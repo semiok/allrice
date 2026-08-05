@@ -4,7 +4,7 @@ AllRice is a browser-first, self-hosted AI workspace for enterprise employees. I
 
 > Current version: **0.1.0 baseline**
 >
-> Current delivery: **MET-44 Codex-only SkillHub on the MET-43 execution plane**
+> Current delivery: **MET-45 Rice EmployeeHub on the Codex execution plane**
 >
 > Product plan: [AllRice MET-38](https://linear.app/metasnowsky/issue/MET-38/allrice-%E5%BC%80%E5%B7%A5%E8%AE%A1%E5%88%92%E7%8B%AC%E7%AB%8B%E5%9F%BA%E7%BA%BF%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E4%B8%8E-mvp-%E5%9E%82%E7%9B%B4%E9%97%AD%E7%8E%AF)
 
@@ -21,10 +21,12 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
 - a SkillHub catalog with immutable artifacts and versions, per-user capability grants, and Codex subscription-backed SkillRun execution.
+- an EmployeeHub menu with Rice as the explicit default, immutable manifest history, SkillVersion composition and durable EmployeeRun evidence.
 
-The Worker executes the isolated `allrice.system.echo` acceptance handler and
-the version-pinned `allrice.skill.run` handler. Chat still uses the intentional
-basic reply; composing Skills into AI employees remains MET-45.
+The Worker executes the isolated `allrice.system.echo`, version-pinned
+`allrice.skill.run` and Rice `allrice.employee.run` handlers. Chat persists a
+pending response, returns the durable Run immediately and restores the final
+answer from PostgreSQL.
 
 ## Product boundary
 
@@ -111,6 +113,10 @@ The readiness endpoints require a working database. The liveness endpoints only 
 Open `http://localhost:3000/skillhub` after accepting the first administrator
 invitation. Codex credentials remain in the deployment environment; AllRice
 stores only secret-free connection health.
+
+Open `http://localhost:3000/employees` to inspect Rice, compose enabled
+SkillHub versions into a new immutable employee version, or switch the assigned
+version. New conversations use the explicitly selected employee Assignment.
 
 ## Docker Compose
 

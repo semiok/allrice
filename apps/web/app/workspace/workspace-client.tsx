@@ -20,6 +20,7 @@ interface Message {
     citations: { type: 'memory' | 'file'; id: string; label: string }[];
   };
   attachments: Attachment[];
+  status: 'pending' | 'completed' | 'failed';
   createdAt: string;
 }
 
@@ -27,6 +28,7 @@ interface Session {
   id: string;
   title: string;
   visibility: Visibility;
+  employeeAssignmentId: string;
   updatedAt: string;
   archivedAt: string | null;
 }
@@ -43,8 +45,16 @@ interface WorkspacePayload {
   organizationId: string;
   workspaceId: string;
   employee: {
+    id: string;
     version: { name: string; model: string; capabilities: string[] };
   };
+  employees: {
+    id: string;
+    isDefault: boolean;
+    currentVersion: {
+      manifest: { name: string; provider: { model: string } };
+    };
+  }[];
   sessions: Session[];
   memories: Memory[];
 }
@@ -86,6 +96,7 @@ async function fileToBase64(file: File) {
 export function WorkspaceClient() {
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
   const [history, setHistory] = useState<HistoryPayload | null>(null);
   const [draft, setDraft] = useState('');
   const [memoryDraft, setMemoryDraft] = useState('');
@@ -110,6 +121,13 @@ export function WorkspaceClient() {
       await fetch('/api/v1/workspace', { cache: 'no-store' }),
     );
     setWorkspace(result.workspace);
+    setSelectedEmployeeId(
+      (current) =>
+        current ||
+        result.workspace.employees.find((employee) => employee.isDefault)?.id ||
+        result.workspace.employees[0]?.id ||
+        '',
+    );
     setActiveId(
       (current) =>
         current ??
@@ -155,6 +173,7 @@ export function WorkspaceClient() {
           headers: { 'content-type': 'application/json', ...tenantHeaders },
           body: JSON.stringify({
             workspaceId: workspace.workspaceId,
+            employeeAssignmentId: selectedEmployeeId || undefined,
             title: '新的对话',
           }),
         }),
@@ -271,22 +290,46 @@ export function WorkspaceClient() {
     setError('');
     setDraft('');
     try {
-      const response = await fetch(
-        `/api/v1/sessions/${activeId}/messages?workspaceId=${workspace.workspaceId}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...tenantHeaders },
-          body: JSON.stringify({
-            clientMessageId: crypto.randomUUID(),
-            text,
-            attachmentIds: pendingAttachments.map((file) => file.id),
-          }),
-        },
+      const created = await readJson<{
+        run: { id: string; status: string; error?: { message: string } | null };
+      }>(
+        await fetch(
+          `/api/v1/sessions/${activeId}/messages?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({
+              clientMessageId: crypto.randomUUID(),
+              text,
+              attachmentIds: pendingAttachments.map((file) => file.id),
+            }),
+          },
+        ),
       );
-      if (!response.ok) await readJson(response);
-      await response.text();
       setPendingAttachments([]);
+      await loadHistory(activeId);
+      let finalRun = created.run;
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        if (['succeeded', 'failed', 'canceled'].includes(finalRun.status))
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        const result = await readJson<{ run: typeof finalRun }>(
+          await fetch(
+            `/api/v1/runs/${created.run.id}?workspaceId=${workspace.workspaceId}`,
+            { cache: 'no-store', headers: tenantHeaders },
+          ),
+        );
+        finalRun = result.run;
+      }
       await Promise.all([loadHistory(activeId), loadWorkspace()]);
+      if (finalRun.status !== 'succeeded') {
+        throw new Error(
+          finalRun.error?.message ??
+            (['failed', 'canceled'].includes(finalRun.status)
+              ? 'Rice 未能完成这次请求。'
+              : 'Rice 仍在后台执行，可稍后回来查看。'),
+        );
+      }
     } catch (cause) {
       setDraft(text);
       setError(errorMessage(cause));
@@ -412,6 +455,23 @@ export function WorkspaceClient() {
         >
           ＋ 新建对话
         </button>
+        <label className="employee-selector">
+          <span>当前 AI 员工</span>
+          <select
+            value={selectedEmployeeId}
+            onChange={(event) => setSelectedEmployeeId(event.target.value)}
+          >
+            {workspace.employees.map((employee) => (
+              <option key={employee.id} value={employee.id}>
+                {employee.currentVersion.manifest.name}
+                {employee.isDefault ? '（默认）' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <a className="sidebar-link" href="/employees">
+          打开 AI 员工
+        </a>
         <a className="sidebar-link" href="/skillhub">
           打开 SkillHub
         </a>
@@ -519,6 +579,14 @@ export function WorkspaceClient() {
                 <time>{new Date(message.createdAt).toLocaleString()}</time>
               </div>
               <p>{message.content.text}</p>
+              {message.status === 'pending' ? (
+                <small className="message-status">后台执行中</small>
+              ) : null}
+              {message.status === 'failed' ? (
+                <small className="message-status message-status-error">
+                  执行失败
+                </small>
+              ) : null}
               {message.attachments.map((attachment) => (
                 <div className="attachment-row" key={attachment.id}>
                   <span>{attachment.fileName}</span>
@@ -577,7 +645,7 @@ export function WorkspaceClient() {
             <div className="empty-conversation">
               <h3>从一件具体的事开始</h3>
               <p>
-                这版支持同步问答、附件和可追溯记忆；后台执行将在下一阶段接入。
+                Rice 会通过可审计的后台 Run 回答，并引用有权限的记忆与技能。
               </p>
             </div>
           ) : null}

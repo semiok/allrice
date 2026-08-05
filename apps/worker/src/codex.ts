@@ -305,14 +305,45 @@ export async function executeCodexSkill(input: {
   signal: AbortSignal;
   onEvent: (event: NormalizedCodexEvent) => Promise<void>;
 }) {
+  return executeCodexHarness({
+    storageObjects: [input.storageObject],
+    workDirectory: input.workDirectory,
+    executionEnvironment: input.executionEnvironment,
+    systemInstructions:
+      'Follow the immutable SkillHub instructions supplied below.',
+    prompt: input.prompt,
+    providerSnapshot: input.providerSnapshot,
+    grantedCapabilities: input.grantedCapabilities,
+    signal: input.signal,
+    onEvent: input.onEvent,
+  });
+}
+
+export async function executeCodexHarness(input: {
+  storageObjects: StorageObject[];
+  workDirectory: string;
+  executionEnvironment: Readonly<Record<string, string>>;
+  systemInstructions: string;
+  prompt: string;
+  providerSnapshot: CodexExecutionSnapshot;
+  grantedCapabilities: SkillCapability[];
+  signal: AbortSignal;
+  onEvent: (event: NormalizedCodexEvent) => Promise<void>;
+}) {
   const config = codexRuntimeConfig();
   config.model = input.providerSnapshot.model;
   config.reasoningEffort = input.providerSnapshot.reasoningEffort;
-  const bundle = await readArtifact(config.storageRoot, input.storageObject);
-  await materializeSkillBundle(bundle, input.workDirectory);
-  const skillInstructions = bundle.files.find(
-    (file) => file.path === bundle.entrypoint,
-  )!.content;
+  const skillInstructions: string[] = [];
+  for (const [index, storageObject] of input.storageObjects.entries()) {
+    const bundle = await readArtifact(config.storageRoot, storageObject);
+    await materializeSkillBundle(
+      bundle,
+      resolve(input.workDirectory, 'skills', String(index + 1)),
+    );
+    skillInstructions.push(
+      bundle.files.find((file) => file.path === bundle.entrypoint)!.content,
+    );
+  }
   let answer = '';
   let usage: NormalizedCodexEvent['usage'];
   let eventChain = Promise.resolve();
@@ -332,10 +363,18 @@ export async function executeCodexSkill(input: {
     ),
     signal: input.signal,
     stdin: [
-      'Follow these immutable SkillHub instructions:',
-      '<skill-instructions>',
-      skillInstructions,
-      '</skill-instructions>',
+      input.systemInstructions,
+      ...(skillInstructions.length
+        ? [
+            '',
+            'The following SkillHub instructions are immutable capability context:',
+            ...skillInstructions.flatMap((instructions, index) => [
+              `<skill-${index + 1}>`,
+              instructions,
+              `</skill-${index + 1}>`,
+            ]),
+          ]
+        : []),
       '',
       'Operate only inside the current working directory.',
       'Do not ask for, read, print, or persist authentication credentials.',

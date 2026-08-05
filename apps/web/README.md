@@ -1,13 +1,13 @@
 # Web application
 
-The Web application is the employee-facing AllRice process. Version 0.1.0 provides the application shell and health endpoints only.
+The Web application is the employee-facing AllRice process. Version 0.1.0 provides invitation auth, the Rice workspace, EmployeeHub, SkillHub and durable Run-backed Chat APIs.
 
 ## Responsibilities
 
 - browser UI and HTTP APIs;
-- authentication/session host after MET-41;
-- employee workspace after MET-50;
-- RunEvent SSE endpoint after MET-43;
+- authentication/session host from MET-41;
+- employee workspace from MET-50 and EmployeeHub from MET-45;
+- Run/RunEvent APIs from MET-43;
 - authorization before every resource query;
 - no direct execution of long-running AI or Skill work.
 

@@ -87,6 +87,7 @@ export const ChatSessionSchema = z
 export const CreateChatSessionInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    employeeAssignmentId: UuidSchema.optional(),
     title: z.string().trim().min(1).max(160).default('New session'),
   })
   .strict();

@@ -1,0 +1,55 @@
+import { randomUUID } from 'node:crypto';
+
+import { DataAccessError, EmployeeHubError } from '@allrice/database';
+
+export function employeeHubErrorResponse(error: unknown) {
+  const requestId = randomUUID();
+  let status = 400;
+  let code = 'VALIDATION_FAILED';
+  let message = 'EmployeeHub request validation failed';
+  if (error instanceof DataAccessError) {
+    if (error.code === 'authentication_required') {
+      status = 401;
+      code = 'AUTHENTICATION_REQUIRED';
+      message = 'Authentication required';
+    } else if (error.code === 'authorization_denied') {
+      status = 403;
+      code = 'AUTHORIZATION_DENIED';
+      message = 'Access denied';
+    } else {
+      status = 404;
+      code = 'RESOURCE_NOT_FOUND';
+      message = 'AI employee resource not found';
+    }
+  } else if (error instanceof EmployeeHubError) {
+    if (error.code === 'not_found') {
+      status = 404;
+      code = 'RESOURCE_NOT_FOUND';
+      message = 'AI employee resource not found';
+    } else if (error.code === 'version_conflict') {
+      status = 409;
+      code = 'VERSION_CONFLICT';
+      message = 'Employee version publication conflicted';
+    } else if (error.code === 'skill_not_installed') {
+      status = 409;
+      code = 'SKILL_NOT_INSTALLED';
+      message = 'Every selected skill version must be installed and enabled';
+    } else {
+      status = 422;
+      code = 'PROVIDER_INVALID';
+      message = 'This employee version cannot execute with Codex';
+    }
+  } else if (error instanceof Error && error.name !== 'ZodError') {
+    console.error('Unhandled EmployeeHub request error', {
+      name: error.name,
+      message: error.message,
+    });
+    status = 500;
+    code = 'INTERNAL_ERROR';
+    message = 'EmployeeHub request failed';
+  }
+  return Response.json(
+    { error: { code, message, requestId, retryable: status >= 500 } },
+    { status },
+  );
+}
