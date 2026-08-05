@@ -67,6 +67,8 @@ MET-49 freezes the following before business implementation:
 - Storage keys, signed access, retention and backup;
 - API and migration version compatibility.
 
+MET-49 freezes these definitions in [`@allrice/contracts`](../../packages/contracts/README.md), [ADR-0001](adr-0001-v1-core-contract-authority.md), the [core-contract reference](v1-core-contracts.md), [schema draft](v1-schema-draft.sql), and [test matrix](v1-contract-test-matrix.md).
+
 ## Explicit V1 exclusions
 
 - desktop application and native operating-system integration;

@@ -1,6 +1,6 @@
 # OpenRice integration
 
-> Status: **Contract pending; not required for AllRice V1 runtime**
+> Status: **MET-49 boundary frozen; not required for AllRice V1 runtime**
 >
 > Linear: **MET-49**
 
