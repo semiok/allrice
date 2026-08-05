@@ -7,6 +7,7 @@ proxy_port="${ALLRICE_PROXY_PORT:-18080}"
 keep_compose="${ALLRICE_KEEP_COMPOSE:-0}"
 
 export ALLRICE_PROXY_PORT="${proxy_port}"
+export ALLRICE_STORAGE_SIGNING_SECRET="${ALLRICE_STORAGE_SIGNING_SECRET:-allrice-compose-smoke-signing-secret}"
 
 cleanup() {
   if [[ "${keep_compose}" != "1" ]]; then
@@ -63,13 +64,39 @@ bootstrap_json="$(
     worker node packages/database/dist/bootstrap-identity.js
 )"
 bootstrap_token="$(printf '%s' "${bootstrap_json}" | jq -r '.token')"
+bootstrap_organization_id="$(printf '%s' "${bootstrap_json}" | jq -r '.organizationId')"
+bootstrap_workspace_id="$(printf '%s' "${bootstrap_json}" | jq -r '.workspaceId')"
 if [[ -z "${bootstrap_token}" || "${bootstrap_token}" == "null" ]]; then
   echo "Identity bootstrap did not return a token" >&2
   exit 1
 fi
 
-ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+identity_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_INVITATION_TOKEN="${bootstrap_token}" \
-  node scripts/identity-http-smoke.mjs
+ALLRICE_SMOKE_ORGANIZATION_ID="${bootstrap_organization_id}" \
+ALLRICE_SMOKE_WORKSPACE_ID="${bootstrap_workspace_id}" \
+  node scripts/identity-http-smoke.mjs)"
+printf '%s\n' "${identity_output}" | sed '/^ALLRICE_SMOKE_STATE=/d'
+smoke_state="$(printf '%s\n' "${identity_output}" | sed -n 's/^ALLRICE_SMOKE_STATE=//p')"
+if [[ -z "${smoke_state}" ]]; then
+  echo "Storage smoke state was not returned" >&2
+  exit 1
+fi
+
+# The migrator must be safely repeatable when no new migration is pending.
+docker compose --project-name "${compose_project}" run --rm migrate
+
+# Validate that both authoritative stores remain consistent after restart.
+docker compose --project-name "${compose_project}" restart postgres web
+for _ in $(seq 1 60); do
+  if curl --fail --silent "http://127.0.0.1:${proxy_port}/api/health/ready" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/ready" >/dev/null
+ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+ALLRICE_SMOKE_STATE="${smoke_state}" \
+  node scripts/storage-restart-smoke.mjs
 
 echo "AllRice Compose smoke passed (migration=${migration}, pgvector=${vector_version})"

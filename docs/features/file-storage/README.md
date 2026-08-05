@@ -1,6 +1,6 @@
 # File storage
 
-> Status: **MET-49 contract frozen; implementation pending MET-42**
+> Status: **MET-42 foundation implemented**
 >
 > Linear: **MET-42, MET-49**
 
@@ -10,27 +10,21 @@ Employees upload files to a Session, reference them in Chat, download authorized
 
 ## V1 implementation
 
-V1 uses a mounted server directory behind a Storage interface. Object keys, metadata and authorization are authoritative; the host path is an implementation detail. The same interface must support a future S3-compatible backend.
+V1 uses a mounted server directory behind `StoragePort`. `LocalStorageAdapter` writes verified content atomically; `S3CompatibleStorageAdapter` accepts an injected S3-compatible object client without changing callers. PostgreSQL metadata and authorization are authoritative; the host path is never returned by an API.
 
 ## Core data
 
-```text
-files
-file_references
-artifacts
-audit_events
-```
+`allrice_storage_objects`, `allrice_storage_quotas`, `allrice_storage_access_grants` and `allrice_audit_events` are implemented by `0003_data_storage.sql`.
 
 Each object records organization, workspace, owner, visibility, object key, content type, byte size, checksum, status, retention and timestamps.
 
 ## API behavior
 
-- initialize/complete upload;
-- authenticated upload proxy or signed upload;
-- short-lived signed download or authenticated download proxy;
-- metadata lookup without host path;
-- delete with reference/retention checks;
-- quota and allowed-type errors.
+- `POST /api/v1/files` performs an authenticated, size/checksum-verified upload;
+- `POST /api/v1/files/:id/sign` issues a 1–900 second HMAC grant after resource authorization;
+- `GET /api/v1/files/:id?token=...` verifies signature, scope, expiry, nonce state and object lifecycle;
+- `DELETE /api/v1/files/:id` enforces resource policy, retention and immutability, then revokes grants;
+- workspace quota is serialized per tenant and defaults to 1 GiB until explicitly configured.
 
 ## Security
 
@@ -43,8 +37,8 @@ Each object records organization, workspace, owner, visibility, object key, cont
 
 ## Failure and recovery
 
-Incomplete uploads are collectible. Parsing failure does not prevent download or deletion. Backup and restore must preserve both database metadata and objects with checksum verification.
+Failed uploads are marked deleted and do not consume active quota. Database metadata and the mounted storage volume survive independent service restarts. Backup and restore must preserve both stores; follow the [data backup and restore runbook](../../operations/data-backup-restore.md).
 
 ## Acceptance
 
-User A cannot access User B's file by URL, guessed ID, object key or vector reference. Old signed access fails after expiry/deletion. Backup/restore returns matching checksums and ownership.
+The Compose smoke creates two users and proves that an organization admin cannot sign or download a member's private file, while its owner can. It rejects invalid signed tokens and re-downloads the same checksum-backed content after PostgreSQL and Web restart. Unit tests cover integrity failure, signed-token tampering and adapter restart.

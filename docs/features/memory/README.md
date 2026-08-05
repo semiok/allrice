@@ -1,6 +1,6 @@
 # Memory
 
-> Status: **Planned**
+> Status: **MET-42 storage/retrieval foundation implemented; product workflows pending MET-50**
 >
 > Linear: **MET-42, MET-50**
 
@@ -23,21 +23,15 @@ AllRice can remember approved facts and source material for an employee while ke
 - administrator default access to private employee Memory;
 - cross-product shared vector tables with OpenRice.
 
-## Data model direction
+## Implemented data foundation
 
-```text
-memory_documents
-memory_chunks
-memory_sources
-embedding_versions
-audit_events
-```
+`allrice_memories` and `allrice_rag_chunks` store explicit organization, workspace, owner and visibility. Chunks use `vector(1536)` with an HNSW cosine index. Chat Session, Message and Run authority tables now carry the same tenant columns for their owning feature work.
 
 Documents and chunks carry organization, workspace, owner, visibility, source ID, embedding model/version and lifecycle status.
 
 ## Retrieval boundary
 
-Authorization and tenant filters are applied before or within retrieval, never after receiving an unrestricted result set. Retrieval results include source IDs and visibility evidence for traceability.
+Authorization and tenant filters are applied inside the SQL recall query, never after receiving an unrestricted result set. `POST /api/v1/memories/recall` always binds organization and workspace and allows private chunks only when `owner_id` matches the authenticated actor.
 
 ## Failure and recovery
 
@@ -45,7 +39,7 @@ Embedding failures are retryable and visible. Deleting a source invalidates corr
 
 ## Acceptance
 
-- private Memory is retrieved only for its owner;
+- private Memory is retrieved only for its owner (covered by two-user Compose smoke);
 - explicitly shared Memory follows Workspace role;
 - User B cannot retrieve User A's vector matches;
 - source attribution resolves to an authorized source;

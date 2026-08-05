@@ -11,6 +11,9 @@ export default defineConfig({
       '@allrice/database': fileURLToPath(
         new URL('./packages/database/src/index.ts', import.meta.url),
       ),
+      '@allrice/storage': fileURLToPath(
+        new URL('./packages/storage/src/index.ts', import.meta.url),
+      ),
     },
   },
 });

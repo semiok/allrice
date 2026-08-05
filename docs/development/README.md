@@ -62,18 +62,19 @@ For a native local installation, install PostgreSQL 17 and the matching pgvector
 
 Copy `.env.example` to `.env` only when changing defaults. The bootstrap script loads this root file and passes one consistent environment to migration, Web, and Worker.
 
-| Variable                          | Default          | Purpose                                                         |
-| --------------------------------- | ---------------- | --------------------------------------------------------------- |
-| `DATABASE_URL`                    | blank            | Existing database override; blank enables the dev container     |
-| `ALLRICE_DEV_DB_PORT`             | `54329`          | Loopback host port for the development database                 |
-| `POSTGRES_DB`                     | `allrice`        | Database created by Compose                                     |
-| `POSTGRES_USER`                   | `allrice`        | Database user created by Compose                                |
-| `POSTGRES_PASSWORD`               | `allrice`        | Local default; must be changed for shared/production deployment |
-| `ALLRICE_WEB_PORT`                | `3000`           | Native Web development port                                     |
-| `ALLRICE_WORKER_PORT`             | `3101`           | Native Worker health port                                       |
-| `ALLRICE_WORKER_POLL_INTERVAL_MS` | `5000`           | Worker database readiness refresh interval                      |
-| `ALLRICE_STORAGE_ROOT`            | `.local/storage` | Ignored native-development storage directory                    |
-| `ALLRICE_PROXY_PORT`              | `8080`           | Host port for the full Compose deployment                       |
+| Variable                          | Default           | Purpose                                                         |
+| --------------------------------- | ----------------- | --------------------------------------------------------------- |
+| `DATABASE_URL`                    | blank             | Existing database override; blank enables the dev container     |
+| `ALLRICE_DEV_DB_PORT`             | `54329`           | Loopback host port for the development database                 |
+| `POSTGRES_DB`                     | `allrice`         | Database created by Compose                                     |
+| `POSTGRES_USER`                   | `allrice`         | Database user created by Compose                                |
+| `POSTGRES_PASSWORD`               | `allrice`         | Local default; must be changed for shared/production deployment |
+| `ALLRICE_WEB_PORT`                | `3000`            | Native Web development port                                     |
+| `ALLRICE_WORKER_PORT`             | `3101`            | Native Worker health port                                       |
+| `ALLRICE_WORKER_POLL_INTERVAL_MS` | `5000`            | Worker database readiness refresh interval                      |
+| `ALLRICE_STORAGE_ROOT`            | `.local/storage`  | Ignored native-development storage directory                    |
+| `ALLRICE_STORAGE_SIGNING_SECRET`  | dev-only fallback | HMAC secret; required in production, minimum 32 bytes           |
+| `ALLRICE_PROXY_PORT`              | `8080`            | Host port for the full Compose deployment                       |
 
 Do not commit `.env`; it is ignored because it may contain credentials.
 
@@ -126,7 +127,7 @@ This prevents the misleading state where liveness passes but a teammate is devel
 - **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
 - **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
 
-The full containerized acceptance path is `pnpm test:compose`. It builds production images, starts a fresh database, and verifies both services, migrations, and pgvector.
+The full containerized acceptance path is `pnpm test:compose`. It builds production images, starts a fresh database, verifies repeatable migrations and pgvector, exercises two-user identity/file/vector isolation, restarts PostgreSQL and Web, and verifies database/storage persistence.
 
 ## Branches and pull requests
 

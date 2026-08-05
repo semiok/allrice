@@ -41,6 +41,18 @@ try {
     throw new Error('baseline runtime metadata is missing or invalid');
   }
 
+  const dataStorageRows = await sql<{ version: string | undefined }[]>`
+    select value ->> 'version' as version
+    from allrice_runtime_metadata
+    where key = 'data-storage-schema'
+  `;
+  if (
+    expectedMigrations.includes('0003_data_storage.sql') &&
+    dataStorageRows[0]?.version !== '0003'
+  ) {
+    throw new Error('data/storage schema metadata is missing or invalid');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

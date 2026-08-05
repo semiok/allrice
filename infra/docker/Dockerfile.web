@@ -5,6 +5,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/database/package.json packages/database/package.json
+COPY packages/storage/package.json packages/storage/package.json
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm --filter @allrice/web... build
