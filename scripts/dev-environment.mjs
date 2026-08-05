@@ -14,7 +14,13 @@ export function loadDevelopmentEnvironment() {
   process.env.ALLRICE_ENV ||= 'development';
   process.env.ALLRICE_WEB_PORT ||= '3000';
   process.env.ALLRICE_WORKER_PORT ||= '3101';
-  process.env.ALLRICE_WORKER_POLL_INTERVAL_MS ||= '5000';
+  process.env.ALLRICE_WORKER_POLL_INTERVAL_MS ||= '1000';
+  process.env.ALLRICE_WORKER_LEASE_MS ||= '30000';
+  process.env.ALLRICE_WORKER_HEARTBEAT_MS ||= '10000';
+  process.env.ALLRICE_WORKER_CONCURRENCY ||= '1';
+  process.env.ALLRICE_EXECUTION_ROOT ||= fileURLToPath(
+    new URL('../.local/executions', import.meta.url),
+  );
   process.env.ALLRICE_STORAGE_ROOT ||= fileURLToPath(
     new URL('../.local/storage', import.meta.url),
   );
