@@ -16,11 +16,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "identity:bootstrap": "tsx src/bootstrap-identity.ts",
     "migrate": "tsx src/migrate.ts",
     "verify": "tsx src/verify.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@allrice/contracts": "workspace:*",
     "postgres": "^3.4.7"
   }
 }

@@ -2,6 +2,7 @@
   "name": "allrice",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.2.2",
   "engines": {
@@ -23,6 +24,7 @@
     "doctor": "node scripts/doctor.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "identity:bootstrap": "pnpm --filter @allrice/database identity:bootstrap",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:compose": "bash scripts/compose-smoke.sh",

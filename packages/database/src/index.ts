@@ -26,3 +26,5 @@ export async function closeDatabase() {
   await client.end({ timeout: 5 });
   client = undefined;
 }
+
+export * from './identity.ts';

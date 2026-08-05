@@ -77,6 +77,18 @@ Copy `.env.example` to `.env` only when changing defaults. The bootstrap script 
 
 Do not commit `.env`; it is ignored because it may contain credentials.
 
+## Bootstrap the first administrator
+
+AllRice has no production Auto Guest or default password. After `pnpm db:setup`, set the five `ALLRICE_BOOTSTRAP_*` values shown in `.env.example`, then run:
+
+```bash
+pnpm identity:bootstrap
+```
+
+The command creates or reuses the Organization and default Workspace, then prints a one-time administrator invitation token. Open `/accept-invitation?token=...` and activate the account within 24 hours. Only the token hash is stored. Subsequent invitations are created through `POST /api/v1/admin/invitations` by an authenticated administrator.
+
+Never put the printed token in source control, issue comments or logs retained by shared CI.
+
 ## What startup verifies
 
 Before Web or Worker starts, the bootstrap checks database connectivity, applies all SQL files in order, and confirms:
@@ -89,20 +101,21 @@ This prevents the misleading state where liveness passes but a teammate is devel
 
 ## Commands
 
-| Command             | Purpose                                             |
-| ------------------- | --------------------------------------------------- |
-| `pnpm doctor`       | Check Node, pnpm, and the selected database path    |
-| `pnpm dev`          | Prepare the database, then run Web and Worker       |
-| `pnpm db:setup`     | Start/default or use/external DB, migrate, verify   |
-| `pnpm db:verify`    | Verify migrations, baseline metadata, and pgvector  |
-| `pnpm db:dev:up`    | Start only the isolated development database        |
-| `pnpm db:dev:down`  | Stop it while retaining its named data volume       |
-| `pnpm db:migrate`   | Apply ordered SQL migrations under an advisory lock |
-| `pnpm format:check` | Verify formatting                                   |
-| `pnpm lint`         | Run static rules                                    |
-| `pnpm typecheck`    | Typecheck every workspace package                   |
-| `pnpm test`         | Run unit/contract tests                             |
-| `pnpm build`        | Build packages and applications                     |
+| Command                   | Purpose                                             |
+| ------------------------- | --------------------------------------------------- |
+| `pnpm doctor`             | Check Node, pnpm, and the selected database path    |
+| `pnpm dev`                | Prepare the database, then run Web and Worker       |
+| `pnpm db:setup`           | Start/default or use/external DB, migrate, verify   |
+| `pnpm db:verify`          | Verify migrations, baseline metadata, and pgvector  |
+| `pnpm db:dev:up`          | Start only the isolated development database        |
+| `pnpm db:dev:down`        | Stop it while retaining its named data volume       |
+| `pnpm db:migrate`         | Apply ordered SQL migrations under an advisory lock |
+| `pnpm identity:bootstrap` | Create the first one-time admin invitation          |
+| `pnpm format:check`       | Verify formatting                                   |
+| `pnpm lint`               | Run static rules                                    |
+| `pnpm typecheck`          | Typecheck every workspace package                   |
+| `pnpm test`               | Run unit/contract tests                             |
+| `pnpm build`              | Build packages and applications                     |
 
 ## Troubleshooting
 

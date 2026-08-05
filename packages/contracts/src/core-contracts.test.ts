@@ -84,6 +84,29 @@ describe('authorization contracts', () => {
       authorize(resource({ visibility: 'private' }), 'resource:read', context())
         .reason,
     ).toBe('denied_private_resource');
+    expect(
+      authorize(
+        resource({ workspaceId: ids.workspaceB }),
+        'resource:read',
+        context(),
+      ).reason,
+    ).toBe('denied_workspace_mismatch');
+  });
+
+  it('allows the owner but not a viewer write', () => {
+    expect(
+      authorize(
+        resource({ ownerId: ids.userA, visibility: 'private' }),
+        'resource:read',
+        context(),
+      ).allowed,
+    ).toBe(true);
+    const viewerContext = context({
+      memberships: [{ ...context().memberships[0]!, role: 'viewer' }],
+    });
+    expect(authorize(resource(), 'resource:write', viewerContext).allowed).toBe(
+      false,
+    );
   });
 
   it('allows a worker only through a current frozen policy grant', () => {
