@@ -24,16 +24,13 @@ import {
   getStoredFile,
 } from './data.ts';
 import { getDatabase } from './index.ts';
+import {
+  employeeManifestChecksum,
+  riceEmployeeKey,
+  riceManifest,
+} from './employee-config.ts';
 
-const defaultEmployee = {
-  key: 'default-assistant',
-  name: 'AllRice Guide',
-  version: 1,
-  model: 'allrice/basic-assistant-v1',
-  systemPrompt:
-    'Help the employee organize work using only authorized Session, File and Memory context. Never claim to have executed background work.',
-  capabilities: ['chat', 'file-context', 'memory-recall'],
-} as const;
+const riceVersion = 2;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -187,16 +184,6 @@ export async function resolveWorkspaceId(
   return workspaceId;
 }
 
-function configChecksum() {
-  const canonical = JSON.stringify({
-    name: defaultEmployee.name,
-    model: defaultEmployee.model,
-    systemPrompt: defaultEmployee.systemPrompt,
-    capabilities: defaultEmployee.capabilities,
-  });
-  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
-}
-
 function mapAssignment(row: AssignmentRow): EmployeeAssignment {
   return {
     id: row.assignment_id,
@@ -225,7 +212,8 @@ export async function ensureDefaultEmployee(
 ) {
   const workspaceId = await resolveWorkspaceId(context, requestedWorkspaceId);
   const userId = requireUser(context);
-  const checksum = configChecksum();
+  const manifest = riceManifest();
+  const checksum = employeeManifestChecksum(manifest);
   const sql = getDatabase();
   const assignment = await sql.begin(async (transaction) => {
     const employees = await transaction<{ id: string }[]>`
@@ -233,7 +221,7 @@ export async function ensureDefaultEmployee(
         organization_id, workspace_id, employee_key, name
       ) values (
         ${context.organizationId}, ${workspaceId},
-        ${defaultEmployee.key}, ${defaultEmployee.name}
+        ${riceEmployeeKey}, ${manifest.name}
       )
       on conflict (organization_id, workspace_id, employee_key)
       do update set name = excluded.name, updated_at = now()
@@ -244,12 +232,16 @@ export async function ensureDefaultEmployee(
     await transaction`
       insert into allrice_employee_versions (
         organization_id, workspace_id, employee_id, version, name, model,
-        system_prompt, capabilities, config_checksum
+        system_prompt, capabilities, config_checksum, description, manifest,
+        provider_snapshot, skill_version_ids
       ) values (
         ${context.organizationId}, ${workspaceId}, ${employeeId},
-        ${defaultEmployee.version}, ${defaultEmployee.name},
-        ${defaultEmployee.model}, ${defaultEmployee.systemPrompt},
-        ${transaction.json([...defaultEmployee.capabilities])}, ${checksum}
+        ${riceVersion}, ${manifest.name},
+        ${manifest.provider.model}, ${manifest.systemPrompt},
+        ${transaction.json(manifest.capabilities)}, ${checksum},
+        ${manifest.description}, ${transaction.json(manifest)},
+        ${transaction.json(manifest.provider)},
+        ${transaction.json(manifest.skillVersionIds)}
       )
       on conflict (employee_id, version) do nothing
     `;
@@ -257,22 +249,37 @@ export async function ensureDefaultEmployee(
       { id: string; config_checksum: string }[]
     >`
       select id, config_checksum from allrice_employee_versions
-      where employee_id = ${employeeId} and version = ${defaultEmployee.version}
+      where employee_id = ${employeeId} and version = ${riceVersion}
     `;
     const version = versions[0];
-    if (!version || version.config_checksum !== checksum) {
-      throw new Error('published default employee version is immutable');
-    }
+    if (!version) throw new Error('published Rice version is missing');
     await transaction`
       insert into allrice_employee_assignments (
         organization_id, workspace_id, employee_id, employee_version_id,
         user_id, is_default, active
       ) values (
         ${context.organizationId}, ${workspaceId}, ${employeeId},
-        ${version.id}, ${userId}, true, true
+        ${version.id}, ${userId},
+        not exists (
+          select 1 from allrice_employee_assignments current_default
+          where current_default.organization_id = ${context.organizationId}
+            and current_default.workspace_id = ${workspaceId}
+            and current_default.user_id = ${userId}
+            and current_default.active and current_default.is_default
+        ),
+        true
       )
       on conflict (organization_id, workspace_id, user_id, employee_id)
-      do update set active = true, updated_at = now()
+      do update set active = true,
+        employee_version_id = case
+          when exists (
+            select 1 from allrice_employee_versions current_version
+            where current_version.id = allrice_employee_assignments.employee_version_id
+              and current_version.model = 'allrice/basic-assistant-v1'
+          ) then excluded.employee_version_id
+          else allrice_employee_assignments.employee_version_id
+        end,
+        updated_at = now()
     `;
     const rows = await transaction<AssignmentRow[]>`
       select
@@ -361,14 +368,35 @@ export async function createChatSession(
   input: unknown,
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
-  const assignment = await ensureDefaultEmployee(context, parsed.workspaceId);
+  const defaultAssignment = await ensureDefaultEmployee(
+    context,
+    parsed.workspaceId,
+  );
   const sql = getDatabase();
+  let assignment = defaultAssignment;
+  if (parsed.employeeAssignmentId) {
+    const assignments = await sql<AssignmentRow[]>`
+      select
+        a.id as assignment_id, a.employee_id, a.employee_version_id,
+        a.user_id, a.organization_id, a.workspace_id, a.is_default,
+        v.version, v.name, v.model, v.system_prompt, v.capabilities,
+        v.published_at, v.config_checksum
+      from allrice_employee_assignments a
+      join allrice_employee_versions v on v.id = a.employee_version_id
+      where a.id = ${parsed.employeeAssignmentId}
+        and a.organization_id = ${context.organizationId}
+        and a.workspace_id = ${defaultAssignment.workspaceId}
+        and a.user_id = ${requireUser(context)} and a.active
+    `;
+    if (!assignments[0]) throw new DataAccessError('authorization_denied');
+    assignment = mapAssignment(assignments[0]);
+  }
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (
       organization_id, workspace_id, owner_id, employee_assignment_id,
       title, visibility
     ) values (
-      ${context.organizationId}, ${parsed.workspaceId}, ${requireUser(context)},
+      ${context.organizationId}, ${defaultAssignment.workspaceId}, ${requireUser(context)},
       ${assignment.id}, ${parsed.title}, 'private'
     )
     returning *
@@ -377,7 +405,7 @@ export async function createChatSession(
   if (!row) throw new Error('session creation failed');
   await audit({
     context,
-    workspaceId: parsed.workspaceId,
+    workspaceId: defaultAssignment.workspaceId,
     action: 'session.create',
     resourceType: 'chat_session',
     resourceId: row.id,
@@ -650,21 +678,6 @@ export async function authorizeSessionOwner(
   return mapSession(session);
 }
 
-function basicReply(text: string, memories: { id: string; content: string }[]) {
-  const preview = text.length > 240 ? `${text.slice(0, 237)}…` : text;
-  const chinese = /[\u3400-\u9fff]/u.test(text);
-  const memoryText = memories.length
-    ? chinese
-      ? `我找到了 ${memories.length} 条与你相关的个人记忆。`
-      : `I found ${memories.length} relevant memory source${memories.length > 1 ? 's' : ''}.`
-    : chinese
-      ? '当前没有匹配的记忆来源。'
-      : 'No matching memory source is available yet.';
-  return chinese
-    ? `我已收到：“${preview}”\n\n${memoryText} 这是同步基础回答；需要后台执行的工作会在 MET-43 接入。`
-    : `I received: “${preview}”\n\n${memoryText} This is the synchronous foundation; background execution will arrive through MET-43.`;
-}
-
 export async function sendChatMessage(
   context: RequestContext,
   workspaceId: string,
@@ -677,11 +690,6 @@ export async function sendChatMessage(
     throw new DataAccessError('authorization_denied');
   }
   const memories = await recallForReply(context, workspaceId, message.text);
-  const citations = memories.map((memory) => ({
-    type: 'memory' as const,
-    id: memory.id,
-    label: memory.content.slice(0, 120),
-  }));
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
     await transaction`
@@ -765,8 +773,8 @@ export async function sendChatMessage(
         ) values (
           ${context.organizationId}, ${workspaceId}, ${session.id},
           ${requireUser(context)}, 'assistant',
-          ${transaction.json({ text: basicReply(message.text, memories), citations })},
-          ${session.visibility}, ${userMessage.id}, 'completed', now()
+          ${transaction.json({ text: 'Rice 正在处理…', citations: [] })},
+          ${session.visibility}, ${userMessage.id}, 'pending', null
         )
         returning *
       `;
@@ -787,10 +795,109 @@ export async function sendChatMessage(
     resourceId: result.userMessage.id,
     reason: 'session_owner_idempotent',
   });
-  return {
-    userMessage: mapMessage(context, result.userMessage, []),
-    assistantMessage: mapMessage(context, result.assistantMessage, []),
-  };
+  const existingEmployeeRuns = await sql<{ run_id: string }[]>`
+    select run_id from allrice_employee_runs
+    where organization_id = ${context.organizationId}
+      and workspace_id = ${workspaceId}
+      and assistant_message_id = ${result.assistantMessage.id}
+  `;
+  if (existingEmployeeRuns[0]) {
+    const { getRun } = await import('./queue.ts');
+    return {
+      userMessage: mapMessage(context, result.userMessage, []),
+      assistantMessage: mapMessage(context, result.assistantMessage, []),
+      run: await getRun(context, workspaceId, existingEmployeeRuns[0].run_id),
+      created: false,
+    };
+  }
+  if (result.assistantMessage.status === 'failed') {
+    const retries = await sql<MessageRow[]>`
+      update allrice_messages
+      set content = ${sql.json({ text: 'Rice 正在重试…', citations: [] })},
+          status = 'pending', error_code = null, completed_at = null
+      where id = ${result.assistantMessage.id}
+      returning *
+    `;
+    if (retries[0]) result.assistantMessage = retries[0];
+  }
+  const historyRows = await sql<MessageRow[]>`
+    select * from allrice_messages
+    where organization_id = ${context.organizationId}
+      and workspace_id = ${workspaceId}
+      and session_id = ${session.id}
+      and status = 'completed'
+      and id <> ${result.userMessage.id}
+    order by created_at, id
+  `;
+  const attachmentRows =
+    message.attachmentIds.length === 0
+      ? []
+      : await sql<{ file_name: string }[]>`
+          select file_name from allrice_message_attachments
+          where message_id = ${result.userMessage.id}
+          order by file_name
+        `;
+  const userRequest = attachmentRows.length
+    ? `${message.text}\n\nAttached files: ${attachmentRows
+        .map((attachment) => attachment.file_name)
+        .join(', ')}`
+    : message.text;
+  try {
+    const { prepareEmployeeRunBinding } = await import('./employeehub.ts');
+    const binding = await prepareEmployeeRunBinding({
+      context,
+      workspaceId,
+      assignmentId: session.employee_assignment_id,
+      sessionId: session.id,
+      userMessageId: result.userMessage.id,
+      assistantMessageId: result.assistantMessage.id,
+      promptSnapshot: {
+        systemPrompt: '',
+        conversation: historyRows.slice(-80).map((row) => ({
+          role: row.role,
+          text: ChatMessageContentSchema.parse(row.content).text,
+        })),
+        memories,
+        userRequest,
+      },
+    });
+    const { enqueueRun } = await import('./queue.ts');
+    const queued = await enqueueRun(
+      context,
+      {
+        workspaceId,
+        idempotencyKey: `employee-message:${message.clientMessageId}`,
+        type: 'allrice.employee.run',
+        input: {
+          employeeAssignmentId: binding.employeeAssignmentId,
+          employeeVersionId: binding.employeeVersionId,
+          sessionId: binding.sessionId,
+          userMessageId: binding.userMessageId,
+          assistantMessageId: binding.assistantMessageId,
+        },
+        maxAttempts: 2,
+        timeoutMs: 300_000,
+      },
+      { employeeBinding: binding },
+    );
+    return {
+      userMessage: mapMessage(context, result.userMessage, []),
+      assistantMessage: mapMessage(context, result.assistantMessage, []),
+      run: queued.run,
+      created: queued.created,
+    };
+  } catch (error) {
+    await sql`
+      update allrice_messages
+      set content = ${sql.json({
+        text: 'Rice 暂时无法开始这次执行，请稍后重试。',
+        citations: [],
+      })}, status = 'failed', error_code = 'EMPLOYEE_ENQUEUE_FAILED',
+        completed_at = now()
+      where id = ${result.assistantMessage.id} and status = 'pending'
+    `;
+    throw error;
+  }
 }
 
 export async function linkFileToSession(input: {
@@ -993,10 +1100,13 @@ export async function getEmployeeWorkspace(
     }),
     listWorkspaceMemories(context, assignment.workspaceId),
   ]);
+  const { listEmployeeHub } = await import('./employeehub.ts');
+  const employeeHub = await listEmployeeHub(context, assignment.workspaceId);
   return {
     organizationId: context.organizationId,
     workspaceId: assignment.workspaceId,
     employee: assignment,
+    employees: employeeHub.assignments,
     sessions: sessions.sessions,
     memories,
   };

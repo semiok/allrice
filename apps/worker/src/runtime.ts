@@ -4,13 +4,18 @@ import {
   completeJob,
   failJob,
   heartbeatJob,
+  resolveEmployeeExecution,
   resolveSkillExecution,
   startClaimedJob,
   type ClaimedExecution,
 } from '@allrice/database';
 
 import { prepareExecutionIsolation } from './isolation.js';
-import { executeCodexSkill, type NormalizedCodexEvent } from './codex.js';
+import {
+  executeCodexHarness,
+  executeCodexSkill,
+  type NormalizedCodexEvent,
+} from './codex.js';
 import { HandlerError } from './errors.js';
 
 function objectInput(input: unknown): Record<string, unknown> {
@@ -50,6 +55,55 @@ async function executeHandler(
   signal: AbortSignal,
   onCodexEvent: (event: NormalizedCodexEvent) => Promise<void>,
 ) {
+  if (execution.payload.type === 'allrice.employee.run') {
+    const input = objectInput(execution.payload.input);
+    if (
+      typeof input.employeeAssignmentId !== 'string' ||
+      typeof input.employeeVersionId !== 'string' ||
+      typeof input.sessionId !== 'string' ||
+      typeof input.userMessageId !== 'string' ||
+      typeof input.assistantMessageId !== 'string'
+    ) {
+      throw new HandlerError(
+        'EMPLOYEE_INPUT_INVALID',
+        'Employee execution input is invalid',
+        false,
+      );
+    }
+    const resolved = await resolveEmployeeExecution({
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId!,
+      ownerId: execution.job.ownerId,
+      runId: execution.context.runId,
+    });
+    const conversation = resolved.promptSnapshot.conversation
+      .map((message) => `${message.role}: ${message.text}`)
+      .join('\n');
+    const memories = resolved.promptSnapshot.memories
+      .map((memory) => `- [${memory.id}] ${memory.content}`)
+      .join('\n');
+    return executeCodexHarness({
+      storageObjects: resolved.skillArtifacts.map(
+        (artifact) => artifact.storageObject,
+      ),
+      workDirectory: isolation.workDirectory,
+      executionEnvironment: isolation.environment,
+      systemInstructions: [
+        resolved.promptSnapshot.systemPrompt,
+        '',
+        'Conversation snapshot:',
+        conversation || '(new conversation)',
+        '',
+        'Authorized memory snapshot:',
+        memories || '(no matching memories)',
+      ].join('\n'),
+      prompt: resolved.promptSnapshot.userRequest,
+      providerSnapshot: resolved.providerSnapshot,
+      grantedCapabilities: resolved.grantedCapabilities,
+      signal,
+      onEvent: onCodexEvent,
+    });
+  }
   if (execution.payload.type === 'allrice.skill.run') {
     const input = objectInput(execution.payload.input);
     if (

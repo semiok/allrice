@@ -1,6 +1,6 @@
 # Chat and Session
 
-> Status: **MET-50 synchronous Chat/Session implemented**
+> Status: **Durable Rice Chat/Session implemented**
 >
 > Linear: **MET-50**
 
@@ -25,11 +25,12 @@ Messages support user, assistant, system and tool roles. The model will include 
 - list/create/update/archive Sessions;
 - list Messages with stable pagination/order;
 - append user Message with idempotency protection;
-- stream a short synchronous assistant response;
+- persist a pending assistant Message and enqueue an idempotent EmployeeRun;
 - reference uploaded files and Memory sources;
-- transition long work into MET-43 Run/SSE rather than holding a Web request indefinitely.
+- return `202` with the Run identity rather than holding the Web request open;
+- recover the completed/failed/canceled assistant result from PostgreSQL.
 
-The routes are `/api/v1/sessions`, `/api/v1/sessions/:id`, `/api/v1/sessions/:id/messages` and `/api/v1/sessions/:id/attachments`. List pagination uses an opaque `(updated_at, id)` cursor. A `clientMessageId` and a transaction advisory lock make retries return the original user/assistant pair.
+The routes are `/api/v1/sessions`, `/api/v1/sessions/:id`, `/api/v1/sessions/:id/messages` and `/api/v1/sessions/:id/attachments`. List pagination uses an opaque `(updated_at, id)` cursor. A `clientMessageId`, transaction advisory lock and `employee-message:<clientMessageId>` queue key make retries return the original Message pair and Run.
 
 ## Authorization
 
@@ -40,9 +41,9 @@ Every list/get/mutation applies organization, workspace, owner, visibility and M
 - client retry reuses an idempotency key;
 - partial assistant output records a clear failed/canceled state;
 - refresh resumes persisted content rather than reconstructing from localStorage;
-- background work will return through RunEvent replay after MET-43;
+- background work returns through the MET-43 Run state/event ledger;
 - archive is reversible; deletion follows retention and audit policy.
 
 ## Acceptance
 
-The Compose smoke covers two users and two Workspaces, private-ID denial, explicit sharing with private attachment masking, duplicate submission, refresh/re-login and Web/PostgreSQL restart. Cursor pagination is implemented at the repository/API boundary. Timeout, cancellation and RunEvent replay remain MET-43 scope.
+The HTTP smoke covers two users and two Workspaces, private-ID denial, explicit sharing with private attachment masking, duplicate Message/Run submission, refresh/re-login and Web/PostgreSQL restart. Cursor pagination is implemented at the repository/API boundary; Queue timeout, cancellation and RunEvent replay are provided by MET-43.

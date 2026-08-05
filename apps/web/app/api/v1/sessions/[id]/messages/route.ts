@@ -1,13 +1,9 @@
 import { DataAccessError, sendChatMessage } from '@allrice/database';
 
 import { getRequestContext } from '../../../../../../lib/identity/session';
-import { storageErrorResponse } from '../../../../../../lib/storage/responses';
+import { employeeHubErrorResponse } from '../../../../../../lib/employeehub/responses';
 
 export const runtime = 'nodejs';
-
-function event(name: string, data: unknown) {
-  return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
-}
 
 export async function POST(
   request: Request,
@@ -25,37 +21,8 @@ export async function POST(
       id,
       await request.json(),
     );
-    const encoder = new TextEncoder();
-    const response = result.assistantMessage.content.text;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(event('message.accepted', result.userMessage)),
-        );
-        for (let index = 0; index < response.length; index += 48) {
-          controller.enqueue(
-            encoder.encode(
-              event('assistant.delta', {
-                text: response.slice(index, index + 48),
-              }),
-            ),
-          );
-        }
-        controller.enqueue(
-          encoder.encode(event('assistant.completed', result.assistantMessage)),
-        );
-        controller.close();
-      },
-    });
-    return new Response(stream, {
-      headers: {
-        'cache-control': 'no-cache, no-transform',
-        connection: 'keep-alive',
-        'content-type': 'text/event-stream; charset=utf-8',
-        'x-accel-buffering': 'no',
-      },
-    });
+    return Response.json(result, { status: result.created ? 202 : 200 });
   } catch (error) {
-    return storageErrorResponse(error);
+    return employeeHubErrorResponse(error);
   }
 }

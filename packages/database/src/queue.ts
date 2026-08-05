@@ -329,6 +329,19 @@ async function appendEvent(
   `;
   const event = rows[0];
   if (!event) throw new Error('run event creation failed');
+  await transaction`
+    insert into allrice_employee_run_steps (
+      organization_id, workspace_id, run_id, sequence, event_type, payload,
+      occurred_at
+    )
+    select ${input.organizationId}, ${input.workspaceId}, ${input.runId},
+      ${sequence}, ${input.type},
+      ${transaction.json(toJsonValue(input.payload))}, ${event.occurred_at}
+    where exists (
+      select 1 from allrice_employee_runs where run_id = ${input.runId}
+    )
+    on conflict (run_id, sequence) do nothing
+  `;
   return mapEvent(event);
 }
 
@@ -410,6 +423,17 @@ export async function enqueueRun(
       installationId: string;
       skillVersionId: string;
       providerSnapshot: Record<string, unknown>;
+    };
+    employeeBinding?: {
+      employeeAssignmentId: string;
+      employeeVersionId: string;
+      sessionId: string;
+      userMessageId: string;
+      assistantMessageId: string;
+      providerSnapshot: Record<string, unknown>;
+      skillVersionIds: string[];
+      skillBindings: unknown[];
+      promptSnapshot: Record<string, unknown>;
     };
   } = {},
 ) {
@@ -508,9 +532,13 @@ export async function enqueueRun(
           toJsonValue({
             schemaVersion: 1,
             handler: submission.type,
-            employeeVersionId: null,
+            employeeVersionId:
+              options.employeeBinding?.employeeVersionId ?? null,
             skillVersionId: options.skillBinding?.skillVersionId ?? null,
-            provider: options.skillBinding ? 'codex' : null,
+            provider:
+              options.skillBinding || options.employeeBinding ? 'codex' : null,
+            skillVersionIds:
+              options.employeeBinding?.skillVersionIds ?? undefined,
           }),
         )},
         ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}
@@ -545,6 +573,28 @@ export async function enqueueRun(
           ${transaction.json(
             toJsonValue(options.skillBinding.providerSnapshot),
           )}
+        )
+      `;
+    }
+    if (options.employeeBinding) {
+      await transaction`
+        insert into allrice_employee_runs (
+          run_id, organization_id, workspace_id, owner_id,
+          employee_assignment_id, employee_version_id, session_id,
+          user_message_id, assistant_message_id, status, provider_snapshot,
+          skill_bindings, prompt_snapshot
+        ) values (
+          ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
+          ${options.employeeBinding.employeeAssignmentId},
+          ${options.employeeBinding.employeeVersionId},
+          ${options.employeeBinding.sessionId},
+          ${options.employeeBinding.userMessageId},
+          ${options.employeeBinding.assistantMessageId}, 'queued',
+          ${transaction.json(
+            toJsonValue(options.employeeBinding.providerSnapshot),
+          )},
+          ${transaction.json(toJsonValue(options.employeeBinding.skillBindings))},
+          ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))}
         )
       `;
     }
@@ -729,6 +779,54 @@ async function transitionTerminal(
     }, updated_at = now(), completed_at = now()
     where id = ${job.run_id}
   `;
+  const employeeRuns = await transaction<
+    { assistant_message_id: string; prompt_snapshot: unknown }[]
+  >`
+    update allrice_employee_runs
+    set status = ${input.runStatus}, error_code = ${input.code ?? null},
+        error_message = ${input.message ?? null}, completed_at = now()
+    where run_id = ${job.run_id}
+    returning assistant_message_id, prompt_snapshot
+  `;
+  const employeeRun = employeeRuns[0];
+  if (employeeRun) {
+    const result =
+      input.result && typeof input.result === 'object'
+        ? (input.result as Record<string, unknown>)
+        : {};
+    const prompt =
+      employeeRun.prompt_snapshot &&
+      typeof employeeRun.prompt_snapshot === 'object'
+        ? (employeeRun.prompt_snapshot as Record<string, unknown>)
+        : {};
+    const memories = Array.isArray(prompt.memories) ? prompt.memories : [];
+    const citations = memories.flatMap((memory) => {
+      if (!memory || typeof memory !== 'object') return [];
+      const item = memory as Record<string, unknown>;
+      return typeof item.id === 'string' && typeof item.content === 'string'
+        ? [
+            {
+              type: 'memory',
+              id: item.id,
+              label: item.content.slice(0, 120),
+            },
+          ]
+        : [];
+    });
+    const text =
+      input.runStatus === 'succeeded' && typeof result.answer === 'string'
+        ? result.answer
+        : input.runStatus === 'canceled'
+          ? 'Rice 的这次执行已取消。'
+          : 'Rice 暂时无法完成这次请求，请稍后重试。';
+    await transaction`
+      update allrice_messages
+      set content = ${transaction.json(toJsonValue({ text, citations }))},
+          status = ${input.runStatus === 'succeeded' ? 'completed' : 'failed'},
+          error_code = ${input.code ?? null}, completed_at = now()
+      where id = ${employeeRun.assistant_message_id}
+    `;
+  }
   await appendEvent(transaction, {
     organizationId: job.organization_id,
     workspaceId: job.workspace_id,
@@ -865,6 +963,11 @@ export async function startClaimedJob(
       set state = 'running', started_at = coalesce(started_at, now()),
           updated_at = now()
       where id = ${job.run_id}
+    `;
+    await transaction`
+      update allrice_employee_runs
+      set status = 'running', started_at = coalesce(started_at, now())
+      where run_id = ${job.run_id}
     `;
     await appendEvent(transaction, {
       organizationId: job.organization_id,
@@ -1065,6 +1168,10 @@ export async function failJob(input: {
         update allrice_runs set state = 'queued', updated_at = now()
         where id = ${job.run_id}
       `;
+      await transaction`
+        update allrice_employee_runs set status = 'queued'
+        where run_id = ${job.run_id}
+      `;
       await appendEvent(transaction, {
         organizationId: job.organization_id,
         workspaceId: job.workspace_id,
@@ -1213,6 +1320,10 @@ export async function maintainQueue(limit = 100) {
       await transaction`
         update allrice_runs set state = 'queued', updated_at = ${now}
         where id = ${job.run_id}
+      `;
+      await transaction`
+        update allrice_employee_runs set status = 'queued'
+        where run_id = ${job.run_id}
       `;
       await appendEvent(transaction, {
         organizationId: job.organization_id,

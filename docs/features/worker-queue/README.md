@@ -48,12 +48,14 @@ terminal event commit together.
 
 Before a claim becomes `running`, Worker constructs an `ExecutionContext` from
 the immutable policy snapshot and calls `authorizeExecution`. A Worker ID alone
-grants nothing. Version snapshot fields for Employee and Skill are present but
-remain null until MET-44/MET-45 publish those entities.
+grants nothing. MET-44 SkillRuns freeze their exact SkillVersion/provider;
+MET-45 EmployeeRuns additionally freeze EmployeeVersion, Assignment, provider,
+SkillVersion grants and prompt context.
 
-`allrice.system.echo` is the only executable handler in MET-43. It is a safe
-acceptance handler for idempotency, retry, cancellation, timeout, lease recovery
-and SSE tests—not an LLM or Skill runtime.
+`allrice.system.echo` remains the safe queue acceptance handler.
+`allrice.skill.run` and `allrice.employee.run` execute through the isolated
+Codex subscription harness. Employee terminal state and its assistant Message
+are committed in the same Queue transaction.
 
 ## HTTP API
 

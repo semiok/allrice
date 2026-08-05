@@ -40,14 +40,6 @@ function tenantHeaders(cookie, selectedWorkspaceId = workspaceId) {
   };
 }
 
-function sseEvent(text, eventName) {
-  const match = text.match(
-    new RegExp(`event: ${eventName}\\ndata: (.+)(?:\\n\\n|$)`),
-  );
-  if (!match?.[1]) throw new Error(`SSE event ${eventName} missing`);
-  return JSON.parse(match[1]);
-}
-
 const accepted = await jsonRequest(
   '/api/v1/auth/invitations/accept',
   {
@@ -139,7 +131,10 @@ const workspaceResponse = await jsonRequest('/api/v1/workspace', {
 const workspace = (await workspaceResponse.json()).workspace;
 if (
   workspace.workspaceId !== workspaceId ||
-  workspace.employee.version.model !== 'allrice/basic-assistant-v1'
+  workspace.employee.version.name !== 'Rice' ||
+  workspace.employee.version.model !==
+    (process.env.ALLRICE_CODEX_MODEL ?? 'gpt-5.6-luna') ||
+  workspace.employees?.[0]?.currentVersion?.manifest?.name !== 'Rice'
 ) {
   throw new Error('default employee workspace was not provisioned correctly');
 }
@@ -220,18 +215,23 @@ const sendInit = {
 const firstSend = await jsonRequest(
   `/api/v1/sessions/${session.id}/messages?workspaceId=${workspaceId}`,
   sendInit,
+  202,
 );
-const firstEvents = await firstSend.text();
-const userMessage = sseEvent(firstEvents, 'message.accepted');
-const assistantMessage = sseEvent(firstEvents, 'assistant.completed');
+const firstResult = await firstSend.json();
+const userMessage = firstResult.userMessage;
+const assistantMessage = firstResult.assistantMessage;
+if (assistantMessage.status !== 'pending' || !firstResult.run?.id) {
+  throw new Error('employee message did not create a durable pending Run');
+}
 const retrySend = await jsonRequest(
   `/api/v1/sessions/${session.id}/messages?workspaceId=${workspaceId}`,
   sendInit,
 );
-const retryEvents = await retrySend.text();
+const retryResult = await retrySend.json();
 if (
-  sseEvent(retryEvents, 'message.accepted').id !== userMessage.id ||
-  sseEvent(retryEvents, 'assistant.completed').id !== assistantMessage.id
+  retryResult.userMessage.id !== userMessage.id ||
+  retryResult.assistantMessage.id !== assistantMessage.id ||
+  retryResult.run.id !== firstResult.run.id
 ) {
   throw new Error('message retry created duplicate records');
 }

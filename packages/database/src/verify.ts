@@ -80,6 +80,22 @@ try {
     throw new Error('SkillHub/Codex schema metadata is missing or invalid');
   }
 
+  const employeeHubRows = await sql<
+    { version: string | undefined; default_employee: string | undefined }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'defaultEmployee' as default_employee
+    from allrice_runtime_metadata
+    where key = 'employeehub-schema'
+  `;
+  if (
+    expectedMigrations.includes('0007_employeehub_rice.sql') &&
+    (employeeHubRows[0]?.version !== '0007' ||
+      employeeHubRows[0]?.default_employee !== 'Rice')
+  ) {
+    throw new Error('EmployeeHub/Rice schema metadata is missing or invalid');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

@@ -89,8 +89,8 @@ Copy `.env.example` to `.env` only when changing defaults. The bootstrap script 
 | `ALLRICE_STORAGE_ROOT`            | `.local/storage`    | Ignored native-development storage directory                    |
 | `ALLRICE_CODEX_COMMAND`           | `codex`             | Codex CLI executable                                            |
 | `ALLRICE_CODEX_AUTH_HOME`         | current `~/.codex`  | Deployment-owned subscription credential directory              |
-| `ALLRICE_CODEX_MODEL`             | `gpt-5.6-luna`      | Pinned Codex SkillRun model                                     |
-| `ALLRICE_CODEX_REASONING_EFFORT`  | `high`              | Pinned Codex reasoning effort                                   |
+| `ALLRICE_CODEX_MODEL`             | `gpt-5.6-luna`      | Model pinned into new Skill and Employee versions/runs          |
+| `ALLRICE_CODEX_REASONING_EFFORT`  | `high`              | Reasoning pinned into new Skill and Employee versions/runs      |
 | `ALLRICE_STORAGE_SIGNING_SECRET`  | dev-only fallback   | HMAC secret; required in production, minimum 32 bytes           |
 | `ALLRICE_PROXY_PORT`              | `8080`              | Host port for the full Compose deployment                       |
 
