@@ -1,0 +1,17 @@
+{
+  "name": "@allrice/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@allrice/contracts": "workspace:*",
+    "@allrice/database": "workspace:*"
+  }
+}
