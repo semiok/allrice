@@ -1,6 +1,6 @@
 # File storage
 
-> Status: **Contract pending**
+> Status: **MET-49 contract frozen; implementation pending MET-42**
 >
 > Linear: **MET-42, MET-49**
 

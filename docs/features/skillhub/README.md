@@ -1,6 +1,6 @@
 # SkillHub
 
-> Status: **Contract pending**
+> Status: **MET-49 contract frozen; implementation pending MET-44**
 >
 > Linear: **MET-44, MET-49**
 

@@ -1,6 +1,6 @@
 # Identity and tenancy
 
-> Status: **Contract pending**
+> Status: **MET-49 contract frozen; implementation pending MET-41**
 >
 > Linear: **MET-41, MET-49**
 >
@@ -55,7 +55,7 @@ audit_events
 - server-side `authorize(resource, action, context)`;
 - explicit error codes for unauthenticated, forbidden, revoked, expired and tenant mismatch.
 
-Exact routes and token claims are frozen in MET-49.
+Canonical RequestContext, ExecutionContext, Membership, PolicySnapshot, roles, actions and deny reasons are frozen in `@allrice/contracts`. MET-41 owns routes, persistence and session implementation.
 
 ## Security
 

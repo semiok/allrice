@@ -1,6 +1,6 @@
 # Worker and persistent Queue
 
-> Status: **Worker process baseline implemented; business contract pending**
+> Status: **Worker baseline and MET-49 contracts implemented; persistence pending MET-43**
 >
 > Linear: **MET-43, MET-49**
 
@@ -33,7 +33,7 @@ Worker re-authorizes before execution and never trusts browser roles. Tenant-spe
 
 ## Current implementation
 
-Version 0.1.0 starts the Worker HTTP process, polls PostgreSQL readiness and exposes liveness/readiness endpoints. It deliberately does not create Job tables or execute work before MET-49.
+Version 0.1.0 starts the Worker HTTP process, polls PostgreSQL readiness and exposes liveness/readiness endpoints. MET-49 now defines Job/lease transitions, retry backoff, ExecutionContext, RunEvent ordering and SSE replay without prematurely implementing the MET-43 queue tables.
 
 ## Acceptance
 
