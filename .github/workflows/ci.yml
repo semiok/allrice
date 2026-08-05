@@ -41,7 +41,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm doctor
+      - run: pnpm doctor:ci
       - run: pnpm db:setup
       - name: Stop development database
         if: always()

@@ -22,6 +22,7 @@
     "dev:web": "pnpm --filter @allrice/web dev",
     "dev:worker": "pnpm --filter @allrice/worker dev",
     "doctor": "node scripts/doctor.mjs",
+    "doctor:ci": "node scripts/doctor.mjs --core-only",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "identity:bootstrap": "pnpm --filter @allrice/database identity:bootstrap",

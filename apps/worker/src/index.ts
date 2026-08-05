@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 
 import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
@@ -8,8 +9,10 @@ import {
   maintainQueue,
   pingDatabase,
   queueSummary,
+  recordCodexProviderStatus,
 } from '@allrice/database';
 
+import { probeCodexProvider } from './codex.js';
 import { executeClaimedJob } from './runtime.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
@@ -27,6 +30,7 @@ function integerSetting(
 }
 
 const readinessIntervalMs = 5000;
+const codexProviderStatusIntervalMs = 30_000;
 const pollIntervalMs = integerSetting(
   'ALLRICE_WORKER_POLL_INTERVAL_MS',
   1000,
@@ -68,6 +72,18 @@ async function refreshReadiness() {
     databaseReady = false;
     lastDatabaseError =
       error instanceof Error ? error.message : 'Unknown database error';
+  }
+}
+
+async function refreshCodexProviderStatus() {
+  try {
+    await mkdir(executionRoot, { recursive: true, mode: 0o700 });
+    const codex = await probeCodexProvider(executionRoot);
+    await recordCodexProviderStatus(codex);
+  } catch (error) {
+    console.error('[M5] Codex provider probe failed', {
+      message: error instanceof Error ? error.message : 'codex_probe_failed',
+    });
   }
 }
 
@@ -150,9 +166,14 @@ async function tick() {
 }
 
 await refreshReadiness();
+await refreshCodexProviderStatus();
 const readinessTimer = setInterval(
   () => void refreshReadiness(),
   readinessIntervalMs,
+);
+const codexProviderStatusTimer = setInterval(
+  () => void refreshCodexProviderStatus(),
+  codexProviderStatusIntervalMs,
 );
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
 void tick();
@@ -169,6 +190,7 @@ async function shutdown(signal: string) {
   console.info(`[M5] received ${signal}; stopping worker`);
   stopping = true;
   clearInterval(readinessTimer);
+  clearInterval(codexProviderStatusTimer);
   clearInterval(queueTimer);
   for (const abort of activeAborters) abort();
   server.close();

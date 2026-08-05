@@ -412,6 +412,9 @@ export function WorkspaceClient() {
         >
           ＋ 新建对话
         </button>
+        <a className="sidebar-link" href="/skillhub">
+          打开 SkillHub
+        </a>
         <nav className="session-list" aria-label="对话列表">
           {workspace.sessions
             .filter((session) => !session.archivedAt)

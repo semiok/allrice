@@ -4,7 +4,7 @@ AllRice is a browser-first, self-hosted AI workspace for enterprise employees. I
 
 > Current version: **0.1.0 baseline**
 >
-> Current delivery: **MET-43 persistent execution plane on the MET-50 workspace**
+> Current delivery: **MET-44 Codex-only SkillHub on the MET-43 execution plane**
 >
 > Product plan: [AllRice MET-38](https://linear.app/metasnowsky/issue/MET-38/allrice-%E5%BC%80%E5%B7%A5%E8%AE%A1%E5%88%92%E7%8B%AC%E7%AB%8B%E5%9F%BA%E7%BA%BF%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E4%B8%8E-mvp-%E5%9E%82%E7%9B%B4%E9%97%AD%E7%8E%AF)
 
@@ -20,10 +20,11 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - detailed feature documentation with implementation status, security boundaries, data ownership, APIs, and acceptance criteria.
 - an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
+- a SkillHub catalog with immutable artifacts and versions, per-user capability grants, and Codex subscription-backed SkillRun execution.
 
-The Worker currently executes only the isolated `allrice.system.echo`
-acceptance handler. LLM/AI employee and Skill execution remain in MET-45 and
-MET-44; MET-43 deliberately does not pull those requirements forward.
+The Worker executes the isolated `allrice.system.echo` acceptance handler and
+the version-pinned `allrice.skill.run` handler. Chat still uses the intentional
+basic reply; composing Skills into AI employees remains MET-45.
 
 ## Product boundary
 
@@ -75,6 +76,7 @@ Requirements:
 - Node.js 22+
 - pnpm 11+
 - Docker Desktop (or Docker Engine with Compose)
+- Codex CLI authenticated using `codex login` with a ChatGPT subscription
 
 ```bash
 git clone https://github.com/semiok/allrice.git
@@ -106,10 +108,16 @@ Default endpoints:
 
 The readiness endpoints require a working database. The liveness endpoints only prove that the process is running. Stop the development database with `pnpm db:dev:down`; its named volume is retained for the next run.
 
+Open `http://localhost:3000/skillhub` after accepting the first administrator
+invitation. Codex credentials remain in the deployment environment; AllRice
+stores only secret-free connection health.
+
 ## Docker Compose
 
 ```bash
 cp .env.example .env
+docker compose build worker
+docker compose run --rm worker codex login --device-auth
 docker compose up --build --wait
 ```
 

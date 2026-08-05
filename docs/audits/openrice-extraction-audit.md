@@ -23,6 +23,30 @@ This audit covers tracked source at the exact commit above. Build output, `node_
 
 No OpenRice source was copied into the AllRice 0.1 baseline. Future extraction must use the commit and path recorded here or a newer, separately audited baseline.
 
+## MET-44 approved Skill record
+
+MET-44 adds one clean-room adaptation as an import candidate rather than copying
+the OpenRice Skill directory:
+
+| Field                                   | Value                                                                                               |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `source_repository`                     | `https://github.com/semiok/openrice`                                                                |
+| `source_commit`                         | `6149e0160893b033b4fd2d32b932b23735720949`                                                          |
+| `source_path`                           | `skills/weather/SKILL.md`                                                                           |
+| `source_license`                        | Apache-2.0 (OpenRice root license; the source Skill has no separate license file)                   |
+| `decision`                              | R — clean-room adaptation                                                                           |
+| `third_party_dependencies_and_licenses` | None; the artifact is UTF-8 instructions and NOTICE only                                            |
+| `desktop_or_host_coupling_removed`      | No Tauri, symlink, home-directory discovery, shell command, or host credential lookup               |
+| `AllRice_destination`                   | `apps/web/lib/skillhub/approved-skills.ts`, materialized through Storage as an immutable artifact   |
+| `modifications`                         | Uses policy-exposed Codex browser tools only; requires current-data honesty and source attribution  |
+| `tests`                                 | Artifact path/entrypoint validation, checksum validation, isolated materialization, Codex event map |
+| `maintenance_owner`                     | M5 / `semiok/allrice`                                                                               |
+
+The artifact contains an explicit modification/provenance NOTICE. It declares
+`model:invoke` and `network:outbound`; V1 disables Codex shell and unified-exec
+tools. This approval is limited to the Weather adaptation and does not approve
+the OpenRice skill loader or any other Skill.
+
 ## Decision vocabulary
 
 | Code | Decision                          | Rule                                                                                                                                                               |

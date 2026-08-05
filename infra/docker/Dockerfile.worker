@@ -14,6 +14,7 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN corepack enable && corepack prepare pnpm@11.2.2 --activate
+RUN npm install --global @openai/codex@0.144.6
 COPY --from=build /app /app
 EXPOSE 3101
 CMD ["pnpm", "--filter", "@allrice/worker", "start"]

@@ -72,6 +72,9 @@ importers:
       '@allrice/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@allrice/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
 
   packages/contracts:
     dependencies:

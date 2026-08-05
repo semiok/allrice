@@ -253,6 +253,184 @@ a {
   text-align: left;
 }
 
+.sidebar-link {
+  color: #326245;
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.skillhub-shell {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 56px 28px 100px;
+}
+
+.skillhub-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 32px;
+  justify-content: space-between;
+}
+
+.skillhub-header h1 {
+  font-size: clamp(3rem, 7vw, 6rem);
+}
+
+.skillhub-header > a {
+  color: #326245;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.provider-card {
+  align-items: center;
+  background: #173d2a;
+  border-radius: 18px;
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  margin: 48px 0;
+  padding: 20px 24px;
+}
+
+.provider-card > div {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.provider-card p {
+  color: #d6e3d9;
+  margin: 0;
+}
+
+.provider-dot {
+  background: #8b958e;
+  border-radius: 999px;
+  height: 10px;
+  width: 10px;
+}
+
+.provider-connected {
+  background: #5ee286;
+  box-shadow: 0 0 0 6px rgb(94 226 134 / 16%);
+}
+
+.provider-error,
+.provider-disconnected {
+  background: #f7a66f;
+}
+
+.skillhub-section,
+.skill-runner {
+  margin-top: 56px;
+}
+
+.section-heading h2 {
+  font-size: 1.8rem;
+  margin-bottom: 6px;
+}
+
+.section-heading p {
+  color: #647068;
+  margin-top: 0;
+}
+
+.skill-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  margin-top: 24px;
+}
+
+.skill-card {
+  display: grid;
+  gap: 16px;
+  min-height: 300px;
+}
+
+.skill-card h3 {
+  font-size: 1.45rem;
+  margin: 0;
+}
+
+.skill-card > p:not(.eyebrow) {
+  line-height: 1.6;
+}
+
+.skill-card small {
+  color: #78837b;
+}
+
+.skill-card .primary-action {
+  align-self: end;
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.installation-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.installation-actions button {
+  background: transparent;
+  border: 1px solid #cbd5ce;
+  border-radius: 8px;
+  color: #326245;
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.capability-list span {
+  background: #e8eee7;
+  border-radius: 999px;
+  color: #35513f;
+  font-size: 0.7rem;
+  padding: 5px 8px;
+}
+
+.skill-runner {
+  background: white;
+  border: 1px solid #dce2dc;
+  border-radius: 18px;
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+}
+
+.skill-runner textarea {
+  border: 1px solid #cbd5ce;
+  border-radius: 12px;
+  min-height: 100px;
+  padding: 14px;
+  resize: vertical;
+}
+
+.skill-runner pre {
+  background: #152018;
+  border-radius: 12px;
+  color: #d8e9dd;
+  max-height: 360px;
+  overflow: auto;
+  padding: 16px;
+  white-space: pre-wrap;
+}
+
+.skillhub-error {
+  background: #8e2f2f;
+  border-radius: 10px;
+  color: white;
+  padding: 12px 16px;
+  position: sticky;
+  bottom: 20px;
+}
+
 .archived-sessions {
   color: #6f7c72;
   font-size: 0.78rem;

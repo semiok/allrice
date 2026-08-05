@@ -75,6 +75,10 @@ services:
       ALLRICE_WORKER_CONCURRENCY: ${ALLRICE_WORKER_CONCURRENCY:-1}
       ALLRICE_EXECUTION_ROOT: /var/lib/allrice/executions
       ALLRICE_STORAGE_ROOT: /var/lib/allrice/storage
+      ALLRICE_CODEX_AUTH_HOME: /var/lib/allrice/codex
+      ALLRICE_CODEX_COMMAND: codex
+      ALLRICE_CODEX_MODEL: ${ALLRICE_CODEX_MODEL:-gpt-5.6-luna}
+      ALLRICE_CODEX_REASONING_EFFORT: ${ALLRICE_CODEX_REASONING_EFFORT:-high}
       DATABASE_URL: postgres://${POSTGRES_USER:-allrice}:${POSTGRES_PASSWORD:-allrice}@postgres:5432/${POSTGRES_DB:-allrice}
     healthcheck:
       test:
@@ -89,6 +93,7 @@ services:
       retries: 12
     volumes:
       - storage-data:/var/lib/allrice/storage
+      - codex-data:/var/lib/allrice/codex
     restart: unless-stopped
 
   proxy:
@@ -105,3 +110,4 @@ services:
 volumes:
   postgres-data:
   storage-data:
+  codex-data:

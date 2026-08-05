@@ -4,21 +4,14 @@ import {
   completeJob,
   failJob,
   heartbeatJob,
+  resolveSkillExecution,
   startClaimedJob,
   type ClaimedExecution,
 } from '@allrice/database';
 
 import { prepareExecutionIsolation } from './isolation.js';
-
-export class HandlerError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly retryable: boolean,
-  ) {
-    super(message);
-  }
-}
+import { executeCodexSkill, type NormalizedCodexEvent } from './codex.js';
+import { HandlerError } from './errors.js';
 
 function objectInput(input: unknown): Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
@@ -53,8 +46,42 @@ async function delayWithAbort(milliseconds: number, signal: AbortSignal) {
 
 async function executeHandler(
   execution: ClaimedExecution,
+  isolation: Awaited<ReturnType<typeof prepareExecutionIsolation>>,
   signal: AbortSignal,
+  onCodexEvent: (event: NormalizedCodexEvent) => Promise<void>,
 ) {
+  if (execution.payload.type === 'allrice.skill.run') {
+    const input = objectInput(execution.payload.input);
+    if (
+      typeof input.installationId !== 'string' ||
+      typeof input.skillVersionId !== 'string' ||
+      typeof input.prompt !== 'string'
+    ) {
+      throw new HandlerError(
+        'SKILL_INPUT_INVALID',
+        'Skill execution input is invalid',
+        false,
+      );
+    }
+    const resolved = await resolveSkillExecution({
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId!,
+      ownerId: execution.job.ownerId,
+      runId: execution.context.runId,
+      installationId: input.installationId,
+      skillVersionId: input.skillVersionId,
+    });
+    return executeCodexSkill({
+      storageObject: resolved.storageObject,
+      workDirectory: isolation.workDirectory,
+      executionEnvironment: isolation.environment,
+      prompt: input.prompt,
+      providerSnapshot: resolved.providerSnapshot,
+      grantedCapabilities: resolved.grantedCapabilities,
+      signal,
+      onEvent: onCodexEvent,
+    });
+  }
   if (execution.payload.type !== 'allrice.system.echo') {
     throw new HandlerError(
       'UNSUPPORTED_JOB_TYPE',
@@ -166,7 +193,28 @@ export async function executeClaimedJob(input: {
         isolation: 'tenant-run-attempt',
       },
     });
-    const result = await executeHandler(execution, controller.signal);
+    const result = await executeHandler(
+      execution,
+      isolation,
+      controller.signal,
+      async (event) => {
+        if (event.kind === 'message') return;
+        await appendJobEvent({
+          workerId: input.workerId,
+          jobId: input.jobId,
+          leaseToken: input.leaseToken,
+          type: event.kind === 'usage' ? 'heartbeat' : 'step.completed',
+          payload:
+            event.kind === 'usage'
+              ? { source: 'codex', usage: event.usage }
+              : {
+                  source: 'codex',
+                  tool: event.name,
+                  status: event.status,
+                },
+        });
+      },
+    );
     if (controller.signal.aborted || input.stopping()) return;
     await appendJobEvent({
       workerId: input.workerId,
