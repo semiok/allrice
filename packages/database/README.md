@@ -4,7 +4,7 @@
 
 ## Implemented scope
 
-Version 0.1 enables pgvector, migration/runtime metadata, the MET-41 identity foundation and the MET-42 tenant data foundation. Session, Message, Memory, RAG chunk, Run and storage rows carry organization/workspace/owner/visibility fields with composite tenant foreign keys. Queue, SkillHub and employee product behavior remain owned by their feature issues.
+Version 0.1 enables pgvector, migration/runtime metadata, the MET-41 identity foundation, the MET-42 tenant data foundation and the MET-50 synchronous employee workspace. Session, Message, attachment, Memory, RAG chunk, Run and storage rows carry organization/workspace/owner/visibility fields with composite tenant foreign keys. Queue/Run execution and SkillHub behavior remain owned by MET-43 and MET-44.
 
 ## Migration rules
 
@@ -14,7 +14,9 @@ Version 0.1 enables pgvector, migration/runtime metadata, the MET-41 identity fo
 - Web and Worker use the same package;
 - AllRice has its own database user and migration history;
 - no OpenRice schema, ORM model, or table is imported.
-- migrations are forward-only; additive `0003` remains readable by the previous supported 0.1 application image, which is the supported application rollback path.
+- migrations are forward-only; additive `0003`/`0004` remain readable by the previous supported 0.1 application image, which is the supported application rollback path.
+
+`0004_employee_workspace.sql` adds immutable Employee versions and assignments, Message idempotency/status, Session attachments/file references and traceable Memory sources. Default assignment provisioning is server-side and checksum-protected.
 
 Run with `pnpm db:migrate` after setting `DATABASE_URL`.
 

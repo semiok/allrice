@@ -71,10 +71,21 @@ if [[ -z "${bootstrap_token}" || "${bootstrap_token}" == "null" ]]; then
   exit 1
 fi
 
+second_workspace_id="$({
+  docker compose --project-name "${compose_project}" exec -T postgres \
+    psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -Atqc \
+    "insert into allrice_workspaces (organization_id, slug, name) values ('${bootstrap_organization_id}', 'restricted-smoke', 'Restricted Smoke') returning id;"
+} | tr -d '\r')"
+if [[ -z "${second_workspace_id}" ]]; then
+  echo "Second workspace setup failed" >&2
+  exit 1
+fi
+
 identity_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_INVITATION_TOKEN="${bootstrap_token}" \
 ALLRICE_SMOKE_ORGANIZATION_ID="${bootstrap_organization_id}" \
 ALLRICE_SMOKE_WORKSPACE_ID="${bootstrap_workspace_id}" \
+ALLRICE_SMOKE_SECOND_WORKSPACE_ID="${second_workspace_id}" \
   node scripts/identity-http-smoke.mjs)"
 printf '%s\n' "${identity_output}" | sed '/^ALLRICE_SMOKE_STATE=/d'
 smoke_state="$(printf '%s\n' "${identity_output}" | sed -n 's/^ALLRICE_SMOKE_STATE=//p')"

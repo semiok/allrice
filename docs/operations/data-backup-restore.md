@@ -29,4 +29,4 @@ Never place credentials, signed URLs or invitation/session tokens in a manifest.
 5. Sample objects from `allrice_storage_objects`, verify stored SHA-256 and ownership, then exercise signed access as the owner and denial as another user.
 6. Switch traffic only after readiness and the sample checks pass. Retain the old stores until the recovery window ends.
 
-Migrations are forward-only. The supported rollback for additive schema `0003` is the previous compatible 0.1 application image; do not drop columns or edit `allrice_schema_migrations` during an incident.
+Migrations are forward-only. The supported rollback for additive schemas `0003` and `0004` is the previous compatible 0.1 application image; do not drop columns or edit `allrice_schema_migrations` during an incident.

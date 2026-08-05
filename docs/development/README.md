@@ -127,7 +127,7 @@ This prevents the misleading state where liveness passes but a teammate is devel
 - **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
 - **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
 
-The full containerized acceptance path is `pnpm test:compose`. It builds production images, starts a fresh database, verifies repeatable migrations and pgvector, exercises two-user identity/file/vector isolation, restarts PostgreSQL and Web, and verifies database/storage persistence.
+The full containerized acceptance path is `pnpm test:compose`. It builds production images, starts a fresh database, verifies repeatable migrations and pgvector, exercises the employee Workspace with two users and two Workspaces, checks idempotent Chat, Session sharing, private attachment masking and Memory isolation, restarts PostgreSQL and Web, and verifies persistence plus file/Memory delete propagation.
 
 ## Branches and pull requests
 

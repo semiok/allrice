@@ -4,6 +4,8 @@ import {
   assertJobTransition,
   authorize,
   authorizeExecution,
+  CreateSessionAttachmentInputSchema,
+  CreateWorkspaceMemoryInputSchema,
   formatSseCursor,
   makeObjectKey,
   ObjectKeySchema,
@@ -217,6 +219,43 @@ describe('storage contracts', () => {
       ObjectKeySchema.parse(
         'organizations/------------------------------------/workspaces/------------------------------------/owners/------------------------------------/uploads/------------------------------------',
       ),
+    ).toThrow();
+  });
+
+  it('allows only workspace attachment MIME types', () => {
+    const base = {
+      fileName: 'notes.txt',
+      contentBase64: 'YWxscmljZQ==',
+    };
+    expect(
+      CreateSessionAttachmentInputSchema.parse({
+        ...base,
+        mediaType: 'text/plain',
+      }).mediaType,
+    ).toBe('text/plain');
+    expect(() =>
+      CreateSessionAttachmentInputSchema.parse({
+        ...base,
+        mediaType: 'application/x-sh',
+      }),
+    ).toThrow();
+  });
+
+  it('requires explicit, traceable workspace memory sources', () => {
+    expect(
+      CreateWorkspaceMemoryInputSchema.parse({
+        workspaceId: ids.workspaceA,
+        content: 'Remember this source',
+        visibility: 'private',
+        sourceType: 'message',
+        sourceId: ids.resource,
+      }).sourceType,
+    ).toBe('message');
+    expect(() =>
+      CreateWorkspaceMemoryInputSchema.parse({
+        workspaceId: ids.workspaceA,
+        content: 'Missing source type',
+      }),
     ).toThrow();
   });
 });
