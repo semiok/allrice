@@ -1,6 +1,6 @@
 # Memory
 
-> Status: **MET-42 storage/retrieval foundation implemented; product workflows pending MET-50**
+> Status: **MET-42 foundation and MET-50 explicit workflows implemented**
 >
 > Linear: **MET-42, MET-50**
 
@@ -27,15 +27,15 @@ AllRice can remember approved facts and source material for an employee while ke
 
 `allrice_memories` and `allrice_rag_chunks` store explicit organization, workspace, owner and visibility. Chunks use `vector(1536)` with an HNSW cosine index. Chat Session, Message and Run authority tables now carry the same tenant columns for their owning feature work.
 
-Documents and chunks carry organization, workspace, owner, visibility, source ID, embedding model/version and lifecycle status.
+Migration `0004_employee_workspace.sql` adds user/message/file source type and source ID plus an embedding-model marker. Explicit browser actions create Memory through server-derived deterministic embeddings; the browser cannot supply an embedding vector.
 
 ## Retrieval boundary
 
-Authorization and tenant filters are applied inside the SQL recall query, never after receiving an unrestricted result set. `POST /api/v1/memories/recall` always binds organization and workspace and allows private chunks only when `owner_id` matches the authenticated actor.
+Authorization and tenant filters are applied inside the SQL recall query, never after receiving an unrestricted result set. `POST /api/v1/memories/recall` accepts text, derives its vector on the server, always binds organization and workspace, and allows private chunks only when `owner_id` matches the authenticated actor. The workspace lists sources and supports owner deletion through `/api/v1/memories/:id`.
 
 ## Failure and recovery
 
-Embedding failures are retryable and visible. Deleting a source invalidates corresponding chunks. Re-embedding creates a versioned transition, not silent incompatible vector reuse.
+Deleting a Memory removes its chunks in the same transaction. Deleting a file archives file-sourced Memory, removes the corresponding chunks and revokes signed grants. A future production embedding model must use a new version marker and migration instead of silently changing vector meaning.
 
 ## Acceptance
 

@@ -1,6 +1,6 @@
 # Chat and Session
 
-> Status: **Planned**
+> Status: **MET-50 synchronous Chat/Session implemented**
 >
 > Linear: **MET-50**
 
@@ -11,11 +11,11 @@ Employees can create, name, archive, restore and continue conversations with the
 ## Data model direction
 
 ```text
-chats
-messages
-message_attachments
-message_references
-audit_events
+allrice_chat_sessions
+allrice_messages
+allrice_message_attachments
+allrice_file_references
+allrice_audit_events
 ```
 
 Messages support user, assistant, system and tool roles. The model will include stable IDs, ordering, creation status, error status, tenant ownership and an idempotency key for client retries.
@@ -29,7 +29,7 @@ Messages support user, assistant, system and tool roles. The model will include 
 - reference uploaded files and Memory sources;
 - transition long work into MET-43 Run/SSE rather than holding a Web request indefinitely.
 
-Exact API names are deferred to MET-49.
+The routes are `/api/v1/sessions`, `/api/v1/sessions/:id`, `/api/v1/sessions/:id/messages` and `/api/v1/sessions/:id/attachments`. List pagination uses an opaque `(updated_at, id)` cursor. A `clientMessageId` and a transaction advisory lock make retries return the original user/assistant pair.
 
 ## Authorization
 
@@ -40,9 +40,9 @@ Every list/get/mutation applies organization, workspace, owner, visibility and M
 - client retry reuses an idempotency key;
 - partial assistant output records a clear failed/canceled state;
 - refresh resumes persisted content rather than reconstructing from localStorage;
-- background work returns through RunEvent replay;
+- background work will return through RunEvent replay after MET-43;
 - archive is reversible; deletion follows retention and audit policy.
 
 ## Acceptance
 
-Two-user tests cover ID enumeration, shared/private visibility, duplicate submit, pagination, refresh, re-login, timeout, cancellation and service restart.
+The Compose smoke covers two users and two Workspaces, private-ID denial, explicit sharing with private attachment masking, duplicate submission, refresh/re-login and Web/PostgreSQL restart. Cursor pagination is implemented at the repository/API boundary. Timeout, cancellation and RunEvent replay remain MET-43 scope.

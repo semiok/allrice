@@ -1,6 +1,6 @@
 const capabilities = [
   ['Identity', 'Invitation and RBAC baseline implemented in MET-41'],
-  ['Employee workspace', 'Planned in MET-50'],
+  ['Employee workspace', 'Implemented in MET-50'],
   ['Persistent Worker', 'Planned in MET-43'],
   ['SkillHub', 'Planned in MET-44'],
 ];
@@ -18,6 +18,10 @@ export default function HomePage() {
         <div className="status">
           <span className="dot" />
           Web process is running
+        </div>
+        <div className="home-actions">
+          <a href="/workspace">进入员工工作台</a>
+          <a href="/login">登录</a>
         </div>
       </section>
 

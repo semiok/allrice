@@ -335,6 +335,26 @@ export async function completeStorageDelete(
     set revoked_at = now()
     where object_id = ${row.id} and revoked_at is null
   `;
+  await sql.begin(async (transaction) => {
+    const memories = await transaction<{ id: string }[]>`
+      update allrice_memories
+      set archived_at = now(), updated_at = now()
+      where organization_id = ${context.organizationId}
+        and workspace_id = ${row.workspace_id}
+        and source_type = 'file'
+        and source_id = ${row.id}
+        and archived_at is null
+      returning id
+    `;
+    if (memories.length > 0) {
+      await transaction`
+        delete from allrice_rag_chunks
+        where organization_id = ${context.organizationId}
+          and workspace_id = ${row.workspace_id}
+          and memory_id in ${transaction(memories.map((memory) => memory.id))}
+      `;
+    }
+  });
   await audit({
     context,
     workspaceId: row.workspace_id,
@@ -401,11 +421,11 @@ export async function createMemory(context: RequestContext, input: unknown) {
   const rows = await sql<{ id: string }[]>`
     insert into allrice_memories (
       organization_id, workspace_id, project_id, owner_id,
-      content, metadata, visibility
+      content, metadata, visibility, source_type, source_id
     ) values (
       ${context.organizationId}, ${memory.workspaceId}, ${memory.projectId},
       ${owner}, ${memory.content}, ${sql.json(memory.metadata)},
-      ${memory.visibility}
+      ${memory.visibility}, ${memory.sourceType}, ${memory.sourceId}
     )
     returning id
   `;

@@ -62,6 +62,8 @@ export const CreateMemoryInputSchema = z
     content: z.string().min(1).max(100_000),
     metadata: z.record(z.string(), z.json()).default({}),
     visibility: VisibilitySchema.default('private'),
+    sourceType: z.enum(['user', 'message', 'file']).default('user'),
+    sourceId: UuidSchema.nullable().default(null),
   })
   .strict();
 

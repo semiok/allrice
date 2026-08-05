@@ -19,7 +19,7 @@ export function LoginForm() {
         password: data.get('password'),
       }),
     });
-    if (response.ok) window.location.assign('/');
+    if (response.ok) window.location.assign('/workspace');
     else {
       setError('登录失败，请检查邮箱、密码或账号状态。');
       setPending(false);

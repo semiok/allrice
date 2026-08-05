@@ -33,3 +33,4 @@ export * from './secrets.ts';
 export * from './skills.ts';
 export * from './sse.ts';
 export * from './storage.ts';
+export * from './workspace.ts';

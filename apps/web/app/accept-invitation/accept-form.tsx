@@ -20,7 +20,7 @@ export function AcceptInvitationForm({ token }: { token: string }) {
         password: data.get('password'),
       }),
     });
-    if (response.ok) window.location.assign('/');
+    if (response.ok) window.location.assign('/workspace');
     else {
       setError('邀请无效、已使用或已经过期。');
       setPending(false);

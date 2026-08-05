@@ -5,6 +5,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 ## Status legend
 
 - **Baseline implemented**: executable engineering foundation exists in 0.1.0.
+- **Feature implemented**: the user workflow and its tenant/recovery acceptance path exist.
 - **Contract pending**: implementation must wait for MET-49.
 - **Planned**: scoped in Linear, not yet implemented.
 - **Deferred**: intentionally excluded from V1.
@@ -25,10 +26,10 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 | Capability              | Status                 | Linear          | Documentation                                     |
 | ----------------------- | ---------------------- | --------------- | ------------------------------------------------- |
 | Identity and tenancy    | Foundation implemented | MET-41 / MET-49 | [README](features/identity/README.md)             |
-| Employee workspace      | Planned                | MET-50          | [README](features/employee-workspace/README.md)   |
-| Chat and Session        | Planned                | MET-50          | [README](features/chat-session/README.md)         |
-| File storage            | Foundation implemented | MET-42 / MET-49 | [README](features/file-storage/README.md)         |
-| Memory                  | Data foundation        | MET-42 / MET-50 | [README](features/memory/README.md)               |
+| Employee workspace      | Feature implemented    | MET-50          | [README](features/employee-workspace/README.md)   |
+| Chat and Session        | Feature implemented    | MET-50          | [README](features/chat-session/README.md)         |
+| File storage            | Workflow implemented   | MET-42 / MET-50 | [README](features/file-storage/README.md)         |
+| Memory                  | Workflow implemented   | MET-42 / MET-50 | [README](features/memory/README.md)               |
 | Worker and Queue        | Contract frozen        | MET-43 / MET-49 | [README](features/worker-queue/README.md)         |
 | SkillHub                | Contract frozen        | MET-44 / MET-49 | [README](features/skillhub/README.md)             |
 | EmployeeHub             | Planned, minimal V1    | MET-45          | [README](features/employeehub/README.md)          |

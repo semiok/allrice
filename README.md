@@ -4,13 +4,13 @@ AllRice is a browser-first, self-hosted AI workspace for enterprise employees. I
 
 > Current version: **0.1.0 baseline**
 >
-> Current delivery: **MET-39 engineering foundation**
+> Current delivery: **MET-50 synchronous employee workspace**
 >
 > Product plan: [AllRice MET-38](https://linear.app/metasnowsky/issue/MET-38/allrice-%E5%BC%80%E5%B7%A5%E8%AE%A1%E5%88%92%E7%8B%AC%E7%AB%8B%E5%9F%BA%E7%BA%BF%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E4%B8%8E-mvp-%E5%9E%82%E7%9B%B4%E9%97%AD%E7%8E%AF)
 
 ## What this version contains
 
-Version 0.1.0 establishes a runnable foundation, not the completed SaaS product:
+Version 0.1.0 establishes a runnable employee loop, not the completed SaaS product:
 
 - a Next.js `web` process with liveness and database-readiness endpoints;
 - a Node.js `worker` process with health endpoints and a scheduler heartbeat module;
@@ -18,8 +18,9 @@ Version 0.1.0 establishes a runnable foundation, not the completed SaaS product:
 - PostgreSQL + pgvector, mounted storage, and reverse-proxy Compose definitions;
 - lint, typecheck, test, build, and CI commands;
 - detailed feature documentation with implementation status, security boundaries, data ownership, APIs, and acceptance criteria.
+- an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 
-The worker intentionally does not execute business jobs yet. Queue, authorization, Run/Event, SkillHub, SSE replay, and Storage contracts must first be frozen in [MET-49](https://linear.app/metasnowsky/issue/MET-49/v1-%E6%A0%B8%E5%BF%83%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E7%A7%9F%E6%88%B7%E6%8E%88%E6%9D%83queueruneventskillhub-%E4%B8%8E-storage).
+The worker intentionally does not execute business jobs yet. The contracts are frozen; persistent Queue/Run execution and SkillHub delivery remain in MET-43 and MET-44.
 
 ## Product boundary
 
@@ -117,7 +118,7 @@ Run the isolated Linux/Compose acceptance smoke with:
 pnpm test:compose
 ```
 
-The smoke uses Compose project `allrice-met39` and host port `18080` by default, verifies Web and Worker readiness, the applied migration, and pgvector, then removes its test containers and volumes. Override `ALLRICE_COMPOSE_PROJECT`, `ALLRICE_PROXY_PORT`, or set `ALLRICE_KEEP_COMPOSE=1` when debugging.
+The smoke uses Compose project `allrice-met39` and host port `18080` by default. It verifies readiness, migrations, pgvector, two-user/two-workspace isolation, the employee Chat/File/Memory loop, restart recovery and delete propagation, then removes test containers and volumes. Override `ALLRICE_COMPOSE_PROJECT`, `ALLRICE_PROXY_PORT`, or set `ALLRICE_KEEP_COMPOSE=1` when debugging.
 
 ## Validation
 
