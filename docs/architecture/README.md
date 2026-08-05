@@ -1,0 +1,76 @@
+# AllRice V1 architecture
+
+## Objective
+
+AllRice V1 provides an employee-facing AI workspace for a small, fixed enterprise user base. It favors a modular monolith and operational clarity over microservice scale.
+
+## Runtime topology
+
+```text
+Browser
+  -> reverse proxy
+  -> Web process
+       -> PostgreSQL + pgvector
+       -> object storage abstraction
+       -> persistent Job / Run records
+            -> Worker process
+                 -> Scheduler module
+                 -> AI runtime
+                 -> Skill runtime
+                 -> Memory
+                 -> Artifact
+```
+
+Only two AllRice application processes exist in V1: Web and Worker. Scheduler is code inside Worker, not a separately deployed process. Infrastructure consists of PostgreSQL, mounted storage, and a reverse proxy.
+
+## Authority
+
+AllRice V1 operates independently. Its local invitation, Organization, Workspace, Membership, Policy, Session, Memory, SkillInstallation, and Run records are authoritative for the employee runtime.
+
+OpenRice is the future enterprise-management authority for organization directory, roles, policy, Employee/Skill publishing and assignment. Integration is through versioned API, signed tokens, events, or explicit synchronization. Direct database sharing is prohibited.
+
+## Trust boundaries
+
+- Browser input is untrusted, including tenant IDs, roles, owner IDs, versions, and capabilities.
+- Web authenticates and authorizes before every resource access.
+- Worker re-authorizes at claim time and freezes a PolicySnapshot.
+- Storage keys are tenant-scoped and never reveal host paths.
+- Skill Artifact is immutable; local Worker materialization is disposable cache.
+- Secret values never return to the browser or enter ordinary logs/Artifacts.
+
+## Data boundaries
+
+Every private or shared business resource must carry the appropriate subset of:
+
+```text
+organization_id
+workspace_id
+project_id
+owner_id
+visibility
+created_at
+updated_at
+```
+
+Tenant isolation is enforced in repository/authorization boundaries and verified with allow/deny tests. It must not depend on callers remembering to add a filter.
+
+## Contract-first rule
+
+MET-49 freezes the following before business implementation:
+
+- IDs and tenant ownership;
+- RequestContext, ExecutionContext, Authorization and PolicySnapshot;
+- Queue state, claim, lease, heartbeat, retry, cancellation and recovery;
+- Run, RunEvent, Artifact, Approval and Audit;
+- SSE Last-Event-ID, replay and reconnect;
+- Skill Version, Artifact, Installation and capability grants;
+- Storage keys, signed access, retention and backup;
+- API and migration version compatibility.
+
+## Explicit V1 exclusions
+
+- desktop application and native operating-system integration;
+- Redis, Kubernetes, microservices, multi-region deployment;
+- public registration, billing and enterprise SSO;
+- arbitrary unreviewed script execution;
+- complete Employee marketplace/editor, broad Connector catalog and Loop automation.
