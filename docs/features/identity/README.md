@@ -1,6 +1,6 @@
 # Identity and tenancy
 
-> Status: **MET-49 contract frozen; implementation pending MET-41**
+> Status: **MET-41 invitation, session, tenancy and RBAC foundation implemented**
 >
 > Linear: **MET-41, MET-49**
 >
@@ -55,7 +55,17 @@ audit_events
 - server-side `authorize(resource, action, context)`;
 - explicit error codes for unauthenticated, forbidden, revoked, expired and tenant mismatch.
 
-Canonical RequestContext, ExecutionContext, Membership, PolicySnapshot, roles, actions and deny reasons are frozen in `@allrice/contracts`. MET-41 owns routes, persistence and session implementation.
+Canonical RequestContext, ExecutionContext, Membership, PolicySnapshot, roles, actions and deny reasons are frozen in `@allrice/contracts`.
+
+Implemented routes:
+
+- `POST /api/v1/auth/invitations/accept`;
+- `POST /api/v1/auth/login`;
+- `POST /api/v1/auth/logout`;
+- `GET /api/v1/auth/session`;
+- `POST /api/v1/admin/invitations`.
+
+The first administrator is created only through the explicit `pnpm identity:bootstrap` invitation flow. There is no Auto Guest or committed default password.
 
 ## Security
 
@@ -73,3 +83,11 @@ Canonical RequestContext, ExecutionContext, Membership, PolicySnapshot, roles, a
 3. Both can access a TNlabs shared workspace according to Membership role.
 4. Revoking User B invalidates new access and background execution.
 5. Forged tenant/owner values are denied and audited.
+
+## Current verification
+
+- runtime schemas reject malformed login, invitation and tenant values;
+- password, invitation and Session secret handling has unit coverage;
+- canonical authorization tests cover cross-Organization, cross-Workspace and administrator access to another user's private resource;
+- composite database keys reject cross-tenant Workspace references;
+- production build contains login, invitation acceptance, Session and admin invitation routes.

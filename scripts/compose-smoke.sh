@@ -31,7 +31,13 @@ migration="$({
     "select name from allrice_schema_migrations order by name;"
 } | tr -d '\r')"
 
-if [[ "${migration}" != "0001_baseline.sql" ]]; then
+expected_migrations="$(
+  for migration_file in packages/database/migrations/*.sql; do
+    basename "${migration_file}"
+  done
+)"
+
+if [[ "${migration}" != "${expected_migrations}" ]]; then
   echo "Unexpected migration state: ${migration}" >&2
   exit 1
 fi
@@ -46,5 +52,24 @@ if [[ -z "${vector_version}" ]]; then
   echo "pgvector extension is not installed" >&2
   exit 1
 fi
+
+bootstrap_json="$(
+  docker compose --project-name "${compose_project}" exec -T \
+    -e ALLRICE_BOOTSTRAP_ORG_SLUG=phase0-smoke \
+    -e ALLRICE_BOOTSTRAP_ORG_NAME='Phase 0 Smoke' \
+    -e ALLRICE_BOOTSTRAP_WORKSPACE_SLUG=default \
+    -e ALLRICE_BOOTSTRAP_WORKSPACE_NAME=Default \
+    -e ALLRICE_BOOTSTRAP_ADMIN_EMAIL=phase0-smoke@example.com \
+    worker node packages/database/dist/bootstrap-identity.js
+)"
+bootstrap_token="$(printf '%s' "${bootstrap_json}" | jq -r '.token')"
+if [[ -z "${bootstrap_token}" || "${bootstrap_token}" == "null" ]]; then
+  echo "Identity bootstrap did not return a token" >&2
+  exit 1
+fi
+
+ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+ALLRICE_SMOKE_INVITATION_TOKEN="${bootstrap_token}" \
+  node scripts/identity-http-smoke.mjs
 
 echo "AllRice Compose smoke passed (migration=${migration}, pgvector=${vector_version})"

@@ -26,8 +26,10 @@ export function makeHealthResponse(
 export * from './api.ts';
 export * from './authorization.ts';
 export * from './common.ts';
+export * from './identity.ts';
 export * from './queue.ts';
 export * from './runs.ts';
+export * from './secrets.ts';
 export * from './skills.ts';
 export * from './sse.ts';
 export * from './storage.ts';

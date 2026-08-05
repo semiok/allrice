@@ -1,5 +1,5 @@
 const capabilities = [
-  ['Identity', 'Planned in MET-41'],
+  ['Identity', 'Invitation and RBAC baseline implemented in MET-41'],
   ['Employee workspace', 'Planned in MET-50'],
   ['Persistent Worker', 'Planned in MET-43'],
   ['SkillHub', 'Planned in MET-44'],
