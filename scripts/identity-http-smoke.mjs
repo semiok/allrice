@@ -254,7 +254,22 @@ const sharedHistoryResponse = await jsonRequest(
   { headers: tenantHeaders(loginCookie) },
 );
 const sharedHistory = (await sharedHistoryResponse.json()).history;
-if (!sharedHistory.messages[0]?.attachments[0]?.restricted) {
+const sharedUserMessageIndex = sharedHistory.messages.findIndex(
+  (message) => message.id === userMessage.id,
+);
+const sharedAssistantMessageIndex = sharedHistory.messages.findIndex(
+  (message) => message.id === assistantMessage.id,
+);
+if (
+  sharedUserMessageIndex === -1 ||
+  sharedAssistantMessageIndex === -1 ||
+  sharedUserMessageIndex >= sharedAssistantMessageIndex
+) {
+  throw new Error('shared session returned messages out of causal order');
+}
+if (
+  !sharedHistory.messages[sharedUserMessageIndex]?.attachments[0]?.restricted
+) {
   throw new Error('shared session exposed another user private attachment');
 }
 
