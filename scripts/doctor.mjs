@@ -18,6 +18,19 @@ checks.push({
   label: 'pnpm is available',
   fix: 'Run `corepack enable`, then retry.',
 });
+checks.push({
+  ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', ['--version']),
+  label: 'Codex CLI is available',
+  fix: 'Install Codex CLI, then run `codex login` with the ChatGPT subscription account.',
+});
+checks.push({
+  ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', [
+    'login',
+    'status',
+  ]),
+  label: 'Codex CLI has a local login',
+  fix: 'Run `codex login` (or `codex login --device-auth`) and retry.',
+});
 
 if (process.env.DATABASE_URL) {
   checks.push({

@@ -65,6 +65,21 @@ try {
     throw new Error('execution plane schema metadata is missing or invalid');
   }
 
+  const skillHubRows = await sql<
+    { version: string | undefined; provider: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'provider' as provider
+    from allrice_runtime_metadata
+    where key = 'skillhub-schema'
+  `;
+  if (
+    expectedMigrations.includes('0006_skillhub_codex.sql') &&
+    (skillHubRows[0]?.version !== '0006' ||
+      skillHubRows[0]?.provider !== 'codex')
+  ) {
+    throw new Error('SkillHub/Codex schema metadata is missing or invalid');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

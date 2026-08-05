@@ -17,6 +17,16 @@ An `.env` file is optional. The default path provisions a private development da
 - Node.js 22+
 - pnpm 11+
 - Docker Desktop, or Docker Engine with the Compose plugin
+- Codex CLI, signed in with the ChatGPT subscription account used for SkillRun
+
+AllRice does not use an OpenAI API key. Before the first local start, run:
+
+```bash
+codex login
+codex login status
+```
+
+This is a one-time deployment authorization step; `pnpm doctor` verifies it.
 
 The repository pins pnpm in `package.json` and the Node major in `.nvmrc`. Run `pnpm doctor` before setup when diagnosing a teammate's machine.
 
@@ -77,6 +87,10 @@ Copy `.env.example` to `.env` only when changing defaults. The bootstrap script 
 | `ALLRICE_WORKER_CONCURRENCY`      | `1`                 | Maximum executions per Worker process                           |
 | `ALLRICE_EXECUTION_ROOT`          | `.local/executions` | Ignored tenant/run/attempt scratch root                         |
 | `ALLRICE_STORAGE_ROOT`            | `.local/storage`    | Ignored native-development storage directory                    |
+| `ALLRICE_CODEX_COMMAND`           | `codex`             | Codex CLI executable                                            |
+| `ALLRICE_CODEX_AUTH_HOME`         | current `~/.codex`  | Deployment-owned subscription credential directory              |
+| `ALLRICE_CODEX_MODEL`             | `gpt-5.6-luna`      | Pinned Codex SkillRun model                                     |
+| `ALLRICE_CODEX_REASONING_EFFORT`  | `high`              | Pinned Codex reasoning effort                                   |
 | `ALLRICE_STORAGE_SIGNING_SECRET`  | dev-only fallback   | HMAC secret; required in production, minimum 32 bytes           |
 | `ALLRICE_PROXY_PORT`              | `8080`              | Host port for the full Compose deployment                       |
 
@@ -108,7 +122,7 @@ This prevents the misleading state where liveness passes but a teammate is devel
 
 | Command                   | Purpose                                             |
 | ------------------------- | --------------------------------------------------- |
-| `pnpm doctor`             | Check Node, pnpm, and the selected database path    |
+| `pnpm doctor`             | Check Node, pnpm, Codex login, and database path    |
 | `pnpm dev`                | Prepare the database, then run Web and Worker       |
 | `pnpm db:setup`           | Start/default or use/external DB, migrate, verify   |
 | `pnpm db:verify`          | Verify migrations, baseline metadata, and pgvector  |
@@ -128,6 +142,8 @@ This prevents the misleading state where liveness passes but a teammate is devel
 - **Port `54329` is already allocated**: set `ALLRICE_DEV_DB_PORT` to another free port in `.env`. The bootstrap constructs the matching connection URL automatically.
 - **`permission denied to create extension vector`**: have a PostgreSQL administrator install pgvector and run `CREATE EXTENSION vector;` in the AllRice database.
 - **Migration mismatch**: run `pnpm db:setup`. Do not edit migration history or the database migration table by hand.
+- **Worker readiness says `run_codex_login`**: run `codex login` as the Worker deployment user. For Compose, run `docker compose run --rm worker codex login --device-auth` so the credential is stored in the dedicated named volume.
+- **Worker readiness says `codex_cli_not_found`**: install the Codex CLI or set `ALLRICE_CODEX_COMMAND` to its absolute executable path.
 - **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
 - **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
 

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@allrice/contracts": "workspace:*",
-    "@allrice/database": "workspace:*"
+    "@allrice/database": "workspace:*",
+    "@allrice/storage": "workspace:*"
   }
 }

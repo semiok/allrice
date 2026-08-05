@@ -1,8 +1,8 @@
 const capabilities = [
   ['Identity', 'Invitation and RBAC baseline implemented in MET-41'],
   ['Employee workspace', 'Implemented in MET-50'],
-  ['Persistent Worker', 'Planned in MET-43'],
-  ['SkillHub', 'Planned in MET-44'],
+  ['Persistent Worker', 'Durable execution plane implemented in MET-43'],
+  ['SkillHub', 'Codex subscription vertical slice implemented in MET-44'],
 ];
 
 export default function HomePage() {

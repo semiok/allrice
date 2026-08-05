@@ -402,7 +402,17 @@ function authorizeRun(context: RequestContext, row: RunRow) {
   if (!decision.allowed) throw new QueueError('not_found');
 }
 
-export async function enqueueRun(context: RequestContext, input: unknown) {
+export async function enqueueRun(
+  context: RequestContext,
+  input: unknown,
+  options: {
+    skillBinding?: {
+      installationId: string;
+      skillVersionId: string;
+      providerSnapshot: Record<string, unknown>;
+    };
+  } = {},
+) {
   const submission = CreateRunInputSchema.parse(input);
   const ownerId = requireUser(context);
   const workspaceId = await resolveWorkspaceId(context, submission.workspaceId);
@@ -422,16 +432,24 @@ export async function enqueueRun(context: RequestContext, input: unknown) {
       )
     `;
     const existing = await transaction<
-      { run_id: string; workspace_id: string; owner_id: string }[]
+      {
+        run_id: string;
+        workspace_id: string;
+        owner_id: string;
+        payload: { type?: unknown; input?: unknown };
+      }[]
     >`
-      select run_id, workspace_id, owner_id from allrice_jobs
+      select run_id, workspace_id, owner_id, payload from allrice_jobs
       where organization_id = ${context.organizationId}
         and idempotency_key = ${submission.idempotencyKey}
     `;
     if (existing[0]) {
       if (
         existing[0].workspace_id !== workspaceId ||
-        existing[0].owner_id !== ownerId
+        existing[0].owner_id !== ownerId ||
+        existing[0].payload.type !== submission.type ||
+        JSON.stringify(existing[0].payload.input) !==
+          JSON.stringify(submission.input)
       ) {
         throw new QueueError('conflict');
       }
@@ -491,7 +509,8 @@ export async function enqueueRun(context: RequestContext, input: unknown) {
             schemaVersion: 1,
             handler: submission.type,
             employeeVersionId: null,
-            skillVersionId: null,
+            skillVersionId: options.skillBinding?.skillVersionId ?? null,
+            provider: options.skillBinding ? 'codex' : null,
           }),
         )},
         ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}
@@ -514,6 +533,21 @@ export async function enqueueRun(context: RequestContext, input: unknown) {
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.skillBinding) {
+      await transaction`
+        insert into allrice_skill_runs (
+          run_id, organization_id, workspace_id, installation_id,
+          skill_version_id, provider, provider_snapshot
+        ) values (
+          ${run.id}, ${context.organizationId}, ${workspaceId},
+          ${options.skillBinding.installationId},
+          ${options.skillBinding.skillVersionId}, 'codex',
+          ${transaction.json(
+            toJsonValue(options.skillBinding.providerSnapshot),
+          )}
+        )
+      `;
+    }
     await appendEvent(transaction, {
       organizationId: context.organizationId,
       workspaceId,
