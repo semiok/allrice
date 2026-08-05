@@ -17,6 +17,7 @@
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "migrate": "tsx src/migrate.ts",
+    "verify": "tsx src/verify.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

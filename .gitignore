@@ -10,5 +10,6 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 .turbo/
+.local/
 storage-data/
 postgres-data/
