@@ -1,33 +1,119 @@
 # Development workflow
 
+The supported fresh-clone path is intentionally executable, not a sequence of manual database steps:
+
+```bash
+git clone https://github.com/semiok/allrice.git
+cd allrice
+corepack enable
+pnpm install
+pnpm dev
+```
+
+An `.env` file is optional. The default path provisions a private development database, migrates and verifies it, creates local storage, then starts both application processes.
+
 ## Requirements
 
 - Node.js 22+
 - pnpm 11+
-- PostgreSQL 17 with pgvector, or Docker Compose
+- Docker Desktop, or Docker Engine with the Compose plugin
 
-## Setup
+The repository pins pnpm in `package.json` and the Node major in `.nvmrc`. Run `pnpm doctor` before setup when diagnosing a teammate's machine.
+
+## Default database: Docker Compose
+
+`pnpm dev` uses `compose.dev.yaml` when `DATABASE_URL` is blank. It starts `pgvector/pgvector:pg17` with these development-only defaults:
+
+| Setting       | Default                                      |
+| ------------- | -------------------------------------------- |
+| Host          | `127.0.0.1`                                  |
+| Port          | `54329`                                      |
+| Database      | `allrice`                                    |
+| User/password | `allrice` / `allrice`                        |
+| Compose name  | `allrice-dev`                                |
+| Data          | named volume `allrice-dev_postgres-dev-data` |
+
+The port binds only to loopback and is deliberately different from PostgreSQL's standard `5432`, so it does not collide with a typical local installation.
+
+Install Docker Desktop on macOS or Windows, or Docker Engine plus the Compose plugin on Linux. Start Docker once, then run `pnpm dev`; no separate PostgreSQL or pgvector installation is needed.
+
+Use `pnpm db:dev:down` to stop the container. This keeps its database volume. Removing that volume is destructive and is therefore not part of the normal setup command.
+
+## Using an existing PostgreSQL database
+
+The database must be PostgreSQL 17 with the pgvector extension available. Create a database and user, ensure the user owns the database (or can create extensions), then add the connection string to the ignored root `.env`:
+
+```dotenv
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DATABASE
+```
+
+Then run:
 
 ```bash
-cp .env.example .env
-pnpm install
-pnpm db:migrate
+pnpm db:setup
 pnpm dev
 ```
 
-`pnpm dev` starts Web and Worker. Without PostgreSQL, liveness endpoints work while readiness endpoints return 503. That distinction is intentional.
+With `DATABASE_URL` set, AllRice never starts or stops Docker. `db:setup` applies ordered migrations under a PostgreSQL advisory lock and runs a read-only schema verification. If your managed PostgreSQL provider prevents the application user from creating extensions, ask an administrator to run `CREATE EXTENSION vector;` once.
+
+For a native local installation, install PostgreSQL 17 and the matching pgvector package using your operating system's package manager, start PostgreSQL, create the user/database, and use the same `DATABASE_URL` flow. Docker remains the reference development path because it pins both versions and is tested in CI.
+
+## Environment variables
+
+Copy `.env.example` to `.env` only when changing defaults. The bootstrap script loads this root file and passes one consistent environment to migration, Web, and Worker.
+
+| Variable                          | Default          | Purpose                                                         |
+| --------------------------------- | ---------------- | --------------------------------------------------------------- |
+| `DATABASE_URL`                    | blank            | Existing database override; blank enables the dev container     |
+| `ALLRICE_DEV_DB_PORT`             | `54329`          | Loopback host port for the development database                 |
+| `POSTGRES_DB`                     | `allrice`        | Database created by Compose                                     |
+| `POSTGRES_USER`                   | `allrice`        | Database user created by Compose                                |
+| `POSTGRES_PASSWORD`               | `allrice`        | Local default; must be changed for shared/production deployment |
+| `ALLRICE_WEB_PORT`                | `3000`           | Native Web development port                                     |
+| `ALLRICE_WORKER_PORT`             | `3101`           | Native Worker health port                                       |
+| `ALLRICE_WORKER_POLL_INTERVAL_MS` | `5000`           | Worker database readiness refresh interval                      |
+| `ALLRICE_STORAGE_ROOT`            | `.local/storage` | Ignored native-development storage directory                    |
+| `ALLRICE_PROXY_PORT`              | `8080`           | Host port for the full Compose deployment                       |
+
+Do not commit `.env`; it is ignored because it may contain credentials.
+
+## What startup verifies
+
+Before Web or Worker starts, the bootstrap checks database connectivity, applies all SQL files in order, and confirms:
+
+- every repository migration is recorded, with no missing or unexpected entries;
+- the pgvector extension is installed;
+- baseline runtime metadata is readable and has the expected version.
+
+This prevents the misleading state where liveness passes but a teammate is developing against an empty or stale database.
 
 ## Commands
 
 | Command             | Purpose                                             |
 | ------------------- | --------------------------------------------------- |
-| `pnpm dev`          | Run Web and Worker                                  |
+| `pnpm doctor`       | Check Node, pnpm, and the selected database path    |
+| `pnpm dev`          | Prepare the database, then run Web and Worker       |
+| `pnpm db:setup`     | Start/default or use/external DB, migrate, verify   |
+| `pnpm db:verify`    | Verify migrations, baseline metadata, and pgvector  |
+| `pnpm db:dev:up`    | Start only the isolated development database        |
+| `pnpm db:dev:down`  | Stop it while retaining its named data volume       |
 | `pnpm db:migrate`   | Apply ordered SQL migrations under an advisory lock |
 | `pnpm format:check` | Verify formatting                                   |
 | `pnpm lint`         | Run static rules                                    |
 | `pnpm typecheck`    | Typecheck every workspace package                   |
 | `pnpm test`         | Run unit/contract tests                             |
 | `pnpm build`        | Build packages and applications                     |
+
+## Troubleshooting
+
+- **`Docker Compose is required`**: install and start Docker Desktop, then confirm `docker compose version` works. Or configure an existing database with `DATABASE_URL`.
+- **Port `54329` is already allocated**: set `ALLRICE_DEV_DB_PORT` to another free port in `.env`. The bootstrap constructs the matching connection URL automatically.
+- **`permission denied to create extension vector`**: have a PostgreSQL administrator install pgvector and run `CREATE EXTENSION vector;` in the AllRice database.
+- **Migration mismatch**: run `pnpm db:setup`. Do not edit migration history or the database migration table by hand.
+- **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
+- **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
+
+The full containerized acceptance path is `pnpm test:compose`. It builds production images, starts a fresh database, and verifies both services, migrations, and pgvector.
 
 ## Branches and pull requests
 

@@ -4,6 +4,8 @@
 >
 > Linear: **MET-49**
 
+The source capability and license decisions that constrain this integration are recorded in the [MET-40 OpenRice extraction audit](../../audits/openrice-extraction-audit.md).
+
 ## Product boundary
 
 OpenRice faces enterprise managers. AllRice faces enterprise employees. OpenRice is the future management authority for enterprise directory, role/policy, Employee/Skill publishing and assignment. AllRice remains authoritative for employee runtime state such as Session, private Memory, Skill favorite and Run history.

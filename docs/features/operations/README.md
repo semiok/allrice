@@ -43,10 +43,13 @@ Logs include service, version, request/run/job IDs and tenant-safe diagnostic co
 ## Current baseline
 
 - Compose and container definitions;
+- isolated Linux/Compose smoke coverage in CI;
 - Web and Worker health endpoints;
 - PostgreSQL readiness;
 - migration runner under an advisory lock;
 - CI for formatting, lint, types, tests and builds.
+
+Run `pnpm test:compose` to build the production images, start PostgreSQL/pgvector, apply migrations, wait for Web and Worker readiness, verify the migration ledger and vector extension, and tear down the isolated test stack.
 
 ## Acceptance
 

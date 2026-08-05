@@ -64,20 +64,31 @@ allrice/
 └── compose.yaml
 ```
 
-## Local development
+## Quick start for contributors
 
 Requirements:
 
 - Node.js 22+
 - pnpm 11+
-- PostgreSQL 17 with pgvector, or Docker Compose
+- Docker Desktop (or Docker Engine with Compose)
 
 ```bash
-cp .env.example .env
+git clone https://github.com/semiok/allrice.git
+cd allrice
+corepack enable
 pnpm install
-pnpm db:migrate
 pnpm dev
 ```
+
+That is the complete default setup. On the first run, `pnpm dev`:
+
+1. loads optional overrides from the root `.env`;
+2. starts an isolated PostgreSQL 17 + pgvector container on `127.0.0.1:54329`;
+3. applies every migration and verifies migration state, baseline metadata, and pgvector;
+4. creates the ignored local storage directory;
+5. starts Web and Worker with the same environment.
+
+Run `pnpm doctor` for prerequisite diagnostics. Copy `.env.example` to `.env` only when you need overrides; it is not required for the default path. See the [development guide](docs/development/README.md) for existing-database setup, environment variables, and troubleshooting.
 
 Default endpoints:
 
@@ -89,16 +100,24 @@ Default endpoints:
 | Worker liveness  | `http://localhost:3101/health/live`      |
 | Worker readiness | `http://localhost:3101/health/ready`     |
 
-The readiness endpoints require `DATABASE_URL`. The liveness endpoints only prove that the process is running.
+The readiness endpoints require a working database. The liveness endpoints only prove that the process is running. Stop the development database with `pnpm db:dev:down`; its named volume is retained for the next run.
 
 ## Docker Compose
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up --build --wait
 ```
 
-The proxy listens on `http://localhost:8080`. PostgreSQL and application storage use named volumes. Compose is the V1 deployment shape; Kubernetes and Redis are explicitly out of scope.
+Set a non-default `POSTGRES_PASSWORD` in `.env` before using this path outside a local machine. The proxy listens on `http://localhost:8080`. PostgreSQL and application storage use named volumes. Compose is the V1 deployment shape; Kubernetes and Redis are explicitly out of scope.
+
+Run the isolated Linux/Compose acceptance smoke with:
+
+```bash
+pnpm test:compose
+```
+
+The smoke uses Compose project `allrice-met39` and host port `18080` by default, verifies Web and Worker readiness, the applied migration, and pgvector, then removes its test containers and volumes. Override `ALLRICE_COMPOSE_PROJECT`, `ALLRICE_PROXY_PORT`, or set `ALLRICE_KEEP_COMPOSE=1` when debugging.
 
 ## Validation
 
@@ -133,4 +152,4 @@ Start at [docs/README.md](docs/README.md). Every feature document records:
 
 ## License
 
-The project license and any reusable OpenRice code provenance are pending the MET-40 source and license audit. No OpenRice source has been copied into this baseline.
+AllRice is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies, Skills, assets and any future extracted files retain their own terms and attribution requirements. See the [license decision](docs/audits/allrice-license-decision.md) and [OpenRice extraction audit](docs/audits/openrice-extraction-audit.md). No OpenRice source has been copied into this baseline.

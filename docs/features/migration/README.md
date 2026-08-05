@@ -4,6 +4,8 @@
 >
 > Linear: **MET-46**
 
+Supported sources must come from the exact, reviewed OpenRice baselines in the [MET-40 extraction audit](../../audits/openrice-extraction-audit.md); discovery of a different source version requires a compatibility decision before import.
+
 ## User outcome
 
 An existing OpenRice user can preview and import supported data and Skills into AllRice once, with ownership, counts, checksums, failures and recovery made explicit.

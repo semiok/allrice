@@ -13,6 +13,9 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 
 - [System architecture](architecture/README.md)
 - [Development workflow](development/README.md)
+- [OpenRice extraction and license audit](audits/openrice-extraction-audit.md)
+- [AllRice Apache-2.0 license decision](audits/allrice-license-decision.md)
+- [Phase 0 readiness review](audits/phase0-readiness-review.md)
 - [Feature README template](templates/feature-readme-template.md)
 
 ## Feature index

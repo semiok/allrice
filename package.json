@@ -2,6 +2,7 @@
   "name": "allrice",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "packageManager": "pnpm@11.2.2",
   "engines": {
     "node": ">=22.0.0",
@@ -10,14 +11,21 @@
   "scripts": {
     "build": "pnpm -r --if-present run build",
     "clean": "pnpm -r --if-present run clean",
+    "db:dev:down": "docker compose --project-name allrice-dev --file compose.dev.yaml down",
+    "db:dev:up": "docker compose --project-name allrice-dev --file compose.dev.yaml up --detach --wait postgres",
     "db:migrate": "pnpm --filter @allrice/database migrate",
-    "dev": "concurrently -n web,worker -c blue,green \"pnpm --filter @allrice/web dev\" \"pnpm --filter @allrice/worker dev\"",
+    "db:setup": "node scripts/setup-dev-db.mjs",
+    "db:verify": "pnpm --filter @allrice/database verify",
+    "dev": "node scripts/dev.mjs",
+    "dev:services": "concurrently -n web,worker -c blue,green \"pnpm --filter @allrice/web dev\" \"pnpm --filter @allrice/worker dev\"",
     "dev:web": "pnpm --filter @allrice/web dev",
     "dev:worker": "pnpm --filter @allrice/worker dev",
+    "doctor": "node scripts/doctor.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
+    "test:compose": "bash scripts/compose-smoke.sh",
     "typecheck": "pnpm -r --if-present run typecheck"
   },
   "devDependencies": {
