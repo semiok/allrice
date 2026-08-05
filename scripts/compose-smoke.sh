@@ -8,6 +8,9 @@ keep_compose="${ALLRICE_KEEP_COMPOSE:-0}"
 
 export ALLRICE_PROXY_PORT="${proxy_port}"
 export ALLRICE_STORAGE_SIGNING_SECRET="${ALLRICE_STORAGE_SIGNING_SECRET:-allrice-compose-smoke-signing-secret}"
+export ALLRICE_WORKER_POLL_INTERVAL_MS="${ALLRICE_WORKER_POLL_INTERVAL_MS:-250}"
+export ALLRICE_WORKER_LEASE_MS="${ALLRICE_WORKER_LEASE_MS:-3000}"
+export ALLRICE_WORKER_HEARTBEAT_MS="${ALLRICE_WORKER_HEARTBEAT_MS:-1000}"
 
 cleanup() {
   if [[ "${keep_compose}" != "1" ]]; then
@@ -93,6 +96,25 @@ if [[ -z "${smoke_state}" ]]; then
   echo "Storage smoke state was not returned" >&2
   exit 1
 fi
+
+execution_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+ALLRICE_SMOKE_STATE="${smoke_state}" \
+  node scripts/execution-http-smoke.mjs)"
+printf '%s\n' "${execution_output}" | sed '/^ALLRICE_EXECUTION_SMOKE_STATE=/d'
+execution_state="$(printf '%s\n' "${execution_output}" | sed -n 's/^ALLRICE_EXECUTION_SMOKE_STATE=//p')"
+if [[ -z "${execution_state}" ]]; then
+  echo "Execution smoke state was not returned" >&2
+  exit 1
+fi
+
+# Simulate an ungraceful Worker crash. The expired lease must be recovered by
+# the replacement Worker without browser participation.
+docker compose --project-name "${compose_project}" kill -s SIGKILL worker
+docker compose --project-name "${compose_project}" up --detach --wait --wait-timeout 120 worker
+ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+ALLRICE_SMOKE_STATE="${smoke_state}" \
+ALLRICE_EXECUTION_SMOKE_STATE="${execution_state}" \
+  node scripts/execution-http-smoke.mjs
 
 # The migrator must be safely repeatable when no new migration is pending.
 docker compose --project-name "${compose_project}" run --rm migrate

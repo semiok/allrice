@@ -4,6 +4,8 @@ import {
   assertJobTransition,
   authorize,
   authorizeExecution,
+  CancelRunInputSchema,
+  CreateRunInputSchema,
   CreateSessionAttachmentInputSchema,
   CreateWorkspaceMemoryInputSchema,
   formatSseCursor,
@@ -159,6 +161,25 @@ describe('queue contracts', () => {
   it('caps exponential retry delay', () => {
     expect(retryDelayMs(1)).toBe(1000);
     expect(retryDelayMs(20)).toBe(300_000);
+  });
+
+  it('validates durable run submission and cancellation inputs', () => {
+    const submission = CreateRunInputSchema.parse({
+      workspaceId: ids.workspaceA,
+      idempotencyKey: 'employee-task:42',
+      type: 'allrice.system.echo',
+      input: { value: 'hello' },
+    });
+    expect(submission.priority).toBe(0);
+    expect(submission.maxAttempts).toBe(3);
+    expect(submission.timeoutMs).toBe(300_000);
+    expect(CancelRunInputSchema.parse({}).reason).toBe('user_requested');
+    expect(() =>
+      CreateRunInputSchema.parse({
+        ...submission,
+        timeoutMs: 999,
+      }),
+    ).toThrow();
   });
 });
 

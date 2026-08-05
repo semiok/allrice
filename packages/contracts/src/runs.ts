@@ -40,6 +40,16 @@ export const RunEventSchema = z
   .strict();
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
+const terminalRunStatuses = new Set<RunStatus>([
+  'succeeded',
+  'failed',
+  'canceled',
+]);
+
+export function isTerminalRunStatus(status: RunStatus) {
+  return terminalRunStatuses.has(status);
+}
+
 export const ChecksumSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 export const ArtifactSchema = z

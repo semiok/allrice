@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { RunStatusSchema } from './runs.ts';
 
 export const JobStatusSchema = z.enum([
   'queued',
@@ -21,6 +22,26 @@ export const JobPayloadSchema = z
     input: z.unknown(),
   })
   .strict();
+export type JobPayload = z.infer<typeof JobPayloadSchema>;
+
+export const CreateRunInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    idempotencyKey: z.string().min(1).max(255),
+    type: z.string().min(1).max(128),
+    input: z.unknown(),
+    priority: z.number().int().min(-100).max(100).default(0),
+    maxAttempts: z.number().int().min(1).max(10).default(3),
+    timeoutMs: z.number().int().min(1_000).max(86_400_000).default(300_000),
+    availableAt: TimestampSchema.optional(),
+  })
+  .strict();
+export type CreateRunInput = z.infer<typeof CreateRunInputSchema>;
+
+export const CancelRunInputSchema = z
+  .object({ reason: z.string().min(1).max(255).default('user_requested') })
+  .strict();
+export type CancelRunInput = z.infer<typeof CancelRunInputSchema>;
 
 export const JobLeaseSchema = z
   .object({
@@ -40,6 +61,7 @@ export const JobSchema = z
     ownerId: UuidSchema,
     status: JobStatusSchema,
     idempotencyKey: z.string().min(1).max(255),
+    priority: z.number().int().min(-100).max(100),
     attempt: z.number().int().nonnegative(),
     maxAttempts: z.number().int().positive(),
     availableAt: TimestampSchema,
@@ -49,6 +71,26 @@ export const JobSchema = z
   })
   .strict();
 export type Job = z.infer<typeof JobSchema>;
+
+export const RunSnapshotSchema = z
+  .object({
+    id: UuidSchema,
+    organizationId: UuidSchema,
+    workspaceId: UuidSchema,
+    ownerId: UuidSchema,
+    status: RunStatusSchema,
+    job: JobSchema,
+    cancelRequestedAt: TimestampSchema.nullable(),
+    result: z.unknown().nullable(),
+    error: z
+      .object({ code: z.string().min(1), message: z.string().min(1) })
+      .strict()
+      .nullable(),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+  })
+  .strict();
+export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 
 const transitions: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
   queued: ['claimed', 'canceled'],

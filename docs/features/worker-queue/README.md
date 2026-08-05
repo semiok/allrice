@@ -1,6 +1,6 @@
 # Worker and persistent Queue
 
-> Status: **Worker baseline and MET-49 contracts implemented; persistence pending MET-43**
+> Status: **MET-43 persistent execution plane implemented**
 >
 > Linear: **MET-43, MET-49**
 
@@ -33,8 +33,67 @@ Worker re-authorizes before execution and never trusts browser roles. Tenant-spe
 
 ## Current implementation
 
-Version 0.1.0 starts the Worker HTTP process, polls PostgreSQL readiness and exposes liveness/readiness endpoints. MET-49 now defines Job/lease transitions, retry backoff, ExecutionContext, RunEvent ordering and SSE replay without prematurely implementing the MET-43 queue tables.
+PostgreSQL is the authority for `allrice_jobs`, `allrice_runs`, frozen
+`allrice_policy_snapshots`, and append-only `allrice_run_events`. Web inserts a
+Run, Job, policy snapshot, audit record, and `run.created` event in one
+transaction. `(organization_id, idempotency_key)` is serialized under a
+transaction advisory lock, so simultaneous browser retries return one Run.
+
+Workers claim with `FOR UPDATE SKIP LOCKED`, increment the attempt, and receive
+a unique lease token. Only the matching Worker/token can start, heartbeat,
+append events, retry, or finish the Job. The Worker-hosted Scheduler promotes
+due retries, applies cancellation and timeout, and recovers expired leases.
+Exhausted retry/lease attempts reach `dead_letter`; terminal Run state and its
+terminal event commit together.
+
+Before a claim becomes `running`, Worker constructs an `ExecutionContext` from
+the immutable policy snapshot and calls `authorizeExecution`. A Worker ID alone
+grants nothing. Version snapshot fields for Employee and Skill are present but
+remain null until MET-44/MET-45 publish those entities.
+
+`allrice.system.echo` is the only executable handler in MET-43. It is a safe
+acceptance handler for idempotency, retry, cancellation, timeout, lease recovery
+and SSE tests—not an LLM or Skill runtime.
+
+## HTTP API
+
+- `POST /api/v1/runs` creates or idempotently returns a Run.
+- `GET /api/v1/runs/:id?workspaceId=...` returns the authorized snapshot.
+- `POST /api/v1/runs/:id/cancel?workspaceId=...` requests cancellation.
+- `GET /api/v1/runs/:id/events?workspaceId=...` streams persisted RunEvents.
+
+SSE IDs are `<run_uuid>:<sequence>`. `Last-Event-ID` replays only later events;
+a cursor for another Run is rejected before streaming. Events remain in
+PostgreSQL in V1, so the current earliest retained sequence is zero.
+
+Example submission:
+
+```json
+{
+  "workspaceId": "00000000-0000-4000-8000-000000000000",
+  "idempotencyKey": "employee-task:42",
+  "type": "allrice.system.echo",
+  "input": { "value": "hello" },
+  "priority": 0,
+  "maxAttempts": 3,
+  "timeoutMs": 300000
+}
+```
+
+## Isolation and side effects
+
+Each attempt receives an ignored, mode-0700 directory below
+`ALLRICE_EXECUTION_ROOT/<organization>/<workspace>/<owner>/<run>/`. Runtime
+environment materialization is an explicit allowlist containing IDs and the
+attempt only; database/storage secrets are not passed to handlers. Attempt
+directories are deleted after completion. Future Skill/AI handlers must use
+the frozen policy context, scoped storage ports, cooperative cancellation, and
+provider idempotency keys for every irreversible external effect.
 
 ## Acceptance
 
-Tests will cover competing claims, expired lease, heartbeat, duplicate submit, retry, cancellation, timeout, crash, replay, Web restart, Worker restart and PostgreSQL restart.
+Unit/contract tests cover transition legality, maintenance ordering, retry
+backoff, terminal event rules, cursor replay, and path/environment isolation.
+`pnpm test:compose` additionally covers simultaneous duplicate submit,
+heartbeat, retry, cancellation, timeout, SSE replay/foreign cursor rejection,
+SIGKILL Worker lease recovery, and PostgreSQL/Web restart on a fresh schema.

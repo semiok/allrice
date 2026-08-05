@@ -4,7 +4,7 @@ AllRice is a browser-first, self-hosted AI workspace for enterprise employees. I
 
 > Current version: **0.1.0 baseline**
 >
-> Current delivery: **MET-50 synchronous employee workspace**
+> Current delivery: **MET-43 persistent execution plane on the MET-50 workspace**
 >
 > Product plan: [AllRice MET-38](https://linear.app/metasnowsky/issue/MET-38/allrice-%E5%BC%80%E5%B7%A5%E8%AE%A1%E5%88%92%E7%8B%AC%E7%AB%8B%E5%9F%BA%E7%BA%BF%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E4%B8%8E-mvp-%E5%9E%82%E7%9B%B4%E9%97%AD%E7%8E%AF)
 
@@ -19,8 +19,11 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - lint, typecheck, test, build, and CI commands;
 - detailed feature documentation with implementation status, security boundaries, data ownership, APIs, and acceptance criteria.
 - an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
+- a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
 
-The worker intentionally does not execute business jobs yet. The contracts are frozen; persistent Queue/Run execution and SkillHub delivery remain in MET-43 and MET-44.
+The Worker currently executes only the isolated `allrice.system.echo`
+acceptance handler. LLM/AI employee and Skill execution remain in MET-45 and
+MET-44; MET-43 deliberately does not pull those requirements forward.
 
 ## Product boundary
 

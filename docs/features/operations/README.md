@@ -1,6 +1,6 @@
 # Operations, release and recovery
 
-> Status: **Baseline definitions implemented**
+> Status: **Baseline plus MET-43 Worker recovery implemented**
 >
 > Linear: **MET-39, MET-47**
 
@@ -15,6 +15,7 @@ V1 deploys Web, Worker, PostgreSQL/pgvector, mounted storage and reverse proxy w
 - version information is included in health responses;
 - reverse proxy sends user traffic only to ready Web instances;
 - Worker readiness tracks PostgreSQL connectivity.
+- Worker startup runs persistent queue maintenance before claims; expired leases are recoverable by any authorized replacement Worker.
 
 ## Release sequence
 
@@ -48,6 +49,7 @@ Logs include service, version, request/run/job IDs and tenant-safe diagnostic co
 - PostgreSQL readiness;
 - migration runner under an advisory lock;
 - CI for formatting, lint, types, tests and builds.
+- persistent Queue/Run/RunEvent state and a SIGKILL Worker recovery smoke.
 
 Run `pnpm test:compose` to build the production images, start PostgreSQL/pgvector, apply migrations, wait for Web and Worker readiness, verify the migration ledger and vector extension, and tear down the isolated test stack.
 

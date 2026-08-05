@@ -62,19 +62,23 @@ For a native local installation, install PostgreSQL 17 and the matching pgvector
 
 Copy `.env.example` to `.env` only when changing defaults. The bootstrap script loads this root file and passes one consistent environment to migration, Web, and Worker.
 
-| Variable                          | Default           | Purpose                                                         |
-| --------------------------------- | ----------------- | --------------------------------------------------------------- |
-| `DATABASE_URL`                    | blank             | Existing database override; blank enables the dev container     |
-| `ALLRICE_DEV_DB_PORT`             | `54329`           | Loopback host port for the development database                 |
-| `POSTGRES_DB`                     | `allrice`         | Database created by Compose                                     |
-| `POSTGRES_USER`                   | `allrice`         | Database user created by Compose                                |
-| `POSTGRES_PASSWORD`               | `allrice`         | Local default; must be changed for shared/production deployment |
-| `ALLRICE_WEB_PORT`                | `3000`            | Native Web development port                                     |
-| `ALLRICE_WORKER_PORT`             | `3101`            | Native Worker health port                                       |
-| `ALLRICE_WORKER_POLL_INTERVAL_MS` | `5000`            | Worker database readiness refresh interval                      |
-| `ALLRICE_STORAGE_ROOT`            | `.local/storage`  | Ignored native-development storage directory                    |
-| `ALLRICE_STORAGE_SIGNING_SECRET`  | dev-only fallback | HMAC secret; required in production, minimum 32 bytes           |
-| `ALLRICE_PROXY_PORT`              | `8080`            | Host port for the full Compose deployment                       |
+| Variable                          | Default             | Purpose                                                         |
+| --------------------------------- | ------------------- | --------------------------------------------------------------- |
+| `DATABASE_URL`                    | blank               | Existing database override; blank enables the dev container     |
+| `ALLRICE_DEV_DB_PORT`             | `54329`             | Loopback host port for the development database                 |
+| `POSTGRES_DB`                     | `allrice`           | Database created by Compose                                     |
+| `POSTGRES_USER`                   | `allrice`           | Database user created by Compose                                |
+| `POSTGRES_PASSWORD`               | `allrice`           | Local default; must be changed for shared/production deployment |
+| `ALLRICE_WEB_PORT`                | `3000`              | Native Web development port                                     |
+| `ALLRICE_WORKER_PORT`             | `3101`              | Native Worker health port                                       |
+| `ALLRICE_WORKER_POLL_INTERVAL_MS` | `1000`              | Persistent Queue maintenance and claim cadence                  |
+| `ALLRICE_WORKER_LEASE_MS`         | `30000`             | Worker claim lease duration                                     |
+| `ALLRICE_WORKER_HEARTBEAT_MS`     | `10000`             | Active execution heartbeat cadence                              |
+| `ALLRICE_WORKER_CONCURRENCY`      | `1`                 | Maximum executions per Worker process                           |
+| `ALLRICE_EXECUTION_ROOT`          | `.local/executions` | Ignored tenant/run/attempt scratch root                         |
+| `ALLRICE_STORAGE_ROOT`            | `.local/storage`    | Ignored native-development storage directory                    |
+| `ALLRICE_STORAGE_SIGNING_SECRET`  | dev-only fallback   | HMAC secret; required in production, minimum 32 bytes           |
+| `ALLRICE_PROXY_PORT`              | `8080`              | Host port for the full Compose deployment                       |
 
 Do not commit `.env`; it is ignored because it may contain credentials.
 
@@ -127,7 +131,12 @@ This prevents the misleading state where liveness passes but a teammate is devel
 - **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
 - **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
 
-The full containerized acceptance path is `pnpm test:compose`. It builds production images, starts a fresh database, verifies repeatable migrations and pgvector, exercises the employee Workspace with two users and two Workspaces, checks idempotent Chat, Session sharing, private attachment masking and Memory isolation, restarts PostgreSQL and Web, and verifies persistence plus file/Memory delete propagation.
+The full containerized acceptance path is `pnpm test:compose`. It builds
+production images, starts a fresh database, verifies repeatable migrations and
+pgvector, exercises the employee Workspace with two users and two Workspaces,
+then validates durable Run submission, retry, cancellation, timeout, SSE replay
+and an ungraceful Worker crash. It finally restarts PostgreSQL and Web and
+verifies business data persistence plus delete propagation.
 
 ## Branches and pull requests
 

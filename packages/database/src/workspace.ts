@@ -551,7 +551,10 @@ export async function getChatSessionHistory(
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and session_id = ${row.id}
-    order by created_at, id
+    order by
+      created_at,
+      case when role = 'user' then 0 else 1 end,
+      id
   `;
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
