@@ -1,5 +1,5 @@
 {
-  "name": "@allrice/database",
+  "name": "@allrice/storage",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,21 +9,13 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist",
-    "migrations"
-  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
-    "identity:bootstrap": "tsx src/bootstrap-identity.ts",
-    "migrate": "tsx src/migrate.ts",
-    "verify": "tsx src/verify.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@allrice/contracts": "workspace:*",
-    "postgres": "^3.4.7",
     "zod": "^4.4.3"
   }
 }

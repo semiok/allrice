@@ -44,6 +44,9 @@ importers:
       '@allrice/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@allrice/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       next:
         specifier: 16.2.1
         version: 16.2.1(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -84,6 +87,18 @@ importers:
       postgres:
         specifier: ^3.4.7
         version: 3.4.9
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/storage:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
 packages:
 

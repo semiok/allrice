@@ -27,8 +27,8 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 | Identity and tenancy    | Foundation implemented | MET-41 / MET-49 | [README](features/identity/README.md)             |
 | Employee workspace      | Planned                | MET-50          | [README](features/employee-workspace/README.md)   |
 | Chat and Session        | Planned                | MET-50          | [README](features/chat-session/README.md)         |
-| File storage            | Contract frozen        | MET-42 / MET-49 | [README](features/file-storage/README.md)         |
-| Memory                  | Planned                | MET-42 / MET-50 | [README](features/memory/README.md)               |
+| File storage            | Foundation implemented | MET-42 / MET-49 | [README](features/file-storage/README.md)         |
+| Memory                  | Data foundation        | MET-42 / MET-50 | [README](features/memory/README.md)               |
 | Worker and Queue        | Contract frozen        | MET-43 / MET-49 | [README](features/worker-queue/README.md)         |
 | SkillHub                | Contract frozen        | MET-44 / MET-49 | [README](features/skillhub/README.md)             |
 | EmployeeHub             | Planned, minimal V1    | MET-45          | [README](features/employeehub/README.md)          |

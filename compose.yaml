@@ -40,6 +40,8 @@ services:
         condition: service_completed_successfully
     environment:
       ALLRICE_ENV: production
+      ALLRICE_STORAGE_ROOT: /var/lib/allrice/storage
+      ALLRICE_STORAGE_SIGNING_SECRET: ${ALLRICE_STORAGE_SIGNING_SECRET:?set ALLRICE_STORAGE_SIGNING_SECRET to at least 32 random bytes}
       ALLRICE_WEB_PORT: 3000
       DATABASE_URL: postgres://${POSTGRES_USER:-allrice}:${POSTGRES_PASSWORD:-allrice}@postgres:5432/${POSTGRES_DB:-allrice}
     healthcheck:
@@ -54,6 +56,8 @@ services:
       timeout: 5s
       retries: 12
     restart: unless-stopped
+    volumes:
+      - storage-data:/var/lib/allrice/storage
 
   worker:
     build:

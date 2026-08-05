@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { TimestampSchema, UuidSchema } from './common.ts';
+import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 
 export const StorageCategorySchema = z.enum([
@@ -37,6 +37,51 @@ export const StorageObjectSchema = z
   .strict();
 export type StorageObject = z.infer<typeof StorageObjectSchema>;
 
+export const CreateFileInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    category: StorageCategorySchema.default('uploads'),
+    mediaType: z.string().min(1).max(255),
+    contentBase64: z.string().min(1).max(12_000_000),
+    visibility: VisibilitySchema.default('private'),
+    retentionUntil: TimestampSchema.nullable().default(null),
+    immutable: z.boolean().default(false),
+  })
+  .strict();
+
+export const SignFileInputSchema = z
+  .object({
+    lifetimeSeconds: z.number().int().min(1).max(900).default(300),
+  })
+  .strict();
+
+export const CreateMemoryInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    projectId: UuidSchema.nullable().default(null),
+    content: z.string().min(1).max(100_000),
+    metadata: z.record(z.string(), z.json()).default({}),
+    visibility: VisibilitySchema.default('private'),
+  })
+  .strict();
+
+export const VectorRecallInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    embedding: z.array(z.number().finite()).length(1536),
+    limit: z.number().int().min(1).max(50).default(10),
+  })
+  .strict();
+
+export const CreateRagChunkInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    memoryId: UuidSchema,
+    content: z.string().min(1).max(100_000),
+    embedding: z.array(z.number().finite()).length(1536),
+  })
+  .strict();
+
 export const SignedAccessGrantSchema = z
   .object({
     objectId: UuidSchema,
@@ -46,6 +91,7 @@ export const SignedAccessGrantSchema = z
     nonce: UuidSchema,
   })
   .strict();
+export type SignedAccessGrant = z.infer<typeof SignedAccessGrantSchema>;
 
 export function makeObjectKey(input: {
   organizationId: string;
