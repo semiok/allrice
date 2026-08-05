@@ -17,8 +17,10 @@ version-pinned Codex SkillRun handler.
 ## Health endpoints
 
 - `GET /health/live`: the process is serving HTTP.
-- `GET /health/ready`: PostgreSQL is ready and the latest Codex subscription
-  probe is connected.
+- `GET /health/ready`: PostgreSQL and the persistent queue are ready. Codex
+  subscription connectivity is reported separately through
+  `GET /api/v1/admin/providers/codex`; a disconnected provider must not prevent
+  the core application or bootstrap smoke from starting.
 
 ## Runtime configuration
 

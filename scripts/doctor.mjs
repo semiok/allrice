@@ -7,6 +7,7 @@ import {
 loadDevelopmentEnvironment();
 
 const checks = [];
+const coreOnly = process.argv.includes('--core-only');
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 checks.push({
   ok: nodeMajor >= 22,
@@ -18,19 +19,25 @@ checks.push({
   label: 'pnpm is available',
   fix: 'Run `corepack enable`, then retry.',
 });
-checks.push({
-  ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', ['--version']),
-  label: 'Codex CLI is available',
-  fix: 'Install Codex CLI, then run `codex login` with the ChatGPT subscription account.',
-});
-checks.push({
-  ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', [
-    'login',
-    'status',
-  ]),
-  label: 'Codex CLI has a local login',
-  fix: 'Run `codex login` (or `codex login --device-auth`) and retry.',
-});
+if (coreOnly) {
+  console.info('! Codex CLI and login checks skipped for core-only bootstrap.');
+} else {
+  checks.push({
+    ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', [
+      '--version',
+    ]),
+    label: 'Codex CLI is available',
+    fix: 'Install Codex CLI, then run `codex login` with the ChatGPT subscription account.',
+  });
+  checks.push({
+    ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', [
+      'login',
+      'status',
+    ]),
+    label: 'Codex CLI has a local login',
+    fix: 'Run `codex login` (or `codex login --device-auth`) and retry.',
+  });
+}
 
 if (process.env.DATABASE_URL) {
   checks.push({
@@ -61,5 +68,9 @@ for (const check of checks) {
 if (checks.some((check) => !check.ok)) {
   process.exitCode = 1;
 } else {
-  console.info('All required development tools are ready.');
+  console.info(
+    coreOnly
+      ? 'All required core development tools are ready.'
+      : 'All required development tools are ready.',
+  );
 }

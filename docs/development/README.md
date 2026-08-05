@@ -123,6 +123,7 @@ This prevents the misleading state where liveness passes but a teammate is devel
 | Command                   | Purpose                                             |
 | ------------------------- | --------------------------------------------------- |
 | `pnpm doctor`             | Check Node, pnpm, Codex login, and database path    |
+| `pnpm doctor:ci`          | Check non-secret core bootstrap prerequisites       |
 | `pnpm dev`                | Prepare the database, then run Web and Worker       |
 | `pnpm db:setup`           | Start/default or use/external DB, migrate, verify   |
 | `pnpm db:verify`          | Verify migrations, baseline metadata, and pgvector  |
@@ -142,8 +143,8 @@ This prevents the misleading state where liveness passes but a teammate is devel
 - **Port `54329` is already allocated**: set `ALLRICE_DEV_DB_PORT` to another free port in `.env`. The bootstrap constructs the matching connection URL automatically.
 - **`permission denied to create extension vector`**: have a PostgreSQL administrator install pgvector and run `CREATE EXTENSION vector;` in the AllRice database.
 - **Migration mismatch**: run `pnpm db:setup`. Do not edit migration history or the database migration table by hand.
-- **Worker readiness says `run_codex_login`**: run `codex login` as the Worker deployment user. For Compose, run `docker compose run --rm worker codex login --device-auth` so the credential is stored in the dedicated named volume.
-- **Worker readiness says `codex_cli_not_found`**: install the Codex CLI or set `ALLRICE_CODEX_COMMAND` to its absolute executable path.
+- **SkillHub provider status says `run_codex_login`**: run `codex login` as the Worker deployment user. For Compose, run `docker compose run --rm worker codex login --device-auth` so the credential is stored in the dedicated named volume.
+- **SkillHub provider status says `codex_cli_not_found`**: install the Codex CLI or set `ALLRICE_CODEX_COMMAND` to its absolute executable path.
 - **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
 - **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
 

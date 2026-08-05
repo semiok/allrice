@@ -30,7 +30,7 @@ function integerSetting(
 }
 
 const readinessIntervalMs = 5000;
-const codexReadinessIntervalMs = 30_000;
+const codexProviderStatusIntervalMs = 30_000;
 const pollIntervalMs = integerSetting(
   'ALLRICE_WORKER_POLL_INTERVAL_MS',
   1000,
@@ -57,8 +57,6 @@ const executionRoot = process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions';
 
 let databaseReady = false;
 let lastDatabaseError: string | undefined;
-let codexReady = false;
-let lastCodexDetail = 'worker_not_checked';
 let stopping = false;
 let tickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
@@ -77,17 +75,15 @@ async function refreshReadiness() {
   }
 }
 
-async function refreshCodexReadiness() {
+async function refreshCodexProviderStatus() {
   try {
     await mkdir(executionRoot, { recursive: true, mode: 0o700 });
     const codex = await probeCodexProvider(executionRoot);
     await recordCodexProviderStatus(codex);
-    codexReady = codex.status === 'connected';
-    lastCodexDetail = codex.detailCode ?? 'unknown';
   } catch (error) {
-    codexReady = false;
-    lastCodexDetail =
-      error instanceof Error ? error.message : 'codex_probe_failed';
+    console.error('[M5] Codex provider probe failed', {
+      message: error instanceof Error ? error.message : 'codex_probe_failed',
+    });
   }
 }
 
@@ -101,13 +97,13 @@ const server = createServer((request, response) => {
   }
 
   if (request.url === '/health/ready') {
-    response.statusCode = databaseReady && codexReady ? 200 : 503;
+    response.statusCode = databaseReady ? 200 : 503;
     response.end(
       JSON.stringify(
         makeHealthResponse(
           'worker',
-          databaseReady && codexReady ? 'ready' : 'not_ready',
-          lastDatabaseError ?? (codexReady ? undefined : lastCodexDetail),
+          databaseReady ? 'ready' : 'not_ready',
+          lastDatabaseError,
         ),
       ),
     );
@@ -170,14 +166,14 @@ async function tick() {
 }
 
 await refreshReadiness();
-await refreshCodexReadiness();
+await refreshCodexProviderStatus();
 const readinessTimer = setInterval(
   () => void refreshReadiness(),
   readinessIntervalMs,
 );
-const codexReadinessTimer = setInterval(
-  () => void refreshCodexReadiness(),
-  codexReadinessIntervalMs,
+const codexProviderStatusTimer = setInterval(
+  () => void refreshCodexProviderStatus(),
+  codexProviderStatusIntervalMs,
 );
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
 void tick();
@@ -194,7 +190,7 @@ async function shutdown(signal: string) {
   console.info(`[M5] received ${signal}; stopping worker`);
   stopping = true;
   clearInterval(readinessTimer);
-  clearInterval(codexReadinessTimer);
+  clearInterval(codexProviderStatusTimer);
   clearInterval(queueTimer);
   for (const abort of activeAborters) abort();
   server.close();
