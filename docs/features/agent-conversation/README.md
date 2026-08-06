@@ -9,15 +9,26 @@ conversation navigation.
 1. Web persists the user message and a pending Rice reply.
 2. The durable Worker freezes the employee provider, prompt, Skill bindings,
    tenant policy and read grants before execution.
-3. Codex runs with ChatGPT subscription authentication. Shell, unified exec,
-   code mode, computer use and unapproved network access remain disabled.
-4. The conversation harness may request one of four Tool Broker operations:
+3. A tool-enabled Rice reply runs as one ephemeral Codex app-server thread and
+   one turn. Codex keeps its model/tool/model loop inside that process instead
+   of restarting the CLI after every tool result.
+4. Codex runs with ChatGPT subscription authentication. Shell, unified exec,
+   code mode, computer use, user MCP servers and unapproved network access
+   remain disabled.
+5. The conversation harness exposes exactly four host-executed dynamic tools:
    `workspace.file.list`, `workspace.file.read`,
    `workspace.memory.search`, or `workspace.session.search`.
-5. Every tool request is re-authorized against the frozen execution policy and
+6. Every tool request is re-authorized against the frozen execution policy and
    audited. Skill installation never grants tenant data access by itself.
-6. Durable RunEvents are streamed over resumable SSE and replayed after a page
+7. Durable RunEvents are streamed over resumable SSE and replayed after a page
    refresh. The assistant message remains the final conversation authority.
+
+The Worker uses the Codex app-server `dynamicTools` request/response protocol.
+Codex receives only JSON Schema tool definitions; when it requests a tool, the
+Worker executes the existing tenant-scoped Tool Broker callback and returns the
+result to the same active turn. The deployment-pinned Codex CLI version must
+therefore continue to support the experimental app-server protocol. Non-tool
+SkillRuns keep the narrower `codex exec --ephemeral` path.
 
 ## Event contract
 

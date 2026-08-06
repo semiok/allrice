@@ -21,22 +21,47 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.file.list',
     description: '列出当前用户在当前工作区有权读取的文件。',
-    input: { limit: 'number, optional, 1-50' },
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
+      additionalProperties: false,
+    },
   },
   {
     name: 'workspace.file.read',
     description: '按文件 ID 读取当前工作区内有权访问的文本文件。',
-    input: { objectId: 'uuid, required' },
+    inputSchema: {
+      type: 'object',
+      properties: { objectId: { type: 'string', format: 'uuid' } },
+      required: ['objectId'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'workspace.memory.search',
     description: '搜索当前用户有权读取的工作区记忆。',
-    input: { query: 'string, required', limit: 'number, optional, 1-20' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1 },
+        limit: { type: 'integer', minimum: 1, maximum: 20 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'workspace.session.search',
     description: '按标题搜索当前用户有权读取的历史对话。',
-    input: { query: 'string, required', limit: 'number, optional, 1-20' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1 },
+        limit: { type: 'integer', minimum: 1, maximum: 20 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
   },
 ] as const;
 
