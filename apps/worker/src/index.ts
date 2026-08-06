@@ -12,7 +12,7 @@ import {
   recordCodexProviderStatus,
 } from '@allrice/database';
 
-import { probeCodexProvider } from './codex.js';
+import { closeCodexAppServerClients, probeCodexProvider } from './codex.js';
 import { executeClaimedJob } from './runtime.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
@@ -195,6 +195,7 @@ async function shutdown(signal: string) {
   for (const abort of activeAborters) abort();
   server.close();
   await Promise.allSettled(activeExecutions);
+  await closeCodexAppServerClients();
   await closeDatabase();
   process.exit(0);
 }

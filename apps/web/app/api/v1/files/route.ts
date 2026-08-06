@@ -7,6 +7,7 @@ import {
   createStorageMetadata,
   markStorageReady,
   newStorageObjectId,
+  listWorkspaceFiles,
 } from '@allrice/database';
 
 import { getRequestContext } from '../../../../lib/identity/session';
@@ -14,6 +15,20 @@ import { storageErrorResponse } from '../../../../lib/storage/responses';
 import { getStorageAdapter } from '../../../../lib/storage/runtime';
 
 export const runtime = 'nodejs';
+
+export async function GET(request: Request) {
+  try {
+    const context = await getRequestContext(request);
+    if (!context) throw new DataAccessError('authentication_required');
+    const workspaceId = new URL(request.url).searchParams.get('workspaceId');
+    if (!workspaceId) throw new DataAccessError('not_found');
+    return Response.json({
+      files: await listWorkspaceFiles(context, workspaceId),
+    });
+  } catch (error) {
+    return storageErrorResponse(error);
+  }
+}
 
 function decodeBase64(input: string) {
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input) || input.length % 4 !== 0) {

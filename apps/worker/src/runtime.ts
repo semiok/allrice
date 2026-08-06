@@ -1,9 +1,16 @@
+import { createHash } from 'node:crypto';
+
 import {
+  ConversationRuntimeError,
   QueueError,
+  acquireConversationRuntime,
   appendJobEvent,
+  bindConversationThread,
   completeJob,
   failJob,
   heartbeatJob,
+  recordConversationTurn,
+  releaseConversationRuntime,
   resolveEmployeeExecution,
   resolveSkillExecution,
   startClaimedJob,
@@ -17,6 +24,7 @@ import {
   type NormalizedCodexEvent,
 } from './codex.js';
 import { HandlerError } from './errors.js';
+import { executeRiceTool, riceToolDefinitions } from './tool-broker.js';
 
 function objectInput(input: unknown): Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
@@ -82,27 +90,123 @@ async function executeHandler(
     const memories = resolved.promptSnapshot.memories
       .map((memory) => `- [${memory.id}] ${memory.content}`)
       .join('\n');
-    return executeCodexHarness({
-      storageObjects: resolved.skillArtifacts.map(
-        (artifact) => artifact.storageObject,
-      ),
-      workDirectory: isolation.workDirectory,
-      executionEnvironment: isolation.environment,
-      systemInstructions: [
-        resolved.promptSnapshot.systemPrompt,
-        '',
-        'Conversation snapshot:',
-        conversation || '(new conversation)',
-        '',
-        'Authorized memory snapshot:',
-        memories || '(no matching memories)',
-      ].join('\n'),
-      prompt: resolved.promptSnapshot.userRequest,
-      providerSnapshot: resolved.providerSnapshot,
-      grantedCapabilities: resolved.grantedCapabilities,
-      signal,
-      onEvent: onCodexEvent,
-    });
+    const configChecksum = `sha256:${createHash('sha256')
+      .update(
+        JSON.stringify({
+          employeeVersionId: input.employeeVersionId,
+          provider: resolved.providerSnapshot,
+          systemPrompt: resolved.promptSnapshot.systemPrompt,
+          skills: resolved.skillArtifacts
+            .map((artifact) => artifact.skillVersionId)
+            .sort(),
+          capabilities: [...resolved.grantedCapabilities].sort(),
+        }),
+      )
+      .digest('hex')}`;
+    const ownership = {
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId!,
+      sessionId: input.sessionId,
+      runId: execution.context.runId,
+      workerId: execution.context.worker.id,
+    };
+    let runtime;
+    try {
+      runtime = await acquireConversationRuntime({
+        ...ownership,
+        ownerId: execution.job.ownerId,
+        configChecksum,
+      });
+    } catch (error) {
+      if (
+        error instanceof ConversationRuntimeError &&
+        error.code === 'conversation_busy'
+      ) {
+        throw new HandlerError(
+          'CONVERSATION_BUSY',
+          'Another Rice turn is still active for this conversation',
+          true,
+        );
+      }
+      throw error;
+    }
+    let outcome: 'idle' | 'interrupted' | 'error' = 'error';
+    let errorCode: string | undefined;
+    try {
+      const result = await executeCodexHarness({
+        storageObjects: resolved.skillArtifacts.map(
+          (artifact) => artifact.storageObject,
+        ),
+        workDirectory: isolation.workDirectory,
+        executionEnvironment: isolation.environment,
+        systemInstructions: resolved.promptSnapshot.systemPrompt,
+        prompt: resolved.promptSnapshot.userRequest,
+        providerSnapshot: resolved.providerSnapshot,
+        grantedCapabilities: resolved.grantedCapabilities,
+        signal,
+        onEvent: onCodexEvent,
+        toolDefinitions: resolved.grantedCapabilities.includes('storage:read')
+          ? riceToolDefinitions
+          : [],
+        onToolCall: resolved.grantedCapabilities.includes('storage:read')
+          ? (call) =>
+              executeRiceTool({
+                context: execution.context,
+                capabilities: resolved.grantedCapabilities,
+                storageRoot:
+                  process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                call,
+              })
+          : undefined,
+        conversationRuntime: {
+          threadId: runtime.threadId,
+          clientUserMessageId: input.userMessageId,
+          bootstrapConversation: conversation,
+          turnContext: memories
+            ? `Authorized memory snapshot:\n${memories}`
+            : undefined,
+          onThreadBound: async ({ threadId }) => {
+            runtime = await bindConversationThread({
+              ...ownership,
+              threadId,
+            });
+          },
+          onTurnStarted: async ({ threadId, turnId }) => {
+            runtime = await recordConversationTurn({
+              ...ownership,
+              threadId,
+              turnId,
+            });
+          },
+        },
+      });
+      outcome = 'idle';
+      return result;
+    } catch (error) {
+      outcome = signal.aborted ? 'interrupted' : 'error';
+      errorCode =
+        error instanceof HandlerError ? error.code : 'CONVERSATION_FAILED';
+      throw error;
+    } finally {
+      try {
+        await releaseConversationRuntime({
+          ...ownership,
+          outcome,
+          ...(errorCode ? { errorCode } : {}),
+        });
+      } catch (error) {
+        if (!(
+          error instanceof ConversationRuntimeError &&
+          error.code === 'conversation_ownership_lost'
+        )) {
+          console.error('[M5] Conversation runtime release failed', {
+            sessionId: input.sessionId,
+            runId: execution.context.runId,
+            message: error instanceof Error ? error.message : 'unknown error',
+          });
+        }
+      }
+    }
   }
   if (execution.payload.type === 'allrice.skill.run') {
     const input = objectInput(execution.payload.input);
@@ -252,20 +356,38 @@ export async function executeClaimedJob(input: {
       isolation,
       controller.signal,
       async (event) => {
-        if (event.kind === 'message') return;
+        const type =
+          event.kind === 'message'
+            ? 'assistant.text.completed'
+            : event.kind === 'usage'
+              ? 'heartbeat'
+              : event.status === 'started'
+                ? 'tool.started'
+                : event.status === 'failed'
+                  ? 'tool.failed'
+                  : 'tool.completed';
         await appendJobEvent({
           workerId: input.workerId,
           jobId: input.jobId,
           leaseToken: input.leaseToken,
-          type: event.kind === 'usage' ? 'heartbeat' : 'step.completed',
+          type,
           payload:
-            event.kind === 'usage'
-              ? { source: 'codex', usage: event.usage }
-              : {
-                  source: 'codex',
-                  tool: event.name,
-                  status: event.status,
-                },
+            event.kind === 'message'
+              ? { source: 'codex', text: event.text ?? '' }
+              : event.kind === 'usage'
+                ? { source: 'codex', usage: event.usage }
+                : {
+                    source: event.source ?? 'codex',
+                    toolCallId: event.toolCallId ?? `${event.name}-unknown`,
+                    name: event.name ?? 'unknown',
+                    label: event.label ?? event.name ?? '工具调用',
+                    status: event.status,
+                    ...(event.summary ? { summary: event.summary } : {}),
+                    ...(event.itemCount === undefined
+                      ? {}
+                      : { itemCount: event.itemCount }),
+                    attempt: execution.job.attempt,
+                  },
         });
       },
     );

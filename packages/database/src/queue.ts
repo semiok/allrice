@@ -507,6 +507,15 @@ export async function enqueueRun(
                 action: 'job:execute',
                 workspaceId,
               },
+              ...(options.employeeBinding
+                ? ['storage_object', 'memory', 'chat_session'].map(
+                    (resourceType) => ({
+                      resourceType,
+                      action: 'resource:read' as const,
+                      workspaceId,
+                    }),
+                  )
+                : []),
             ],
           }),
         )},
@@ -1176,7 +1185,7 @@ export async function failJob(input: {
         organizationId: job.organization_id,
         workspaceId: job.workspace_id,
         runId: job.run_id,
-        type: 'step.completed',
+        type: 'run.retrying',
         payload: {
           outcome: 'retry_scheduled',
           code: input.code,

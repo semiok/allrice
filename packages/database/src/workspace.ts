@@ -30,7 +30,7 @@ import {
   riceManifest,
 } from './employee-config.ts';
 
-const riceVersion = 2;
+const riceVersion = 3;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -78,6 +78,7 @@ interface MessageRow {
   reply_to_id: string | null;
   created_at: Date;
   completed_at: Date | null;
+  run_id?: string | null;
 }
 
 interface AttachmentRow {
@@ -275,7 +276,10 @@ export async function ensureDefaultEmployee(
           when exists (
             select 1 from allrice_employee_versions current_version
             where current_version.id = allrice_employee_assignments.employee_version_id
-              and current_version.model = 'allrice/basic-assistant-v1'
+              and (
+                current_version.model = 'allrice/basic-assistant-v1'
+                or current_version.version = 2
+              )
           ) then excluded.employee_version_id
           else allrice_employee_assignments.employee_version_id
         end,
@@ -548,6 +552,7 @@ function mapMessage(
     status: row.status,
     clientMessageId: row.client_message_id,
     replyToId: row.reply_to_id,
+    runId: row.run_id ?? null,
     attachments: attachments.map((attachment) => {
       const restricted =
         attachment.state !== 'ready' ||
@@ -575,14 +580,16 @@ export async function getChatSessionHistory(
   const row = await sessionRow(context, workspaceId, sessionId);
   const sql = getDatabase();
   const messages = await sql<MessageRow[]>`
-    select * from allrice_messages
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and session_id = ${row.id}
+    select m.*, er.run_id
+    from allrice_messages m
+    left join allrice_employee_runs er on er.assistant_message_id = m.id
+    where m.organization_id = ${context.organizationId}
+      and m.workspace_id = ${workspaceId}
+      and m.session_id = ${row.id}
     order by
-      created_at,
-      case when role = 'user' then 0 else 1 end,
-      id
+      m.created_at,
+      case when m.role = 'user' then 0 else 1 end,
+      m.id
   `;
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
@@ -715,7 +722,7 @@ export async function sendChatMessage(
           where o.id in ${transaction(message.attachmentIds)}
             and o.organization_id = ${context.organizationId}
             and o.workspace_id = ${workspaceId}
-            and o.owner_id = ${requireUser(context)}
+            and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
             and o.state = 'ready'
             and f.session_id = ${session.id}
         `;
@@ -940,6 +947,90 @@ export async function linkFileToSession(input: {
     if (!existing[0]) throw new DataAccessError('authorization_denied');
   }
   return { objectId: input.objectId, sessionId: session.id };
+}
+
+export async function listWorkspaceFiles(
+  context: RequestContext,
+  workspaceIdInput: string,
+) {
+  const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
+  const sql = getDatabase();
+  const rows = await sql<
+    {
+      id: string;
+      owner_id: string;
+      file_name: string;
+      media_type: string;
+      size_bytes: number | string;
+      visibility: Visibility;
+      created_at: Date;
+    }[]
+  >`
+    select o.id, o.owner_id,
+      coalesce(max(f.file_name), '未命名文件') as file_name,
+      o.media_type, o.size_bytes, o.visibility, o.created_at
+    from allrice_storage_objects o
+    left join allrice_file_references f on f.object_id = o.id
+    where o.organization_id = ${context.organizationId}
+      and o.workspace_id = ${workspaceId}
+      and o.category = 'uploads' and o.state = 'ready'
+      and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
+    group by o.id
+    order by o.created_at desc
+    limit 100
+  `;
+  return rows.map((row) => ({
+    id: row.id,
+    fileName: row.file_name,
+    mediaType: row.media_type,
+    sizeBytes: Number(row.size_bytes),
+    visibility: row.visibility,
+    ownedByMe: row.owner_id === requireUser(context),
+    createdAt: row.created_at.toISOString(),
+  }));
+}
+
+export async function linkWorkspaceFileToSession(input: {
+  context: RequestContext;
+  workspaceId: string;
+  sessionId: string;
+  objectId: string;
+}) {
+  const session = await sessionRow(
+    input.context,
+    input.workspaceId,
+    input.sessionId,
+  );
+  if (session.owner_id !== requireUser(input.context) || session.archived_at) {
+    throw new DataAccessError('authorization_denied');
+  }
+  const sql = getDatabase();
+  const rows = await sql<{ id: string; file_name: string }[]>`
+    select o.id, coalesce(max(f.file_name), '未命名文件') as file_name
+    from allrice_storage_objects o
+    left join allrice_file_references f on f.object_id = o.id
+    where o.id = ${UuidSchema.parse(input.objectId)}
+      and o.organization_id = ${input.context.organizationId}
+      and o.workspace_id = ${input.workspaceId}
+      and o.state = 'ready'
+      and (o.owner_id = ${requireUser(input.context)} or o.visibility <> 'private')
+    group by o.id
+  `;
+  const file = rows[0];
+  if (!file) throw new DataAccessError('authorization_denied');
+  await sql`
+    insert into allrice_file_references (
+      organization_id, workspace_id, object_id, session_id, owner_id, file_name
+    ) values (
+      ${input.context.organizationId}, ${input.workspaceId}, ${file.id},
+      ${session.id}, ${requireUser(input.context)}, ${file.file_name}
+    ) on conflict (object_id, session_id) do nothing
+  `;
+  return {
+    objectId: file.id,
+    sessionId: session.id,
+    fileName: file.file_name,
+  };
 }
 
 function mapMemory(row: MemoryRow): WorkspaceMemory {

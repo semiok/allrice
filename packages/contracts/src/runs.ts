@@ -15,8 +15,14 @@ export type RunStatus = z.infer<typeof RunStatusSchema>;
 export const RunEventTypeSchema = z.enum([
   'run.created',
   'run.started',
+  'run.retrying',
   'step.started',
   'step.completed',
+  'assistant.text.delta',
+  'assistant.text.completed',
+  'tool.started',
+  'tool.completed',
+  'tool.failed',
   'artifact.created',
   'approval.requested',
   'approval.decided',
@@ -26,6 +32,34 @@ export const RunEventTypeSchema = z.enum([
   'heartbeat',
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
+
+export const AssistantTextEventPayloadSchema = z
+  .object({
+    text: z.string().max(100_000),
+    source: z.literal('codex'),
+  })
+  .strict();
+
+export const ToolEventPayloadSchema = z
+  .object({
+    toolCallId: z.string().min(1).max(160),
+    name: z.string().min(1).max(160),
+    label: z.string().min(1).max(200),
+    source: z.enum(['codex', 'tool_broker']),
+    status: z.enum(['started', 'completed', 'failed']),
+    summary: z.string().max(1_000).optional(),
+    itemCount: z.number().int().nonnegative().optional(),
+    attempt: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const RunRetryingEventPayloadSchema = z
+  .object({
+    code: z.string().min(1).max(160),
+    attempt: z.number().int().nonnegative(),
+    availableAt: TimestampSchema,
+  })
+  .strict();
 
 export const RunEventSchema = z
   .object({

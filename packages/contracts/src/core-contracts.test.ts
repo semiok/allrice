@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertJobTransition,
+  AssistantTextEventPayloadSchema,
   authorize,
   authorizeExecution,
   CancelRunInputSchema,
@@ -14,6 +15,7 @@ import {
   parseSseCursor,
   replayRunEvents,
   retryDelayMs,
+  ToolEventPayloadSchema,
   validateRunEventSequence,
   type RequestContext,
   type ResourceRef,
@@ -212,6 +214,37 @@ describe('run and SSE contracts', () => {
     expect(replayRunEvents(events, cursor)).toEqual([events[1]]);
   });
 
+  it('validates secret-free assistant and Tool Broker event payloads', () => {
+    expect(
+      AssistantTextEventPayloadSchema.parse({
+        source: 'codex',
+        text: 'done',
+      }),
+    ).toEqual({ source: 'codex', text: 'done' });
+    expect(
+      ToolEventPayloadSchema.parse({
+        toolCallId: 'tool-1',
+        name: 'workspace.file.list',
+        label: '查看工作区文件',
+        source: 'tool_broker',
+        status: 'completed',
+        summary: '找到 2 个可访问文件',
+        itemCount: 2,
+        attempt: 1,
+      }).status,
+    ).toBe('completed');
+    expect(() =>
+      ToolEventPayloadSchema.parse({
+        toolCallId: 'tool-1',
+        name: 'workspace.file.list',
+        label: '查看工作区文件',
+        source: 'tool_broker',
+        status: 'completed',
+        rawCommand: 'cat ~/.ssh/id_rsa',
+      }),
+    ).toThrow();
+  });
+
   it('rejects expired cursors and terminal-event suffixes', () => {
     expect(() => replayRunEvents(events, `${ids.run}:0`, 2)).toThrow(
       'cursor_expired',
@@ -226,6 +259,15 @@ describe('run and SSE contracts', () => {
 });
 
 describe('storage contracts', () => {
+  it('defaults local conversation uploads to private visibility', () => {
+    expect(
+      CreateSessionAttachmentInputSchema.parse({
+        fileName: 'brief.md',
+        mediaType: 'text/markdown',
+        contentBase64: 'dGVzdA==',
+      }).visibility,
+    ).toBe('private');
+  });
   it('builds tenant-prefixed opaque keys and rejects host paths', () => {
     const key = makeObjectKey({
       organizationId: ids.organizationA,

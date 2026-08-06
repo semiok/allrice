@@ -96,6 +96,30 @@ try {
     throw new Error('EmployeeHub/Rice schema metadata is missing or invalid');
   }
 
+  const conversationRuntimeRows = await sql<
+    {
+      version: string | undefined;
+      provider: string | undefined;
+      thread_source: string | undefined;
+    }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'provider' as provider,
+      value ->> 'threadSource' as thread_source
+    from allrice_runtime_metadata
+    where key = 'durable-conversation-runtime-schema'
+  `;
+  if (
+    expectedMigrations.includes('0009_durable_conversation_runtime.sql') &&
+    (conversationRuntimeRows[0]?.version !== '0009' ||
+      conversationRuntimeRows[0]?.provider !== 'codex-app-server' ||
+      conversationRuntimeRows[0]?.thread_source !== 'persistent')
+  ) {
+    throw new Error(
+      'durable conversation runtime schema metadata is missing or invalid',
+    );
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );
