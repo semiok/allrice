@@ -30,11 +30,11 @@ interface CatalogSkill {
 
 interface Installation {
   id: string;
+  ownerId: string | null;
   catalogSkillId: string;
   pinnedVersionId: string;
   grantedCapabilities: Capability[];
   enabled: boolean;
-  favorite: boolean;
 }
 
 interface Candidate {
@@ -46,13 +46,6 @@ interface Candidate {
   version: string;
   capabilities: Capability[];
   source: { license: string };
-}
-
-interface Provider {
-  status: 'connected' | 'disconnected' | 'error' | 'unknown';
-  cliVersion: string | null;
-  detailCode: string | null;
-  checkedAt: string | null;
 }
 
 async function json<T>(response: Response): Promise<T> {
@@ -77,14 +70,9 @@ export function SkillHubClient() {
   const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [provider, setProvider] = useState<Provider | null>(null);
-  const [prompt, setPrompt] = useState('纽约今天的天气怎么样？');
-  const [run, setRun] = useState<{
-    id: string;
-    status: string;
-    result?: unknown;
-    error?: { message: string } | null;
-  } | null>(null);
+  const [canAdminister, setCanAdminister] = useState(false);
+  const [riceEmployeeId, setRiceEmployeeId] = useState('');
+  const [riceSkillVersionIds, setRiceSkillVersionIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -101,6 +89,7 @@ export function SkillHubClient() {
         installations: Installation[];
       };
       candidates: Candidate[];
+      canAdminister: boolean;
     }>(
       await fetch(`/api/v1/skills?workspaceId=${nextWorkspaceId}`, {
         cache: 'no-store',
@@ -110,6 +99,30 @@ export function SkillHubClient() {
     setCatalog(result.skillHub.catalog);
     setInstallations(result.skillHub.installations);
     setCandidates(result.candidates);
+    setCanAdminister(result.canAdminister);
+    if (result.canAdminister) {
+      const employees = await json<{
+        employeeHub: {
+          assignments: {
+            employeeId: string;
+            employeeKey: string;
+            currentVersion: { manifest: { skillVersionIds: string[] } };
+          }[];
+        };
+      }>(
+        await fetch(`/api/v1/employees?workspaceId=${nextWorkspaceId}`, {
+          cache: 'no-store',
+          headers: { 'x-allrice-workspace-id': nextWorkspaceId },
+        }),
+      );
+      const rice = employees.employeeHub.assignments.find(
+        (assignment) => assignment.employeeKey === 'default-assistant',
+      );
+      setRiceEmployeeId(rice?.employeeId ?? '');
+      setRiceSkillVersionIds(
+        rice?.currentVersion.manifest.skillVersionIds ?? [],
+      );
+    }
   }, []);
 
   useEffect(() => {
@@ -121,12 +134,6 @@ export function SkillHubClient() {
         setWorkspaceId(workspace.workspace.workspaceId);
         setOrganizationId(workspace.workspace.organizationId);
         await refresh(workspace.workspace.workspaceId);
-        const status = await fetch('/api/v1/admin/providers/codex', {
-          cache: 'no-store',
-        });
-        if (status.ok) {
-          setProvider((await status.json()).provider as Provider);
-        }
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : '加载失败');
       }
@@ -163,6 +170,7 @@ export function SkillHubClient() {
           body: JSON.stringify({
             workspaceId,
             skillVersionId: version.version.id,
+            scope: 'workspace',
             grantedCapabilities: version.version.capabilities,
             timeoutMs: 300_000,
             budgetCents: 0,
@@ -177,68 +185,32 @@ export function SkillHubClient() {
     }
   }
 
-  async function execute(installation: Installation) {
-    setBusy(true);
-    setRun(null);
-    setError('');
-    try {
-      const created = await json<{ run: { id: string; status: string } }>(
-        await fetch('/api/v1/skills/runs', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            workspaceId,
-            installationId: installation.id,
-            prompt,
-            idempotencyKey: crypto.randomUUID(),
-          }),
-        }),
-      );
-      setRun(created.run);
-      for (let attempt = 0; attempt < 150; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        const result = await json<{
-          run: {
-            id: string;
-            status: string;
-            result?: unknown;
-            error?: { message: string } | null;
-          };
-        }>(
-          await fetch(
-            `/api/v1/runs/${created.run.id}?workspaceId=${workspaceId}`,
-            { cache: 'no-store', headers },
-          ),
-        );
-        setRun(result.run);
-        if (['succeeded', 'failed', 'canceled'].includes(result.run.status)) {
-          break;
-        }
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '运行失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function updateInstallation(
+  async function configureRice(
     installation: Installation,
-    update: { enabled?: boolean; favorite?: boolean },
+    shouldBind: boolean,
   ) {
     setBusy(true);
     setError('');
     try {
+      const skillVersionIds = shouldBind
+        ? [...new Set([...riceSkillVersionIds, installation.pinnedVersionId])]
+        : riceSkillVersionIds.filter(
+            (skillVersionId) => skillVersionId !== installation.pinnedVersionId,
+          );
       await json(
-        await fetch(`/api/v1/skills/installations/${installation.id}`, {
-          method: 'PATCH',
+        await fetch('/api/v1/employees', {
+          method: 'POST',
           headers,
-          body: JSON.stringify({ workspaceId, ...update }),
+          body: JSON.stringify({
+            workspaceId,
+            employeeId: riceEmployeeId,
+            skillVersionIds,
+          }),
         }),
       );
       await refresh(workspaceId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '更新安装失败');
+      setError(cause instanceof Error ? cause.message : '配置 Rice 失败');
     } finally {
       setBusy(false);
     }
@@ -252,29 +224,16 @@ export function SkillHubClient() {
           <p className="eyebrow">ALLRICE · SKILLHUB</p>
           <h1>技能底座</h1>
           <p className="lede">
-            技能按不可变版本安装；当前唯一执行提供方是 Codex 订阅授权。
+            管理员审核并添加工作区技能，再决定 Rice 可以使用哪些能力。
           </p>
         </div>
         <a href="/workspace">返回工作台</a>
       </header>
 
-      <section className="provider-card">
-        <div>
-          <span
-            className={`provider-dot provider-${provider?.status ?? 'unknown'}`}
-          />
-          <strong>Codex · ChatGPT subscription</strong>
-        </div>
-        <p>
-          {provider?.status ?? 'unknown'} ·{' '}
-          {provider?.cliVersion ?? provider?.detailCode ?? '等待 Worker 检查'}
-        </p>
-      </section>
-
       <section className="skillhub-section">
         <div className="section-heading">
           <h2>已审计导入源</h2>
-          <p>只导入单个技能，不复制 OpenRice 的桌面加载器或用户配置。</p>
+          <p>只接收固定来源、许可证和校验和的技能，不执行来源仓库里的命令。</p>
         </div>
         <div className="skill-grid">
           {candidates.map((candidate) => (
@@ -287,12 +246,16 @@ export function SkillHubClient() {
               </small>
               <button
                 className="primary-action"
-                disabled={busy || importedSlugs.has(candidate.slug)}
+                disabled={
+                  busy || importedSlugs.has(candidate.slug) || !canAdminister
+                }
                 onClick={() => void importCandidate(candidate.id)}
               >
                 {importedSlugs.has(candidate.slug)
                   ? '已导入'
-                  : '导入不可变版本'}
+                  : canAdminister
+                    ? '导入技能'
+                    : '仅管理员可导入'}
               </button>
             </article>
           ))}
@@ -302,13 +265,14 @@ export function SkillHubClient() {
       <section className="skillhub-section">
         <div className="section-heading">
           <h2>组织技能目录</h2>
-          <p>安装时显式授予能力，运行固定到 checksum 对应的版本。</p>
+          <p>工作区安装与 Rice 配置分离，联网权限只有两边都允许时才生效。</p>
         </div>
         <div className="skill-grid">
           {catalog.map((skill) => {
             const version = skill.versions[0];
             const installation = installations.find(
-              (item) => item.catalogSkillId === skill.id,
+              (item) =>
+                item.catalogSkillId === skill.id && item.ownerId === null,
             );
             return (
               <article className="skill-card" key={skill.id}>
@@ -328,32 +292,33 @@ export function SkillHubClient() {
                     </div>
                     <button
                       className="primary-action"
-                      disabled={busy || Boolean(installation)}
+                      disabled={busy || Boolean(installation) || !canAdminister}
                       onClick={() => void install(skill, version)}
                     >
-                      {installation ? '已安装并固定版本' : '安装并授权'}
+                      {installation
+                        ? '已添加到工作区'
+                        : canAdminister
+                          ? '添加到工作区'
+                          : '仅管理员可添加'}
                     </button>
                     {installation ? (
                       <div className="installation-actions">
                         <button
-                          disabled={busy}
+                          disabled={busy || !canAdminister || !riceEmployeeId}
                           onClick={() =>
-                            void updateInstallation(installation, {
-                              favorite: !installation.favorite,
-                            })
+                            void configureRice(
+                              installation,
+                              !riceSkillVersionIds.includes(
+                                installation.pinnedVersionId,
+                              ),
+                            )
                           }
                         >
-                          {installation.favorite ? '★ 已收藏' : '☆ 收藏'}
-                        </button>
-                        <button
-                          disabled={busy}
-                          onClick={() =>
-                            void updateInstallation(installation, {
-                              enabled: !installation.enabled,
-                            })
-                          }
-                        >
-                          {installation.enabled ? '停用' : '启用'}
+                          {riceSkillVersionIds.includes(
+                            installation.pinnedVersionId,
+                          )
+                            ? '从 Rice 移除'
+                            : '配置给 Rice'}
                         </button>
                       </div>
                     ) : null}
@@ -366,30 +331,6 @@ export function SkillHubClient() {
         </div>
       </section>
 
-      {installations.some((installation) => installation.enabled) ? (
-        <section className="skill-runner">
-          <div className="section-heading">
-            <h2>Codex SkillRun</h2>
-            <p>该入口用于验收 SkillHub；AI 员工组合将在后续 Issue 接入。</p>
-          </div>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-          />
-          <button
-            className="primary-action"
-            disabled={busy || !prompt.trim()}
-            onClick={() =>
-              void execute(
-                installations.find((installation) => installation.enabled)!,
-              )
-            }
-          >
-            {busy ? '运行中…' : '运行已安装技能'}
-          </button>
-          {run ? <pre>{JSON.stringify(run, null, 2)}</pre> : null}
-        </section>
-      ) : null}
       {error ? <p className="skillhub-error">{error}</p> : null}
     </main>
   );

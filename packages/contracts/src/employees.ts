@@ -114,6 +114,7 @@ export const FrozenEmployeeSkillBindingSchema = z
   .object({
     installationId: UuidSchema,
     skillVersionId: UuidSchema,
+    declaredCapabilities: z.array(SkillCapabilitySchema).max(16).default([]),
     grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
   })
   .strict();

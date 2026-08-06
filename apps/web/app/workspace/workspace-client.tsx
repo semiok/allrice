@@ -38,6 +38,7 @@ interface WorkspacePayload {
   workspaceId: string;
   employee: { version: { name: string } };
   sessions: Session[];
+  canAdminister: boolean;
 }
 
 interface HistoryPayload {
@@ -98,6 +99,8 @@ function toolLabel(name: unknown) {
     'workspace.file.read': '读取工作区文件',
     'workspace.memory.search': '检索工作区记忆',
     'workspace.session.search': '检索历史对话',
+    'web.search': '联网搜索',
+    'web.fetch': '读取公开网页',
     mcp_tool_call: '调用受控工具',
     command_execution: '运行时工具',
   };
@@ -540,6 +543,11 @@ export function WorkspaceClient() {
               </button>
             ))}
         </nav>
+        {workspace.canAdminister ? (
+          <a className="text-action" href="/skillhub">
+            管理 Rice 技能
+          </a>
+        ) : null}
         <button className="text-action" onClick={logout}>
           退出登录
         </button>

@@ -53,13 +53,38 @@ interface EmployeeAssignmentRow extends EmployeeVersionRow {
 interface SkillBindingRow {
   installation_id: string;
   skill_version_id: string;
+  declared_capabilities: SkillCapability[];
   granted_capabilities: SkillCapability[];
 }
 
 export interface FrozenSkillBinding {
   installationId: string;
   skillVersionId: string;
+  declaredCapabilities: SkillCapability[];
   grantedCapabilities: SkillCapability[];
+}
+
+const skillGatedCapabilities = new Set<SkillCapability>([
+  'network:outbound',
+  'storage:write',
+  'secret:use',
+]);
+
+export function resolveEmployeeCapabilities(
+  employeeCapabilities: SkillCapability[],
+  skillBindings: FrozenSkillBinding[],
+) {
+  const skillGranted = new Set(
+    skillBindings.flatMap((binding) =>
+      binding.grantedCapabilities.filter((capability) =>
+        binding.declaredCapabilities.includes(capability),
+      ),
+    ),
+  );
+  return employeeCapabilities.filter(
+    (capability) =>
+      !skillGatedCapabilities.has(capability) || skillGranted.has(capability),
+  );
 }
 
 export interface EmployeeRunBinding {
@@ -195,7 +220,7 @@ export async function listEmployeeHub(
     join allrice_catalog_skills c on c.id = i.catalog_skill_id
     where i.organization_id = ${context.organizationId}
       and i.workspace_id = ${workspaceId}
-      and i.owner_id = ${userId(context)}
+      and i.owner_id is null
       and v.status = 'published'
     order by c.name, v.version
   `;
@@ -265,7 +290,7 @@ export async function publishEmployeeVersion(
           and v.organization_id = ${context.organizationId}
           and v.workspace_id = ${workspaceId}
           and v.status = 'published'
-          and i.owner_id = ${actorId} and i.enabled
+          and i.owner_id is null and i.enabled
       `;
       if (
         new Set(installed.map((row) => row.id)).size !== skillVersionIds.length
@@ -315,7 +340,7 @@ export async function publishEmployeeVersion(
       where organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId}
         and employee_id = ${employee.id}
-        and user_id = ${actorId} and active
+        and active
     `;
     await transaction`
       insert into allrice_audit_events (
@@ -453,6 +478,7 @@ export async function prepareEmployeeRunBinding(input: {
       ? []
       : await sql<SkillBindingRow[]>`
           select i.id as installation_id, v.id as skill_version_id,
+            v.capabilities as declared_capabilities,
             i.granted_capabilities
           from allrice_skill_versions v
           join allrice_skill_installations i
@@ -464,7 +490,7 @@ export async function prepareEmployeeRunBinding(input: {
             and v.organization_id = ${input.context.organizationId}
             and v.workspace_id = ${input.workspaceId}
             and v.status = 'published' and o.state = 'ready' and o.immutable
-            and i.owner_id = ${actorId} and i.enabled
+            and i.owner_id is null and i.enabled
         `;
   if (
     new Set(bindings.map((binding) => binding.skill_version_id)).size !==
@@ -485,6 +511,7 @@ export async function prepareEmployeeRunBinding(input: {
     skillBindings: bindings.map((binding) => ({
       installationId: binding.installation_id,
       skillVersionId: binding.skill_version_id,
+      declaredCapabilities: binding.declared_capabilities,
       grantedCapabilities: binding.granted_capabilities,
     })),
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
@@ -528,7 +555,12 @@ export async function resolveEmployeeExecution(input: {
     row.prompt_snapshot,
   );
   const manifest = EmployeeManifestSchema.parse(row.manifest);
-  const artifacts = [];
+  const artifacts: {
+    skillVersionId: string;
+    declaredCapabilities: SkillCapability[];
+    grantedCapabilities: SkillCapability[];
+    storageObject: ReturnType<typeof StorageObjectSchema.parse>;
+  }[] = [];
   for (const binding of skillBindings) {
     const objects = await sql<
       {
@@ -543,9 +575,10 @@ export async function resolveEmployeeExecution(input: {
         retention_until: Date | null;
         deleted_at: Date | null;
         immutable: boolean;
+        capabilities: SkillCapability[];
       }[]
     >`
-      select o.*
+      select o.*, v.capabilities
       from allrice_skill_versions v
       join allrice_storage_objects o on o.id = v.artifact_object_id
       where v.id = ${UuidSchema.parse(binding.skillVersionId)}
@@ -557,6 +590,7 @@ export async function resolveEmployeeExecution(input: {
     if (!object) throw new EmployeeHubError('not_found');
     artifacts.push({
       skillVersionId: binding.skillVersionId,
+      declaredCapabilities: object.capabilities,
       grantedCapabilities: binding.grantedCapabilities,
       storageObject: StorageObjectSchema.parse({
         id: object.id,
@@ -577,11 +611,17 @@ export async function resolveEmployeeExecution(input: {
     providerSnapshot: CodexExecutionSnapshotSchema.parse(row.provider_snapshot),
     promptSnapshot,
     skillArtifacts: artifacts,
-    grantedCapabilities: [
-      ...new Set([
-        ...manifest.capabilities,
-        ...skillBindings.flatMap((binding) => binding.grantedCapabilities),
-      ]),
-    ],
+    grantedCapabilities: resolveEmployeeCapabilities(
+      manifest.capabilities,
+      skillBindings.map((binding) => ({
+        installationId: binding.installationId,
+        skillVersionId: binding.skillVersionId,
+        declaredCapabilities:
+          artifacts.find(
+            (artifact) => artifact.skillVersionId === binding.skillVersionId,
+          )?.declaredCapabilities ?? [],
+        grantedCapabilities: binding.grantedCapabilities,
+      })),
+    ),
   };
 }

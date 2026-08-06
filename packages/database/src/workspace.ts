@@ -30,7 +30,7 @@ import {
   riceManifest,
 } from './employee-config.ts';
 
-const riceVersion = 3;
+const riceVersion = 4;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -247,10 +247,12 @@ export async function ensureDefaultEmployee(
       on conflict (employee_id, version) do nothing
     `;
     const versions = await transaction<
-      { id: string; config_checksum: string }[]
+      { id: string; config_checksum: string; version: number }[]
     >`
-      select id, config_checksum from allrice_employee_versions
-      where employee_id = ${employeeId} and version = ${riceVersion}
+      select id, config_checksum, version from allrice_employee_versions
+      where employee_id = ${employeeId}
+      order by version desc
+      limit 1
     `;
     const version = versions[0];
     if (!version) throw new Error('published Rice version is missing');
@@ -278,7 +280,7 @@ export async function ensureDefaultEmployee(
             where current_version.id = allrice_employee_assignments.employee_version_id
               and (
                 current_version.model = 'allrice/basic-assistant-v1'
-                or current_version.version = 2
+                or current_version.version < ${riceVersion}
               )
           ) then excluded.employee_version_id
           else allrice_employee_assignments.employee_version_id

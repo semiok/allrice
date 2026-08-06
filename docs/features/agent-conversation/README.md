@@ -20,9 +20,11 @@ conversation navigation.
 5. Codex runs with ChatGPT subscription authentication. Shell, unified exec,
    code mode, computer use, user MCP servers and unapproved network access
    remain disabled.
-6. The conversation harness exposes exactly four host-executed dynamic tools:
+6. The conversation harness exposes four tenant-data tools:
    `workspace.file.list`, `workspace.file.read`,
-   `workspace.memory.search`, or `workspace.session.search`.
+   `workspace.memory.search`, or `workspace.session.search`. A bound reviewed
+   network Skill can additionally activate Codex Hosted Search and the guarded
+   `web.fetch` reader.
 7. Every tool request is re-authorized against the frozen execution policy and
    audited. Skill installation never grants tenant data access by itself.
 8. Durable RunEvents are streamed over resumable SSE and replayed after a page
@@ -65,6 +67,10 @@ file reads currently support `text/plain`, `text/markdown`, and
 Arbitrary shell execution and per-tenant sandboxes are deliberately deferred;
 they require a separate sandbox runner and approval model rather than an
 expansion of the conversation Tool Broker.
+
+Network access follows the SkillHub capability intersection described in the
+[SkillHub guide](../skillhub/README.md). It never turns browser automation or
+shell access back on, and it has no paid-provider fallback.
 
 See the pinned [MET-51 upstream runtime review](../../audits/met-51-upstream-runtime-review.md)
 for the OpenClaw, Hermes Agent and DeerFlow source comparison and copy decision.

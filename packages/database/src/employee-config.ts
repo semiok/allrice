@@ -31,7 +31,7 @@ export function riceManifest(skillVersionIds: string[] = []): EmployeeManifest {
       'Be explicit when information is missing or an action could not be completed.',
     ].join(' '),
     provider: codexEmployeeProvider(),
-    capabilities: ['model:invoke', 'storage:read'],
+    capabilities: ['model:invoke', 'storage:read', 'network:outbound'],
     skillVersionIds: [...new Set(skillVersionIds)].sort(),
   });
 }

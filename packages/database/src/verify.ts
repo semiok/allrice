@@ -120,6 +120,22 @@ try {
     );
   }
 
+  const skillGovernanceRows = await sql<
+    { version: string | undefined; capability_rule: string | undefined }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'capabilityRule' as capability_rule
+    from allrice_runtime_metadata
+    where key = 'skill-governance-schema'
+  `;
+  if (
+    expectedMigrations.includes('0010_workspace_skill_governance.sql') &&
+    (skillGovernanceRows[0]?.version !== '0010' ||
+      skillGovernanceRows[0]?.capability_rule !== 'employee-intersection-skill')
+  ) {
+    throw new Error('Skill governance schema metadata is missing or invalid');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );
