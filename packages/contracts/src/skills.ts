@@ -107,6 +107,7 @@ export const InstallSkillInputSchema = z
   .object({
     workspaceId: UuidSchema,
     skillVersionId: UuidSchema,
+    scope: z.enum(['personal', 'workspace']).default('personal'),
     grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
     timeoutMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
     budgetCents: z.number().int().nonnegative().max(1_000_000).default(0),

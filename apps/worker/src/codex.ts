@@ -31,6 +31,7 @@ const disabledCodexFeatures = [
   'unified_exec',
   'apps',
   'auth_elicitation',
+  'browser_use',
   'browser_use_external',
   'browser_use_full_cdp_access',
   'code_mode',
@@ -68,9 +69,6 @@ export function codexExecArguments(
     '--ignore-user-config',
     '--ignore-rules',
     ...disabledFeatureArguments(),
-    ...(capabilities.includes('network:outbound')
-      ? ['--enable', 'browser_use']
-      : ['--disable', 'browser_use']),
     '--color',
     'never',
     '--sandbox',
@@ -82,6 +80,10 @@ export function codexExecArguments(
     config.model,
     '--config',
     `model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}`,
+    '--config',
+    `web_search=${JSON.stringify(
+      capabilities.includes('network:outbound') ? 'live' : 'disabled',
+    )}`,
     '-',
   ];
 }
@@ -91,9 +93,6 @@ export function codexAppServerArguments(capabilities: SkillCapability[]) {
     'app-server',
     '--stdio',
     ...disabledFeatureArguments(),
-    ...(capabilities.includes('network:outbound')
-      ? ['--enable', 'browser_use']
-      : ['--disable', 'browser_use']),
     '--config',
     'mcp_servers={}',
     '--config',

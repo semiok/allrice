@@ -9,6 +9,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import type { ExecutionContext, SkillCapability } from '@allrice/contracts';
 
 import { HandlerError } from './errors.js';
+import { fetchPublicWebPage } from './web-fetch.js';
 
 const maximumReadableBytes = 200_000;
 const readableMediaTypes = new Set([
@@ -63,7 +64,34 @@ export const riceToolDefinitions = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'web.fetch',
+    description:
+      '读取公开 HTTP/HTTPS 网页的正文。会阻止内网地址、重新校验重定向，并将结果标记为不可信外部内容。',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string', format: 'uri' } },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
+
+const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
+  'workspace.file.list': 'storage:read',
+  'workspace.file.read': 'storage:read',
+  'workspace.memory.search': 'storage:read',
+  'workspace.session.search': 'storage:read',
+  'web.fetch': 'network:outbound',
+};
+
+export function riceToolDefinitionsForCapabilities(
+  capabilities: SkillCapability[],
+) {
+  return riceToolDefinitions.filter((definition) =>
+    capabilities.includes(toolCapabilities[definition.name]!),
+  );
+}
 
 export interface RiceToolCall {
   id: string;
@@ -125,12 +153,21 @@ export async function executeRiceTool(input: {
   context: ExecutionContext;
   capabilities: SkillCapability[];
   storageRoot: string;
+  skillVersionIds?: string[];
   call: RiceToolCall;
 }): Promise<RiceToolResult> {
-  if (!input.capabilities.includes('storage:read')) {
+  const requiredCapability = toolCapabilities[input.call.name];
+  if (!requiredCapability) {
+    throw new HandlerError(
+      'TOOL_NOT_ALLOWED',
+      `不允许调用工具 ${input.call.name}`,
+      false,
+    );
+  }
+  if (!input.capabilities.includes(requiredCapability)) {
     throw new HandlerError(
       'TOOL_CAPABILITY_DENIED',
-      'Rice 未被授予工作区读取能力',
+      `Rice 未被授予 ${requiredCapability} 能力`,
       false,
     );
   }
@@ -194,6 +231,13 @@ export async function executeRiceTool(input: {
         summary: `找到 ${sessions.length} 个相关对话`,
         itemCount: sessions.length,
       };
+    } else if (input.call.name === 'web.fetch') {
+      const page = await fetchPublicWebPage(stringValue(args.url, 'url'));
+      result = {
+        modelContent: JSON.stringify(page),
+        summary: `已读取 ${new URL(page.url).hostname}`,
+        itemCount: 1,
+      };
     } else {
       throw new HandlerError(
         'TOOL_NOT_ALLOWED',
@@ -204,6 +248,10 @@ export async function executeRiceTool(input: {
     await recordToolBrokerAudit({
       context: input.context,
       toolName: input.call.name,
+      metadata: {
+        skillVersionIds: input.skillVersionIds ?? [],
+        requiredCapability,
+      },
     });
     return result;
   } catch (error) {
@@ -215,6 +263,10 @@ export async function executeRiceTool(input: {
         error instanceof HandlerError
           ? error.code.toLowerCase()
           : 'tool_execution_failed',
+      metadata: {
+        skillVersionIds: input.skillVersionIds ?? [],
+        requiredCapability,
+      },
     }).catch(() => undefined);
     throw error;
   }

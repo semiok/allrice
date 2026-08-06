@@ -25,8 +25,20 @@ export async function GET(request: Request) {
     if (!context) throw new DataAccessError('authentication_required');
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new Error('workspaceId is required');
+    const canAdminister =
+      context.actor.type === 'user' &&
+      context.memberships.some(
+        (membership) =>
+          membership.active &&
+          membership.userId === context.actor.id &&
+          membership.organizationId === context.organizationId &&
+          membership.role === 'admin' &&
+          (membership.workspaceId === null ||
+            membership.workspaceId === workspaceId),
+      );
     return Response.json({
       skillHub: await listSkillHub(context, workspaceId),
+      canAdminister,
       candidates: Object.entries(approvedSkillCandidates).map(
         ([id, candidate]) => ({ id, ...candidate, bundle: undefined }),
       ),
@@ -50,9 +62,11 @@ export async function POST(request: Request) {
     const candidate = body.candidateId
       ? approvedSkillCandidates[body.candidateId]
       : undefined;
-    const input = ImportSkillInputSchema.parse(
-      candidate ? { ...candidate, workspaceId: body.workspaceId } : body,
-    );
+    if (!candidate) throw new SkillHubError('artifact_invalid');
+    const input = ImportSkillInputSchema.parse({
+      ...candidate,
+      workspaceId: body.workspaceId,
+    });
     if (
       requestContext.actor.type !== 'user' ||
       !requestContext.memberships.some(

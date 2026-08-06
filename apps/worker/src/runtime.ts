@@ -10,6 +10,7 @@ import {
   failJob,
   heartbeatJob,
   recordConversationTurn,
+  recordToolBrokerAudit,
   releaseConversationRuntime,
   resolveEmployeeExecution,
   resolveSkillExecution,
@@ -24,7 +25,10 @@ import {
   type NormalizedCodexEvent,
 } from './codex.js';
 import { HandlerError } from './errors.js';
-import { executeRiceTool, riceToolDefinitions } from './tool-broker.js';
+import {
+  executeRiceTool,
+  riceToolDefinitionsForCapabilities,
+} from './tool-broker.js';
 
 function objectInput(input: unknown): Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
@@ -144,20 +148,44 @@ async function executeHandler(
         providerSnapshot: resolved.providerSnapshot,
         grantedCapabilities: resolved.grantedCapabilities,
         signal,
-        onEvent: onCodexEvent,
-        toolDefinitions: resolved.grantedCapabilities.includes('storage:read')
-          ? riceToolDefinitions
-          : [],
-        onToolCall: resolved.grantedCapabilities.includes('storage:read')
-          ? (call) =>
-              executeRiceTool({
-                context: execution.context,
-                capabilities: resolved.grantedCapabilities,
-                storageRoot:
-                  process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                call,
-              })
-          : undefined,
+        onEvent: async (event) => {
+          if (
+            event.kind === 'tool' &&
+            event.source === 'codex' &&
+            event.status === 'completed' &&
+            (event.name === 'web.search' || event.name === 'web.fetch')
+          ) {
+            await recordToolBrokerAudit({
+              context: execution.context,
+              toolName: event.name,
+              metadata: {
+                skillVersionIds: resolved.skillArtifacts.map(
+                  (artifact) => artifact.skillVersionId,
+                ),
+                capability: 'network:outbound',
+              },
+            });
+          }
+          await onCodexEvent(event);
+        },
+        toolDefinitions: riceToolDefinitionsForCapabilities(
+          resolved.grantedCapabilities,
+        ),
+        onToolCall:
+          riceToolDefinitionsForCapabilities(resolved.grantedCapabilities)
+            .length > 0
+            ? (call) =>
+                executeRiceTool({
+                  context: execution.context,
+                  capabilities: resolved.grantedCapabilities,
+                  storageRoot:
+                    process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                  skillVersionIds: resolved.skillArtifacts.map(
+                    (artifact) => artifact.skillVersionId,
+                  ),
+                  call,
+                })
+            : undefined,
         conversationRuntime: {
           threadId: runtime.threadId,
           clientUserMessageId: input.userMessageId,

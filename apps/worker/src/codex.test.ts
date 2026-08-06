@@ -34,6 +34,7 @@ describe('Codex SkillRun adapter', () => {
     expect(args).toContain('computer_use');
     expect(args).toContain('browser_use_full_cdp_access');
     expect(args).toContain('browser_use');
+    expect(args).toContain('web_search="live"');
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
@@ -45,6 +46,7 @@ describe('Codex SkillRun adapter', () => {
     expect(args).toContain('mcp_servers={}');
     expect(args).toContain('project_doc_max_bytes=0');
     expect(args).toContain('web_search="disabled"');
+    expect(args).toContain('browser_use');
   });
 
   it('keeps a dynamic tool call and final answer inside one app-server process', async () => {
@@ -73,6 +75,8 @@ input.on('line', (line) => {
   }
   if (message.method === 'turn/start') {
     send({ id: message.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+    send({ method: 'item/started', params: { threadId: 'thread-1', turnId: 'turn-1', item: { type: 'webSearch', id: 'web-1', query: 'current weather', action: { type: 'search', query: 'current weather' } } } });
+    send({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', item: { type: 'webSearch', id: 'web-1', query: 'current weather', action: { type: 'search', query: 'current weather' } } } });
     send({ id: 90, method: 'item/tool/call', params: { threadId: 'thread-1', turnId: 'turn-1', callId: 'call-1', namespace: null, tool: 'workspace_file_list', arguments: { limit: 2 } } });
   }
   if (message.id === 90 && message.result) {
@@ -159,6 +163,15 @@ input.on('line', (line) => {
         text: '找到两个文件。',
         source: 'codex',
       });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: 'tool',
+          name: 'web.search',
+          label: '联网搜索',
+          status: 'completed',
+          source: 'codex',
+        }),
+      );
       expect(threadId).toBe('thread-1');
       await expect(run(threadId)).resolves.toMatchObject({
         answer: '找到两个文件。',

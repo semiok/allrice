@@ -55,7 +55,7 @@ interface InstallationRow {
   id: string;
   organization_id: string;
   workspace_id: string;
-  owner_id: string;
+  owner_id: string | null;
   catalog_skill_id: string;
   pinned_version_id: string;
   enabled: boolean;
@@ -261,7 +261,7 @@ export async function listSkillHub(
     select * from allrice_skill_installations
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
-      and owner_id = ${actorId}
+      and (owner_id = ${actorId} or owner_id is null)
     order by created_at
   `;
   return {
@@ -286,7 +286,10 @@ export async function installSkill(context: RequestContext, input: unknown) {
     context,
     installation.workspaceId,
   );
-  const actorId = userId(context);
+  const actorId =
+    installation.scope === 'workspace'
+      ? requireAdmin(context, workspaceId)
+      : userId(context);
   const sql = getDatabase();
   const versions = await sql<
     { catalog_skill_id: string; capabilities: SkillCapability[] }[]
@@ -306,23 +309,47 @@ export async function installSkill(context: RequestContext, input: unknown) {
   ) {
     throw new SkillHubError('capability_denied');
   }
-  const rows = await sql<InstallationRow[]>`
-    insert into allrice_skill_installations (
-      organization_id, workspace_id, owner_id, catalog_skill_id,
-      pinned_version_id, granted_capabilities, timeout_ms, budget_cents
-    ) values (
-      ${context.organizationId}, ${workspaceId}, ${actorId},
-      ${version.catalog_skill_id}, ${installation.skillVersionId},
-      ${sql.json(installation.grantedCapabilities)}, ${installation.timeoutMs},
-      ${installation.budgetCents}
-    )
-    on conflict (organization_id, workspace_id, owner_id, catalog_skill_id)
-    do update set pinned_version_id = excluded.pinned_version_id,
-      granted_capabilities = excluded.granted_capabilities,
-      timeout_ms = excluded.timeout_ms, budget_cents = excluded.budget_cents,
-      enabled = true, updated_at = now()
-    returning *
-  `;
+  const rows =
+    installation.scope === 'workspace'
+      ? await sql<InstallationRow[]>`
+          insert into allrice_skill_installations (
+            organization_id, workspace_id, owner_id, catalog_skill_id,
+            pinned_version_id, granted_capabilities, timeout_ms, budget_cents
+          ) values (
+            ${context.organizationId}, ${workspaceId}, null,
+            ${version.catalog_skill_id}, ${installation.skillVersionId},
+            ${sql.json(installation.grantedCapabilities)},
+            ${installation.timeoutMs}, ${installation.budgetCents}
+          )
+          on conflict (organization_id, workspace_id, catalog_skill_id)
+            where owner_id is null
+          do update set pinned_version_id = excluded.pinned_version_id,
+            granted_capabilities = excluded.granted_capabilities,
+            timeout_ms = excluded.timeout_ms,
+            budget_cents = excluded.budget_cents,
+            enabled = true, updated_at = now()
+          returning *
+        `
+      : await sql<InstallationRow[]>`
+          insert into allrice_skill_installations (
+            organization_id, workspace_id, owner_id, catalog_skill_id,
+            pinned_version_id, granted_capabilities, timeout_ms, budget_cents
+          ) values (
+            ${context.organizationId}, ${workspaceId}, ${actorId},
+            ${version.catalog_skill_id}, ${installation.skillVersionId},
+            ${sql.json(installation.grantedCapabilities)},
+            ${installation.timeoutMs}, ${installation.budgetCents}
+          )
+          on conflict (
+            organization_id, workspace_id, owner_id, catalog_skill_id
+          ) where owner_id is not null
+          do update set pinned_version_id = excluded.pinned_version_id,
+            granted_capabilities = excluded.granted_capabilities,
+            timeout_ms = excluded.timeout_ms,
+            budget_cents = excluded.budget_cents,
+            enabled = true, updated_at = now()
+          returning *
+        `;
   const row = rows[0];
   if (!row) throw new Error('skill installation failed');
   await sql`
@@ -332,8 +359,13 @@ export async function installSkill(context: RequestContext, input: unknown) {
     ) values (
       ${context.organizationId}, ${workspaceId}, ${actorId},
       'skill.install', 'skill_installation', ${row.id}, 'allowed',
-      'owner_pinned_published_version', ${context.requestId},
+      ${
+        installation.scope === 'workspace'
+          ? 'admin_pinned_workspace_version'
+          : 'owner_pinned_published_version'
+      }, ${context.requestId},
       ${sql.json({
+        scope: installation.scope,
         skillVersionId: installation.skillVersionId,
         grantedCapabilities: installation.grantedCapabilities,
       })}
@@ -350,6 +382,15 @@ export async function updateSkillInstallation(
   const update = UpdateSkillInstallationInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
   const actorId = userId(context);
+  const canAdminister = context.memberships.some(
+    (membership) =>
+      membership.active &&
+      membership.userId === actorId &&
+      membership.organizationId === context.organizationId &&
+      membership.role === 'admin' &&
+      (membership.workspaceId === null ||
+        membership.workspaceId === workspaceId),
+  );
   const installationId = UuidSchema.parse(installationIdInput);
   const sql = getDatabase();
   const rows = await sql<InstallationRow[]>`
@@ -360,7 +401,10 @@ export async function updateSkillInstallation(
     where id = ${installationId}
       and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
-      and owner_id = ${actorId}
+      and (
+        owner_id = ${actorId}
+        or (owner_id is null and ${canAdminister})
+      )
     returning *
   `;
   const row = rows[0];
@@ -372,7 +416,13 @@ export async function updateSkillInstallation(
     ) values (
       ${context.organizationId}, ${workspaceId}, ${actorId},
       'skill.installation.update', 'skill_installation', ${row.id},
-      'allowed', 'owner_updated_personal_installation', ${context.requestId},
+      'allowed',
+      ${
+        row.owner_id === null
+          ? 'admin_updated_workspace_installation'
+          : 'owner_updated_personal_installation'
+      },
+      ${context.requestId},
       ${sql.json({ enabled: update.enabled, favorite: update.favorite })}
     )
   `;
@@ -397,7 +447,7 @@ export async function enqueueSkillRun(
     where id = ${installationId}
       and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
-      and owner_id = ${actorId}
+      and (owner_id = ${actorId} or owner_id is null)
       and enabled
   `;
   const installation = rows[0];
@@ -489,7 +539,7 @@ export async function resolveSkillExecution(input: {
       and sr.workspace_id = ${UuidSchema.parse(input.workspaceId)}
       and sr.installation_id = ${UuidSchema.parse(input.installationId)}
       and sr.skill_version_id = ${UuidSchema.parse(input.skillVersionId)}
-      and i.owner_id = ${UuidSchema.parse(input.ownerId)}
+      and (i.owner_id = ${UuidSchema.parse(input.ownerId)} or i.owner_id is null)
       and i.enabled and i.granted_capabilities ? 'model:invoke'
       and v.status = 'published' and o.state = 'ready'
   `;

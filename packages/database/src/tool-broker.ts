@@ -45,6 +45,7 @@ export async function recordToolBrokerAudit(input: {
   resourceId?: string;
   decision?: 'allowed' | 'denied';
   reason?: string;
+  metadata?: Record<string, unknown>;
 }) {
   const sql = getDatabase();
   await sql`
@@ -60,6 +61,7 @@ export async function recordToolBrokerAudit(input: {
         executionId: input.context.executionId,
         runId: input.context.runId,
         toolName: input.toolName,
+        ...input.metadata,
       })}
     )
   `;

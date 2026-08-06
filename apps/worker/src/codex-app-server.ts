@@ -97,6 +97,24 @@ function toolEventFromItem(
   status: string,
 ): CodexAppServerEvent | null {
   const type = stringValue(item.type);
+  if (type === 'webSearch') {
+    const action = objectValue(item.action);
+    const actionType = stringValue(action?.type);
+    const isFetch = actionType === 'openPage' || actionType === 'findInPage';
+    return {
+      kind: 'tool',
+      name: isFetch ? 'web.fetch' : 'web.search',
+      label: isFetch ? '读取网页' : '联网搜索',
+      toolCallId: stringValue(item.id) ?? 'web-search-unknown',
+      status,
+      summary:
+        stringValue(item.query) ??
+        stringValue(action?.query) ??
+        stringValue(action?.url) ??
+        undefined,
+      source: 'codex',
+    };
+  }
   if (type !== 'commandExecution' && type !== 'mcpToolCall') return null;
   return {
     kind: 'tool',
