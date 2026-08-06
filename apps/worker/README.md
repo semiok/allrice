@@ -12,7 +12,8 @@ harness over the same execution boundary.
 - Scheduler module for due work;
 - authorization re-check and immutable PolicySnapshot before execution;
 - the audited Codex subscription Skill execution host;
-- single-process Codex app-server turns for Rice's host-executed dynamic tools;
+- persistent per-Session Codex threads on a shared long-lived app-server;
+- PostgreSQL run/turn/Worker ownership and restart-safe thread resume;
 - tenant-isolated temporary directories, environment, credentials, and outputs;
 - persisted RunEvent emission for SSE replay.
 

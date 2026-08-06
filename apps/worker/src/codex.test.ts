@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  closeCodexAppServerClients,
   codexAppServerArguments,
   codexExecArguments,
   executeCodexHarness,
@@ -54,14 +55,20 @@ describe('Codex SkillRun adapter', () => {
       `#!/usr/bin/env node
 const fs = require('node:fs');
 const readline = require('node:readline');
-fs.appendFileSync('spawn.log', '1\\n');
+fs.appendFileSync(require('node:path').join(__dirname, 'spawn.log'), '1\\n');
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
 const input = readline.createInterface({ input: process.stdin });
 input.on('line', (line) => {
   const message = JSON.parse(line);
+  fs.appendFileSync(require('node:path').join(__dirname, 'requests.log'), JSON.stringify(message) + '\\n');
   if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } });
   if (message.method === 'thread/start') {
     if (message.params.dynamicTools?.[0]?.name !== 'workspace_file_list') process.exit(9);
+    if (message.params.ephemeral !== false || message.params.historyMode !== 'paginated') process.exit(12);
+    send({ id: message.id, result: { thread: { id: 'thread-1' } } });
+  }
+  if (message.method === 'thread/resume') {
+    if (message.params.threadId !== 'thread-1') process.exit(11);
     send({ id: message.id, result: { thread: { id: 'thread-1' } } });
   }
   if (message.method === 'turn/start') {
@@ -82,45 +89,55 @@ input.on('line', (line) => {
     const previousCommand = process.env.ALLRICE_CODEX_COMMAND;
     process.env.ALLRICE_CODEX_COMMAND = executable;
     const events: unknown[] = [];
+    let threadId: string | null = null;
     try {
-      const result = await executeCodexHarness({
-        storageObjects: [],
-        workDirectory: directory,
-        executionEnvironment: {},
-        systemInstructions: 'You are Rice.',
-        prompt: '列出文件',
-        providerSnapshot: {
-          provider: 'codex',
-          authMode: 'chatgpt_subscription',
-          model: 'test-model',
-          reasoningEffort: 'high',
-          sandbox: 'workspace-write',
-        },
-        grantedCapabilities: ['model:invoke', 'storage:read'],
-        signal: new AbortController().signal,
-        onEvent: async (event) => {
-          events.push(event);
-        },
-        toolDefinitions: [
-          {
-            name: 'workspace.file.list',
-            description: 'List files',
-            inputSchema: { type: 'object' },
+      const run = (existingThreadId?: string | null) =>
+        executeCodexHarness({
+          storageObjects: [],
+          workDirectory: directory,
+          executionEnvironment: {},
+          systemInstructions: 'You are Rice.',
+          prompt: '列出文件',
+          providerSnapshot: {
+            provider: 'codex',
+            authMode: 'chatgpt_subscription',
+            model: 'test-model',
+            reasoningEffort: 'high',
+            sandbox: 'workspace-write',
           },
-        ],
-        onToolCall: async (call) => {
-          expect(call).toMatchObject({
-            id: 'call-1',
-            name: 'workspace.file.list',
-            arguments: { limit: 2 },
-          });
-          return {
-            modelContent: '[{"id":"one"},{"id":"two"}]',
-            summary: '找到 2 个可访问文件',
-            itemCount: 2,
-          };
-        },
-      });
+          grantedCapabilities: ['model:invoke', 'storage:read'],
+          signal: new AbortController().signal,
+          onEvent: async (event) => {
+            events.push(event);
+          },
+          toolDefinitions: [
+            {
+              name: 'workspace.file.list',
+              description: 'List files',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          onToolCall: async (call) => {
+            expect(call).toMatchObject({
+              id: 'call-1',
+              name: 'workspace.file.list',
+              arguments: { limit: 2 },
+            });
+            return {
+              modelContent: '[{"id":"one"},{"id":"two"}]',
+              summary: '找到 2 个可访问文件',
+              itemCount: 2,
+            };
+          },
+          conversationRuntime: {
+            threadId: existingThreadId,
+            clientUserMessageId: 'message-1',
+            onThreadBound: async (binding) => {
+              threadId = binding.threadId;
+            },
+          },
+        });
+      const result = await run();
       expect(result.answer).toBe('找到两个文件。');
       expect(result.usage).toEqual({
         inputTokens: 12,
@@ -142,7 +159,31 @@ input.on('line', (line) => {
         text: '找到两个文件。',
         source: 'codex',
       });
+      expect(threadId).toBe('thread-1');
+      await expect(run(threadId)).resolves.toMatchObject({
+        answer: '找到两个文件。',
+      });
+      expect(await readFile(join(directory, 'spawn.log'), 'utf8')).toBe('1\n');
+      const requests = (await readFile(join(directory, 'requests.log'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map(
+          (line) => JSON.parse(line) as { method?: string; params?: object },
+        );
+      expect(
+        requests.filter((request) => request.method === 'thread/start'),
+      ).toHaveLength(1);
+      expect(
+        requests.filter((request) => request.method === 'thread/resume'),
+      ).toHaveLength(1);
+      expect(
+        requests.filter((request) => request.method === 'turn/start'),
+      ).toHaveLength(2);
+      expect(
+        requests.find((request) => request.method === 'turn/start')?.params,
+      ).toMatchObject({ clientUserMessageId: 'message-1' });
     } finally {
+      await closeCodexAppServerClients();
       if (previousCommand === undefined)
         delete process.env.ALLRICE_CODEX_COMMAND;
       else process.env.ALLRICE_CODEX_COMMAND = previousCommand;

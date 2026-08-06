@@ -16,9 +16,12 @@ import { LocalStorageAdapter } from '@allrice/storage';
 
 import { HandlerError } from './errors.js';
 import {
+  closeCodexAppServerClients,
   runCodexAppServerTurn,
   type CodexDynamicToolDefinition,
 } from './codex-app-server.js';
+
+export { closeCodexAppServerClients };
 
 const maximumArtifactBytes = 2_000_000;
 const maximumOutputBytes = 2_000_000;
@@ -135,6 +138,16 @@ function safeEnvironment(
     TMPDIR: workDirectory,
     ...(config.authHome ? { CODEX_HOME: config.authHome } : {}),
     ...executionEnvironment,
+  };
+}
+
+function appServerEnvironment(config: CodexRuntimeConfig) {
+  return {
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    LANG: process.env.LANG ?? 'C.UTF-8',
+    HOME: process.env.HOME ?? process.cwd(),
+    TMPDIR: process.env.TMPDIR ?? '/tmp',
+    ...(config.authHome ? { CODEX_HOME: config.authHome } : {}),
   };
 }
 
@@ -383,6 +396,21 @@ export async function executeCodexHarness(input: {
     name: string;
     arguments: Record<string, unknown>;
   }) => Promise<{ modelContent: string; summary: string; itemCount?: number }>;
+  conversationRuntime?: {
+    threadId?: string | null;
+    clientUserMessageId?: string;
+    bootstrapConversation?: string;
+    turnContext?: string;
+    onThreadBound?: (input: {
+      threadId: string;
+      resumed: boolean;
+      replacedThreadId: string | null;
+    }) => Promise<void>;
+    onTurnStarted?: (input: {
+      threadId: string;
+      turnId: string;
+    }) => Promise<void>;
+  };
 }) {
   const config = codexRuntimeConfig();
   config.model = input.providerSnapshot.model;
@@ -427,25 +455,39 @@ export async function executeCodexHarness(input: {
   ].join('\n');
   let answer = '';
   let usage: NormalizedCodexEvent['usage'];
-  if (input.toolDefinitions?.length && input.onToolCall) {
+  if (
+    input.conversationRuntime ||
+    (input.toolDefinitions?.length && input.onToolCall)
+  ) {
     const result = await runCodexAppServerTurn({
       command: config.command,
       args: codexAppServerArguments(input.grantedCapabilities),
+      serverCwd: process.cwd(),
       cwd: input.workDirectory,
-      environment: safeEnvironment(
-        config,
-        input.workDirectory,
-        input.executionEnvironment,
-      ),
+      environment: appServerEnvironment(config),
+      threadId: input.conversationRuntime?.threadId,
       signal: input.signal,
       model: config.model,
       reasoningEffort: config.reasoningEffort,
       developerInstructions,
       prompt: input.prompt,
+      clientUserMessageId: input.conversationRuntime?.clientUserMessageId,
+      bootstrapConversation: input.conversationRuntime?.bootstrapConversation,
+      turnContext: input.conversationRuntime?.turnContext,
       networkAllowed: input.grantedCapabilities.includes('network:outbound'),
-      tools: input.toolDefinitions,
+      tools: input.toolDefinitions ?? [],
       onEvent: input.onEvent,
-      onToolCall: input.onToolCall,
+      onToolCall:
+        input.onToolCall ??
+        (async () => {
+          throw new HandlerError(
+            'CODEX_DYNAMIC_TOOL_INVALID',
+            'No Tool Broker handler is registered for this conversation',
+            false,
+          );
+        }),
+      onThreadBound: input.conversationRuntime?.onThreadBound,
+      onTurnStarted: input.conversationRuntime?.onTurnStarted,
     });
     answer = result.answer;
     usage = result.usage;

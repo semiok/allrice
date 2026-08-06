@@ -9,18 +9,23 @@ conversation navigation.
 1. Web persists the user message and a pending Rice reply.
 2. The durable Worker freezes the employee provider, prompt, Skill bindings,
    tenant policy and read grants before execution.
-3. A tool-enabled Rice reply runs as one ephemeral Codex app-server thread and
-   one turn. Codex keeps its model/tool/model loop inside that process instead
-   of restarting the CLI after every tool result.
-4. Codex runs with ChatGPT subscription authentication. Shell, unified exec,
+3. Each AllRice ChatSession owns one persistent Codex app-server thread. The
+   Worker starts it once, stores the thread ID in PostgreSQL, and resumes it for
+   later user messages instead of flattening the full transcript into every
+   prompt.
+4. Each Worker process reuses a long-lived app-server process for its deployment
+   Codex configuration. A turn is serialized per ChatSession and guarded by a
+   database run/worker lease; a Worker restart or another replica resumes the
+   persisted thread.
+5. Codex runs with ChatGPT subscription authentication. Shell, unified exec,
    code mode, computer use, user MCP servers and unapproved network access
    remain disabled.
-5. The conversation harness exposes exactly four host-executed dynamic tools:
+6. The conversation harness exposes exactly four host-executed dynamic tools:
    `workspace.file.list`, `workspace.file.read`,
    `workspace.memory.search`, or `workspace.session.search`.
-6. Every tool request is re-authorized against the frozen execution policy and
+7. Every tool request is re-authorized against the frozen execution policy and
    audited. Skill installation never grants tenant data access by itself.
-7. Durable RunEvents are streamed over resumable SSE and replayed after a page
+8. Durable RunEvents are streamed over resumable SSE and replayed after a page
    refresh. The assistant message remains the final conversation authority.
 
 The Worker uses the Codex app-server `dynamicTools` request/response protocol.
@@ -28,7 +33,16 @@ Codex receives only JSON Schema tool definitions; when it requests a tool, the
 Worker executes the existing tenant-scoped Tool Broker callback and returns the
 result to the same active turn. The deployment-pinned Codex CLI version must
 therefore continue to support the experimental app-server protocol. Non-tool
-SkillRuns keep the narrower `codex exec --ephemeral` path.
+SkillRuns keep the narrower `codex exec --ephemeral` path. A user message ID is
+also sent as Codex's `clientUserMessageId`, while PostgreSQL remains the source
+of truth for AllRice messages, run ownership and tenant authorization.
+
+If the employee's model, system prompt, capabilities or installed Skill
+versions change, AllRice starts a new Codex thread instead of silently resuming
+one under a different security/configuration snapshot. MET-51's next runtime
+increments add active-turn steering and incremental assistant deltas; this
+first increment deliberately serializes a second message behind the active
+turn.
 
 ## Event contract
 
@@ -51,3 +65,6 @@ file reads currently support `text/plain`, `text/markdown`, and
 Arbitrary shell execution and per-tenant sandboxes are deliberately deferred;
 they require a separate sandbox runner and approval model rather than an
 expansion of the conversation Tool Broker.
+
+See the pinned [MET-51 upstream runtime review](../../audits/met-51-upstream-runtime-review.md)
+for the OpenClaw, Hermes Agent and DeerFlow source comparison and copy decision.

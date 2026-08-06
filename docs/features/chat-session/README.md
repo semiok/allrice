@@ -15,6 +15,7 @@ allrice_chat_sessions
 allrice_messages
 allrice_message_attachments
 allrice_file_references
+allrice_conversation_runtimes
 allrice_audit_events
 ```
 
@@ -42,6 +43,10 @@ Every list/get/mutation applies organization, workspace, owner, visibility and M
 - partial assistant output records a clear failed/canceled state;
 - refresh resumes persisted content rather than reconstructing from localStorage;
 - background work returns through the MET-43 Run state/event ledger;
+- every Session resumes its persisted Codex thread while PostgreSQL owns the
+  active run/turn/Worker binding;
+- a changed employee configuration rotates the Codex thread rather than mixing
+  incompatible prompt or capability snapshots;
 - archive is reversible; deletion follows retention and audit policy.
 
 ## Acceptance
