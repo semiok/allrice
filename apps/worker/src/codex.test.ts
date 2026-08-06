@@ -64,7 +64,7 @@ input.on('line', (line) => {
   if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } });
   if (message.method === 'thread/start') {
     if (message.params.dynamicTools?.[0]?.name !== 'workspace_file_list') process.exit(9);
-    if (message.params.ephemeral !== false || message.params.historyMode !== 'paginated') process.exit(12);
+    if (message.params.ephemeral !== false || message.params.historyMode !== undefined) process.exit(12);
     send({ id: message.id, result: { thread: { id: 'thread-1' } } });
   }
   if (message.method === 'thread/resume') {

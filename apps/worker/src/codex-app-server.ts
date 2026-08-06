@@ -618,7 +618,6 @@ class SharedCodexAppServerClient {
           approvalPolicy: 'never',
           sandbox: 'read-only',
           ephemeral: false,
-          historyMode: 'paginated',
           serviceName: 'allrice_worker',
           baseInstructions: input.developerInstructions,
           config: {
