@@ -108,6 +108,12 @@ export async function GET(
       id,
       afterSequence,
     );
+    if (
+      new URL(request.url).searchParams.get('format') === 'json' ||
+      request.headers.get('accept')?.includes('application/json')
+    ) {
+      return Response.json({ events: initialEvents });
+    }
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         void streamEvents({

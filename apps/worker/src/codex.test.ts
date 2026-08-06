@@ -50,7 +50,25 @@ describe('Codex SkillRun adapter', () => {
     ).toEqual({
       kind: 'tool',
       name: 'command_execution',
+      label: '执行运行时工具',
+      toolCallId: 'command_execution-unknown',
       status: 'completed',
+      source: 'codex',
+    });
+    expect(
+      normalizeCodexEvent(
+        JSON.stringify({
+          type: 'item.started',
+          item: { id: 'tool-1', type: 'mcp_tool_call' },
+        }),
+      ),
+    ).toEqual({
+      kind: 'tool',
+      name: 'mcp_tool_call',
+      label: '调用受控工具',
+      toolCallId: 'tool-1',
+      status: 'started',
+      source: 'codex',
     });
     expect(
       normalizeCodexEvent(

@@ -53,6 +53,7 @@ export const ChatMessageSchema = z
     status: z.enum(['pending', 'completed', 'failed']),
     clientMessageId: UuidSchema.nullable(),
     replyToId: UuidSchema.nullable(),
+    runId: UuidSchema.nullable(),
     attachments: z.array(
       z
         .object({
@@ -125,7 +126,12 @@ export const CreateSessionAttachmentInputSchema = z
       'image/webp',
     ]),
     contentBase64: z.string().min(1).max(12_000_000),
+    visibility: VisibilitySchema.default('private'),
   })
+  .strict();
+
+export const LinkSessionAttachmentInputSchema = z
+  .object({ objectId: UuidSchema })
   .strict();
 
 export const CreateWorkspaceMemoryInputSchema = z

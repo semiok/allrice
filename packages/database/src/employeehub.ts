@@ -507,10 +507,11 @@ export async function resolveEmployeeExecution(input: {
       skill_bindings: unknown;
       prompt_snapshot: unknown;
       system_prompt: string;
+      manifest: unknown;
     }[]
   >`
     select er.provider_snapshot, er.skill_bindings, er.prompt_snapshot,
-      v.system_prompt
+      v.system_prompt, v.manifest
     from allrice_employee_runs er
     join allrice_employee_versions v on v.id = er.employee_version_id
     where er.run_id = ${UuidSchema.parse(input.runId)}
@@ -526,6 +527,7 @@ export async function resolveEmployeeExecution(input: {
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
   );
+  const manifest = EmployeeManifestSchema.parse(row.manifest);
   const artifacts = [];
   for (const binding of skillBindings) {
     const objects = await sql<
@@ -576,9 +578,10 @@ export async function resolveEmployeeExecution(input: {
     promptSnapshot,
     skillArtifacts: artifacts,
     grantedCapabilities: [
-      ...new Set(
-        skillBindings.flatMap((binding) => binding.grantedCapabilities),
-      ),
+      ...new Set([
+        ...manifest.capabilities,
+        ...skillBindings.flatMap((binding) => binding.grantedCapabilities),
+      ]),
     ],
   };
 }

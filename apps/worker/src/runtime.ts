@@ -17,6 +17,7 @@ import {
   type NormalizedCodexEvent,
 } from './codex.js';
 import { HandlerError } from './errors.js';
+import { executeRiceTool, riceToolDefinitions } from './tool-broker.js';
 
 function objectInput(input: unknown): Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
@@ -102,6 +103,18 @@ async function executeHandler(
       grantedCapabilities: resolved.grantedCapabilities,
       signal,
       onEvent: onCodexEvent,
+      toolDefinitions: resolved.grantedCapabilities.includes('storage:read')
+        ? riceToolDefinitions
+        : [],
+      onToolCall: resolved.grantedCapabilities.includes('storage:read')
+        ? (call) =>
+            executeRiceTool({
+              context: execution.context,
+              capabilities: resolved.grantedCapabilities,
+              storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+              call,
+            })
+        : undefined,
     });
   }
   if (execution.payload.type === 'allrice.skill.run') {
@@ -252,20 +265,38 @@ export async function executeClaimedJob(input: {
       isolation,
       controller.signal,
       async (event) => {
-        if (event.kind === 'message') return;
+        const type =
+          event.kind === 'message'
+            ? 'assistant.text.completed'
+            : event.kind === 'usage'
+              ? 'heartbeat'
+              : event.status === 'started'
+                ? 'tool.started'
+                : event.status === 'failed'
+                  ? 'tool.failed'
+                  : 'tool.completed';
         await appendJobEvent({
           workerId: input.workerId,
           jobId: input.jobId,
           leaseToken: input.leaseToken,
-          type: event.kind === 'usage' ? 'heartbeat' : 'step.completed',
+          type,
           payload:
-            event.kind === 'usage'
-              ? { source: 'codex', usage: event.usage }
-              : {
-                  source: 'codex',
-                  tool: event.name,
-                  status: event.status,
-                },
+            event.kind === 'message'
+              ? { source: 'codex', text: event.text ?? '' }
+              : event.kind === 'usage'
+                ? { source: 'codex', usage: event.usage }
+                : {
+                    source: event.source ?? 'codex',
+                    toolCallId: event.toolCallId ?? `${event.name}-unknown`,
+                    name: event.name ?? 'unknown',
+                    label: event.label ?? event.name ?? '工具调用',
+                    status: event.status,
+                    ...(event.summary ? { summary: event.summary } : {}),
+                    ...(event.itemCount === undefined
+                      ? {}
+                      : { itemCount: event.itemCount }),
+                    attempt: execution.job.attempt,
+                  },
         });
       },
     );
