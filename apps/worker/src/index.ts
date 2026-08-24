@@ -4,12 +4,14 @@ import { createServer } from 'node:http';
 
 import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
 import {
+  claimDueAutomations,
   claimNextJob,
   closeDatabase,
   maintainQueue,
   pingDatabase,
   queueSummary,
   recordCodexProviderStatus,
+  syncAutomationRuns,
 } from '@allrice/database';
 
 import { closeCodexAppServerClients, probeCodexProvider } from './codex.js';
@@ -59,6 +61,7 @@ let databaseReady = false;
 let lastDatabaseError: string | undefined;
 let stopping = false;
 let tickRunning = false;
+let automationTickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
 
@@ -165,6 +168,24 @@ async function tick() {
   }
 }
 
+async function automationTick() {
+  if (automationTickRunning || stopping || !databaseReady) return;
+  automationTickRunning = true;
+  try {
+    await syncAutomationRuns();
+    const claimed = await claimDueAutomations(Math.max(1, concurrency));
+    if (claimed > 0) {
+      console.info('[M6] queued automation runs', { count: claimed });
+    }
+  } catch (error) {
+    console.error('[M6] automation scheduler failed', {
+      message: error instanceof Error ? error.message : 'unknown error',
+    });
+  } finally {
+    automationTickRunning = false;
+  }
+}
+
 await refreshReadiness();
 await refreshCodexProviderStatus();
 const readinessTimer = setInterval(
@@ -176,7 +197,12 @@ const codexProviderStatusTimer = setInterval(
   codexProviderStatusIntervalMs,
 );
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
+const automationTimer = setInterval(
+  () => void automationTick(),
+  pollIntervalMs,
+);
 void tick();
+void automationTick();
 
 server.listen(port, '0.0.0.0', () => {
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
@@ -192,6 +218,7 @@ async function shutdown(signal: string) {
   clearInterval(readinessTimer);
   clearInterval(codexProviderStatusTimer);
   clearInterval(queueTimer);
+  clearInterval(automationTimer);
   for (const abort of activeAborters) abort();
   server.close();
   await Promise.allSettled(activeExecutions);

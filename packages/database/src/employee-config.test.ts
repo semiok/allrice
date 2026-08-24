@@ -23,4 +23,23 @@ describe('Rice employee manifest', () => {
       employeeManifestChecksum(riceManifest([randomUUID()])),
     );
   });
+
+  it('freezes the partner profile into the employee manifest', () => {
+    const manifest = riceManifest([], {
+      role: '产品经理工作伙伴',
+      mission: '把需求和数据转成可执行的产品决策。',
+      communicationStyle: 'concise',
+      outputLanguage: 'zh-CN',
+      proactivePolicy: 'ask',
+      approvalPolicy: 'confirm_external',
+    });
+    expect(manifest.partnerProfile).toMatchObject({
+      role: '产品经理工作伙伴',
+      communicationStyle: 'concise',
+      proactivePolicy: 'ask',
+      approvalPolicy: 'confirm_external',
+    });
+    expect(manifest.systemPrompt).toContain('产品经理工作伙伴');
+    expect(manifest.systemPrompt).toContain('external communication');
+  });
 });

@@ -9,6 +9,7 @@ export const SkillCapabilitySchema = z.enum([
   'storage:write',
   'secret:use',
   'model:invoke',
+  'automation:write',
 ]);
 export type SkillCapability = z.infer<typeof SkillCapabilitySchema>;
 

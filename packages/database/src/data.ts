@@ -420,10 +420,11 @@ export async function createMemory(context: RequestContext, input: unknown) {
   const sql = getDatabase();
   const rows = await sql<{ id: string }[]>`
     insert into allrice_memories (
-      organization_id, workspace_id, project_id, owner_id,
+      organization_id, workspace_id, project_id, employee_id, owner_id,
       content, metadata, visibility, source_type, source_id
     ) values (
       ${context.organizationId}, ${memory.workspaceId}, ${memory.projectId},
+      ${memory.employeeId},
       ${owner}, ${memory.content}, ${sql.json(memory.metadata)},
       ${memory.visibility}, ${memory.sourceType}, ${memory.sourceId}
     )

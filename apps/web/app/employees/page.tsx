@@ -1,5 +1,5 @@
-import { EmployeeHubClient } from './employeehub-client';
+import { AppShell } from '../components/app-shell';
 
 export default function EmployeesPage() {
-  return <EmployeeHubClient />;
+  return <AppShell initialPanel="employees" />;
 }

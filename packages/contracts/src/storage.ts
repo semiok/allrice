@@ -58,6 +58,7 @@ export const SignFileInputSchema = z
 export const CreateMemoryInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    employeeId: UuidSchema.nullable().default(null),
     projectId: UuidSchema.nullable().default(null),
     content: z.string().min(1).max(100_000),
     metadata: z.record(z.string(), z.json()).default({}),

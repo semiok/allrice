@@ -227,7 +227,19 @@ async function readArtifact(
   storageRoot: string,
   object: StorageObject,
 ): Promise<SkillArtifactBundle> {
-  const stream = await new LocalStorageAdapter(storageRoot).get(object);
+  let stream: ReadableStream<Uint8Array>;
+  try {
+    stream = await new LocalStorageAdapter(storageRoot).get(object);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new HandlerError(
+        'SKILL_ARTIFACT_MISSING',
+        'Skill artifact is missing from local storage',
+        false,
+      );
+    }
+    throw error;
+  }
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
