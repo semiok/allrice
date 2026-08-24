@@ -23,7 +23,10 @@ export const AutomationScheduleSchema = z
   .object({
     frequency: AutomationFrequencySchema,
     runAt: TimestampSchema.optional(),
-    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    time: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .optional(),
     weekday: z.number().int().min(0).max(6).optional(),
     timezone: z.string().min(1).max(64).default('Asia/Shanghai'),
   })
