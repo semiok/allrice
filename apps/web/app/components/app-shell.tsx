@@ -100,7 +100,7 @@ function WorkspaceSidebar({
                     >
                       <strong>{session.title}</strong>
                       <span>
-                        AI员工版本 ·{' '}
+                        最近工作 ·{' '}
                         {new Date(session.updatedAt).toLocaleDateString()}
                       </span>
                     </button>
@@ -190,6 +190,7 @@ export function AppShell({ initialPanel }: { initialPanel: AppPanel }) {
           onFiles={() => requestWorkspaceAction('files')}
           onMemory={() => requestWorkspaceAction('memory')}
           onNavigate={setActivePanel}
+          showEmployeeAdmin={workspaceSidebar?.canAdminister ?? false}
         >
           <WorkspaceSidebar
             snapshot={workspaceSidebar}

@@ -4,16 +4,23 @@ import {
   AssignEmployeeVersionInputSchema,
   CreateEmployeeInputSchema,
   CodexExecutionSnapshotSchema,
+  EmployeeAdminDirectoryEntrySchema,
+  EmployeeAdminMemberSchema,
+  EmployeeExecutionSnapshotSchema,
   EmployeeHubAssignmentSchema,
   EmployeeManifestSchema,
   EmployeePromptSnapshotSchema,
+  EmployeeUserProfileSchema,
   EmployeeVersionSnapshotSchema,
   FrozenEmployeeSkillBindingSchema,
+  ManageEmployeeAssignmentsInputSchema,
   PublishEmployeeVersionInputSchema,
   SetDefaultEmployeeInputSchema,
   StorageObjectSchema,
+  UpdateEmployeeStatusInputSchema,
   UuidSchema,
   type EmployeeManifest,
+  type EmployeeExecutionSnapshot,
   type RequestContext,
   type SkillCapability,
 } from '@allrice/contracts';
@@ -51,6 +58,14 @@ interface EmployeeAssignmentRow extends EmployeeVersionRow {
   workspace_id: string;
   is_default: boolean;
   active: boolean;
+  assigned_by: string | null;
+  assigned_at: Date;
+}
+
+interface EmployeeDirectoryRow extends EmployeeVersionRow {
+  employee_key: string;
+  status: 'active' | 'archived';
+  assigned_user_ids: string[];
 }
 
 interface SkillBindingRow {
@@ -99,6 +114,10 @@ export interface EmployeeRunBinding {
   providerSnapshot: ReturnType<typeof CodexExecutionSnapshotSchema.parse>;
   skillVersionIds: string[];
   skillBindings: FrozenSkillBinding[];
+  executionSnapshot: Omit<
+    EmployeeExecutionSnapshot,
+    'tenantContext' | 'createdAt'
+  >;
   promptSnapshot: {
     systemPrompt: string;
     conversation: { role: string; text: string }[];
@@ -113,7 +132,9 @@ export class EmployeeHubError extends Error {
       | 'not_found'
       | 'version_conflict'
       | 'skill_not_installed'
-      | 'provider_invalid',
+      | 'provider_invalid'
+      | 'default_protected'
+      | 'assignment_invalid',
   ) {
     super(code);
   }
@@ -124,6 +145,53 @@ function userId(context: RequestContext) {
     throw new DataAccessError('authentication_required');
   }
   return context.actor.id;
+}
+
+export function canAdministerEmployees(
+  context: RequestContext,
+  workspaceId: string,
+) {
+  const actorId = userId(context);
+  return context.memberships.some(
+    (membership) =>
+      membership.active &&
+      membership.userId === actorId &&
+      membership.organizationId === context.organizationId &&
+      membership.role === 'admin' &&
+      (membership.workspaceId === null ||
+        membership.workspaceId === workspaceId),
+  );
+}
+
+function requireEmployeeAdmin(context: RequestContext, workspaceId: string) {
+  const actorId = userId(context);
+  if (!canAdministerEmployees(context, workspaceId)) {
+    throw new DataAccessError('authorization_denied');
+  }
+  return actorId;
+}
+
+function runtimePolicy(manifest: EmployeeManifest) {
+  if (manifest.schemaVersion === 2) return manifest.runtimePolicy;
+  return {
+    harness: 'codex' as const,
+    provider: manifest.provider.provider,
+    model: manifest.provider.model,
+    reasoningEffort: manifest.provider.reasoningEffort,
+    timeoutMs: 300_000,
+    fallbackModels: [],
+  };
+}
+
+function capabilityBindings(manifest: EmployeeManifest) {
+  return manifest.schemaVersion === 2
+    ? manifest.capabilityBindings
+    : {
+        skillVersionIds: manifest.skillVersionIds,
+        toolNames: [],
+        knowledgeScopes: ['workspace' as const, 'user' as const],
+        workflowIds: [],
+      };
 }
 
 function legacyManifest(row: EmployeeVersionRow): EmployeeManifest {
@@ -166,11 +234,12 @@ export async function listEmployeeHub(
     workspaceIdInput,
   );
   const workspaceId = defaultAssignment.workspaceId;
+  const canAdminister = canAdministerEmployees(context, workspaceId);
   const sql = getDatabase();
   const assignments = await sql<EmployeeAssignmentRow[]>`
     select
       a.id as assignment_id, a.user_id, a.organization_id, a.workspace_id,
-      a.is_default, a.active, e.employee_key,
+      a.is_default, a.active, a.assigned_by, a.assigned_at, e.employee_key,
       v.*
     from allrice_employee_assignments a
     join allrice_employees e on e.id = a.employee_id
@@ -225,9 +294,48 @@ export async function listEmployeeHub(
   const memoryCountByEmployee = new Map(
     memoryCounts.map((row) => [row.employee_id, row.count]),
   );
+  const directory = canAdminister
+    ? await sql<EmployeeDirectoryRow[]>`
+        select distinct on (e.id)
+          v.*, e.employee_key, e.status,
+          coalesce((
+            select array_agg(a.user_id order by a.user_id)
+            from allrice_employee_assignments a
+            where a.organization_id = e.organization_id
+              and a.workspace_id = e.workspace_id
+              and a.employee_id = e.id and a.active
+          ), array[]::uuid[]) as assigned_user_ids
+        from allrice_employees e
+        join allrice_employee_versions v on v.employee_id = e.id
+        where e.organization_id = ${context.organizationId}
+          and e.workspace_id = ${workspaceId}
+        order by e.id, v.version desc
+      `
+    : [];
+  const members = canAdminister
+    ? await sql<
+        {
+          user_id: string;
+          email: string;
+          display_name: string;
+          role: 'admin' | 'member' | 'viewer';
+        }[]
+      >`
+        select distinct on (u.id)
+          u.id as user_id, u.email, u.display_name, m.role
+        from allrice_users u
+        join allrice_memberships m on m.user_id = u.id
+        where m.organization_id = ${context.organizationId}
+          and (m.workspace_id is null or m.workspace_id = ${workspaceId})
+          and m.active and u.status = 'active'
+        order by u.id,
+          case m.role when 'admin' then 0 when 'member' then 1 else 2 end
+      `
+    : [];
   return {
     organizationId: context.organizationId,
     workspaceId,
+    canAdminister,
     assignments: assignments.map((assignment) =>
       EmployeeHubAssignmentSchema.parse({
         id: assignment.assignment_id,
@@ -238,6 +346,8 @@ export async function listEmployeeHub(
         workspaceId: assignment.workspace_id,
         isDefault: assignment.is_default,
         active: assignment.active,
+        assignedBy: assignment.assigned_by,
+        assignedAt: assignment.assigned_at.toISOString(),
         memoryCount: memoryCountByEmployee.get(assignment.employee_id) ?? 0,
         currentVersion: versionSnapshot(assignment),
         versions: versions
@@ -245,20 +355,37 @@ export async function listEmployeeHub(
           .map(versionSnapshot),
       }),
     ),
-    availableSkills: skills.map((skill) => ({
+    availableSkills: (canAdminister ? skills : []).map((skill) => ({
       installationId: skill.installation_id,
       skillVersionId: skill.skill_version_id,
       name: skill.name,
       version: skill.version,
       enabled: skill.enabled,
     })),
+    directory: directory.map((entry) =>
+      EmployeeAdminDirectoryEntrySchema.parse({
+        employeeId: entry.employee_id,
+        employeeKey: entry.employee_key,
+        status: entry.status,
+        currentVersion: versionSnapshot(entry),
+        assignedUserIds: entry.assigned_user_ids,
+      }),
+    ),
+    members: members.map((member) =>
+      EmployeeAdminMemberSchema.parse({
+        userId: member.user_id,
+        email: member.email,
+        displayName: member.display_name,
+        role: member.role,
+      }),
+    ),
   };
 }
 
 export async function createEmployee(context: RequestContext, input: unknown) {
   const creation = CreateEmployeeInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const actorId = userId(context);
+  const actorId = requireEmployeeAdmin(context, workspaceId);
   const employeeKey = `employee-${randomUUID().slice(0, 8)}`;
   const manifest = employeeManifest({
     key: employeeKey,
@@ -266,6 +393,10 @@ export async function createEmployee(context: RequestContext, input: unknown) {
     description: creation.description,
     skillVersionIds: creation.skillVersionIds,
     partnerProfile: creation.partnerProfile,
+    appearance: creation.appearance,
+    applicableScenarios: creation.applicableScenarios,
+    behaviorRules: creation.behaviorRules,
+    safetyBoundaries: creation.safetyBoundaries,
   });
   const checksum = employeeManifestChecksum(manifest);
   const sql = getDatabase();
@@ -318,10 +449,10 @@ export async function createEmployee(context: RequestContext, input: unknown) {
     await transaction`
       insert into allrice_employee_assignments (
         organization_id, workspace_id, employee_id, employee_version_id,
-        user_id, is_default, active
+        user_id, is_default, active, assigned_by
       ) values (
         ${context.organizationId}, ${workspaceId}, ${createdId}, ${versionId},
-        ${actorId}, false, true
+        ${actorId}, false, true, ${actorId}
       )
     `;
     await transaction`
@@ -331,7 +462,7 @@ export async function createEmployee(context: RequestContext, input: unknown) {
       ) values (
         ${context.organizationId}, ${workspaceId}, ${actorId},
         'employee.create', 'employee', ${createdId}, 'allowed',
-        'user_created_independent_employee', ${context.requestId},
+        'admin_created_employee_definition', ${context.requestId},
         ${transaction.json({ employeeKey, skillVersionIds: manifest.skillVersionIds })}
       )
     `;
@@ -354,7 +485,7 @@ export async function publishEmployeeVersion(
     context,
     publication.workspaceId,
   );
-  const actorId = userId(context);
+  const actorId = requireEmployeeAdmin(context, workspaceId);
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const employees = await transaction<
@@ -362,12 +493,6 @@ export async function publishEmployeeVersion(
     >`
       select e.id, e.employee_key, e.name
       from allrice_employees e
-      join allrice_employee_assignments a
-        on a.employee_id = e.id
-       and a.organization_id = e.organization_id
-       and a.workspace_id = e.workspace_id
-       and a.user_id = ${actorId}
-       and a.active
       where e.id = ${publication.employeeId}
         and e.organization_id = ${context.organizationId}
         and e.workspace_id = ${workspaceId}
@@ -420,6 +545,26 @@ export async function publishEmployeeVersion(
         publication.partnerProfile ??
         (currentManifest.success
           ? currentManifest.data.partnerProfile
+          : undefined),
+      appearance:
+        publication.appearance ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.appearance
+          : undefined),
+      applicableScenarios:
+        publication.applicableScenarios ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.applicableScenarios
+          : undefined),
+      behaviorRules:
+        publication.behaviorRules ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.identity.behaviorRules
+          : undefined),
+      safetyBoundaries:
+        publication.safetyBoundaries ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.identity.safetyBoundaries
           : undefined),
     });
     const checksum = employeeManifestChecksum(manifest);
@@ -480,6 +625,205 @@ export async function publishEmployeeVersion(
   });
 }
 
+export async function manageEmployeeAssignments(
+  context: RequestContext,
+  input: unknown,
+) {
+  const update = ManageEmployeeAssignmentsInputSchema.parse(input);
+  const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
+  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const userIds = [...new Set(update.userIds)].sort();
+  const sql = getDatabase();
+  await sql.begin(async (transaction) => {
+    const employees = await transaction<
+      {
+        id: string;
+        employee_key: string;
+        status: 'active' | 'archived';
+        version_id: string;
+      }[]
+    >`
+      select e.id, e.employee_key, e.status, v.id as version_id
+      from allrice_employees e
+      join lateral (
+        select id from allrice_employee_versions
+        where employee_id = e.id
+        order by version desc limit 1
+      ) v on true
+      where e.id = ${update.employeeId}
+        and e.organization_id = ${context.organizationId}
+        and e.workspace_id = ${workspaceId}
+      for update of e
+    `;
+    const employee = employees[0];
+    if (!employee || employee.status !== 'active') {
+      throw new EmployeeHubError('not_found');
+    }
+    if (employee.employee_key === riceEmployeeKey) {
+      throw new EmployeeHubError('default_protected');
+    }
+    if (userIds.length > 0) {
+      const members = await transaction<{ user_id: string }[]>`
+        select distinct user_id
+        from allrice_memberships
+        where organization_id = ${context.organizationId}
+          and (workspace_id is null or workspace_id = ${workspaceId})
+          and active and user_id in ${transaction(userIds)}
+      `;
+      if (
+        new Set(members.map((member) => member.user_id)).size !== userIds.length
+      ) {
+        throw new EmployeeHubError('assignment_invalid');
+      }
+    }
+    const removedDefaults =
+      userIds.length === 0
+        ? await transaction<{ user_id: string }[]>`
+            update allrice_employee_assignments
+            set active = false, is_default = false, updated_at = now()
+            where organization_id = ${context.organizationId}
+              and workspace_id = ${workspaceId}
+              and employee_id = ${employee.id} and active
+            returning user_id
+          `
+        : await transaction<{ user_id: string }[]>`
+            update allrice_employee_assignments
+            set active = false, is_default = false, updated_at = now()
+            where organization_id = ${context.organizationId}
+              and workspace_id = ${workspaceId}
+              and employee_id = ${employee.id} and active
+              and user_id not in ${transaction(userIds)}
+            returning user_id
+          `;
+    for (const assignedUserId of userIds) {
+      await transaction`
+        insert into allrice_employee_assignments (
+          organization_id, workspace_id, employee_id, employee_version_id,
+          user_id, is_default, active, assigned_by, assigned_at
+        ) values (
+          ${context.organizationId}, ${workspaceId}, ${employee.id},
+          ${employee.version_id}, ${assignedUserId}, false, true,
+          ${actorId}, now()
+        )
+        on conflict (organization_id, workspace_id, user_id, employee_id)
+        do update set employee_version_id = excluded.employee_version_id,
+          active = true, assigned_by = excluded.assigned_by,
+          assigned_at = excluded.assigned_at, updated_at = now()
+      `;
+    }
+    for (const removed of removedDefaults) {
+      await transaction`
+        update allrice_employee_assignments rice
+        set is_default = true, active = true, updated_at = now()
+        from allrice_employees e
+        where e.id = rice.employee_id
+          and e.organization_id = rice.organization_id
+          and e.workspace_id = rice.workspace_id
+          and e.employee_key = ${riceEmployeeKey}
+          and rice.organization_id = ${context.organizationId}
+          and rice.workspace_id = ${workspaceId}
+          and rice.user_id = ${removed.user_id}
+          and not exists (
+            select 1 from allrice_employee_assignments current_default
+            where current_default.organization_id = rice.organization_id
+              and current_default.workspace_id = rice.workspace_id
+              and current_default.user_id = rice.user_id
+              and current_default.active and current_default.is_default
+          )
+      `;
+    }
+    await transaction`
+      insert into allrice_audit_events (
+        organization_id, workspace_id, actor_id, action, resource_type,
+        resource_id, decision, reason, request_id, metadata
+      ) values (
+        ${context.organizationId}, ${workspaceId}, ${actorId},
+        'employee.assignment.manage', 'employee', ${employee.id}, 'allowed',
+        'admin_managed_employee_assignments', ${context.requestId},
+        ${transaction.json({ userIds })}
+      )
+    `;
+  });
+  return listEmployeeHub(context, workspaceId);
+}
+
+export async function updateEmployeeStatus(
+  context: RequestContext,
+  employeeIdInput: string,
+  input: unknown,
+) {
+  const update = UpdateEmployeeStatusInputSchema.parse(input);
+  const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
+  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const sql = getDatabase();
+  await sql.begin(async (transaction) => {
+    const employees = await transaction<{ id: string; employee_key: string }[]>`
+      select id, employee_key from allrice_employees
+      where id = ${employeeId}
+        and organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+      for update
+    `;
+    const employee = employees[0];
+    if (!employee) throw new EmployeeHubError('not_found');
+    if (
+      employee.employee_key === riceEmployeeKey &&
+      update.status !== 'active'
+    ) {
+      throw new EmployeeHubError('default_protected');
+    }
+    await transaction`
+      update allrice_employees set status = ${update.status}, updated_at = now()
+      where id = ${employee.id}
+    `;
+    const removed =
+      update.status === 'archived'
+        ? await transaction<{ user_id: string }[]>`
+        update allrice_employee_assignments
+        set active = false, is_default = false, updated_at = now()
+        where organization_id = ${context.organizationId}
+          and workspace_id = ${workspaceId}
+          and employee_id = ${employee.id}
+          and active
+        returning user_id
+      `
+        : [];
+    for (const assignment of removed) {
+      await transaction`
+        update allrice_employee_assignments rice
+        set is_default = true, active = true, updated_at = now()
+        from allrice_employees e
+        where e.id = rice.employee_id
+          and e.organization_id = rice.organization_id
+          and e.workspace_id = rice.workspace_id
+          and e.employee_key = ${riceEmployeeKey}
+          and rice.organization_id = ${context.organizationId}
+          and rice.workspace_id = ${workspaceId}
+          and rice.user_id = ${assignment.user_id}
+          and not exists (
+            select 1 from allrice_employee_assignments current_default
+            where current_default.organization_id = rice.organization_id
+              and current_default.workspace_id = rice.workspace_id
+              and current_default.user_id = rice.user_id
+              and current_default.active and current_default.is_default
+          )
+      `;
+    }
+    await transaction`
+      insert into allrice_audit_events (
+        organization_id, workspace_id, actor_id, action, resource_type,
+        resource_id, decision, reason, request_id, metadata
+      ) values (
+        ${context.organizationId}, ${workspaceId}, ${actorId},
+        'employee.status.update', 'employee', ${employee.id}, 'allowed',
+        'admin_updated_employee_status', ${context.requestId},
+        ${transaction.json({ status: update.status })}
+      )
+    `;
+  });
+}
+
 export async function assignEmployeeVersion(
   context: RequestContext,
   assignmentIdInput: string,
@@ -487,7 +831,7 @@ export async function assignEmployeeVersion(
 ) {
   const update = AssignEmployeeVersionInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const actorId = userId(context);
+  const actorId = requireEmployeeAdmin(context, workspaceId);
   const assignmentId = UuidSchema.parse(assignmentIdInput);
   const sql = getDatabase();
   const rows = await sql<EmployeeAssignmentRow[]>`
@@ -497,7 +841,7 @@ export async function assignEmployeeVersion(
     where a.id = ${assignmentId}
       and a.organization_id = ${context.organizationId}
       and a.workspace_id = ${workspaceId}
-      and a.user_id = ${actorId} and a.active
+      and a.active
       and v.id = ${update.employeeVersionId}
       and v.organization_id = a.organization_id
       and v.workspace_id = a.workspace_id
@@ -516,7 +860,7 @@ export async function assignEmployeeVersion(
     ) values (
       ${context.organizationId}, ${workspaceId}, ${actorId},
       'employee.assignment.version', 'employee_assignment', ${assignmentId},
-      'allowed', 'owner_selected_published_version', ${context.requestId},
+      'allowed', 'admin_selected_published_version', ${context.requestId},
       ${sql.json({ employeeVersionId: update.employeeVersionId })}
     )
   `;
@@ -581,7 +925,8 @@ export async function prepareEmployeeRunBinding(input: {
   const sql = getDatabase();
   const rows = await sql<EmployeeAssignmentRow[]>`
     select a.id as assignment_id, a.user_id, a.organization_id,
-      a.workspace_id, a.is_default, a.active, e.employee_key, v.*
+      a.workspace_id, a.is_default, a.active, a.assigned_by, a.assigned_at,
+      e.employee_key, v.*
     from allrice_employee_assignments a
     join allrice_employees e on e.id = a.employee_id
     join allrice_employee_versions v
@@ -626,6 +971,38 @@ export async function prepareEmployeeRunBinding(input: {
   ) {
     throw new EmployeeHubError('skill_not_installed');
   }
+  const skillBindings = bindings.map((binding) => ({
+    installationId: binding.installation_id,
+    skillVersionId: binding.skill_version_id,
+    declaredCapabilities: binding.declared_capabilities,
+    grantedCapabilities: binding.granted_capabilities,
+  }));
+  const grantedCapabilities = resolveEmployeeCapabilities(
+    manifest.data.capabilities,
+    skillBindings,
+  );
+  const profiles = await sql<{ profile: unknown; display_name: string }[]>`
+    select coalesce(p.profile, jsonb_build_object(
+        'schemaVersion', 1,
+        'displayName', u.display_name,
+        'preferences', '{}'::jsonb
+      )) as profile,
+      u.display_name
+    from allrice_users u
+    left join allrice_employee_user_profiles p
+      on p.user_id = u.id
+     and p.organization_id = ${input.context.organizationId}
+     and p.workspace_id = ${input.workspaceId}
+     and p.employee_id = ${assignment.employee_id}
+    where u.id = ${actorId}
+  `;
+  const userProfile = EmployeeUserProfileSchema.parse(
+    profiles[0]?.profile ?? {
+      schemaVersion: 1,
+      displayName: null,
+      preferences: {},
+    },
+  );
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
@@ -636,12 +1013,33 @@ export async function prepareEmployeeRunBinding(input: {
       manifest.data.provider,
     ),
     skillVersionIds,
-    skillBindings: bindings.map((binding) => ({
-      installationId: binding.installation_id,
-      skillVersionId: binding.skill_version_id,
-      declaredCapabilities: binding.declared_capabilities,
-      grantedCapabilities: binding.granted_capabilities,
-    })),
+    skillBindings,
+    executionSnapshot: {
+      schemaVersion: 1,
+      employee: {
+        id: assignment.employee_id,
+        key: assignment.employee_key,
+        versionId: assignment.id,
+        revision: assignment.version,
+        definitionChecksum: assignment.config_checksum,
+        definition: manifest.data,
+      },
+      assignment: {
+        id: assignment.assignment_id,
+        userId: assignment.user_id,
+        assignedBy: assignment.assigned_by,
+        assignedAt: assignment.assigned_at.toISOString(),
+      },
+      runtimePolicy: runtimePolicy(manifest.data),
+      capabilitySnapshot: {
+        declaredCapabilities: manifest.data.capabilities,
+        grantedCapabilities,
+        bindings: capabilityBindings(manifest.data),
+        skillBindings:
+          FrozenEmployeeSkillBindingSchema.array().parse(skillBindings),
+      },
+      userProfile,
+    },
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
       ...input.promptSnapshot,
       systemPrompt: manifest.data.systemPrompt,
@@ -661,11 +1059,13 @@ export async function resolveEmployeeExecution(input: {
       provider_snapshot: unknown;
       skill_bindings: unknown;
       prompt_snapshot: unknown;
+      execution_snapshot: unknown;
       system_prompt: string;
       manifest: unknown;
     }[]
   >`
     select er.provider_snapshot, er.skill_bindings, er.prompt_snapshot,
+      er.execution_snapshot,
       v.system_prompt, v.manifest
     from allrice_employee_runs er
     join allrice_employee_versions v on v.id = er.employee_version_id
@@ -682,7 +1082,14 @@ export async function resolveEmployeeExecution(input: {
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
   );
-  const manifest = EmployeeManifestSchema.parse(row.manifest);
+  const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
+    row.execution_snapshot,
+  );
+  const manifest = EmployeeManifestSchema.parse(
+    executionSnapshot.success
+      ? executionSnapshot.data.employee.definition
+      : row.manifest,
+  );
   const artifacts: {
     skillVersionId: string;
     declaredCapabilities: SkillCapability[];
@@ -738,18 +1145,24 @@ export async function resolveEmployeeExecution(input: {
   return {
     providerSnapshot: CodexExecutionSnapshotSchema.parse(row.provider_snapshot),
     promptSnapshot,
+    executionSnapshot: executionSnapshot.success
+      ? executionSnapshot.data
+      : null,
     skillArtifacts: artifacts,
-    grantedCapabilities: resolveEmployeeCapabilities(
-      manifest.capabilities,
-      skillBindings.map((binding) => ({
-        installationId: binding.installationId,
-        skillVersionId: binding.skillVersionId,
-        declaredCapabilities:
-          artifacts.find(
-            (artifact) => artifact.skillVersionId === binding.skillVersionId,
-          )?.declaredCapabilities ?? [],
-        grantedCapabilities: binding.grantedCapabilities,
-      })),
-    ),
+    grantedCapabilities: executionSnapshot.success
+      ? executionSnapshot.data.capabilitySnapshot.grantedCapabilities
+      : resolveEmployeeCapabilities(
+          manifest.capabilities,
+          skillBindings.map((binding) => ({
+            installationId: binding.installationId,
+            skillVersionId: binding.skillVersionId,
+            declaredCapabilities:
+              artifacts.find(
+                (artifact) =>
+                  artifact.skillVersionId === binding.skillVersionId,
+              )?.declaredCapabilities ?? [],
+            grantedCapabilities: binding.grantedCapabilities,
+          })),
+        ),
   };
 }

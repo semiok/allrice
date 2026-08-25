@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import {
   CodexExecutionSnapshotSchema,
   DefaultPartnerProfile,
-  EmployeeManifestSchema,
+  EmployeeAppearanceSchema,
+  EmployeeDefinitionSchema,
   PartnerProfileSchema,
   type EmployeeManifest,
   type PartnerProfile,
@@ -180,6 +181,13 @@ export function employeeManifest(input: {
   role?: string;
   skillVersionIds?: string[];
   partnerProfile?: PartnerProfile;
+  appearance?: {
+    avatarType: 'initials' | 'emoji' | 'image';
+    avatarValue: string;
+  };
+  applicableScenarios?: string[];
+  behaviorRules?: string[];
+  safetyBoundaries?: string[];
 }): EmployeeManifest {
   const profile = PartnerProfileSchema.parse({
     ...DefaultPartnerProfile,
@@ -188,11 +196,44 @@ export function employeeManifest(input: {
       input.partnerProfile?.role ?? input.role ?? DefaultPartnerProfile.role,
   });
   const name = input.name.trim();
-  return EmployeeManifestSchema.parse({
-    schemaVersion: 1,
+  const provider = codexEmployeeProvider();
+  const skillVersionIds = [...new Set(input.skillVersionIds ?? [])].sort();
+  return EmployeeDefinitionSchema.parse({
+    schemaVersion: 2,
     key: input.key,
     name,
     description: input.description.trim(),
+    appearance: EmployeeAppearanceSchema.parse(
+      input.appearance ?? {
+        avatarType: 'initials',
+        avatarValue: name.slice(0, 1).toLocaleUpperCase(),
+      },
+    ),
+    applicableScenarios: input.applicableScenarios ?? [
+      '对话协作',
+      '信息整理',
+      '使用已授权能力完成工作',
+    ],
+    isDefaultRice: input.key === riceEmployeeKey,
+    identity: {
+      role: profile.role,
+      mission: profile.mission,
+      workStyle: {
+        concise: '结论优先，表达简洁，明确列出下一步。',
+        structured: '先理解目标，再结构化推进并交付可复用结果。',
+        exploratory: '先比较方案与取舍，再提出推荐路径。',
+      }[profile.communicationStyle],
+      behaviorRules: input.behaviorRules ?? [
+        '先理解目标、约束和授权范围，再开始执行。',
+        '缺少关键信息时明确说明，不编造数据或执行结果。',
+        '优先交付可编辑、可复用、可继续协作的结果。',
+      ],
+      safetyBoundaries: input.safetyBoundaries ?? [
+        '只能使用当前租户、工作区、用户和员工获授权的数据。',
+        '不得读取、输出或持久化凭证、宿主机路径和其他租户信息。',
+        '有外部副作用或不可逆影响的动作必须遵循审批策略。',
+      ],
+    },
     systemPrompt: [
       `You are ${name}, an AI employee in AllRice.`,
       profileInstruction(profile),
@@ -203,14 +244,40 @@ export function employeeManifest(input: {
       'Prefer delivering an editable or reusable result over a vague explanation. For consequential actions, ambiguous data, or external communication, pause and ask for confirmation instead of guessing.',
       'When the user explicitly asks for a reminder or a future scheduled action, use the automation.create tool instead of merely promising to remember it. After the tool succeeds, state the scheduled time clearly.',
     ].join(' '),
-    provider: codexEmployeeProvider(),
+    provider,
+    runtimePolicy: {
+      harness: 'codex',
+      provider: provider.provider,
+      model: provider.model,
+      reasoningEffort: provider.reasoningEffort,
+      timeoutMs: 300_000,
+      fallbackModels: [],
+    },
     capabilities: [
       'model:invoke',
       'storage:read',
       'network:outbound',
       'automation:write',
     ],
-    skillVersionIds: [...new Set(input.skillVersionIds ?? [])].sort(),
+    skillVersionIds,
+    capabilityBindings: {
+      skillVersionIds,
+      toolNames: [
+        'workspace.file.list',
+        'workspace.file.read',
+        'workspace.memory.search',
+        'workspace.session.search',
+        'automation.create',
+      ],
+      knowledgeScopes: ['workspace', 'employee', 'user'],
+      workflowIds: [],
+    },
+    securityPolicy: {
+      dataScopes: ['workspace', 'employee', 'user'],
+      connectorIdentityModes: ['user'],
+      approvalPolicy: profile.approvalPolicy,
+      deniedCapabilities: ['secret:use'],
+    },
     partnerProfile: profile,
   });
 }
@@ -220,5 +287,16 @@ export function employeeManifestChecksum(manifest: EmployeeManifest) {
 }
 
 export function employeeManifestTemplateChecksum(manifest: EmployeeManifest) {
-  return employeeManifestChecksum({ ...manifest, skillVersionIds: [] });
+  return employeeManifestChecksum(
+    manifest.schemaVersion === 2
+      ? {
+          ...manifest,
+          skillVersionIds: [],
+          capabilityBindings: {
+            ...manifest.capabilityBindings,
+            skillVersionIds: [],
+          },
+        }
+      : { ...manifest, skillVersionIds: [] },
+  );
 }

@@ -35,7 +35,7 @@ import {
 
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
-const riceVersion = 7;
+const riceVersion = 8;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -302,7 +302,7 @@ export async function ensureDefaultEmployee(
           ${context.organizationId}, ${workspaceId}, ${builtIn.key}, ${builtIn.name}
         )
         on conflict (organization_id, workspace_id, employee_key)
-        do update set name = excluded.name, status = 'active', updated_at = now()
+        do update set name = excluded.name, updated_at = now()
         returning id
       `;
       const builtInEmployeeId = builtInEmployees[0]?.id;
@@ -352,10 +352,18 @@ export async function ensureDefaultEmployee(
           const skillVersionIds = currentManifest.success
             ? currentManifest.data.skillVersionIds
             : builtIn.skillVersionIds;
-          const nextManifest = {
-            ...builtIn,
-            skillVersionIds,
-          };
+          const nextManifest = EmployeeManifestSchema.parse(
+            builtIn.schemaVersion === 2
+              ? {
+                  ...builtIn,
+                  skillVersionIds,
+                  capabilityBindings: {
+                    ...builtIn.capabilityBindings,
+                    skillVersionIds,
+                  },
+                }
+              : { ...builtIn, skillVersionIds },
+          );
           const nextChecksum = employeeManifestChecksum(nextManifest);
           const nextVersions = await transaction<{ version: number }[]>`
             select coalesce(max(version), 0)::integer + 1 as version
@@ -389,19 +397,6 @@ export async function ensureDefaultEmployee(
           and workspace_id = ${workspaceId}
           and employee_id = ${builtInEmployeeId}
           and active
-      `;
-      await transaction`
-        insert into allrice_employee_assignments (
-          organization_id, workspace_id, employee_id, employee_version_id,
-          user_id, is_default, active
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId},
-          ${builtInVersionId}, ${userId}, false, true
-        )
-        on conflict (organization_id, workspace_id, user_id, employee_id)
-        do update set active = true,
-          employee_version_id = excluded.employee_version_id,
-          updated_at = now()
       `;
     }
     const rows = await transaction<AssignmentRow[]>`

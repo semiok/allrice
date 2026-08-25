@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canAdministerEmployees,
   resolveEmployeeCapabilities,
   type FrozenSkillBinding,
 } from './employeehub.js';
+import type { RequestContext } from '@allrice/contracts';
+import { randomUUID } from 'node:crypto';
 
 describe('Rice capability intersection', () => {
   const binding: FrozenSkillBinding = {
@@ -38,5 +41,42 @@ describe('Rice capability intersection', () => {
         [{ ...binding, declaredCapabilities: ['model:invoke'] }],
       ),
     ).toEqual(['model:invoke']);
+  });
+
+  it('keeps employee configuration behind an active workspace admin role', () => {
+    const actorId = randomUUID();
+    const organizationId = randomUUID();
+    const workspaceId = randomUUID();
+    const context: RequestContext = {
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      actor: { type: 'user', id: actorId },
+      organizationId,
+      workspaceId,
+      authenticatedAt: '2026-08-25T00:00:00.000Z',
+      memberships: [
+        {
+          id: randomUUID(),
+          userId: actorId,
+          organizationId,
+          workspaceId,
+          role: 'admin',
+          active: true,
+        },
+      ],
+    };
+    expect(canAdministerEmployees(context, workspaceId)).toBe(true);
+    expect(
+      canAdministerEmployees(
+        {
+          ...context,
+          memberships: context.memberships.map((membership) => ({
+            ...membership,
+            role: 'member',
+          })),
+        },
+        workspaceId,
+      ),
+    ).toBe(false);
   });
 });

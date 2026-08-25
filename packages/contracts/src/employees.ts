@@ -44,7 +44,61 @@ export const DefaultPartnerProfile: PartnerProfile = {
   approvalPolicy: 'confirm_side_effects',
 };
 
-export const EmployeeManifestSchema = z
+export const EmployeeAppearanceSchema = z
+  .object({
+    avatarType: z.enum(['initials', 'emoji', 'image']).default('initials'),
+    avatarValue: z.string().trim().min(1).max(500).default('R'),
+  })
+  .strict();
+
+export const EmployeeIdentitySchema = z
+  .object({
+    role: z.string().trim().min(1).max(120),
+    mission: z.string().trim().min(1).max(500),
+    workStyle: z.string().trim().min(1).max(1_000),
+    behaviorRules: z.array(z.string().trim().min(1).max(500)).max(32),
+    safetyBoundaries: z.array(z.string().trim().min(1).max(500)).max(32),
+  })
+  .strict();
+
+export const EmployeeRuntimePolicySchema = z
+  .object({
+    harness: z.enum(['codex', 'dsh']),
+    provider: z.string().trim().min(1).max(120),
+    model: z.string().trim().min(1).max(200),
+    reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
+    timeoutMs: z.number().int().min(1_000).max(3_600_000),
+    fallbackModels: z.array(z.string().trim().min(1).max(200)).max(8),
+  })
+  .strict();
+
+export const EmployeeCapabilityBindingsSchema = z
+  .object({
+    skillVersionIds: z.array(UuidSchema).max(32),
+    toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
+    knowledgeScopes: z
+      .array(z.enum(['organization', 'workspace', 'employee', 'user']))
+      .max(4),
+    workflowIds: z.array(UuidSchema).max(32),
+  })
+  .strict();
+
+export const EmployeeSecurityPolicySchema = z
+  .object({
+    dataScopes: z
+      .array(z.enum(['organization', 'workspace', 'employee', 'user']))
+      .max(4),
+    connectorIdentityModes: z.array(z.enum(['user', 'service'])).max(2),
+    approvalPolicy: z.enum([
+      'confirm_side_effects',
+      'confirm_external',
+      'autonomous',
+    ]),
+    deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
+  })
+  .strict();
+
+const EmployeeManifestV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     key: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -57,7 +111,47 @@ export const EmployeeManifestSchema = z
     partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
   })
   .strict();
+
+export const EmployeeDefinitionSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    key: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    name: z.string().min(1).max(120),
+    description: z.string().min(1).max(1_000),
+    appearance: EmployeeAppearanceSchema,
+    applicableScenarios: z.array(z.string().trim().min(1).max(300)).max(24),
+    isDefaultRice: z.boolean(),
+    identity: EmployeeIdentitySchema,
+    systemPrompt: z.string().min(1).max(10_000),
+    provider: EmployeeProviderSnapshotSchema,
+    runtimePolicy: EmployeeRuntimePolicySchema,
+    capabilities: z.array(SkillCapabilitySchema).max(16),
+    skillVersionIds: z.array(UuidSchema).max(32),
+    capabilityBindings: EmployeeCapabilityBindingsSchema,
+    securityPolicy: EmployeeSecurityPolicySchema,
+    partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
+  })
+  .strict()
+  .superRefine((definition, context) => {
+    const topLevel = [...new Set(definition.skillVersionIds)].sort();
+    const bindings = [
+      ...new Set(definition.capabilityBindings.skillVersionIds),
+    ].sort();
+    if (JSON.stringify(topLevel) !== JSON.stringify(bindings)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['capabilityBindings', 'skillVersionIds'],
+        message: 'skill bindings must match skillVersionIds',
+      });
+    }
+  });
+
+export const EmployeeManifestSchema = z.union([
+  EmployeeDefinitionSchema,
+  EmployeeManifestV1Schema,
+]);
 export type EmployeeManifest = z.infer<typeof EmployeeManifestSchema>;
+export type EmployeeDefinition = z.infer<typeof EmployeeDefinitionSchema>;
 
 export const EmployeeVersionSnapshotSchema = z
   .object({
@@ -80,9 +174,30 @@ export const EmployeeHubAssignmentSchema = z
     workspaceId: UuidSchema,
     isDefault: z.boolean(),
     active: z.boolean(),
+    assignedBy: UuidSchema.nullable(),
+    assignedAt: TimestampSchema,
     memoryCount: z.number().int().nonnegative().default(0),
     currentVersion: EmployeeVersionSnapshotSchema,
     versions: z.array(EmployeeVersionSnapshotSchema),
+  })
+  .strict();
+
+export const EmployeeAdminMemberSchema = z
+  .object({
+    userId: UuidSchema,
+    email: z.string().email(),
+    displayName: z.string().min(1).max(120),
+    role: z.enum(['admin', 'member', 'viewer']),
+  })
+  .strict();
+
+export const EmployeeAdminDirectoryEntrySchema = z
+  .object({
+    employeeId: UuidSchema,
+    employeeKey: z.string().min(1).max(160),
+    status: z.enum(['active', 'archived']),
+    currentVersion: EmployeeVersionSnapshotSchema,
+    assignedUserIds: z.array(UuidSchema),
   })
   .strict();
 
@@ -92,6 +207,19 @@ export const CreateEmployeeInputSchema = z
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().min(1).max(1_000),
     partnerProfile: PartnerProfileSchema,
+    appearance: EmployeeAppearanceSchema.optional(),
+    applicableScenarios: z
+      .array(z.string().trim().min(1).max(300))
+      .max(24)
+      .default([]),
+    behaviorRules: z
+      .array(z.string().trim().min(1).max(500))
+      .max(32)
+      .default([]),
+    safetyBoundaries: z
+      .array(z.string().trim().min(1).max(500))
+      .max(32)
+      .default([]),
     skillVersionIds: z.array(UuidSchema).max(32).default([]),
   })
   .strict();
@@ -102,8 +230,99 @@ export const PublishEmployeeVersionInputSchema = z
     employeeId: UuidSchema,
     skillVersionIds: z.array(UuidSchema).max(32).default([]),
     partnerProfile: PartnerProfileSchema.optional(),
+    appearance: EmployeeAppearanceSchema.optional(),
+    applicableScenarios: z
+      .array(z.string().trim().min(1).max(300))
+      .max(24)
+      .optional(),
+    behaviorRules: z
+      .array(z.string().trim().min(1).max(500))
+      .max(32)
+      .optional(),
+    safetyBoundaries: z
+      .array(z.string().trim().min(1).max(500))
+      .max(32)
+      .optional(),
   })
   .strict();
+
+export const ManageEmployeeAssignmentsInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    employeeId: UuidSchema,
+    userIds: z.array(UuidSchema).max(500),
+  })
+  .strict();
+
+export const UpdateEmployeeStatusInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    status: z.enum(['active', 'archived']),
+  })
+  .strict();
+
+export const EmployeeUserProfileSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    displayName: z.string().trim().min(1).max(120).nullable(),
+    preferences: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
+export const FrozenEmployeeSkillBindingSchema = z
+  .object({
+    installationId: UuidSchema,
+    skillVersionId: UuidSchema,
+    declaredCapabilities: z.array(SkillCapabilitySchema).max(16).default([]),
+    grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
+  })
+  .strict();
+
+export const EmployeeExecutionSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    employee: z
+      .object({
+        id: UuidSchema,
+        key: z.string().min(1).max(160),
+        versionId: UuidSchema,
+        revision: z.number().int().positive(),
+        definitionChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        definition: EmployeeManifestSchema,
+      })
+      .strict(),
+    assignment: z
+      .object({
+        id: UuidSchema,
+        userId: UuidSchema,
+        assignedBy: UuidSchema.nullable(),
+        assignedAt: TimestampSchema,
+      })
+      .strict(),
+    runtimePolicy: EmployeeRuntimePolicySchema,
+    capabilitySnapshot: z
+      .object({
+        declaredCapabilities: z.array(SkillCapabilitySchema).max(16),
+        grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
+        bindings: EmployeeCapabilityBindingsSchema,
+        skillBindings: z.array(FrozenEmployeeSkillBindingSchema).max(32),
+      })
+      .strict(),
+    tenantContext: z
+      .object({
+        organizationId: UuidSchema,
+        workspaceId: UuidSchema,
+        actorId: UuidSchema,
+        policySnapshotId: UuidSchema,
+      })
+      .strict(),
+    userProfile: EmployeeUserProfileSchema,
+    createdAt: TimestampSchema,
+  })
+  .strict();
+export type EmployeeExecutionSnapshot = z.infer<
+  typeof EmployeeExecutionSnapshotSchema
+>;
 
 export const AssignEmployeeVersionInputSchema = z
   .object({
@@ -143,15 +362,6 @@ export const EmployeePromptSnapshotSchema = z
       )
       .max(20),
     userRequest: z.string().min(1).max(100_000),
-  })
-  .strict();
-
-export const FrozenEmployeeSkillBindingSchema = z
-  .object({
-    installationId: UuidSchema,
-    skillVersionId: UuidSchema,
-    declaredCapabilities: z.array(SkillCapabilitySchema).max(16).default([]),
-    grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
   })
   .strict();
 
