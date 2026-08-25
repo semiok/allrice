@@ -23,6 +23,7 @@ import { executeCodexSkill } from './codex.js';
 import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
 import type { HarnessEvent } from '@allrice/contracts';
+import { HarnessEventBatcher } from './harness/delta-batcher.js';
 import { HarnessRouter } from './harness/router.js';
 import {
   executeRiceTool,
@@ -283,6 +284,7 @@ async function executeHandler(
           order: 1,
           threadId: null,
           turnId: null,
+          messageId: execution.context.runId,
           ...(event.kind === 'message'
             ? { type, text: event.text ?? '' }
             : event.kind === 'usage'
@@ -335,6 +337,78 @@ async function executeHandler(
 
 function isLeaseLoss(error: unknown) {
   return error instanceof QueueError && error.code === 'lease_lost';
+}
+
+async function appendHarnessEvent(input: {
+  workerId: string;
+  jobId: string;
+  leaseToken: string;
+  event: HarnessEvent;
+}) {
+  const { event } = input;
+  const type =
+    event.type === 'assistant.completed'
+      ? 'assistant.text.completed'
+      : event.type === 'assistant.delta'
+        ? 'assistant.text.delta'
+        : event.type === 'usage.updated'
+          ? 'heartbeat'
+          : event.type === 'tool.started'
+            ? 'tool.started'
+            : event.type === 'tool.failed'
+              ? 'tool.failed'
+              : 'tool.completed';
+  await appendJobEvent({
+    workerId: input.workerId,
+    jobId: input.jobId,
+    leaseToken: input.leaseToken,
+    type,
+    payload:
+      event.type === 'assistant.completed' || event.type === 'assistant.delta'
+        ? {
+            source: event.harness,
+            text: event.text,
+            generation: event.generation,
+            turnId: event.turnId,
+            messageId: event.messageId,
+            attempt: event.attempt,
+            order: event.order,
+            ...(event.type === 'assistant.delta' && event.orderStart
+              ? { orderStart: event.orderStart }
+              : {}),
+          }
+        : event.type === 'usage.updated'
+          ? {
+              source: event.harness,
+              generation: event.generation,
+              turnId: event.turnId,
+              messageId: event.messageId,
+              attempt: event.attempt,
+              order: event.order,
+              usage: {
+                inputTokens: event.inputTokens,
+                cachedInputTokens: event.cachedInputTokens,
+                outputTokens: event.outputTokens,
+              },
+            }
+          : {
+              source:
+                event.source === 'tool_broker' ? 'tool_broker' : event.harness,
+              toolCallId: event.toolCallId,
+              name: event.name,
+              label: event.label,
+              status: event.type.split('.')[1],
+              generation: event.generation,
+              turnId: event.turnId,
+              messageId: event.messageId,
+              ...(event.summary ? { summary: event.summary } : {}),
+              ...(event.itemCount === undefined
+                ? {}
+                : { itemCount: event.itemCount }),
+              attempt: event.attempt,
+              order: event.order,
+            },
+  });
 }
 
 export async function executeClaimedJob(input: {
@@ -407,6 +481,15 @@ export async function executeClaimedJob(input: {
       });
   }, input.heartbeatMs);
 
+  const eventBatcher = new HarnessEventBatcher((event) =>
+    appendHarnessEvent({
+      workerId: input.workerId,
+      jobId: input.jobId,
+      leaseToken: input.leaseToken,
+      event,
+    }),
+  );
+
   try {
     await appendJobEvent({
       workerId: input.workerId,
@@ -423,69 +506,9 @@ export async function executeClaimedJob(input: {
       execution,
       isolation,
       controller.signal,
-      async (event) => {
-        const type =
-          event.type === 'assistant.completed'
-            ? 'assistant.text.completed'
-            : event.type === 'assistant.delta'
-              ? 'assistant.text.delta'
-              : event.type === 'usage.updated'
-                ? 'heartbeat'
-                : event.type === 'tool.started'
-                  ? 'tool.started'
-                  : event.type === 'tool.failed'
-                    ? 'tool.failed'
-                    : 'tool.completed';
-        await appendJobEvent({
-          workerId: input.workerId,
-          jobId: input.jobId,
-          leaseToken: input.leaseToken,
-          type,
-          payload:
-            event.type === 'assistant.completed' ||
-            event.type === 'assistant.delta'
-              ? {
-                  source: event.harness,
-                  text: event.text,
-                  generation: event.generation,
-                  turnId: event.turnId,
-                  attempt: event.attempt,
-                  order: event.order,
-                }
-              : event.type === 'usage.updated'
-                ? {
-                    source: event.harness,
-                    generation: event.generation,
-                    turnId: event.turnId,
-                    attempt: event.attempt,
-                    order: event.order,
-                    usage: {
-                      inputTokens: event.inputTokens,
-                      cachedInputTokens: event.cachedInputTokens,
-                      outputTokens: event.outputTokens,
-                    },
-                  }
-                : {
-                    source:
-                      event.source === 'tool_broker'
-                        ? 'tool_broker'
-                        : event.harness,
-                    toolCallId: event.toolCallId,
-                    name: event.name,
-                    label: event.label,
-                    status: event.type.split('.')[1],
-                    generation: event.generation,
-                    turnId: event.turnId,
-                    ...(event.summary ? { summary: event.summary } : {}),
-                    ...(event.itemCount === undefined
-                      ? {}
-                      : { itemCount: event.itemCount }),
-                    attempt: event.attempt,
-                    order: event.order,
-                  },
-        });
-      },
+      (event) => eventBatcher.accept(event),
     );
+    await eventBatcher.flush();
     if (controller.signal.aborted || input.stopping()) return;
     await appendJobEvent({
       workerId: input.workerId,
@@ -528,6 +551,14 @@ export async function executeClaimedJob(input: {
     }
   } finally {
     clearInterval(heartbeat);
+    await eventBatcher.close().catch((error: unknown) => {
+      if (!isLeaseLoss(error)) {
+        console.error('[M5] Harness event flush failed', {
+          jobId: input.jobId,
+          message: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
+    });
     await isolation.cleanup();
   }
 }

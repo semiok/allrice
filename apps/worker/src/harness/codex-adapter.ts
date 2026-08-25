@@ -9,6 +9,7 @@ import type {
 
 function eventType(event: NormalizedCodexEvent): HarnessEvent['type'] {
   if (event.kind === 'message') return 'assistant.completed';
+  if (event.kind === 'delta') return 'assistant.delta';
   if (event.kind === 'usage') return 'usage.updated';
   if (event.status === 'started') return 'tool.started';
   if (event.status === 'failed') return 'tool.failed';
@@ -19,7 +20,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   readonly kind = 'codex' as const;
   readonly capabilities = {
     persistentThreads: true,
-    assistantDeltas: false,
+    assistantDeltas: true,
     toolEvents: true,
     usageEvents: true,
     interrupt: true,
@@ -43,9 +44,10 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         order: ++order,
         threadId,
         turnId,
+        messageId: input.kernel.assistantMessageId,
       };
       const normalized =
-        event.kind === 'message'
+        event.kind === 'message' || event.kind === 'delta'
           ? { ...envelope, type, text: event.text ?? '' }
           : event.kind === 'usage'
             ? {

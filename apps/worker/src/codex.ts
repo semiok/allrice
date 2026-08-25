@@ -303,7 +303,7 @@ export async function materializeSkillBundle(
 }
 
 export interface NormalizedCodexEvent {
-  kind: 'tool' | 'message' | 'usage';
+  kind: 'tool' | 'message' | 'delta' | 'usage';
   name?: string;
   status?: string;
   toolCallId?: string;
@@ -502,6 +502,7 @@ export async function executeCodexHarness(input: {
     });
     answer = result.answer;
     usage = result.usage;
+    await input.onEvent({ kind: 'usage', usage, source: 'codex' });
   } else {
     let eventChain = Promise.resolve();
     await runCommand({

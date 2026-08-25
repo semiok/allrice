@@ -41,7 +41,7 @@ describe('HarnessRouter', () => {
     expect(capabilities).toMatchObject({
       persistentThreads: true,
       interrupt: true,
-      assistantDeltas: false,
+      assistantDeltas: true,
       steer: false,
       compact: false,
     });

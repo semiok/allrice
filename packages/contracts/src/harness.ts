@@ -28,12 +28,14 @@ const HarnessEventEnvelopeSchema = z.object({
   order: z.number().int().positive(),
   threadId: z.string().trim().min(1).nullable(),
   turnId: z.string().trim().min(1).nullable(),
+  messageId: UuidSchema,
 });
 
 export const HarnessEventSchema = z.discriminatedUnion('type', [
   HarnessEventEnvelopeSchema.extend({
     type: z.literal('assistant.delta'),
     text: z.string(),
+    orderStart: z.number().int().positive().optional(),
   }).strict(),
   HarnessEventEnvelopeSchema.extend({
     type: z.literal('assistant.completed'),

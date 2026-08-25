@@ -63,7 +63,7 @@ async function streamEvents(input: {
         input.controller.enqueue(encoder.encode(': heartbeat\n\n'));
         lastHeartbeat = Date.now();
       }
-      await new Promise((resolve) => setTimeout(resolve, 750));
+      await new Promise((resolve) => setTimeout(resolve, 150));
       pending = await listRunEvents(
         input.context,
         input.workspaceId,

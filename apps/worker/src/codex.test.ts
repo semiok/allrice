@@ -81,6 +81,8 @@ input.on('line', (line) => {
   }
   if (message.id === 90 && message.result) {
     if (message.result.success !== true) process.exit(10);
+    send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', delta: '找到' } });
+    send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', delta: '两个文件。' } });
     send({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', completedAtMs: Date.now(), item: { type: 'agentMessage', id: 'message-1', text: '找到两个文件。', phase: null, memoryCitation: null } } });
     send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'turn-1', tokenUsage: { last: { inputTokens: 12, cachedInputTokens: 3, outputTokens: 8 } } } });
     send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [], error: null } } });
@@ -163,6 +165,7 @@ input.on('line', (line) => {
         text: '找到两个文件。',
         source: 'codex',
       });
+      expect(events).toContainEqual({ kind: 'delta', text: '找到' });
       expect(events).toContainEqual(
         expect.objectContaining({
           kind: 'tool',
