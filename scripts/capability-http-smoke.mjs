@@ -321,7 +321,16 @@ const archivedDirectory = await jsonRequest(
   `/api/v1/employees/${rice.employeeId}/capabilities?workspaceId=${workspaceId}`,
   { headers: tenantHeaders(admin.cookie) },
 );
-if ((await archivedDirectory.json()).capabilities.knowledge.length !== 1) {
+const archivedKnowledge = (await archivedDirectory.json()).capabilities
+  .knowledge;
+const archivedBinding = archivedKnowledge.find(
+  (item) => item.revision.id === workspaceKnowledge.id,
+);
+if (
+  archivedKnowledge.length !== 2 ||
+  archivedBinding?.effective !== false ||
+  archivedBinding.disabledReason !== 'revision_unavailable'
+) {
   throw new Error('archived Knowledge remained effective');
 }
 await jsonRequest(
