@@ -11,12 +11,14 @@ import {
   claimConversationSteer,
   completeJob,
   consumeConversationSteer,
+  effectiveContextTokens,
   estimateConversationTokens,
   failJob,
   heartbeatJob,
   getLatestContextCheckpoint,
   listContextCheckpointEvidence,
   recordConversationTurn,
+  recordConversationUsage,
   recordToolBrokerAudit,
   rejectConversationSteer,
   releaseConversationRuntime,
@@ -296,6 +298,14 @@ async function executeHandler(
           });
         });
       runtime = await clearConversationTurn(ownership);
+      if (result.usage.inputTokens > 0) {
+        runtime = await recordConversationUsage({
+          ...ownership,
+          generation: runtime.generation,
+          inputTokens: result.usage.inputTokens,
+          cachedInputTokens: result.usage.cachedInputTokens,
+        });
+      }
       const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
         (message) =>
           message.id
@@ -303,13 +313,17 @@ async function executeHandler(
             : [],
       );
       const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;
-      const estimatedTokens = estimateConversationTokens(
+      const applicationEstimatedTokens = estimateConversationTokens(
         [
           kernel.bootstrapConversation,
           kernel.authorizedMemoryContext,
           kernel.userRequest,
         ].join('\n'),
       );
+      const estimatedTokens = effectiveContextTokens({
+        applicationEstimatedTokens,
+        observedDynamicTokens: runtime.dynamicContextTokens,
+      });
       if (
         runtime.threadId &&
         adapter.capabilities.compact &&

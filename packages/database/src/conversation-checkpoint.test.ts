@@ -6,6 +6,10 @@ import {
   estimateConversationTokens,
   shouldCreateContextCheckpoint,
 } from './conversation-checkpoint.js';
+import {
+  conversationUsageWatermark,
+  effectiveContextTokens,
+} from './conversation-usage.js';
 
 describe('context checkpoint planning', () => {
   it('creates a stable checksum for a recovery snapshot', () => {
@@ -70,5 +74,45 @@ describe('context checkpoint planning', () => {
       }),
     ).toBe(false);
     expect(estimateConversationTokens('你好')).toBeGreaterThan(0);
+  });
+
+  it('subtracts the fixed harness baseline before evaluating compaction', () => {
+    const first = conversationUsageWatermark({
+      baselineInputTokens: null,
+      inputTokens: 8_590,
+    });
+    expect(first).toEqual({
+      baselineInputTokens: 8_590,
+      inputTokens: 8_590,
+      dynamicContextTokens: 0,
+    });
+
+    const latest = conversationUsageWatermark({
+      baselineInputTokens: first.baselineInputTokens,
+      inputTokens: 13_516,
+    });
+    expect(latest.dynamicContextTokens).toBe(4_926);
+    expect(
+      effectiveContextTokens({
+        applicationEstimatedTokens: 520,
+        observedDynamicTokens: latest.dynamicContextTokens,
+      }),
+    ).toBe(4_926);
+    expect(
+      shouldCreateContextCheckpoint({
+        estimatedTokens: latest.dynamicContextTokens,
+        thresholdTokens: 40_000,
+        coveredThroughMessageId: 'message-2',
+      }),
+    ).toBe(false);
+  });
+
+  it('never reports negative dynamic context after a provider reset', () => {
+    expect(
+      conversationUsageWatermark({
+        baselineInputTokens: 8_590,
+        inputTokens: 1_000,
+      }).dynamicContextTokens,
+    ).toBe(0);
   });
 });
