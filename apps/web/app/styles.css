@@ -2932,6 +2932,43 @@ textarea {
   padding: 7px 8px;
 }
 
+.session-context-status {
+  align-items: center;
+  color: #718078;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 700;
+  gap: 7px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.session-context-meter {
+  background: #dfe7df;
+  border-radius: 999px;
+  display: inline-block;
+  height: 5px;
+  overflow: hidden;
+  width: 54px;
+}
+
+.session-context-meter > span {
+  background: #78a98b;
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  transition: width 180ms ease;
+}
+
+.session-context-status-warning {
+  color: #a05b2c;
+}
+
+.session-context-status-warning .session-context-meter > span {
+  background: #d47b3d;
+}
+
 .composer .send-action {
   align-items: center;
   background: #1f6b49;

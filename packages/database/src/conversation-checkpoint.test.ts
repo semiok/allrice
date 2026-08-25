@@ -8,6 +8,7 @@ import {
 } from './conversation-checkpoint.js';
 import {
   conversationUsageWatermark,
+  sessionCompactionStatus,
   effectiveContextTokens,
 } from './conversation-usage.js';
 
@@ -114,5 +115,24 @@ describe('context checkpoint planning', () => {
         inputTokens: 1_000,
       }).dynamicContextTokens,
     ).toBe(0);
+  });
+
+  it('shows 100 percent only when compaction is actually due', () => {
+    expect(
+      sessionCompactionStatus({
+        pressureTokens: 39_999,
+        thresholdTokens: 40_000,
+      }),
+    ).toMatchObject({ percentage: 99, compactionDue: false });
+    expect(
+      sessionCompactionStatus({
+        pressureTokens: 40_000,
+        thresholdTokens: 40_000,
+      }),
+    ).toMatchObject({
+      percentage: 100,
+      compactionDue: true,
+      remainingTokens: 0,
+    });
   });
 });

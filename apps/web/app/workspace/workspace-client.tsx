@@ -39,6 +39,14 @@ interface Session {
   archivedAt: string | null;
 }
 
+interface SessionContextStatus {
+  pressureTokens: number;
+  thresholdTokens: number;
+  remainingTokens: number;
+  percentage: number;
+  compactionDue: boolean;
+}
+
 interface RiceVersionChoice {
   id: string;
   version: number;
@@ -187,6 +195,7 @@ interface AutomationToast {
 interface HistoryPayload {
   session: Session;
   messages: Message[];
+  contextStatus: SessionContextStatus;
 }
 
 interface RunEvent {
@@ -218,6 +227,32 @@ interface WorkspaceMemory {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
+}
+
+function SessionContextMeter({ status }: { status: SessionContextStatus }) {
+  const label = status.compactionDue
+    ? '上下文 100% · 待压缩'
+    : `上下文 ${status.percentage}%`;
+  return (
+    <div
+      className={`session-context-status${
+        status.percentage >= 80 ? ' session-context-status-warning' : ''
+      }`}
+      title={`当前 ${status.pressureTokens.toLocaleString()} / ${status.thresholdTokens.toLocaleString()} tokens；达到 100% 后自动压缩`}
+    >
+      <span>{label}</span>
+      <span
+        aria-label={`会话上下文使用 ${status.percentage}%，达到 100% 后自动压缩`}
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={status.percentage}
+        className="session-context-meter"
+        role="progressbar"
+      >
+        <span style={{ width: `${status.percentage}%` }} />
+      </span>
+    </div>
+  );
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -793,7 +828,17 @@ export function WorkspaceClient({
         sessions: [result.session, ...workspace.sessions],
       });
       setActiveId(result.session.id);
-      setHistory({ session: result.session, messages: [] });
+      setHistory({
+        session: result.session,
+        messages: [],
+        contextStatus: {
+          pressureTokens: 0,
+          thresholdTokens: 40_000,
+          remainingTokens: 40_000,
+          percentage: 0,
+          compactionDue: false,
+        },
+      });
       setNewTaskOpen(false);
       setEmployeePickerOpen(false);
       window.history.replaceState(null, '', window.location.pathname);
@@ -1503,6 +1548,7 @@ export function WorkspaceClient({
                   <option value="private">保持私有</option>
                   <option value="workspace">工作区公开</option>
                 </select>
+                <SessionContextMeter status={history.contextStatus} />
               </div>
               <button
                 className="send-action"

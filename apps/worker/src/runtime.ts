@@ -151,6 +151,7 @@ async function executeHandler(
         ...ownership,
         ownerId: execution.job.ownerId,
         configChecksum,
+        compactThresholdTokens: contextCompactThreshold(),
       });
     } catch (error) {
       if (
@@ -298,21 +299,12 @@ async function executeHandler(
           });
         });
       runtime = await clearConversationTurn(ownership);
-      if (result.usage.inputTokens > 0) {
-        runtime = await recordConversationUsage({
-          ...ownership,
-          generation: runtime.generation,
-          inputTokens: result.usage.inputTokens,
-          cachedInputTokens: result.usage.cachedInputTokens,
-        });
-      }
       const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
         (message) =>
           message.id
             ? [{ id: message.id, role: message.role, text: message.text }]
             : [],
       );
-      const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;
       const applicationEstimatedTokens = estimateConversationTokens(
         [
           kernel.bootstrapConversation,
@@ -320,17 +312,30 @@ async function executeHandler(
           kernel.userRequest,
         ].join('\n'),
       );
-      const estimatedTokens = effectiveContextTokens({
-        applicationEstimatedTokens,
-        observedDynamicTokens: runtime.dynamicContextTokens,
-      });
+      if (result.usage.inputTokens > 0) {
+        runtime = await recordConversationUsage({
+          ...ownership,
+          generation: runtime.generation,
+          inputTokens: result.usage.inputTokens,
+          cachedInputTokens: result.usage.cachedInputTokens,
+          applicationEstimatedTokens,
+        });
+      }
+      const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;
+      const estimatedTokens =
+        result.usage.inputTokens > 0
+          ? runtime.contextPressureTokens
+          : effectiveContextTokens({
+              applicationEstimatedTokens,
+              observedDynamicTokens: runtime.dynamicContextTokens,
+            });
       if (
         runtime.threadId &&
         adapter.capabilities.compact &&
         adapter.compact &&
         shouldCreateContextCheckpoint({
           estimatedTokens,
-          thresholdTokens: contextCompactThreshold(),
+          thresholdTokens: runtime.compactThresholdTokens,
           coveredThroughMessageId,
           latestCoveredThroughMessageId:
             checkpoint?.coveredThroughMessageId ?? null,

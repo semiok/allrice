@@ -32,6 +32,10 @@ import {
   riceEmployeeKey,
   riceManifest,
 } from './employee-config.ts';
+import {
+  defaultContextCompactThreshold,
+  sessionCompactionStatus,
+} from './conversation-usage.ts';
 
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
@@ -718,11 +722,27 @@ export async function getChatSessionHistory(
       case when m.role = 'user' then 0 else 1 end,
       m.id
   `;
+  const runtimes = await sql<
+    { context_pressure_tokens: number; compact_threshold_tokens: number }[]
+  >`
+    select context_pressure_tokens, compact_threshold_tokens
+    from allrice_conversation_runtimes
+    where organization_id = ${context.organizationId}
+      and workspace_id = ${workspaceId}
+      and session_id = ${row.id}
+      and owner_id = ${row.owner_id}
+  `;
+  const contextStatus = sessionCompactionStatus({
+    pressureTokens: runtimes[0]?.context_pressure_tokens ?? 0,
+    thresholdTokens:
+      runtimes[0]?.compact_threshold_tokens ?? defaultContextCompactThreshold,
+  });
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
   );
   return {
     session: mapSession(row),
+    contextStatus,
     messages: messages.map((message) =>
       mapMessage(context, message, attachments.get(message.id) ?? []),
     ),

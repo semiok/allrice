@@ -25,6 +25,23 @@ try {
     );
   }
 
+  const compactionStatusRows = await sql<
+    { version: string | undefined; semantics: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'semantics' as semantics
+    from allrice_runtime_metadata
+    where key = 'session-compaction-status-schema'
+  `;
+  if (
+    expectedMigrations.includes('0019_session_compaction_status.sql') &&
+    (compactionStatusRows[0]?.version !== '0019' ||
+      compactionStatusRows[0]?.semantics !== 'floor-pressure-percent')
+  ) {
+    throw new Error(
+      'Session compaction status schema metadata is missing or invalid',
+    );
+  }
+
   const vectorRows = await sql<{ version: string }[]>`
     select extversion as version from pg_extension where extname = 'vector'
   `;
