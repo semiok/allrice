@@ -94,10 +94,21 @@ export interface ConnectorTransport {
   }): Promise<{ modelContent: string; summary: string; rawOutput: unknown }>;
 }
 
+interface ConnectorBrokerStore {
+  prepare: typeof prepareConnectorCall;
+  load: typeof getApprovedConnectorCallForExecution;
+  complete: typeof completeConnectorCall;
+}
+
 export class ConnectorBroker {
   constructor(
     private readonly credentialResolver: ConnectorCredentialResolver,
     private readonly transports: ReadonlyMap<string, ConnectorTransport>,
+    private readonly store: ConnectorBrokerStore = {
+      prepare: prepareConnectorCall,
+      load: getApprovedConnectorCallForExecution,
+      complete: completeConnectorCall,
+    },
   ) {}
 
   async execute(input: {
@@ -107,7 +118,7 @@ export class ConnectorBroker {
     allowedIdentityModes: ('user' | 'service')[];
     signal: AbortSignal;
   }) {
-    const decision = await prepareConnectorCall(input);
+    const decision = await this.store.prepare(input);
     if (decision.status === 'waiting_approval') {
       throw new HandlerError(
         'APPROVAL_REQUIRED',
@@ -122,13 +133,13 @@ export class ConnectorBroker {
         false,
       );
     }
-    const execution = await getApprovedConnectorCallForExecution({
+    const execution = await this.store.load({
       context: input.context,
       callId: decision.callId,
     });
     const transport = this.transports.get(execution.connectorKey);
     if (!transport) {
-      await completeConnectorCall({
+      await this.store.complete({
         context: input.context,
         callId: decision.callId,
         errorCode: 'CONNECTOR_TRANSPORT_UNAVAILABLE',
@@ -153,18 +164,20 @@ export class ConnectorBroker {
         resourceScope: execution.resourceScope,
         signal: input.signal,
       });
-      await completeConnectorCall({
+      await this.store.complete({
         context: input.context,
         callId: decision.callId,
         output: result.rawOutput,
       });
       return result;
     } catch (error) {
-      await completeConnectorCall({
-        context: input.context,
-        callId: decision.callId,
-        errorCode: 'CONNECTOR_EXECUTION_FAILED',
-      }).catch(() => undefined);
+      await this.store
+        .complete({
+          context: input.context,
+          callId: decision.callId,
+          errorCode: 'CONNECTOR_EXECUTION_FAILED',
+        })
+        .catch(() => undefined);
       throw error;
     }
   }
