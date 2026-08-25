@@ -34,7 +34,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 | Memory                  | Workflow implemented     | MET-42 / MET-50  | [README](features/memory/README.md)               |
 | Worker and Queue        | Feature implemented      | MET-43 / MET-49  | [README](features/worker-queue/README.md)         |
 | SkillHub                | Rice binding implemented | MET-53 / 54 / 55 | [README](features/skillhub/README.md)             |
-| EmployeeHub             | Codex V1 implemented     | MET-45           | [README](features/employeehub/README.md)          |
+| EmployeeHub             | Definition V2 Phase 1.1  | MET-45, MET-63   | [README](features/employeehub/README.md)          |
 | OpenRice integration    | Boundary frozen          | MET-49           | [README](features/openrice-integration/README.md) |
 | OpenRice migration      | Planned                  | MET-46           | [README](features/migration/README.md)            |
 | Operations and recovery | Baseline definitions     | MET-47           | [README](features/operations/README.md)           |

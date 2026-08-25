@@ -6,6 +6,7 @@ export type AppNavKey = 'workspace' | 'automation' | 'employees';
 interface AppNavigationProps {
   active: AppNavKey | null;
   actionsDisabled?: boolean;
+  showEmployeeAdmin?: boolean;
   onFiles?: () => void;
   onMemory?: () => void;
   onNavigate?: (key: AppNavKey) => void;
@@ -25,6 +26,7 @@ function navClass(active: boolean) {
 export function AppNavigation({
   active,
   actionsDisabled,
+  showEmployeeAdmin = false,
   onFiles,
   onMemory,
   onNavigate,
@@ -76,14 +78,16 @@ export function AppNavigation({
           自动化
         </>,
       )}
-      {destination(
-        'employees',
-        '/employees',
-        <>
-          <span className="primary-menu-icon">✦</span>
-          AI员工
-        </>,
-      )}
+      {showEmployeeAdmin
+        ? destination(
+            'employees',
+            '/employees',
+            <>
+              <span className="primary-menu-icon">✦</span>
+              AI员工配置
+            </>,
+          )
+        : null}
     </nav>
   );
 }
@@ -98,6 +102,7 @@ export function AppSidebar({
   onFiles,
   onMemory,
   onNavigate,
+  showEmployeeAdmin,
 }: AppSidebarProps) {
   return (
     <aside className={`app-sidebar ${className ?? ''}`.trim()}>
@@ -115,6 +120,7 @@ export function AppSidebar({
         onFiles={onFiles}
         onMemory={onMemory}
         onNavigate={onNavigate}
+        showEmployeeAdmin={showEmployeeAdmin}
       />
       {children}
       {footer}

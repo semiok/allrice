@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CancelRunInputSchema,
   CreateRunInputSchema,
+  EmployeeExecutionSnapshotSchema,
   ExecutionContextSchema,
   JobPayloadSchema,
   JobSchema,
@@ -15,6 +16,7 @@ import {
   authorizeExecution,
   retryDelayMs,
   type ExecutionContext,
+  type EmployeeExecutionSnapshot,
   type Job,
   type JobStatus,
   type RequestContext,
@@ -434,6 +436,10 @@ export async function enqueueRun(
       skillVersionIds: string[];
       skillBindings: unknown[];
       promptSnapshot: Record<string, unknown>;
+      executionSnapshot: Omit<
+        EmployeeExecutionSnapshot,
+        'tenantContext' | 'createdAt'
+      >;
     };
   } = {},
 ) {
@@ -595,12 +601,22 @@ export async function enqueueRun(
       `;
     }
     if (options.employeeBinding) {
+      const executionSnapshot = EmployeeExecutionSnapshotSchema.parse({
+        ...options.employeeBinding.executionSnapshot,
+        tenantContext: {
+          organizationId: context.organizationId,
+          workspaceId,
+          actorId: ownerId,
+          policySnapshotId: policy.id,
+        },
+        createdAt: new Date().toISOString(),
+      });
       await transaction`
         insert into allrice_employee_runs (
           run_id, organization_id, workspace_id, owner_id,
           employee_assignment_id, employee_version_id, session_id,
           user_message_id, assistant_message_id, status, provider_snapshot,
-          skill_bindings, prompt_snapshot
+          skill_bindings, prompt_snapshot, execution_snapshot, created_at
         ) values (
           ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
           ${options.employeeBinding.employeeAssignmentId},
@@ -612,7 +628,9 @@ export async function enqueueRun(
             toJsonValue(options.employeeBinding.providerSnapshot),
           )},
           ${transaction.json(toJsonValue(options.employeeBinding.skillBindings))},
-          ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))}
+          ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))},
+          ${transaction.json(toJsonValue(executionSnapshot))},
+          ${executionSnapshot.createdAt}
         )
       `;
     }

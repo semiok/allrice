@@ -136,6 +136,46 @@ try {
     throw new Error('Skill governance schema metadata is missing or invalid');
   }
 
+  const employeeDefinitionRows = await sql<
+    {
+      version: string | undefined;
+      definition: string | undefined;
+      execution_snapshot: string | undefined;
+      assignment: string | undefined;
+    }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'definition' as definition,
+      value ->> 'executionSnapshot' as execution_snapshot,
+      value ->> 'assignment' as assignment
+    from allrice_runtime_metadata
+    where key = 'employee-definition-schema'
+  `;
+  if (
+    expectedMigrations.includes('0015_employee_snapshot_rollout.sql') &&
+    (employeeDefinitionRows[0]?.version !== '0015' ||
+      employeeDefinitionRows[0]?.definition !== '2' ||
+      employeeDefinitionRows[0]?.execution_snapshot !== '1' ||
+      employeeDefinitionRows[0]?.assignment !== 'admin-managed')
+  ) {
+    throw new Error(
+      'Employee Definition schema metadata is missing or invalid',
+    );
+  }
+  const employeeSnapshotTriggerRows = await sql<{ installed: boolean }[]>`
+    select exists (
+      select 1 from pg_trigger
+      where tgname = 'allrice_employee_runs_snapshot_rollout'
+        and not tgisinternal
+    ) as installed
+  `;
+  if (
+    expectedMigrations.includes('0015_employee_snapshot_rollout.sql') &&
+    employeeSnapshotTriggerRows[0]?.installed !== true
+  ) {
+    throw new Error('Employee snapshot rollout trigger is missing');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

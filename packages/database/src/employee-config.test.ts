@@ -2,13 +2,18 @@ import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import { employeeManifestChecksum, riceManifest } from './employee-config.js';
+import {
+  employeeManifestChecksum,
+  employeeManifestTemplateChecksum,
+  riceManifest,
+} from './employee-config.js';
 
 describe('Rice employee manifest', () => {
   it('has a stable identity and canonical skill ordering', () => {
     const first = randomUUID();
     const second = randomUUID();
     const manifest = riceManifest([second, first, second]);
+    expect(manifest.schemaVersion).toBe(2);
     expect(manifest.name).toBe('Rice');
     expect(manifest.provider).toMatchObject({
       provider: 'codex',
@@ -16,11 +21,23 @@ describe('Rice employee manifest', () => {
       reasoningEffort: 'high',
     });
     expect(manifest.skillVersionIds).toEqual([first, second].sort());
+    if (manifest.schemaVersion === 2) {
+      expect(manifest.isDefaultRice).toBe(true);
+      expect(manifest.runtimePolicy.harness).toBe('codex');
+      expect(manifest.capabilityBindings.skillVersionIds).toEqual(
+        manifest.skillVersionIds,
+      );
+      expect(manifest.securityPolicy.dataScopes).not.toContain('organization');
+    }
   });
 
   it('changes the immutable checksum when a SkillVersion changes', () => {
+    const skillVersionId = randomUUID();
     expect(employeeManifestChecksum(riceManifest())).not.toBe(
-      employeeManifestChecksum(riceManifest([randomUUID()])),
+      employeeManifestChecksum(riceManifest([skillVersionId])),
+    );
+    expect(employeeManifestTemplateChecksum(riceManifest())).toBe(
+      employeeManifestTemplateChecksum(riceManifest([skillVersionId])),
     );
   });
 

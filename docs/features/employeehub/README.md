@@ -1,59 +1,91 @@
 # EmployeeHub
 
-> Status: **Minimal Codex-backed V1 implemented**
+> Status: **Employee Definition V2 / Phase 1.1 implemented**
 >
-> Linear: **MET-45**
+> Linear: **MET-45, MET-60, MET-63**
 
-## User outcome
+## Product model
 
-An employee receives a default AI employee and can run it with a stable, auditable definition. Enterprise managers can later publish and assign richer employees through OpenRice integration.
+Rice is the default general-purpose employee. Administrators define and assign
+specialized employees; ordinary members use only the employees assigned to
+them. Employees have no user-facing version concept. AllRice keeps immutable
+internal revisions solely for reproducible execution, rollback and audit.
 
-## V1 scope
+An Employee Definition contains:
 
-- one predefined Employee named **Rice**, shown first and selected by an explicit default Assignment;
-- immutable EmployeeVersion;
-- one EmployeeAssignment per human employee;
-- `gpt-5.6-luna` / `high` defaults with deployment overrides frozen into each published manifest;
-- exact SkillVersion bindings inherited from installed, enabled SkillHub versions;
-- Run linkage to EmployeeVersion, SkillVersion and PolicySnapshot;
-- result and audit visibility in the employee workspace.
+- name, description, appearance and applicable scenarios;
+- identity, mission, work style, behavior rules and safety boundaries;
+- runtime policy (harness, provider, model, reasoning and timeout);
+- Skill, Tool, Knowledge and Workflow bindings;
+- data scopes, connector identity modes and approval policy.
 
-## Deferred
+## Administration boundary
 
-- visual employee editor;
-- public/internal marketplace;
-- complex multi-step manifest builder;
-- broad Connector and Loop orchestration;
-- cross-enterprise publishing.
+- Active workspace or organization administrators may create, configure,
+  enable, disable and assign specialized employees.
+- Ordinary members and viewers cannot mutate Employee Definitions or
+  assignments.
+- Rice cannot be disabled or removed through the assignment API.
+- Specialized built-in templates are available in the administrator directory
+  but are not automatically granted to every user.
+- A member sees a specialized employee in the workspace only after an explicit
+  administrator assignment.
+
+## Immutable execution snapshot
+
+Every accepted EmployeeRun freezes an `EmployeeExecutionSnapshot` before it is
+queued. The snapshot includes:
+
+- exact Employee Definition revision and checksum;
+- exact assignment, assignee, assigning administrator and assignment time;
+- runtime and capability policy;
+- exact SkillVersion grants and Tool / Knowledge / Workflow bindings;
+- organization, workspace, actor and PolicySnapshot identifiers;
+- the employee-scoped user profile used for that run.
+
+The database rejects later mutation of the snapshot. A later configuration or
+assignment change affects only new work and cannot rewrite historical runs.
+During rolling deployment, an older Web/Worker process receives a frozen legacy
+snapshot automatically instead of failing a message; the new runtime always
+writes the complete V2-derived snapshot explicitly.
 
 ## Core relationship
 
 ```text
-Employee
-  -> EmployeeVersion
-       -> EmployeeAssignment
-            -> EmployeeRun
-                 -> RunStep / SkillRun / Approval / Artifact / AuditEvent
+Employee Definition
+  -> immutable internal revision
+       -> administrator Assignment
+            -> Session
+                 -> EmployeeRun + immutable ExecutionSnapshot
+                      -> RunStep / SkillRun / Approval / Artifact / AuditEvent
 ```
 
-Published versions are immutable. Assignment grants access but does not copy private Session/Memory between human employees.
+Assignment grants use of the employee but never copies private Session, Memory,
+files or credentials between users.
 
-Migration `0007_employeehub_rice.sql` makes the published manifest, provider snapshot and SkillVersion IDs immutable. `allrice_employee_runs` freezes the Assignment, EmployeeVersion, provider, skill grants and prompt context for each durable Run; `allrice_employee_run_steps` mirrors its ordered RunEvent evidence. Rollback changes an Assignment to an older executable version and never rewrites history.
+## API
 
-## Product surface and API
+- `GET /api/v1/employees` returns the caller's assignments. Administrators also
+  receive the employee directory, member directory and configurable Skills.
+- `POST /api/v1/employees` creates a specialized employee or publishes an
+  immutable internal revision; both operations require an administrator.
+- `PUT /api/v1/employees/:employeeId/assignments` replaces the employee's
+  member assignments and requires an administrator.
+- `PATCH /api/v1/employees/:employeeId/status` enables or disables a specialized
+  employee and requires an administrator.
+- `PATCH /api/v1/employees/:assignmentId/default` lets a user choose among the
+  employees already assigned to them.
 
-- `/employees` is the EmployeeHub menu. V1 shows Rice, the explicit default badge, current model/reasoning, enabled SkillHub choices and immutable version history.
-- `GET|POST /api/v1/employees` lists assignments or publishes a new Rice version.
-- `PATCH /api/v1/employees/:assignmentId/version` switches the exact assigned version.
-- `PATCH /api/v1/employees/:assignmentId/default` explicitly changes the default without relying on list order.
-- creating a Session may name an `employeeAssignmentId`; sending a Message returns `202` with its durable Run and a pending assistant Message.
+## Security invariant
 
-The browser polls the normal Run endpoint and reloads server-authoritative Message state. Success, failure and cancellation are written back transactionally by the Queue finalizer.
-
-## Security
-
-The effective execution permission is the intersection of human Membership, EmployeeAssignment, immutable EmployeeVersion capability, enabled version-pinned SkillInstallation and the frozen PolicySnapshot. The Worker receives no database URL or arbitrary deployment credentials, and the Codex harness keeps shell, unified exec, full browser/CDP, multi-agent and credential elicitation disabled.
+Effective execution permission is the intersection of human Membership,
+EmployeeAssignment, Employee Definition capabilities, enabled and pinned
+SkillInstallation grants, tenant policy and the frozen PolicySnapshot. The
+worker receives no database URL, host shell or arbitrary deployment credentials.
 
 ## Acceptance
 
-TNlabs assigns the same default EmployeeVersion to User A and User B as separate assignments. Both can run it, but their Chat, Memory, files, credentials, Skill favorites and Run context remain isolated.
+An administrator can configure a specialized employee and assign it to User A
+without exposing it to User B. Rice remains available to both users. A run
+started by User A can later be reproduced from its snapshot even if the
+administrator changes the employee, Skill grants or assignments.
