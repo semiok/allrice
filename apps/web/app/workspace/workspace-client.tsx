@@ -1088,6 +1088,23 @@ export function WorkspaceClient({
   async function sendMessage() {
     if (!workspace || !activeId || !draft.trim()) return;
     const text = draft.trim();
+    const activeAssistant = [...(history?.messages ?? [])]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          message.status === 'pending' &&
+          message.runId,
+      );
+    const activeTurnEvent = activeAssistant?.runId
+      ? [...(eventsByRun[activeAssistant.runId] ?? [])]
+          .reverse()
+          .find(
+            (event) =>
+              typeof event.payload.turnId === 'string' &&
+              typeof event.payload.generation === 'number',
+          )
+      : undefined;
     setBusy(true);
     setError('');
     setDraft('');
@@ -1102,6 +1119,13 @@ export function WorkspaceClient({
               clientMessageId: crypto.randomUUID(),
               text,
               attachmentIds: pendingAttachments.map((file) => file.id),
+              deliveryMode: 'auto',
+              ...(activeTurnEvent
+                ? {
+                    expectedTurnId: activeTurnEvent.payload.turnId,
+                    expectedGeneration: activeTurnEvent.payload.generation,
+                  }
+                : {}),
             }),
           },
         ),

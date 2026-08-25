@@ -19,11 +19,13 @@ import {
   closeCodexAppServerClients,
   compactCodexAppServerThread,
   runCodexAppServerTurn,
+  steerCodexAppServerTurn,
   type CodexDynamicToolDefinition,
 } from './codex-app-server.js';
 
 export { closeCodexAppServerClients };
 export { compactCodexAppServerThread };
+export { steerCodexAppServerTurn };
 
 const maximumArtifactBytes = 2_000_000;
 const maximumOutputBytes = 2_000_000;

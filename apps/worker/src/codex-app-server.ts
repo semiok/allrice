@@ -876,6 +876,37 @@ class SharedCodexAppServerClient {
     }
   }
 
+  async steerTurn(input: {
+    threadId: string;
+    turnId: string;
+    message: string;
+    clientUserMessageId: string;
+  }) {
+    await this.ready;
+    const active = this.activeTurns.get(input.threadId);
+    if (!active || active.turnId !== input.turnId || active.settled) {
+      throw new HandlerError(
+        'CODEX_APP_SERVER_ERROR',
+        'Codex turn is no longer active for steer',
+        true,
+      );
+    }
+    const response = await this.request('turn/steer', {
+      threadId: input.threadId,
+      expectedTurnId: input.turnId,
+      clientUserMessageId: input.clientUserMessageId,
+      input: [{ type: 'text', text: input.message, text_elements: [] }],
+    });
+    const turnId = stringValue(response.turnId);
+    if (turnId && turnId !== input.turnId) {
+      throw new HandlerError(
+        'CODEX_APP_SERVER_ERROR',
+        'Codex steer acknowledged a different turn',
+        true,
+      );
+    }
+  }
+
   retire(error: Error) {
     if (this.terminalError) return;
     this.terminalError = error;
@@ -975,6 +1006,23 @@ export async function compactCodexAppServerThread(threadId: string) {
     );
   }
   await client.compactThread(threadId);
+}
+
+export async function steerCodexAppServerTurn(input: {
+  threadId: string;
+  turnId: string;
+  message: string;
+  clientUserMessageId: string;
+}) {
+  const client = threadClients.get(input.threadId);
+  if (!client?.usable) {
+    throw new HandlerError(
+      'CODEX_APP_SERVER_ERROR',
+      'Codex thread is not loaded for steer',
+      true,
+    );
+  }
+  await client.steerTurn(input);
 }
 
 export async function runCodexAppServerTurn(input: {

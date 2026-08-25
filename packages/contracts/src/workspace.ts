@@ -112,6 +112,9 @@ export const SendChatMessageInputSchema = z
     clientMessageId: UuidSchema,
     text: z.string().trim().min(1).max(40_000),
     attachmentIds: z.array(UuidSchema).max(8).default([]),
+    deliveryMode: z.enum(['auto', 'steer', 'follow_up']).default('auto'),
+    expectedTurnId: z.string().trim().min(1).max(255).optional(),
+    expectedGeneration: z.number().int().nonnegative().optional(),
   })
   .strict();
 

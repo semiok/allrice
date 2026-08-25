@@ -191,6 +191,21 @@ try {
     throw new Error('Context checkpoint schema metadata is missing or invalid');
   }
 
+  const conversationInputRows = await sql<
+    { version: string | undefined; steer: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'steer' as steer
+    from allrice_runtime_metadata
+    where key = 'conversation-input-schema'
+  `;
+  if (
+    expectedMigrations.includes('0017_active_turn_steer.sql') &&
+    (conversationInputRows[0]?.version !== '0017' ||
+      conversationInputRows[0]?.steer !== 'turn/steer')
+  ) {
+    throw new Error('Conversation input schema metadata is missing or invalid');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

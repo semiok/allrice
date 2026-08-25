@@ -1011,7 +1011,7 @@ export async function sendChatMessage(
         userRequest,
       },
     });
-    const { enqueueRun } = await import('./queue.ts');
+    const { enqueueRun, getRun } = await import('./queue.ts');
     const queued = await enqueueRun(
       context,
       {
@@ -1028,12 +1028,35 @@ export async function sendChatMessage(
         maxAttempts: 2,
         timeoutMs: 300_000,
       },
-      { employeeBinding: binding },
+      {
+        employeeBinding: binding,
+        conversationDelivery: {
+          sessionId: session.id,
+          userMessageId: result.userMessage.id,
+          assistantMessageId: result.assistantMessage.id,
+          clientUserMessageId: message.clientMessageId,
+          message: message.text,
+          requestedMode: message.deliveryMode,
+          ...(message.expectedTurnId
+            ? { expectedTurnId: message.expectedTurnId }
+            : {}),
+          ...(message.expectedGeneration === undefined
+            ? {}
+            : { expectedGeneration: message.expectedGeneration }),
+          hasAttachments: message.attachmentIds.length > 0,
+        },
+      },
     );
+    const responseRun =
+      queued.delivery === 'steer_pending' && queued.activeRunId
+        ? await getRun(context, workspaceId, queued.activeRunId)
+        : queued.run;
     return {
       userMessage: mapMessage(context, result.userMessage, []),
       assistantMessage: mapMessage(context, result.assistantMessage, []),
-      run: queued.run,
+      run: responseRun,
+      fallbackRunId: queued.delivery === 'immediate' ? null : queued.run.id,
+      delivery: queued.delivery,
       created: queued.created,
     };
   } catch (error) {
