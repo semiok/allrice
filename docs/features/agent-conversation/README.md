@@ -48,14 +48,20 @@ increments add context compaction and active-turn steering. A second message is
 still deliberately serialized behind the active turn.
 
 Long conversations are compacted only after a turn and its tool lifecycle have
-closed. When the authorized context reaches the configured token threshold,
+closed. The threshold measures growth above the thread generation's first
+observed provider input, excluding fixed system, Harness and tool-schema
+overhead. AllRice compares that growth with its tenant-authorized visible
+conversation estimate and uses the larger value. Cached input is retained for
+diagnostics but is not itself treated as conversation growth. When this dynamic
+context reaches the configured token threshold,
 AllRice asks the active Harness to compact its thread, then stores a tenant-bound
 `ContextCheckpoint` with an extractive summary, covered message ID, summary
 version, configuration checksum, token estimate and thread generation. A
 checkpoint with a mismatched checksum is ignored. If Codex can no longer resume
 the old thread, the new generation starts from the verified checkpoint plus the
 uncovered recent message window. `ALLRICE_CONTEXT_COMPACT_TOKENS` defaults to
-40,000 and may be lowered in deterministic acceptance tests.
+40,000. The watermark resets after compaction or a new thread generation and
+may be lowered in deterministic acceptance tests.
 
 ## Event contract
 

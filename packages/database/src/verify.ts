@@ -206,6 +206,23 @@ try {
     throw new Error('Conversation input schema metadata is missing or invalid');
   }
 
+  const usageWatermarkRows = await sql<
+    { version: string | undefined; strategy: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'strategy' as strategy
+    from allrice_runtime_metadata
+    where key = 'conversation-usage-watermark-schema'
+  `;
+  if (
+    expectedMigrations.includes('0018_conversation_usage_watermark.sql') &&
+    (usageWatermarkRows[0]?.version !== '0018' ||
+      usageWatermarkRows[0]?.strategy !== 'baseline-relative-max-visible')
+  ) {
+    throw new Error(
+      'Conversation usage watermark schema metadata is missing or invalid',
+    );
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

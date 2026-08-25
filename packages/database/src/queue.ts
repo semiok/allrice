@@ -909,6 +909,12 @@ async function transitionTerminal(
     }, updated_at = now(), completed_at = now()
     where id = ${job.run_id}
   `;
+  await transaction`
+    update allrice_conversation_followups
+    set state = ${input.runStatus === 'succeeded' ? 'consumed' : 'canceled'},
+        consumed_at = ${input.runStatus === 'succeeded' ? new Date() : null}
+    where run_id = ${job.run_id} and state in ('released', 'running')
+  `;
   const employeeRuns = await transaction<
     { assistant_message_id: string; prompt_snapshot: unknown }[]
   >`

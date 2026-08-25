@@ -3,6 +3,7 @@ import type postgres from 'postgres';
 import { z } from 'zod';
 
 import { getDatabase } from './index.ts';
+import { conversationUsageWatermark } from './conversation-usage.ts';
 
 const ChecksumSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const ThreadIdSchema = z.string().trim().min(1).max(255);
@@ -23,6 +24,10 @@ interface ConversationRuntimeRow {
   active_turn_id: string | null;
   worker_id: string | null;
   last_error_code: string | null;
+  usage_baseline_input_tokens: number | null;
+  last_input_tokens: number | null;
+  last_cached_input_tokens: number | null;
+  dynamic_context_tokens: number;
 }
 
 export class ConversationRuntimeError extends Error {
@@ -60,6 +65,10 @@ function mapBinding(row: ConversationRuntimeRow) {
     activeTurnId: row.active_turn_id,
     workerId: row.worker_id,
     lastErrorCode: row.last_error_code,
+    usageBaselineInputTokens: row.usage_baseline_input_tokens,
+    lastInputTokens: row.last_input_tokens,
+    lastCachedInputTokens: row.last_cached_input_tokens,
+    dynamicContextTokens: row.dynamic_context_tokens,
   };
 }
 
@@ -129,6 +138,10 @@ export async function acquireConversationRuntime(input: {
           active_turn_id = null, worker_id = ${values.workerId},
           config_checksum = ${values.configChecksum},
           thread_id = ${configChanged ? null : current.thread_id},
+          usage_baseline_input_tokens = ${configChanged ? null : current.usage_baseline_input_tokens},
+          last_input_tokens = ${configChanged ? null : current.last_input_tokens},
+          last_cached_input_tokens = ${configChanged ? null : current.last_cached_input_tokens},
+          dynamic_context_tokens = ${configChanged ? 0 : current.dynamic_context_tokens},
           last_error_code = null, last_started_at = now(), updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -207,7 +220,55 @@ export async function bindConversationThread(input: {
       update allrice_conversation_runtimes
       set thread_id = ${values.threadId},
           thread_generation = thread_generation + ${changed ? 1 : 0},
+          usage_baseline_input_tokens = ${changed ? null : current.usage_baseline_input_tokens},
+          last_input_tokens = ${changed ? null : current.last_input_tokens},
+          last_cached_input_tokens = ${changed ? null : current.last_cached_input_tokens},
+          dynamic_context_tokens = ${changed ? 0 : current.dynamic_context_tokens},
           active_turn_id = null, updated_at = now()
+      where session_id = ${values.sessionId}
+      returning *
+    `;
+    return mapBinding(rows[0]!);
+  });
+}
+
+export async function recordConversationUsage(input: {
+  organizationId: string;
+  workspaceId: string;
+  sessionId: string;
+  runId: string;
+  workerId: string;
+  generation: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+}) {
+  const values = {
+    ...ownedValues(input),
+    generation: z.number().int().nonnegative().parse(input.generation),
+    inputTokens: z.number().int().nonnegative().parse(input.inputTokens),
+    cachedInputTokens: z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(input.cachedInputTokens),
+  };
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    const current = await lockedOwnedRuntime(transaction, values);
+    if (current.thread_generation !== values.generation) {
+      throw new ConversationRuntimeError('conversation_ownership_lost');
+    }
+    const watermark = conversationUsageWatermark({
+      baselineInputTokens: current.usage_baseline_input_tokens,
+      inputTokens: values.inputTokens,
+    });
+    const rows = await transaction<ConversationRuntimeRow[]>`
+      update allrice_conversation_runtimes
+      set usage_baseline_input_tokens = ${watermark.baselineInputTokens},
+          last_input_tokens = ${watermark.inputTokens},
+          last_cached_input_tokens = ${values.cachedInputTokens},
+          dynamic_context_tokens = ${watermark.dynamicContextTokens},
+          updated_at = now()
       where session_id = ${values.sessionId}
       returning *
     `;

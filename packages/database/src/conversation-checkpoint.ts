@@ -270,6 +270,13 @@ export async function saveContextCheckpoint(input: {
         do update set summary = excluded.summary
       returning *
     `;
+    await transaction`
+      update allrice_conversation_runtimes
+      set usage_baseline_input_tokens = null, last_input_tokens = null,
+          last_cached_input_tokens = null, dynamic_context_tokens = 0,
+          updated_at = now()
+      where session_id = ${values.sessionId}
+    `;
     return mappedCheckpoint(rows[0]!)!;
   });
 }
