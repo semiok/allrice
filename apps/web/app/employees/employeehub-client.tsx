@@ -220,6 +220,24 @@ const defaultProfile: PartnerProfile = {
   approvalPolicy: 'confirm_side_effects',
 };
 
+const managedMinimaxRuntime = {
+  harness: 'dsh' as const,
+  provider: 'openai-compatible',
+  model: 'MiniMax-M3',
+  reasoningEffort: 'high' as const,
+  credentialReference: 'deployment:minimax-default',
+  baseUrl: 'https://api.minimaxi.com/v1',
+};
+
+const managedDeepseekRuntime = {
+  harness: 'dsh' as const,
+  provider: 'deepseek-official',
+  model: 'deepseek-v4-flash',
+  reasoningEffort: 'high' as const,
+  credentialReference: 'deployment:deepseek-default',
+  baseUrl: null,
+};
+
 function lines(value: string) {
   return value
     .split('\n')
@@ -1259,13 +1277,7 @@ export function EmployeeHubClient({
                                   ...current,
                                   runtimePolicy: {
                                     ...current.runtimePolicy,
-                                    harness: 'dsh',
-                                    provider: 'deepseek-official',
-                                    model: 'deepseek-v4-flash',
-                                    reasoningEffort: 'high',
-                                    credentialReference:
-                                      'deployment:deepseek-default',
-                                    baseUrl: null,
+                                    ...managedMinimaxRuntime,
                                   },
                                 }
                               : {
@@ -1302,13 +1314,10 @@ export function EmployeeHubClient({
                                     ...current,
                                     runtimePolicy: {
                                       ...current.runtimePolicy,
-                                      provider: event.target.value,
-                                      baseUrl:
-                                        event.target.value ===
-                                        'openai-compatible'
-                                          ? (current.runtimePolicy.baseUrl ??
-                                            '')
-                                          : null,
+                                      ...(event.target.value ===
+                                      'openai-compatible'
+                                        ? managedMinimaxRuntime
+                                        : managedDeepseekRuntime),
                                     },
                                   }
                                 : current,
@@ -1319,59 +1328,20 @@ export function EmployeeHubClient({
                             DeepSeek 官方 API
                           </option>
                           <option value="openai-compatible">
-                            OpenAI 兼容 API
+                            MiniMax（平台托管）
                           </option>
                         </select>
                       )}
                     </label>
                   </div>
                   {draft.runtimePolicy.harness === 'dsh' ? (
-                    <div className="employee-inline-fields">
-                      <label>
-                        凭据引用
-                        <input
-                          disabled={disabled}
-                          value={draft.runtimePolicy.credentialReference ?? ''}
-                          placeholder="deployment:deepseek-default"
-                          onChange={(event) =>
-                            setDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    runtimePolicy: {
-                                      ...current.runtimePolicy,
-                                      credentialReference: event.target.value,
-                                    },
-                                  }
-                                : current,
-                            )
-                          }
-                        />
-                      </label>
-                      <label>
-                        API Base URL
-                        <input
-                          disabled={
-                            disabled ||
-                            draft.runtimePolicy.provider !== 'openai-compatible'
-                          }
-                          value={draft.runtimePolicy.baseUrl ?? ''}
-                          placeholder="https://gateway.example/v1"
-                          onChange={(event) =>
-                            setDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    runtimePolicy: {
-                                      ...current.runtimePolicy,
-                                      baseUrl: event.target.value,
-                                    },
-                                  }
-                                : current,
-                            )
-                          }
-                        />
-                      </label>
+                    <div className="employee-config-card employee-runtime-note">
+                      <p className="eyebrow">平台托管凭据</p>
+                      <h3>已由 AllRice 服务端配置</h3>
+                      <p>
+                        管理员无需填写 API Key 或 Base URL；凭据只会在执行时注入
+                        DSH Worker，不会进入员工配置、任务快照或浏览器。
+                      </p>
                     </div>
                   ) : null}
                   <label>

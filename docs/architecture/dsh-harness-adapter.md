@@ -15,12 +15,20 @@ model events and provider protocol. DSH receives an allowlisted child-process
 environment and never inherits the Worker environment.
 
 The deployment secret bridge accepts an `ALLRICE_DSH_CREDENTIALS_JSON` object
-whose values are bindings, not bare keys. A binding must either carry matching
+or a private `ALLRICE_DSH_CREDENTIALS_FILE` containing that object. Credential
+files must not be group or world accessible. Values are bindings, not bare
+keys. A binding must either carry matching
 `organizationId`, nullable `workspaceId` and nullable `ownerId`, or explicitly
 declare `{"scope":"deployment"}`. The adapter resolves the binding for the
 frozen run tenant and passes only that one API key to one child process. Key
 rotation changes the runtime fingerprint and replaces the process on the next
 turn; key material is never persisted in employee or run snapshots.
+
+The first managed OpenAI-compatible preset is MiniMax. Employee definitions
+store only the route (`openai-compatible`), model (`MiniMax-M3`), official
+China endpoint and `deployment:minimax-default` credential reference. The API
+key is deployment-owned Worker configuration and is never entered in the Web
+UI or committed to the repository.
 
 The restricted composition intentionally omits shell, terminal, filesystem,
 browser, direct-network, MCP, subagent and dynamic-plugin packages. DSH cannot
@@ -40,7 +48,7 @@ and execute only through `HarnessExecutionInput.onToolCall`.
 | Compact            | Closes the native runtime; AllRice writes an extractive `ContextCheckpoint`        |
 | Recover            | Starts a clean runtime and rehydrates from the AllRice checkpoint/bootstrap prompt |
 | Active-turn steer  | Unsupported by the pinned SDK wire protocol                                        |
-| Providers          | `deepseek-official` and restricted `openai-compatible`                             |
+| Providers          | `deepseek-official` and restricted `openai-compatible` (managed MiniMax preset)    |
 
 ## Upstream limitations
 

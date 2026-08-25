@@ -1,4 +1,5 @@
 import type { DshExecutionSnapshot } from '@allrice/contracts';
+import { readFile, stat } from 'node:fs/promises';
 
 import { HandlerError } from '../errors.js';
 
@@ -25,7 +26,28 @@ export interface DshCredentialResolver {
  */
 export class DeploymentDshCredentialResolver implements DshCredentialResolver {
   async resolve(input: DshCredentialRequest): Promise<DshCredential> {
-    const encoded = process.env.ALLRICE_DSH_CREDENTIALS_JSON;
+    let encoded = process.env.ALLRICE_DSH_CREDENTIALS_JSON;
+    const credentialFile = process.env.ALLRICE_DSH_CREDENTIALS_FILE;
+    if (!encoded && credentialFile) {
+      try {
+        const metadata = await stat(credentialFile);
+        if ((metadata.mode & 0o077) !== 0) {
+          throw new HandlerError(
+            'DSH_CREDENTIAL_FILE_INSECURE',
+            'The AllRice DSH credential file must not be group or world accessible',
+            false,
+          );
+        }
+        encoded = await readFile(credentialFile, 'utf8');
+      } catch (error) {
+        if (error instanceof HandlerError) throw error;
+        throw new HandlerError(
+          'DSH_CREDENTIAL_FILE_UNAVAILABLE',
+          'The AllRice DSH credential file is unavailable',
+          false,
+        );
+      }
+    }
     let directory: unknown = {};
     try {
       directory = encoded ? JSON.parse(encoded) : {};
