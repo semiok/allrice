@@ -902,7 +902,7 @@ export async function assignEmployeeVersion(
       and v.organization_id = a.organization_id
       and v.workspace_id = a.workspace_id
       and v.employee_id = a.employee_id
-      and v.provider_snapshot ->> 'provider' = 'codex'
+      and v.provider_snapshot ->> 'provider' in ('codex', 'dsh')
       and e.id = a.employee_id
     returning a.id as assignment_id, a.user_id, a.organization_id,
       a.workspace_id, a.is_default, a.active, e.employee_key, v.*

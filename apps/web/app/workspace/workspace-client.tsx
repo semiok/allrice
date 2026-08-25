@@ -65,6 +65,12 @@ interface RiceVersionChoice {
   manifest: {
     name: string;
     description?: string;
+    provider?: {
+      provider: string;
+    };
+    runtimePolicy?: {
+      harness: 'codex' | 'dsh';
+    };
     partnerProfile?: {
       role: string;
       mission: string;
@@ -845,6 +851,17 @@ export function WorkspaceClient({
       : 'AI员工版本';
   }
 
+  function employeeHarness(versionId: string): 'codex' | 'dsh' {
+    const version = riceVersions.find((item) => item.id === versionId);
+    if (
+      version?.manifest.runtimePolicy?.harness === 'dsh' ||
+      version?.manifest.provider?.provider === 'dsh'
+    ) {
+      return 'dsh';
+    }
+    return 'codex';
+  }
+
   function employeeForVersion(versionId: string) {
     return workspace?.employees.find((employee) =>
       employee.versions.some((version) => version.id === versionId),
@@ -1103,6 +1120,7 @@ export function WorkspaceClient({
               id: session.id,
               title: session.title,
               employeeVersionId: session.employeeVersionId,
+              harness: employeeHarness(session.employeeVersionId),
               updatedAt: session.updatedAt,
             })),
           })),
@@ -1379,9 +1397,20 @@ export function WorkspaceClient({
                           }}
                         >
                           <strong>{session.title}</strong>
-                          <span>
-                            {employeeVersionLabel(session.employeeVersionId)} ·{' '}
-                            {new Date(session.updatedAt).toLocaleDateString()}
+                          <span className="employee-session-meta">
+                            <span>
+                              {employeeVersionLabel(session.employeeVersionId)}{' '}
+                              ·{' '}
+                              {new Date(session.updatedAt).toLocaleDateString()}
+                            </span>
+                            <em
+                              className={`session-harness-badge session-harness-${employeeHarness(session.employeeVersionId)}`}
+                            >
+                              {employeeHarness(session.employeeVersionId) ===
+                              'dsh'
+                                ? 'DSH'
+                                : 'Codex'}
+                            </em>
                           </span>
                         </button>
                       ))}

@@ -4420,6 +4420,43 @@ textarea {
   font-size: 0.72rem;
 }
 
+.employee-session-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.employee-session-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-harness-badge {
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+.session-harness-codex {
+  background: rgb(216 237 139 / 12%);
+  color: #cfe5a3;
+}
+
+.session-harness-dsh {
+  background: rgb(119 176 255 / 16%);
+  color: #b7d5ff;
+}
+
 .app-shell-sidebar .employee-session-list button.session-active {
   background: #294a39;
   border-left-color: var(--rice-lime, #d8ed8b);

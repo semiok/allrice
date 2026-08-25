@@ -523,7 +523,7 @@ export async function createChatSession(
       and organization_id = ${context.organizationId}
       and workspace_id = ${defaultAssignment.workspaceId}
       and employee_id = ${assignment.employeeId}
-      and provider_snapshot ->> 'provider' = 'codex'
+      and provider_snapshot ->> 'provider' in ('codex', 'dsh')
   `;
   if (!versions[0]) throw new DataAccessError('authorization_denied');
   const rows = await sql<SessionRow[]>`
