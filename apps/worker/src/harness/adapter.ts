@@ -57,6 +57,14 @@ export interface HarnessExecutionResult {
   turnId?: string | null;
 }
 
+/**
+ * Provider boundary owned by AllRice ChatFlow Runtime.
+ *
+ * A HarnessAdapter translates native Harness sessions and events into the
+ * tenant-authorized ChatFlow execution contract. It must not move product
+ * Session/Run authority, credentials, durable replay or Tool Broker policy
+ * into the provider runtime.
+ */
 export interface HarnessAdapter {
   readonly kind: 'codex' | 'dsh';
   readonly capabilities: HarnessCapabilities;

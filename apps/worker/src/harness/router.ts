@@ -10,6 +10,7 @@ import type { HarnessAdapter } from './adapter.js';
 import { CodexHarnessAdapter } from './codex-adapter.js';
 import { DshHarnessAdapter } from './dsh-adapter.js';
 
+/** ChatFlow Runtime router for provider-native Harness implementations. */
 export class HarnessRouter {
   private readonly adapters: ReadonlyMap<HarnessKind, HarnessAdapter>;
 
