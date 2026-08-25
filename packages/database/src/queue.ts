@@ -441,19 +441,29 @@ export async function enqueueRun(
         'tenantContext' | 'createdAt'
       >;
     };
+    conversationDelivery?: {
+      sessionId: string;
+      userMessageId: string;
+      assistantMessageId: string;
+      clientUserMessageId: string;
+      message: string;
+      requestedMode: 'auto' | 'steer' | 'follow_up';
+      expectedTurnId?: string;
+      expectedGeneration?: number;
+      hasAttachments: boolean;
+    };
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
   const ownerId = requireUser(context);
   const workspaceId = await resolveWorkspaceId(context, submission.workspaceId);
   await requireExecutionMembership(context, workspaceId);
-  const availableAt = submission.availableAt
+  let availableAt = submission.availableAt
     ? new Date(submission.availableAt)
     : new Date();
-  const timeoutAt = new Date(
+  let timeoutAt = new Date(
     Math.max(Date.now(), availableAt.getTime()) + submission.timeoutMs,
   );
-  const policyExpiresAt = new Date(timeoutAt.getTime() + 24 * 60 * 60 * 1000);
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
     await transaction`
@@ -483,8 +493,54 @@ export async function enqueueRun(
       ) {
         throw new QueueError('conflict');
       }
-      return { runId: existing[0].run_id, created: false };
+      return {
+        runId: existing[0].run_id,
+        created: false,
+        delivery: 'immediate' as const,
+        activeRunId: null as string | null,
+      };
     }
+
+    let delivery: 'immediate' | 'follow_up' | 'steer_pending' = 'immediate';
+    let activeRunId: string | null = null;
+    let expectedTurnId: string | null = null;
+    let expectedGeneration: number | null = null;
+    if (options.conversationDelivery) {
+      const runtimeRows = await transaction<
+        {
+          state: string;
+          active_run_id: string | null;
+          active_turn_id: string | null;
+          thread_generation: number;
+        }[]
+      >`
+        select state, active_run_id, active_turn_id, thread_generation
+        from allrice_conversation_runtimes
+        where organization_id = ${context.organizationId}
+          and workspace_id = ${workspaceId}
+          and session_id = ${options.conversationDelivery.sessionId}
+          and owner_id = ${ownerId}
+        for update
+      `;
+      const runtime = runtimeRows[0];
+      if (runtime?.state === 'running' && runtime.active_run_id) {
+        activeRunId = runtime.active_run_id;
+        const exactTurn =
+          !options.conversationDelivery.hasAttachments &&
+          options.conversationDelivery.requestedMode !== 'follow_up' &&
+          runtime.active_turn_id !== null &&
+          options.conversationDelivery.expectedTurnId ===
+            runtime.active_turn_id &&
+          options.conversationDelivery.expectedGeneration ===
+            runtime.thread_generation;
+        delivery = exactTurn ? 'steer_pending' : 'follow_up';
+        expectedTurnId = exactTurn ? runtime.active_turn_id : null;
+        expectedGeneration = exactTurn ? runtime.thread_generation : null;
+        availableAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        timeoutAt = new Date(availableAt.getTime() + submission.timeoutMs);
+      }
+    }
+    const policyExpiresAt = new Date(timeoutAt.getTime() + 24 * 60 * 60 * 1000);
 
     await transaction`select id from allrice_users where id = ${ownerId} for update`;
     const versions = await transaction<{ version: number }[]>`
@@ -585,6 +641,42 @@ export async function enqueueRun(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.conversationDelivery && delivery !== 'immediate') {
+      await transaction`
+        insert into allrice_conversation_followups (
+          run_id, organization_id, workspace_id, session_id, owner_id,
+          user_message_id, assistant_message_id, client_user_message_id,
+          mode, state
+        ) values (
+          ${run.id}, ${context.organizationId}, ${workspaceId},
+          ${options.conversationDelivery.sessionId}, ${ownerId},
+          ${options.conversationDelivery.userMessageId},
+          ${options.conversationDelivery.assistantMessageId},
+          ${options.conversationDelivery.clientUserMessageId},
+          ${delivery === 'steer_pending' ? 'steer_fallback' : 'follow_up'},
+          'queued'
+        )
+      `;
+      if (
+        delivery === 'steer_pending' &&
+        expectedTurnId !== null &&
+        expectedGeneration !== null
+      ) {
+        await transaction`
+          insert into allrice_conversation_commands (
+            organization_id, workspace_id, session_id, owner_id,
+            followup_run_id, command_type, client_user_message_id,
+            expected_generation, expected_turn_id, message
+          ) values (
+            ${context.organizationId}, ${workspaceId},
+            ${options.conversationDelivery.sessionId}, ${ownerId}, ${run.id},
+            'steer', ${options.conversationDelivery.clientUserMessageId},
+            ${expectedGeneration}, ${expectedTurnId},
+            ${options.conversationDelivery.message}
+          )
+        `;
+      }
+    }
     if (options.skillBinding) {
       await transaction`
         insert into allrice_skill_runs (
@@ -657,11 +749,13 @@ export async function enqueueRun(
       requestId: context.requestId,
       metadata: { jobId: job.id, policySnapshotId: policy.id },
     });
-    return { runId: run.id, created: true };
+    return { runId: run.id, created: true, delivery, activeRunId };
   });
   return {
     run: await getRun(context, workspaceId, result.runId),
     created: result.created,
+    delivery: result.delivery,
+    activeRunId: result.activeRunId,
   };
 }
 

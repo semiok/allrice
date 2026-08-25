@@ -36,13 +36,13 @@ describe('HarnessRouter', () => {
     expect(router.resolve('dsh')).toBe(dsh);
   });
 
-  it('advertises unsupported Codex V2 operations instead of simulating them', () => {
+  it('advertises native Codex active-turn steering', () => {
     const capabilities = new CodexHarnessAdapter().capabilities;
     expect(capabilities).toMatchObject({
       persistentThreads: true,
       interrupt: true,
       assistantDeltas: true,
-      steer: false,
+      steer: true,
       compact: true,
     });
   });

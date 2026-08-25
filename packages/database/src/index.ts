@@ -36,4 +36,5 @@ export * from './employeehub.ts';
 export * from './tool-broker.ts';
 export * from './conversation-runtime.ts';
 export * from './conversation-checkpoint.ts';
+export * from './conversation-input.ts';
 export * from './automation.ts';

@@ -3,6 +3,7 @@ import { HarnessEventSchema, type HarnessEvent } from '@allrice/contracts';
 import {
   compactCodexAppServerThread,
   executeCodexHarness,
+  steerCodexAppServerTurn,
   type NormalizedCodexEvent,
 } from '../codex.js';
 import type {
@@ -28,7 +29,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     toolEvents: true,
     usageEvents: true,
     interrupt: true,
-    steer: false,
+    steer: true,
     compact: true,
     recover: true,
   } as const;
@@ -112,5 +113,14 @@ export class CodexHarnessAdapter implements HarnessAdapter {
 
   async compact(input: { threadId: string }) {
     await compactCodexAppServerThread(input.threadId);
+  }
+
+  async steer(input: {
+    threadId: string;
+    turnId: string;
+    message: string;
+    clientUserMessageId: string;
+  }) {
+    await steerCodexAppServerTurn(input);
   }
 }

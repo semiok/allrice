@@ -12,6 +12,7 @@ import {
   executeCodexHarness,
   materializeSkillBundle,
   normalizeCodexEvent,
+  steerCodexAppServerTurn,
 } from './codex.js';
 
 describe('Codex SkillRun adapter', () => {
@@ -84,6 +85,12 @@ input.on('line', (line) => {
     send({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', item: { type: 'webSearch', id: 'web-1', query: 'current weather', action: { type: 'search', query: 'current weather' } } } });
     send({ id: 90, method: 'item/tool/call', params: { threadId: 'thread-1', turnId: 'turn-1', callId: 'call-1', namespace: null, tool: 'workspace_file_list', arguments: { limit: 2 } } });
   }
+  if (message.method === 'turn/steer') {
+    if (message.params.expectedTurnId !== 'turn-1') process.exit(13);
+    if (message.params.clientUserMessageId !== 'message-steer') process.exit(14);
+    if (message.params.input?.[0]?.text !== '再补充一个约束') process.exit(15);
+    send({ id: message.id, result: { turnId: 'turn-1' } });
+  }
   if (message.id === 90 && message.result) {
     if (message.result.success !== true) process.exit(10);
     send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', delta: '找到' } });
@@ -101,6 +108,7 @@ input.on('line', (line) => {
     process.env.ALLRICE_CODEX_COMMAND = executable;
     const events: unknown[] = [];
     let threadId: string | null = null;
+    let steered = false;
     try {
       const run = (existingThreadId?: string | null) =>
         executeCodexHarness({
@@ -145,6 +153,16 @@ input.on('line', (line) => {
             clientUserMessageId: 'message-1',
             onThreadBound: async (binding) => {
               threadId = binding.threadId;
+            },
+            onTurnStarted: async (turn) => {
+              if (steered) return;
+              steered = true;
+              await steerCodexAppServerTurn({
+                threadId: turn.threadId,
+                turnId: turn.turnId,
+                message: '再补充一个约束',
+                clientUserMessageId: 'message-steer',
+              });
             },
           },
         });
@@ -206,6 +224,9 @@ input.on('line', (line) => {
       expect(
         requests.filter((request) => request.method === 'turn/start'),
       ).toHaveLength(2);
+      expect(
+        requests.filter((request) => request.method === 'turn/steer'),
+      ).toHaveLength(1);
       expect(
         requests.find((request) => request.method === 'turn/start')?.params,
       ).toMatchObject({ clientUserMessageId: 'message-1' });

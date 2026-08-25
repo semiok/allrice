@@ -66,6 +66,7 @@ export interface HarnessAdapter {
     threadId: string;
     turnId: string;
     message: string;
+    clientUserMessageId: string;
   }): Promise<void>;
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;

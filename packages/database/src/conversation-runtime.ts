@@ -133,6 +133,11 @@ export async function acquireConversationRuntime(input: {
       where session_id = ${values.sessionId}
       returning *
     `;
+    await transaction`
+      update allrice_conversation_followups
+      set state = 'running'
+      where run_id = ${values.runId} and state = 'released'
+    `;
     return mapBinding(updated[0]!);
   });
 }
@@ -283,6 +288,37 @@ export async function releaseConversationRuntime(input: {
       where session_id = ${values.sessionId}
       returning *
     `;
+    await transaction`
+      update allrice_conversation_commands
+      set state = 'rejected', error_code = 'TURN_CLOSED', updated_at = now()
+      where organization_id = ${values.organizationId}
+        and workspace_id = ${values.workspaceId}
+        and session_id = ${values.sessionId}
+        and state in ('pending', 'claimed')
+    `;
+    const next = await transaction<{ run_id: string }[]>`
+      select run_id from allrice_conversation_followups
+      where organization_id = ${values.organizationId}
+        and workspace_id = ${values.workspaceId}
+        and session_id = ${values.sessionId}
+        and state = 'queued'
+      order by created_at, run_id
+      for update skip locked
+      limit 1
+    `;
+    if (next[0]) {
+      await transaction`
+        update allrice_conversation_followups
+        set state = 'released', released_at = now()
+        where run_id = ${next[0].run_id}
+      `;
+      await transaction`
+        update allrice_jobs
+        set available_at = now(), timeout_at = now() + interval '5 minutes',
+            updated_at = now()
+        where run_id = ${next[0].run_id} and status = 'queued'
+      `;
+    }
     return mapBinding(rows[0]!);
   });
 }

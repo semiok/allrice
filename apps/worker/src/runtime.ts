@@ -8,7 +8,9 @@ import {
   bindConversationThread,
   buildExtractiveContextSummary,
   clearConversationTurn,
+  claimConversationSteer,
   completeJob,
+  consumeConversationSteer,
   estimateConversationTokens,
   failJob,
   heartbeatJob,
@@ -16,6 +18,7 @@ import {
   listContextCheckpointEvidence,
   recordConversationTurn,
   recordToolBrokerAudit,
+  rejectConversationSteer,
   releaseConversationRuntime,
   resolveEmployeeExecution,
   resolveSkillExecution,
@@ -167,71 +170,131 @@ async function executeHandler(
         resolved.grantedCapabilities,
       );
       const adapter = new HarnessRouter().resolve(kernel.harness);
-      const result = await adapter.execute({
-        kernel,
-        storageObjects: resolved.skillArtifacts.map(
-          (artifact) => artifact.storageObject,
-        ),
-        workDirectory: isolation.workDirectory,
-        executionEnvironment: isolation.environment,
-        providerSnapshot: resolved.providerSnapshot,
-        signal,
-        attempt: execution.job.attempt,
-        generation: runtime.generation,
-        onEvent: async (event) => {
-          if (
-            event.type === 'tool.completed' &&
-            event.source === 'harness' &&
-            (event.name === 'web.search' || event.name === 'web.fetch')
-          ) {
-            await recordToolBrokerAudit({
-              context: execution.context,
-              toolName: event.name,
-              metadata: {
-                skillVersionIds: resolved.skillArtifacts.map(
-                  (artifact) => artifact.skillVersionId,
-                ),
-                capability: 'network:outbound',
-              },
-            });
-          }
-          await onHarnessEvent(event);
-        },
-        tools,
-        onToolCall:
-          tools.length > 0
-            ? (call) =>
-                executeRiceTool({
-                  context: execution.context,
-                  capabilities: resolved.grantedCapabilities,
-                  storageRoot:
-                    process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      let steerPolling = true;
+      let steerLoop: Promise<void> | undefined;
+      const result = await adapter
+        .execute({
+          kernel,
+          storageObjects: resolved.skillArtifacts.map(
+            (artifact) => artifact.storageObject,
+          ),
+          workDirectory: isolation.workDirectory,
+          executionEnvironment: isolation.environment,
+          providerSnapshot: resolved.providerSnapshot,
+          signal,
+          attempt: execution.job.attempt,
+          generation: runtime.generation,
+          onEvent: async (event) => {
+            if (
+              event.type === 'tool.completed' &&
+              event.source === 'harness' &&
+              (event.name === 'web.search' || event.name === 'web.fetch')
+            ) {
+              await recordToolBrokerAudit({
+                context: execution.context,
+                toolName: event.name,
+                metadata: {
                   skillVersionIds: resolved.skillArtifacts.map(
                     (artifact) => artifact.skillVersionId,
                   ),
-                  sessionId:
-                    typeof input.sessionId === 'string'
-                      ? input.sessionId
-                      : undefined,
-                  call,
-                })
-            : undefined,
-        threadId: runtime.threadId,
-        onThreadBound: async ({ threadId }) => {
-          runtime = await bindConversationThread({
-            ...ownership,
-            threadId,
+                  capability: 'network:outbound',
+                },
+              });
+            }
+            await onHarnessEvent(event);
+          },
+          tools,
+          onToolCall:
+            tools.length > 0
+              ? (call) =>
+                  executeRiceTool({
+                    context: execution.context,
+                    capabilities: resolved.grantedCapabilities,
+                    storageRoot:
+                      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                    skillVersionIds: resolved.skillArtifacts.map(
+                      (artifact) => artifact.skillVersionId,
+                    ),
+                    sessionId:
+                      typeof input.sessionId === 'string'
+                        ? input.sessionId
+                        : undefined,
+                    call,
+                  })
+              : undefined,
+          threadId: runtime.threadId,
+          onThreadBound: async ({ threadId }) => {
+            runtime = await bindConversationThread({
+              ...ownership,
+              threadId,
+            });
+            return { generation: runtime.generation };
+          },
+          onTurnStarted: async ({ threadId, turnId }) => {
+            runtime = await recordConversationTurn({
+              ...ownership,
+              threadId,
+              turnId,
+            });
+            steerLoop = (async () => {
+              while (steerPolling && !signal.aborted) {
+                const command = await claimConversationSteer({
+                  organizationId: ownership.organizationId,
+                  workspaceId: ownership.workspaceId,
+                  sessionId: ownership.sessionId,
+                  workerId: ownership.workerId,
+                  generation: runtime.generation,
+                  turnId,
+                });
+                if (!command) {
+                  await new Promise((resolve) => setTimeout(resolve, 150));
+                  continue;
+                }
+                if (!adapter.capabilities.steer || !adapter.steer) {
+                  await rejectConversationSteer({
+                    commandId: command.id,
+                    workerId: ownership.workerId,
+                    errorCode: 'HARNESS_STEER_UNSUPPORTED',
+                  });
+                  continue;
+                }
+                try {
+                  await adapter.steer({
+                    threadId,
+                    turnId,
+                    message: command.message,
+                    clientUserMessageId: command.clientUserMessageId,
+                  });
+                  await consumeConversationSteer({
+                    commandId: command.id,
+                    workerId: ownership.workerId,
+                  });
+                } catch (error) {
+                  await rejectConversationSteer({
+                    commandId: command.id,
+                    workerId: ownership.workerId,
+                    errorCode: 'STEER_REJECTED',
+                  });
+                  console.error('[M5] Active turn steer failed', {
+                    sessionId: input.sessionId,
+                    turnId,
+                    message:
+                      error instanceof Error ? error.message : 'unknown error',
+                  });
+                }
+              }
+            })();
+          },
+        })
+        .finally(async () => {
+          steerPolling = false;
+          await steerLoop?.catch((error) => {
+            console.error('[M5] Active turn steer polling failed', {
+              sessionId: input.sessionId,
+              message: error instanceof Error ? error.message : 'unknown error',
+            });
           });
-          return { generation: runtime.generation };
-        },
-        onTurnStarted: async ({ threadId, turnId }) => {
-          runtime = await recordConversationTurn({
-            ...ownership,
-            threadId,
-            turnId,
-          });
-        },
-      });
+        });
       runtime = await clearConversationTurn(ownership);
       const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
         (message) =>
