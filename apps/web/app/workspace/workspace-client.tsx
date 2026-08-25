@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AppSidebar } from '../components/app-sidebar';
+import { assistantStreamText } from '../../lib/execution/assistant-stream';
 
 type Visibility = 'private' | 'workspace' | 'organization';
 
@@ -1329,13 +1330,7 @@ export function WorkspaceClient({
             const events = message.runId
               ? (eventsByRun[message.runId] ?? [])
               : [];
-            const streamed = [...events]
-              .reverse()
-              .find((event) => event.type === 'assistant.text.completed');
-            const text =
-              streamed && typeof streamed.payload.text === 'string'
-                ? streamed.payload.text
-                : message.content.text;
+            const text = assistantStreamText(events, message.content.text);
             const previousUser = [...history.messages.slice(0, index)]
               .reverse()
               .find((item) => item.role === 'user');

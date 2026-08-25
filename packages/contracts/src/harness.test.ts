@@ -32,6 +32,7 @@ describe('harness contracts', () => {
         order: 4,
         threadId: 'thread-1',
         turnId: 'turn-1',
+        messageId: '00000000-0000-4000-8000-000000000001',
         type: 'assistant.completed',
         text: '完成',
       }),

@@ -13,16 +13,18 @@ export interface CodexDynamicToolDefinition {
   inputSchema: Readonly<Record<string, unknown>>;
 }
 
-export interface CodexAppServerEvent {
-  kind: 'tool';
-  name: string;
-  status: string;
-  toolCallId: string;
-  label: string;
-  summary?: string;
-  itemCount?: number;
-  source: 'codex' | 'tool_broker';
-}
+export type CodexAppServerEvent =
+  | { kind: 'delta'; text: string }
+  | {
+      kind: 'tool';
+      name: string;
+      status: string;
+      toolCallId: string;
+      label: string;
+      summary?: string;
+      itemCount?: number;
+      source: 'codex' | 'tool_broker';
+    };
 
 export interface CodexAppServerToolCall {
   id: string;
@@ -367,6 +369,14 @@ class SharedCodexAppServerClient {
     });
   }
 
+  private async queueEventAndWait(
+    turn: ActiveTurn,
+    event: CodexAppServerEvent,
+  ) {
+    this.queueEvent(turn, event);
+    await turn.eventChain;
+  }
+
   private async handleDynamicToolCall(message: JsonRpcMessage) {
     const params = message.params ?? {};
     const turn = this.scopedTurn(params);
@@ -390,7 +400,7 @@ class SharedCodexAppServerClient {
       return;
     }
     const name = tool.name;
-    await turn.onEvent({
+    await this.queueEventAndWait(turn, {
       kind: 'tool',
       name,
       label: name,
@@ -404,7 +414,7 @@ class SharedCodexAppServerClient {
         name,
         arguments: argumentsValue,
       });
-      await turn.onEvent({
+      await this.queueEventAndWait(turn, {
         kind: 'tool',
         name,
         label: name,
@@ -424,7 +434,7 @@ class SharedCodexAppServerClient {
     } catch (error) {
       const detail =
         error instanceof Error ? error.message : 'tool execution failed';
-      await turn.onEvent({
+      await this.queueEventAndWait(turn, {
         kind: 'tool',
         name,
         label: name,
@@ -447,7 +457,9 @@ class SharedCodexAppServerClient {
     const turn = this.scopedTurn(message.params);
     if (!turn || !this.addTurnBytes(turn, rawLine)) return;
     if (message.method === 'item/agentMessage/delta') {
-      turn.answerDelta += stringValue(message.params?.delta) ?? '';
+      const text = stringValue(message.params?.delta) ?? '';
+      turn.answerDelta += text;
+      if (text) this.queueEvent(turn, { kind: 'delta', text });
       return;
     }
     if (message.method === 'item/started') {

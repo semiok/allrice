@@ -43,6 +43,8 @@ export const AssistantTextEventPayloadSchema = z
     turnId: z.string().trim().min(1).nullable().optional(),
     attempt: z.number().int().positive().optional(),
     order: z.number().int().positive().optional(),
+    orderStart: z.number().int().positive().optional(),
+    messageId: UuidSchema.optional(),
   })
   .strict();
 
@@ -59,6 +61,7 @@ export const ToolEventPayloadSchema = z
     generation: z.number().int().nonnegative().optional(),
     turnId: z.string().trim().min(1).nullable().optional(),
     order: z.number().int().positive().optional(),
+    messageId: UuidSchema.optional(),
   })
   .strict();
 

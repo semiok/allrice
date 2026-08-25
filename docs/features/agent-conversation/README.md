@@ -27,8 +27,10 @@ conversation navigation.
    `web.fetch` reader.
 7. Every tool request is re-authorized against the frozen execution policy and
    audited. Skill installation never grants tenant data access by itself.
-8. Durable RunEvents are streamed over resumable SSE and replayed after a page
-   refresh. The assistant message remains the final conversation authority.
+8. Codex assistant deltas are normalized by the HarnessAdapter, batched by an
+   80 ms / 512 character Worker window, persisted as ordered RunEvents and
+   streamed over resumable SSE. Refresh and reconnect replay the same event IDs;
+   the completed assistant message remains the final conversation authority.
 
 The Worker uses the Codex app-server `dynamicTools` request/response protocol.
 Codex receives only JSON Schema tool definitions; when it requests a tool, the
@@ -42,9 +44,8 @@ of truth for AllRice messages, run ownership and tenant authorization.
 If the employee's model, system prompt, capabilities or installed Skill
 versions change, AllRice starts a new Codex thread instead of silently resuming
 one under a different security/configuration snapshot. MET-51's next runtime
-increments add active-turn steering and incremental assistant deltas; this
-first increment deliberately serializes a second message behind the active
-turn.
+increments add context compaction and active-turn steering. A second message is
+still deliberately serialized behind the active turn.
 
 ## Event contract
 
@@ -52,6 +53,12 @@ Schema version 1 adds `assistant.text.delta`, `assistant.text.completed`,
 `tool.started`, `tool.completed`, `tool.failed`, and `run.retrying`. Tool event
 payloads contain a safe label, status and summary; raw credentials, local paths,
 commands and file contents are never persisted as UI evidence.
+
+Assistant events carry generation, turn, attempt, message and adapter-local
+order metadata. The Web client renders only the newest generation/attempt,
+deduplicates replayed event IDs, and uses `assistant.text.completed` to calibrate
+the accumulated delta text. Only `item/agentMessage/delta` is forwarded; hidden
+reasoning is neither persisted nor displayed.
 
 The UI groups tool events by `toolCallId` in a collapsed disclosure under the
 Rice reply. Failed and canceled runs remain visible and the stream can be
