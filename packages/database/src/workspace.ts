@@ -1003,6 +1003,7 @@ export async function sendChatMessage(
       promptSnapshot: {
         systemPrompt: '',
         conversation: historyRows.slice(-80).map((row) => ({
+          id: row.id,
           role: row.role,
           text: ChatMessageContentSchema.parse(row.content).text,
         })),

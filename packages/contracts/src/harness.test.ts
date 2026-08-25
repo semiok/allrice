@@ -43,14 +43,19 @@ describe('harness contracts', () => {
     expect(
       ContextCheckpointSchema.parse({
         schemaVersion: 1,
+        checkpointId: '00000000-0000-4000-8000-000000000002',
         sessionId: '00000000-0000-4000-8000-000000000001',
         harness: 'codex',
         threadId: 'thread-1',
         generation: 2,
         coveredThroughMessageId: null,
+        summaryVersion: 'extractive-v1',
         summary: 'User is implementing a harness boundary.',
         checksum: `sha256:${'a'.repeat(64)}`,
+        configChecksum: `sha256:${'b'.repeat(64)}`,
         estimatedTokens: 12,
+        messageCount: 2,
+        createdAt: '2026-08-25T00:00:00.000Z',
       }),
     ).toMatchObject({ generation: 2, estimatedTokens: 12 });
   });

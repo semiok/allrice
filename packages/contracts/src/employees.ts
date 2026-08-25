@@ -350,6 +350,7 @@ export const EmployeePromptSnapshotSchema = z
       .array(
         z
           .object({
+            id: UuidSchema.optional(),
             role: z.enum(['user', 'assistant', 'system', 'tool']),
             text: z.string().max(100_000),
           })

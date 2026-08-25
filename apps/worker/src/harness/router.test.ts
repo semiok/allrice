@@ -43,7 +43,7 @@ describe('HarnessRouter', () => {
       interrupt: true,
       assistantDeltas: true,
       steer: false,
-      compact: false,
+      compact: true,
     });
   });
 

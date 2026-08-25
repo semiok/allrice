@@ -54,6 +54,12 @@ interface PendingRequest {
   abort?: () => void;
 }
 
+interface PendingCompaction {
+  resolve(): void;
+  reject(error: Error): void;
+  timer: NodeJS.Timeout;
+}
+
 interface ActiveTurn {
   threadId: string;
   turnId: string | null;
@@ -166,6 +172,7 @@ class SharedCodexAppServerClient {
   private readonly lines: Interface;
   private readonly pendingRequests = new Map<string | number, PendingRequest>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  private readonly pendingCompactions = new Map<string, PendingCompaction>();
   private readonly closed: Promise<void>;
   private requestId = 0;
   private closing = false;
@@ -454,6 +461,37 @@ class SharedCodexAppServerClient {
   }
 
   private handleNotification(message: JsonRpcMessage, rawLine: string) {
+    if (message.method === 'thread/compacted') {
+      const threadId = stringValue(message.params?.threadId);
+      const pending = threadId ? this.pendingCompactions.get(threadId) : null;
+      if (threadId && pending) {
+        this.pendingCompactions.delete(threadId);
+        clearTimeout(pending.timer);
+        pending.resolve();
+      }
+      return;
+    }
+    if (message.method === 'turn/completed') {
+      const threadId = stringValue(message.params?.threadId);
+      const pending = threadId ? this.pendingCompactions.get(threadId) : null;
+      if (threadId && pending) {
+        this.pendingCompactions.delete(threadId);
+        clearTimeout(pending.timer);
+        const completedTurn = objectValue(message.params?.turn);
+        const status = stringValue(completedTurn?.status);
+        if (status === 'completed') pending.resolve();
+        else {
+          pending.reject(
+            new HandlerError(
+              'CODEX_APP_SERVER_ERROR',
+              `Codex compaction ended with status ${status ?? 'unknown'}`,
+              true,
+            ),
+          );
+        }
+        return;
+      }
+    }
     const turn = this.scopedTurn(message.params);
     if (!turn || !this.addTurnBytes(turn, rawLine)) return;
     if (message.method === 'item/agentMessage/delta') {
@@ -686,6 +724,7 @@ class SharedCodexAppServerClient {
         replacedThreadId: null,
       });
     }
+    threadClients.set(threadId, this);
     if (this.activeTurns.has(threadId)) {
       throw new HandlerError(
         'CODEX_APP_SERVER_ERROR',
@@ -795,6 +834,48 @@ class SharedCodexAppServerClient {
     };
   }
 
+  async compactThread(threadId: string) {
+    await this.ready;
+    if (
+      this.activeTurns.has(threadId) ||
+      this.pendingCompactions.has(threadId)
+    ) {
+      throw new HandlerError(
+        'CODEX_APP_SERVER_ERROR',
+        'Codex thread is not at a safe compaction boundary',
+        true,
+      );
+    }
+    const done = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCompactions.delete(threadId);
+        reject(
+          new HandlerError(
+            'CODEX_APP_SERVER_ERROR',
+            'Codex thread compaction timed out',
+            true,
+          ),
+        );
+      }, requestTimeoutMs);
+      this.pendingCompactions.set(threadId, { resolve, reject, timer });
+    });
+    void done.catch(() => undefined);
+    try {
+      await this.request('thread/compact/start', { threadId });
+      await done;
+    } catch (error) {
+      const pending = this.pendingCompactions.get(threadId);
+      if (pending) {
+        this.pendingCompactions.delete(threadId);
+        clearTimeout(pending.timer);
+        pending.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+      throw error;
+    }
+  }
+
   retire(error: Error) {
     if (this.terminalError) return;
     this.terminalError = error;
@@ -807,6 +888,14 @@ class SharedCodexAppServerClient {
     }
     this.pendingRequests.clear();
     for (const turn of this.activeTurns.values()) this.finishTurn(turn, error);
+    for (const [threadId, pending] of this.pendingCompactions) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pendingCompactions.delete(threadId);
+    }
+    for (const [threadId, client] of threadClients) {
+      if (client === this) threadClients.delete(threadId);
+    }
     if (!this.child.killed) this.child.kill('SIGTERM');
   }
 
@@ -824,6 +913,11 @@ class SharedCodexAppServerClient {
     }
     this.pendingRequests.clear();
     for (const turn of this.activeTurns.values()) this.finishTurn(turn, error);
+    for (const [threadId, pending] of this.pendingCompactions) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pendingCompactions.delete(threadId);
+    }
     if (!this.child.stdin.destroyed) this.child.stdin.end();
     if (!this.child.killed) this.child.kill('SIGTERM');
     await this.closed;
@@ -831,6 +925,7 @@ class SharedCodexAppServerClient {
 }
 
 const sharedClients = new Map<string, SharedCodexAppServerClient>();
+const threadClients = new Map<string, SharedCodexAppServerClient>();
 
 function clientKey(input: {
   command: string;
@@ -866,7 +961,20 @@ function sharedClient(input: {
 export async function closeCodexAppServerClients() {
   const clients = [...sharedClients.values()];
   sharedClients.clear();
+  threadClients.clear();
   await Promise.allSettled(clients.map((client) => client.close()));
+}
+
+export async function compactCodexAppServerThread(threadId: string) {
+  const client = threadClients.get(threadId);
+  if (!client?.usable) {
+    throw new HandlerError(
+      'CODEX_APP_SERVER_ERROR',
+      'Codex thread is not loaded for compaction',
+      true,
+    );
+  }
+  await client.compactThread(threadId);
 }
 
 export async function runCodexAppServerTurn(input: {

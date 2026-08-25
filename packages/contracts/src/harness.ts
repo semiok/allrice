@@ -62,14 +62,19 @@ export type HarnessEvent = z.infer<typeof HarnessEventSchema>;
 export const ContextCheckpointSchema = z
   .object({
     schemaVersion: z.literal(1),
+    checkpointId: UuidSchema,
     sessionId: UuidSchema,
     harness: HarnessKindSchema,
     threadId: z.string().trim().min(1).nullable(),
     generation: z.number().int().nonnegative(),
     coveredThroughMessageId: UuidSchema.nullable(),
+    summaryVersion: z.literal('extractive-v1'),
     summary: z.string(),
     checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    configChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     estimatedTokens: z.number().int().nonnegative(),
+    messageCount: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(),
   })
   .strict();
 export type ContextCheckpoint = z.infer<typeof ContextCheckpointSchema>;
