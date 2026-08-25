@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import {
   AssignEmployeeVersionInputSchema,
   CreateEmployeeInputSchema,
-  CodexExecutionSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
   EmployeeAdminMemberSchema,
   EmployeeExecutionSnapshotSchema,
@@ -14,6 +13,7 @@ import {
   EmployeeUserProfilePolicySchema,
   EmployeeVersionSnapshotSchema,
   FrozenEmployeeSkillBindingSchema,
+  HarnessExecutionSnapshotSchema,
   ManageEmployeeAssignmentsInputSchema,
   PublishEmployeeVersionInputSchema,
   SetDefaultEmployeeInputSchema,
@@ -113,7 +113,7 @@ export interface EmployeeRunBinding {
   sessionId: string;
   userMessageId: string;
   assistantMessageId: string;
-  providerSnapshot: ReturnType<typeof CodexExecutionSnapshotSchema.parse>;
+  providerSnapshot: ReturnType<typeof HarnessExecutionSnapshotSchema.parse>;
   skillVersionIds: string[];
   skillBindings: FrozenSkillBinding[];
   executionSnapshot: Omit<
@@ -511,13 +511,6 @@ export async function publishEmployeeVersion(
     const employee = employees[0];
     if (!employee) {
       throw new EmployeeHubError('not_found');
-    }
-    if (
-      publication.runtimePolicy &&
-      (publication.runtimePolicy.harness !== 'codex' ||
-        publication.runtimePolicy.reasoningEffort === 'none')
-    ) {
-      throw new EmployeeHubError('provider_invalid');
     }
     const selectedSkillRows =
       publication.skillVersionIds === undefined
@@ -1005,7 +998,11 @@ export async function prepareEmployeeRunBinding(input: {
   const assignment = rows[0];
   if (!assignment) throw new EmployeeHubError('not_found');
   const manifest = EmployeeManifestSchema.safeParse(assignment.manifest);
-  if (!manifest.success || manifest.data.provider.provider !== 'codex') {
+  if (
+    !manifest.success ||
+    (manifest.data.provider.provider !== 'codex' &&
+      manifest.data.provider.provider !== 'dsh')
+  ) {
     throw new EmployeeHubError('provider_invalid');
   }
   const capabilityDirectory = await resolveEmployeeCapabilitiesForRun({
@@ -1071,7 +1068,7 @@ export async function prepareEmployeeRunBinding(input: {
     sessionId: UuidSchema.parse(input.sessionId),
     userMessageId: UuidSchema.parse(input.userMessageId),
     assistantMessageId: UuidSchema.parse(input.assistantMessageId),
-    providerSnapshot: CodexExecutionSnapshotSchema.parse(
+    providerSnapshot: HarnessExecutionSnapshotSchema.parse(
       manifest.data.provider,
     ),
     skillVersionIds,
@@ -1222,7 +1219,9 @@ export async function resolveEmployeeExecution(input: {
     });
   }
   return {
-    providerSnapshot: CodexExecutionSnapshotSchema.parse(row.provider_snapshot),
+    providerSnapshot: HarnessExecutionSnapshotSchema.parse(
+      row.provider_snapshot,
+    ),
     promptSnapshot,
     executionSnapshot: executionSnapshot.success
       ? executionSnapshot.data

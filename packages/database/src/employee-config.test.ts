@@ -107,6 +107,30 @@ describe('Rice employee manifest', () => {
     }
   });
 
+  it('builds a DSH definition from an AllRice credential reference', () => {
+    const manifest = employeeManifest({
+      key: 'dsh-research-partner',
+      name: 'DSH 研究伙伴',
+      description: '使用 DSH 的受限研究员工。',
+      runtimePolicy: {
+        harness: 'dsh',
+        provider: 'openai-compatible',
+        model: 'research-model',
+        reasoningEffort: 'high',
+        timeoutMs: 300_000,
+        fallbackModels: [],
+        credentialReference: 'deployment:research-gateway',
+        baseUrl: 'https://gateway.example/v1',
+      },
+    });
+    expect(manifest.provider).toMatchObject({
+      provider: 'dsh',
+      route: 'openai-compatible',
+      model: 'research-model',
+      credentialReference: 'deployment:research-gateway',
+    });
+  });
+
   it('injects only user-profile fields allowed by the employee policy', () => {
     const stored = {
       schemaVersion: 1 as const,

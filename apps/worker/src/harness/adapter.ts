@@ -1,6 +1,6 @@
 import type {
-  CodexExecutionSnapshot,
   EmployeeKernelRequest,
+  HarnessExecutionSnapshot,
   HarnessCapabilities,
   HarnessEvent,
   StorageObject,
@@ -22,7 +22,7 @@ export interface HarnessToolResult {
 
 export interface HarnessExecutionInput {
   kernel: EmployeeKernelRequest;
-  providerSnapshot: CodexExecutionSnapshot;
+  providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
@@ -70,4 +70,5 @@ export interface HarnessAdapter {
   }): Promise<void>;
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
+  close?(): Promise<void>;
 }

@@ -1,0 +1,60 @@
+# AllRice owns identity, tools, authorization, credentials and durable context.
+# This DSH composition deliberately exposes no shell, terminal, filesystem,
+# browser, network, MCP, subagent or dynamic-plugin tools to the model.
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: false
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    baseURL: !!js process.env.DEEPSEEK_BASE_URL
+    reasoningEffort: !!js process.env.DSH_REASONING_EFFORT ?? 'high'
+
+- id: llm-openai-compatible
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      openai-compatible:
+        apiKeyEnv: OPENAI_COMPATIBLE_API_KEY
+        api: openai-completions
+        baseURL: !!js process.env.OPENAI_COMPATIBLE_BASE_URL
+        models:
+          - id: !!js process.env.DSH_MODEL ?? 'default'
+            contextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 200000)
+            maxTokens: !!js Number(process.env.DSH_MAX_OUTPUT_TOKENS ?? 32768)
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are an AllRice AI employee.'
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT
+    compression: none
+
+- id: session-checkpoints
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  config:
+    thresholdRatio: 0.8
+    retainRatio: 0.16
+    maxTokens: 8192
+    compactionRetries: 1

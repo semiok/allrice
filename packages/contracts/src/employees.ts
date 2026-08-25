@@ -8,6 +8,8 @@ import {
 import { TimestampSchema, UuidSchema } from './common.ts';
 import {
   CodexExecutionSnapshotSchema,
+  DshExecutionSnapshotSchema,
+  HarnessExecutionSnapshotSchema,
   SkillCapabilitySchema,
 } from './skills.ts';
 
@@ -23,6 +25,7 @@ export const LegacyEmployeeProviderSchema = z
 
 export const EmployeeProviderSnapshotSchema = z.union([
   CodexExecutionSnapshotSchema,
+  DshExecutionSnapshotSchema,
   LegacyEmployeeProviderSchema,
 ]);
 
@@ -75,8 +78,45 @@ export const EmployeeRuntimePolicySchema = z
     reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
     timeoutMs: z.number().int().min(1_000).max(3_600_000),
     fallbackModels: z.array(z.string().trim().min(1).max(200)).max(8),
+    credentialReference: z.string().trim().min(1).max(255).optional(),
+    baseUrl: z.string().url().max(2_000).nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((policy, context) => {
+    if (policy.harness === 'codex') {
+      if (policy.provider !== 'codex' || policy.reasoningEffort === 'none') {
+        context.addIssue({
+          code: 'custom',
+          message: 'Codex requires the codex provider and reasoning',
+        });
+      }
+      return;
+    }
+    if (
+      policy.provider !== 'deepseek-official' &&
+      policy.provider !== 'openai-compatible'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['provider'],
+        message: 'DSH requires a supported provider route',
+      });
+    }
+    if (!policy.credentialReference) {
+      context.addIssue({
+        code: 'custom',
+        path: ['credentialReference'],
+        message: 'DSH requires an AllRice credential reference',
+      });
+    }
+    if (policy.provider === 'openai-compatible' && !policy.baseUrl) {
+      context.addIssue({
+        code: 'custom',
+        path: ['baseUrl'],
+        message: 'OpenAI-compatible DSH routes require a base URL',
+      });
+    }
+  });
 export type EmployeeRuntimePolicy = z.infer<typeof EmployeeRuntimePolicySchema>;
 
 export const EmployeeCapabilityBindingsSchema = z
@@ -429,7 +469,7 @@ export const EmployeeRunSchema = z
     userMessageId: UuidSchema,
     assistantMessageId: UuidSchema,
     status: EmployeeRunStatusSchema,
-    providerSnapshot: CodexExecutionSnapshotSchema,
+    providerSnapshot: HarnessExecutionSnapshotSchema,
     skillVersionIds: z.array(UuidSchema),
     createdAt: TimestampSchema,
     startedAt: TimestampSchema.nullable(),

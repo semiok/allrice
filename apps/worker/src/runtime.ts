@@ -36,7 +36,7 @@ import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
 import type { HarnessEvent } from '@allrice/contracts';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
-import { HarnessRouter } from './harness/router.js';
+import { getHarnessRouter } from './harness/router.js';
 import {
   executeRiceTool,
   riceToolDefinitionsForCapabilities,
@@ -172,7 +172,7 @@ async function executeHandler(
       const tools = riceToolDefinitionsForCapabilities(
         resolved.grantedCapabilities,
       );
-      const adapter = new HarnessRouter().resolve(kernel.harness);
+      const adapter = getHarnessRouter().resolve(kernel.harness);
       let steerPolling = true;
       let steerLoop: Promise<void> | undefined;
       const result = await adapter

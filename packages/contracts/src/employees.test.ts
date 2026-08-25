@@ -35,6 +35,73 @@ describe('EmployeeHub contracts', () => {
     expect(manifest.partnerProfile.approvalPolicy).toBe('confirm_side_effects');
   });
 
+  it('accepts a DSH provider snapshot without storing the API key', () => {
+    const definition = EmployeeDefinitionSchema.parse({
+      schemaVersion: 2,
+      key: 'research-partner',
+      name: '研究伙伴',
+      description: '使用受限 DSH runtime 完成研究工作。',
+      appearance: { avatarType: 'emoji', avatarValue: '🔎' },
+      applicableScenarios: ['公开资料研究'],
+      isDefaultRice: false,
+      identity: {
+        role: '研究伙伴',
+        mission: '核实资料并形成结论。',
+        workStyle: '先核实来源，再给出判断。',
+        behaviorRules: ['区分事实与推断。'],
+        safetyBoundaries: ['只使用已授权工具。'],
+      },
+      systemPrompt: 'Work only through the AllRice Tool Broker.',
+      provider: {
+        provider: 'dsh',
+        authMode: 'allrice_credential',
+        route: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'high',
+        credentialReference: 'deployment:deepseek-default',
+        baseUrl: null,
+      },
+      runtimePolicy: {
+        harness: 'dsh',
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'high',
+        timeoutMs: 300_000,
+        fallbackModels: [],
+        credentialReference: 'deployment:deepseek-default',
+        baseUrl: null,
+      },
+      capabilities: ['model:invoke'],
+      skillVersionIds: [],
+      capabilityBindings: {
+        skillVersionIds: [],
+        toolNames: [],
+        knowledgeScopes: ['workspace', 'user'],
+        workflowIds: [],
+      },
+      securityPolicy: {
+        dataScopes: ['workspace', 'user'],
+        connectorIdentityModes: ['user'],
+        approvalPolicy: 'confirm_side_effects',
+        deniedCapabilities: ['secret:use'],
+      },
+      partnerProfile: {
+        role: '研究伙伴',
+        mission: '核实资料并形成结论。',
+        communicationStyle: 'structured',
+        outputLanguage: 'zh-CN',
+        proactivePolicy: 'suggest',
+        approvalPolicy: 'confirm_side_effects',
+      },
+    });
+    expect(definition.provider).toMatchObject({
+      provider: 'dsh',
+      route: 'deepseek-official',
+      credentialReference: 'deployment:deepseek-default',
+    });
+    expect(JSON.stringify(definition)).not.toContain('apiKey');
+  });
+
   it('rejects mutable skill aliases in a publication request', () => {
     expect(() =>
       PublishEmployeeVersionInputSchema.parse({

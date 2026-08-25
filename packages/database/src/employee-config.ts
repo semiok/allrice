@@ -7,6 +7,7 @@ import {
   EmployeeDefinitionSchema,
   EmployeeIdentitySchema,
   EmployeeRuntimePolicySchema,
+  DshExecutionSnapshotSchema,
   EmployeeSecurityPolicySchema,
   EmployeeUserProfileSchema,
   EmployeeUserProfilePolicySchema,
@@ -223,6 +224,8 @@ export function employeeManifest(input: {
     reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
     timeoutMs: number;
     fallbackModels: string[];
+    credentialReference?: string;
+    baseUrl?: string | null;
   };
   securityPolicy?: {
     dataScopes: ('organization' | 'workspace' | 'employee' | 'user')[];
@@ -274,19 +277,24 @@ export function employeeManifest(input: {
       fallbackModels: [],
     },
   );
-  if (
-    runtimePolicy.harness !== 'codex' ||
-    runtimePolicy.reasoningEffort === 'none'
-  ) {
-    throw new Error('DSH runtime is not available until MET-70');
-  }
-  const provider = CodexExecutionSnapshotSchema.parse({
-    provider: 'codex',
-    authMode: 'chatgpt_subscription',
-    model: runtimePolicy.model,
-    reasoningEffort: runtimePolicy.reasoningEffort,
-    sandbox: 'workspace-write',
-  });
+  const provider =
+    runtimePolicy.harness === 'codex'
+      ? CodexExecutionSnapshotSchema.parse({
+          provider: 'codex',
+          authMode: 'chatgpt_subscription',
+          model: runtimePolicy.model,
+          reasoningEffort: runtimePolicy.reasoningEffort,
+          sandbox: 'workspace-write',
+        })
+      : DshExecutionSnapshotSchema.parse({
+          provider: 'dsh',
+          authMode: 'allrice_credential',
+          route: runtimePolicy.provider,
+          model: runtimePolicy.model,
+          reasoningEffort: runtimePolicy.reasoningEffort,
+          credentialReference: runtimePolicy.credentialReference,
+          baseUrl: runtimePolicy.baseUrl ?? null,
+        });
   const skillVersionIds = [...new Set(input.skillVersionIds ?? [])].sort();
   const identity = EmployeeIdentitySchema.parse(
     input.identity ?? {
