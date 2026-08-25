@@ -176,6 +176,21 @@ try {
     throw new Error('Employee snapshot rollout trigger is missing');
   }
 
+  const checkpointRows = await sql<
+    { version: string | undefined; summary: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'summary' as summary
+    from allrice_runtime_metadata
+    where key = 'context-checkpoint-schema'
+  `;
+  if (
+    expectedMigrations.includes('0016_context_checkpoints.sql') &&
+    (checkpointRows[0]?.version !== '0016' ||
+      checkpointRows[0]?.summary !== 'extractive-v1')
+  ) {
+    throw new Error('Context checkpoint schema metadata is missing or invalid');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

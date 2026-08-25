@@ -17,11 +17,13 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from './errors.js';
 import {
   closeCodexAppServerClients,
+  compactCodexAppServerThread,
   runCodexAppServerTurn,
   type CodexDynamicToolDefinition,
 } from './codex-app-server.js';
 
 export { closeCodexAppServerClients };
+export { compactCodexAppServerThread };
 
 const maximumArtifactBytes = 2_000_000;
 const maximumOutputBytes = 2_000_000;

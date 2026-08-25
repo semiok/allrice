@@ -1,5 +1,6 @@
 import {
   EmployeeKernelRequestSchema,
+  type ContextCheckpoint,
   type EmployeeKernelRequest,
 } from '@allrice/contracts';
 import type { resolveEmployeeExecution } from '@allrice/database';
@@ -8,6 +9,36 @@ type ResolvedEmployeeExecution = Awaited<
   ReturnType<typeof resolveEmployeeExecution>
 >;
 
+type KernelConversationMessage =
+  ResolvedEmployeeExecution['promptSnapshot']['conversation'][number];
+
+export function bootstrapConversationForCheckpoint(
+  messages: KernelConversationMessage[],
+  checkpoint?: ContextCheckpoint | null,
+) {
+  const coveredIndex = checkpoint?.coveredThroughMessageId
+    ? messages.findIndex(
+        (message) => message.id === checkpoint.coveredThroughMessageId,
+      )
+    : -1;
+  const recentMessages =
+    coveredIndex >= 0 ? messages.slice(coveredIndex + 1) : messages;
+  const conversation = recentMessages
+    .map((message) => `${message.role}: ${message.text}`)
+    .join('\n');
+  return checkpoint
+    ? [
+        `AllRice durable context checkpoint (${checkpoint.summaryVersion}, generation ${checkpoint.generation}):`,
+        checkpoint.summary,
+        conversation
+          ? `Recent conversation after checkpoint:\n${conversation}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+    : conversation;
+}
+
 export function assembleEmployeeKernel(input: {
   employeeAssignmentId: string;
   employeeVersionId: string;
@@ -15,10 +46,12 @@ export function assembleEmployeeKernel(input: {
   userMessageId: string;
   assistantMessageId: string;
   resolved: ResolvedEmployeeExecution;
+  checkpoint?: ContextCheckpoint | null;
 }): EmployeeKernelRequest {
-  const conversation = input.resolved.promptSnapshot.conversation
-    .map((message) => `${message.role}: ${message.text}`)
-    .join('\n');
+  const bootstrapConversation = bootstrapConversationForCheckpoint(
+    input.resolved.promptSnapshot.conversation,
+    input.checkpoint,
+  );
   const memories = input.resolved.promptSnapshot.memories
     .map((memory) => `- [${memory.id}] ${memory.content}`)
     .join('\n');
@@ -34,7 +67,7 @@ export function assembleEmployeeKernel(input: {
     assistantMessageId: input.assistantMessageId,
     systemInstructions: input.resolved.promptSnapshot.systemPrompt,
     userRequest: input.resolved.promptSnapshot.userRequest,
-    bootstrapConversation: conversation,
+    bootstrapConversation,
     authorizedMemoryContext: memories
       ? `Authorized memory snapshot:\n${memories}`
       : '',

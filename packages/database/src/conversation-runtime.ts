@@ -240,6 +240,27 @@ export async function recordConversationTurn(input: {
   });
 }
 
+export async function clearConversationTurn(input: {
+  organizationId: string;
+  workspaceId: string;
+  sessionId: string;
+  runId: string;
+  workerId: string;
+}) {
+  const values = ownedValues(input);
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    await lockedOwnedRuntime(transaction, values);
+    const rows = await transaction<ConversationRuntimeRow[]>`
+      update allrice_conversation_runtimes
+      set active_turn_id = null, updated_at = now()
+      where session_id = ${values.sessionId}
+      returning *
+    `;
+    return mapBinding(rows[0]!);
+  });
+}
+
 export async function releaseConversationRuntime(input: {
   organizationId: string;
   workspaceId: string;

@@ -6,14 +6,21 @@ import {
   acquireConversationRuntime,
   appendJobEvent,
   bindConversationThread,
+  buildExtractiveContextSummary,
+  clearConversationTurn,
   completeJob,
+  estimateConversationTokens,
   failJob,
   heartbeatJob,
+  getLatestContextCheckpoint,
+  listContextCheckpointEvidence,
   recordConversationTurn,
   recordToolBrokerAudit,
   releaseConversationRuntime,
   resolveEmployeeExecution,
   resolveSkillExecution,
+  saveContextCheckpoint,
+  shouldCreateContextCheckpoint,
   startClaimedJob,
   type ClaimedExecution,
 } from '@allrice/database';
@@ -48,6 +55,15 @@ function boundedInteger(
     value <= maximum
     ? value
     : fallback;
+}
+
+function contextCompactThreshold() {
+  return boundedInteger(
+    Number(process.env.ALLRICE_CONTEXT_COMPACT_TOKENS ?? 40_000),
+    40_000,
+    1_000,
+    1_000_000,
+  );
 }
 
 async function delayWithAbort(milliseconds: number, signal: AbortSignal) {
@@ -88,14 +104,6 @@ async function executeHandler(
       ownerId: execution.job.ownerId,
       runId: execution.context.runId,
     });
-    const kernel = assembleEmployeeKernel({
-      employeeAssignmentId: input.employeeAssignmentId,
-      employeeVersionId: input.employeeVersionId,
-      sessionId: input.sessionId,
-      userMessageId: input.userMessageId,
-      assistantMessageId: input.assistantMessageId,
-      resolved,
-    });
     const configChecksum = `sha256:${createHash('sha256')
       .update(
         JSON.stringify({
@@ -109,6 +117,22 @@ async function executeHandler(
         }),
       )
       .digest('hex')}`;
+    const checkpoint = await getLatestContextCheckpoint({
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId!,
+      sessionId: input.sessionId,
+      ownerId: execution.job.ownerId,
+      configChecksum,
+    });
+    const kernelInput = {
+      employeeAssignmentId: input.employeeAssignmentId,
+      employeeVersionId: input.employeeVersionId,
+      sessionId: input.sessionId,
+      userMessageId: input.userMessageId,
+      assistantMessageId: input.assistantMessageId,
+      resolved,
+    };
+    const kernel = assembleEmployeeKernel({ ...kernelInput, checkpoint });
     const ownership = {
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
@@ -208,6 +232,65 @@ async function executeHandler(
           });
         },
       });
+      runtime = await clearConversationTurn(ownership);
+      const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
+        (message) =>
+          message.id
+            ? [{ id: message.id, role: message.role, text: message.text }]
+            : [],
+      );
+      const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;
+      const estimatedTokens = estimateConversationTokens(
+        [
+          kernel.bootstrapConversation,
+          kernel.authorizedMemoryContext,
+          kernel.userRequest,
+        ].join('\n'),
+      );
+      if (
+        runtime.threadId &&
+        adapter.capabilities.compact &&
+        adapter.compact &&
+        shouldCreateContextCheckpoint({
+          estimatedTokens,
+          thresholdTokens: contextCompactThreshold(),
+          coveredThroughMessageId,
+          latestCoveredThroughMessageId:
+            checkpoint?.coveredThroughMessageId ?? null,
+        })
+      ) {
+        try {
+          await adapter.compact({ threadId: runtime.threadId });
+          const evidence = await listContextCheckpointEvidence({
+            organizationId: execution.context.organizationId,
+            workspaceId: execution.context.workspaceId!,
+            sessionId: input.sessionId,
+            ownerId: execution.job.ownerId,
+          });
+          const summary = buildExtractiveContextSummary({
+            previousSummary: checkpoint?.summary,
+            messages: [...evidence, ...checkpointMessages],
+          });
+          await saveContextCheckpoint({
+            ...ownership,
+            ownerId: execution.job.ownerId,
+            harness: kernel.harness,
+            threadId: runtime.threadId,
+            generation: runtime.generation,
+            coveredThroughMessageId: coveredThroughMessageId!,
+            summary,
+            configChecksum,
+            estimatedTokens,
+            messageCount: checkpointMessages.length,
+          });
+        } catch (error) {
+          console.error('[M5] Context checkpoint maintenance failed', {
+            sessionId: input.sessionId,
+            runId: execution.context.runId,
+            message: error instanceof Error ? error.message : 'unknown error',
+          });
+        }
+      }
       outcome = 'idle';
       return result;
     } catch (error) {

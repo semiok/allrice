@@ -8,6 +8,7 @@ import {
   closeCodexAppServerClients,
   codexAppServerArguments,
   codexExecArguments,
+  compactCodexAppServerThread,
   executeCodexHarness,
   materializeSkillBundle,
   normalizeCodexEvent,
@@ -72,6 +73,10 @@ input.on('line', (line) => {
   if (message.method === 'thread/resume') {
     if (message.params.threadId !== 'thread-1') process.exit(11);
     send({ id: message.id, result: { thread: { id: 'thread-1' } } });
+  }
+  if (message.method === 'thread/compact/start') {
+    send({ id: message.id, result: {} });
+    send({ method: 'thread/compacted', params: { threadId: 'thread-1', turnId: 'compact-1' } });
   }
   if (message.method === 'turn/start') {
     send({ id: message.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
@@ -176,6 +181,9 @@ input.on('line', (line) => {
         }),
       );
       expect(threadId).toBe('thread-1');
+      await expect(
+        compactCodexAppServerThread(threadId!),
+      ).resolves.toBeUndefined();
       await expect(run(threadId)).resolves.toMatchObject({
         answer: '找到两个文件。',
       });
@@ -191,6 +199,9 @@ input.on('line', (line) => {
       ).toHaveLength(1);
       expect(
         requests.filter((request) => request.method === 'thread/resume'),
+      ).toHaveLength(1);
+      expect(
+        requests.filter((request) => request.method === 'thread/compact/start'),
       ).toHaveLength(1);
       expect(
         requests.filter((request) => request.method === 'turn/start'),
