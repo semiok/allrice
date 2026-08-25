@@ -104,7 +104,7 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
-  it('keeps one runtime and session across multiple turns', async () => {
+  it('keeps one runtime and session across turns with different tool grants', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;
     const firstInput = executionInput({ prompt: 'first' });
@@ -112,9 +112,9 @@ describe('DshHarnessAdapter', () => {
       threadId = binding.threadId;
     };
     const first = await adapter.execute(firstInput);
-    const second = await adapter.execute(
-      executionInput({ prompt: 'second', threadId }),
-    );
+    const secondInput = executionInput({ prompt: 'second', threadId });
+    secondInput.tools = [];
+    const second = await adapter.execute(secondInput);
     expect(first.answer).toBe('turn-1');
     expect(second.answer).toBe('turn-2');
     expect(second.threadId).toBe(threadId);

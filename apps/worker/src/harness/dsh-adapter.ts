@@ -220,6 +220,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     );
   }
 
+  isConfigured(snapshot: HarnessExecutionInput['providerSnapshot']) {
+    return snapshot.provider === 'dsh' && Boolean(this.runtimeCommand);
+  }
+
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
     if (input.providerSnapshot.provider !== 'dsh') {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
@@ -263,6 +267,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       );
     };
     const initialPrompt = [
+      toolBridgeInstructions(input),
       fresh && input.kernel.bootstrapConversation
         ? `Conversation context:\n${input.kernel.bootstrapConversation}`
         : '',
@@ -431,7 +436,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         JSON.stringify({
           snapshot: input.snapshot,
           systemInstructions: input.input.kernel.systemInstructions,
-          tools: input.input.tools,
           credentialDigest: createHash('sha256')
             .update(credential.apiKey)
             .digest('hex'),
@@ -468,7 +472,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       DSH_REASONING_EFFORT: mappedReasoning(input.snapshot.reasoningEffort),
       DSH_SYSTEM_PROMPT: [
         input.input.kernel.systemInstructions,
-        toolBridgeInstructions(input.input),
+        'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',
       ].join('\n\n'),
     };
     if (input.snapshot.route === 'deepseek-official') {

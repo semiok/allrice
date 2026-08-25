@@ -83,7 +83,7 @@ lines.on('line', (line) => {
   event(sessionId, 'turn/start', { turn });
   if (prompt.includes('hang forever')) return;
   let text;
-  if (prompt.includes('<allrice_tool_result>')) {
+  if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
     text = 'tool-finished';
   } else if (prompt.includes('use-tool')) {
     text =

@@ -60,6 +60,7 @@ export interface HarnessExecutionResult {
 export interface HarnessAdapter {
   readonly kind: 'codex' | 'dsh';
   readonly capabilities: HarnessCapabilities;
+  isConfigured?(snapshot: HarnessExecutionSnapshot): boolean;
   execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult>;
   interrupt?(input: { threadId: string; turnId: string }): Promise<void>;
   steer?(input: {

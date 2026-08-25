@@ -33,6 +33,7 @@ export * from './harness.ts';
 export * from './identity.ts';
 export * from './queue.ts';
 export * from './runs.ts';
+export * from './routing.ts';
 export * from './secrets.ts';
 export * from './skills.ts';
 export * from './sse.ts';
