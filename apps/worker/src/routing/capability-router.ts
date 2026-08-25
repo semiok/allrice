@@ -376,7 +376,16 @@ export function decideCapabilityRoute(input: {
   if (!best) {
     throw new Error('No authorized route can invoke the employee model');
   }
-  const selected = best.score > 1 ? best : candidates[0]!;
+  let selected = best.score > 1 ? best : candidates[0]!;
+  const matchedKnowledge = authorized.filter(
+    (candidate) => candidate.kind === 'knowledge' && candidate.score > 1,
+  );
+  const matchedSkills = authorized.filter(
+    (candidate) => candidate.kind === 'agent_skill' && candidate.score > 1,
+  );
+  if (matchedKnowledge.length > 0 && matchedSkills.length > 0) {
+    selected = matchedSkills[0]!;
+  }
   const reasonCodes: RouteReasonCode[] = [];
   if (selected.kind === 'direct') {
     reasonCodes.push(
@@ -402,7 +411,13 @@ export function decideCapabilityRoute(input: {
     selectedSkillVersionIds:
       selected.kind === 'agent_skill' ? [revisionId] : [],
     selectedKnowledgeRevisionIds:
-      selected.kind === 'knowledge' ? [revisionId] : [],
+      selected.kind === 'knowledge'
+        ? [revisionId]
+        : selected.kind === 'agent_skill'
+          ? matchedKnowledge
+              .slice(0, 3)
+              .map((candidate) => candidate.id.split(':').slice(1).join(':'))
+          : [],
     selectedWorkflowRevisionIds:
       selected.kind === 'workflow' ? [revisionId] : [],
     selectedToolNames: selected.kind === 'tool' ? [revisionId] : [],

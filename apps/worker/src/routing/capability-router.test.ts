@@ -364,4 +364,21 @@ describe('capability route decision', () => {
     expect(first.selectedCandidateId).toBe(second.selectedCandidateId);
     expect(first.reasonCodes).toContain('ambiguous_deterministic_tiebreak');
   });
+
+  it('combines authorized Knowledge with an Agent Skill without widening tools', () => {
+    const input = base();
+    const snapshot = withCapabilities(input.snapshot);
+    const plan = decideCapabilityRoute({
+      request: {
+        ...input.request,
+        prompt: '请用市场研究技能，根据产品知识库分析竞品',
+      },
+      executionSnapshot: snapshot,
+      tools,
+    });
+    expect(plan.selectedKind).toBe('agent_skill');
+    expect(plan.selectedSkillVersionIds).toHaveLength(1);
+    expect(plan.selectedKnowledgeRevisionIds).toHaveLength(1);
+    expect(plan.selectedToolNames).toEqual([]);
+  });
 });

@@ -1384,6 +1384,22 @@ a {
   font-size: 0.8rem;
 }
 
+.rice-workspace.workspace-shell .citation-list {
+  align-items: flex-start;
+  background: #f4f7f1;
+  border: 1px solid #dfe9dc;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 10px 12px;
+}
+
+.rice-workspace.workspace-shell .citation-list strong {
+  color: #315d42;
+}
+
 .remember-action {
   opacity: 0.75;
 }

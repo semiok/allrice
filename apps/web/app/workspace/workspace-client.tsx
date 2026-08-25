@@ -21,7 +21,19 @@ interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
     text: string;
-    citations: { type: string; id: string; label: string }[];
+    citations: {
+      type: string;
+      id: string;
+      label: string;
+      documentId?: string;
+      locator?: {
+        sourceRef: string;
+        chunk: number;
+        start: number;
+        end: number;
+      };
+      updatedAt?: string;
+    }[];
   };
   attachments: Attachment[];
   status: 'pending' | 'completed' | 'failed';
@@ -1435,6 +1447,21 @@ export function WorkspaceClient({
                   ) : null}
                 </div>
                 <MessageContent text={text} />
+                {message.content.citations.length > 0 ? (
+                  <div className="citation-list" aria-label="回答来源">
+                    <strong>来源</strong>
+                    {message.content.citations.map(
+                      (citation, citationIndex) => (
+                        <span key={`${citation.type}-${citation.id}`}>
+                          [{citationIndex + 1}] {citation.label}
+                          {citation.locator
+                            ? ` · 第 ${citation.locator.chunk + 1} 段`
+                            : ''}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                ) : null}
                 {message.runId ? <RunDetails events={events} /> : null}
                 {message.status === 'pending' ? (
                   <div className="message-progress">

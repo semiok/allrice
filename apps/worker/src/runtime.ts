@@ -47,6 +47,7 @@ import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
 import { getHarnessRouter } from './harness/router.js';
+import { buildAuthorizedKnowledgeContext } from './knowledge.js';
 import { decideCapabilityRoute } from './routing/capability-router.js';
 import {
   executeRiceTool,
@@ -323,8 +324,18 @@ async function executeHandler(
         .split(':')
         .slice(1)
         .join(':');
-      const selectedSkillVersionIds =
-        routeDecision.selectedKind === 'agent_skill' ? [revisionId] : [];
+      const routePlanMatchesStoredDecision =
+        routeDecision.selectedCandidateId === routePlan.selectedCandidateId;
+      const selectedSkillVersionIds = routePlanMatchesStoredDecision
+        ? routePlan.selectedSkillVersionIds
+        : routeDecision.selectedKind === 'agent_skill'
+          ? [revisionId]
+          : [];
+      const selectedKnowledgeRevisionIds = routePlanMatchesStoredDecision
+        ? routePlan.selectedKnowledgeRevisionIds
+        : routeDecision.selectedKind === 'knowledge'
+          ? [revisionId]
+          : [];
       const skillRequiredTools =
         routeDecision.selectedKind === 'agent_skill' &&
         executionSnapshot.schemaVersion === 2
@@ -344,6 +355,13 @@ async function executeHandler(
           selectedSkillVersionIds.includes(artifact.skillVersionId),
         )
         .map((artifact) => artifact.storageObject);
+      const knowledge = await buildAuthorizedKnowledgeContext({
+        context: execution.context,
+        employeeId: executionSnapshot.employee.id,
+        knowledgeRevisionIds: selectedKnowledgeRevisionIds,
+        query: kernel.userRequest,
+        storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      });
       const routedKernel = EmployeeKernelRequestSchema.parse({
         ...kernel,
         harness: routeDecision.harness,
@@ -351,6 +369,12 @@ async function executeHandler(
           kernel.systemInstructions,
           `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Use only the capabilities and tools supplied for this turn.`,
         ].join('\n\n'),
+        authorizedMemoryContext: [
+          kernel.authorizedMemoryContext,
+          knowledge.context,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
         grantedCapabilities: [
           ...new Set([
             'model:invoke' as const,
@@ -577,7 +601,7 @@ async function executeHandler(
         },
       });
       outcome = 'idle';
-      return result;
+      return { ...result, citations: knowledge.citations };
     } catch (error) {
       outcome = signal.aborted ? 'interrupted' : 'error';
       errorCode =
