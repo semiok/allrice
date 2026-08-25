@@ -389,6 +389,7 @@ console.info(
     JSON.stringify({
       runId: message.run.id,
       memberUserId: member.userId,
+      employeeId: memberRice.employeeId,
       workflowRevisionId: workflowRevision.id,
       workspaceKnowledgeRevisionId: workspaceKnowledge.id,
       adminOnlyKnowledgeRevisionId: adminOnlyKnowledge.id,

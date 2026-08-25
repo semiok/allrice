@@ -118,6 +118,27 @@ if [[ "${capability_snapshot}" != "2|1|1|${capability_member_id}" ]]; then
   exit 1
 fi
 
+workflow_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+ALLRICE_SMOKE_STATE="${smoke_state}" \
+ALLRICE_CAPABILITY_SMOKE_STATE="${capability_state}" \
+  node scripts/workflow-http-smoke.mjs)"
+printf '%s\n' "${workflow_output}" | sed '/^ALLRICE_WORKFLOW_SMOKE_STATE=/d'
+workflow_state="$(printf '%s\n' "${workflow_output}" | sed -n 's/^ALLRICE_WORKFLOW_SMOKE_STATE=//p')"
+if [[ -z "${workflow_state}" ]]; then
+  echo "Workflow smoke state was not returned" >&2
+  exit 1
+fi
+workflow_run_id="$(printf '%s' "${workflow_state}" | base64 --decode 2>/dev/null | jq -r '.runId')"
+workflow_evidence="$({
+  docker compose --project-name "${compose_project}" exec -T postgres \
+    psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -AtF '|' -c \
+    "select wr.status, count(distinct a.id), count(distinct e.id) from allrice_workflow_runs wr left join allrice_workflow_artifacts a on a.workflow_run_id = wr.id left join allrice_workflow_evaluations e on e.workflow_run_id = wr.id where wr.run_id = '${workflow_run_id}' group by wr.status;"
+} | tr -d '\r')"
+if [[ "${workflow_evidence}" != "succeeded|1|1" ]]; then
+  echo "Unexpected MET-73 Workflow evidence: ${workflow_evidence}" >&2
+  exit 1
+fi
+
 execution_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \
   node scripts/execution-http-smoke.mjs)"
