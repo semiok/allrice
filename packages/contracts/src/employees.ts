@@ -21,6 +21,29 @@ export const EmployeeProviderSnapshotSchema = z.union([
   LegacyEmployeeProviderSchema,
 ]);
 
+export const PartnerProfileSchema = z
+  .object({
+    role: z.string().trim().min(1).max(120),
+    mission: z.string().trim().min(1).max(500),
+    communicationStyle: z.enum(['concise', 'structured', 'exploratory']),
+    outputLanguage: z.enum(['zh-CN', 'en-US']),
+    proactivePolicy: z.enum(['suggest', 'ask', 'disabled']),
+    approvalPolicy: z
+      .enum(['confirm_side_effects', 'confirm_external', 'autonomous'])
+      .default('confirm_side_effects'),
+  })
+  .strict();
+export type PartnerProfile = z.infer<typeof PartnerProfileSchema>;
+
+export const DefaultPartnerProfile: PartnerProfile = {
+  role: '通用工作伙伴',
+  mission: '理解目标、推进任务，并交付可继续协作的结果。',
+  communicationStyle: 'structured',
+  outputLanguage: 'zh-CN',
+  proactivePolicy: 'suggest',
+  approvalPolicy: 'confirm_side_effects',
+};
+
 export const EmployeeManifestSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -31,6 +54,7 @@ export const EmployeeManifestSchema = z
     provider: EmployeeProviderSnapshotSchema,
     capabilities: z.array(SkillCapabilitySchema).max(16),
     skillVersionIds: z.array(UuidSchema).max(32),
+    partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
   })
   .strict();
 export type EmployeeManifest = z.infer<typeof EmployeeManifestSchema>;
@@ -56,8 +80,19 @@ export const EmployeeHubAssignmentSchema = z
     workspaceId: UuidSchema,
     isDefault: z.boolean(),
     active: z.boolean(),
+    memoryCount: z.number().int().nonnegative().default(0),
     currentVersion: EmployeeVersionSnapshotSchema,
     versions: z.array(EmployeeVersionSnapshotSchema),
+  })
+  .strict();
+
+export const CreateEmployeeInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().min(1).max(1_000),
+    partnerProfile: PartnerProfileSchema,
+    skillVersionIds: z.array(UuidSchema).max(32).default([]),
   })
   .strict();
 
@@ -66,6 +101,7 @@ export const PublishEmployeeVersionInputSchema = z
     workspaceId: UuidSchema,
     employeeId: UuidSchema,
     skillVersionIds: z.array(UuidSchema).max(32).default([]),
+    partnerProfile: PartnerProfileSchema.optional(),
   })
   .strict();
 

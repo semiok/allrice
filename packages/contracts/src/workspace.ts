@@ -77,6 +77,7 @@ export const ChatSessionSchema = z
     workspaceId: UuidSchema,
     ownerId: UuidSchema,
     employeeAssignmentId: UuidSchema,
+    employeeVersionId: UuidSchema,
     title: z.string().min(1).max(160),
     visibility: VisibilitySchema,
     createdAt: TimestampSchema,
@@ -89,6 +90,7 @@ export const CreateChatSessionInputSchema = z
   .object({
     workspaceId: UuidSchema,
     employeeAssignmentId: UuidSchema.optional(),
+    employeeVersionId: UuidSchema.optional(),
     title: z.string().trim().min(1).max(160).default('New session'),
   })
   .strict();
@@ -137,6 +139,7 @@ export const LinkSessionAttachmentInputSchema = z
 export const CreateWorkspaceMemoryInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    employeeId: UuidSchema.nullable().default(null),
     content: z.string().trim().min(1).max(100_000),
     visibility: VisibilitySchema.default('private'),
     sourceType: z.enum(['user', 'message', 'file']),
@@ -149,6 +152,7 @@ export const WorkspaceMemorySchema = z
     id: UuidSchema,
     organizationId: UuidSchema,
     workspaceId: UuidSchema,
+    employeeId: UuidSchema.nullable(),
     ownerId: UuidSchema,
     content: z.string(),
     visibility: VisibilitySchema,

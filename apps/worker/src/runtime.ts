@@ -183,6 +183,10 @@ async function executeHandler(
                   skillVersionIds: resolved.skillArtifacts.map(
                     (artifact) => artifact.skillVersionId,
                   ),
+                  sessionId:
+                    typeof input.sessionId === 'string'
+                      ? input.sessionId
+                      : undefined,
                   call,
                 })
             : undefined,
@@ -441,6 +445,12 @@ export async function executeClaimedJob(input: {
       error instanceof HandlerError
         ? error
         : new HandlerError('HANDLER_FAILED', 'Worker handler failed', false);
+    console.error('[M5] Handler failed', {
+      jobId: input.jobId,
+      code: failure.code,
+      message: failure.message,
+      cause: error instanceof Error ? error.message : 'unknown error',
+    });
     try {
       await failJob({
         workerId: input.workerId,

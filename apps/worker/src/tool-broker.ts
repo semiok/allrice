@@ -1,6 +1,7 @@
 import {
   getToolBrokerFile,
   listToolBrokerFiles,
+  createAutomationFromExecutionContext,
   recordToolBrokerAudit,
   searchToolBrokerMemories,
   searchToolBrokerSessions,
@@ -75,6 +76,21 @@ export const riceToolDefinitions = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'automation.create',
+    description:
+      '当用户明确要求提醒或未来执行某项任务时，创建当前工作区的一次性自动化，并绑定到当前对话。不要在用户没有明确提出未来执行要求时调用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 160 },
+        prompt: { type: 'string', minLength: 1, maxLength: 40000 },
+        delayMinutes: { type: 'integer', minimum: 1, maximum: 525600 },
+      },
+      required: ['name', 'prompt', 'delayMinutes'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
@@ -83,6 +99,7 @@ const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'workspace.memory.search': 'storage:read',
   'workspace.session.search': 'storage:read',
   'web.fetch': 'network:outbound',
+  'automation.create': 'automation:write',
 };
 
 export function riceToolDefinitionsForCapabilities(
@@ -154,6 +171,7 @@ export async function executeRiceTool(input: {
   capabilities: SkillCapability[];
   storageRoot: string;
   skillVersionIds?: string[];
+  sessionId?: string;
   call: RiceToolCall;
 }): Promise<RiceToolResult> {
   const requiredCapability = toolCapabilities[input.call.name];
@@ -236,6 +254,37 @@ export async function executeRiceTool(input: {
       result = {
         modelContent: JSON.stringify(page),
         summary: `已读取 ${new URL(page.url).hostname}`,
+        itemCount: 1,
+      };
+    } else if (input.call.name === 'automation.create') {
+      const delayMinutes = args.delayMinutes;
+      if (
+        typeof delayMinutes !== 'number' ||
+        !Number.isInteger(delayMinutes) ||
+        delayMinutes < 1 ||
+        delayMinutes > 525600
+      ) {
+        throw new HandlerError(
+          'TOOL_INPUT_INVALID',
+          'delayMinutes 必须是 1 到 525600 之间的整数',
+          false,
+        );
+      }
+      const automation = await createAutomationFromExecutionContext({
+        context: input.context,
+        sessionId: input.sessionId,
+        name: stringValue(args.name, 'name'),
+        prompt: stringValue(args.prompt, 'prompt'),
+        delayMinutes,
+      });
+      result = {
+        modelContent: JSON.stringify({
+          automationId: automation.id,
+          name: automation.name,
+          runAt: automation.nextRunAt,
+          sessionId: automation.lastSessionId,
+        }),
+        summary: `已创建一次性自动化，将于 ${automation.nextRunAt ?? '指定时间'} 执行`,
         itemCount: 1,
       };
     } else {

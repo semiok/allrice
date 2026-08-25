@@ -1,5 +1,5 @@
-import { WorkspaceClient } from './workspace-client';
+import { AppShell } from '../components/app-shell';
 
 export default function WorkspacePage() {
-  return <WorkspaceClient />;
+  return <AppShell initialPanel="workspace" />;
 }

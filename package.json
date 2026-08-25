@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@11.2.2",
+  "packageManager": "pnpm@10.33.3",
   "engines": {
     "node": ">=22.0.0",
-    "pnpm": ">=11.0.0"
+    "pnpm": ">=10.33.3"
   },
   "scripts": {
     "build": "pnpm -r --if-present run build",
@@ -15,6 +15,7 @@
     "db:dev:down": "docker compose --project-name allrice-dev --file compose.dev.yaml down",
     "db:dev:up": "docker compose --project-name allrice-dev --file compose.dev.yaml up --detach --wait postgres",
     "db:migrate": "pnpm --filter @allrice/database migrate",
+    "db:repair": "tsx scripts/repair-dev-skill-artifacts.ts",
     "db:setup": "node scripts/setup-dev-db.mjs",
     "db:verify": "pnpm --filter @allrice/database verify",
     "dev": "node scripts/dev.mjs",

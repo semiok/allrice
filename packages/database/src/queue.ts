@@ -516,6 +516,15 @@ export async function enqueueRun(
                     }),
                   )
                 : []),
+              ...(options.employeeBinding
+                ? [
+                    {
+                      resourceType: 'automation',
+                      action: 'resource:write' as const,
+                      workspaceId,
+                    },
+                  ]
+                : []),
             ],
           }),
         )},
@@ -822,12 +831,19 @@ async function transitionTerminal(
           ]
         : [];
     });
+    const failureText =
+      input.code === 'SKILL_ARTIFACT_MISSING'
+        ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'
+        : input.code === 'SKILL_ARTIFACT_MISMATCH' ||
+            input.code === 'SKILL_ARTIFACT_INVALID'
+          ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件校验失败。请重新安装或刷新该 Skill 后重试。'
+          : 'Rice 暂时无法完成这次请求，请稍后重试。';
     const text =
       input.runStatus === 'succeeded' && typeof result.answer === 'string'
         ? result.answer
         : input.runStatus === 'canceled'
           ? 'Rice 的这次执行已取消。'
-          : 'Rice 暂时无法完成这次请求，请稍后重试。';
+          : failureText;
     await transaction`
       update allrice_messages
       set content = ${transaction.json(toJsonValue({ text, citations }))},

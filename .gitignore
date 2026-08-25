@@ -13,3 +13,5 @@ coverage/
 .local/
 storage-data/
 postgres-data/
+backups/*.sql
+backups/*.dump

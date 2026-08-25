@@ -1,4 +1,5 @@
 import {
+  createEmployee,
   DataAccessError,
   listEmployeeHub,
   publishEmployeeVersion,
@@ -26,8 +27,13 @@ export async function POST(request: Request) {
   try {
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
-    const version = await publishEmployeeVersion(context, await request.json());
-    return Response.json({ version }, { status: 201 });
+    const input = await request.json();
+    if (typeof input?.employeeId === 'string') {
+      const version = await publishEmployeeVersion(context, input);
+      return Response.json({ version }, { status: 201 });
+    }
+    const employee = await createEmployee(context, input);
+    return Response.json({ employee }, { status: 201 });
   } catch (error) {
     return employeeHubErrorResponse(error);
   }

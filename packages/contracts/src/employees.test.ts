@@ -29,6 +29,8 @@ describe('EmployeeHub contracts', () => {
     expect(manifest.name).toBe('Rice');
     expect(manifest.provider.provider).toBe('codex');
     expect(manifest.skillVersionIds).toEqual([skillVersionId]);
+    expect(manifest.partnerProfile.role).toBe('通用工作伙伴');
+    expect(manifest.partnerProfile.approvalPolicy).toBe('confirm_side_effects');
   });
 
   it('rejects mutable skill aliases in a publication request', () => {
@@ -39,5 +41,23 @@ describe('EmployeeHub contracts', () => {
         skillVersionIds: ['weather@latest'],
       }),
     ).toThrow();
+  });
+
+  it('accepts a persisted partner profile in a publication request', () => {
+    const parsed = PublishEmployeeVersionInputSchema.parse({
+      workspaceId: randomUUID(),
+      employeeId: randomUUID(),
+      skillVersionIds: [],
+      partnerProfile: {
+        role: '客户成功伙伴',
+        mission: '跟进客户问题并维护交付节奏。',
+        communicationStyle: 'structured',
+        outputLanguage: 'zh-CN',
+        proactivePolicy: 'suggest',
+        approvalPolicy: 'confirm_external',
+      },
+    });
+    expect(parsed.partnerProfile?.role).toBe('客户成功伙伴');
+    expect(parsed.partnerProfile?.approvalPolicy).toBe('confirm_external');
   });
 });

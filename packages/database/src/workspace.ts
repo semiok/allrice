@@ -4,6 +4,7 @@ import {
   ChatMessageContentSchema,
   CreateChatSessionInputSchema,
   CreateWorkspaceMemoryInputSchema,
+  EmployeeManifestSchema,
   SendChatMessageInputSchema,
   UpdateChatSessionInputSchema,
   UuidSchema,
@@ -25,12 +26,16 @@ import {
 } from './data.ts';
 import { getDatabase } from './index.ts';
 import {
+  builtInEmployeeManifests,
   employeeManifestChecksum,
+  employeeManifestTemplateChecksum,
   riceEmployeeKey,
   riceManifest,
 } from './employee-config.ts';
 
-const riceVersion = 4;
+// Bump when the built-in Rice prompt contract changes so existing assignments
+// receive the new version while historical Sessions remain pinned.
+const riceVersion = 7;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -60,6 +65,7 @@ interface SessionRow {
   workspace_id: string;
   owner_id: string;
   employee_assignment_id: string;
+  employee_version_id: string;
   title: string;
   visibility: Visibility;
   created_at: Date;
@@ -96,6 +102,7 @@ interface MemoryRow {
   id: string;
   organization_id: string;
   workspace_id: string;
+  employee_id: string | null;
   owner_id: string;
   content: string;
   visibility: Visibility;
@@ -287,6 +294,116 @@ export async function ensureDefaultEmployee(
         end,
         updated_at = now()
     `;
+    for (const builtIn of builtInEmployeeManifests()) {
+      const builtInEmployees = await transaction<{ id: string }[]>`
+        insert into allrice_employees (
+          organization_id, workspace_id, employee_key, name
+        ) values (
+          ${context.organizationId}, ${workspaceId}, ${builtIn.key}, ${builtIn.name}
+        )
+        on conflict (organization_id, workspace_id, employee_key)
+        do update set name = excluded.name, status = 'active', updated_at = now()
+        returning id
+      `;
+      const builtInEmployeeId = builtInEmployees[0]?.id;
+      if (!builtInEmployeeId)
+        throw new Error('built-in employee provisioning failed');
+      const currentBuiltInVersions = await transaction<
+        {
+          id: string;
+          version: number;
+          config_checksum: string;
+          manifest: unknown;
+        }[]
+      >`
+        select id, version, config_checksum, manifest
+        from allrice_employee_versions
+        where employee_id = ${builtInEmployeeId}
+        order by version desc
+        limit 1
+      `;
+      let builtInVersionId = currentBuiltInVersions[0]?.id;
+      if (!builtInVersionId) {
+        const builtInChecksum = employeeManifestChecksum(builtIn);
+        const insertedVersions = await transaction<{ id: string }[]>`
+          insert into allrice_employee_versions (
+            organization_id, workspace_id, employee_id, version, name, model,
+            system_prompt, capabilities, config_checksum, description, manifest,
+            provider_snapshot, skill_version_ids
+          ) values (
+            ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId}, 1,
+            ${builtIn.name}, ${builtIn.provider.model}, ${builtIn.systemPrompt},
+            ${transaction.json(builtIn.capabilities)}, ${builtInChecksum},
+            ${builtIn.description}, ${transaction.json(builtIn)},
+            ${transaction.json(builtIn.provider)},
+            ${transaction.json(builtIn.skillVersionIds)}
+          ) returning id
+        `;
+        builtInVersionId = insertedVersions[0]?.id;
+      } else {
+        const currentManifest = EmployeeManifestSchema.safeParse(
+          currentBuiltInVersions[0]?.manifest,
+        );
+        const templateChanged =
+          !currentManifest.success ||
+          employeeManifestTemplateChecksum(currentManifest.data) !==
+            employeeManifestTemplateChecksum(builtIn);
+        if (templateChanged) {
+          const skillVersionIds = currentManifest.success
+            ? currentManifest.data.skillVersionIds
+            : builtIn.skillVersionIds;
+          const nextManifest = {
+            ...builtIn,
+            skillVersionIds,
+          };
+          const nextChecksum = employeeManifestChecksum(nextManifest);
+          const nextVersions = await transaction<{ version: number }[]>`
+            select coalesce(max(version), 0)::integer + 1 as version
+            from allrice_employee_versions
+            where employee_id = ${builtInEmployeeId}
+          `;
+          const insertedVersions = await transaction<{ id: string }[]>`
+            insert into allrice_employee_versions (
+              organization_id, workspace_id, employee_id, version, name, model,
+              system_prompt, capabilities, config_checksum, description, manifest,
+              provider_snapshot, skill_version_ids
+            ) values (
+              ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId},
+              ${nextVersions[0]?.version ?? 1}, ${builtIn.name},
+              ${nextManifest.provider.model}, ${nextManifest.systemPrompt},
+              ${transaction.json(nextManifest.capabilities)}, ${nextChecksum},
+              ${nextManifest.description}, ${transaction.json(nextManifest)},
+              ${transaction.json(nextManifest.provider)},
+              ${transaction.json(nextManifest.skillVersionIds)}
+            ) returning id
+          `;
+          builtInVersionId = insertedVersions[0]?.id;
+        }
+      }
+      if (!builtInVersionId)
+        throw new Error('built-in employee version missing');
+      await transaction`
+        update allrice_employee_assignments
+        set employee_version_id = ${builtInVersionId}, updated_at = now()
+        where organization_id = ${context.organizationId}
+          and workspace_id = ${workspaceId}
+          and employee_id = ${builtInEmployeeId}
+          and active
+      `;
+      await transaction`
+        insert into allrice_employee_assignments (
+          organization_id, workspace_id, employee_id, employee_version_id,
+          user_id, is_default, active
+        ) values (
+          ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId},
+          ${builtInVersionId}, ${userId}, false, true
+        )
+        on conflict (organization_id, workspace_id, user_id, employee_id)
+        do update set active = true,
+          employee_version_id = excluded.employee_version_id,
+          updated_at = now()
+      `;
+    }
     const rows = await transaction<AssignmentRow[]>`
       select
         a.id as assignment_id, a.employee_id, a.employee_version_id,
@@ -313,6 +430,7 @@ function mapSession(row: SessionRow): ChatSession {
     workspaceId: row.workspace_id,
     ownerId: row.owner_id,
     employeeAssignmentId: row.employee_assignment_id,
+    employeeVersionId: row.employee_version_id,
     title: row.title,
     visibility: row.visibility,
     createdAt: row.created_at.toISOString(),
@@ -397,13 +515,25 @@ export async function createChatSession(
     if (!assignments[0]) throw new DataAccessError('authorization_denied');
     assignment = mapAssignment(assignments[0]);
   }
+  const employeeVersionId = parsed.employeeVersionId
+    ? UuidSchema.parse(parsed.employeeVersionId)
+    : assignment.employeeVersionId;
+  const versions = await sql<{ id: string }[]>`
+    select id from allrice_employee_versions
+    where id = ${employeeVersionId}
+      and organization_id = ${context.organizationId}
+      and workspace_id = ${defaultAssignment.workspaceId}
+      and employee_id = ${assignment.employeeId}
+      and provider_snapshot ->> 'provider' = 'codex'
+  `;
+  if (!versions[0]) throw new DataAccessError('authorization_denied');
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (
       organization_id, workspace_id, owner_id, employee_assignment_id,
-      title, visibility
+      employee_version_id, title, visibility
     ) values (
       ${context.organizationId}, ${defaultAssignment.workspaceId}, ${requireUser(context)},
-      ${assignment.id}, ${parsed.title}, 'private'
+      ${assignment.id}, ${employeeVersionId}, ${parsed.title}, 'private'
     )
     returning *
   `;
@@ -629,17 +759,20 @@ function vectorLiteral(values: number[]) {
 async function recallForReply(
   context: RequestContext,
   workspaceId: string,
+  employeeId: string | undefined,
   text: string,
 ) {
   const sql = getDatabase();
+  const employeeScope = employeeId ?? null;
   const embedding = vectorLiteral(embedWorkspaceText(text));
-  return sql<{ id: string; content: string }[]>`
+  return await sql<{ id: string; content: string }[]>`
     select m.id, m.content
     from allrice_rag_chunks c
     join allrice_memories m on m.id = c.memory_id
     where c.organization_id = ${context.organizationId}
       and c.workspace_id = ${workspaceId}
       and m.archived_at is null
+      and (${employeeScope}::uuid is null or m.employee_id is null or m.employee_id = ${employeeScope})
       and (c.owner_id = ${requireUser(context)} or c.visibility <> 'private')
     order by c.embedding <=> ${embedding}::vector
     limit 3
@@ -698,8 +831,19 @@ export async function sendChatMessage(
   if (session.owner_id !== requireUser(context) || session.archived_at) {
     throw new DataAccessError('authorization_denied');
   }
-  const memories = await recallForReply(context, workspaceId, message.text);
   const sql = getDatabase();
+  const employeeRows = await sql<{ employee_id: string }[]>`
+    select employee_id from allrice_employee_assignments
+    where id = ${session.employee_assignment_id}
+      and organization_id = ${context.organizationId}
+      and workspace_id = ${workspaceId}
+  `;
+  const memories = await recallForReply(
+    context,
+    workspaceId,
+    employeeRows[0]?.employee_id,
+    message.text,
+  );
   const result = await sql.begin(async (transaction) => {
     await transaction`
       select pg_advisory_xact_lock(
@@ -857,6 +1001,7 @@ export async function sendChatMessage(
       context,
       workspaceId,
       assignmentId: session.employee_assignment_id,
+      employeeVersionId: session.employee_version_id,
       sessionId: session.id,
       userMessageId: result.userMessage.id,
       assistantMessageId: result.assistantMessage.id,
@@ -1040,6 +1185,7 @@ function mapMemory(row: MemoryRow): WorkspaceMemory {
     id: row.id,
     organizationId: row.organization_id,
     workspaceId: row.workspace_id,
+    employeeId: row.employee_id,
     ownerId: row.owner_id,
     content: row.content,
     visibility: row.visibility,
@@ -1053,13 +1199,16 @@ function mapMemory(row: MemoryRow): WorkspaceMemory {
 export async function listWorkspaceMemories(
   context: RequestContext,
   workspaceIdInput: string,
+  employeeIdInput?: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
+  const employeeId = employeeIdInput ? UuidSchema.parse(employeeIdInput) : null;
   const sql = getDatabase();
   const rows = await sql<MemoryRow[]>`
     select * from allrice_memories
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
+      and (${employeeId}::uuid is null or employee_id = ${employeeId})
       and archived_at is null
     order by updated_at desc, id desc
     limit 100
@@ -1114,8 +1263,20 @@ export async function createTraceableMemory(
       throw new DataAccessError('authorization_denied');
     }
   }
+  if (memory.employeeId) {
+    const assignments = await sql<{ id: string }[]>`
+      select id from allrice_employee_assignments
+      where organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and employee_id = ${memory.employeeId}
+        and user_id = ${requireUser(context)}
+        and active
+    `;
+    if (!assignments[0]) throw new DataAccessError('authorization_denied');
+  }
   const created = await createMemory(context, {
     workspaceId,
+    employeeId: memory.employeeId,
     projectId: null,
     content: memory.content,
     metadata: {},

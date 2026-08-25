@@ -1,12 +1,12 @@
 # Employee workspace
 
-> Status: **Rice workspace with durable execution implemented**
+> Status: **Independent AI employees with durable execution implemented**
 >
 > Linear: **MET-50**
 
 ## User outcome
 
-After login, an enterprise employee lands in one coherent workspace with Rice selected as the default AI employee, persistent Session history, durable Codex-backed Chat, attachments, explicit Memory and links to EmployeeHub and SkillHub.
+After login, an enterprise employee lands in one coherent workspace where each new task can select an independent AI employee. Each employee has its own Skill configuration, memory and durable conversation history.
 
 ## V1 layout
 
@@ -15,7 +15,8 @@ After login, an enterprise employee lands in one coherent workspace with Rice se
 - Chat conversation area;
 - file attachment and context surface;
 - basic Memory source/status surface;
-- an AI employee selector used when creating a Session;
+- an AI employee selector used when creating a task;
+- a task launchpad that exposes the selected employee's role, mission, Skill/Memory context and execution-confirmation boundary;
 - EmployeeHub and SkillHub navigation;
 - pending, completed and failed Run-backed Message state.
 
@@ -23,11 +24,19 @@ After login, an enterprise employee lands in one coherent workspace with Rice se
 
 Business state is server-authoritative. Browser storage is limited to non-sensitive presentation preferences. Page refresh, browser restart and re-login restore the workspace from server records.
 
-## Default AI employee
+## Independent AI employees
 
-V1 provisions one default EmployeeVersion/Assignment per human user. The employee's model, system instructions and capabilities are versioned server configuration, not browser input. A complex editor and marketplace are deferred.
+The system provisions Rice plus built-in employees for e-commerce analysis, short-video growth, fitness management, sales coaching, growth strategy and e-commerce campaign pages. Users can also create additional employees. An EmployeeVersion is an internal immutable configuration snapshot; users select employees, not versions. Each employee can have its own Skill bindings and employee-scoped memories.
 
-`GET /api/v1/workspace` lazily provisions immutable Rice version 2 and the user's explicit default assignment, then restores all active employee assignments, active/archived Sessions and authorized Memory. The browser stores no business authority.
+The employee `PartnerProfile` also records an explicit execution-confirmation
+preference. `confirm_side_effects` is the default: the employee may analyze and
+prepare work, but must explain and ask before changes, external communication,
+publishing, booking, deletion or other side effects. This preference is frozen
+into the EmployeeVersion prompt snapshot and shown at task creation time;
+actual authorization remains enforced by capabilities, Skill grants and the
+execution policy.
+
+`GET /api/v1/workspace` lazily provisions Rice and restores all active employee assignments, active/archived Sessions and authorized Memory. Each Session keeps its own employee assignment and version binding. The browser stores no business authority.
 
 ## Implemented API surface
 
@@ -35,11 +44,11 @@ V1 provisions one default EmployeeVersion/Assignment per human user. The employe
 - `GET|POST /api/v1/sessions` and `GET|PATCH /api/v1/sessions/:id` manage conversations;
 - `POST /api/v1/sessions/:id/messages` persists an idempotent user/pending-assistant pair and returns its durable EmployeeRun;
 - `POST /api/v1/sessions/:id/attachments` validates, stores and references an allowlisted private attachment;
-- Memory and signed file APIs provide explicit remember, inspect, download and delete actions.
+- Memory and signed file APIs provide workspace memory plus employee-scoped remember and inspect actions.
 
 ## Boundary
 
-MET-50 owns the base workspace, Chat/File/Memory records. MET-43 owns the durable execution plane, MET-44 owns immutable Skill installation, and MET-45 composes them through Rice manifests, Assignments and EmployeeRuns. Rich employee editors and multi-employee catalogs remain deferred.
+MET-50 owns the base workspace, Chat/File/Memory records. MET-43 owns the durable execution plane, MET-44 owns immutable Skill installation, and MET-45 composes them through employee manifests, Assignments and EmployeeRuns.
 
 ## Failure behavior
 
