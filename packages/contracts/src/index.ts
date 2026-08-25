@@ -28,6 +28,7 @@ export * from './automation.ts';
 export * from './authorization.ts';
 export * from './common.ts';
 export * from './employees.ts';
+export * from './harness.ts';
 export * from './identity.ts';
 export * from './queue.ts';
 export * from './runs.ts';

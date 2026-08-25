@@ -19,12 +19,11 @@ import {
 } from '@allrice/database';
 
 import { prepareExecutionIsolation } from './isolation.js';
-import {
-  executeCodexHarness,
-  executeCodexSkill,
-  type NormalizedCodexEvent,
-} from './codex.js';
+import { executeCodexSkill } from './codex.js';
+import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
+import type { HarnessEvent } from '@allrice/contracts';
+import { HarnessRouter } from './harness/router.js';
 import {
   executeRiceTool,
   riceToolDefinitionsForCapabilities,
@@ -65,7 +64,7 @@ async function executeHandler(
   execution: ClaimedExecution,
   isolation: Awaited<ReturnType<typeof prepareExecutionIsolation>>,
   signal: AbortSignal,
-  onCodexEvent: (event: NormalizedCodexEvent) => Promise<void>,
+  onHarnessEvent: (event: HarnessEvent) => Promise<void>,
 ) {
   if (execution.payload.type === 'allrice.employee.run') {
     const input = objectInput(execution.payload.input);
@@ -88,12 +87,14 @@ async function executeHandler(
       ownerId: execution.job.ownerId,
       runId: execution.context.runId,
     });
-    const conversation = resolved.promptSnapshot.conversation
-      .map((message) => `${message.role}: ${message.text}`)
-      .join('\n');
-    const memories = resolved.promptSnapshot.memories
-      .map((memory) => `- [${memory.id}] ${memory.content}`)
-      .join('\n');
+    const kernel = assembleEmployeeKernel({
+      employeeAssignmentId: input.employeeAssignmentId,
+      employeeVersionId: input.employeeVersionId,
+      sessionId: input.sessionId,
+      userMessageId: input.userMessageId,
+      assistantMessageId: input.assistantMessageId,
+      resolved,
+    });
     const configChecksum = `sha256:${createHash('sha256')
       .update(
         JSON.stringify({
@@ -137,22 +138,25 @@ async function executeHandler(
     let outcome: 'idle' | 'interrupted' | 'error' = 'error';
     let errorCode: string | undefined;
     try {
-      const result = await executeCodexHarness({
+      const tools = riceToolDefinitionsForCapabilities(
+        resolved.grantedCapabilities,
+      );
+      const adapter = new HarnessRouter().resolve(kernel.harness);
+      const result = await adapter.execute({
+        kernel,
         storageObjects: resolved.skillArtifacts.map(
           (artifact) => artifact.storageObject,
         ),
         workDirectory: isolation.workDirectory,
         executionEnvironment: isolation.environment,
-        systemInstructions: resolved.promptSnapshot.systemPrompt,
-        prompt: resolved.promptSnapshot.userRequest,
         providerSnapshot: resolved.providerSnapshot,
-        grantedCapabilities: resolved.grantedCapabilities,
         signal,
+        attempt: execution.job.attempt,
+        generation: runtime.generation,
         onEvent: async (event) => {
           if (
-            event.kind === 'tool' &&
-            event.source === 'codex' &&
-            event.status === 'completed' &&
+            event.type === 'tool.completed' &&
+            event.source === 'harness' &&
             (event.name === 'web.search' || event.name === 'web.fetch')
           ) {
             await recordToolBrokerAudit({
@@ -166,14 +170,11 @@ async function executeHandler(
               },
             });
           }
-          await onCodexEvent(event);
+          await onHarnessEvent(event);
         },
-        toolDefinitions: riceToolDefinitionsForCapabilities(
-          resolved.grantedCapabilities,
-        ),
+        tools,
         onToolCall:
-          riceToolDefinitionsForCapabilities(resolved.grantedCapabilities)
-            .length > 0
+          tools.length > 0
             ? (call) =>
                 executeRiceTool({
                   context: execution.context,
@@ -190,26 +191,20 @@ async function executeHandler(
                   call,
                 })
             : undefined,
-        conversationRuntime: {
-          threadId: runtime.threadId,
-          clientUserMessageId: input.userMessageId,
-          bootstrapConversation: conversation,
-          turnContext: memories
-            ? `Authorized memory snapshot:\n${memories}`
-            : undefined,
-          onThreadBound: async ({ threadId }) => {
-            runtime = await bindConversationThread({
-              ...ownership,
-              threadId,
-            });
-          },
-          onTurnStarted: async ({ threadId, turnId }) => {
-            runtime = await recordConversationTurn({
-              ...ownership,
-              threadId,
-              turnId,
-            });
-          },
+        threadId: runtime.threadId,
+        onThreadBound: async ({ threadId }) => {
+          runtime = await bindConversationThread({
+            ...ownership,
+            threadId,
+          });
+          return { generation: runtime.generation };
+        },
+        onTurnStarted: async ({ threadId, turnId }) => {
+          runtime = await recordConversationTurn({
+            ...ownership,
+            threadId,
+            turnId,
+          });
         },
       });
       outcome = 'idle';
@@ -269,7 +264,48 @@ async function executeHandler(
       providerSnapshot: resolved.providerSnapshot,
       grantedCapabilities: resolved.grantedCapabilities,
       signal,
-      onEvent: onCodexEvent,
+      onEvent: async (event) => {
+        const type =
+          event.kind === 'message'
+            ? 'assistant.completed'
+            : event.kind === 'usage'
+              ? 'usage.updated'
+              : event.status === 'started'
+                ? 'tool.started'
+                : event.status === 'failed'
+                  ? 'tool.failed'
+                  : 'tool.completed';
+        await onHarnessEvent({
+          schemaVersion: 1,
+          harness: 'codex',
+          generation: 0,
+          attempt: execution.job.attempt,
+          order: 1,
+          threadId: null,
+          turnId: null,
+          ...(event.kind === 'message'
+            ? { type, text: event.text ?? '' }
+            : event.kind === 'usage'
+              ? {
+                  type,
+                  inputTokens: event.usage?.inputTokens ?? 0,
+                  cachedInputTokens: event.usage?.cachedInputTokens ?? 0,
+                  outputTokens: event.usage?.outputTokens ?? 0,
+                }
+              : {
+                  type,
+                  toolCallId: event.toolCallId ?? `${event.name}-unknown`,
+                  name: event.name ?? 'unknown',
+                  label: event.label ?? event.name ?? '工具调用',
+                  source:
+                    event.source === 'tool_broker' ? 'tool_broker' : 'harness',
+                  ...(event.summary ? { summary: event.summary } : {}),
+                  ...(event.itemCount === undefined
+                    ? {}
+                    : { itemCount: event.itemCount }),
+                }),
+        } as HarnessEvent);
+      },
     });
   }
   if (execution.payload.type !== 'allrice.system.echo') {
@@ -389,36 +425,63 @@ export async function executeClaimedJob(input: {
       controller.signal,
       async (event) => {
         const type =
-          event.kind === 'message'
+          event.type === 'assistant.completed'
             ? 'assistant.text.completed'
-            : event.kind === 'usage'
-              ? 'heartbeat'
-              : event.status === 'started'
-                ? 'tool.started'
-                : event.status === 'failed'
-                  ? 'tool.failed'
-                  : 'tool.completed';
+            : event.type === 'assistant.delta'
+              ? 'assistant.text.delta'
+              : event.type === 'usage.updated'
+                ? 'heartbeat'
+                : event.type === 'tool.started'
+                  ? 'tool.started'
+                  : event.type === 'tool.failed'
+                    ? 'tool.failed'
+                    : 'tool.completed';
         await appendJobEvent({
           workerId: input.workerId,
           jobId: input.jobId,
           leaseToken: input.leaseToken,
           type,
           payload:
-            event.kind === 'message'
-              ? { source: 'codex', text: event.text ?? '' }
-              : event.kind === 'usage'
-                ? { source: 'codex', usage: event.usage }
+            event.type === 'assistant.completed' ||
+            event.type === 'assistant.delta'
+              ? {
+                  source: event.harness,
+                  text: event.text,
+                  generation: event.generation,
+                  turnId: event.turnId,
+                  attempt: event.attempt,
+                  order: event.order,
+                }
+              : event.type === 'usage.updated'
+                ? {
+                    source: event.harness,
+                    generation: event.generation,
+                    turnId: event.turnId,
+                    attempt: event.attempt,
+                    order: event.order,
+                    usage: {
+                      inputTokens: event.inputTokens,
+                      cachedInputTokens: event.cachedInputTokens,
+                      outputTokens: event.outputTokens,
+                    },
+                  }
                 : {
-                    source: event.source ?? 'codex',
-                    toolCallId: event.toolCallId ?? `${event.name}-unknown`,
-                    name: event.name ?? 'unknown',
-                    label: event.label ?? event.name ?? '工具调用',
-                    status: event.status,
+                    source:
+                      event.source === 'tool_broker'
+                        ? 'tool_broker'
+                        : event.harness,
+                    toolCallId: event.toolCallId,
+                    name: event.name,
+                    label: event.label,
+                    status: event.type.split('.')[1],
+                    generation: event.generation,
+                    turnId: event.turnId,
                     ...(event.summary ? { summary: event.summary } : {}),
                     ...(event.itemCount === undefined
                       ? {}
                       : { itemCount: event.itemCount }),
-                    attempt: execution.job.attempt,
+                    attempt: event.attempt,
+                    order: event.order,
                   },
         });
       },

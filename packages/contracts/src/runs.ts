@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 
+export const HarnessEventSourceSchema = z.enum(['codex', 'dsh']);
+
 export const RunStatusSchema = z.enum([
   'queued',
   'running',
@@ -36,7 +38,11 @@ export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 export const AssistantTextEventPayloadSchema = z
   .object({
     text: z.string().max(100_000),
-    source: z.literal('codex'),
+    source: HarnessEventSourceSchema,
+    generation: z.number().int().nonnegative().optional(),
+    turnId: z.string().trim().min(1).nullable().optional(),
+    attempt: z.number().int().positive().optional(),
+    order: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -45,11 +51,14 @@ export const ToolEventPayloadSchema = z
     toolCallId: z.string().min(1).max(160),
     name: z.string().min(1).max(160),
     label: z.string().min(1).max(200),
-    source: z.enum(['codex', 'tool_broker']),
+    source: z.union([HarnessEventSourceSchema, z.literal('tool_broker')]),
     status: z.enum(['started', 'completed', 'failed']),
     summary: z.string().max(1_000).optional(),
     itemCount: z.number().int().nonnegative().optional(),
     attempt: z.number().int().positive().optional(),
+    generation: z.number().int().nonnegative().optional(),
+    turnId: z.string().trim().min(1).nullable().optional(),
+    order: z.number().int().positive().optional(),
   })
   .strict();
 
