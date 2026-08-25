@@ -13,9 +13,9 @@ afterEach(async () => {
   delete process.env.ALLRICE_DSH_CREDENTIALS_JSON;
   delete process.env.ALLRICE_DSH_CREDENTIALS_FILE;
   await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
