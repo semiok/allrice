@@ -68,6 +68,8 @@ export interface HarnessExecutionResult {
 export interface HarnessAdapter {
   readonly kind: 'codex' | 'dsh';
   readonly capabilities: HarnessCapabilities;
+  /** Who mutates the live context window; ChatFlow still owns checkpoints. */
+  readonly contextStrategy: 'chatflow-managed' | 'harness-native';
   isConfigured?(snapshot: HarnessExecutionSnapshot): boolean;
   execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult>;
   interrupt?(input: { threadId: string; turnId: string }): Promise<void>;

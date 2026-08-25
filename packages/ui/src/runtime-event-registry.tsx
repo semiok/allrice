@@ -57,6 +57,41 @@ function RuntimeRow({
 }
 
 export const defaultRuntimeEventRegistry = new RuntimeEventRendererRegistry()
+  .register('session.bound', ({ event }) => (
+    <RuntimeRow event={event}>
+      <strong>会话已连接</strong>
+      <small>
+        {event.payload.resumed ? '已恢复原会话' : '已建立会话'} ·{' '}
+        {String(event.payload.source ?? 'Harness')} · 第{' '}
+        {String(event.payload.generation ?? 0)} 代上下文
+      </small>
+    </RuntimeRow>
+  ))
+  .register('routing.selected', ({ event }) => (
+    <RuntimeRow event={event}>
+      <strong>
+        {event.payload.fallback ? '已切换执行引擎' : '已选择执行引擎'}
+      </strong>
+      <small>
+        {String(event.payload.source ?? '')} ·{' '}
+        {String(event.payload.model ?? '')}
+      </small>
+    </RuntimeRow>
+  ))
+  .register('turn.*', ({ event }) => (
+    <RuntimeRow event={event}>
+      <strong>
+        {event.type === 'turn.started'
+          ? 'Rice 正在处理'
+          : event.type === 'turn.completed'
+            ? '本轮已完成'
+            : event.type === 'turn.canceled'
+              ? '本轮已停止'
+              : '本轮未完成'}
+      </strong>
+      <small>{String(event.payload.source ?? 'ChatFlow')}</small>
+    </RuntimeRow>
+  ))
   .register('step.*', ({ event }) => (
     <RuntimeRow event={event}>
       <strong>
@@ -95,6 +130,34 @@ export const defaultRuntimeEventRegistry = new RuntimeEventRendererRegistry()
     <RuntimeRow event={event}>
       <strong>正在重试</strong>
       <small>第 {String(event.payload.attempt ?? '?')} 次执行未完成</small>
+    </RuntimeRow>
+  ))
+  .register('context.*', ({ event }) => (
+    <RuntimeRow event={event}>
+      <strong>
+        {event.type === 'context.checkpoint.created'
+          ? '上下文恢复点已保存'
+          : event.type === 'context.compaction.completed'
+            ? '上下文整理完成'
+            : event.type === 'context.compaction.failed'
+              ? '上下文整理失败'
+              : '正在整理上下文'}
+      </strong>
+      <small>
+        {event.payload.estimatedTokens
+          ? `约 ${String(event.payload.estimatedTokens)} tokens`
+          : String(event.payload.contextStrategy ?? '')}
+      </small>
+    </RuntimeRow>
+  ))
+  .register('approval.*', ({ event }) => (
+    <RuntimeRow event={event}>
+      <strong>
+        {event.type === 'approval.requested' ? '等待你的确认' : '审批已处理'}
+      </strong>
+      <small>
+        {String(event.payload.name ?? event.payload.decision ?? '')}
+      </small>
     </RuntimeRow>
   ));
 

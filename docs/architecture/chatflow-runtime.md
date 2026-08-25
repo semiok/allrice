@@ -1,6 +1,6 @@
 # AllRice ChatFlow Runtime
 
-> Status: planned convergence under
+> Status: dual-track convergence implemented under
 > [MET-79](https://linear.app/metasnowsky/issue/MET-79/allrice-chatflow-runtime多-harness-对话控制平面收敛与双轨迁移).
 
 **AllRice ChatFlow is the multi-Harness SaaS conversation control plane. It
@@ -51,8 +51,20 @@ route currently discovers new durable events by polling PostgreSQL every 150
 ms. Last-Event-ID and the RunEvent sequence provide replay after reconnect.
 
 This is real Harness streaming, not a final answer split into synthetic token
-chunks. The convergence work removes avoidable transport latency and duplicate
-runtime responsibilities without discarding the durable recovery path.
+chunks. ChatFlow now commits those events to PostgreSQL and uses a transactional
+`LISTEN/NOTIFY` wake-up to remove avoidable delivery latency. The original 150
+ms query loop remains an automatic fallback and recovery path.
+
+The implementation exposes `GET /api/v1/admin/chatflow` to organization admins
+for rollout policy and process-local delivery counters. Set
+`ALLRICE_CHATFLOW_REALTIME=0` for an emergency return to polling, or use
+`ALLRICE_CHATFLOW_REALTIME_ROLLOUT_JSON` for organization, workspace, employee
+revision and Harness canaries.
+
+Stage 3 does **not** immediately delete polling. Controlled retirement remains
+behind the exit gates below. Redis Streams and NATS are represented only by the
+transport-neutral wake-up contract until measured scale justifies either
+dependency.
 
 ## Non-negotiable migration rule
 

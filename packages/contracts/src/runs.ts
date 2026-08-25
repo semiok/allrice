@@ -19,6 +19,12 @@ export const RunEventTypeSchema = z.enum([
   'run.created',
   'run.started',
   'run.retrying',
+  'session.bound',
+  'turn.started',
+  'turn.completed',
+  'turn.failed',
+  'turn.canceled',
+  'routing.selected',
   'step.started',
   'step.completed',
   'step.waiting_approval',
@@ -38,6 +44,7 @@ export const RunEventTypeSchema = z.enum([
   'context.compaction.completed',
   'context.compaction.failed',
   'context.checkpoint.created',
+  'usage.updated',
   'run.succeeded',
   'run.failed',
   'run.canceled',
@@ -56,6 +63,10 @@ export const RuntimeEventCategorySchema = z.enum([
   'knowledge',
   'context',
   'system',
+  'session',
+  'turn',
+  'usage',
+  'routing',
 ]);
 export type RuntimeEventCategory = z.infer<typeof RuntimeEventCategorySchema>;
 
@@ -144,6 +155,10 @@ export const CanonicalRuntimeEventSchema = z
 export type CanonicalRuntimeEvent = z.infer<typeof CanonicalRuntimeEventSchema>;
 
 function runtimeEventCategory(type: RunEventType): RuntimeEventCategory {
+  if (type.startsWith('session.')) return 'session';
+  if (type.startsWith('turn.')) return 'turn';
+  if (type === 'usage.updated') return 'usage';
+  if (type.startsWith('routing.')) return 'routing';
   if (type.startsWith('assistant.')) return 'assistant';
   if (type.startsWith('tool.')) return 'tool';
   if (type.startsWith('step.')) return 'workflow';

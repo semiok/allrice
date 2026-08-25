@@ -196,6 +196,7 @@ function visibleModelText(text: string) {
 
 export class DshHarnessAdapter implements HarnessAdapter {
   readonly kind = 'dsh' as const;
+  readonly contextStrategy = 'harness-native' as const;
   readonly capabilities = {
     persistentThreads: true,
     assistantDeltas: true,

@@ -27,6 +27,7 @@ export * from './api.ts';
 export * from './automation.ts';
 export * from './authorization.ts';
 export * from './capabilities.ts';
+export * from './chatflow.ts';
 export * from './common.ts';
 export * from './employees.ts';
 export * from './framework.ts';

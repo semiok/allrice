@@ -1,5 +1,7 @@
 import postgres from 'postgres';
 
+import { closeChatFlowWakeups } from './chatflow-notifications.ts';
+
 let client: ReturnType<typeof postgres> | undefined;
 
 export function getDatabase() {
@@ -23,6 +25,7 @@ export async function pingDatabase() {
 
 export async function closeDatabase() {
   if (!client) return;
+  await closeChatFlowWakeups();
   await client.end({ timeout: 5 });
   client = undefined;
 }
@@ -44,3 +47,4 @@ export * from './route-decision.ts';
 export * from './knowledge-retrieval.ts';
 export * from './connector-broker.ts';
 export * from './workflow-runtime.ts';
+export * from './chatflow-notifications.ts';

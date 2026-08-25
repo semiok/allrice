@@ -59,4 +59,29 @@ describe('normalizeHarnessRunEvent', () => {
       },
     });
   });
+
+  it('keeps usage as a first-class ChatFlow event and preserves source metadata', () => {
+    const event: HarnessEvent = {
+      ...envelope('codex'),
+      sourceEventId: 'codex-native-9',
+      sourceOccurredAt: '2026-08-25T12:00:00.000Z',
+      type: 'usage.updated',
+      inputTokens: 120,
+      cachedInputTokens: 40,
+      outputTokens: 20,
+    };
+    expect(normalizeHarnessRunEvent(event)).toEqual({
+      type: 'usage.updated',
+      payload: expect.objectContaining({
+        source: 'codex',
+        sourceEventId: 'codex-native-9',
+        sourceOccurredAt: '2026-08-25T12:00:00.000Z',
+        usage: {
+          inputTokens: 120,
+          cachedInputTokens: 40,
+          outputTokens: 20,
+        },
+      }),
+    });
+  });
 });

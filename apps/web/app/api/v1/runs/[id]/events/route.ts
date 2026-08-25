@@ -9,11 +9,16 @@ import {
   DataAccessError,
   QueueError,
   getRun,
+  getDatabase,
   listRunEvents,
+  subscribeChatFlowWakeups,
 } from '@allrice/database';
 
 import { executionErrorResponse } from '../../../../../../lib/execution/responses';
 import { getRequestContext } from '../../../../../../lib/identity/session';
+import { chatFlowRealtimeEnabled } from '../../../../../../lib/chatflow/rollout';
+import { incrementChatFlowMetric } from '../../../../../../lib/chatflow/metrics';
+import { createChatFlowWaiter } from '../../../../../../lib/chatflow/waiter';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,16 +41,45 @@ async function streamEvents(input: {
   runId: string;
   initialEvents: RunEvent[];
   afterSequence: number;
+  preferNotify: boolean;
 }) {
   const encoder = new TextEncoder();
   let sequence = input.afterSequence;
   let pending = input.initialEvents;
   let lastHeartbeat = Date.now();
+  const waiter = createChatFlowWaiter();
+  let unsubscribe: (() => void) | null = null;
+  let notifyActive = false;
   try {
+    if (input.preferNotify) {
+      try {
+        unsubscribe = await subscribeChatFlowWakeups(
+          getDatabase(),
+          input.runId,
+          () => {
+            incrementChatFlowMetric('wakeups');
+            waiter.signal();
+          },
+        );
+        notifyActive = true;
+        incrementChatFlowMetric('postgresNotifyConnections');
+      } catch (error) {
+        incrementChatFlowMetric('notifyFallbacks');
+        console.error(
+          '[ChatFlow] PostgreSQL notification subscription failed',
+          {
+            runId: input.runId,
+            message: error instanceof Error ? error.message : 'unknown error',
+          },
+        );
+      }
+    }
+    if (!notifyActive) incrementChatFlowMetric('pollingConnections');
     while (!input.request.signal.aborted) {
       for (const event of pending) {
         input.controller.enqueue(encoder.encode(encodedEvent(event)));
         sequence = event.sequence;
+        incrementChatFlowMetric('eventsDelivered');
       }
       const run = await getRun(input.context, input.workspaceId, input.runId);
       const nextEvents = await listRunEvents(
@@ -63,7 +97,13 @@ async function streamEvents(input: {
         input.controller.enqueue(encoder.encode(': heartbeat\n\n'));
         lastHeartbeat = Date.now();
       }
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (notifyActive) {
+        const wakeup = await waiter.wait(5_000, input.request.signal);
+        if (wakeup === 'aborted') break;
+        if (wakeup === 'timeout') incrementChatFlowMetric('safetyPolls');
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
       pending = await listRunEvents(
         input.context,
         input.workspaceId,
@@ -76,6 +116,8 @@ async function streamEvents(input: {
     if (!input.request.signal.aborted) {
       input.controller.error(error);
     }
+  } finally {
+    unsubscribe?.();
   }
 }
 
@@ -108,6 +150,18 @@ export async function GET(
       id,
       afterSequence,
     );
+    const harness = initialEvents
+      .map((event) =>
+        event.payload && typeof event.payload === 'object'
+          ? (event.payload as { source?: unknown }).source
+          : null,
+      )
+      .find((source) => source === 'codex' || source === 'dsh');
+    const preferNotify = chatFlowRealtimeEnabled({
+      organizationId: context.organizationId,
+      workspaceId,
+      harness: harness === 'codex' || harness === 'dsh' ? harness : null,
+    });
     if (
       new URL(request.url).searchParams.get('format') === 'json' ||
       request.headers.get('accept')?.includes('application/json')
@@ -124,15 +178,21 @@ export async function GET(
           runId: id,
           initialEvents,
           afterSequence,
+          preferNotify,
         });
       },
     });
+    incrementChatFlowMetric('connections');
+    if (lastEventId) incrementChatFlowMetric('reconnects');
     return new Response(stream, {
       headers: {
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive',
         'content-type': 'text/event-stream; charset=utf-8',
         'x-accel-buffering': 'no',
+        'x-allrice-chatflow-transport': preferNotify
+          ? 'postgres-notify'
+          : 'polling',
       },
     });
   } catch (error) {

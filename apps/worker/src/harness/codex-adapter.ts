@@ -23,6 +23,7 @@ function eventType(event: NormalizedCodexEvent): HarnessEvent['type'] {
 
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly kind = 'codex' as const;
+  readonly contextStrategy = 'chatflow-managed' as const;
   readonly capabilities = {
     persistentThreads: true,
     assistantDeltas: true,

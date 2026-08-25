@@ -17,6 +17,10 @@ export function normalizeHarnessRunEvent(
     messageId: event.messageId,
     attempt: event.attempt,
     order: event.order,
+    ...(event.sourceEventId ? { sourceEventId: event.sourceEventId } : {}),
+    ...(event.sourceOccurredAt
+      ? { sourceOccurredAt: event.sourceOccurredAt }
+      : {}),
   };
   if (event.type === 'assistant.completed') {
     return {
@@ -36,7 +40,7 @@ export function normalizeHarnessRunEvent(
   }
   if (event.type === 'usage.updated') {
     return {
-      type: 'heartbeat',
+      type: 'usage.updated',
       payload: {
         ...envelope,
         usage: {

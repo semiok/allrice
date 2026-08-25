@@ -67,6 +67,8 @@ const HarnessEventEnvelopeSchema = z.object({
   threadId: z.string().trim().min(1).nullable(),
   turnId: z.string().trim().min(1).nullable(),
   messageId: UuidSchema,
+  sourceEventId: z.string().trim().min(1).max(240).optional(),
+  sourceOccurredAt: z.string().datetime().optional(),
 });
 
 export const HarnessEventSchema = z.discriminatedUnion('type', [
