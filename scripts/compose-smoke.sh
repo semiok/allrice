@@ -106,8 +106,9 @@ if [[ -z "${capability_state}" ]]; then
   echo "Capability smoke state was not returned" >&2
   exit 1
 fi
-capability_run_id="$(printf '%s' "${capability_state}" | base64 --decode 2>/dev/null | jq -r '.runId')"
-capability_member_id="$(printf '%s' "${capability_state}" | base64 --decode 2>/dev/null | jq -r '.memberUserId')"
+capability_decoded="$(node -e "process.stdout.write(Buffer.from(process.argv[1], 'base64url').toString('utf8'))" "${capability_state}")"
+capability_run_id="$(printf '%s' "${capability_decoded}" | jq -r '.runId')"
+capability_member_id="$(printf '%s' "${capability_decoded}" | jq -r '.memberUserId')"
 capability_snapshot="$({
   docker compose --project-name "${compose_project}" exec -T postgres \
     psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -AtF '|' -c \
@@ -128,7 +129,8 @@ if [[ -z "${workflow_state}" ]]; then
   echo "Workflow smoke state was not returned" >&2
   exit 1
 fi
-workflow_run_id="$(printf '%s' "${workflow_state}" | base64 --decode 2>/dev/null | jq -r '.runId')"
+workflow_decoded="$(node -e "process.stdout.write(Buffer.from(process.argv[1], 'base64url').toString('utf8'))" "${workflow_state}")"
+workflow_run_id="$(printf '%s' "${workflow_decoded}" | jq -r '.runId')"
 workflow_evidence="$({
   docker compose --project-name "${compose_project}" exec -T postgres \
     psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -AtF '|' -c \
