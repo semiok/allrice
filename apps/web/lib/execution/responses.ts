@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   DataAccessError,
+  IdentityError,
   QueueError,
   WorkflowRuntimeError,
 } from '@allrice/database';
@@ -12,7 +13,20 @@ export function executionErrorResponse(error: unknown) {
   let code = 'VALIDATION_FAILED';
   let message = 'Execution request validation failed';
   let retryable = false;
-  if (error instanceof DataAccessError) {
+  if (error instanceof IdentityError) {
+    if (error.code === 'authentication_failed') {
+      status = 401;
+      code = 'AUTHENTICATION_REQUIRED';
+      message = 'Authentication required';
+    } else if (
+      error.code === 'authorization_denied' ||
+      error.code === 'tenant_context_invalid'
+    ) {
+      status = 403;
+      code = 'AUTHORIZATION_DENIED';
+      message = 'Access denied';
+    }
+  } else if (error instanceof DataAccessError) {
     if (error.code === 'authentication_required') {
       status = 401;
       code = 'AUTHENTICATION_REQUIRED';
