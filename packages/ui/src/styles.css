@@ -185,3 +185,175 @@
 .ar-runtime-state-failed {
   background: var(--ar-danger);
 }
+
+/* DSH-inspired product shell: neutral, modular and owned by AllRice. */
+[data-allrice-framework='v2'] body,
+[data-allrice-framework='v2'] .app-shell,
+[data-allrice-framework='v2'] .employee-panel-only,
+[data-allrice-framework='v2'] .automation-shell {
+  background: var(--ar-canvas);
+  color: var(--ar-text);
+}
+
+[data-allrice-framework='v2'] .app-shell {
+  grid-template-columns: 264px minmax(0, 1fr);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar {
+  background: var(--ar-surface-subtle);
+  border-right: 1px solid var(--ar-border);
+  color: var(--ar-text);
+  padding: 24px 16px 18px;
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .rice-brand {
+  padding-bottom: 16px;
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .rice-brand > span {
+  background: var(--ar-accent-strong);
+  color: white;
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .rice-brand small,
+[data-allrice-framework='v2'] .app-shell-sidebar .sidebar-section-title,
+[data-allrice-framework='v2'] .app-shell-sidebar .employee-group-empty,
+[data-allrice-framework='v2']
+  .app-shell-sidebar
+  .employee-session-list
+  button
+  span {
+  color: var(--ar-text-soft);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .new-chat {
+  background: var(--ar-text);
+  color: white;
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .new-chat:hover {
+  background: var(--ar-accent-strong);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .app-primary-menu {
+  border-bottom-color: var(--ar-border);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .primary-menu a,
+[data-allrice-framework='v2'] .app-shell-sidebar .primary-menu button,
+[data-allrice-framework='v2'] .app-shell-sidebar .employee-work-heading,
+[data-allrice-framework='v2'] .app-shell-sidebar .employee-session-list button,
+[data-allrice-framework='v2'] .app-shell-sidebar > .text-action {
+  color: var(--ar-text-muted);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .primary-menu-icon {
+  color: var(--ar-accent);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .primary-menu a:hover,
+[data-allrice-framework='v2']
+  .app-shell-sidebar
+  .primary-menu
+  button:hover:not(:disabled),
+[data-allrice-framework='v2'] .app-shell-sidebar .employee-work-heading:hover,
+[data-allrice-framework='v2']
+  .app-shell-sidebar
+  .employee-session-list
+  button:hover,
+[data-allrice-framework='v2']
+  .app-shell-sidebar
+  .employee-session-list
+  button.session-active,
+[data-allrice-framework='v2']
+  .app-sidebar
+  .primary-menu
+  button.primary-menu-active {
+  background: var(--ar-surface-muted);
+  color: var(--ar-text);
+}
+
+[data-allrice-framework='v2']
+  .app-shell-sidebar
+  .employee-session-list
+  button.session-active {
+  border-left-color: var(--ar-accent);
+}
+
+[data-allrice-framework='v2']
+  .app-shell-sidebar
+  .employee-session-list
+  button.session-active
+  strong {
+  color: var(--ar-text);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .session-harness-badge {
+  border-color: var(--ar-border);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .session-harness-codex {
+  background: var(--ar-accent-soft);
+  color: var(--ar-accent-strong);
+}
+
+[data-allrice-framework='v2'] .app-shell-sidebar .session-harness-dsh {
+  background: #e8f0ff;
+  color: #315c9d;
+}
+
+[data-allrice-framework='v2'] .app-shell-content {
+  background: var(--ar-canvas);
+}
+
+[data-allrice-framework='v2']
+  .rice-workspace.workspace-panel-only
+  > .conversation-panel {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 70%), transparent 22%),
+    var(--ar-canvas);
+}
+
+[data-allrice-framework='v2'] .rice-workspace .conversation-header {
+  border-bottom-color: var(--ar-border);
+}
+
+[data-allrice-framework='v2'] .rice-workspace .message {
+  border-color: var(--ar-border);
+  border-radius: var(--ar-radius-md);
+  box-shadow: var(--ar-shadow-sm);
+}
+
+[data-allrice-framework='v2'] .rice-workspace .message-assistant,
+[data-allrice-framework='v2'] .rice-workspace .composer {
+  background: var(--ar-surface);
+}
+
+[data-allrice-framework='v2'] .rice-workspace .message-user {
+  background: var(--ar-accent-soft);
+  border-color: #d3e5d7;
+}
+
+[data-allrice-framework='v2'] .rice-workspace .composer {
+  border-color: var(--ar-border-strong);
+  border-radius: var(--ar-radius-md);
+  box-shadow: var(--ar-shadow-md);
+}
+
+[data-allrice-framework='v2'] .employee-panel-only section,
+[data-allrice-framework='v2'] .automation-main,
+[data-allrice-framework='v2'] .automation-context {
+  border-color: var(--ar-border);
+}
+
+@media (max-width: 760px) {
+  [data-allrice-framework='v2'] .app-shell {
+    display: block;
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  [data-allrice-framework='v2'] .app-shell-sidebar {
+    position: relative;
+  }
+}

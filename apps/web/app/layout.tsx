@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
-import '@allrice/ui/styles.css';
 import './styles.css';
+import '@allrice/ui/styles.css';
 
 import { readFrameworkRolloutPolicy } from '../lib/framework/rollout';
 
