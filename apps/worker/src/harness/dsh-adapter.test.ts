@@ -151,6 +151,21 @@ describe('DshHarnessAdapter', () => {
     expect(started).toHaveLength(1);
   });
 
+  it('keeps provider reasoning private while streaming the visible answer', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const result = await adapter.execute(
+      executionInput({ prompt: 'think-first', events }),
+    );
+    const streamed = events
+      .filter((event) => event.type === 'assistant.delta')
+      .map((event) => ('text' in event ? event.text : ''))
+      .join('');
+    expect(result.answer).toBe('visible answer');
+    expect(streamed).toBe('visible answer');
+    expect(streamed).not.toContain('private reasoning');
+  });
+
   it('routes tool envelopes only through the AllRice Tool Broker callback', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];

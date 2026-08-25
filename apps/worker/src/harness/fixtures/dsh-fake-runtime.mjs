@@ -95,6 +95,8 @@ lines.on('line', (line) => {
       hasDeepSeek: Boolean(process.env.DEEPSEEK_API_KEY),
       hasOpenAiCompatible: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
     });
+  } else if (prompt.includes('think-first')) {
+    text = '<think>private reasoning</think>\n\nvisible answer';
   } else {
     text = `turn-${turn}`;
   }

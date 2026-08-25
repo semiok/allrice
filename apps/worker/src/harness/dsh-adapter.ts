@@ -175,6 +175,24 @@ function parseToolCall(text: string): HarnessToolCall | null {
   return { id: input.id, name: input.name, arguments: args };
 }
 
+function visibleModelText(text: string) {
+  const candidate = text.trimStart();
+  if ('<think>'.startsWith(candidate)) {
+    return { ready: false, text: '' };
+  }
+  if (!candidate.startsWith('<think>')) {
+    return { ready: true, text };
+  }
+  const closingTag = candidate.indexOf('</think>');
+  if (closingTag === -1) {
+    return { ready: false, text: '' };
+  }
+  return {
+    ready: true,
+    text: candidate.slice(closingTag + '</think>'.length).trimStart(),
+  };
+}
+
 export class DshHarnessAdapter implements HarnessAdapter {
   readonly kind = 'dsh' as const;
   readonly capabilities = {
@@ -516,7 +534,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     onTurn(turnId: string): Promise<void>;
     onDelta(text: string): Promise<void>;
   }) {
+    let rawAnswer = '';
     let answer = '';
+    let visibleLength = 0;
     let deltaBuffer = '';
     let deltaMode: 'unknown' | 'answer' | 'tool' = 'unknown';
     let eventChain = Promise.resolve();
@@ -554,13 +574,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
         if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') {
           return;
         }
-        answer += chunk.text;
+        rawAnswer += chunk.text;
+        const visible = visibleModelText(rawAnswer);
+        if (!visible.ready) return;
+        answer = visible.text;
+        const delta = answer.slice(visibleLength);
+        visibleLength = answer.length;
+        if (!delta) return;
         if (deltaMode === 'tool') return;
         if (deltaMode === 'answer') {
-          await input.onDelta(chunk.text);
+          await input.onDelta(delta);
           return;
         }
-        deltaBuffer += chunk.text;
+        deltaBuffer += delta;
         const candidate = deltaBuffer.trimStart();
         if (!candidate || toolEnvelopePrefix.startsWith(candidate)) return;
         if (candidate.startsWith(toolEnvelopePrefix)) {
@@ -575,7 +601,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (event.type === 'assistant/message') {
         const message = record(data.message);
         const final = textBlocks(message?.content);
-        if (final) answer = final;
+        if (final) {
+          rawAnswer = final;
+          const visible = visibleModelText(final);
+          if (visible.ready) answer = visible.text;
+        }
         const eventUsage = record(data.usage);
         usage.inputTokens += positiveInteger(eventUsage?.inputTokens);
         usage.cachedInputTokens += positiveInteger(eventUsage?.cacheReadTokens);
