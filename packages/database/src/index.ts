@@ -43,3 +43,4 @@ export * from './capability-registry.ts';
 export * from './route-decision.ts';
 export * from './knowledge-retrieval.ts';
 export * from './connector-broker.ts';
+export * from './workflow-runtime.ts';

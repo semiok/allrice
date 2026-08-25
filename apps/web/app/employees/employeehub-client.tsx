@@ -155,6 +155,28 @@ interface EmployeeCapabilities {
   }[];
 }
 
+interface WorkflowRunSummary {
+  id: string;
+  runId: string;
+  status:
+    | 'queued'
+    | 'running'
+    | 'waiting_approval'
+    | 'succeeded'
+    | 'failed'
+    | 'canceled'
+    | 'needs_attention';
+  currentStepKey: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  steps: {
+    stepKey: string;
+    name: string;
+    status: string;
+    attempt: number;
+  }[];
+}
+
 interface Draft {
   partnerProfile: PartnerProfile;
   applicableScenarios: string[];
@@ -322,6 +344,7 @@ export function EmployeeHubClient({
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedWorkflows, setSelectedWorkflows] = useState<string[]>([]);
   const [selectedKnowledge, setSelectedKnowledge] = useState<string[]>([]);
+  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRunSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -357,7 +380,7 @@ export function EmployeeHubClient({
         'x-allrice-organization-id': currentHub.organizationId,
         'x-allrice-workspace-id': currentHub.workspaceId,
       };
-      const [catalogResult, bindingResult] = await Promise.all([
+      const [catalogResult, bindingResult, workflowResult] = await Promise.all([
         readJson<{ catalog: CapabilityCatalog }>(
           await fetch(
             `/api/v1/admin/capabilities?workspaceId=${currentHub.workspaceId}`,
@@ -367,6 +390,12 @@ export function EmployeeHubClient({
         readJson<{ capabilities: EmployeeCapabilities }>(
           await fetch(
             `/api/v1/employees/${employeeId}/capabilities?workspaceId=${currentHub.workspaceId}`,
+            { cache: 'no-store', headers: requestHeaders },
+          ),
+        ),
+        readJson<{ workflowRuns: WorkflowRunSummary[] }>(
+          await fetch(
+            `/api/v1/workflow-runs?workspaceId=${currentHub.workspaceId}&employeeId=${employeeId}&limit=8`,
             { cache: 'no-store', headers: requestHeaders },
           ),
         ),
@@ -382,6 +411,7 @@ export function EmployeeHubClient({
       setSelectedKnowledge(
         bindingResult.capabilities.knowledge.map((item) => item.revision.id),
       );
+      setWorkflowRuns(workflowResult.workflowRuns);
     },
     [],
   );
@@ -1645,6 +1675,56 @@ export function EmployeeHubClient({
               </div>
             ) : null}
           </div>
+          <section className="employee-config-card employee-execution-history">
+            <div className="employee-config-section-heading">
+              <div>
+                <p className="eyebrow">执行记录</p>
+                <h3>最近 Workflow</h3>
+              </div>
+              <span>{workflowRuns.length} 条</span>
+            </div>
+            {workflowRuns.length ? (
+              <div className="employee-execution-list">
+                {workflowRuns.map((run) => (
+                  <div className="employee-execution-row" key={run.id}>
+                    <span>
+                      <strong>
+                        {run.currentStepKey
+                          ? (run.steps.find(
+                              (step) => step.stepKey === run.currentStepKey,
+                            )?.name ?? run.currentStepKey)
+                          : 'Workflow'}
+                      </strong>
+                      <small>
+                        {
+                          run.steps.filter(
+                            (step) => step.status === 'succeeded',
+                          ).length
+                        }{' '}
+                        / {run.steps.length} 个步骤 ·{' '}
+                        {new Date(run.createdAt).toLocaleString()}
+                      </small>
+                    </span>
+                    <em data-status={run.status}>
+                      {
+                        {
+                          queued: '等待执行',
+                          running: '执行中',
+                          waiting_approval: '等待确认',
+                          succeeded: '已完成',
+                          failed: '失败',
+                          canceled: '已取消',
+                          needs_attention: '需要处理',
+                        }[run.status]
+                      }
+                    </em>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">这个员工还没有 Workflow 执行记录。</p>
+            )}
+          </section>
           <div className="employee-save-feedback" aria-live="polite">
             {notice ? <p className="employee-notice">{notice}</p> : null}
             {error ? (

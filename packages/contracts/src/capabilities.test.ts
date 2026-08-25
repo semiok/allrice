@@ -78,6 +78,33 @@ describe('Agent capability contracts', () => {
         ],
       }),
     ).toThrow('workflow dependencies must form an acyclic graph');
+    expect(() =>
+      WorkflowDefinitionSchema.parse({
+        schemaVersion: 1,
+        steps: [
+          {
+            key: 'publish',
+            name: '发布',
+            kind: 'tool',
+            sideEffect: 'non_idempotent',
+          },
+        ],
+      }),
+    ).toThrow('non-idempotent workflow steps require compensation');
+    expect(
+      WorkflowDefinitionSchema.parse({
+        schemaVersion: 1,
+        steps: [
+          {
+            key: 'publish',
+            name: '发布',
+            kind: 'tool',
+            sideEffect: 'idempotent',
+            approval: 'required',
+          },
+        ],
+      }).steps[0],
+    ).toMatchObject({ sideEffect: 'idempotent', approval: 'required' });
   });
 
   it('requires connector Knowledge to use an opaque binding ID', () => {

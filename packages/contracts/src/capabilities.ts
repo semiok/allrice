@@ -64,8 +64,33 @@ export const WorkflowStepDefinitionSchema = z
     timeoutMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
     maxAttempts: z.number().int().min(1).max(10).default(1),
     approval: z.enum(['none', 'required']).default('none'),
+    sideEffect: z
+      .enum(['none', 'idempotent', 'non_idempotent'])
+      .default('none'),
+    compensation: z
+      .object({
+        mode: z.enum(['automatic', 'manual']),
+        stepKey: z
+          .string()
+          .regex(/^[a-z][a-z0-9_-]{0,63}$/)
+          .nullable()
+          .default(null),
+      })
+      .strict()
+      .nullable()
+      .default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((step, context) => {
+    if (step.sideEffect === 'non_idempotent' && step.compensation === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['compensation'],
+        message:
+          'non-idempotent workflow steps require compensation or manual recovery',
+      });
+    }
+  });
 
 export const WorkflowDefinitionSchema = z
   .object({

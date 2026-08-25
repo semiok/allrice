@@ -408,6 +408,41 @@ try {
     );
   }
 
+  const workflowRuntimeRows = await sql<
+    {
+      version: string | undefined;
+      checkpoint: string | undefined;
+      approval: string | undefined;
+      side_effects: string | undefined;
+    }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'checkpoint' as checkpoint,
+      value ->> 'approval' as approval,
+      value ->> 'sideEffects' as side_effects
+    from allrice_runtime_metadata
+    where key = 'durable-workflow-schema'
+  `;
+  const workflowTables = await sql<
+    { runs: string | null; steps: string | null; artifacts: string | null }[]
+  >`
+    select to_regclass('allrice_workflow_runs')::text as runs,
+      to_regclass('allrice_workflow_step_runs')::text as steps,
+      to_regclass('allrice_workflow_artifacts')::text as artifacts
+  `;
+  if (
+    expectedMigrations.includes('0028_durable_workflows.sql') &&
+    (workflowRuntimeRows[0]?.version !== '0028' ||
+      workflowRuntimeRows[0]?.checkpoint !== 'per-step' ||
+      workflowRuntimeRows[0]?.approval !== 'durable' ||
+      workflowRuntimeRows[0]?.side_effects !== 'idempotency-required' ||
+      !workflowTables[0]?.runs ||
+      !workflowTables[0]?.steps ||
+      !workflowTables[0]?.artifacts)
+  ) {
+    throw new Error('Durable Workflow schema metadata or tables are missing');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

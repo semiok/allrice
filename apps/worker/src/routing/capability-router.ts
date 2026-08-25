@@ -87,6 +87,7 @@ function authorization(input: {
   grantedCapabilities: SkillCapability[];
   requiresApproval: boolean;
   approvalPolicy: 'confirm_side_effects' | 'confirm_external' | 'autonomous';
+  approvalHandledByWorkflow?: boolean;
 }): Pick<RouteCandidate, 'authorized' | 'exclusionReason'> {
   if (!input.effective) {
     return { authorized: false, exclusionReason: 'excluded_not_effective' };
@@ -110,7 +111,11 @@ function authorization(input: {
       exclusionReason: 'excluded_capability_denied',
     };
   }
-  if (input.requiresApproval && input.approvalPolicy !== 'autonomous') {
+  if (
+    input.requiresApproval &&
+    !input.approvalHandledByWorkflow &&
+    input.approvalPolicy !== 'autonomous'
+  ) {
     return {
       authorized: false,
       exclusionReason: 'excluded_approval_required',
@@ -304,6 +309,7 @@ export function decideCapabilityRoute(input: {
             grantedCapabilities,
             requiresApproval,
             approvalPolicy,
+            approvalHandledByWorkflow: true,
           }),
           score: 0,
         }),

@@ -121,7 +121,8 @@ export const CreateConnectorBindingInputSchema = z
       context.addIssue({
         code: 'custom',
         path: ['userId'],
-        message: 'service identity connector bindings cannot impersonate a user',
+        message:
+          'service identity connector bindings cannot impersonate a user',
       });
     }
   });

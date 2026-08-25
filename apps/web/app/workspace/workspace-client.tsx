@@ -344,24 +344,103 @@ function starterPrompts(employee: RiceEmployeeChoice | undefined) {
   );
 }
 
-function RunDetails({ events }: { events: RunEvent[] }) {
+function RunDetails({
+  events,
+  workspaceId,
+}: {
+  events: RunEvent[];
+  workspaceId: string;
+}) {
+  const [deciding, setDeciding] = useState(false);
   const tools = new Map<string, RunEvent>();
+  const steps = new Map<string, RunEvent>();
   for (const event of events) {
-    if (!event.type.startsWith('tool.')) continue;
-    const id = String(event.payload.toolCallId ?? event.eventId);
-    const previous = tools.get(id);
-    if (!previous || event.sequence > previous.sequence) tools.set(id, event);
+    if (event.type.startsWith('tool.')) {
+      const id = String(event.payload.toolCallId ?? event.eventId);
+      const previous = tools.get(id);
+      if (!previous || event.sequence > previous.sequence) tools.set(id, event);
+    }
+    if (event.type.startsWith('step.')) {
+      const key = String(event.payload.stepKey ?? event.eventId);
+      const previous = steps.get(key);
+      if (!previous || event.sequence > previous.sequence)
+        steps.set(key, event);
+    }
   }
   const retries = events.filter((event) => event.type === 'run.retrying');
-  if (tools.size === 0 && retries.length === 0) return null;
+  const decidedApprovals = new Set(
+    events
+      .filter((event) => event.type === 'approval.decided')
+      .map((event) => String(event.payload.approvalId ?? '')),
+  );
+  const pendingApproval = [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === 'approval.requested' &&
+        !decidedApprovals.has(String(event.payload.approvalId ?? '')),
+    );
+  if (tools.size === 0 && retries.length === 0 && steps.size === 0) return null;
+  async function decide(decision: 'approved' | 'rejected') {
+    const approvalId = pendingApproval?.payload.approvalId;
+    if (typeof approvalId !== 'string') return;
+    setDeciding(true);
+    try {
+      await readJson(
+        await fetch(`/api/v1/workflow-approvals/${approvalId}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            decision,
+            reason: decision === 'approved' ? '用户确认继续' : '用户拒绝执行',
+          }),
+        }),
+      );
+      window.location.reload();
+    } finally {
+      setDeciding(false);
+    }
+  }
   return (
     <details className="run-details">
       <summary>
+        {steps.size ? `执行记录 · ${steps.size} 个步骤` : ''}
+        {steps.size && tools.size ? ' · ' : ''}
         {tools.size ? `${tools.size} 个工具调用` : ''}
-        {tools.size && retries.length ? ' · ' : ''}
+        {(steps.size || tools.size) && retries.length ? ' · ' : ''}
         {retries.length ? `${retries.length} 次重试` : ''}
       </summary>
       <div className="tool-list">
+        {[...steps.values()].map((event) => (
+          <div className="tool-row" key={String(event.payload.stepKey)}>
+            <span
+              className={`tool-state tool-state-${
+                event.type === 'step.completed'
+                  ? 'completed'
+                  : event.type === 'step.retrying'
+                    ? 'started'
+                    : event.type === 'step.waiting_approval'
+                      ? 'started'
+                      : 'started'
+              }`}
+            />
+            <div>
+              <strong>
+                {String(event.payload.name ?? event.payload.stepKey)}
+              </strong>
+              <small>
+                {event.type === 'step.completed'
+                  ? '已完成'
+                  : event.type === 'step.waiting_approval'
+                    ? '等待你的确认'
+                    : event.type === 'step.retrying'
+                      ? `正在重试 · 第 ${String(event.payload.attempt ?? '?')} 次`
+                      : '正在执行'}
+              </small>
+            </div>
+          </div>
+        ))}
         {[...tools.values()].map((event) => (
           <div
             className="tool-row"
@@ -396,6 +475,19 @@ function RunDetails({ events }: { events: RunEvent[] }) {
             </div>
           </div>
         ))}
+        {pendingApproval ? (
+          <div className="workflow-approval-actions">
+            <span>
+              {String(pendingApproval.payload.summary ?? '此步骤需要确认')}
+            </span>
+            <button disabled={deciding} onClick={() => void decide('rejected')}>
+              拒绝
+            </button>
+            <button disabled={deciding} onClick={() => void decide('approved')}>
+              同意并继续
+            </button>
+          </div>
+        ) : null}
       </div>
     </details>
   );
@@ -1462,7 +1554,12 @@ export function WorkspaceClient({
                     )}
                   </div>
                 ) : null}
-                {message.runId ? <RunDetails events={events} /> : null}
+                {message.runId && workspace ? (
+                  <RunDetails
+                    events={events}
+                    workspaceId={workspace.workspaceId}
+                  />
+                ) : null}
                 {message.status === 'pending' ? (
                   <div className="message-progress">
                     <span className="thinking-dot" />

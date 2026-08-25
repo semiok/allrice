@@ -453,6 +453,11 @@ export async function enqueueRun(
       expectedGeneration?: number;
       hasAttachments: boolean;
     };
+    workflowBinding?: {
+      employeeId: string;
+      workflowRevisionId: string;
+      sessionId: string | null;
+    };
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
@@ -588,6 +593,15 @@ export async function enqueueRun(
                     },
                   ]
                 : []),
+              ...(options.workflowBinding
+                ? ['storage_object', 'memory', 'chat_session'].map(
+                    (resourceType) => ({
+                      resourceType,
+                      action: 'resource:read' as const,
+                      workspaceId,
+                    }),
+                  )
+                : []),
             ],
           }),
         )},
@@ -620,6 +634,9 @@ export async function enqueueRun(
               options.skillBinding || options.employeeBinding ? 'codex' : null,
             skillVersionIds:
               options.employeeBinding?.skillVersionIds ?? undefined,
+            workflowRevisionId:
+              options.workflowBinding?.workflowRevisionId ?? undefined,
+            employeeId: options.workflowBinding?.employeeId ?? undefined,
           }),
         )},
         ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}

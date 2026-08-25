@@ -323,6 +323,27 @@ describe('capability route decision', () => {
     });
   });
 
+  it('keeps approval-bearing workflows routable for the durable engine', () => {
+    const input = base({ approvalPolicy: 'confirm_side_effects' });
+    const snapshot = withCapabilities(input.snapshot);
+    if (snapshot.schemaVersion !== 2) throw new Error('v2 required');
+    snapshot.capabilitySnapshot.workflows[0]!.revision.definition.steps[0]!.approval =
+      'required';
+    const plan = decideCapabilityRoute({
+      request: { ...input.request, prompt: '运行周报工作流' },
+      executionSnapshot: snapshot,
+      tools,
+    });
+    expect(
+      plan.candidates.find((candidate) => candidate.id.startsWith('workflow:')),
+    ).toMatchObject({
+      authorized: true,
+      requiresApproval: true,
+      exclusionReason: null,
+    });
+    expect(plan.selectedKind).toBe('workflow');
+  });
+
   it('allows the same tool only under an explicit autonomous policy', () => {
     const input = base({ approvalPolicy: 'autonomous' });
     const plan = decideCapabilityRoute({

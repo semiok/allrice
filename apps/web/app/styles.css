@@ -2682,6 +2682,29 @@ textarea {
   background: #bd564c;
 }
 
+.workflow-approval-actions {
+  align-items: center;
+  background: #f4f7f1;
+  border-top: 1px solid #dfe5de;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+}
+
+.workflow-approval-actions span {
+  color: #334c3a;
+  flex: 1 1 220px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.workflow-approval-actions button:last-child {
+  background: #2f7450;
+  border-color: #2f7450;
+  color: #fff;
+}
+
 .message-progress,
 .message-failed {
   align-items: center;
@@ -4512,6 +4535,58 @@ textarea {
 .employee-admin-detail {
   display: grid;
   gap: 24px;
+}
+
+.employee-execution-history {
+  display: grid;
+  gap: 14px;
+}
+
+.employee-execution-list {
+  display: grid;
+}
+
+.employee-execution-row {
+  align-items: center;
+  border-top: 1px solid var(--rice-line, #d7e0d5);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 13px 0;
+}
+
+.employee-execution-row > span {
+  display: grid;
+  gap: 4px;
+}
+
+.employee-execution-row small {
+  color: #77857b;
+}
+
+.employee-execution-row em {
+  background: #eef2ec;
+  border-radius: 999px;
+  color: #53635a;
+  font-size: 0.75rem;
+  font-style: normal;
+  padding: 5px 9px;
+}
+
+.employee-execution-row em[data-status='succeeded'] {
+  background: #e1f1e5;
+  color: #246b46;
+}
+
+.employee-execution-row em[data-status='waiting_approval'],
+.employee-execution-row em[data-status='needs_attention'] {
+  background: #fff1d8;
+  color: #8b5b10;
+}
+
+.employee-execution-row em[data-status='failed'] {
+  background: #f8e4e1;
+  color: #963d35;
 }
 
 .employee-config-meta {

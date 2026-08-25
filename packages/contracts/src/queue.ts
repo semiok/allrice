@@ -7,6 +7,7 @@ export const JobStatusSchema = z.enum([
   'queued',
   'claimed',
   'running',
+  'waiting_approval',
   'retry_wait',
   'succeeded',
   'failed',
@@ -95,7 +96,14 @@ export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 const transitions: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
   queued: ['claimed', 'canceled'],
   claimed: ['running', 'canceled', 'dead_letter'],
-  running: ['succeeded', 'retry_wait', 'failed', 'canceled'],
+  running: [
+    'waiting_approval',
+    'succeeded',
+    'retry_wait',
+    'failed',
+    'canceled',
+  ],
+  waiting_approval: ['queued', 'failed', 'canceled'],
   retry_wait: ['queued', 'dead_letter', 'canceled'],
   succeeded: [],
   failed: [],
