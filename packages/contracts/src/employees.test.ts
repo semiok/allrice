@@ -63,6 +63,29 @@ describe('EmployeeHub contracts', () => {
     expect(parsed.partnerProfile?.approvalPolicy).toBe('confirm_external');
   });
 
+  it('accepts an admin configuration update without requiring Skill IDs', () => {
+    const parsed = PublishEmployeeVersionInputSchema.parse({
+      workspaceId: randomUUID(),
+      employeeId: randomUUID(),
+      identity: {
+        role: '研究伙伴',
+        mission: '核实资料并形成结论。',
+        workStyle: '先核实来源，再区分事实和判断。',
+        behaviorRules: ['引用来源。'],
+        safetyBoundaries: ['不访问其他租户数据。'],
+      },
+      userProfilePolicy: {
+        enabled: true,
+        fields: ['preferences'],
+        scope: 'employee_user',
+      },
+      toolNames: ['workspace.file.read'],
+    });
+    expect(parsed.skillVersionIds).toBeUndefined();
+    expect(parsed.identity?.role).toBe('研究伙伴');
+    expect(parsed.userProfilePolicy?.fields).toEqual(['preferences']);
+  });
+
   it('validates a complete Employee Definition and exact capability bindings', () => {
     const skillVersionId = randomUUID();
     const definition = EmployeeDefinitionSchema.parse({
@@ -123,6 +146,11 @@ describe('EmployeeHub contracts', () => {
     expect(definition.capabilityBindings.skillVersionIds).toEqual([
       skillVersionId,
     ]);
+    expect(definition.userProfilePolicy).toEqual({
+      enabled: true,
+      fields: ['displayName', 'preferences'],
+      scope: 'employee_user',
+    });
     expect(() =>
       EmployeeDefinitionSchema.parse({
         ...definition,

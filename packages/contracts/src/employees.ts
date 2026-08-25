@@ -65,6 +65,7 @@ export const EmployeeIdentitySchema = z
     safetyBoundaries: z.array(z.string().trim().min(1).max(500)).max(32),
   })
   .strict();
+export type EmployeeIdentity = z.infer<typeof EmployeeIdentitySchema>;
 
 export const EmployeeRuntimePolicySchema = z
   .object({
@@ -76,6 +77,7 @@ export const EmployeeRuntimePolicySchema = z
     fallbackModels: z.array(z.string().trim().min(1).max(200)).max(8),
   })
   .strict();
+export type EmployeeRuntimePolicy = z.infer<typeof EmployeeRuntimePolicySchema>;
 
 export const EmployeeCapabilityBindingsSchema = z
   .object({
@@ -102,6 +104,20 @@ export const EmployeeSecurityPolicySchema = z
     deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
   })
   .strict();
+export type EmployeeSecurityPolicy = z.infer<
+  typeof EmployeeSecurityPolicySchema
+>;
+
+export const EmployeeUserProfilePolicySchema = z
+  .object({
+    enabled: z.boolean(),
+    fields: z.array(z.enum(['displayName', 'preferences'])).max(2),
+    scope: z.literal('employee_user'),
+  })
+  .strict();
+export type EmployeeUserProfilePolicy = z.infer<
+  typeof EmployeeUserProfilePolicySchema
+>;
 
 const EmployeeManifestV1Schema = z
   .object({
@@ -134,6 +150,11 @@ export const EmployeeDefinitionSchema = z
     skillVersionIds: z.array(UuidSchema).max(32),
     capabilityBindings: EmployeeCapabilityBindingsSchema,
     securityPolicy: EmployeeSecurityPolicySchema,
+    userProfilePolicy: EmployeeUserProfilePolicySchema.default({
+      enabled: true,
+      fields: ['displayName', 'preferences'],
+      scope: 'employee_user',
+    }),
     partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
   })
   .strict()
@@ -233,7 +254,7 @@ export const PublishEmployeeVersionInputSchema = z
   .object({
     workspaceId: UuidSchema,
     employeeId: UuidSchema,
-    skillVersionIds: z.array(UuidSchema).max(32).default([]),
+    skillVersionIds: z.array(UuidSchema).max(32).optional(),
     partnerProfile: PartnerProfileSchema.optional(),
     appearance: EmployeeAppearanceSchema.optional(),
     applicableScenarios: z
@@ -248,6 +269,11 @@ export const PublishEmployeeVersionInputSchema = z
       .array(z.string().trim().min(1).max(500))
       .max(32)
       .optional(),
+    identity: EmployeeIdentitySchema.optional(),
+    runtimePolicy: EmployeeRuntimePolicySchema.optional(),
+    securityPolicy: EmployeeSecurityPolicySchema.optional(),
+    userProfilePolicy: EmployeeUserProfilePolicySchema.optional(),
+    toolNames: z.array(z.string().trim().min(1).max(160)).max(64).optional(),
   })
   .strict();
 
@@ -273,6 +299,7 @@ export const EmployeeUserProfileSchema = z
     preferences: z.record(z.string(), z.unknown()),
   })
   .strict();
+export type EmployeeUserProfile = z.infer<typeof EmployeeUserProfileSchema>;
 
 export const FrozenEmployeeSkillBindingSchema = z
   .object({

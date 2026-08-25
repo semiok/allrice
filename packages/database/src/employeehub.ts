@@ -11,6 +11,7 @@ import {
   EmployeeManifestSchema,
   EmployeePromptSnapshotSchema,
   EmployeeUserProfileSchema,
+  EmployeeUserProfilePolicySchema,
   EmployeeVersionSnapshotSchema,
   FrozenEmployeeSkillBindingSchema,
   ManageEmployeeAssignmentsInputSchema,
@@ -31,6 +32,7 @@ import {
   synchronizeEmployeeSkillBindings,
 } from './capability-registry.ts';
 import {
+  applyEmployeeUserProfilePolicy,
   employeeManifest,
   employeeManifestChecksum,
   riceEmployeeKey,
@@ -510,7 +512,29 @@ export async function publishEmployeeVersion(
     if (!employee) {
       throw new EmployeeHubError('not_found');
     }
-    const skillVersionIds = [...new Set(publication.skillVersionIds)].sort();
+    if (
+      publication.runtimePolicy &&
+      (publication.runtimePolicy.harness !== 'codex' ||
+        publication.runtimePolicy.reasoningEffort === 'none')
+    ) {
+      throw new EmployeeHubError('provider_invalid');
+    }
+    const selectedSkillRows =
+      publication.skillVersionIds === undefined
+        ? await transaction<{ skill_version_id: string }[]>`
+            select skill_version_id
+            from allrice_employee_agent_skill_bindings
+            where organization_id = ${context.organizationId}
+              and workspace_id = ${workspaceId}
+              and employee_id = ${employee.id} and enabled
+            order by skill_version_id
+          `
+        : publication.skillVersionIds.map((skillVersionId) => ({
+            skill_version_id: skillVersionId,
+          }));
+    const skillVersionIds = [
+      ...new Set(selectedSkillRows.map((row) => row.skill_version_id)),
+    ].sort();
     if (skillVersionIds.length > 0) {
       const installed = await transaction<{ id: string }[]>`
         select v.id
@@ -572,6 +596,31 @@ export async function publishEmployeeVersion(
         publication.safetyBoundaries ??
         (currentManifest.success && currentManifest.data.schemaVersion === 2
           ? currentManifest.data.identity.safetyBoundaries
+          : undefined),
+      identity:
+        publication.identity ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.identity
+          : undefined),
+      runtimePolicy:
+        publication.runtimePolicy ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.runtimePolicy
+          : undefined),
+      securityPolicy:
+        publication.securityPolicy ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.securityPolicy
+          : undefined),
+      userProfilePolicy:
+        publication.userProfilePolicy ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.userProfilePolicy
+          : undefined),
+      toolNames:
+        publication.toolNames ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.capabilityBindings.toolNames
           : undefined),
     });
     const checksum = employeeManifestChecksum(manifest);
@@ -996,12 +1045,25 @@ export async function prepareEmployeeRunBinding(input: {
      and p.employee_id = ${assignment.employee_id}
     where u.id = ${actorId}
   `;
-  const userProfile = EmployeeUserProfileSchema.parse(
+  const storedUserProfile = EmployeeUserProfileSchema.parse(
     profiles[0]?.profile ?? {
       schemaVersion: 1,
       displayName: null,
       preferences: {},
     },
+  );
+  const userProfilePolicy = EmployeeUserProfilePolicySchema.parse(
+    manifest.data.schemaVersion === 2
+      ? manifest.data.userProfilePolicy
+      : {
+          enabled: true,
+          fields: ['displayName', 'preferences'],
+          scope: 'employee_user',
+        },
+  );
+  const userProfile = applyEmployeeUserProfilePolicy(
+    storedUserProfile,
+    userProfilePolicy,
   );
   return {
     employeeAssignmentId: assignment.assignment_id,

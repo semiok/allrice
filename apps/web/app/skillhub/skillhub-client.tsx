@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import { AppSidebar } from '../components/app-sidebar';
+import { buildEmployeeCapabilityUpdate } from './employee-capabilities';
 
 type Capability =
   | 'network:outbound'
@@ -52,16 +53,26 @@ interface Candidate {
   source: { license: string };
 }
 
-interface EmployeeAssignment {
+interface EmployeeDirectoryEntry {
   employeeId: string;
   employeeKey: string;
-  isDefault: boolean;
   currentVersion: {
     manifest: {
       name: string;
-      skillVersionIds: string[];
     };
   };
+}
+
+interface EmployeeCapabilities {
+  employeeId: string;
+  agentSkills: {
+    installationId: string;
+    grantedCapabilities: Capability[];
+    revision: { id: string };
+    effective: boolean;
+  }[];
+  workflows: { revision: { id: string }; effective: boolean }[];
+  knowledge: { revision: { id: string }; effective: boolean }[];
 }
 
 async function json<T>(response: Response): Promise<T> {
@@ -87,10 +98,13 @@ export function SkillHubClient() {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [canAdminister, setCanAdminister] = useState(false);
-  const [employees, setEmployees] = useState<EmployeeAssignment[]>([]);
+  const [employees, setEmployees] = useState<EmployeeDirectoryEntry[]>([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [employeeCapabilities, setEmployeeCapabilities] =
+    useState<EmployeeCapabilities | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const headers = {
     'content-type': 'application/json',
@@ -119,7 +133,7 @@ export function SkillHubClient() {
     if (result.canAdminister) {
       const employees = await json<{
         employeeHub: {
-          assignments: EmployeeAssignment[];
+          directory: EmployeeDirectoryEntry[];
         };
       }>(
         await fetch(`/api/v1/employees?workspaceId=${nextWorkspaceId}`, {
@@ -127,12 +141,14 @@ export function SkillHubClient() {
           headers: { 'x-allrice-workspace-id': nextWorkspaceId },
         }),
       );
-      const nextEmployees = employees.employeeHub.assignments;
+      const nextEmployees = employees.employeeHub.directory;
       setEmployees(nextEmployees);
       setSelectedEmployeeId((current) =>
         nextEmployees.some((employee) => employee.employeeId === current)
           ? current
-          : (nextEmployees.find((employee) => employee.isDefault)?.employeeId ??
+          : (nextEmployees.find(
+              (employee) => employee.employeeKey === 'default-assistant',
+            )?.employeeId ??
             nextEmployees[0]?.employeeId ??
             ''),
       );
@@ -141,6 +157,26 @@ export function SkillHubClient() {
       setSelectedEmployeeId('');
     }
   }, []);
+
+  const refreshEmployeeCapabilities = useCallback(
+    async (employeeId: string, nextWorkspaceId: string) => {
+      if (!employeeId || !nextWorkspaceId) {
+        setEmployeeCapabilities(null);
+        return;
+      }
+      const result = await json<{ capabilities: EmployeeCapabilities }>(
+        await fetch(
+          `/api/v1/employees/${employeeId}/capabilities?workspaceId=${nextWorkspaceId}`,
+          {
+            cache: 'no-store',
+            headers: { 'x-allrice-workspace-id': nextWorkspaceId },
+          },
+        ),
+      );
+      setEmployeeCapabilities(result.capabilities);
+    },
+    [],
+  );
 
   useEffect(() => {
     void (async () => {
@@ -156,6 +192,23 @@ export function SkillHubClient() {
       }
     })();
   }, [refresh]);
+
+  useEffect(() => {
+    setNotice('');
+    setEmployeeCapabilities(null);
+    if (!canAdminister || !selectedEmployeeId || !workspaceId) return;
+    void refreshEmployeeCapabilities(selectedEmployeeId, workspaceId).catch(
+      (cause) =>
+        setError(
+          cause instanceof Error ? cause.message : '员工能力配置加载失败',
+        ),
+    );
+  }, [
+    canAdminister,
+    refreshEmployeeCapabilities,
+    selectedEmployeeId,
+    workspaceId,
+  ]);
 
   async function importCandidate(candidateId: string) {
     setBusy(true);
@@ -209,34 +262,32 @@ export function SkillHubClient() {
     const employee = employees.find(
       (item) => item.employeeId === selectedEmployeeId,
     );
-    if (!employee) return;
+    if (!employee || !employeeCapabilities) return;
     setBusy(true);
     setError('');
+    setNotice('');
     try {
-      const currentSkillVersionIds =
-        employee.currentVersion.manifest.skillVersionIds;
-      const skillVersionIds = shouldBind
-        ? [
-            ...new Set([
-              ...currentSkillVersionIds,
-              installation.pinnedVersionId,
-            ]),
-          ]
-        : currentSkillVersionIds.filter(
-            (skillVersionId) => skillVersionId !== installation.pinnedVersionId,
-          );
-      await json(
-        await fetch('/api/v1/employees', {
-          method: 'POST',
+      const update = buildEmployeeCapabilityUpdate(
+        employeeCapabilities,
+        installation,
+        shouldBind,
+      );
+      const result = await json<{ capabilities: EmployeeCapabilities }>(
+        await fetch(`/api/v1/employees/${employee.employeeId}/capabilities`, {
+          method: 'PUT',
           headers,
           body: JSON.stringify({
             workspaceId,
-            employeeId: employee.employeeId,
-            skillVersionIds,
+            ...update,
           }),
         }),
       );
-      await refresh(workspaceId);
+      setEmployeeCapabilities(result.capabilities);
+      setNotice(
+        shouldBind
+          ? `已把技能配置给 ${employee.currentVersion.manifest.name}。`
+          : `已从 ${employee.currentVersion.manifest.name} 移除技能。`,
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '配置 AI员工失败');
     } finally {
@@ -249,7 +300,8 @@ export function SkillHubClient() {
     (employee) => employee.employeeId === selectedEmployeeId,
   );
   const selectedSkillVersionIds =
-    selectedEmployee?.currentVersion.manifest.skillVersionIds ?? [];
+    employeeCapabilities?.agentSkills.map((binding) => binding.revision.id) ??
+    [];
   return (
     <main className="app-page-shell">
       <AppSidebar
@@ -288,9 +340,7 @@ export function SkillHubClient() {
                   <p className="eyebrow">{candidate.publisher}</p>
                   <h3>{candidate.name}</h3>
                   <p>{candidate.description}</p>
-                  <small>
-                    v{candidate.version} · {candidate.source.license}
-                  </small>
+                  <small>{candidate.source.license} · 已审计导入源</small>
                   <button
                     className="primary-action"
                     disabled={
@@ -363,8 +413,7 @@ export function SkillHubClient() {
                     {version ? (
                       <>
                         <small>
-                          v{version.version.version} ·{' '}
-                          {version.artifact.checksum.slice(0, 20)}…
+                          {version.artifact.source.license} · 工作区可用
                         </small>
                         <div className="capability-list">
                           {version.version.capabilities.map((capability) => (
@@ -391,7 +440,8 @@ export function SkillHubClient() {
                                 busy ||
                                 !canAdminister ||
                                 !selectedEmployee ||
-                                !selectedEmployeeId
+                                !selectedEmployeeId ||
+                                !employeeCapabilities
                               }
                               onClick={() =>
                                 void configureEmployee(
@@ -419,7 +469,16 @@ export function SkillHubClient() {
             </div>
           </section>
 
-          {error ? <p className="skillhub-error">{error}</p> : null}
+          {notice ? (
+            <p className="skillhub-notice" role="status">
+              {notice}
+            </p>
+          ) : null}
+          {error ? (
+            <p className="skillhub-error" role="alert">
+              {error}
+            </p>
+          ) : null}
         </div>
       </section>
     </main>

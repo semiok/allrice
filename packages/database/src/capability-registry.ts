@@ -59,6 +59,10 @@ interface AgentSkillBindingRow extends AgentSkillRevisionRow {
   binding_id: string;
   installation_id: string;
   granted_capabilities: SkillCapability[];
+  binding_enabled: boolean;
+  installation_enabled: boolean;
+  pinned: boolean;
+  storage_ready: boolean;
   bound_by: string;
   bound_at: Date;
 }
@@ -78,6 +82,8 @@ interface WorkflowRevisionRow {
 
 interface WorkflowBindingRow extends WorkflowRevisionRow {
   binding_id: string;
+  binding_enabled: boolean;
+  source_active: boolean;
   bound_by: string;
   bound_at: Date;
 }
@@ -100,6 +106,8 @@ interface KnowledgeRevisionRow {
 
 interface KnowledgeBindingRow extends KnowledgeRevisionRow {
   binding_id: string;
+  binding_enabled: boolean;
+  source_active: boolean;
   bound_by: string;
   bound_at: Date;
 }
@@ -268,11 +276,22 @@ function mapAgentSkillRevision(row: AgentSkillRevisionRow) {
 }
 
 function mapAgentSkill(row: AgentSkillBindingRow) {
+  const disabledReason = !row.binding_enabled
+    ? 'binding_disabled'
+    : !row.installation_enabled || !row.pinned
+      ? 'installation_disabled'
+      : row.status !== 'published'
+        ? 'revision_unavailable'
+        : !row.storage_ready
+          ? 'source_unavailable'
+          : null;
   return FrozenAgentSkillBindingSchema.parse({
     bindingId: row.binding_id,
     installationId: row.installation_id,
     revision: mapAgentSkillRevision(row),
     grantedCapabilities: row.granted_capabilities,
+    effective: disabledReason === null,
+    disabledReason,
     boundBy: row.bound_by,
     boundAt: row.bound_at.toISOString(),
   });
@@ -295,9 +314,16 @@ function mapWorkflowRevision(row: WorkflowRevisionRow) {
 }
 
 function mapWorkflow(row: WorkflowBindingRow) {
+  const disabledReason = !row.binding_enabled
+    ? 'binding_disabled'
+    : !row.source_active || row.status !== 'published'
+      ? 'revision_unavailable'
+      : null;
   return FrozenWorkflowBindingSchema.parse({
     bindingId: row.binding_id,
     revision: mapWorkflowRevision(row),
+    effective: disabledReason === null,
+    disabledReason,
     boundBy: row.bound_by,
     boundAt: row.bound_at.toISOString(),
   });
@@ -347,10 +373,19 @@ function mapKnowledge(
     );
   const effectiveAcl = resolveEffectiveKnowledgeAcl(acl, input);
   if (!input.adminView && effectiveAcl.length === 0) return null;
+  const disabledReason = !first.binding_enabled
+    ? 'binding_disabled'
+    : !first.source_active || first.status !== 'published'
+      ? 'revision_unavailable'
+      : !input.adminView && effectiveAcl.length === 0
+        ? 'acl_denied'
+        : null;
   return FrozenKnowledgeBindingSchema.parse({
     bindingId: first.binding_id,
     revision: mapKnowledgeRevision(rows),
     effectiveAcl: input.adminView ? acl : effectiveAcl,
+    effective: disabledReason === null,
+    disabledReason,
     boundBy: first.bound_by,
     boundAt: first.bound_at.toISOString(),
   });
@@ -396,6 +431,9 @@ async function loadEmployeeCapabilityDirectory(input: {
     sql<AgentSkillBindingRow[]>`
       select b.id as binding_id, b.installation_id,
         b.granted_capabilities, b.bound_by, b.bound_at,
+        b.enabled as binding_enabled, i.enabled as installation_enabled,
+        (i.pinned_version_id = v.id) as pinned,
+        (o.state = 'ready' and o.immutable) as storage_ready,
         v.id as skill_version_id, c.id as agent_skill_id, c.slug,
         v.agent_name as name, v.agent_description as description,
         v.agent_publisher as publisher, v.version, v.status,
@@ -410,13 +448,17 @@ async function loadEmployeeCapabilityDirectory(input: {
       where b.organization_id = ${input.organizationId}
         and b.workspace_id = ${input.workspaceId}
         and b.employee_id = ${input.employeeId}
-        and b.enabled and i.enabled and i.owner_id is null
-        and i.pinned_version_id = v.id and v.status = 'published'
-        and o.state = 'ready' and o.immutable
+        and i.owner_id is null
+        and b.enabled
+        and (${input.adminView} or (
+          i.enabled and i.pinned_version_id = v.id
+          and v.status = 'published' and o.state = 'ready' and o.immutable
+        ))
       order by c.name, v.version, b.id
     `,
     sql<WorkflowBindingRow[]>`
       select b.id as binding_id, b.bound_by, b.bound_at,
+        b.enabled as binding_enabled, (w.status = 'active') as source_active,
         r.id as revision_id, w.id as workflow_id, w.slug,
         r.name, r.description, r.revision, r.status, r.checksum,
         r.definition, r.published_at
@@ -426,11 +468,15 @@ async function loadEmployeeCapabilityDirectory(input: {
       where b.organization_id = ${input.organizationId}
         and b.workspace_id = ${input.workspaceId}
         and b.employee_id = ${input.employeeId}
-        and b.enabled and w.status = 'active' and r.status = 'published'
+        and b.enabled
+        and (${input.adminView} or (
+          w.status = 'active' and r.status = 'published'
+        ))
       order by w.name, r.revision, b.id
     `,
     sql<KnowledgeBindingRow[]>`
       select b.id as binding_id, b.bound_by, b.bound_at,
+        b.enabled as binding_enabled, (s.status = 'active') as source_active,
         r.id as revision_id, s.id as knowledge_source_id, s.slug,
         r.name, r.description, r.revision, r.status, r.checksum,
         r.definition, r.published_at,
@@ -443,7 +489,10 @@ async function loadEmployeeCapabilityDirectory(input: {
       where b.organization_id = ${input.organizationId}
         and b.workspace_id = ${input.workspaceId}
         and b.employee_id = ${input.employeeId}
-        and b.enabled and s.status = 'active' and r.status = 'published'
+        and b.enabled
+        and (${input.adminView} or (
+          s.status = 'active' and r.status = 'published'
+        ))
       order by s.name, r.revision, b.id, a.principal_type, a.principal_id
     `,
   ]);

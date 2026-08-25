@@ -297,6 +297,17 @@ export const FrozenAgentSkillBindingSchema = z
     installationId: UuidSchema,
     revision: AgentSkillRevisionSchema,
     grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
+    effective: z.boolean().default(true),
+    disabledReason: z
+      .enum([
+        'binding_disabled',
+        'installation_disabled',
+        'revision_unavailable',
+        'source_unavailable',
+        'acl_denied',
+      ])
+      .nullable()
+      .default(null),
     boundBy: UuidSchema,
     boundAt: TimestampSchema,
   })
@@ -306,6 +317,11 @@ export const FrozenWorkflowBindingSchema = z
   .object({
     bindingId: UuidSchema,
     revision: WorkflowRevisionSchema,
+    effective: z.boolean().default(true),
+    disabledReason: z
+      .enum(['binding_disabled', 'revision_unavailable'])
+      .nullable()
+      .default(null),
     boundBy: UuidSchema,
     boundAt: TimestampSchema,
   })
@@ -316,6 +332,11 @@ export const FrozenKnowledgeBindingSchema = z
     bindingId: UuidSchema,
     revision: KnowledgeRevisionSchema,
     effectiveAcl: z.array(KnowledgeAclEntrySchema).min(1).max(256),
+    effective: z.boolean().default(true),
+    disabledReason: z
+      .enum(['binding_disabled', 'revision_unavailable', 'acl_denied'])
+      .nullable()
+      .default(null),
     boundBy: UuidSchema,
     boundAt: TimestampSchema,
   })
