@@ -48,6 +48,7 @@ import { executeCodexSkill } from './codex.js';
 import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
+import { normalizeHarnessRunEvent } from './harness/runtime-contract.js';
 import { getHarnessRouter } from './harness/router.js';
 import { buildAuthorizedKnowledgeContext } from './knowledge.js';
 import { decideCapabilityRoute } from './routing/capability-router.js';
@@ -1057,69 +1058,13 @@ async function appendHarnessEvent(input: {
   leaseToken: string;
   event: HarnessEvent;
 }) {
-  const { event } = input;
-  const type =
-    event.type === 'assistant.completed'
-      ? 'assistant.text.completed'
-      : event.type === 'assistant.delta'
-        ? 'assistant.text.delta'
-        : event.type === 'usage.updated'
-          ? 'heartbeat'
-          : event.type === 'tool.started'
-            ? 'tool.started'
-            : event.type === 'tool.failed'
-              ? 'tool.failed'
-              : 'tool.completed';
+  const normalized = normalizeHarnessRunEvent(input.event);
   await appendJobEvent({
     workerId: input.workerId,
     jobId: input.jobId,
     leaseToken: input.leaseToken,
-    type,
-    payload:
-      event.type === 'assistant.completed' || event.type === 'assistant.delta'
-        ? {
-            source: event.harness,
-            text: event.text,
-            generation: event.generation,
-            turnId: event.turnId,
-            messageId: event.messageId,
-            attempt: event.attempt,
-            order: event.order,
-            ...(event.type === 'assistant.delta' && event.orderStart
-              ? { orderStart: event.orderStart }
-              : {}),
-          }
-        : event.type === 'usage.updated'
-          ? {
-              source: event.harness,
-              generation: event.generation,
-              turnId: event.turnId,
-              messageId: event.messageId,
-              attempt: event.attempt,
-              order: event.order,
-              usage: {
-                inputTokens: event.inputTokens,
-                cachedInputTokens: event.cachedInputTokens,
-                outputTokens: event.outputTokens,
-              },
-            }
-          : {
-              source:
-                event.source === 'tool_broker' ? 'tool_broker' : event.harness,
-              toolCallId: event.toolCallId,
-              name: event.name,
-              label: event.label,
-              status: event.type.split('.')[1],
-              generation: event.generation,
-              turnId: event.turnId,
-              messageId: event.messageId,
-              ...(event.summary ? { summary: event.summary } : {}),
-              ...(event.itemCount === undefined
-                ? {}
-                : { itemCount: event.itemCount }),
-              attempt: event.attempt,
-              order: event.order,
-            },
+    type: normalized.type,
+    payload: normalized.payload,
   });
 }
 

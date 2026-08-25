@@ -19,6 +19,7 @@ import {
   DeploymentDshCredentialResolver,
   type DshCredentialResolver,
 } from './dsh-credential-resolver.js';
+import { DSH_DISTRIBUTION_CURRENT_VERSION } from './dsh-distribution.js';
 import {
   DshProtocolClient,
   type DshNotification,
@@ -518,6 +519,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
+        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true };

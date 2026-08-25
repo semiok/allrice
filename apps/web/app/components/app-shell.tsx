@@ -4,6 +4,11 @@ import Link from 'next/link';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
+import {
+  resolveFrameworkRollout,
+  type FrameworkRolloutPolicy,
+} from '@allrice/contracts';
+
 import { AutomationClient } from '../automation/automation-client';
 import { EmployeeHubClient } from '../employees/employeehub-client';
 import { WorkspaceClient } from '../workspace/workspace-client';
@@ -26,6 +31,9 @@ export interface WorkspaceSidebarGroup {
 }
 
 export interface WorkspaceSidebarSnapshot {
+  organizationId: string;
+  workspaceId: string;
+  employeeVersionId: string | null;
   groups: WorkspaceSidebarGroup[];
   activeId: string | null;
   canAdminister: boolean;
@@ -129,7 +137,13 @@ function WorkspaceSidebar({
   );
 }
 
-export function AppShell({ initialPanel }: { initialPanel: AppPanel }) {
+export function AppShell({
+  initialPanel,
+  rolloutPolicy,
+}: {
+  initialPanel: AppPanel;
+  rolloutPolicy: FrameworkRolloutPolicy;
+}) {
   const pathname = usePathname();
   const routePanel = useMemo(() => panelFromPathname(pathname), [pathname]);
   const [activePanel, setActivePanel] = useState<AppPanel>(initialPanel);
@@ -156,6 +170,18 @@ export function AppShell({ initialPanel }: { initialPanel: AppPanel }) {
         receiveWorkspaceSidebar,
       );
   }, []);
+
+  useEffect(() => {
+    const enabled = resolveFrameworkRollout(rolloutPolicy, {
+      organizationId: workspaceSidebar?.organizationId,
+      workspaceId: workspaceSidebar?.workspaceId,
+      employeeVersionId: workspaceSidebar?.employeeVersionId,
+      surface: activePanel,
+    });
+    document.documentElement.dataset.allriceFramework = enabled
+      ? 'v2'
+      : 'legacy';
+  }, [activePanel, rolloutPolicy, workspaceSidebar]);
 
   function requestWorkspaceAction(action: 'new' | 'files' | 'memory') {
     window.dispatchEvent(

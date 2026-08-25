@@ -84,8 +84,10 @@ export class DshProtocolClient {
     provider: string;
     model: string;
     maxTokens?: number;
+    expectedVersion?: string;
   }) {
-    const result = await this.request('initialize', input);
+    const { expectedVersion, ...params } = input;
+    const result = await this.request('initialize', params);
     const serverInfo = record(result.serverInfo);
     if (
       serverInfo?.name !== 'deepseek-harness-sdk-runtime' ||
@@ -94,6 +96,17 @@ export class DshProtocolClient {
       throw new HandlerError(
         'DSH_PROTOCOL_MISMATCH',
         'DSH runtime returned an incompatible server identity',
+        false,
+      );
+    }
+    if (
+      expectedVersion &&
+      serverInfo.version !== expectedVersion &&
+      !serverInfo.version.startsWith(`${expectedVersion}-`)
+    ) {
+      throw new HandlerError(
+        'DSH_VERSION_MISMATCH',
+        `DSH runtime version ${serverInfo.version} does not match the approved AllRice distribution`,
         false,
       );
     }

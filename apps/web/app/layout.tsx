@@ -1,7 +1,10 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
+import '@allrice/ui/styles.css';
 import './styles.css';
+
+import { readFrameworkRolloutPolicy } from '../lib/framework/rollout';
 
 const thirdPartyErrorGuard = `
 (() => {
@@ -32,8 +35,11 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  const policy = readFrameworkRolloutPolicy();
+  const framework =
+    policy.emergencyOff || !policy.defaultEnabled ? 'legacy' : 'v2';
   return (
-    <html lang="zh-CN">
+    <html data-allrice-framework={framework} lang="zh-CN">
       <head>
         <script dangerouslySetInnerHTML={{ __html: thirdPartyErrorGuard }} />
       </head>

@@ -3,6 +3,12 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import {
+  canonicalizeRunEvent,
+  type RunEvent as ContractRunEvent,
+} from '@allrice/contracts';
+import { ContextPressureMeter, RuntimeTrace } from '@allrice/ui';
+
 import { AppSidebar } from '../components/app-sidebar';
 import { assistantStreamText } from '../../lib/execution/assistant-stream';
 
@@ -216,12 +222,7 @@ interface HistoryPayload {
   contextStatus: SessionContextStatus;
 }
 
-interface RunEvent {
-  eventId: string;
-  runId: string;
-  sequence: number;
-  type: string;
-  occurredAt: string;
+interface RunEvent extends Omit<ContractRunEvent, 'payload'> {
   payload: Record<string, unknown>;
 }
 
@@ -252,24 +253,11 @@ function SessionContextMeter({ status }: { status: SessionContextStatus }) {
     ? '上下文 100% · 待压缩'
     : `上下文 ${status.percentage}%`;
   return (
-    <div
-      className={`session-context-status${
-        status.percentage >= 80 ? ' session-context-status-warning' : ''
-      }`}
+    <ContextPressureMeter
+      label={label}
+      percentage={status.percentage}
       title={`当前 ${status.pressureTokens.toLocaleString()} / ${status.thresholdTokens.toLocaleString()} tokens；达到 100% 后自动压缩`}
-    >
-      <span>{label}</span>
-      <span
-        aria-label={`会话上下文使用 ${status.percentage}%，达到 100% 后自动压缩`}
-        aria-valuemax={100}
-        aria-valuemin={0}
-        aria-valuenow={status.percentage}
-        className="session-context-meter"
-        role="progressbar"
-      >
-        <span style={{ width: `${status.percentage}%` }} />
-      </span>
-    </div>
+    />
   );
 }
 
@@ -358,22 +346,7 @@ function RunDetails({
   workspaceId: string;
 }) {
   const [deciding, setDeciding] = useState(false);
-  const tools = new Map<string, RunEvent>();
-  const steps = new Map<string, RunEvent>();
-  for (const event of events) {
-    if (event.type.startsWith('tool.')) {
-      const id = String(event.payload.toolCallId ?? event.eventId);
-      const previous = tools.get(id);
-      if (!previous || event.sequence > previous.sequence) tools.set(id, event);
-    }
-    if (event.type.startsWith('step.')) {
-      const key = String(event.payload.stepKey ?? event.eventId);
-      const previous = steps.get(key);
-      if (!previous || event.sequence > previous.sequence)
-        steps.set(key, event);
-    }
-  }
-  const retries = events.filter((event) => event.type === 'run.retrying');
+  const canonicalEvents = events.map((event) => canonicalizeRunEvent(event));
   const decidedApprovals = new Set(
     events
       .filter((event) => event.type === 'approval.decided')
@@ -386,7 +359,13 @@ function RunDetails({
         event.type === 'approval.requested' &&
         !decidedApprovals.has(String(event.payload.approvalId ?? '')),
     );
-  if (tools.size === 0 && retries.length === 0 && steps.size === 0) return null;
+  const hasVisibleEvents = events.some(
+    (event) =>
+      event.type.startsWith('tool.') ||
+      event.type.startsWith('step.') ||
+      event.type === 'run.retrying',
+  );
+  if (!hasVisibleEvents && !pendingApproval) return null;
   async function decide(decision: 'approved' | 'rejected') {
     const approvalId = pendingApproval?.payload.approvalId;
     if (typeof approvalId !== 'string') return;
@@ -409,79 +388,11 @@ function RunDetails({
     }
   }
   return (
-    <details className="run-details">
-      <summary>
-        {steps.size ? `执行记录 · ${steps.size} 个步骤` : ''}
-        {steps.size && tools.size ? ' · ' : ''}
-        {tools.size ? `${tools.size} 个工具调用` : ''}
-        {(steps.size || tools.size) && retries.length ? ' · ' : ''}
-        {retries.length ? `${retries.length} 次重试` : ''}
-      </summary>
-      <div className="tool-list">
-        {[...steps.values()].map((event) => (
-          <div className="tool-row" key={String(event.payload.stepKey)}>
-            <span
-              className={`tool-state tool-state-${
-                event.type === 'step.completed'
-                  ? 'completed'
-                  : event.type === 'step.retrying'
-                    ? 'started'
-                    : event.type === 'step.waiting_approval'
-                      ? 'started'
-                      : 'started'
-              }`}
-            />
-            <div>
-              <strong>
-                {String(event.payload.name ?? event.payload.stepKey)}
-              </strong>
-              <small>
-                {event.type === 'step.completed'
-                  ? '已完成'
-                  : event.type === 'step.waiting_approval'
-                    ? '等待你的确认'
-                    : event.type === 'step.retrying'
-                      ? `正在重试 · 第 ${String(event.payload.attempt ?? '?')} 次`
-                      : '正在执行'}
-              </small>
-            </div>
-          </div>
-        ))}
-        {[...tools.values()].map((event) => (
-          <div
-            className="tool-row"
-            key={String(event.payload.toolCallId ?? event.eventId)}
-          >
-            <span
-              className={`tool-state tool-state-${String(event.payload.status ?? 'started')}`}
-            />
-            <div>
-              <strong>{toolLabel(event.payload.name)}</strong>
-              <small>
-                {String(
-                  event.payload.summary ??
-                    (event.type === 'tool.started'
-                      ? '正在调用…'
-                      : event.type === 'tool.failed'
-                        ? '调用失败'
-                        : '调用完成'),
-                )}
-              </small>
-            </div>
-          </div>
-        ))}
-        {retries.map((event) => (
-          <div className="tool-row" key={event.eventId}>
-            <span className="tool-state tool-state-started" />
-            <div>
-              <strong>正在重试</strong>
-              <small>
-                第 {String(event.payload.attempt ?? '?')} 次执行未完成
-              </small>
-            </div>
-          </div>
-        ))}
-        {pendingApproval ? (
+    <RuntimeTrace
+      events={canonicalEvents}
+      toolLabel={toolLabel}
+      footer={
+        pendingApproval ? (
           <div className="workflow-approval-actions">
             <span>
               {String(pendingApproval.payload.summary ?? '此步骤需要确认')}
@@ -493,9 +404,9 @@ function RunDetails({
               同意并继续
             </button>
           </div>
-        ) : null}
-      </div>
-    </details>
+        ) : null
+      }
+    />
   );
 }
 
@@ -1113,6 +1024,12 @@ export function WorkspaceClient({
     window.dispatchEvent(
       new CustomEvent('allrice:workspace-sidebar', {
         detail: {
+          organizationId: workspace.organizationId,
+          workspaceId: workspace.workspaceId,
+          employeeVersionId:
+            history?.session.employeeVersionId ??
+            selectedEmployee?.currentVersion.id ??
+            null,
           groups: employeeWorkGroups.map((group) => ({
             id: group.id,
             name: group.name,
@@ -1129,7 +1046,7 @@ export function WorkspaceClient({
         },
       }),
     );
-  }, [activeId, employeeWorkGroups, workspace]);
+  }, [activeId, employeeWorkGroups, history, selectedEmployee, workspace]);
 
   useEffect(() => {
     const receiveWorkspaceAction = (event: Event) => {

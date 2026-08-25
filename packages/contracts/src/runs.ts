@@ -33,6 +33,11 @@ export const RunEventTypeSchema = z.enum([
   'artifact.created',
   'approval.requested',
   'approval.decided',
+  'knowledge.retrieved',
+  'context.compaction.started',
+  'context.compaction.completed',
+  'context.compaction.failed',
+  'context.checkpoint.created',
   'run.succeeded',
   'run.failed',
   'run.canceled',
@@ -40,6 +45,30 @@ export const RunEventTypeSchema = z.enum([
   'heartbeat',
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
+
+export const RuntimeEventCategorySchema = z.enum([
+  'run',
+  'assistant',
+  'tool',
+  'workflow',
+  'approval',
+  'artifact',
+  'knowledge',
+  'context',
+  'system',
+]);
+export type RuntimeEventCategory = z.infer<typeof RuntimeEventCategorySchema>;
+
+export const RuntimeEventPhaseSchema = z.enum([
+  'queued',
+  'running',
+  'waiting',
+  'succeeded',
+  'failed',
+  'canceled',
+  'info',
+]);
+export type RuntimeEventPhase = z.infer<typeof RuntimeEventPhaseSchema>;
 
 export const AssistantTextEventPayloadSchema = z
   .object({
@@ -91,6 +120,95 @@ export const RunEventSchema = z
   })
   .strict();
 export type RunEvent = z.infer<typeof RunEventSchema>;
+
+/**
+ * Stable presentation envelope shared by Codex, DSH and future harnesses.
+ * It intentionally wraps the durable RunEvent instead of exposing a harness
+ * wire protocol to product clients.
+ */
+export const CanonicalRuntimeEventSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    eventId: UuidSchema,
+    runId: UuidSchema,
+    sequence: z.number().int().nonnegative(),
+    occurredAt: TimestampSchema,
+    type: RunEventTypeSchema,
+    category: RuntimeEventCategorySchema,
+    phase: RuntimeEventPhaseSchema,
+    harness: HarnessEventSourceSchema.nullable(),
+    generation: z.number().int().nonnegative().nullable(),
+    payload: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export type CanonicalRuntimeEvent = z.infer<typeof CanonicalRuntimeEventSchema>;
+
+function runtimeEventCategory(type: RunEventType): RuntimeEventCategory {
+  if (type.startsWith('assistant.')) return 'assistant';
+  if (type.startsWith('tool.')) return 'tool';
+  if (type.startsWith('step.')) return 'workflow';
+  if (type.startsWith('approval.')) return 'approval';
+  if (type.startsWith('artifact.')) return 'artifact';
+  if (type.startsWith('knowledge.')) return 'knowledge';
+  if (type.startsWith('context.')) return 'context';
+  if (type === 'heartbeat') return 'system';
+  return 'run';
+}
+
+function runtimeEventPhase(type: RunEventType): RuntimeEventPhase {
+  if (type === 'run.created') return 'queued';
+  if (type.endsWith('.failed') || type === 'run.needs_attention')
+    return 'failed';
+  if (type.endsWith('.canceled')) return 'canceled';
+  if (
+    type.endsWith('.completed') ||
+    type.endsWith('.succeeded') ||
+    type === 'artifact.created' ||
+    type === 'approval.decided' ||
+    type === 'knowledge.retrieved' ||
+    type === 'context.checkpoint.created'
+  )
+    return 'succeeded';
+  if (type.includes('waiting') || type === 'approval.requested')
+    return 'waiting';
+  if (
+    type.endsWith('.started') ||
+    type.endsWith('.retrying') ||
+    type === 'assistant.text.delta'
+  )
+    return 'running';
+  return 'info';
+}
+
+export function canonicalizeRunEvent(input: RunEvent): CanonicalRuntimeEvent {
+  const event = RunEventSchema.parse(input);
+  const payload =
+    event.payload !== null &&
+    typeof event.payload === 'object' &&
+    !Array.isArray(event.payload)
+      ? (event.payload as Record<string, unknown>)
+      : { value: event.payload };
+  const source = payload.source;
+  const generation = payload.generation;
+  return CanonicalRuntimeEventSchema.parse({
+    schemaVersion: 1,
+    eventId: event.eventId,
+    runId: event.runId,
+    sequence: event.sequence,
+    occurredAt: event.occurredAt,
+    type: event.type,
+    category: runtimeEventCategory(event.type),
+    phase: runtimeEventPhase(event.type),
+    harness: source === 'codex' || source === 'dsh' ? source : null,
+    generation:
+      typeof generation === 'number' &&
+      Number.isInteger(generation) &&
+      generation >= 0
+        ? generation
+        : null,
+    payload,
+  });
+}
 
 const terminalRunStatuses = new Set<RunStatus>([
   'succeeded',

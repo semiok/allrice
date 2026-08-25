@@ -29,6 +29,7 @@ export * from './authorization.ts';
 export * from './capabilities.ts';
 export * from './common.ts';
 export * from './employees.ts';
+export * from './framework.ts';
 export * from './harness.ts';
 export * from './identity.ts';
 export * from './queue.ts';
