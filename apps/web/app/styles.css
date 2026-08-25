@@ -4347,14 +4347,14 @@ textarea {
   background: var(--rice-paper, #f3f5f1);
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  height: 100vh;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   padding: 0;
 }
 
 .app-shell-sidebar {
-  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
   position: sticky;
@@ -4434,16 +4434,18 @@ textarea {
 }
 
 .app-shell-content {
-  height: 100vh;
+  height: 100dvh;
   min-width: 0;
-  min-height: 100vh;
-  overflow: hidden;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   position: relative;
 }
 
 .app-shell-panel {
-  height: 100vh;
-  min-height: 100vh;
+  height: auto;
+  min-height: 100%;
   min-width: 0;
   padding: 0;
 }
@@ -4453,16 +4455,35 @@ textarea {
 }
 
 .rice-workspace.workspace-panel-only {
+  align-items: start;
   grid-template-columns: minmax(0, 1fr) 306px;
+  grid-template-rows: auto;
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
   padding: 0;
 }
 
 .rice-workspace.workspace-panel-only > .conversation-panel {
+  align-content: space-between;
   grid-column: 1;
+  grid-template-rows: auto auto auto;
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
 }
 
 .rice-workspace.workspace-panel-only > .workspace-context-rail {
   grid-column: 2;
+  height: 100dvh;
+  position: sticky;
+  top: 0;
+}
+
+.rice-workspace.workspace-panel-only .message-list {
+  min-height: 0;
+  overflow: visible;
+  touch-action: pan-y;
 }
 
 .automation-shell.automation-panel-only {
