@@ -97,6 +97,27 @@ if [[ -z "${smoke_state}" ]]; then
   exit 1
 fi
 
+capability_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
+ALLRICE_SMOKE_STATE="${smoke_state}" \
+  node scripts/capability-http-smoke.mjs)"
+printf '%s\n' "${capability_output}" | sed '/^ALLRICE_CAPABILITY_SMOKE_STATE=/d'
+capability_state="$(printf '%s\n' "${capability_output}" | sed -n 's/^ALLRICE_CAPABILITY_SMOKE_STATE=//p')"
+if [[ -z "${capability_state}" ]]; then
+  echo "Capability smoke state was not returned" >&2
+  exit 1
+fi
+capability_run_id="$(printf '%s' "${capability_state}" | base64 --decode 2>/dev/null | jq -r '.runId')"
+capability_member_id="$(printf '%s' "${capability_state}" | base64 --decode 2>/dev/null | jq -r '.memberUserId')"
+capability_snapshot="$({
+  docker compose --project-name "${compose_project}" exec -T postgres \
+    psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -AtF '|' -c \
+    "select execution_snapshot ->> 'schemaVersion', jsonb_array_length(execution_snapshot -> 'capabilitySnapshot' -> 'workflows'), jsonb_array_length(execution_snapshot -> 'capabilitySnapshot' -> 'knowledge'), execution_snapshot -> 'capabilitySnapshot' ->> 'resolvedForActorId' from allrice_employee_runs where run_id = '${capability_run_id}';"
+} | tr -d '\r')"
+if [[ "${capability_snapshot}" != "2|1|1|${capability_member_id}" ]]; then
+  echo "Unexpected MET-68 capability snapshot: ${capability_snapshot}" >&2
+  exit 1
+fi
+
 execution_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \
   node scripts/execution-http-smoke.mjs)"

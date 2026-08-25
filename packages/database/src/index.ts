@@ -39,3 +39,4 @@ export * from './conversation-checkpoint.ts';
 export * from './conversation-usage.ts';
 export * from './conversation-input.ts';
 export * from './automation.ts';
+export * from './capability-registry.ts';

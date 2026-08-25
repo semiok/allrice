@@ -214,4 +214,87 @@ describe('EmployeeHub contracts', () => {
       policySnapshotId,
     });
   });
+
+  it('freezes three independent capability families in a v2 run snapshot', () => {
+    const employeeId = randomUUID();
+    const versionId = randomUUID();
+    const assignmentId = randomUUID();
+    const userId = randomUUID();
+    const organizationId = randomUUID();
+    const workspaceId = randomUUID();
+    const definition = EmployeeManifestSchema.parse({
+      schemaVersion: 1,
+      key: 'default-assistant',
+      name: 'Rice',
+      description: 'General AI employee',
+      systemPrompt: 'Act only inside the frozen capability snapshot.',
+      provider: {
+        provider: 'codex',
+        authMode: 'chatgpt_subscription',
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'high',
+        sandbox: 'workspace-write',
+      },
+      capabilities: ['model:invoke'],
+      skillVersionIds: [],
+    });
+    const snapshot = EmployeeExecutionSnapshotSchema.parse({
+      schemaVersion: 2,
+      employee: {
+        id: employeeId,
+        key: definition.key,
+        versionId,
+        revision: 1,
+        definitionChecksum: `sha256:${'a'.repeat(64)}`,
+        definition,
+      },
+      assignment: {
+        id: assignmentId,
+        userId,
+        assignedBy: userId,
+        assignedAt: '2026-08-25T00:00:00.000Z',
+      },
+      runtimePolicy: {
+        harness: 'codex',
+        provider: 'codex',
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'high',
+        timeoutMs: 300_000,
+        fallbackModels: [],
+      },
+      capabilitySnapshot: {
+        declaredCapabilities: ['model:invoke'],
+        grantedCapabilities: ['model:invoke'],
+        bindings: {
+          skillVersionIds: [],
+          toolNames: [],
+          knowledgeScopes: [],
+          workflowIds: [],
+        },
+        skillBindings: [],
+        agentSkills: [],
+        workflows: [],
+        knowledge: [],
+        resolvedForActorId: userId,
+      },
+      tenantContext: {
+        organizationId,
+        workspaceId,
+        actorId: userId,
+        policySnapshotId: randomUUID(),
+      },
+      userProfile: {
+        schemaVersion: 1,
+        displayName: '测试用户',
+        preferences: {},
+      },
+      createdAt: '2026-08-25T00:00:01.000Z',
+    });
+    expect(snapshot.schemaVersion).toBe(2);
+    if (snapshot.schemaVersion === 2) {
+      expect(snapshot.capabilitySnapshot.resolvedForActorId).toBe(userId);
+      expect(snapshot.capabilitySnapshot.workflows).toEqual([]);
+      expect(snapshot.capabilitySnapshot.knowledge).toEqual([]);
+    }
+  });
 });

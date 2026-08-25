@@ -30,6 +30,26 @@ THIRD_PARTY_NOTICES.md.
 
 type ApprovedCandidate = Omit<ImportSkillInput, 'workspaceId'>;
 
+function agentMetadata(
+  description: string,
+  capabilities: ApprovedCandidate['capabilities'],
+): ApprovedCandidate['agentMetadata'] {
+  return {
+    applicableScenarios: [description],
+    inputSchema: { type: 'object', required: ['request'] },
+    outputSchema: { type: 'object', required: ['result'] },
+    requiredToolRefs: capabilities.includes('network:outbound')
+      ? ['codex-hosted-search']
+      : [],
+    riskLevel: capabilities.includes('secret:use')
+      ? 'high'
+      : capabilities.includes('network:outbound') ||
+          capabilities.includes('storage:write')
+        ? 'medium'
+        : 'low',
+  };
+}
+
 const forbiddenArtifactPatterns = [
   /metadata\.openclaw\.requires/i,
   /\brequires\s*:/i,
@@ -81,6 +101,7 @@ function openClawCandidate(input: {
     publisher: 'openclaw/openclaw · AllRice audited adaptation',
     version: '1.0.0',
     capabilities: input.capabilities,
+    agentMetadata: agentMetadata(input.description, input.capabilities),
     source: {
       repository: 'https://github.com/openclaw/openclaw',
       commit: openClawCommit,
@@ -121,6 +142,7 @@ function allRiceWorkflowCandidate(
     publisher: 'AllRice · OpenClaw-inspired audited workflow',
     version: '1.0.0',
     capabilities: input.capabilities,
+    agentMetadata: agentMetadata(input.description, input.capabilities),
     source: {
       repository: 'https://github.com/openclaw/openclaw',
       commit: openClawCommit,

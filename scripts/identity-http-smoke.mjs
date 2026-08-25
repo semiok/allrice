@@ -344,6 +344,7 @@ console.info(
       persistedContent,
       organizationId,
       workspaceId,
+      secondWorkspaceId,
       inviteeEmail,
       inviteePassword,
       sessionId: session.id,

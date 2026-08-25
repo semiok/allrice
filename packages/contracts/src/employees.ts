@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+import {
+  FrozenAgentSkillBindingSchema,
+  FrozenKnowledgeBindingSchema,
+  FrozenWorkflowBindingSchema,
+} from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import {
   CodexExecutionSnapshotSchema,
@@ -278,7 +283,7 @@ export const FrozenEmployeeSkillBindingSchema = z
   })
   .strict();
 
-export const EmployeeExecutionSnapshotSchema = z
+export const EmployeeExecutionSnapshotV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     employee: z
@@ -320,6 +325,28 @@ export const EmployeeExecutionSnapshotSchema = z
     createdAt: TimestampSchema,
   })
   .strict();
+
+export const EmployeeExecutionSnapshotV2Schema =
+  EmployeeExecutionSnapshotV1Schema.extend({
+    schemaVersion: z.literal(2),
+    capabilitySnapshot: z
+      .object({
+        declaredCapabilities: z.array(SkillCapabilitySchema).max(16),
+        grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
+        bindings: EmployeeCapabilityBindingsSchema,
+        skillBindings: z.array(FrozenEmployeeSkillBindingSchema).max(32),
+        agentSkills: z.array(FrozenAgentSkillBindingSchema).max(32),
+        workflows: z.array(FrozenWorkflowBindingSchema).max(32),
+        knowledge: z.array(FrozenKnowledgeBindingSchema).max(32),
+        resolvedForActorId: UuidSchema,
+      })
+      .strict(),
+  }).strict();
+
+export const EmployeeExecutionSnapshotSchema = z.discriminatedUnion(
+  'schemaVersion',
+  [EmployeeExecutionSnapshotV1Schema, EmployeeExecutionSnapshotV2Schema],
+);
 export type EmployeeExecutionSnapshot = z.infer<
   typeof EmployeeExecutionSnapshotSchema
 >;

@@ -13,6 +13,30 @@ export const SkillCapabilitySchema = z.enum([
 ]);
 export type SkillCapability = z.infer<typeof SkillCapabilitySchema>;
 
+export const AgentSkillRiskLevelSchema = z.enum([
+  'low',
+  'medium',
+  'high',
+  'critical',
+]);
+
+export const AgentSkillMetadataSchema = z
+  .object({
+    applicableScenarios: z
+      .array(z.string().trim().min(1).max(300))
+      .max(24)
+      .default([]),
+    inputSchema: z.record(z.string(), z.unknown()).default({}),
+    outputSchema: z.record(z.string(), z.unknown()).default({}),
+    requiredToolRefs: z
+      .array(z.string().trim().min(1).max(240))
+      .max(32)
+      .default([]),
+    riskLevel: AgentSkillRiskLevelSchema.default('low'),
+  })
+  .strict();
+export type AgentSkillMetadata = z.infer<typeof AgentSkillMetadataSchema>;
+
 export const SkillSourceSchema = z
   .object({
     repository: z.string().url(),
@@ -98,6 +122,13 @@ export const ImportSkillInputSchema = z
     publisher: z.string().min(1).max(120),
     version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
     capabilities: z.array(SkillCapabilitySchema).max(16),
+    agentMetadata: AgentSkillMetadataSchema.default({
+      applicableScenarios: [],
+      inputSchema: {},
+      outputSchema: {},
+      requiredToolRefs: [],
+      riskLevel: 'low',
+    }),
     source: SkillSourceSchema,
     bundle: SkillArtifactBundleSchema,
   })
