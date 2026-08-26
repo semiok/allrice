@@ -8,7 +8,14 @@ import type {
   SaasCapabilityManifest,
 } from '@allrice/contracts';
 
-import styles from './chatflow.module.css';
+import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
+import chatUi from './dsh-upstream/ChatView.module.css';
+import conversationUi from './dsh-upstream/ConversationRoot.module.css';
+import frameUi from './dsh-upstream/AppFrame.module.css';
+import inputUi from './dsh-upstream/InputBar.module.css';
+import messageUi from './dsh-upstream/MessageItem.module.css';
+import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
+import styles from './dsh-saas.module.css';
 
 type Visibility = 'private' | 'workspace' | 'organization';
 
@@ -222,6 +229,8 @@ export function ChatFlowClient() {
     useState<Visibility>('private');
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const activeStream = useRef<AbortController | null>(null);
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -413,7 +422,12 @@ export function ChatFlowClient() {
   }, [history, runView?.runId, streamRun]);
 
   useEffect(() => {
-    transcriptEnd.current?.scrollIntoView({ behavior: 'smooth' });
+    const scrollRegion =
+      transcriptEnd.current?.closest<HTMLElement>('[data-chat-scroll]');
+    scrollRegion?.scrollTo({
+      behavior: 'smooth',
+      top: scrollRegion.scrollHeight,
+    });
   }, [history, runView]);
 
   useEffect(
@@ -422,6 +436,14 @@ export function ChatFlowClient() {
     },
     [],
   );
+
+  useEffect(() => {
+    const mobile = window.matchMedia('(max-width: 760px)');
+    const syncSidebar = () => setSidebarCollapsed(mobile.matches);
+    syncSidebar();
+    mobile.addEventListener('change', syncSidebar);
+    return () => mobile.removeEventListener('change', syncSidebar);
+  }, []);
 
   async function createSession() {
     if (!workspace) return null;
@@ -648,274 +670,515 @@ export function ChatFlowClient() {
   const visibleEvents = runView?.events.filter(visibleEvent) ?? [];
   const isRunning =
     runView?.status === 'running' || runView?.status === 'connecting';
+  const isEmptyConversation = !history?.messages.length && !runView;
 
-  return (
-    <main className={styles.shell}>
-      <aside className={styles.sidebar}>
-        <header className={styles.brand}>
-          <span className={styles.brandMark}>R</span>
-          <span>
-            <strong>AllRice</strong>
-            <small>ChatFlow 2.0</small>
-          </span>
-        </header>
-
-        <button
-          className={styles.newConversation}
-          onClick={() => {
-            activeStream.current?.abort();
-            setActiveId(null);
-            setHistory(null);
-            setRunView(null);
-            setDraft('');
-            setPendingAttachments([]);
+  const renderComposer = (hero = false) => (
+    <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
+      {error ? <div className={inputUi.notice}>{error}</div> : null}
+      <div className={inputUi.card}>
+        {pendingAttachments.length ? (
+          <div className={styles.pendingFiles}>
+            {pendingAttachments.map((file) => (
+              <span key={file.id}>
+                <b aria-hidden="true">▧</b>
+                {file.fileName}
+                <button
+                  aria-label={`移除 ${file.fileName}`}
+                  onClick={() =>
+                    setPendingAttachments((current) =>
+                      current.filter((item) => item.id !== file.id),
+                    )
+                  }
+                  type="button"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <textarea
+          aria-label="给 Rice 的消息"
+          className={styles.composerInput}
+          disabled={busy}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              void sendMessage();
+            }
           }}
-          type="button"
-        >
-          <span>＋</span> 新的工作
-        </button>
-
-        <section className={styles.sessionSection}>
-          <p>最近对话</p>
-          <nav>
-            {sessions.map((session) => {
-              return (
-                <button
-                  className={
-                    session.id === activeId ? styles.activeSession : ''
-                  }
-                  key={session.id}
-                  onClick={() => setActiveId(session.id)}
-                  type="button"
-                >
-                  <span>{session.title}</span>
-                  <small>
-                    {providerForSession(workspace, session)} ·{' '}
-                    {formatTime(session.updatedAt)}
-                  </small>
-                </button>
-              );
-            })}
-            {sessions.length === 0 ? (
-              <span className={styles.emptySessions}>还没有对话</span>
-            ) : null}
-          </nav>
-        </section>
-
-        <footer className={styles.sidebarFooter}>
-          <Link href="/chatflow/employees">
-            {manifest.surfaces.includes('tenant_admin')
-              ? '员工配置'
-              : '可用员工'}
-          </Link>
-          {manifest.surfaces.includes('tenant_admin') ? (
-            <Link href="/chatflow/governance">评测与发布</Link>
-          ) : null}
-          {manifest.surfaces.includes('platform_admin') ? (
-            <Link href="/chatflow/admin">平台管理</Link>
-          ) : null}
-          <span>{manifest.roles.join(' · ')}</span>
-        </footer>
-      </aside>
-
-      <section className={styles.workspace}>
-        <header className={styles.topbar}>
-          <div>
-            <p>
-              与 {activeEmployee?.currentVersion.manifest.name ?? 'Rice'} 工作
-            </p>
-            <h1>{activeSession?.title ?? '新的工作'}</h1>
-          </div>
-          <div className={styles.runtimeBadge}>
-            <i /> {providerForSession(workspace, activeSession)}
-          </div>
-        </header>
-
-        <div className={styles.transcript}>
-          {!history?.messages.length && !runView ? (
-            <section className={styles.welcome}>
-              <div className={styles.employeeAvatar}>R</div>
-              <p>通用 AI 员工</p>
-              <h2>Rice 已准备好和你一起工作。</h2>
-              <span>描述目标、背景和你希望拿到的结果。</span>
-            </section>
-          ) : null}
-
-          {history?.messages.map((message) => (
-            <article
-              className={
-                message.role === 'user'
-                  ? styles.userMessage
-                  : styles.riceMessage
-              }
-              key={message.id}
-            >
-              <header>
-                <strong>{message.role === 'user' ? '你' : 'Rice'}</strong>
-                <time>{formatTime(message.createdAt)}</time>
-              </header>
-              <div>{message.content.text}</div>
-              {message.status === 'failed' ? (
-                <small>这次没有完成。</small>
-              ) : null}
-              {message.role === 'assistant' &&
-              message.status === 'completed' &&
-              message.runId ? (
-                <footer className={styles.feedback}>
-                  <span>这个结果有帮助吗？</span>
-                  <button
-                    aria-pressed={feedback[message.runId] === true}
-                    onClick={() => void sendFeedback(message, true)}
-                    type="button"
-                  >
-                    有用
-                  </button>
-                  <button
-                    aria-pressed={feedback[message.runId] === false}
-                    onClick={() => void sendFeedback(message, false)}
-                    type="button"
-                  >
-                    无用
-                  </button>
-                </footer>
-              ) : null}
-            </article>
-          ))}
-
-          {isRunning ? (
-            <article className={styles.riceMessage}>
-              <header>
-                <strong>Rice</strong>
-                <span className={styles.live}>正在工作</span>
-              </header>
-              {visibleEvents.length ? (
-                <details className={styles.eventTrace} open>
-                  <summary>{visibleEvents.length} 条执行动态</summary>
-                  {visibleEvents.map((event) => (
-                    <div key={event.eventId}>
-                      <i />
-                      <span>{eventLabel(event)}</span>
-                      <small>
-                        {event.sourceEvent?.type ?? event.harness ?? ''}
-                      </small>
-                    </div>
-                  ))}
-                </details>
-              ) : null}
-              <div>{liveText || '正在理解你的需求…'}</div>
-              <button className={styles.stop} onClick={() => void cancelRun()}>
-                停止
-              </button>
-            </article>
-          ) : null}
-
-          {runView?.status === 'failed' || runView?.status === 'canceled' ? (
-            <button
-              className={styles.recover}
-              onClick={() => void streamRun(runView.runId)}
-              type="button"
-            >
-              重新连接并恢复执行记录
-            </button>
-          ) : null}
-          <div ref={transcriptEnd} />
-        </div>
-
-        <footer className={styles.composerArea}>
-          {error ? <div className={styles.error}>{error}</div> : null}
-          <div className={styles.composer}>
-            {pendingAttachments.length ? (
-              <div className={styles.pendingFiles}>
-                {pendingAttachments.map((file) => (
-                  <span key={file.id}>
-                    <b>📎</b> {file.fileName}
-                    <button
-                      aria-label={`移除 ${file.fileName}`}
-                      onClick={() =>
-                        setPendingAttachments((current) =>
-                          current.filter((item) => item.id !== file.id),
-                        )
-                      }
-                      type="button"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            <textarea
-              aria-label="给 Rice 的消息"
-              disabled={busy}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  void sendMessage();
-                }
-              }}
-              placeholder="描述你想完成的工作…"
-              rows={3}
-              value={draft}
-            />
-            <div className={styles.composerMeta}>
-              <div className={styles.attachmentActions}>
-                <button
-                  disabled={busy}
-                  onClick={() => void openWorkspaceFiles()}
-                  type="button"
-                >
-                  从工作区添加
-                </button>
-                <input
-                  accept=".txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp"
-                  hidden
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void uploadAttachment(file);
-                  }}
-                  ref={fileInput}
-                  type="file"
-                />
-                <button
-                  disabled={busy}
-                  onClick={() => fileInput.current?.click()}
-                  type="button"
-                >
-                  从本地上传
-                </button>
-                <select
-                  aria-label="上传文件可见范围"
-                  onChange={(event) =>
-                    setUploadVisibility(event.target.value as Visibility)
-                  }
-                  value={uploadVisibility}
-                >
-                  <option value="private">保持私有</option>
-                  <option value="workspace">工作区公开</option>
-                </select>
-                <span>
-                  上下文 {history?.contextStatus.percentage ?? 0}%
-                  {history?.contextStatus.compactionDue
-                    ? ' · 即将自动整理'
-                    : ''}
-                </span>
-              </div>
+          placeholder={
+            hero ? '告诉 Rice 你想完成什么工作' : '继续和 Rice 工作…'
+          }
+          rows={hero ? 3 : 2}
+          value={draft}
+        />
+        <div className={inputUi.row}>
+          <div className={inputUi.tools}>
+            <div className={styles.attachmentMenuAnchor}>
               <button
-                aria-label="发送"
-                disabled={busy || !draft.trim()}
-                onClick={() => void sendMessage()}
+                aria-expanded={attachmentMenuOpen}
+                aria-label="添加文件"
+                className={inputUi.add}
+                disabled={busy}
+                onClick={() => setAttachmentMenuOpen((open) => !open)}
                 type="button"
               >
-                ↑
+                ＋
               </button>
+              {attachmentMenuOpen ? (
+                <div className={styles.attachmentMenu} role="menu">
+                  <button
+                    onClick={() => {
+                      setAttachmentMenuOpen(false);
+                      void openWorkspaceFiles();
+                    }}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <span aria-hidden="true">◇</span>
+                    <span>
+                      <strong>从工作区添加</strong>
+                      <small>使用已有的工作区文件</small>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAttachmentMenuOpen(false);
+                      fileInput.current?.click();
+                    }}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <span aria-hidden="true">↑</span>
+                    <span>
+                      <strong>从本地上传</strong>
+                      <small>上传后选择私有或工作区公开</small>
+                    </span>
+                  </button>
+                </div>
+              ) : null}
+              <input
+                accept=".txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp"
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void uploadAttachment(file);
+                }}
+                ref={fileInput}
+                type="file"
+              />
             </div>
+            <select
+              aria-label="上传文件可见范围"
+              className={inputUi.select}
+              onChange={(event) =>
+                setUploadVisibility(event.target.value as Visibility)
+              }
+              value={uploadVisibility}
+            >
+              <option value="private">保持私有</option>
+              <option value="workspace">工作区公开</option>
+            </select>
           </div>
-          <small className={styles.disclaimer}>
-            AllRice ChatFlow 负责会话、权限和事件恢复；任务由 DSH Harness
-            通过已配置的 Provider 执行。
-          </small>
-        </footer>
+          <div className={inputUi.trailing}>
+            <span className={styles.providerChip}>
+              {providerForSession(workspace, activeSession)}
+            </span>
+            <button
+              aria-label="发送"
+              className={inputUi.primary}
+              disabled={busy || !draft.trim()}
+              onClick={() => void sendMessage()}
+              type="button"
+            >
+              ↑
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className={styles.composerStatus}>
+        <span>
+          Session 上下文 {history?.contextStatus.percentage ?? 0}%
+          {history?.contextStatus.compactionDue ? ' · 即将自动压缩' : ''}
+        </span>
+        {isRunning ? (
+          <button onClick={() => void cancelRun()} type="button">
+            停止本轮
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  return (
+    <main
+      className={`${frameUi.frame} ${styles.shell}`}
+      data-details-collapsed="true"
+      style={{
+        gridTemplateColumns: sidebarCollapsed
+          ? '57px minmax(0, 1fr)'
+          : '280px minmax(0, 1fr)',
+      }}
+    >
+      <aside className={frameUi.sidebarCol}>
+        <div
+          className={`${sidebarUi.root} ${
+            sidebarCollapsed ? sidebarUi.collapsed : styles.sidebar
+          }`}
+        >
+          <div className={sidebarUi.logoRow}>
+            {!sidebarCollapsed ? (
+              <button
+                aria-label="开始新的工作"
+                className={sidebarUi.brand}
+                onClick={() => {
+                  activeStream.current?.abort();
+                  setActiveId(null);
+                  setHistory(null);
+                  setRunView(null);
+                  setDraft('');
+                  setPendingAttachments([]);
+                }}
+                type="button"
+              >
+                <span className={sidebarUi.brandIdentity}>
+                  <span className={styles.allRiceMark}>R</span>
+                  <span
+                    className={`${sidebarUi.brandName} ${sidebarUi.fallbackBrandName}`}
+                  >
+                    AllRice
+                  </span>
+                </span>
+              </button>
+            ) : null}
+            <button
+              aria-label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+              className={`${sidebarUi.iconButton} ${sidebarUi.toggle}`}
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+              type="button"
+            >
+              {sidebarCollapsed ? (
+                <>
+                  <span className={`${sidebarUi.railMark} ${styles.railMark}`}>
+                    R
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className={`${sidebarUi.panelIcon} ${styles.sidebarToggle}`}
+                  >
+                    ›
+                  </span>
+                </>
+              ) : (
+                <span aria-hidden="true" className={styles.sidebarToggle}>
+                  ‹
+                </span>
+              )}
+            </button>
+          </div>
+
+          <button
+            className={sidebarUi.newSession}
+            onClick={() => {
+              activeStream.current?.abort();
+              setActiveId(null);
+              setHistory(null);
+              setRunView(null);
+              setDraft('');
+              setPendingAttachments([]);
+            }}
+            type="button"
+          >
+            <span aria-hidden="true">＋</span>
+            <span className={sidebarUi.newSessionLabel}>新的工作</span>
+          </button>
+
+          <div className={sidebarUi.regionArea}>
+            {sidebarCollapsed ? (
+              <nav aria-label="最近对话" className={styles.railSessions}>
+                {sessions.slice(0, 12).map((session) => (
+                  <button
+                    aria-label={session.title}
+                    className={
+                      session.id === activeId ? styles.activeRailSession : ''
+                    }
+                    key={session.id}
+                    onClick={() => setActiveId(session.id)}
+                    title={session.title}
+                    type="button"
+                  >
+                    {session.title.trim().slice(0, 1).toUpperCase() || 'R'}
+                  </button>
+                ))}
+              </nav>
+            ) : (
+              <section className={styles.sessionSection}>
+                <p>最近对话</p>
+                <nav>
+                  {sessions.map((session) => (
+                    <button
+                      className={
+                        session.id === activeId ? styles.activeSession : ''
+                      }
+                      key={session.id}
+                      onClick={() => setActiveId(session.id)}
+                      type="button"
+                    >
+                      <span>{session.title}</span>
+                      <small>
+                        {providerForSession(workspace, session)} ·{' '}
+                        {formatTime(session.updatedAt)}
+                      </small>
+                    </button>
+                  ))}
+                  {sessions.length === 0 ? (
+                    <span className={styles.emptySessions}>还没有对话</span>
+                  ) : null}
+                </nav>
+              </section>
+            )}
+          </div>
+
+          <div className={sidebarUi.footArea}>
+            {!sidebarCollapsed ? (
+              <>
+                <nav className={styles.saasNavigation}>
+                  <Link href="/chatflow/employees">
+                    <span aria-hidden="true">♙</span>
+                    {manifest.surfaces.includes('tenant_admin')
+                      ? '员工配置'
+                      : '可用员工'}
+                  </Link>
+                  {manifest.surfaces.includes('tenant_admin') ? (
+                    <Link href="/chatflow/governance">
+                      <span aria-hidden="true">⌁</span>
+                      评测与发布
+                    </Link>
+                  ) : null}
+                  {manifest.surfaces.includes('platform_admin') ? (
+                    <Link href="/chatflow/admin">
+                      <span aria-hidden="true">⚙</span>
+                      平台管理
+                    </Link>
+                  ) : null}
+                </nav>
+                <div className={styles.accountRow}>
+                  <span className={styles.accountAvatar}>R</span>
+                  <span>
+                    <strong>
+                      {activeEmployee?.currentVersion.manifest.name ?? 'Rice'}
+                    </strong>
+                    <small>{manifest.roles.join(' · ')}</small>
+                  </span>
+                </div>
+              </>
+            ) : (
+              <div className={styles.accountAvatar} title="Rice">
+                R
+              </div>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      <section className={frameUi.centerCol}>
+        <div
+          className={conversationUi.root}
+          data-phase={isEmptyConversation ? 'hero' : 'active'}
+        >
+          {isEmptyConversation ? (
+            <header
+              className={`${conversationUi.header} ${conversationUi.headerHidden}`}
+            />
+          ) : (
+            <header
+              className={`${conversationUi.header} ${styles.conversationHeader}`}
+            >
+              <div className={conversationUi.titleRow}>
+                <div className={conversationUi.titleCluster}>
+                  <div className={conversationUi.crumbs}>
+                    <span className={conversationUi.crumbSeg}>
+                      <button
+                        className={conversationUi.crumb}
+                        onClick={() => {
+                          setActiveId(null);
+                          setHistory(null);
+                          setRunView(null);
+                        }}
+                        type="button"
+                      >
+                        与 Rice 工作
+                      </button>
+                      <span className={conversationUi.crumbSep}>/</span>
+                    </span>
+                    <h1>{activeSession?.title ?? '新的工作'}</h1>
+                  </div>
+                </div>
+                <div className={conversationUi.headerActions}>
+                  <span className={styles.runtimePill}>
+                    <i />
+                    {providerForSession(workspace, activeSession)}
+                  </span>
+                </div>
+              </div>
+            </header>
+          )}
+
+          {isEmptyConversation ? (
+            <div className={conversationUi.scrollBody}>
+              <section className={styles.emptyStage}>
+                <div className={styles.heroStack}>
+                  <div className={styles.heroHeadline}>
+                    <span className={styles.heroMark}>R</span>
+                    <h1>与 Rice 工作</h1>
+                    <p>把目标交给 Rice，过程和结果会留在同一个 Session 里。</p>
+                  </div>
+                  {renderComposer(true)}
+                </div>
+              </section>
+            </div>
+          ) : (
+            <div
+              className={`${conversationUi.scrollBody} ${styles.conversationBody}`}
+              data-conversation-scroll
+            >
+              <div className={conversationUi.viewArea}>
+                <div className={chatUi.root}>
+                  <div className={chatUi.scroll} data-chat-scroll>
+                    <div className={chatUi.column}>
+                      {history?.messages.map((message) => (
+                        <div className={chatUi.flowItem} key={message.id}>
+                          {message.role === 'user' ? (
+                            <div className={messageUi.userRow}>
+                              <div className={messageUi.userStack}>
+                                <div className={messageUi.bubble}>
+                                  {message.content.text}
+                                </div>
+                              </div>
+                              <div className={styles.messageMeta}>
+                                <span>你</span>
+                                <time>{formatTime(message.createdAt)}</time>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className={assistantUi.root}>
+                              <div className={styles.assistantIdentity}>
+                                <i aria-hidden="true" />
+                                <span>Rice</span>
+                                <time>{formatTime(message.createdAt)}</time>
+                              </div>
+                              <div
+                                className={`${assistantUi.body} ${styles.assistantCopy}`}
+                              >
+                                {message.content.text}
+                              </div>
+                              {message.status === 'failed' ? (
+                                <small className={styles.failedMessage}>
+                                  这次没有完成。
+                                </small>
+                              ) : null}
+                              {message.status === 'completed' &&
+                              message.runId ? (
+                                <div
+                                  className={`${assistantUi.actions} ${styles.feedback}`}
+                                >
+                                  <span>这个结果有帮助吗？</span>
+                                  <button
+                                    aria-pressed={
+                                      feedback[message.runId] === true
+                                    }
+                                    onClick={() =>
+                                      void sendFeedback(message, true)
+                                    }
+                                    type="button"
+                                  >
+                                    有用
+                                  </button>
+                                  <button
+                                    aria-pressed={
+                                      feedback[message.runId] === false
+                                    }
+                                    onClick={() =>
+                                      void sendFeedback(message, false)
+                                    }
+                                    type="button"
+                                  >
+                                    无用
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+
+                      {isRunning ? (
+                        <div className={chatUi.flowItem}>
+                          <div className={assistantUi.root}>
+                            <div className={styles.assistantIdentity}>
+                              <i aria-hidden="true" />
+                              <span>Rice</span>
+                              <span className={styles.runningDot} />
+                              <span>正在工作</span>
+                            </div>
+                            {visibleEvents.length ? (
+                              <details className={styles.executionGroup}>
+                                <summary>
+                                  {visibleEvents.length} 条执行动态
+                                </summary>
+                                {visibleEvents.map((event) => (
+                                  <div key={event.eventId}>
+                                    <i />
+                                    <span>{eventLabel(event)}</span>
+                                    <small>
+                                      {event.sourceEvent?.type ??
+                                        event.harness ??
+                                        ''}
+                                    </small>
+                                  </div>
+                                ))}
+                              </details>
+                            ) : null}
+                            {liveText ? (
+                              <div
+                                className={`${assistantUi.body} ${styles.assistantCopy}`}
+                              >
+                                {liveText}
+                              </div>
+                            ) : (
+                              <div className={chatUi.turnStatus}>
+                                Rice 正在理解你的需求…
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {runView?.status === 'failed' ||
+                      runView?.status === 'canceled' ? (
+                        <button
+                          className={styles.recover}
+                          onClick={() => void streamRun(runView.runId)}
+                          type="button"
+                        >
+                          重新连接并恢复执行记录
+                        </button>
+                      ) : null}
+                      <div ref={transcriptEnd} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div
+                className={`${conversationUi.composerSeat} ${styles.composerDock}`}
+              >
+                {renderComposer(false)}
+              </div>
+            </div>
+          )}
+        </div>
       </section>
 
       {filePickerOpen ? (
@@ -947,7 +1210,7 @@ export function ChatFlowClient() {
                   onClick={() => void addWorkspaceFile(file)}
                   type="button"
                 >
-                  <span>📄</span>
+                  <span aria-hidden="true">□</span>
                   <div>
                     <strong>{file.fileName}</strong>
                     <small>
