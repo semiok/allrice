@@ -32,8 +32,13 @@
    Percentages resolve against the wrapper's containing block, so a table
    indented inside a list still reaches the same transcript edges. */
 .body :global(.md-table-wide) {
-  --dsh-table-spare: max(0px, calc((100cqw - var(--dsh-chat-content-width)) / 2));
-  --dsh-table-lead: calc(var(--dsh-table-spare) + min(var(--dsh-chat-content-width), 100cqw) - 100%);
+  --dsh-table-spare: max(
+    0px,
+    calc((100cqw - var(--dsh-chat-content-width)) / 2)
+  );
+  --dsh-table-lead: calc(
+    var(--dsh-table-spare) + min(var(--dsh-chat-content-width), 100cqw) - 100%
+  );
   box-sizing: border-box;
   width: calc(100% + var(--dsh-table-lead) + var(--dsh-table-spare));
   /* The base .tableScroll caps at the column (max-width: 100%); the breakout
@@ -60,4 +65,3 @@
   /* Optical align with 28px icon hit targets that pad 6px past the glyph. */
   margin-left: -6px;
 }
-

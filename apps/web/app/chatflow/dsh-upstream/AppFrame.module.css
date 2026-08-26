@@ -11,7 +11,8 @@
   background: var(--dsw-alias-bg-base);
   /* Collapse/expand animates the tracks on the deepsuite sider curve
      (--ds-ease-in-out / --ds-transition-duration-slow, ui-theme base.css). */
-  transition: grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+  transition: grid-template-columns var(--ds-transition-duration-slow)
+    var(--ds-ease-in-out);
 }
 
 /* Dragging writes widths at pointer cadence; easing them would detach the
@@ -121,4 +122,3 @@
 .overlayLayer > * {
   pointer-events: auto;
 }
-

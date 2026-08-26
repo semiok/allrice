@@ -59,7 +59,9 @@
 }
 
 @keyframes wide-in {
-  from { opacity: 0; }
+  from {
+    opacity: 0;
+  }
 }
 
 /* At the 150ms rail settle, the four upper controls enter from the former
@@ -85,7 +87,9 @@
 }
 
 @keyframes rail-fade-in {
-  from { opacity: 0; }
+  from {
+    opacity: 0;
+  }
 }
 
 /* Logo row (figma pad (4,8,4,8)): expanded keeps the panel toggle at the
@@ -341,4 +345,3 @@
     animation: none;
   }
 }
-

@@ -294,7 +294,9 @@
   scrollbar-gutter: auto;
 }
 
-.scrollBody:has([data-conversation-composer-overlay]) > :global([data-slot='conversation.session']) > .viewArea {
+.scrollBody:has([data-conversation-composer-overlay])
+  > :global([data-slot='conversation.session'])
+  > .viewArea {
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
@@ -329,7 +331,13 @@
   padding-bottom: 32px;
   /* Card cap + both clearances: the hero input card lands at exactly the same
      width as the docked composer at every viewport. */
-  width: min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);
+  width: min(
+    calc(
+      var(--dsh-composer-card-max-width) + 2 *
+        var(--dsh-composer-side-clearance)
+    ),
+    100%
+  );
   z-index: 1;
 }
 
@@ -372,4 +380,3 @@
 .root[data-phase='settling'] .composerSeat {
   visibility: hidden;
 }
-
