@@ -272,6 +272,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let turnId: string | null = null;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
     const emit = async (event: HarnessEventPayload) => {
+      const sourceEventType =
+        event.type === 'assistant.delta'
+          ? 'assistant/chunk'
+          : event.type === 'assistant.completed'
+            ? 'assistant/message'
+            : event.type === 'usage.updated'
+              ? 'assistant/message:usage'
+              : event.source === 'tool_broker'
+                ? 'allrice/tool-broker'
+                : 'dsh/tool';
       await input.onEvent(
         HarnessEventSchema.parse({
           schemaVersion: 1,
@@ -282,6 +292,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           threadId,
           turnId,
           messageId: input.kernel.assistantMessageId,
+          sourceEventId: `dsh:${input.attempt}:${order}`,
+          sourceEventType,
+          sourceOccurredAt: new Date().toISOString(),
           ...event,
         }),
       );

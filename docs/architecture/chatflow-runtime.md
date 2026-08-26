@@ -1,7 +1,9 @@
 # AllRice ChatFlow Runtime
 
-> Status: dual-track convergence implemented under
-> [MET-79](https://linear.app/metasnowsky/issue/MET-79/allrice-chatflow-runtime多-harness-对话控制平面收敛与双轨迁移).
+> Status: V1 dual-track convergence from
+> [MET-79](https://linear.app/metasnowsky/issue/MET-79/allrice-chatflow-runtime多-harness-对话控制平面收敛与双轨迁移)
+> is being hardened as ChatFlow 2.0 under
+> [MET-85](https://linear.app/metasnowsky/issue/MET-85).
 
 **AllRice ChatFlow is the multi-Harness SaaS conversation control plane. It
 manages Session, Run, event delivery, context recovery, authorization and
@@ -47,8 +49,11 @@ tenant, employee and actor may execute it.
 Codex App Server and the DSH SDK runtime already emit native deltas. Their
 adapters normalize those events, and the Worker batches assistant deltas for up
 to 80 ms or 512 characters before persisting ordered RunEvents. The Web SSE
-route currently discovers new durable events by polling PostgreSQL every 150
-ms. Last-Event-ID and the RunEvent sequence provide replay after reconnect.
+route discovers new durable events through PostgreSQL notifications, with the
+150 ms poller retained as a fallback. Last-Event-ID and the RunEvent sequence
+provide replay after reconnect. The Web client retries an interrupted live
+stream with exponential backoff from the last committed sequence and
+deduplicates by durable Event ID.
 
 This is real Harness streaming, not a final answer split into synthetic token
 chunks. ChatFlow now commits those events to PostgreSQL and uses a transactional
@@ -60,6 +65,11 @@ for rollout policy and process-local delivery counters. Set
 `ALLRICE_CHATFLOW_REALTIME=0` for an emergency return to polling, or use
 `ALLRICE_CHATFLOW_REALTIME_ROLLOUT_JSON` for organization, workspace, employee
 revision and Harness canaries.
+
+ChatFlow 2.0 preserves the native Harness event type and occurrence timestamp
+alongside the normalized event. The SSE response advertises
+`x-allrice-chatflow-version: 2`; PostgreSQL remains authoritative even when the
+delivery path uses notifications.
 
 Stage 3 does **not** immediately delete polling. Controlled retirement remains
 behind the exit gates below. Redis Streams and NATS are represented only by the

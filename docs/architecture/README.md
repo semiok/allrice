@@ -8,6 +8,8 @@ The employee execution boundary is documented in [Harness Adapter and Employee K
 The multi-Harness SaaS conversation control plane and its no-big-bang,
 dual-track convergence plan are documented in
 [AllRice ChatFlow Runtime](chatflow-runtime.md).
+The platform-managed Provider, model and employee selection boundary is
+documented in [Platform-managed model pool](platform-model-pool.md).
 The first-class Agent Skill, Workflow and Knowledge model is documented in
 [Agent capability foundation](agent-capability-foundation.md).
 DSH version isolation is documented in

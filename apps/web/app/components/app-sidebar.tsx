@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-export type AppNavKey = 'workspace' | 'automation' | 'employees';
+export type AppNavKey = 'workspace' | 'automation' | 'employees' | 'model-pool';
 
 interface AppNavigationProps {
   active: AppNavKey | null;

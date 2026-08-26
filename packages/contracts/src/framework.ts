@@ -7,6 +7,7 @@ export const FrameworkSurfaceSchema = z.enum([
   'employees',
   'automation',
   'skillhub',
+  'model-pool',
 ]);
 export type FrameworkSurface = z.infer<typeof FrameworkSurfaceSchema>;
 

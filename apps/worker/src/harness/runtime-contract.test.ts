@@ -64,6 +64,7 @@ describe('normalizeHarnessRunEvent', () => {
     const event: HarnessEvent = {
       ...envelope('codex'),
       sourceEventId: 'codex-native-9',
+      sourceEventType: 'turn.completed',
       sourceOccurredAt: '2026-08-25T12:00:00.000Z',
       type: 'usage.updated',
       inputTokens: 120,
@@ -75,6 +76,7 @@ describe('normalizeHarnessRunEvent', () => {
       payload: expect.objectContaining({
         source: 'codex',
         sourceEventId: 'codex-native-9',
+        sourceEventType: 'turn.completed',
         sourceOccurredAt: '2026-08-25T12:00:00.000Z',
         usage: {
           inputTokens: 120,

@@ -111,7 +111,7 @@ export function codexAppServerArguments(capabilities: SkillCapability[]) {
 }
 
 export function codexRuntimeConfig(): CodexRuntimeConfig {
-  const effort = process.env.ALLRICE_CODEX_REASONING_EFFORT ?? 'high';
+  const effort = process.env.ALLRICE_CODEX_REASONING_EFFORT ?? 'xhigh';
   if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) {
     throw new Error(
       'ALLRICE_CODEX_REASONING_EFFORT must be low, medium, high, or xhigh',
@@ -315,6 +315,7 @@ export interface NormalizedCodexEvent {
   summary?: string;
   itemCount?: number;
   source?: 'codex' | 'tool_broker';
+  sourceEventType?: string;
   text?: string;
   usage?: {
     inputTokens: number;
@@ -336,6 +337,7 @@ export function normalizeCodexEvent(line: string): NormalizedCodexEvent | null {
     const usage = event.usage as Record<string, unknown>;
     return {
       kind: 'usage',
+      sourceEventType: String(event.type),
       usage: {
         inputTokens: Number(usage.input_tokens ?? 0),
         cachedInputTokens: Number(usage.cached_input_tokens ?? 0),
@@ -352,7 +354,11 @@ export function normalizeCodexEvent(line: string): NormalizedCodexEvent | null {
     return null;
   const item = event.item as Record<string, unknown>;
   if (event.type === 'item.completed' && item.type === 'agent_message') {
-    return { kind: 'message', text: String(item.text ?? '') };
+    return {
+      kind: 'message',
+      text: String(item.text ?? ''),
+      sourceEventType: String(event.type),
+    };
   }
   if (item.type === 'command_execution' || item.type === 'mcp_tool_call') {
     const status =
@@ -366,6 +372,7 @@ export function normalizeCodexEvent(line: string): NormalizedCodexEvent | null {
       toolCallId: String(item.id ?? `${item.type}-unknown`),
       status,
       source: 'codex',
+      sourceEventType: String(event.type),
     };
   }
   return null;
@@ -506,7 +513,12 @@ export async function executeCodexHarness(input: {
     });
     answer = result.answer;
     usage = result.usage;
-    await input.onEvent({ kind: 'usage', usage, source: 'codex' });
+    await input.onEvent({
+      kind: 'usage',
+      usage,
+      source: 'codex',
+      sourceEventType: 'thread/tokenUsage/updated',
+    });
   } else {
     let eventChain = Promise.resolve();
     await runCommand({
@@ -543,7 +555,12 @@ export async function executeCodexHarness(input: {
       false,
     );
   }
-  await input.onEvent({ kind: 'message', text: answer, source: 'codex' });
+  await input.onEvent({
+    kind: 'message',
+    text: answer,
+    source: 'codex',
+    sourceEventType: 'item/completed',
+  });
   return {
     answer,
     usage: usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },

@@ -276,7 +276,8 @@ function createDraft(manifest: EmployeeDefinition): Draft {
       reasoningEffort:
         manifest.provider.reasoningEffort === 'none'
           ? 'low'
-          : (manifest.provider.reasoningEffort as 'low' | 'medium' | 'high'),
+          : (manifest.provider.reasoningEffort as
+              'low' | 'medium' | 'high' | 'xhigh'),
       timeoutMs: 300_000,
       fallbackModels: [],
     },
@@ -1287,7 +1288,7 @@ export function EmployeeHubClient({
                                     harness: 'codex',
                                     provider: 'codex',
                                     model: 'gpt-5.6-luna',
-                                    reasoningEffort: 'high',
+                                    reasoningEffort: 'xhigh',
                                     credentialReference: undefined,
                                     baseUrl: undefined,
                                   },

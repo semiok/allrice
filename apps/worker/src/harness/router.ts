@@ -38,6 +38,7 @@ export class HarnessRouter {
   select(input: {
     runtimePolicy: EmployeeRuntimePolicy;
     providerSnapshot: HarnessExecutionSnapshot;
+    fallbackSnapshots?: readonly HarnessExecutionSnapshot[];
     providerHealth?: Partial<Record<HarnessKind, 'available' | 'unavailable'>>;
   }): {
     adapter: HarnessAdapter;
@@ -85,6 +86,7 @@ export class HarnessRouter {
     }, []);
     const candidates: HarnessExecutionSnapshot[] = [
       input.providerSnapshot,
+      ...(input.fallbackSnapshots ?? []),
       ...fallbacks,
     ];
     for (const [index, snapshot] of candidates.entries()) {

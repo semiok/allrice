@@ -155,7 +155,7 @@ export function codexEmployeeProvider() {
     provider: 'codex',
     authMode: 'chatgpt_subscription',
     model: process.env.ALLRICE_CODEX_MODEL ?? 'gpt-5.6-luna',
-    reasoningEffort: process.env.ALLRICE_CODEX_REASONING_EFFORT ?? 'high',
+    reasoningEffort: process.env.ALLRICE_CODEX_REASONING_EFFORT ?? 'xhigh',
     sandbox: 'workspace-write',
   });
 }

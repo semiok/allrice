@@ -18,6 +18,9 @@ export function normalizeHarnessRunEvent(
     attempt: event.attempt,
     order: event.order,
     ...(event.sourceEventId ? { sourceEventId: event.sourceEventId } : {}),
+    ...(event.sourceEventType
+      ? { sourceEventType: event.sourceEventType }
+      : {}),
     ...(event.sourceOccurredAt
       ? { sourceOccurredAt: event.sourceOccurredAt }
       : {}),

@@ -58,6 +58,17 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         threadId,
         turnId,
         messageId: input.kernel.assistantMessageId,
+        sourceEventId: `codex:${input.attempt}:${order}`,
+        sourceEventType:
+          event.sourceEventType ??
+          (event.kind === 'delta'
+            ? 'item/agentMessage/delta'
+            : event.kind === 'usage'
+              ? 'thread/tokenUsage/updated'
+              : event.kind === 'message'
+                ? 'item/completed'
+                : 'item/tool'),
+        sourceOccurredAt: new Date().toISOString(),
       };
       const normalized =
         event.kind === 'message' || event.kind === 'delta'

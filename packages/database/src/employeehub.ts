@@ -9,6 +9,7 @@ import {
   EmployeeHubAssignmentSchema,
   EmployeeManifestSchema,
   EmployeePromptSnapshotSchema,
+  EmployeeRuntimePolicySchema,
   EmployeeUserProfileSchema,
   EmployeeUserProfilePolicySchema,
   EmployeeVersionSnapshotSchema,
@@ -38,6 +39,7 @@ import {
   riceEmployeeKey,
 } from './employee-config.ts';
 import { getDatabase } from './index.ts';
+import { freezeSessionModelSnapshot } from './model-pool.ts';
 import { ensureDefaultEmployee, resolveWorkspaceId } from './workspace.ts';
 
 interface EmployeeVersionRow {
@@ -117,7 +119,7 @@ export interface EmployeeRunBinding {
   skillVersionIds: string[];
   skillBindings: FrozenSkillBinding[];
   executionSnapshot: Omit<
-    EmployeeExecutionSnapshot,
+    Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
     'tenantContext' | 'createdAt'
   >;
   promptSnapshot: {
@@ -1062,15 +1064,47 @@ export async function prepareEmployeeRunBinding(input: {
     storedUserProfile,
     userProfilePolicy,
   );
+  const modelSnapshot = await freezeSessionModelSnapshot({
+    organizationId: input.context.organizationId,
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+  });
+  const providerSnapshot = HarnessExecutionSnapshotSchema.parse(
+    modelSnapshot.harness === 'codex'
+      ? {
+          provider: 'codex',
+          authMode: 'chatgpt_subscription',
+          model: modelSnapshot.model,
+          reasoningEffort: modelSnapshot.reasoningEffort,
+          sandbox: 'workspace-write',
+        }
+      : {
+          provider: 'dsh',
+          authMode: 'allrice_credential',
+          route: modelSnapshot.provider,
+          model: modelSnapshot.model,
+          reasoningEffort: modelSnapshot.reasoningEffort,
+          credentialReference: modelSnapshot.credentialReference,
+          baseUrl: modelSnapshot.baseUrl,
+        },
+  );
+  const selectedRuntimePolicy = EmployeeRuntimePolicySchema.parse({
+    ...runtimePolicy(manifest.data),
+    harness: modelSnapshot.harness,
+    provider: modelSnapshot.provider,
+    model: modelSnapshot.model,
+    reasoningEffort: modelSnapshot.reasoningEffort,
+    credentialReference: modelSnapshot.credentialReference ?? undefined,
+    baseUrl: modelSnapshot.baseUrl,
+    fallbackModels: [],
+  });
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
     sessionId: UuidSchema.parse(input.sessionId),
     userMessageId: UuidSchema.parse(input.userMessageId),
     assistantMessageId: UuidSchema.parse(input.assistantMessageId),
-    providerSnapshot: HarnessExecutionSnapshotSchema.parse(
-      manifest.data.provider,
-    ),
+    providerSnapshot,
     skillVersionIds,
     skillBindings,
     executionSnapshot: {
@@ -1089,7 +1123,8 @@ export async function prepareEmployeeRunBinding(input: {
         assignedBy: assignment.assigned_by,
         assignedAt: assignment.assigned_at.toISOString(),
       },
-      runtimePolicy: runtimePolicy(manifest.data),
+      runtimePolicy: selectedRuntimePolicy,
+      modelSnapshot,
       capabilitySnapshot: {
         declaredCapabilities: manifest.data.capabilities,
         grantedCapabilities,

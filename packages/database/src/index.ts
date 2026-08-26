@@ -48,3 +48,4 @@ export * from './knowledge-retrieval.ts';
 export * from './connector-broker.ts';
 export * from './workflow-runtime.ts';
 export * from './chatflow-notifications.ts';
+export * from './model-pool.ts';

@@ -68,6 +68,7 @@ const HarnessEventEnvelopeSchema = z.object({
   turnId: z.string().trim().min(1).nullable(),
   messageId: UuidSchema,
   sourceEventId: z.string().trim().min(1).max(240).optional(),
+  sourceEventType: z.string().trim().min(1).max(240).optional(),
   sourceOccurredAt: z.string().datetime().optional(),
 });
 

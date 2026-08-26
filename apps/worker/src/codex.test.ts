@@ -187,6 +187,7 @@ input.on('line', (line) => {
         kind: 'message',
         text: '找到两个文件。',
         source: 'codex',
+        sourceEventType: 'item/completed',
       });
       expect(events).toContainEqual({ kind: 'delta', text: '找到' });
       expect(events).toContainEqual(
@@ -258,6 +259,7 @@ input.on('line', (line) => {
       toolCallId: 'command_execution-unknown',
       status: 'completed',
       source: 'codex',
+      sourceEventType: 'item.completed',
     });
     expect(
       normalizeCodexEvent(
@@ -273,6 +275,7 @@ input.on('line', (line) => {
       toolCallId: 'tool-1',
       status: 'started',
       source: 'codex',
+      sourceEventType: 'item.started',
     });
     expect(
       normalizeCodexEvent(
@@ -287,6 +290,7 @@ input.on('line', (line) => {
       ),
     ).toEqual({
       kind: 'usage',
+      sourceEventType: 'turn.completed',
       usage: { inputTokens: 12, cachedInputTokens: 4, outputTokens: 7 },
     });
     expect(normalizeCodexEvent('not json')).toBeNull();

@@ -438,7 +438,7 @@ export async function enqueueRun(
       skillBindings: unknown[];
       promptSnapshot: Record<string, unknown>;
       executionSnapshot: Omit<
-        EmployeeExecutionSnapshot,
+        Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
         'tenantContext' | 'createdAt'
       >;
     };

@@ -14,6 +14,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 
 - [System architecture](architecture/README.md)
 - [AllRice ChatFlow Runtime](architecture/chatflow-runtime.md)
+- [Platform-managed model pool](architecture/platform-model-pool.md)
 - [V1 core contracts](architecture/v1-core-contracts.md)
 - [V1 contract test matrix](architecture/v1-contract-test-matrix.md)
 - [Development workflow](development/README.md)

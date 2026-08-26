@@ -21,6 +21,9 @@ interface RouteDecisionRow {
   harness: RouteDecision['harness'];
   provider: string;
   model: string;
+  model_connection_id: string | null;
+  model_catalog_entry_id: string | null;
+  model_policy_revision: number | null;
   generation: number;
   attempt: number;
   reason_codes: unknown;
@@ -43,6 +46,9 @@ function mapDecision(row: RouteDecisionRow) {
     harness: row.harness,
     provider: row.provider,
     model: row.model,
+    modelConnectionId: row.model_connection_id,
+    modelCatalogEntryId: row.model_catalog_entry_id,
+    modelPolicyRevision: row.model_policy_revision,
     generation: row.generation,
     attempt: row.attempt,
     reasonCodes: row.reason_codes,
@@ -58,13 +64,17 @@ export async function recordRouteDecision(input: RouteDecision) {
       insert into allrice_route_decisions (
         id, organization_id, workspace_id, actor_id, employee_id, run_id,
         input_checksum, candidates, selected_kind, selected_candidate_id,
-        harness, provider, model, generation, attempt, reason_codes, created_at
+        harness, provider, model, model_connection_id,
+        model_catalog_entry_id, model_policy_revision,
+        generation, attempt, reason_codes, created_at
       ) values (
         ${decision.id}, ${decision.organizationId}, ${decision.workspaceId},
         ${decision.actorId}, ${decision.employeeId}, ${decision.runId},
         ${decision.inputChecksum}, ${transaction.json(decision.candidates)},
         ${decision.selectedKind}, ${decision.selectedCandidateId},
         ${decision.harness}, ${decision.provider}, ${decision.model},
+        ${decision.modelConnectionId}, ${decision.modelCatalogEntryId},
+        ${decision.modelPolicyRevision},
         ${decision.generation}, ${decision.attempt},
         ${transaction.json(decision.reasonCodes)},
         ${new Date(decision.createdAt)}
@@ -74,7 +84,9 @@ export async function recordRouteDecision(input: RouteDecision) {
     const rows = await transaction<RouteDecisionRow[]>`
       select id, organization_id, workspace_id, actor_id, employee_id, run_id,
         input_checksum, candidates, selected_kind, selected_candidate_id,
-        harness, provider, model, generation, attempt, reason_codes, created_at
+        harness, provider, model, model_connection_id,
+        model_catalog_entry_id, model_policy_revision,
+        generation, attempt, reason_codes, created_at
       from allrice_route_decisions
       where run_id = ${decision.runId} and attempt = ${decision.attempt}
         and organization_id = ${decision.organizationId}
@@ -137,7 +149,9 @@ export async function getRouteDecisionForRun(input: {
   const rows = await sql<RouteDecisionRow[]>`
     select id, organization_id, workspace_id, actor_id, employee_id, run_id,
       input_checksum, candidates, selected_kind, selected_candidate_id,
-      harness, provider, model, generation, attempt, reason_codes, created_at
+      harness, provider, model, model_connection_id,
+      model_catalog_entry_id, model_policy_revision,
+      generation, attempt, reason_codes, created_at
     from allrice_route_decisions
     where run_id = ${input.runId} and attempt = ${input.attempt}
       and organization_id = ${input.organizationId}

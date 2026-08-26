@@ -5,6 +5,7 @@ import {
   RouteDecisionSchema,
   type HarnessEvent,
   type HarnessExecutionSnapshot,
+  type ResolvedModelTarget,
   type RouteDecision,
 } from '@allrice/contracts';
 
@@ -63,11 +64,44 @@ function providerName(snapshot: HarnessExecutionSnapshot) {
   return snapshot.provider === 'codex' ? 'codex' : snapshot.route;
 }
 
+function providerSnapshotForModelTarget(
+  target: ResolvedModelTarget,
+): HarnessExecutionSnapshot {
+  return target.harness === 'codex'
+    ? {
+        provider: 'codex',
+        authMode: 'chatgpt_subscription',
+        model: target.model,
+        reasoningEffort:
+          target.reasoningEffort === 'none' ? 'low' : target.reasoningEffort,
+        sandbox: 'workspace-write',
+      }
+    : {
+        provider: 'dsh',
+        authMode: 'allrice_credential',
+        route:
+          target.provider === 'deepseek-official'
+            ? 'deepseek-official'
+            : 'openai-compatible',
+        model: target.model,
+        reasoningEffort: target.reasoningEffort,
+        credentialReference: target.credentialReference!,
+        baseUrl: target.baseUrl,
+      };
+}
+
 function replayProviderSnapshot(input: {
   decision: RouteDecision;
   original: HarnessExecutionSnapshot;
+  fallbacks?: readonly HarnessExecutionSnapshot[];
   reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 }): HarnessExecutionSnapshot {
+  const frozen = [input.original, ...(input.fallbacks ?? [])].find(
+    (snapshot) =>
+      (snapshot.provider === 'codex' ? 'codex' : 'dsh') ===
+        input.decision.harness && snapshot.model === input.decision.model,
+  );
+  if (frozen) return frozen;
   if (input.decision.harness === 'codex') {
     return {
       provider: 'codex',
@@ -281,9 +315,16 @@ async function executeHandler(
         }),
       });
       const codexStatus = await getCodexProviderStatus();
+      const fallbackSnapshots =
+        executionSnapshot.schemaVersion === 2
+          ? (executionSnapshot.modelSnapshot?.resolvedFallbacks.map(
+              providerSnapshotForModelTarget,
+            ) ?? [])
+          : [];
       const selectedHarness = getHarnessRouter().select({
         runtimePolicy: executionSnapshot.runtimePolicy,
         providerSnapshot: resolved.providerSnapshot,
+        fallbackSnapshots,
         providerHealth: {
           codex: ['disconnected', 'error'].includes(codexStatus.status)
             ? 'unavailable'
@@ -291,6 +332,15 @@ async function executeHandler(
           dsh: 'available',
         },
       });
+      const frozenModelSnapshot =
+        executionSnapshot.schemaVersion === 2
+          ? executionSnapshot.modelSnapshot
+          : undefined;
+      const selectedFallback = frozenModelSnapshot?.resolvedFallbacks.find(
+        (target) =>
+          target.harness === selectedHarness.adapter.kind &&
+          target.model === selectedHarness.providerSnapshot.model,
+      );
       const proposedDecision = RouteDecisionSchema.parse({
         schemaVersion: 1,
         id: randomUUID(),
@@ -308,6 +358,15 @@ async function executeHandler(
         harness: selectedHarness.adapter.kind,
         provider: providerName(selectedHarness.providerSnapshot),
         model: selectedHarness.providerSnapshot.model,
+        modelConnectionId:
+          selectedFallback?.connectionId ??
+          frozenModelSnapshot?.connectionId ??
+          null,
+        modelCatalogEntryId:
+          selectedFallback?.modelCatalogEntryId ??
+          frozenModelSnapshot?.modelCatalogEntryId ??
+          null,
+        modelPolicyRevision: frozenModelSnapshot?.policyRevision ?? null,
         generation: runtime.generation,
         attempt: execution.job.attempt,
         reasonCodes: [
@@ -350,6 +409,7 @@ async function executeHandler(
       const providerSnapshot = replayProviderSnapshot({
         decision: routeDecision,
         original: resolved.providerSnapshot,
+        fallbacks: fallbackSnapshots,
         reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
       });
       const adapter = getHarnessRouter().resolve(routeDecision.harness);

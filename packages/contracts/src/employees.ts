@@ -6,6 +6,7 @@ import {
   FrozenWorkflowBindingSchema,
 } from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { SessionModelSnapshotSchema } from './models.ts';
 import {
   CodexExecutionSnapshotSchema,
   DshExecutionSnapshotSchema,
@@ -396,6 +397,7 @@ export const EmployeeExecutionSnapshotV1Schema = z
 export const EmployeeExecutionSnapshotV2Schema =
   EmployeeExecutionSnapshotV1Schema.extend({
     schemaVersion: z.literal(2),
+    modelSnapshot: SessionModelSnapshotSchema.optional(),
     capabilitySnapshot: z
       .object({
         declaredCapabilities: z.array(SkillCapabilitySchema).max(16),

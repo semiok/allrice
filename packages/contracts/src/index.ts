@@ -37,6 +37,7 @@ export * from './queue.ts';
 export * from './runs.ts';
 export * from './routing.ts';
 export * from './knowledge.ts';
+export * from './models.ts';
 export * from './secrets.ts';
 export * from './skills.ts';
 export * from './sse.ts';

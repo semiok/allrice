@@ -20,7 +20,7 @@ describe('Rice employee manifest', () => {
     expect(manifest.provider).toMatchObject({
       provider: 'codex',
       authMode: 'chatgpt_subscription',
-      reasoningEffort: 'high',
+      reasoningEffort: 'xhigh',
     });
     expect(manifest.skillVersionIds).toEqual([first, second].sort());
     if (manifest.schemaVersion === 2) {

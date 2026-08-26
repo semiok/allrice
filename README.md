@@ -22,6 +22,11 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
 - an administrator-facing SkillHub with audited immutable artifacts, workspace grants and direct Rice binding;
 - one ordinary-user entry, **与 Rice 工作**, backed by a persistent Codex conversation thread and tenant-scoped tools.
+- a platform-managed model pool with per-employee selection and immutable
+  Session routing snapshots; the default is **GPT-5.6 Luna · 极高** through
+  Codex Harness.
+- a role-aware Web UI 2.0 shell: members, tenant administrators and platform
+  administrators use one application but receive different authorized controls.
 
 The Worker executes the isolated `allrice.system.echo`, version-pinned
 `allrice.skill.run` and Rice `allrice.employee.run` handlers. Chat persists a
@@ -45,6 +50,8 @@ authorization and Harness routing while Codex, DSH and future Harnesses retain
 their native agent loops and streaming execution. Its convergence is explicitly
 dual-track rather than a big-bang replacement; see the
 [ChatFlow Runtime architecture](docs/architecture/chatflow-runtime.md).
+Provider connections and employee model selection are defined in the
+[platform model pool architecture](docs/architecture/platform-model-pool.md).
 
 ```text
 Browser

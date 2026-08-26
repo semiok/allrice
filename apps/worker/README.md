@@ -39,7 +39,7 @@ harness over the same execution boundary.
 | `ALLRICE_CODEX_COMMAND`           | `codex`               | Pinned Codex CLI executable                   |
 | `ALLRICE_CODEX_AUTH_HOME`         | current `~/.codex`    | Deployment credential directory               |
 | `ALLRICE_CODEX_MODEL`             | `gpt-5.6-luna`        | Model frozen into new Skill/Employee runs     |
-| `ALLRICE_CODEX_REASONING_EFFORT`  | `high`                | Reasoning frozen into new Skill/Employee runs |
+| `ALLRICE_CODEX_REASONING_EFFORT`  | `xhigh`               | Reasoning frozen into new Skill/Employee runs |
 
 `ALLRICE_WORKER_HEARTBEAT_MS` must be lower than the lease. Production
 deployments should provide a stable, unique UUID per Worker replica.

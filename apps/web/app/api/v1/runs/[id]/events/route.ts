@@ -190,6 +190,8 @@ export async function GET(
         connection: 'keep-alive',
         'content-type': 'text/event-stream; charset=utf-8',
         'x-accel-buffering': 'no',
+        'x-allrice-chatflow-version': '2',
+        'x-allrice-chatflow-event-contract': 'run-event-v1',
         'x-allrice-chatflow-transport': preferNotify
           ? 'postgres-notify'
           : 'polling',
