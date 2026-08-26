@@ -5,7 +5,8 @@
 AllRice V1 provides an employee-facing AI workspace for a small, fixed enterprise user base. It favors a modular monolith and operational clarity over microservice scale.
 
 The employee execution boundary is documented in [Harness Adapter and Employee Kernel](harness-adapter.md).
-The multi-Harness SaaS conversation control plane and its no-big-bang,
+The Provider-neutral SaaS conversation control plane above the single DSH
+Harness, and its no-big-bang,
 dual-track convergence plan are documented in
 [AllRice ChatFlow Runtime](chatflow-runtime.md).
 The platform-managed Provider, model and employee selection boundary is
@@ -23,13 +24,13 @@ product migration switch is documented in
 Browser
   -> reverse proxy
   -> Web process
-       -> ChatFlow Runtime (Session / Run / Event / recovery / Harness routing)
+       -> ChatFlow Runtime (Session / Run / Event / recovery / Provider routing)
        -> PostgreSQL + pgvector
        -> object storage abstraction
        -> persistent Job / Run records
             -> Worker process
                  -> Scheduler module
-                 -> AI runtime
+                 -> DSH Harness / Provider router
                  -> Skill runtime
                  -> Memory
                  -> Artifact

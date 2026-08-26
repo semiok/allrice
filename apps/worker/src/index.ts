@@ -10,11 +10,15 @@ import {
   maintainQueue,
   pingDatabase,
   queueSummary,
+  recoverCodexAuthorizationFlows,
   recordCodexProviderStatus,
   syncAutomationRuns,
 } from '@allrice/database';
 
-import { closeCodexAppServerClients, probeCodexProvider } from './codex.js';
+import {
+  CodexAuthorizationBroker,
+  probeDshCodexProvider,
+} from './codex-auth-broker.js';
 import { executeClaimedJob } from './runtime.js';
 import { closeHarnessAdapters } from './harness/router.js';
 
@@ -57,6 +61,10 @@ const workerId = UuidSchema.parse(
   process.env.ALLRICE_WORKER_ID ?? randomUUID(),
 );
 const executionRoot = process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions';
+const codexAuthorizationBroker = new CodexAuthorizationBroker(
+  workerId,
+  executionRoot,
+);
 
 let databaseReady = false;
 let lastDatabaseError: string | undefined;
@@ -82,7 +90,7 @@ async function refreshReadiness() {
 async function refreshCodexProviderStatus() {
   try {
     await mkdir(executionRoot, { recursive: true, mode: 0o700 });
-    const codex = await probeCodexProvider(executionRoot);
+    const codex = await probeDshCodexProvider(executionRoot);
     await recordCodexProviderStatus(codex);
   } catch (error) {
     console.error('[M5] Codex provider probe failed', {
@@ -188,6 +196,7 @@ async function automationTick() {
 }
 
 await refreshReadiness();
+await recoverCodexAuthorizationFlows();
 await refreshCodexProviderStatus();
 const readinessTimer = setInterval(
   () => void refreshReadiness(),
@@ -202,8 +211,13 @@ const automationTimer = setInterval(
   () => void automationTick(),
   pollIntervalMs,
 );
+const codexAuthorizationTimer = setInterval(
+  () => codexAuthorizationBroker.tick(),
+  pollIntervalMs,
+);
 void tick();
 void automationTick();
+codexAuthorizationBroker.tick();
 
 server.listen(port, '0.0.0.0', () => {
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
@@ -220,11 +234,12 @@ async function shutdown(signal: string) {
   clearInterval(codexProviderStatusTimer);
   clearInterval(queueTimer);
   clearInterval(automationTimer);
+  clearInterval(codexAuthorizationTimer);
   for (const abort of activeAborters) abort();
   server.close();
   await Promise.allSettled(activeExecutions);
+  await codexAuthorizationBroker.close();
   await closeHarnessAdapters();
-  await closeCodexAppServerClients();
   await closeDatabase();
   process.exit(0);
 }

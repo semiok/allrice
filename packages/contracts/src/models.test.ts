@@ -30,6 +30,14 @@ describe('platform model pool contracts', () => {
       updatedAt: now,
     });
     expect(policy.reasoningEffort).toBe('xhigh');
+    expect(policy.runLimits).toEqual({
+      timeoutMs: 300_000,
+      maxInputTokens: 120_000,
+      maxOutputTokens: 16_000,
+      maxTotalTokens: 136_000,
+      maxCostCents: null,
+    });
+    expect(policy.fallbackOn).toContain('provider_unavailable');
     expect(
       SessionModelSnapshotSchema.parse({
         schemaVersion: 1,
@@ -106,5 +114,31 @@ describe('platform model pool contracts', () => {
         updatedAt: new Date().toISOString(),
       }),
     ).toThrow();
+  });
+
+  it('rejects a total token budget below an individual boundary', () => {
+    expect(() =>
+      EmployeeModelPolicySchema.parse({
+        schemaVersion: 1,
+        employeeId: randomUUID(),
+        organizationId: randomUUID(),
+        workspaceId: randomUUID(),
+        connectionId: randomUUID(),
+        modelCatalogEntryId: randomUUID(),
+        reasoningEffort: 'high',
+        fallbackPolicy: 'disabled',
+        fallbackTargets: [],
+        runLimits: {
+          timeoutMs: 60_000,
+          maxInputTokens: 20_000,
+          maxOutputTokens: 4_000,
+          maxTotalTokens: 10_000,
+          maxCostCents: 25,
+        },
+        revision: 1,
+        updatedBy: randomUUID(),
+        updatedAt: new Date().toISOString(),
+      }),
+    ).toThrow(/total token limit/);
   });
 });

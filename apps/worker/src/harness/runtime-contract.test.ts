@@ -15,6 +15,7 @@ function envelope(harness: 'codex' | 'dsh') {
     order: 7,
     threadId: `${harness}-thread`,
     turnId: `${harness}-turn`,
+    sessionId: randomUUID(),
     messageId: randomUUID(),
   };
 }

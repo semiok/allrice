@@ -14,6 +14,7 @@ export function normalizeHarnessRunEvent(
     generation: event.generation,
     threadId: event.threadId,
     turnId: event.turnId,
+    conversationId: event.sessionId,
     messageId: event.messageId,
     attempt: event.attempt,
     order: event.order,
@@ -24,6 +25,7 @@ export function normalizeHarnessRunEvent(
     ...(event.sourceOccurredAt
       ? { sourceOccurredAt: event.sourceOccurredAt }
       : {}),
+    ...(event.sourcePayload ? { nativePayload: event.sourcePayload } : {}),
   };
   if (event.type === 'assistant.completed') {
     return {

@@ -297,7 +297,10 @@ try {
   if (
     expectedMigrations.includes('0009_durable_conversation_runtime.sql') &&
     (conversationRuntimeRows[0]?.version !== '0009' ||
-      conversationRuntimeRows[0]?.provider !== 'codex-app-server' ||
+      conversationRuntimeRows[0]?.provider !==
+        (expectedMigrations.includes('0039_finalize_single_dsh_runtime.sql')
+          ? 'dsh-sdk'
+          : 'codex-app-server') ||
       conversationRuntimeRows[0]?.thread_source !== 'persistent')
   ) {
     throw new Error(

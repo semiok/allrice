@@ -67,6 +67,31 @@ lines.on('line', (line) => {
     setImmediate(() => process.exit(0));
     return;
   }
+  if (frame.method === 'session/interrupt') {
+    respond(frame.id, { interrupted: true });
+    notify('session.status', {
+      sessionId: frame.params.sessionId,
+      status: 'idle',
+    });
+    return;
+  }
+  if (frame.method === 'session/compact') {
+    respond(frame.id, { compacted: true, compactionId: `compact-${seq++}` });
+    return;
+  }
+  if (frame.method === 'session/recover') {
+    respond(frame.id, { recovered: true, sequence: seq });
+    return;
+  }
+  if (frame.method === 'session/steer') {
+    respond(frame.id, { messageId: `steer-${seq++}` });
+    return;
+  }
+  if (frame.method === 'session/close') {
+    turns.delete(frame.params.sessionId);
+    respond(frame.id, { closed: true });
+    return;
+  }
   if (frame.method !== 'session/prompt') return;
   const { sessionId, contentBlocks } = frame.params;
   const prompt = contentBlocks.map((block) => block.text ?? '').join('');

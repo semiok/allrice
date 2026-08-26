@@ -113,6 +113,45 @@ export const ModelFallbackTargetSchema = z
   .strict();
 export type ModelFallbackTarget = z.infer<typeof ModelFallbackTargetSchema>;
 
+export const ModelFallbackConditionSchema = z.enum([
+  'provider_unavailable',
+  'rate_limited',
+  'timeout',
+  'transient_error',
+]);
+export type ModelFallbackCondition = z.infer<
+  typeof ModelFallbackConditionSchema
+>;
+
+export const ModelRunLimitsSchema = z
+  .object({
+    timeoutMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
+    maxInputTokens: z.number().int().min(1_000).max(2_000_000).default(120_000),
+    maxOutputTokens: z.number().int().min(1).max(200_000).default(16_000),
+    maxTotalTokens: z.number().int().min(1_000).max(2_000_000).default(136_000),
+    maxCostCents: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(1_000_000)
+      .nullable()
+      .default(null),
+  })
+  .strict()
+  .superRefine((limits, context) => {
+    if (
+      limits.maxTotalTokens < limits.maxInputTokens ||
+      limits.maxTotalTokens < limits.maxOutputTokens
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['maxTotalTokens'],
+        message: 'total token limit must cover both individual token limits',
+      });
+    }
+  });
+export type ModelRunLimits = z.infer<typeof ModelRunLimitsSchema>;
+
 export const ResolvedModelTargetSchema = z
   .object({
     connectionId: UuidSchema,
@@ -139,6 +178,22 @@ export const EmployeeModelPolicySchema = z
     reasoningEffort: ModelReasoningEffortSchema,
     fallbackPolicy: z.enum(['disabled', 'explicit']),
     fallbackTargets: z.array(ModelFallbackTargetSchema).max(8),
+    fallbackOn: z
+      .array(ModelFallbackConditionSchema)
+      .max(4)
+      .default([
+        'provider_unavailable',
+        'rate_limited',
+        'timeout',
+        'transient_error',
+      ]),
+    runLimits: ModelRunLimitsSchema.default({
+      timeoutMs: 300_000,
+      maxInputTokens: 120_000,
+      maxOutputTokens: 16_000,
+      maxTotalTokens: 136_000,
+      maxCostCents: null,
+    }),
     revision: z.number().int().positive(),
     updatedBy: UuidSchema,
     updatedAt: TimestampSchema,
@@ -185,6 +240,22 @@ export const SessionModelSnapshotSchema = z
     baseUrl: z.string().url().max(2_000).nullable(),
     fallbackPolicy: z.enum(['disabled', 'explicit']),
     fallbackTargets: z.array(ModelFallbackTargetSchema).max(8),
+    fallbackOn: z
+      .array(ModelFallbackConditionSchema)
+      .max(4)
+      .default([
+        'provider_unavailable',
+        'rate_limited',
+        'timeout',
+        'transient_error',
+      ]),
+    runLimits: ModelRunLimitsSchema.default({
+      timeoutMs: 300_000,
+      maxInputTokens: 120_000,
+      maxOutputTokens: 16_000,
+      maxTotalTokens: 136_000,
+      maxCostCents: null,
+    }),
     resolvedFallbacks: z.array(ResolvedModelTargetSchema).max(8).default([]),
     frozenAt: TimestampSchema,
   })
@@ -198,6 +269,22 @@ export const UpsertEmployeeModelPolicyInputSchema = z
     reasoningEffort: ModelReasoningEffortSchema,
     fallbackPolicy: z.enum(['disabled', 'explicit']).default('disabled'),
     fallbackTargets: z.array(ModelFallbackTargetSchema).max(8).default([]),
+    fallbackOn: z
+      .array(ModelFallbackConditionSchema)
+      .max(4)
+      .default([
+        'provider_unavailable',
+        'rate_limited',
+        'timeout',
+        'transient_error',
+      ]),
+    runLimits: ModelRunLimitsSchema.default({
+      timeoutMs: 300_000,
+      maxInputTokens: 120_000,
+      maxOutputTokens: 16_000,
+      maxTotalTokens: 136_000,
+      maxCostCents: null,
+    }),
   })
   .strict();
 export type UpsertEmployeeModelPolicyInput = z.infer<
@@ -219,4 +306,25 @@ export const UpsertModelConnectionInputSchema = z
   .strict();
 export type UpsertModelConnectionInput = z.infer<
   typeof UpsertModelConnectionInputSchema
+>;
+
+export const UpdateModelConnectionInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    credentialReference: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .nullable()
+      .optional(),
+    baseUrl: z.string().url().max(2_000).nullable().optional(),
+    status: z.enum(['ready', 'degraded', 'disabled']).optional(),
+    stability: z.enum(['production', 'experimental']).optional(),
+    priority: z.number().int().min(0).max(10_000).optional(),
+  })
+  .strict()
+  .refine((input) => Object.keys(input).length > 0, 'an update is required');
+export type UpdateModelConnectionInput = z.infer<
+  typeof UpdateModelConnectionInputSchema
 >;

@@ -1,0 +1,971 @@
+'use client';
+
+import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import type {
+  ChatFlowEventEnvelope,
+  SaasCapabilityManifest,
+} from '@allrice/contracts';
+
+import styles from './chatflow.module.css';
+
+type Visibility = 'private' | 'workspace' | 'organization';
+
+interface Session {
+  id: string;
+  title: string;
+  employeeAssignmentId: string;
+  employeeVersionId: string;
+  visibility: Visibility;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+interface EmployeeVersion {
+  id: string;
+  manifest: {
+    name: string;
+    description?: string;
+    runtimePolicy?: {
+      harness: 'codex' | 'dsh';
+      provider?: string;
+      model?: string;
+    };
+    provider?: { provider: string };
+  };
+}
+
+interface Employee {
+  id: string;
+  employeeId: string;
+  isDefault: boolean;
+  currentVersion: EmployeeVersion;
+  versions: EmployeeVersion[];
+}
+
+interface Workspace {
+  organizationId: string;
+  workspaceId: string;
+  employees: Employee[];
+  sessions: Session[];
+  sessionModels: Array<{
+    sessionId: string;
+    harness: 'dsh';
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+  }>;
+  canAdminister: boolean;
+}
+
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: { text: string };
+  status: 'pending' | 'completed' | 'failed';
+  runId: string | null;
+  createdAt: string;
+}
+
+interface History {
+  session: Session;
+  messages: Message[];
+  contextStatus: {
+    percentage: number;
+    pressureTokens: number;
+    thresholdTokens: number;
+    compactionDue: boolean;
+  };
+}
+
+interface Attachment {
+  id: string;
+  fileName: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+interface WorkspaceFile extends Attachment {
+  visibility: Visibility;
+  ownedByMe: boolean;
+}
+
+interface RunView {
+  runId: string;
+  status: 'connecting' | 'running' | 'completed' | 'failed' | 'canceled';
+  cursor: string | null;
+  reconnects: number;
+  events: ChatFlowEventEnvelope[];
+}
+
+async function readJson<T>(response: Response): Promise<T> {
+  if (response.status === 401) {
+    window.location.assign('/login?next=/chatflow');
+    throw new Error('登录状态已失效');
+  }
+  const body = (await response.json().catch(() => null)) as
+    T | { error?: { message?: string } } | null;
+  if (!response.ok) {
+    throw new Error(
+      (body as { error?: { message?: string } } | null)?.error?.message ??
+        `请求失败（${response.status}）`,
+    );
+  }
+  return body as T;
+}
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+async function fileToBase64(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
+}
+
+function employeeForSession(workspace: Workspace, session: Session) {
+  return workspace.employees.find(
+    (employee) =>
+      employee.id === session.employeeAssignmentId ||
+      employee.versions.some(
+        (version) => version.id === session.employeeVersionId,
+      ),
+  );
+}
+
+function providerForEmployee(employee?: Employee) {
+  const manifest = employee?.currentVersion.manifest;
+  const provider = manifest?.runtimePolicy?.provider;
+  if (provider === 'openai-codex' || provider === 'codex') {
+    return 'Codex 订阅 · DSH';
+  }
+  if (provider === 'deepseek-official') return 'DeepSeek · DSH';
+  if (provider === 'openai-compatible') return 'API 模型 · DSH';
+  return 'DSH';
+}
+
+function providerForSession(workspace: Workspace, session?: Session) {
+  const frozen = workspace.sessionModels.find(
+    (snapshot) => snapshot.sessionId === session?.id,
+  );
+  if (!frozen) {
+    return providerForEmployee(
+      session ? employeeForSession(workspace, session) : undefined,
+    );
+  }
+  if (frozen.provider === 'openai-codex') return 'Codex 订阅 · DSH';
+  if (frozen.provider === 'deepseek-official') return 'DeepSeek · DSH';
+  if (/minimax/i.test(frozen.model)) return 'MiniMax · DSH';
+  return `${frozen.model} · DSH`;
+}
+
+function visibleEvent(event: ChatFlowEventEnvelope) {
+  return (
+    event.type.startsWith('tool.') ||
+    event.type.startsWith('context.') ||
+    event.type.startsWith('turn.') ||
+    event.type === 'run.retrying' ||
+    event.type === 'run.failed' ||
+    event.type === 'run.canceled'
+  );
+}
+
+function eventLabel(event: ChatFlowEventEnvelope) {
+  const name = String(event.payload.name ?? event.payload.label ?? '');
+  const labels: Record<string, string> = {
+    'turn.started': 'Rice 已开始处理',
+    'turn.completed': '本轮处理完成',
+    'turn.failed': '本轮处理失败',
+    'turn.canceled': '本轮已停止',
+    'tool.started': name ? `正在使用 ${name}` : '正在调用工具',
+    'tool.completed': name ? `${name} 已完成` : '工具调用完成',
+    'tool.failed': name ? `${name} 调用失败` : '工具调用失败',
+    'context.compaction.started': '正在整理会话上下文',
+    'context.compaction.completed': '会话上下文已整理',
+    'context.compaction.failed': '会话上下文整理失败',
+    'run.retrying': '连接暂时中断，正在恢复',
+    'run.failed': '本次工作未完成',
+    'run.canceled': '本次工作已停止',
+  };
+  return labels[event.type] ?? event.type;
+}
+
+function assistantDelta(events: ChatFlowEventEnvelope[]) {
+  return events
+    .filter((event) => event.type === 'assistant.text.delta')
+    .map((event) => String(event.payload.text ?? ''))
+    .join('');
+}
+
+export function ChatFlowClient() {
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [history, setHistory] = useState<History | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [runView, setRunView] = useState<RunView | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, boolean>>({});
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
+    [],
+  );
+  const [uploadVisibility, setUploadVisibility] =
+    useState<Visibility>('private');
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const [filePickerOpen, setFilePickerOpen] = useState(false);
+  const activeStream = useRef<AbortController | null>(null);
+  const transcriptEnd = useRef<HTMLDivElement | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  const tenantHeaders = useMemo<Record<string, string>>(
+    () =>
+      workspace
+        ? {
+            'x-allrice-organization-id': workspace.organizationId,
+            'x-allrice-workspace-id': workspace.workspaceId,
+          }
+        : ({} as Record<string, string>),
+    [workspace],
+  );
+
+  const loadWorkspace = useCallback(async () => {
+    const [workspaceResult, capabilityResult] = await Promise.all([
+      readJson<{ workspace: Workspace }>(
+        await fetch('/api/v1/workspace', { cache: 'no-store' }),
+      ),
+      readJson<{ capabilities: SaasCapabilityManifest }>(
+        await fetch('/api/v1/saas/capabilities', { cache: 'no-store' }),
+      ),
+    ]);
+    setWorkspace(workspaceResult.workspace);
+    setManifest(capabilityResult.capabilities);
+    setActiveId((current) => {
+      if (
+        current &&
+        workspaceResult.workspace.sessions.some(
+          (session) => session.id === current && !session.archivedAt,
+        )
+      ) {
+        return current;
+      }
+      return (
+        workspaceResult.workspace.sessions.find(
+          (session) => !session.archivedAt,
+        )?.id ?? null
+      );
+    });
+  }, []);
+
+  const loadHistory = useCallback(
+    async (sessionId: string) => {
+      if (!workspace) return;
+      const result = await readJson<{ history: History }>(
+        await fetch(
+          `/api/v1/sessions/${sessionId}?workspaceId=${workspace.workspaceId}`,
+          { cache: 'no-store', headers: tenantHeaders },
+        ),
+      );
+      setHistory(result.history);
+    },
+    [tenantHeaders, workspace],
+  );
+
+  const streamRun = useCallback(
+    async (runId: string) => {
+      if (!workspace) return;
+      activeStream.current?.abort();
+      const controller = new AbortController();
+      activeStream.current = controller;
+      let cursor: string | null = null;
+      let reconnects = 0;
+      let terminal = false;
+      let accumulated: ChatFlowEventEnvelope[] = [];
+      setRunView({
+        runId,
+        status: 'connecting',
+        cursor: null,
+        reconnects: 0,
+        events: [],
+      });
+      while (!terminal && reconnects <= 6 && !controller.signal.aborted) {
+        try {
+          const headers: Record<string, string> = { ...tenantHeaders };
+          if (cursor) headers['last-event-id'] = cursor;
+          const response = await fetch(
+            `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}&contract=chatflow-v2`,
+            { cache: 'no-store', headers, signal: controller.signal },
+          );
+          if (!response.ok || !response.body) await readJson(response);
+          const reader = response.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          setRunView((current) =>
+            current ? { ...current, status: 'running' } : current,
+          );
+          while (!controller.signal.aborted) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() ?? '';
+            for (const block of blocks) {
+              const data = block
+                .split('\n')
+                .filter((line) => line.startsWith('data: '))
+                .map((line) => line.slice(6))
+                .join('\n');
+              if (!data) continue;
+              const event = JSON.parse(data) as ChatFlowEventEnvelope;
+              cursor = event.cursor;
+              if (!accumulated.some((item) => item.eventId === event.eventId)) {
+                accumulated = [...accumulated, event];
+              }
+              terminal = [
+                'run.succeeded',
+                'run.failed',
+                'run.canceled',
+                'run.needs_attention',
+              ].includes(event.type);
+              setRunView({
+                runId,
+                status:
+                  event.type === 'run.failed'
+                    ? 'failed'
+                    : event.type === 'run.canceled'
+                      ? 'canceled'
+                      : terminal
+                        ? 'completed'
+                        : 'running',
+                cursor,
+                reconnects,
+                events: accumulated,
+              });
+            }
+          }
+          if (!terminal) {
+            reconnects += 1;
+            setRunView((current) =>
+              current ? { ...current, reconnects } : current,
+            );
+          }
+        } catch (cause) {
+          if (controller.signal.aborted) break;
+          reconnects += 1;
+          setRunView((current) =>
+            current
+              ? { ...current, status: 'connecting', reconnects }
+              : current,
+          );
+          if (reconnects > 6) {
+            setError(
+              cause instanceof Error
+                ? `实时连接恢复失败：${cause.message}`
+                : '实时连接恢复失败',
+            );
+            break;
+          }
+        }
+        if (!terminal && reconnects <= 6) {
+          await new Promise((resolve) =>
+            window.setTimeout(resolve, Math.min(300 * 2 ** reconnects, 3_000)),
+          );
+        }
+      }
+      if (activeId) await loadHistory(activeId).catch(() => undefined);
+      await loadWorkspace().catch(() => undefined);
+    },
+    [activeId, loadHistory, loadWorkspace, tenantHeaders, workspace],
+  );
+
+  useEffect(() => {
+    loadWorkspace().catch((cause) =>
+      setError(cause instanceof Error ? cause.message : '工作区加载失败'),
+    );
+  }, [loadWorkspace]);
+
+  useEffect(() => {
+    if (!activeId) {
+      setHistory(null);
+      return;
+    }
+    setRunView(null);
+    loadHistory(activeId).catch((cause) =>
+      setError(cause instanceof Error ? cause.message : '会话加载失败'),
+    );
+  }, [activeId, loadHistory]);
+
+  useEffect(() => {
+    const pending = [...(history?.messages ?? [])]
+      .reverse()
+      .find((message) => message.status === 'pending' && message.runId);
+    if (pending?.runId && runView?.runId !== pending.runId) {
+      void streamRun(pending.runId);
+    }
+  }, [history, runView?.runId, streamRun]);
+
+  useEffect(() => {
+    transcriptEnd.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [history, runView]);
+
+  useEffect(
+    () => () => {
+      activeStream.current?.abort();
+    },
+    [],
+  );
+
+  async function createSession() {
+    if (!workspace) return null;
+    const employee =
+      workspace.employees.find((item) => item.isDefault) ??
+      workspace.employees[0];
+    if (!employee) throw new Error('当前没有可用的 AI 员工');
+    const result = await readJson<{ session: Session }>(
+      await fetch('/api/v1/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...tenantHeaders },
+        body: JSON.stringify({
+          workspaceId: workspace.workspaceId,
+          employeeAssignmentId: employee.id,
+          employeeVersionId: employee.currentVersion.id,
+          title: draft.trim().slice(0, 60) || '新的工作',
+        }),
+      }),
+    );
+    setWorkspace({
+      ...workspace,
+      sessions: [result.session, ...workspace.sessions],
+    });
+    setActiveId(result.session.id);
+    setHistory({
+      session: result.session,
+      messages: [],
+      contextStatus: {
+        percentage: 0,
+        pressureTokens: 0,
+        thresholdTokens: 40_000,
+        compactionDue: false,
+      },
+    });
+    return result.session.id;
+  }
+
+  async function uploadAttachment(file: File) {
+    if (!workspace) return;
+    if (file.size > 8_000_000) {
+      setError('附件不能超过 8 MB。');
+      return;
+    }
+    const mediaType =
+      file.type ||
+      (file.name.endsWith('.md')
+        ? 'text/markdown'
+        : file.name.endsWith('.txt')
+          ? 'text/plain'
+          : file.name.endsWith('.json')
+            ? 'application/json'
+            : '');
+    if (!mediaType) {
+      setError('不支持这种附件格式。');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const sessionId = activeId ?? (await createSession());
+      if (!sessionId) return;
+      const result = await readJson<{ attachment: Attachment }>(
+        await fetch(
+          `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({
+              fileName: file.name,
+              mediaType,
+              contentBase64: await fileToBase64(file),
+              visibility: uploadVisibility,
+            }),
+          },
+        ),
+      );
+      setPendingAttachments((current) => [
+        ...current.filter((item) => item.id !== result.attachment.id),
+        result.attachment,
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '文件上传失败');
+    } finally {
+      if (fileInput.current) fileInput.current.value = '';
+      setBusy(false);
+    }
+  }
+
+  async function openWorkspaceFiles() {
+    if (!workspace) return;
+    try {
+      const result = await readJson<{ files: WorkspaceFile[] }>(
+        await fetch(`/api/v1/files?workspaceId=${workspace.workspaceId}`, {
+          cache: 'no-store',
+          headers: tenantHeaders,
+        }),
+      );
+      setWorkspaceFiles(result.files);
+      setFilePickerOpen(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '工作区文件加载失败');
+    }
+  }
+
+  async function addWorkspaceFile(file: WorkspaceFile) {
+    if (!workspace) return;
+    setBusy(true);
+    try {
+      const sessionId = activeId ?? (await createSession());
+      if (!sessionId) return;
+      await readJson(
+        await fetch(
+          `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({ objectId: file.id }),
+          },
+        ),
+      );
+      setPendingAttachments((current) => [
+        ...current.filter((item) => item.id !== file.id),
+        file,
+      ]);
+      setFilePickerOpen(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '文件添加失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendMessage() {
+    const text = draft.trim();
+    if (!workspace || !text || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const sessionId = activeId ?? (await createSession());
+      if (!sessionId) return;
+      setDraft('');
+      const result = await readJson<{ run: { id: string } }>(
+        await fetch(
+          `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({
+              clientMessageId: crypto.randomUUID(),
+              text,
+              attachmentIds: pendingAttachments.map((item) => item.id),
+              deliveryMode: 'auto',
+            }),
+          },
+        ),
+      );
+      setPendingAttachments([]);
+      await loadHistory(sessionId);
+      void streamRun(result.run.id);
+    } catch (cause) {
+      setDraft(text);
+      setError(cause instanceof Error ? cause.message : '消息发送失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelRun() {
+    if (!workspace || !runView) return;
+    await readJson(
+      await fetch(
+        `/api/v1/runs/${runView.runId}/cancel?workspaceId=${workspace.workspaceId}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...tenantHeaders },
+          body: JSON.stringify({ reason: 'user_requested' }),
+        },
+      ),
+    ).catch((cause) =>
+      setError(cause instanceof Error ? cause.message : '停止失败'),
+    );
+  }
+
+  async function sendFeedback(message: Message, helpful: boolean) {
+    if (!workspace || !message.runId) return;
+    try {
+      await readJson(
+        await fetch(`/api/v1/runs/${message.runId}/feedback`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...tenantHeaders },
+          body: JSON.stringify({
+            workspaceId: workspace.workspaceId,
+            messageId: message.id,
+            helpful,
+            reason: null,
+          }),
+        }),
+      );
+      setFeedback((current) => ({ ...current, [message.runId!]: helpful }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '反馈提交失败');
+    }
+  }
+
+  if (!workspace || !manifest) {
+    return <main className={styles.loading}>正在进入 AllRice ChatFlow…</main>;
+  }
+
+  if (!manifest.features.chatFlowV2) {
+    return (
+      <main className={styles.loading}>
+        ChatFlow 2.0 尚未对当前工作区开放。
+      </main>
+    );
+  }
+
+  const sessions = workspace.sessions.filter((session) => !session.archivedAt);
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const activeEmployee = activeSession
+    ? employeeForSession(workspace, activeSession)
+    : (workspace.employees.find((employee) => employee.isDefault) ??
+      workspace.employees[0]);
+  const liveText = runView ? assistantDelta(runView.events) : '';
+  const visibleEvents = runView?.events.filter(visibleEvent) ?? [];
+  const isRunning =
+    runView?.status === 'running' || runView?.status === 'connecting';
+
+  return (
+    <main className={styles.shell}>
+      <aside className={styles.sidebar}>
+        <header className={styles.brand}>
+          <span className={styles.brandMark}>R</span>
+          <span>
+            <strong>AllRice</strong>
+            <small>ChatFlow 2.0</small>
+          </span>
+        </header>
+
+        <button
+          className={styles.newConversation}
+          onClick={() => {
+            activeStream.current?.abort();
+            setActiveId(null);
+            setHistory(null);
+            setRunView(null);
+            setDraft('');
+            setPendingAttachments([]);
+          }}
+          type="button"
+        >
+          <span>＋</span> 新的工作
+        </button>
+
+        <section className={styles.sessionSection}>
+          <p>最近对话</p>
+          <nav>
+            {sessions.map((session) => {
+              return (
+                <button
+                  className={
+                    session.id === activeId ? styles.activeSession : ''
+                  }
+                  key={session.id}
+                  onClick={() => setActiveId(session.id)}
+                  type="button"
+                >
+                  <span>{session.title}</span>
+                  <small>
+                    {providerForSession(workspace, session)} ·{' '}
+                    {formatTime(session.updatedAt)}
+                  </small>
+                </button>
+              );
+            })}
+            {sessions.length === 0 ? (
+              <span className={styles.emptySessions}>还没有对话</span>
+            ) : null}
+          </nav>
+        </section>
+
+        <footer className={styles.sidebarFooter}>
+          <Link href="/chatflow/employees">
+            {manifest.surfaces.includes('tenant_admin')
+              ? '员工配置'
+              : '可用员工'}
+          </Link>
+          {manifest.surfaces.includes('tenant_admin') ? (
+            <Link href="/chatflow/governance">评测与发布</Link>
+          ) : null}
+          {manifest.surfaces.includes('platform_admin') ? (
+            <Link href="/chatflow/admin">平台管理</Link>
+          ) : null}
+          <span>{manifest.roles.join(' · ')}</span>
+        </footer>
+      </aside>
+
+      <section className={styles.workspace}>
+        <header className={styles.topbar}>
+          <div>
+            <p>
+              与 {activeEmployee?.currentVersion.manifest.name ?? 'Rice'} 工作
+            </p>
+            <h1>{activeSession?.title ?? '新的工作'}</h1>
+          </div>
+          <div className={styles.runtimeBadge}>
+            <i /> {providerForSession(workspace, activeSession)}
+          </div>
+        </header>
+
+        <div className={styles.transcript}>
+          {!history?.messages.length && !runView ? (
+            <section className={styles.welcome}>
+              <div className={styles.employeeAvatar}>R</div>
+              <p>通用 AI 员工</p>
+              <h2>Rice 已准备好和你一起工作。</h2>
+              <span>描述目标、背景和你希望拿到的结果。</span>
+            </section>
+          ) : null}
+
+          {history?.messages.map((message) => (
+            <article
+              className={
+                message.role === 'user'
+                  ? styles.userMessage
+                  : styles.riceMessage
+              }
+              key={message.id}
+            >
+              <header>
+                <strong>{message.role === 'user' ? '你' : 'Rice'}</strong>
+                <time>{formatTime(message.createdAt)}</time>
+              </header>
+              <div>{message.content.text}</div>
+              {message.status === 'failed' ? (
+                <small>这次没有完成。</small>
+              ) : null}
+              {message.role === 'assistant' &&
+              message.status === 'completed' &&
+              message.runId ? (
+                <footer className={styles.feedback}>
+                  <span>这个结果有帮助吗？</span>
+                  <button
+                    aria-pressed={feedback[message.runId] === true}
+                    onClick={() => void sendFeedback(message, true)}
+                    type="button"
+                  >
+                    有用
+                  </button>
+                  <button
+                    aria-pressed={feedback[message.runId] === false}
+                    onClick={() => void sendFeedback(message, false)}
+                    type="button"
+                  >
+                    无用
+                  </button>
+                </footer>
+              ) : null}
+            </article>
+          ))}
+
+          {isRunning ? (
+            <article className={styles.riceMessage}>
+              <header>
+                <strong>Rice</strong>
+                <span className={styles.live}>正在工作</span>
+              </header>
+              {visibleEvents.length ? (
+                <details className={styles.eventTrace} open>
+                  <summary>{visibleEvents.length} 条执行动态</summary>
+                  {visibleEvents.map((event) => (
+                    <div key={event.eventId}>
+                      <i />
+                      <span>{eventLabel(event)}</span>
+                      <small>
+                        {event.sourceEvent?.type ?? event.harness ?? ''}
+                      </small>
+                    </div>
+                  ))}
+                </details>
+              ) : null}
+              <div>{liveText || '正在理解你的需求…'}</div>
+              <button className={styles.stop} onClick={() => void cancelRun()}>
+                停止
+              </button>
+            </article>
+          ) : null}
+
+          {runView?.status === 'failed' || runView?.status === 'canceled' ? (
+            <button
+              className={styles.recover}
+              onClick={() => void streamRun(runView.runId)}
+              type="button"
+            >
+              重新连接并恢复执行记录
+            </button>
+          ) : null}
+          <div ref={transcriptEnd} />
+        </div>
+
+        <footer className={styles.composerArea}>
+          {error ? <div className={styles.error}>{error}</div> : null}
+          <div className={styles.composer}>
+            {pendingAttachments.length ? (
+              <div className={styles.pendingFiles}>
+                {pendingAttachments.map((file) => (
+                  <span key={file.id}>
+                    <b>📎</b> {file.fileName}
+                    <button
+                      aria-label={`移除 ${file.fileName}`}
+                      onClick={() =>
+                        setPendingAttachments((current) =>
+                          current.filter((item) => item.id !== file.id),
+                        )
+                      }
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <textarea
+              aria-label="给 Rice 的消息"
+              disabled={busy}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendMessage();
+                }
+              }}
+              placeholder="描述你想完成的工作…"
+              rows={3}
+              value={draft}
+            />
+            <div className={styles.composerMeta}>
+              <div className={styles.attachmentActions}>
+                <button
+                  disabled={busy}
+                  onClick={() => void openWorkspaceFiles()}
+                  type="button"
+                >
+                  从工作区添加
+                </button>
+                <input
+                  accept=".txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void uploadAttachment(file);
+                  }}
+                  ref={fileInput}
+                  type="file"
+                />
+                <button
+                  disabled={busy}
+                  onClick={() => fileInput.current?.click()}
+                  type="button"
+                >
+                  从本地上传
+                </button>
+                <select
+                  aria-label="上传文件可见范围"
+                  onChange={(event) =>
+                    setUploadVisibility(event.target.value as Visibility)
+                  }
+                  value={uploadVisibility}
+                >
+                  <option value="private">保持私有</option>
+                  <option value="workspace">工作区公开</option>
+                </select>
+                <span>
+                  上下文 {history?.contextStatus.percentage ?? 0}%
+                  {history?.contextStatus.compactionDue
+                    ? ' · 即将自动整理'
+                    : ''}
+                </span>
+              </div>
+              <button
+                aria-label="发送"
+                disabled={busy || !draft.trim()}
+                onClick={() => void sendMessage()}
+                type="button"
+              >
+                ↑
+              </button>
+            </div>
+          </div>
+          <small className={styles.disclaimer}>
+            AllRice ChatFlow 负责会话、权限和事件恢复；任务由 DSH Harness
+            通过已配置的 Provider 执行。
+          </small>
+        </footer>
+      </section>
+
+      {filePickerOpen ? (
+        <div
+          className={styles.filePickerBackdrop}
+          onClick={() => setFilePickerOpen(false)}
+          role="presentation"
+        >
+          <section
+            aria-label="从工作区添加文件"
+            aria-modal="true"
+            className={styles.filePicker}
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <header>
+              <div>
+                <p>工作区文件</p>
+                <h2>选择要交给 Rice 的文件</h2>
+              </div>
+              <button onClick={() => setFilePickerOpen(false)} type="button">
+                ×
+              </button>
+            </header>
+            <div className={styles.fileList}>
+              {workspaceFiles.map((file) => (
+                <button
+                  key={file.id}
+                  onClick={() => void addWorkspaceFile(file)}
+                  type="button"
+                >
+                  <span>📄</span>
+                  <div>
+                    <strong>{file.fileName}</strong>
+                    <small>
+                      {file.visibility === 'private' ? '仅自己' : '工作区公开'}
+                      {' · '}
+                      {Math.max(1, Math.ceil(file.sizeBytes / 1024))} KB
+                    </small>
+                  </div>
+                  <em>添加</em>
+                </button>
+              ))}
+              {workspaceFiles.length === 0 ? (
+                <p>工作区还没有可用文件。</p>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </main>
+  );
+}

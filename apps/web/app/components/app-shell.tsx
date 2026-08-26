@@ -56,9 +56,7 @@ export interface WorkspaceSidebarSnapshot {
 }
 
 interface SaasCapabilities {
-  member: boolean;
-  tenantAdmin: boolean;
-  platformAdmin: boolean;
+  roles: Array<'member' | 'tenant_admin' | 'platform_admin'>;
 }
 
 function panelFromPathname(pathname: string | null): AppPanel | null {
@@ -94,9 +92,7 @@ function SessionDirectory({
             >
               <span className="v2-session-title">{session.title}</span>
               <span className="v2-session-subtitle">
-                <em className={`v2-harness v2-harness-${session.harness}`}>
-                  {session.harness === 'dsh' ? 'DSH' : 'Codex'}
-                </em>
+                <em className="v2-harness v2-harness-dsh">DSH</em>
                 {new Date(session.updatedAt).toLocaleDateString()}
               </span>
             </button>
@@ -123,9 +119,7 @@ export function AppShell({
   const [workspaceSidebar, setWorkspaceSidebar] =
     useState<WorkspaceSidebarSnapshot | null>(null);
   const [capabilities, setCapabilities] = useState<SaasCapabilities>({
-    member: true,
-    tenantAdmin: false,
-    platformAdmin: false,
+    roles: ['member'],
   });
 
   useEffect(() => {
@@ -179,8 +173,10 @@ export function AppShell({
     window.location.assign('/login');
   }
 
+  const platformAdmin = capabilities.roles.includes('platform_admin');
   const tenantAdmin =
-    capabilities.tenantAdmin || workspaceSidebar?.canAdminister;
+    capabilities.roles.includes('tenant_admin') ||
+    workspaceSidebar?.canAdminister;
 
   return (
     <AppShellContext.Provider value={{ activePanel, navigate: setActivePanel }}>
@@ -251,15 +247,13 @@ export function AppShell({
               <span className="v2-account-avatar">S</span>
               <span>
                 <strong>
-                  {capabilities.platformAdmin
+                  {platformAdmin
                     ? '平台管理员'
                     : tenantAdmin
                       ? '租户管理员'
                       : '成员'}
                 </strong>
-                <small>
-                  {capabilities.platformAdmin ? 'Platform' : 'Workspace'}
-                </small>
+                <small>{platformAdmin ? 'Platform' : 'Workspace'}</small>
               </span>
             </div>
             <button type="button" onClick={logout} aria-label="退出登录">

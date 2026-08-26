@@ -88,12 +88,14 @@ export const EmployeeRuntimePolicySchema = z
       if (policy.provider !== 'codex' || policy.reasoningEffort === 'none') {
         context.addIssue({
           code: 'custom',
-          message: 'Codex requires the codex provider and reasoning',
+          message:
+            'Legacy Codex Harness policies are read-only and normalized to DSH at execution',
         });
       }
       return;
     }
     if (
+      policy.provider !== 'openai-codex' &&
       policy.provider !== 'deepseek-official' &&
       policy.provider !== 'openai-compatible'
     ) {

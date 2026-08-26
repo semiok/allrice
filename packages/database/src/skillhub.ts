@@ -18,7 +18,6 @@ import type postgres from 'postgres';
 
 import { DataAccessError } from './data.ts';
 import { getDatabase } from './index.ts';
-import { enqueueRun } from './queue.ts';
 import { resolveWorkspaceId } from './workspace.ts';
 
 type JsonValue = Parameters<postgres.TransactionSql['json']>[0];
@@ -78,7 +77,8 @@ export class SkillHubError extends Error {
       | 'not_found'
       | 'version_conflict'
       | 'capability_denied'
-      | 'artifact_invalid',
+      | 'artifact_invalid'
+      | 'conversation_required',
   ) {
     super(code);
   }
@@ -438,86 +438,6 @@ export async function updateSkillInstallation(
     )
   `;
   return mapInstallation(row);
-}
-
-export async function enqueueSkillRun(
-  context: RequestContext,
-  input: {
-    workspaceId: string;
-    installationId: string;
-    prompt: string;
-    idempotencyKey: string;
-  },
-) {
-  const workspaceId = await resolveWorkspaceId(context, input.workspaceId);
-  const actorId = userId(context);
-  const sql = getDatabase();
-  const installationId = UuidSchema.parse(input.installationId);
-  const rows = await sql<InstallationRow[]>`
-    select * from allrice_skill_installations
-    where id = ${installationId}
-      and organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and (owner_id = ${actorId} or owner_id is null)
-      and enabled
-  `;
-  const installation = rows[0];
-  if (!installation) {
-    await sql`
-      insert into allrice_audit_events (
-        organization_id, workspace_id, actor_id, action, resource_type,
-        resource_id, decision, reason, request_id
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${actorId},
-        'skill.execute', 'skill_installation', ${installationId}, 'denied',
-        'owner_enabled_installation_required', ${context.requestId}
-      )
-    `;
-    throw new SkillHubError('not_found');
-  }
-  if (!installation.granted_capabilities.includes('model:invoke')) {
-    await sql`
-      insert into allrice_audit_events (
-        organization_id, workspace_id, actor_id, action, resource_type,
-        resource_id, decision, reason, request_id
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${actorId},
-        'skill.execute', 'skill_installation', ${installation.id}, 'denied',
-        'model_invoke_capability_not_granted', ${context.requestId}
-      )
-    `;
-    throw new SkillHubError('capability_denied');
-  }
-  const providerSnapshot = CodexExecutionSnapshotSchema.parse({
-    provider: 'codex',
-    authMode: 'chatgpt_subscription',
-    model: process.env.ALLRICE_CODEX_MODEL ?? 'gpt-5.6-luna',
-    reasoningEffort: process.env.ALLRICE_CODEX_REASONING_EFFORT ?? 'xhigh',
-    sandbox: 'workspace-write',
-  });
-  return enqueueRun(
-    context,
-    {
-      workspaceId,
-      idempotencyKey: input.idempotencyKey,
-      type: 'allrice.skill.run',
-      input: {
-        installationId: installation.id,
-        skillVersionId: installation.pinned_version_id,
-        prompt: input.prompt,
-        providerSnapshot,
-      },
-      maxAttempts: 1,
-      timeoutMs: installation.timeout_ms,
-    },
-    {
-      skillBinding: {
-        installationId: installation.id,
-        skillVersionId: installation.pinned_version_id,
-        providerSnapshot,
-      },
-    },
-  );
 }
 
 export async function resolveSkillExecution(input: {

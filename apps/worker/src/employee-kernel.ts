@@ -55,8 +55,9 @@ export function assembleEmployeeKernel(input: {
   const memories = input.resolved.promptSnapshot.memories
     .map((memory) => `- [${memory.id}] ${memory.content}`)
     .join('\n');
-  const runtimeHarness =
-    input.resolved.executionSnapshot?.runtimePolicy.harness ?? 'codex';
+  // Durable v1/v2 snapshots may still say `codex`, but new execution has one
+  // production harness only. Codex subscription access is a DSH Provider.
+  const runtimeHarness = 'dsh';
   return EmployeeKernelRequestSchema.parse({
     schemaVersion: 1,
     harness: runtimeHarness,

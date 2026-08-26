@@ -7,19 +7,13 @@ import type {
 
 import { HandlerError } from '../errors.js';
 import type { HarnessAdapter } from './adapter.js';
-import { CodexHarnessAdapter } from './codex-adapter.js';
 import { DshHarnessAdapter } from './dsh-adapter.js';
 
 /** ChatFlow Runtime router for provider-native Harness implementations. */
 export class HarnessRouter {
   private readonly adapters: ReadonlyMap<HarnessKind, HarnessAdapter>;
 
-  constructor(
-    adapters: readonly HarnessAdapter[] = [
-      new CodexHarnessAdapter(),
-      new DshHarnessAdapter(),
-    ],
-  ) {
+  constructor(adapters: readonly HarnessAdapter[] = [new DshHarnessAdapter()]) {
     this.adapters = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
   }
 
@@ -40,17 +34,21 @@ export class HarnessRouter {
     providerSnapshot: HarnessExecutionSnapshot;
     fallbackSnapshots?: readonly HarnessExecutionSnapshot[];
     providerHealth?: Partial<Record<HarnessKind, 'available' | 'unavailable'>>;
+    excludedRoutes?: readonly string[];
+    allowRuntimePolicyFallbacks?: boolean;
   }): {
     adapter: HarnessAdapter;
     providerSnapshot: HarnessExecutionSnapshot;
     reasonCode: Extract<
       RouteReasonCode,
-      'primary_harness_selected' | 'fallback_harness_selected'
+      'primary_provider_selected' | 'fallback_provider_selected'
     >;
   } {
-    const fallbacks = input.runtimePolicy.fallbackModels.reduce<
-      HarnessExecutionSnapshot[]
-    >((result, fallback) => {
+    const fallbacks = (
+      input.allowRuntimePolicyFallbacks === false
+        ? []
+        : input.runtimePolicy.fallbackModels
+    ).reduce<HarnessExecutionSnapshot[]>((result, fallback) => {
       const codexPrefix = fallback.startsWith('codex:')
         ? 'codex:'
         : fallback.startsWith('codex/')
@@ -65,14 +63,16 @@ export class HarnessRouter {
         const model = fallback.slice(codexPrefix.length).trim();
         if (!model) return result;
         result.push({
-          provider: 'codex',
-          authMode: 'chatgpt_subscription',
+          provider: 'dsh',
+          authMode: 'platform_subscription',
+          route: 'openai-codex',
           model,
           reasoningEffort:
             input.runtimePolicy.reasoningEffort === 'none'
               ? 'low'
               : input.runtimePolicy.reasoningEffort,
-          sandbox: 'workspace-write',
+          credentialReference: 'deployment:codex-default',
+          baseUrl: null,
         });
         return result;
       }
@@ -84,15 +84,21 @@ export class HarnessRouter {
       result.push({ ...input.providerSnapshot, model });
       return result;
     }, []);
-    const candidates: HarnessExecutionSnapshot[] = [
-      input.providerSnapshot,
-      ...(input.fallbackSnapshots ?? []),
+    const candidateMap = new Map<string, HarnessExecutionSnapshot>();
+    for (const snapshot of [
+      normalizeDshSnapshot(input.providerSnapshot),
+      ...(input.fallbackSnapshots ?? []).map(normalizeDshSnapshot),
       ...fallbacks,
-    ];
+    ]) {
+      candidateMap.set(harnessRouteKey(snapshot), snapshot);
+    }
+    const candidates = [...candidateMap.values()];
+    const excludedRoutes = new Set(input.excludedRoutes ?? []);
     for (const [index, snapshot] of candidates.entries()) {
-      const kind: HarnessKind = snapshot.provider === 'codex' ? 'codex' : 'dsh';
+      const kind: HarnessKind = 'dsh';
       const adapter = this.adapters.get(kind);
       if (
+        excludedRoutes.has(harnessRouteKey(snapshot)) ||
         !adapter ||
         input.providerHealth?.[kind] === 'unavailable' ||
         (adapter.isConfigured && !adapter.isConfigured(snapshot))
@@ -101,16 +107,16 @@ export class HarnessRouter {
       }
       return {
         adapter,
-        providerSnapshot: snapshot,
+        providerSnapshot: normalizeDshSnapshot(snapshot),
         reasonCode:
           index === 0
-            ? 'primary_harness_selected'
-            : 'fallback_harness_selected',
+            ? 'primary_provider_selected'
+            : 'fallback_provider_selected',
       };
     }
     throw new HandlerError(
       'PROVIDER_UNAVAILABLE',
-      'No configured and healthy harness route is available',
+      'No configured and healthy DSH Provider route is available',
       true,
     );
   }
@@ -122,6 +128,71 @@ export class HarnessRouter {
       ),
     );
   }
+}
+
+export function harnessRouteKey(snapshot: HarnessExecutionSnapshot) {
+  const normalized = normalizeDshSnapshot(snapshot);
+  return ['dsh', normalized.route, normalized.model].join(':');
+}
+
+/**
+ * Legacy Codex snapshots remain readable for durable replay, but execution is
+ * always delegated to the single DSH Harness as its openai-codex Provider.
+ */
+export function normalizeDshSnapshot(
+  snapshot: HarnessExecutionSnapshot,
+): Extract<HarnessExecutionSnapshot, { provider: 'dsh' }> {
+  return snapshot.provider === 'dsh'
+    ? snapshot
+    : {
+        provider: 'dsh',
+        authMode: 'platform_subscription',
+        route: 'openai-codex',
+        model: snapshot.model,
+        reasoningEffort: snapshot.reasoningEffort,
+        credentialReference: 'deployment:codex-default',
+        baseUrl: null,
+      };
+}
+
+export function failedDecisionRouteKey(input: {
+  harness: HarnessKind;
+  provider: string;
+  model: string;
+}) {
+  return [input.harness, input.provider, input.model].join(':');
+}
+
+export function classifyProviderFailure(errorCode: string | null) {
+  if (!errorCode) return null;
+  const normalized = errorCode.toUpperCase();
+  if (
+    normalized.includes('RATE_LIMIT') ||
+    normalized.includes('TOO_MANY_REQUESTS') ||
+    normalized.includes('HTTP_429')
+  ) {
+    return 'rate_limited' as const;
+  }
+  if (normalized.includes('TIMEOUT') || normalized.includes('TIMED_OUT')) {
+    return 'timeout' as const;
+  }
+  if (
+    normalized.includes('UNAVAILABLE') ||
+    normalized.includes('NOT_CONFIGURED') ||
+    normalized.includes('CREDENTIAL') ||
+    normalized.includes('AUTH_REQUIRED')
+  ) {
+    return 'provider_unavailable' as const;
+  }
+  if (
+    normalized.includes('TRANSIENT') ||
+    normalized.includes('CONNECTION') ||
+    normalized.includes('PROTOCOL') ||
+    normalized.includes('EMPTY_RESPONSE')
+  ) {
+    return 'transient_error' as const;
+  }
+  return null;
 }
 
 const defaultHarnessRouter = new HarnessRouter();

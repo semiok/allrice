@@ -19,24 +19,15 @@ checks.push({
   label: 'pnpm is available',
   fix: 'Run `corepack enable`, then retry.',
 });
-if (coreOnly) {
-  console.info('! Codex CLI and login checks skipped for core-only bootstrap.');
-} else {
-  checks.push({
-    ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', [
-      '--version',
-    ]),
-    label: 'Codex CLI is available',
-    fix: 'Install Codex CLI, then run `codex login` with the ChatGPT subscription account.',
-  });
-  checks.push({
-    ok: commandWorks(process.env.ALLRICE_CODEX_COMMAND || 'codex', [
-      'login',
-      'status',
-    ]),
-    label: 'Codex CLI has a local login',
-    fix: 'Run `codex login` (or `codex login --device-auth`) and retry.',
-  });
+checks.push({
+  ok: existsSync(resolve('apps/worker/dsh/allrice-jsonrpc-runtime.mjs')),
+  label: 'DSH JSON-RPC runtime bridge is present',
+  fix: 'Restore the Worker DSH runtime bridge from the repository.',
+});
+if (!coreOnly) {
+  console.info(
+    '! Codex subscription authorization is completed after startup in the platform model console.',
+  );
 }
 
 if (process.env.DATABASE_URL) {
@@ -74,3 +65,5 @@ if (checks.some((check) => !check.ok)) {
       : 'All required development tools are ready.',
   );
 }
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';

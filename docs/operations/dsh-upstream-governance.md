@@ -35,4 +35,6 @@ and runtime generation; an in-flight session is never silently migrated.
 An identity mismatch, version mismatch, malformed JSON-RPC frame, permission
 escape or failed release gate blocks promotion. Runtime failure may route a new
 turn to an explicitly approved fallback, but never grants broader capabilities.
-Codex traffic remains independent from the DSH process and dependency tree.
+Codex subscription traffic uses DSH's `openai-codex` Provider plugin and the
+same restricted runtime boundary as every other model route. A DSH candidate
+cannot be promoted unless that OAuth Provider passes replay and refresh tests.

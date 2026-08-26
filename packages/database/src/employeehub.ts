@@ -178,12 +178,14 @@ function requireEmployeeAdmin(context: RequestContext, workspaceId: string) {
 function runtimePolicy(manifest: EmployeeManifest) {
   if (manifest.schemaVersion === 2) return manifest.runtimePolicy;
   return {
-    harness: 'codex' as const,
-    provider: manifest.provider.provider,
+    harness: 'dsh' as const,
+    provider: 'openai-codex' as const,
     model: manifest.provider.model,
     reasoningEffort: manifest.provider.reasoningEffort,
     timeoutMs: 300_000,
     fallbackModels: [],
+    credentialReference: 'deployment:codex-default',
+    baseUrl: null,
   };
 }
 
@@ -227,6 +229,36 @@ function versionSnapshot(row: EmployeeVersionRow) {
     configChecksum: row.config_checksum,
     publishedAt: row.published_at.toISOString(),
   });
+}
+
+const privateEmployeeFields = new Set([
+  'credentialReference',
+  'credential_reference',
+  'baseUrl',
+  'base_url',
+  'accessToken',
+  'refreshToken',
+  'apiKey',
+  'secret',
+]);
+
+/**
+ * EmployeeHub is a tenant surface. Provider credentials and deployment
+ * endpoints are owned by the platform model pool and must never be serialized
+ * into employee or workspace responses, even for a tenant administrator.
+ */
+export function redactEmployeeSecrets<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactEmployeeSecrets(item)) as T;
+  }
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !privateEmployeeFields.has(key))
+      .map(([key, item]) => [key, redactEmployeeSecrets(item)]),
+  ) as T;
 }
 
 export async function listEmployeeHub(
@@ -341,23 +373,25 @@ export async function listEmployeeHub(
     workspaceId,
     canAdminister,
     assignments: assignments.map((assignment) =>
-      EmployeeHubAssignmentSchema.parse({
-        id: assignment.assignment_id,
-        employeeId: assignment.employee_id,
-        employeeKey: assignment.employee_key,
-        userId: assignment.user_id,
-        organizationId: assignment.organization_id,
-        workspaceId: assignment.workspace_id,
-        isDefault: assignment.is_default,
-        active: assignment.active,
-        assignedBy: assignment.assigned_by,
-        assignedAt: assignment.assigned_at.toISOString(),
-        memoryCount: memoryCountByEmployee.get(assignment.employee_id) ?? 0,
-        currentVersion: versionSnapshot(assignment),
-        versions: versions
-          .filter((version) => version.employee_id === assignment.employee_id)
-          .map(versionSnapshot),
-      }),
+      redactEmployeeSecrets(
+        EmployeeHubAssignmentSchema.parse({
+          id: assignment.assignment_id,
+          employeeId: assignment.employee_id,
+          employeeKey: assignment.employee_key,
+          userId: assignment.user_id,
+          organizationId: assignment.organization_id,
+          workspaceId: assignment.workspace_id,
+          isDefault: assignment.is_default,
+          active: assignment.active,
+          assignedBy: assignment.assigned_by,
+          assignedAt: assignment.assigned_at.toISOString(),
+          memoryCount: memoryCountByEmployee.get(assignment.employee_id) ?? 0,
+          currentVersion: versionSnapshot(assignment),
+          versions: versions
+            .filter((version) => version.employee_id === assignment.employee_id)
+            .map(versionSnapshot),
+        }),
+      ),
     ),
     availableSkills: (canAdminister ? skills : []).map((skill) => ({
       installationId: skill.installation_id,
@@ -367,13 +401,15 @@ export async function listEmployeeHub(
       enabled: skill.enabled,
     })),
     directory: directory.map((entry) =>
-      EmployeeAdminDirectoryEntrySchema.parse({
-        employeeId: entry.employee_id,
-        employeeKey: entry.employee_key,
-        status: entry.status,
-        currentVersion: versionSnapshot(entry),
-        assignedUserIds: entry.assigned_user_ids,
-      }),
+      redactEmployeeSecrets(
+        EmployeeAdminDirectoryEntrySchema.parse({
+          employeeId: entry.employee_id,
+          employeeKey: entry.employee_key,
+          status: entry.status,
+          currentVersion: versionSnapshot(entry),
+          assignedUserIds: entry.assigned_user_ids,
+        }),
+      ),
     ),
     members: members.map((member) =>
       EmployeeAdminMemberSchema.parse({
@@ -653,13 +689,28 @@ export async function publishEmployeeVersion(
     }
     const version = versions[0];
     if (!version) throw new Error('employee version publication failed');
-    await transaction`
-      update allrice_employee_assignments
-      set employee_version_id = ${version.id}, updated_at = now()
+    const assignedVersions = await transaction<
+      { employee_version_id: string }[]
+    >`
+      select employee_version_id from allrice_employee_assignments
       where organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId}
-        and employee_id = ${employee.id}
-        and active
+        and employee_id = ${employee.id} and active
+      order by updated_at desc limit 1
+    `;
+    const stableVersionId =
+      assignedVersions[0]?.employee_version_id ?? version.id;
+    await transaction`
+      insert into allrice_employee_releases (
+        organization_id, workspace_id, employee_id, stable_version_id,
+        candidate_version_id, stage, traffic_percentage, gate_status
+      ) values (
+        ${context.organizationId}, ${workspaceId}, ${employee.id},
+        ${stableVersionId}, ${version.id}, 'draft', 0, 'pending'
+      ) on conflict (organization_id, workspace_id, employee_id) do update set
+        candidate_version_id = excluded.candidate_version_id,
+        stage = 'draft', traffic_percentage = 0, gate_status = 'pending',
+        approved_by = null, approved_at = null, updated_at = now()
     `;
     await synchronizeEmployeeSkillBindings(transaction, {
       organizationId: context.organizationId,
@@ -675,8 +726,8 @@ export async function publishEmployeeVersion(
       ) values (
         ${context.organizationId}, ${workspaceId}, ${actorId},
         'employee.version.publish', 'employee_version', ${version.id},
-        'allowed', 'admin_published_immutable_manifest', ${context.requestId},
-        ${transaction.json({ checksum, skillVersionIds, partnerProfile: manifest.partnerProfile })}
+        'allowed', 'admin_published_immutable_candidate', ${context.requestId},
+        ${transaction.json({ checksum, skillVersionIds, partnerProfile: manifest.partnerProfile, stableVersionId })}
       )
     `;
     return versionSnapshot(version);
@@ -1069,34 +1120,45 @@ export async function prepareEmployeeRunBinding(input: {
     workspaceId: input.workspaceId,
     sessionId: input.sessionId,
   });
-  const providerSnapshot = HarnessExecutionSnapshotSchema.parse(
-    modelSnapshot.harness === 'codex'
-      ? {
-          provider: 'codex',
-          authMode: 'chatgpt_subscription',
-          model: modelSnapshot.model,
-          reasoningEffort: modelSnapshot.reasoningEffort,
-          sandbox: 'workspace-write',
-        }
-      : {
-          provider: 'dsh',
-          authMode: 'allrice_credential',
-          route: modelSnapshot.provider,
-          model: modelSnapshot.model,
-          reasoningEffort: modelSnapshot.reasoningEffort,
-          credentialReference: modelSnapshot.credentialReference,
-          baseUrl: modelSnapshot.baseUrl,
-        },
-  );
+  const providerRoute =
+    modelSnapshot.harness === 'codex' ||
+    modelSnapshot.provider === 'codex' ||
+    modelSnapshot.provider === 'openai-codex'
+      ? 'openai-codex'
+      : modelSnapshot.provider === 'deepseek' ||
+          modelSnapshot.provider === 'deepseek-official'
+        ? 'deepseek-official'
+        : 'openai-compatible';
+  const providerSnapshot = HarnessExecutionSnapshotSchema.parse({
+    provider: 'dsh',
+    authMode:
+      providerRoute === 'openai-codex'
+        ? 'platform_subscription'
+        : 'allrice_credential',
+    route: providerRoute,
+    model: modelSnapshot.model,
+    reasoningEffort:
+      modelSnapshot.reasoningEffort === 'none'
+        ? 'low'
+        : modelSnapshot.reasoningEffort,
+    credentialReference:
+      modelSnapshot.credentialReference ?? 'deployment:codex-default',
+    baseUrl: providerRoute === 'openai-codex' ? null : modelSnapshot.baseUrl,
+  });
   const selectedRuntimePolicy = EmployeeRuntimePolicySchema.parse({
     ...runtimePolicy(manifest.data),
-    harness: modelSnapshot.harness,
-    provider: modelSnapshot.provider,
+    harness: 'dsh',
+    provider: providerRoute,
     model: modelSnapshot.model,
-    reasoningEffort: modelSnapshot.reasoningEffort,
-    credentialReference: modelSnapshot.credentialReference ?? undefined,
-    baseUrl: modelSnapshot.baseUrl,
+    reasoningEffort:
+      modelSnapshot.reasoningEffort === 'none'
+        ? 'low'
+        : modelSnapshot.reasoningEffort,
+    credentialReference:
+      modelSnapshot.credentialReference ?? 'deployment:codex-default',
+    baseUrl: providerRoute === 'openai-codex' ? null : modelSnapshot.baseUrl,
     fallbackModels: [],
+    timeoutMs: modelSnapshot.runLimits.timeoutMs,
   });
   return {
     employeeAssignmentId: assignment.assignment_id,

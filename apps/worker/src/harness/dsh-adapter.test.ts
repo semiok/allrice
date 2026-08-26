@@ -36,10 +36,13 @@ function createAdapter() {
     credentialResolver: { resolve: async () => ({ apiKey: 'test-secret' }) },
     runtimeCommand: process.execPath,
     runtimeArgs: [
-      resolve('apps/worker/src/harness/fixtures/dsh-fake-runtime.mjs'),
+      resolve(import.meta.dirname, 'fixtures/dsh-fake-runtime.mjs'),
     ],
     runtimeRoot: resolve('.local/test-dsh-runtime'),
-    cordisConfig: resolve('apps/worker/dsh/allrice-restricted.cordis.yml'),
+    cordisConfig: resolve(
+      import.meta.dirname,
+      '../../dsh/allrice-restricted.cordis.yml',
+    ),
     requestTimeoutMs: 5_000,
   });
   adapters.push(adapter);
@@ -245,7 +248,7 @@ describe('DshHarnessAdapter', () => {
     expect(recovered.answer).toBe('turn-1');
   });
 
-  it('compacts by closing native state before AllRice checkpoint rehydration', async () => {
+  it('uses DSH native compaction without replacing the live session', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;
     const input = executionInput({ prompt: 'before compact' });
@@ -257,6 +260,6 @@ describe('DshHarnessAdapter', () => {
     const after = await adapter.execute(
       executionInput({ prompt: 'after compact', threadId }),
     );
-    expect(after.answer).toBe('turn-1');
+    expect(after.answer).toBe('turn-2');
   });
 });

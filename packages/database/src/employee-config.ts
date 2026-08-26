@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 
 import {
-  CodexExecutionSnapshotSchema,
   DefaultPartnerProfile,
   EmployeeAppearanceSchema,
   EmployeeDefinitionSchema,
@@ -151,12 +150,20 @@ export function builtInEmployeeManifests() {
 }
 
 export function codexEmployeeProvider() {
-  return CodexExecutionSnapshotSchema.parse({
-    provider: 'codex',
-    authMode: 'chatgpt_subscription',
-    model: process.env.ALLRICE_CODEX_MODEL ?? 'gpt-5.6-luna',
-    reasoningEffort: process.env.ALLRICE_CODEX_REASONING_EFFORT ?? 'xhigh',
-    sandbox: 'workspace-write',
+  return DshExecutionSnapshotSchema.parse({
+    provider: 'dsh',
+    authMode: 'platform_subscription',
+    route: 'openai-codex',
+    model:
+      process.env.ALLRICE_DSH_CODEX_MODEL ??
+      process.env.ALLRICE_CODEX_MODEL ??
+      'gpt-5.6-luna',
+    reasoningEffort:
+      process.env.ALLRICE_DSH_CODEX_REASONING_EFFORT ??
+      process.env.ALLRICE_CODEX_REASONING_EFFORT ??
+      'xhigh',
+    credentialReference: 'deployment:codex-default',
+    baseUrl: null,
   });
 }
 
@@ -269,32 +276,31 @@ export function employeeManifest(input: {
   const defaultProvider = codexEmployeeProvider();
   const runtimePolicy = EmployeeRuntimePolicySchema.parse(
     input.runtimePolicy ?? {
-      harness: 'codex',
-      provider: defaultProvider.provider,
+      harness: 'dsh',
+      provider: defaultProvider.route,
       model: defaultProvider.model,
       reasoningEffort: defaultProvider.reasoningEffort,
       timeoutMs: 300_000,
       fallbackModels: [],
+      credentialReference: defaultProvider.credentialReference,
+      baseUrl: null,
     },
   );
-  const provider =
-    runtimePolicy.harness === 'codex'
-      ? CodexExecutionSnapshotSchema.parse({
-          provider: 'codex',
-          authMode: 'chatgpt_subscription',
-          model: runtimePolicy.model,
-          reasoningEffort: runtimePolicy.reasoningEffort,
-          sandbox: 'workspace-write',
-        })
-      : DshExecutionSnapshotSchema.parse({
-          provider: 'dsh',
-          authMode: 'allrice_credential',
-          route: runtimePolicy.provider,
-          model: runtimePolicy.model,
-          reasoningEffort: runtimePolicy.reasoningEffort,
-          credentialReference: runtimePolicy.credentialReference,
-          baseUrl: runtimePolicy.baseUrl ?? null,
-        });
+  const providerRoute =
+    runtimePolicy.harness === 'codex' ? 'openai-codex' : runtimePolicy.provider;
+  const provider = DshExecutionSnapshotSchema.parse({
+    provider: 'dsh',
+    authMode:
+      providerRoute === 'openai-codex'
+        ? 'platform_subscription'
+        : 'allrice_credential',
+    route: providerRoute,
+    model: runtimePolicy.model,
+    reasoningEffort: runtimePolicy.reasoningEffort,
+    credentialReference:
+      runtimePolicy.credentialReference ?? 'deployment:codex-default',
+    baseUrl: runtimePolicy.baseUrl ?? null,
+  });
   const skillVersionIds = [...new Set(input.skillVersionIds ?? [])].sort();
   const identity = EmployeeIdentitySchema.parse(
     input.identity ?? {

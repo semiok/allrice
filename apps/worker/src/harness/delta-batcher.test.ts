@@ -5,6 +5,7 @@ import type { HarnessEvent } from '@allrice/contracts';
 import { HarnessEventBatcher } from './delta-batcher.js';
 
 const messageId = '00000000-0000-4000-8000-000000000001';
+const sessionId = '00000000-0000-4000-8000-000000000002';
 
 function delta(order: number, text: string): HarnessEvent {
   return {
@@ -15,6 +16,7 @@ function delta(order: number, text: string): HarnessEvent {
     order,
     threadId: 'thread-1',
     turnId: 'turn-1',
+    sessionId,
     messageId,
     type: 'assistant.delta',
     text,

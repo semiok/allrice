@@ -5,7 +5,9 @@ import {
   ModelCatalogEntrySchema,
   ModelConnectionSchema,
   ModelProviderSchema,
+  SaasCapabilityManifestSchema,
   SessionModelSnapshotSchema,
+  UpdateModelConnectionInputSchema,
   UpsertEmployeeModelPolicyInputSchema,
   UpsertModelConnectionInputSchema,
   type EmployeeModelPolicy,
@@ -73,6 +75,12 @@ interface PolicyRow {
   reasoning_effort: EmployeeModelPolicy['reasoningEffort'];
   fallback_policy: EmployeeModelPolicy['fallbackPolicy'];
   fallback_targets: unknown;
+  fallback_on: unknown;
+  timeout_ms: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+  max_total_tokens: number;
+  max_cost_cents: number | null;
   revision: number;
   updated_by: string;
   updated_at: Date;
@@ -122,11 +130,63 @@ export async function isPlatformAdmin(context: RequestContext) {
 
 export async function getSaasCapabilities(context: RequestContext) {
   const workspaceId = context.workspaceId;
-  return {
+  return buildSaasCapabilityManifest({
     member: context.actor.type === 'user',
     tenantAdmin: tenantAdmin(context, workspaceId),
     platformAdmin: await isPlatformAdmin(context),
-  };
+    chatFlowV2: process.env.ALLRICE_CHATFLOW_V2_ENABLED !== '0',
+    legacyWorkspace: process.env.ALLRICE_LEGACY_WORKSPACE_ENABLED !== '0',
+  });
+}
+
+export function buildSaasCapabilityManifest(input: {
+  member: boolean;
+  tenantAdmin: boolean;
+  platformAdmin: boolean;
+  chatFlowV2: boolean;
+  legacyWorkspace: boolean;
+}) {
+  const roles = [
+    ...(input.member ? (['member'] as const) : []),
+    ...(input.tenantAdmin ? (['tenant_admin'] as const) : []),
+    ...(input.platformAdmin ? (['platform_admin'] as const) : []),
+  ];
+  const actions = [
+    'conversation:read',
+    'conversation:create',
+    'conversation:send',
+    'conversation:cancel',
+    'conversation:recover',
+    'file:upload',
+    'employee:read',
+    ...(input.tenantAdmin
+      ? ([
+          'employee:manage',
+          'skill:assign',
+          'workflow:manage',
+          'knowledge:manage',
+          'model_policy:manage',
+        ] as const)
+      : []),
+    ...(input.platformAdmin
+      ? (['model_connection:manage', 'platform_audit:read'] as const)
+      : []),
+  ];
+  return SaasCapabilityManifestSchema.parse({
+    schemaVersion: 1,
+    roles,
+    actions,
+    surfaces: [
+      'chatflow',
+      ...(input.tenantAdmin ? (['tenant_admin'] as const) : []),
+      ...(input.platformAdmin ? (['platform_admin'] as const) : []),
+    ],
+    features: {
+      chatFlowV2: input.chatFlowV2,
+      nativeHarnessEvents: true,
+      legacyWorkspace: input.legacyWorkspace,
+    },
+  });
 }
 
 async function requirePlatformAdmin(context: RequestContext) {
@@ -202,6 +262,14 @@ function mapPolicy(row: PolicyRow) {
     reasoningEffort: row.reasoning_effort,
     fallbackPolicy: row.fallback_policy,
     fallbackTargets: row.fallback_targets,
+    fallbackOn: row.fallback_on,
+    runLimits: {
+      timeoutMs: row.timeout_ms,
+      maxInputTokens: row.max_input_tokens,
+      maxOutputTokens: row.max_output_tokens,
+      maxTotalTokens: row.max_total_tokens,
+      maxCostCents: row.max_cost_cents,
+    },
     revision: row.revision,
     updatedBy: row.updated_by,
     updatedAt: row.updated_at.toISOString(),
@@ -268,6 +336,21 @@ export async function listModelPool(context: RequestContext) {
       modelCatalogEntryId: defaultModelId,
       model: 'gpt-5.6-luna',
       reasoningEffort: 'xhigh' as const,
+      fallbackPolicy: 'disabled' as const,
+      fallbackTargets: [],
+      fallbackOn: [
+        'provider_unavailable',
+        'rate_limited',
+        'timeout',
+        'transient_error',
+      ] as const,
+      runLimits: {
+        timeoutMs: 300_000,
+        maxInputTokens: 120_000,
+        maxOutputTokens: 16_000,
+        maxTotalTokens: 136_000,
+        maxCostCents: null,
+      },
     },
   };
 }
@@ -307,6 +390,63 @@ export async function createModelConnection(
       'model_connection.create', 'model_connection', ${row.id},
       'recorded', 'platform_admin', ${context.requestId},
       ${sql.json({ providerId: row.provider_id, scope: row.scope })}
+    )
+  `;
+  return mapConnection(row);
+}
+
+export async function updateModelConnection(input: {
+  context: RequestContext;
+  connectionId: string;
+  update: unknown;
+}) {
+  const actorId = await requirePlatformAdmin(input.context);
+  const update = UpdateModelConnectionInputSchema.parse(input.update);
+  const sql = getDatabase();
+  const currentRows = await sql<ConnectionRow[]>`
+    select id, provider_id, organization_id, scope, name,
+      credential_reference, base_url, status, stability, priority,
+      created_at, updated_at
+    from allrice_model_connections
+    where id = ${input.connectionId} and scope = 'platform'
+  `;
+  const current = currentRows[0];
+  if (!current) throw new DataAccessError('not_found');
+  const rows = await sql<ConnectionRow[]>`
+    update allrice_model_connections set
+      name = ${update.name ?? current.name},
+      credential_reference = ${
+        update.credentialReference === undefined
+          ? current.credential_reference
+          : update.credentialReference
+      },
+      base_url = ${
+        update.baseUrl === undefined ? current.base_url : update.baseUrl
+      },
+      status = ${update.status ?? current.status},
+      stability = ${update.stability ?? current.stability},
+      priority = ${update.priority ?? current.priority},
+      updated_at = now()
+    where id = ${current.id}
+    returning id, provider_id, organization_id, scope, name,
+      credential_reference, base_url, status, stability, priority,
+      created_at, updated_at
+  `;
+  const row = rows[0];
+  if (!row) throw new DataAccessError('not_found');
+  await sql`
+    insert into allrice_audit_events (
+      organization_id, workspace_id, actor_id, action, resource_type,
+      resource_id, decision, reason, request_id, metadata
+    ) values (
+      ${input.context.organizationId}, ${input.context.workspaceId}, ${actorId},
+      'model_connection.update', 'model_connection', ${row.id},
+      'recorded', 'platform_admin', ${input.context.requestId},
+      ${sql.json({
+        changedFields: Object.keys(update).sort(),
+        status: row.status,
+        stability: row.stability,
+      })}
     )
   `;
   return mapConnection(row);
@@ -361,7 +501,9 @@ export async function getEmployeeModelPolicy(input: {
   const rows = await sql<PolicyRow[]>`
     select employee_id, organization_id, workspace_id, connection_id,
       model_catalog_entry_id, reasoning_effort, fallback_policy,
-      fallback_targets, revision, updated_by, updated_at
+      fallback_targets, fallback_on, timeout_ms, max_input_tokens,
+      max_output_tokens, max_total_tokens, max_cost_cents,
+      revision, updated_by, updated_at
     from allrice_employee_model_policies
     where organization_id = ${input.context.organizationId}
       and workspace_id = ${input.workspaceId}
@@ -397,12 +539,17 @@ export async function upsertEmployeeModelPolicy(input: {
     insert into allrice_employee_model_policies (
       employee_id, organization_id, workspace_id, connection_id,
       model_catalog_entry_id, reasoning_effort, fallback_policy,
-      fallback_targets, revision, updated_by
+      fallback_targets, fallback_on, timeout_ms, max_input_tokens,
+      max_output_tokens, max_total_tokens, max_cost_cents,
+      revision, updated_by
     ) values (
       ${input.employeeId}, ${input.context.organizationId},
       ${input.workspaceId}, ${policy.connectionId},
       ${policy.modelCatalogEntryId}, ${policy.reasoningEffort},
-      ${policy.fallbackPolicy}, ${sql.json(policy.fallbackTargets)}, 1,
+      ${policy.fallbackPolicy}, ${sql.json(policy.fallbackTargets)},
+      ${sql.json(policy.fallbackOn)}, ${policy.runLimits.timeoutMs},
+      ${policy.runLimits.maxInputTokens}, ${policy.runLimits.maxOutputTokens},
+      ${policy.runLimits.maxTotalTokens}, ${policy.runLimits.maxCostCents}, 1,
       ${actorId}
     ) on conflict (employee_id) do update set
       connection_id = excluded.connection_id,
@@ -410,6 +557,12 @@ export async function upsertEmployeeModelPolicy(input: {
       reasoning_effort = excluded.reasoning_effort,
       fallback_policy = excluded.fallback_policy,
       fallback_targets = excluded.fallback_targets,
+      fallback_on = excluded.fallback_on,
+      timeout_ms = excluded.timeout_ms,
+      max_input_tokens = excluded.max_input_tokens,
+      max_output_tokens = excluded.max_output_tokens,
+      max_total_tokens = excluded.max_total_tokens,
+      max_cost_cents = excluded.max_cost_cents,
       revision = allrice_employee_model_policies.revision + 1,
       updated_by = excluded.updated_by,
       updated_at = now()
@@ -417,10 +570,13 @@ export async function upsertEmployeeModelPolicy(input: {
       and allrice_employee_model_policies.workspace_id = excluded.workspace_id
     returning employee_id, organization_id, workspace_id, connection_id,
       model_catalog_entry_id, reasoning_effort, fallback_policy,
-      fallback_targets, revision, updated_by, updated_at
+      fallback_targets, fallback_on, timeout_ms, max_input_tokens,
+      max_output_tokens, max_total_tokens, max_cost_cents,
+      revision, updated_by, updated_at
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
+  const persistedPolicy = mapPolicy(row);
   await sql`
     insert into allrice_audit_events (
       organization_id, workspace_id, actor_id, action, resource_type,
@@ -433,11 +589,14 @@ export async function upsertEmployeeModelPolicy(input: {
         connectionId: row.connection_id,
         modelCatalogEntryId: row.model_catalog_entry_id,
         reasoningEffort: row.reasoning_effort,
+        fallbackPolicy: row.fallback_policy,
+        fallbackOn: persistedPolicy.fallbackOn,
+        runLimits: persistedPolicy.runLimits,
         revision: row.revision,
       })}
     )
   `;
-  return mapPolicy(row);
+  return persistedPolicy;
 }
 
 async function ensureDefaultPolicy(input: {
@@ -451,17 +610,27 @@ async function ensureDefaultPolicy(input: {
     insert into allrice_employee_model_policies (
       employee_id, organization_id, workspace_id, connection_id,
       model_catalog_entry_id, reasoning_effort, fallback_policy,
-      fallback_targets, revision, updated_by
+      fallback_targets, fallback_on, timeout_ms, max_input_tokens,
+      max_output_tokens, max_total_tokens, max_cost_cents,
+      revision, updated_by
     ) values (
       ${input.employeeId}, ${input.organizationId}, ${input.workspaceId},
       ${defaultConnectionId}, ${defaultModelId}, 'xhigh', 'disabled',
       ${sql.json([])},
+      ${sql.json([
+        'provider_unavailable',
+        'rate_limited',
+        'timeout',
+        'transient_error',
+      ])}, 300000, 120000, 16000, 136000, null,
       1, ${input.actorId}
     ) on conflict (employee_id) do update
       set employee_id = excluded.employee_id
     returning employee_id, organization_id, workspace_id, connection_id,
       model_catalog_entry_id, reasoning_effort, fallback_policy,
-      fallback_targets, revision, updated_by, updated_at
+      fallback_targets, fallback_on, timeout_ms, max_input_tokens,
+      max_output_tokens, max_total_tokens, max_cost_cents,
+      revision, updated_by, updated_at
   `;
   const row = rows[0];
   if (!row) throw new Error('default model policy creation failed');
@@ -507,10 +676,13 @@ async function resolveFrozenTarget(input: {
   return {
     connectionId: input.connectionId,
     modelCatalogEntryId: input.modelCatalogEntryId,
-    harness: selection.harness,
+    // Codex is a Provider inside DSH. The legacy provider row may still say
+    // `codex` until migration 0038 is applied, but no new snapshot may select
+    // a peer Codex Harness.
+    harness: 'dsh',
     provider:
-      selection.harness === 'codex'
-        ? 'codex'
+      selection.provider_key === 'codex'
+        ? 'openai-codex'
         : selection.provider_key === 'deepseek'
           ? 'deepseek-official'
           : 'openai-compatible',
@@ -589,6 +761,8 @@ export async function freezeSessionModelSnapshot(input: {
     baseUrl: selection.baseUrl,
     fallbackPolicy: policy.fallbackPolicy,
     fallbackTargets: policy.fallbackTargets,
+    fallbackOn: policy.fallbackOn,
+    runLimits: policy.runLimits,
     resolvedFallbacks,
     frozenAt: new Date().toISOString(),
   });

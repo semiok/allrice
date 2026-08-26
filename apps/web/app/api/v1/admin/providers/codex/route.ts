@@ -1,5 +1,7 @@
 import {
   DataAccessError,
+  getCodexAuthorization,
+  getCodexProviderGrant,
   getCodexProviderStatus,
   isPlatformAdmin,
 } from '@allrice/database';
@@ -18,7 +20,12 @@ export async function GET(request: Request) {
     if (!(await isPlatformAdmin(context))) {
       throw new DataAccessError('authorization_denied');
     }
-    return Response.json({ provider: await getCodexProviderStatus() });
+    const [provider, grant, authorization] = await Promise.all([
+      getCodexProviderStatus(),
+      getCodexProviderGrant(context),
+      getCodexAuthorization(context),
+    ]);
+    return Response.json({ provider, grant, authorization });
   } catch (error) {
     return skillHubErrorResponse(error);
   }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 import {
@@ -9,6 +9,7 @@ import {
 } from '@allrice/contracts';
 
 import { HandlerError } from '../errors.js';
+import { skillInstructionsForStorageObjects } from '../skill-artifact.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -56,6 +57,7 @@ type HarnessEventPayload = HarnessEvent extends infer Event
         | 'order'
         | 'threadId'
         | 'turnId'
+        | 'sessionId'
         | 'messageId'
       >
     : never
@@ -65,6 +67,33 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+interface DshSourceMetadata {
+  sourceEventId: string;
+  sourceEventType: string;
+  sourceOccurredAt: string;
+  sourcePayload: Record<string, unknown>;
+}
+
+function sourceMetadata(event: Record<string, unknown>): DshSourceMetadata {
+  const sequence =
+    typeof event.seq === 'number' || typeof event.seq === 'string'
+      ? String(event.seq)
+      : randomUUID();
+  const occurredAt =
+    typeof event.time === 'string' && !Number.isNaN(Date.parse(event.time))
+      ? new Date(event.time).toISOString()
+      : typeof event.time === 'number' && Number.isFinite(event.time)
+        ? new Date(event.time).toISOString()
+        : new Date().toISOString();
+  return {
+    sourceEventId: `dsh:${sequence}`,
+    sourceEventType:
+      typeof event.type === 'string' ? event.type : 'dsh/session-event',
+    sourceOccurredAt: occurredAt,
+    sourcePayload: record(event.data) ?? {},
+  };
 }
 
 function textBlocks(value: unknown) {
@@ -203,7 +232,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     toolEvents: true,
     usageEvents: true,
     interrupt: true,
-    steer: false,
+    steer: true,
     compact: true,
     recover: true,
   } as const;
@@ -219,11 +248,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
   constructor(options: DshAdapterOptions = {}) {
     this.credentialResolver =
       options.credentialResolver ?? new DeploymentDshCredentialResolver();
-    this.runtimeCommand =
+    const configuredRuntimeCommand =
       options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
+    this.runtimeCommand = configuredRuntimeCommand ?? process.execPath;
     this.runtimeArgs =
       options.runtimeArgs ??
-      parseRuntimeArgs(process.env.ALLRICE_DSH_RUNTIME_ARGS);
+      (process.env.ALLRICE_DSH_RUNTIME_ARGS
+        ? parseRuntimeArgs(process.env.ALLRICE_DSH_RUNTIME_ARGS)
+        : configuredRuntimeCommand
+          ? []
+          : [
+              resolve(
+                import.meta.dirname,
+                '../../dsh/allrice-jsonrpc-runtime.mjs',
+              ),
+            ]);
     this.runtimeRoot = resolve(
       options.runtimeRoot ??
         process.env.ALLRICE_DSH_RUNTIME_ROOT ??
@@ -232,7 +271,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     this.cordisConfig = resolve(
       options.cordisConfig ??
         process.env.ALLRICE_DSH_CORDIS_CONFIG ??
-        'apps/worker/dsh/allrice-restricted.cordis.yml',
+        resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
     );
     this.requestTimeoutMs = requestTimeout(
       options.requestTimeoutMs ??
@@ -254,6 +293,23 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? input.threadId
       : expectedThreadId;
     const existing = this.runtimes.get(threadId);
+    const skillInstructions = await skillInstructionsForStorageObjects(
+      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      input.storageObjects,
+    );
+    const systemInstructions = [
+      input.kernel.systemInstructions,
+      ...(skillInstructions.length
+        ? [
+            'The following SkillHub instructions are immutable capability context:',
+            ...skillInstructions.flatMap((instructions, index) => [
+              `<skill-${index + 1}>`,
+              instructions,
+              `</skill-${index + 1}>`,
+            ]),
+          ]
+        : []),
+    ].join('\n\n');
     let generation = input.generation;
     if (!input.threadId || input.threadId !== threadId) {
       const bound = await input.onThreadBound?.({
@@ -267,6 +323,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       input,
       snapshot,
       threadId,
+      systemInstructions,
     });
     let order = 0;
     let turnId: string | null = null;
@@ -291,10 +348,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
           order: ++order,
           threadId,
           turnId,
+          sessionId: input.kernel.sessionId,
           messageId: input.kernel.assistantMessageId,
           sourceEventId: `dsh:${input.attempt}:${order}`,
           sourceEventType,
           sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: {},
           ...event,
         }),
       );
@@ -325,7 +384,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
             turnId = nextTurnId;
             await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
           },
-          onDelta: async (text) => emit({ type: 'assistant.delta', text }),
+          onDelta: async (text, source) =>
+            emit({ type: 'assistant.delta', text, ...source }),
         });
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;
@@ -333,8 +393,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const toolCall = parseToolCall(result.answer);
         if (!toolCall) {
           answer = result.answer;
-          await emit({ type: 'assistant.completed', text: answer });
-          await emit({ type: 'usage.updated', ...usage });
+          await emit({
+            type: 'assistant.completed',
+            text: answer,
+            ...(result.completionSource ?? {}),
+          });
+          await emit({
+            type: 'usage.updated',
+            ...usage,
+            ...(result.usageSource ?? result.completionSource ?? {}),
+          });
           break;
         }
         if (callIndex === maximumToolCallsPerTurn) {
@@ -417,15 +485,33 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   async interrupt(input: { threadId: string }) {
-    await this.dropRuntime(input.threadId);
+    const runtime = this.runtimes.get(input.threadId);
+    if (!runtime) return;
+    await runtime.client.interrupt(runtime.sessionId);
   }
 
   async compact(input: { threadId: string }) {
-    await this.dropRuntime(input.threadId);
+    const runtime = this.runtimes.get(input.threadId);
+    if (!runtime) return;
+    await runtime.client.compact(runtime.sessionId);
   }
 
   async recover(input: { threadId: string }) {
-    await this.dropRuntime(input.threadId);
+    const runtime = this.runtimes.get(input.threadId);
+    if (!runtime) return;
+    await runtime.client.recover(runtime.sessionId);
+  }
+
+  async steer(input: { threadId: string; message: string }) {
+    const runtime = this.runtimes.get(input.threadId);
+    if (!runtime) {
+      throw new HandlerError(
+        'DSH_SESSION_NOT_LIVE',
+        'DSH session is not live on this worker',
+        true,
+      );
+    }
+    await runtime.client.steer(runtime.sessionId, input.message);
   }
 
   async close() {
@@ -438,6 +524,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     input: HarnessExecutionInput;
     snapshot: DshExecutionSnapshot;
     threadId: string;
+    systemInstructions: string;
   }) {
     if (!this.runtimeCommand) {
       throw new HandlerError(
@@ -457,21 +544,39 @@ export class DshHarnessAdapter implements HarnessAdapter {
         false,
       );
     }
-    const credential = await this.credentialResolver.resolve({
-      reference: input.snapshot.credentialReference,
-      organizationId,
-      workspaceId,
-      ownerId,
-      route: input.snapshot.route,
-    });
+    const dshPlatformHome = resolve(
+      process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
+    );
+    const dshCredentialsPath = resolve(dshPlatformHome, '.credentials.yaml');
+    const credential =
+      input.snapshot.route === 'openai-codex'
+        ? null
+        : await this.credentialResolver.resolve({
+            reference: input.snapshot.credentialReference,
+            organizationId,
+            workspaceId,
+            ownerId,
+            route: input.snapshot.route,
+          });
+    const codexGrantMetadata =
+      input.snapshot.route === 'openai-codex'
+        ? await stat(dshCredentialsPath).catch(() => null)
+        : null;
+    if (input.snapshot.route === 'openai-codex' && !codexGrantMetadata) {
+      throw new HandlerError(
+        'CODEX_SUBSCRIPTION_AUTH_REQUIRED',
+        'The platform Codex subscription must be authorized before DSH can use it',
+        false,
+      );
+    }
     const fingerprint = createHash('sha256')
       .update(
         JSON.stringify({
           snapshot: input.snapshot,
-          systemInstructions: input.input.kernel.systemInstructions,
-          credentialDigest: createHash('sha256')
-            .update(credential.apiKey)
-            .digest('hex'),
+          systemInstructions: input.systemInstructions,
+          credentialDigest: credential
+            ? createHash('sha256').update(credential.apiKey).digest('hex')
+            : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
         }),
       )
       .digest('hex');
@@ -495,26 +600,42 @@ export class DshHarnessAdapter implements HarnessAdapter {
       );
     }
     await mkdir(tenantRoot, { recursive: true, mode: 0o700 });
+    await mkdir(dshPlatformHome, { recursive: true, mode: 0o700 });
     const environment: Record<string, string> = {
       PATH: process.env.PATH ?? '/usr/bin:/bin',
       LANG: process.env.LANG ?? 'C.UTF-8',
       DSH_CORDIS_CONFIG: this.cordisConfig,
+      DSH_HOME: dshPlatformHome,
+      DSH_CREDENTIALS_PATH: resolve(dshPlatformHome, '.credentials.yaml'),
       DSH_CWD: tenantRoot,
       DSH_SESSION_ROOT: resolve(tenantRoot, 'sessions'),
       DSH_MODEL: input.snapshot.model,
+      DSH_CODEX_MODEL:
+        input.snapshot.route === 'openai-codex'
+          ? input.snapshot.model
+          : 'gpt-5.6-luna',
+      DSH_OPENAI_COMPATIBLE_MODEL:
+        input.snapshot.route === 'openai-compatible'
+          ? input.snapshot.model
+          : 'allrice-unused',
       DSH_REASONING_EFFORT: mappedReasoning(input.snapshot.reasoningEffort),
       DSH_SYSTEM_PROMPT: [
-        input.input.kernel.systemInstructions,
+        input.systemInstructions,
         'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',
       ].join('\n\n'),
+      DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+      DSH_MAX_OUTPUT_TOKENS: String(input.input.maxOutputTokens ?? 16_000),
     };
-    if (input.snapshot.route === 'deepseek-official') {
-      environment.DEEPSEEK_API_KEY = credential.apiKey;
+    if (input.snapshot.route === 'openai-codex') {
+      // The DSH credential service resolves and refreshes the platform OAuth
+      // grant. No token is copied into the child environment.
+    } else if (input.snapshot.route === 'deepseek-official') {
+      environment.DEEPSEEK_API_KEY = credential!.apiKey;
       if (input.snapshot.baseUrl) {
         environment.DEEPSEEK_BASE_URL = input.snapshot.baseUrl;
       }
     } else {
-      environment.OPENAI_COMPATIBLE_API_KEY = credential.apiKey;
+      environment.OPENAI_COMPATIBLE_API_KEY = credential!.apiKey;
       environment.OPENAI_COMPATIBLE_BASE_URL = input.snapshot.baseUrl!;
     }
     const runtime: DshRuntime = {
@@ -533,6 +654,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
+        maxTokens: input.input.maxOutputTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
       this.runtimes.set(input.threadId, runtime);
@@ -548,7 +670,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     prompt: string;
     signal: AbortSignal;
     onTurn(turnId: string): Promise<void>;
-    onDelta(text: string): Promise<void>;
+    onDelta(text: string, source: DshSourceMetadata): Promise<void>;
   }) {
     let rawAnswer = '';
     let answer = '';
@@ -563,6 +685,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       settle = resolveIdle;
     });
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+    let completionSource: DshSourceMetadata | undefined;
+    let usageSource: DshSourceMetadata | undefined;
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
       if (
@@ -577,6 +701,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const event = record(notification.params.event);
       const data = record(event?.data);
       if (!event || !data) return;
+      const source = sourceMetadata(event);
       if (event.type === 'turn/start') {
         const turn =
           typeof data.turn === 'number' || typeof data.turn === 'string'
@@ -599,7 +724,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         if (!delta) return;
         if (deltaMode === 'tool') return;
         if (deltaMode === 'answer') {
-          await input.onDelta(delta);
+          await input.onDelta(delta, source);
           return;
         }
         deltaBuffer += delta;
@@ -610,11 +735,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
           return;
         }
         deltaMode = 'answer';
-        await input.onDelta(deltaBuffer);
+        await input.onDelta(deltaBuffer, source);
         deltaBuffer = '';
         return;
       }
       if (event.type === 'assistant/message') {
+        completionSource = source;
         const message = record(data.message);
         const final = textBlocks(message?.content);
         if (final) {
@@ -626,6 +752,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usage.inputTokens += positiveInteger(eventUsage?.inputTokens);
         usage.cachedInputTokens += positiveInteger(eventUsage?.cacheReadTokens);
         usage.outputTokens += positiveInteger(eventUsage?.outputTokens);
+        usageSource = source;
       }
       if (event.type === 'turn/end') {
         const reason = record(data.reason);
@@ -652,7 +779,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         });
     });
     const abort = () => {
-      void input.runtime.client.close();
+      void input.runtime.client.interrupt(input.runtime.sessionId);
       settle();
     };
     input.signal.addEventListener('abort', abort, { once: true });
@@ -670,9 +797,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       }
       if (deltaMode === 'unknown' && deltaBuffer && !parseToolCall(answer)) {
-        await input.onDelta(deltaBuffer);
+        await input.onDelta(deltaBuffer, {
+          sourceEventId: `dsh:buffer:${randomUUID()}`,
+          sourceEventType: 'assistant/chunk',
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: { text: deltaBuffer },
+        });
       }
-      return { answer, usage };
+      return { answer, usage, completionSource, usageSource };
     } finally {
       unsubscribe();
       input.signal.removeEventListener('abort', abort);

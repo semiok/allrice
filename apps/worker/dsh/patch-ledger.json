@@ -1,4 +1,13 @@
 {
   "schemaVersion": 1,
-  "patches": []
+  "patches": [
+    {
+      "id": "allrice-jsonrpc-lifecycle-v1",
+      "issue": "MET-85",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
+      "reason": "Expose native session lifecycle and report the approved distribution version without modifying upstream packages."
+    }
+  ]
 }

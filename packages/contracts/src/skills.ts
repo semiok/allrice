@@ -195,14 +195,36 @@ export type CodexExecutionSnapshot = z.infer<
 export const DshExecutionSnapshotSchema = z
   .object({
     provider: z.literal('dsh'),
-    authMode: z.literal('allrice_credential'),
-    route: z.enum(['deepseek-official', 'openai-compatible']),
+    authMode: z.enum(['allrice_credential', 'platform_subscription']),
+    route: z.enum(['openai-codex', 'deepseek-official', 'openai-compatible']),
     model: z.string().min(1).max(200),
     reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
     credentialReference: z.string().min(1).max(255),
     baseUrl: z.string().url().max(2_000).nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((snapshot, context) => {
+    if (
+      snapshot.route === 'openai-codex' &&
+      snapshot.authMode !== 'platform_subscription'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['authMode'],
+        message: 'OpenAI Codex is a platform subscription Provider in DSH',
+      });
+    }
+    if (
+      snapshot.route !== 'openai-codex' &&
+      snapshot.authMode !== 'allrice_credential'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['authMode'],
+        message: 'API Providers require an AllRice credential',
+      });
+    }
+  });
 export type DshExecutionSnapshot = z.infer<typeof DshExecutionSnapshotSchema>;
 
 export const HarnessExecutionSnapshotSchema = z.union([

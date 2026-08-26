@@ -1,19 +1,20 @@
 # AllRice ChatFlow Runtime
 
-> Status: V1 dual-track convergence from
+> Status: dual-track implementation from
 > [MET-79](https://linear.app/metasnowsky/issue/MET-79/allrice-chatflow-runtime多-harness-对话控制平面收敛与双轨迁移)
-> is being hardened as ChatFlow 2.0 under
+> is implemented as ChatFlow 2.0 under
 > [MET-85](https://linear.app/metasnowsky/issue/MET-85).
 
-**AllRice ChatFlow is the multi-Harness SaaS conversation control plane. It
-manages Session, Run, event delivery, context recovery, authorization and
-Harness routing.**
+**AllRice ChatFlow is the SaaS conversation control plane above DSH. It manages
+Session, Run, event delivery, context recovery, authorization and Provider
+routing while DSH is the single execution Harness.**
 
 ChatFlow Runtime is not a Harness. It does not implement model inference, an
-agent loop, token generation or a provider's internal tool planner. Codex, DSH
-and future Harnesses retain their native sessions, agent loops, streaming
-events and execution semantics. ChatFlow turns those capabilities into one
-tenant-safe, durable and recoverable AllRice product experience.
+agent loop, token generation or a provider's internal tool planner. DSH retains
+its native sessions, agent loop, streaming events and execution semantics.
+Codex subscription, MiniMax and later API models are DSH Providers, not peer
+Harnesses. ChatFlow turns those capabilities into one tenant-safe, durable and
+recoverable AllRice product experience.
 
 ```text
 AllRice SaaS Platform
@@ -22,10 +23,11 @@ AllRice SaaS Platform
     ├── Realtime Event Gateway
     ├── Context & Checkpoint
     ├── Tenant Policy / Tool Broker
-    └── Harness Router
-        ├── CodexHarnessAdapter
-        ├── DshHarnessAdapter
-        └── FutureHarnessAdapter
+    └── DshHarnessAdapter
+        └── DSH Provider Router
+            ├── openai-codex (platform ChatGPT subscription)
+            ├── openai-compatible (MiniMax and managed APIs)
+            └── deepseek-official
 ```
 
 ## Ownership
@@ -37,8 +39,8 @@ AllRice SaaS Platform
 | Tool Broker enforcement and audit            | Tool selection and native tool events     |
 | Durable RunEvent order and replay            | Native streaming event production         |
 | Browser delivery, reconnect and backpressure | Provider protocol and token generation    |
-| Cross-Worker/Harness recovery checkpoints    | Live-session context while runtime exists |
-| Harness routing, fallback and capabilities   | Capability-specific execution semantics   |
+| Cross-Worker recovery checkpoints            | Live-session context while runtime exists |
+| Provider routing, fallback and capabilities  | Capability-specific execution semantics   |
 
 The browser never connects directly to a Harness runtime. A Harness may request
 an operation, but AllRice remains the authority that decides whether the
@@ -46,8 +48,8 @@ tenant, employee and actor may execute it.
 
 ## Current path
 
-Codex App Server and the DSH SDK runtime already emit native deltas. Their
-adapters normalize those events, and the Worker batches assistant deltas for up
+The DSH SDK runtime emits native deltas for every Provider, including the Codex
+subscription route. Its adapter normalizes those events, and the Worker batches assistant deltas for up
 to 80 ms or 512 characters before persisting ordered RunEvents. The Web SSE
 route discovers new durable events through PostgreSQL notifications, with the
 150 ms poller retained as a fallback. Last-Event-ID and the RunEvent sequence
@@ -64,12 +66,19 @@ The implementation exposes `GET /api/v1/admin/chatflow` to organization admins
 for rollout policy and process-local delivery counters. Set
 `ALLRICE_CHATFLOW_REALTIME=0` for an emergency return to polling, or use
 `ALLRICE_CHATFLOW_REALTIME_ROLLOUT_JSON` for organization, workspace, employee
-revision and Harness canaries.
+revision and Provider canaries.
 
-ChatFlow 2.0 preserves the native Harness event type and occurrence timestamp
-alongside the normalized event. The SSE response advertises
+ChatFlow 2.0 preserves the native Harness event type, source payload and
+occurrence timestamp alongside the normalized event. Clients opt into the V2
+envelope with `contract=chatflow-v2`; the existing V1 response remains available
+for dual-track rollback. The SSE response advertises
 `x-allrice-chatflow-version: 2`; PostgreSQL remains authoritative even when the
 delivery path uses notifications.
+
+The new `/chatflow` client reconnects from the last durable cursor, deduplicates
+by Event ID, renders native tool/turn/compaction lifecycle events, exposes
+cancel/recovery only when supported, and shows Session context pressure. It does
+not split a completed answer into simulated streaming chunks.
 
 Stage 3 does **not** immediately delete polling. Controlled retirement remains
 behind the exit gates below. Redis Streams and NATS are represented only by the
@@ -92,7 +101,7 @@ Harness native event
    delivery never becomes the only copy of an event.
 3. A realtime failure, browser reconnect or Worker restart must recover from
    PostgreSQL using the last durable sequence.
-4. Rollout is gated by Harness, employee and workspace, with an emergency-off
+4. Rollout is gated by Provider, employee and workspace, with an emergency-off
    switch that returns traffic to the current path.
 5. Duplicate logic is removed only after event integrity, recovery and latency
    targets remain healthy through canary and rollback drills.
@@ -118,14 +127,14 @@ context checkpoints.
 
 - Freeze ChatFlow terminology, ownership and the canonical event contract.
 - Preserve Harness source identity, source event ID, generation, attempt, turn,
-  order and timestamp when normalizing Codex and DSH events.
-- Add replay fixtures and conformance tests from real Codex App Server and DSH
-  SDK event sequences.
+  order and timestamp when normalizing DSH events across Providers.
+- Add replay fixtures and conformance tests from DSH native event sequences for
+  both subscription and API Providers.
 - Drive UI actions from the Harness Capability Matrix; never emulate an
   unsupported capability.
 - Prohibit synthetic streaming from a completed answer.
-- Prefer native context management while a Harness runtime is live; reserve
-  AllRice checkpoints for cross-Worker, cross-Harness and disaster recovery.
+- Prefer native context management while a DSH runtime is live; reserve
+  AllRice checkpoints for cross-Worker and disaster recovery.
 - Record baseline latency, recovery, event-integrity and database-load metrics.
 
 The existing PostgreSQL plus SSE path remains unchanged in this stage.
@@ -139,7 +148,7 @@ The existing PostgreSQL plus SSE path remains unchanged in this stage.
   heartbeat, batching, backpressure and slow-client handling.
 - Emit acknowledged stop/cancel events.
 - Add runtime affinity and cross-replica recovery constraints.
-- Canary by workspace, employee and Harness with emergency-off.
+- Canary by workspace, employee and Provider with emergency-off.
 
 The realtime track is successful only if losing it does not interrupt the
 conversation and the durable track can reconstruct the exact transcript.
@@ -148,8 +157,7 @@ conversation and the durable track can reconstruct the exact transcript.
 
 - Render common thinking/working, tool, approval, compaction, recovery and
   routing states through one ChatFlow event registry.
-- Preserve Harness differences: Codex may expose active-turn steer while a DSH
-  session without steer queues the next message.
+- Preserve Provider differences without exposing a second Harness contract.
 - Prefer native structured tool events and retire the DSH text tool envelope
   only after the upstream protocol and Tool Broker bridge pass conformance.
 - Introduce unified observability and evaluation dashboards.
@@ -162,13 +170,13 @@ conversation and the durable track can reconstruct the exact transcript.
 The old path cannot be retired until canary and rollback exercises demonstrate
 acceptable first-token latency, inter-delta latency, stop latency, zero event
 loss and reordering, bounded duplication, successful reconnect and Session
-recovery, stable tool completion, Codex/DSH contract conformance and acceptable
+recovery, stable tool completion, DSH subscription/API Provider conformance and acceptable
 database connection/query load.
 
 ## Non-goals
 
 - creating another Harness;
-- copying the Codex or DSH Web UI;
+- copying the DSH Web UI instead of building the role-aware AllRice SaaS UI;
 - allowing browsers to connect directly to Harness runtimes;
 - replacing durable business data with Redis or NATS;
 - enabling shell or host filesystem access outside the Tool Broker/sandbox

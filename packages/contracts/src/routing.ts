@@ -4,6 +4,7 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { HarnessKindSchema } from './harness.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillCapabilitySchema } from './skills.ts';
+import { ProviderFailureCategorySchema } from './governance.ts';
 
 export const RouteKindSchema = z.enum([
   'direct',
@@ -26,9 +27,18 @@ export const RouteReasonCodeSchema = z.enum([
   'excluded_approval_required',
   'excluded_connector_identity',
   'fallback_no_authorized_candidate',
+  'primary_provider_selected',
+  'fallback_provider_selected',
+  // Historical values retained so durable decisions written before the
+  // single-DSH migration remain readable. New executions must use the
+  // provider-scoped reason codes above.
   'primary_harness_selected',
   'fallback_harness_selected',
   'provider_unavailable',
+  'fallback_condition_provider_unavailable',
+  'fallback_condition_rate_limited',
+  'fallback_condition_timeout',
+  'fallback_condition_transient_error',
 ]);
 export type RouteReasonCode = z.infer<typeof RouteReasonCodeSchema>;
 
@@ -82,6 +92,16 @@ export const RouteDecisionSchema = z
     modelConnectionId: UuidSchema.nullable().default(null),
     modelCatalogEntryId: UuidSchema.nullable().default(null),
     modelPolicyRevision: z.number().int().positive().nullable().default(null),
+    fallbackFromDecisionId: UuidSchema.nullable().default(null),
+    fallbackCondition: z
+      .enum([
+        'provider_unavailable',
+        'rate_limited',
+        'timeout',
+        'transient_error',
+      ])
+      .nullable()
+      .default(null),
     generation: z.number().int().nonnegative(),
     attempt: z.number().int().positive(),
     reasonCodes: z.array(RouteReasonCodeSchema).min(1).max(32),
@@ -99,6 +119,7 @@ export const RouteOutcomeSchema = z
     outputTokens: z.number().int().nonnegative(),
     costCents: z.number().nonnegative(),
     errorCode: z.string().trim().min(1).max(160).nullable(),
+    failureCategory: ProviderFailureCategorySchema.nullable().default(null),
     completedAt: TimestampSchema,
   })
   .strict();

@@ -128,6 +128,38 @@ export class DshProtocolClient {
     return result.messageId;
   }
 
+  async interrupt(sessionId: string) {
+    return this.request('session/interrupt', { sessionId }, 10_000);
+  }
+
+  async steer(sessionId: string, text: string) {
+    return this.request('session/steer', { sessionId, text }, 10_000);
+  }
+
+  async compact(sessionId: string) {
+    return this.request('session/compact', { sessionId });
+  }
+
+  async recover(sessionId: string) {
+    return this.request('session/recover', { sessionId });
+  }
+
+  async closeSession(sessionId: string) {
+    return this.request('session/close', { sessionId }, 10_000);
+  }
+
+  async providerStatus() {
+    return this.request('provider/status', undefined, 10_000);
+  }
+
+  async authorizeCodex() {
+    return this.request('provider/authorize-codex', undefined, 20 * 60_000);
+  }
+
+  async cancelCodexAuthorization() {
+    return this.request('provider/cancel-codex', undefined, 10_000);
+  }
+
   async close() {
     if (this.closing) return this.closed;
     this.closing = true;

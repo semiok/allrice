@@ -869,12 +869,18 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
   const sql = getDatabase();
   const row = await sql.begin(async (transaction) => {
     const rows = await transaction<JobRow[]>`
-      select * from allrice_jobs
-      where status = 'queued'
-        and available_at <= ${now}
-        and timeout_at > ${now}
-        and cancel_requested_at is null
-      order by priority desc, available_at, created_at, id
+      select candidate.* from allrice_jobs candidate
+      where candidate.status = 'queued'
+        and candidate.available_at <= ${now}
+        and candidate.timeout_at > ${now}
+        and candidate.cancel_requested_at is null
+      order by (
+        select count(*) from allrice_jobs active
+        where active.organization_id = candidate.organization_id
+          and active.status in ('claimed', 'running', 'waiting_approval')
+      ) asc,
+      candidate.priority desc, candidate.available_at,
+      candidate.created_at, candidate.id
       for update skip locked
       limit 1
     `;
