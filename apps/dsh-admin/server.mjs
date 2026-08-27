@@ -301,9 +301,11 @@ server.on('upgrade', (request, socket, head) => {
   proxy.ws(request, socket, head);
 });
 
-const dshCommand =
+const dshEntry =
   process.env.ALLRICE_DSH_COMMAND ??
-  fileURLToPath(new URL('node_modules/.bin/dsh', import.meta.url));
+  fileURLToPath(
+    new URL('node_modules/@deepseek-ai/dsh/lib/bin.js', import.meta.url),
+  );
 const platformPatch = fileURLToPath(
   new URL('allrice-platform.patch.yml', import.meta.url),
 );
@@ -337,8 +339,13 @@ writeFileSync(
   { mode: 0o600 },
 );
 const dsh = spawn(
-  dshCommand,
+  process.execPath,
   [
+    // The native DSH WebUI HMR service explicitly requires this Node flag.
+    // Launch the JavaScript entry directly so the flag reaches DSH instead of
+    // being swallowed by pnpm's generated shell wrapper.
+    '--expose-internals',
+    dshEntry,
     '--profile',
     'web',
     '--patch',
