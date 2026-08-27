@@ -13,9 +13,15 @@ export ALLRICE_WORKER_LEASE_MS="${ALLRICE_WORKER_LEASE_MS:-3000}"
 export ALLRICE_WORKER_HEARTBEAT_MS="${ALLRICE_WORKER_HEARTBEAT_MS:-1000}"
 
 cleanup() {
+  exit_code="$?"
+  if [[ "${exit_code}" != "0" ]]; then
+    docker compose --project-name "${compose_project}" ps --all || true
+    docker compose --project-name "${compose_project}" logs --no-color --tail 200 || true
+  fi
   if [[ "${keep_compose}" != "1" ]]; then
     docker compose --project-name "${compose_project}" down --volumes --remove-orphans
   fi
+  return "${exit_code}"
 }
 
 trap cleanup EXIT
