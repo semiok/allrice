@@ -1,7 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import type {
   ChatFlowEventEnvelope,
@@ -9,6 +16,7 @@ import type {
 } from '@allrice/contracts';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
+import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { AssistantMarkdown } from './assistant-markdown';
@@ -235,11 +243,22 @@ export function ChatFlowClient() {
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
   const activeStream = useRef<AbortController | null>(null);
   const traceLoads = useRef(new Set<string>());
-  const transcriptEnd = useRef<HTMLDivElement | null>(null);
+  const conversationScroll = useRef<HTMLDivElement | null>(null);
+  const transcriptColumn = useRef<HTMLDivElement | null>(null);
+  const followTranscript = useRef(true);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const composing = useRef(false);
+
+  const scrollToTranscriptBottom = useCallback(() => {
+    const scrollRegion = conversationScroll.current;
+    if (!scrollRegion) return;
+    scrollRegion.scrollTop = scrollRegion.scrollHeight;
+    followTranscript.current = true;
+    setAtTranscriptBottom(true);
+  }, []);
 
   const tenantHeaders = useMemo<Record<string, string>>(
     () =>
@@ -454,6 +473,8 @@ export function ChatFlowClient() {
       setHistory(null);
       return;
     }
+    followTranscript.current = true;
+    setAtTranscriptBottom(true);
     setRunView(null);
     setRunTraces({});
     traceLoads.current.clear();
@@ -482,13 +503,38 @@ export function ChatFlowClient() {
   }, [history, loadRunTrace, runView?.runId]);
 
   useEffect(() => {
-    const scrollRegion =
-      transcriptEnd.current?.closest<HTMLElement>('[data-chat-scroll]');
-    scrollRegion?.scrollTo({
-      behavior: 'smooth',
-      top: scrollRegion.scrollHeight,
+    const scrollRegion = conversationScroll.current;
+    if (!scrollRegion) return;
+    const handleScroll = () => {
+      const atBottom = isConversationAtBottom(scrollRegion);
+      followTranscript.current = atBottom;
+      setAtTranscriptBottom(atBottom);
+    };
+    scrollRegion.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+    return () => scrollRegion.removeEventListener('scroll', handleScroll);
+  }, [activeId, history?.messages.length]);
+
+  useLayoutEffect(() => {
+    if (followTranscript.current) scrollToTranscriptBottom();
+  }, [history, runView, scrollToTranscriptBottom]);
+
+  useEffect(() => {
+    const column = transcriptColumn.current;
+    const scrollRegion = conversationScroll.current;
+    if (!column || !scrollRegion || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const composer = scrollRegion.querySelector<HTMLElement>(
+      '[data-composer-seat]',
+    );
+    const observer = new ResizeObserver(() => {
+      if (followTranscript.current) scrollToTranscriptBottom();
     });
-  }, [history, runView]);
+    observer.observe(column);
+    if (composer) observer.observe(composer);
+    return () => observer.disconnect();
+  }, [activeId, history?.messages.length, scrollToTranscriptBottom]);
 
   useEffect(
     () => () => {
@@ -641,6 +687,8 @@ export function ChatFlowClient() {
     const clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
     const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
+    followTranscript.current = true;
+    setAtTranscriptBottom(true);
     setBusy(true);
     setError('');
     try {
@@ -1157,11 +1205,12 @@ export function ChatFlowClient() {
             <div
               className={`${conversationUi.scrollBody} ${styles.conversationBody}`}
               data-conversation-scroll
+              ref={conversationScroll}
             >
               <div className={conversationUi.viewArea}>
                 <div className={chatUi.root}>
                   <div className={chatUi.scroll} data-chat-scroll>
-                    <div className={chatUi.column}>
+                    <div className={chatUi.column} ref={transcriptColumn}>
                       {history?.messages.map((message) => {
                         const messageRun =
                           message.runId && runView?.runId === message.runId
@@ -1300,13 +1349,26 @@ export function ChatFlowClient() {
                           重新连接并恢复执行记录
                         </button>
                       ) : null}
-                      <div ref={transcriptEnd} />
                     </div>
+                    {!atTranscriptBottom ? (
+                      <div className={chatUi.toBottomSlot}>
+                        <button
+                          aria-label="回到底部"
+                          className={chatUi.toBottom}
+                          onClick={scrollToTranscriptBottom}
+                          title="回到底部"
+                          type="button"
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
               <div
                 className={`${conversationUi.composerSeat} ${styles.composerDock}`}
+                data-composer-seat
               >
                 {renderComposer(false)}
               </div>
