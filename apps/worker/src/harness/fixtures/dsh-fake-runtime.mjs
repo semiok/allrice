@@ -148,6 +148,9 @@ lines.on('line', (line) => {
   } else if (prompt.includes('use-tool-with-preamble')) {
     text =
       'I will check that now.\n<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';
+  } else if (prompt.includes('use-tool-with-postamble')) {
+    text =
+      '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>I will summarize after the tool returns.';
   } else if (prompt.includes('use-tool')) {
     text =
       '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';

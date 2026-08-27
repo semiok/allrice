@@ -241,6 +241,27 @@ describe('DshHarnessAdapter', () => {
     expect(result.answer).not.toContain('allrice_tool_call');
   });
 
+  it('accepts a single tool envelope before a harmless model postamble', async () => {
+    const adapter = createAdapter();
+    const calls: string[] = [];
+    const result = await adapter.execute(
+      executionInput({
+        prompt: 'use-tool-with-postamble',
+        onToolCall: async (call) => {
+          calls.push(call.name);
+          return {
+            modelContent: '[{"id":"one"}]',
+            summary: 'one file',
+            itemCount: 1,
+          };
+        },
+      }),
+    );
+    expect(calls).toEqual(['workspace.file.list']);
+    expect(result.answer).toBe('tool-finished');
+    expect(result.answer).not.toContain('allrice_tool_call');
+  });
+
   it.each(['deepseek-official', 'openai-compatible'] as const)(
     'supports the %s route without inheriting Worker secrets',
     async (route) => {
