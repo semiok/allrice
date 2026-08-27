@@ -291,23 +291,6 @@ function nativeEventView(event: Record<string, unknown>) {
       ...source,
     };
   }
-  if (type === 'tool/call' || type === 'tool/result') {
-    const name = shortText(data.name, 160);
-    const failed = Boolean(data.error);
-    return {
-      type: 'native.event' as const,
-      presentation:
-        name === 'web.search' ? ('search' as const) : ('tool' as const),
-      status:
-        type === 'tool/call'
-          ? ('started' as const)
-          : failed
-            ? ('failed' as const)
-            : ('completed' as const),
-      label: name ?? (type === 'tool/call' ? '工具调用' : '工具调用完成'),
-      ...source,
-    };
-  }
   return null;
 }
 
@@ -373,10 +356,14 @@ function mappedReasoning(
 }
 
 function toolBridgeInstructions(input: HarnessExecutionInput) {
-  if (input.tools.length === 0) {
+  const bridgedTools = input.tools.filter((tool) => tool.name !== 'web.search');
+  if (bridgedTools.length === 0) {
+    if (input.tools.some((tool) => tool.name === 'web.search')) {
+      return 'Use the native DSH web_search tool for current information. Do not emit AllRice XML tool envelopes.';
+    }
     return 'No external tools are available. Never claim that a tool was called.';
   }
-  const definitions = input.tools.map((tool) => ({
+  const definitions = bridgedTools.map((tool) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema,
@@ -824,6 +811,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         JSON.stringify({
           snapshot: input.snapshot,
           systemInstructions: input.systemInstructions,
+          nativeTools: input.input.tools
+            .map((tool) => tool.name)
+            .filter((name) => name === 'web.search')
+            .sort(),
           credentialDigest: credential
             ? createHash('sha256').update(credential.apiKey).digest('hex')
             : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
@@ -904,6 +895,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
+        nativeTools: input.input.tools
+          .map((tool) => tool.name)
+          .filter((name) => name === 'web.search'),
         maxTokens: input.input.maxOutputTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
@@ -939,6 +933,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let completionSource: DshSourceMetadata | undefined;
     let usageSource: DshSourceMetadata | undefined;
     const activeReasoningBlocks = new Set<number>();
+    const activeNativeTools = new Map<
+      string,
+      { name: string; query?: string }
+    >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
       if (
@@ -954,6 +952,84 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const data = record(event?.data);
       if (!event || !data) return;
       const source = sourceMetadata(event);
+      if (event.type === 'tool/call') {
+        const callId = shortText(data.callId, 240);
+        const rawName = shortText(data.name, 160);
+        if (!callId || !rawName) return;
+        const name = rawName === 'web_search' ? 'web.search' : rawName;
+        let args: Record<string, unknown> | null = null;
+        try {
+          args =
+            typeof data.arguments === 'string'
+              ? record(JSON.parse(data.arguments))
+              : record(data.arguments);
+        } catch {
+          args = null;
+        }
+        const queries = Array.isArray(args?.queries)
+          ? args.queries.filter((query) => typeof query === 'string')
+          : [];
+        const query = queries.length
+          ? queries.join(' · ').slice(0, 500)
+          : shortText(args?.query, 500);
+        activeNativeTools.set(callId, {
+          name,
+          ...(query ? { query } : {}),
+        });
+        await input.onNative({
+          type: 'tool.started',
+          toolCallId: callId,
+          name,
+          label: name,
+          source: 'harness',
+          ...source,
+          sourcePayload: {
+            ...source.sourcePayload,
+            presentation: name === 'web.search' ? 'search' : 'tool',
+            status: 'started',
+            ...(query ? { query } : {}),
+          },
+        });
+        return;
+      }
+      if (event.type === 'tool/result') {
+        const message = record(data.message);
+        const firstBlock = Array.isArray(message?.content)
+          ? record(message.content[0])
+          : null;
+        const callId = shortText(
+          firstBlock?.toolCallId ?? message?.toolCallId ?? message?.callId,
+          240,
+        );
+        if (!callId) return;
+        const active = activeNativeTools.get(callId);
+        const name = active?.name ?? 'tool';
+        const failed = Boolean(data.error);
+        await input.onNative({
+          type: failed ? 'tool.failed' : 'tool.completed',
+          toolCallId: callId,
+          name,
+          label: name,
+          source: 'harness',
+          summary:
+            name === 'web.search'
+              ? failed
+                ? '搜索失败'
+                : '搜索完成'
+              : failed
+                ? '工具执行失败'
+                : '工具执行完成',
+          ...source,
+          sourcePayload: {
+            ...source.sourcePayload,
+            presentation: name === 'web.search' ? 'search' : 'tool',
+            status: failed ? 'failed' : 'completed',
+            ...(active?.query ? { query: active.query } : {}),
+          },
+        });
+        activeNativeTools.delete(callId);
+        return;
+      }
       const nativeView = nativeEventView(event);
       if (nativeView) await input.onNative(nativeView);
       if (event.type === 'turn/start') {

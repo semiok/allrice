@@ -37,7 +37,7 @@ function event(
 }
 
 describe('projectNativeExperience', () => {
-  it('keeps DSH order and replaces a reasoning block in place', () => {
+  it('hides internal context and replaces a reasoning block in place', () => {
     const projected = projectNativeExperience([
       event(
         1,
@@ -71,9 +71,9 @@ describe('projectNativeExperience', () => {
         { turn: 1, step: 0, chunk: { index: 0 } },
       ),
     ]);
-    expect(projected).toHaveLength(2);
-    expect(projected.map((item) => item.kind)).toEqual(['context', 'think']);
-    expect(projected[1]).toMatchObject({
+    expect(projected).toHaveLength(1);
+    expect(projected.map((item) => item.kind)).toEqual(['think']);
+    expect(projected[0]).toMatchObject({
       status: 'completed',
       title: '思考完成',
       sequence: 2,
@@ -108,5 +108,65 @@ describe('projectNativeExperience', () => {
         sequence: 4,
       }),
     ]);
+  });
+
+  it('matches the DSH completed view with one search and the final think', () => {
+    const projected = projectNativeExperience([
+      event(
+        1,
+        'harness.native',
+        {
+          presentation: 'context',
+          status: 'completed',
+          label: '上下文注入',
+        },
+        { turn: 1 },
+      ),
+      event(
+        2,
+        'harness.native',
+        {
+          presentation: 'think',
+          status: 'completed',
+          label: '思考完成',
+        },
+        { turn: 1, step: 0, chunk: { index: 0 } },
+      ),
+      event(
+        3,
+        'tool.started',
+        { toolCallId: 'search-1', name: 'web.search' },
+        { presentation: 'search', query: 'NVIDIA price' },
+      ),
+      event(
+        4,
+        'tool.completed',
+        { toolCallId: 'search-1', name: 'web.search' },
+        { presentation: 'search', status: 'completed' },
+      ),
+      event(
+        5,
+        'harness.native',
+        {
+          presentation: 'think',
+          status: 'completed',
+          label: '思考完成',
+        },
+        { turn: 1, step: 2, chunk: { index: 0 } },
+      ),
+      event(
+        6,
+        'harness.native',
+        {
+          presentation: 'context',
+          status: 'completed',
+          label: '上下文注入',
+        },
+        { turn: 1 },
+      ),
+    ]);
+
+    expect(projected.map((item) => item.kind)).toEqual(['search', 'think']);
+    expect(projected.map((item) => item.sequence)).toEqual([3, 5]);
   });
 });

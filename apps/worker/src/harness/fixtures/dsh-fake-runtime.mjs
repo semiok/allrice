@@ -49,20 +49,20 @@ function assistant(sessionId, turn, text) {
   event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
 }
 
-function reasoning(sessionId, turn) {
+function reasoning(sessionId, turn, step = 0) {
   event(sessionId, 'assistant/chunk', {
     turn,
-    step: 0,
+    step,
     chunk: { type: 'block-start', index: 0, blockType: 'reasoning' },
   });
   event(sessionId, 'assistant/chunk', {
     turn,
-    step: 0,
+    step,
     chunk: { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
   });
   event(sessionId, 'assistant/chunk', {
     turn,
-    step: 0,
+    step,
     chunk: {
       type: 'block-end',
       index: 0,
@@ -162,8 +162,32 @@ lines.on('line', (line) => {
       hasOpenAiCompatible: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
     });
   } else if (prompt.includes('think-first')) {
-    reasoning(sessionId, turn);
+    reasoning(sessionId, turn, 0);
     text = 'visible answer';
+  } else if (prompt.includes('native-search')) {
+    reasoning(sessionId, turn, 0);
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId: 'native-search-1',
+      name: 'web_search',
+      arguments: JSON.stringify({ queries: ['NVIDIA price'] }),
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 1,
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'native-search-1',
+            content: [{ type: 'text', text: 'search evidence' }],
+          },
+        ],
+      },
+    });
+    reasoning(sessionId, turn, 2);
+    text = 'native-search-finished';
   } else {
     text = `turn-${turn}`;
   }

@@ -55,6 +55,7 @@ describe('AllRice DSH protocol runtime', () => {
         cwd: root,
         provider: 'openai-codex',
         model: 'gpt-5.6-luna',
+        nativeTools: ['web.search'],
         maxTokens: 1_024,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       }),

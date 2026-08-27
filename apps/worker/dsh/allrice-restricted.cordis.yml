@@ -1,6 +1,8 @@
 # AllRice owns identity, tools, authorization, credentials and durable context.
 # This DSH composition deliberately exposes no shell, terminal, filesystem,
-# browser, network, MCP, subagent or dynamic-plugin tools to the model.
+# browser, unrestricted network, MCP, subagent or dynamic-plugin tools. The
+# runtime may register a reviewed native tool only when AllRice freezes that
+# capability into the current tenant Session policy.
 
 - id: credentials
   name: '@deepseek-ai/dsh-credentials-local'

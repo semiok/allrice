@@ -31,9 +31,11 @@ conversation navigation.
    streamed over resumable SSE. Refresh and reconnect replay the same event IDs;
    the completed assistant message remains the final conversation authority.
 
-The Worker exposes only JSON Schema tool definitions through the AllRice DSH
-bridge. When DSH requests a tool, the Worker executes the tenant-scoped Tool
-Broker callback and returns the result to the same active turn. Skills are
+The Worker freezes approved native tool grants into the tenant-isolated DSH
+process. `web.search` uses DSH's native tool protocol and completes within one
+DSH Turn; its safe call/result events are still persisted and audited by
+ChatFlow. Tools without a native adapter continue through the tenant-scoped
+Tool Broker compatibility bridge. Skills are
 immutable capability context bound to an employee; standalone Skill execution
 is retired because it would create a second execution authority. PostgreSQL
 remains the source of truth for messages, Run ownership and authorization.

@@ -220,6 +220,49 @@ describe('DshHarnessAdapter', () => {
     ).not.toContain('allrice_tool_call');
   });
 
+  it('keeps native DSH search inside one turn and projects its tool events', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const calls: string[] = [];
+    const started: string[] = [];
+    const input = executionInput({
+      prompt: 'native-search',
+      events,
+      onToolCall: async (call) => {
+        calls.push(call.name);
+        return { modelContent: 'unused', summary: 'unused' };
+      },
+    });
+    input.tools = [
+      {
+        name: 'web.search',
+        description: 'Search the web',
+        inputSchema: { type: 'object' },
+      },
+    ];
+    input.onTurnStarted = async ({ turnId }) => {
+      started.push(turnId);
+    };
+
+    const result = await adapter.execute(input);
+
+    expect(result.answer).toBe('native-search-finished');
+    expect(started).toHaveLength(1);
+    expect(calls).toEqual([]);
+    expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
+      expect.objectContaining({
+        type: 'tool.started',
+        name: 'web.search',
+        source: 'harness',
+      }),
+      expect.objectContaining({
+        type: 'tool.completed',
+        name: 'web.search',
+        source: 'harness',
+      }),
+    ]);
+  });
+
   it('accepts a single tool envelope after a harmless model preamble', async () => {
     const adapter = createAdapter();
     const calls: string[] = [];

@@ -83,6 +83,7 @@ export class DshProtocolClient {
     cwd: string;
     provider: string;
     model: string;
+    nativeTools?: string[];
     maxTokens?: number;
     expectedVersion?: string;
   }) {

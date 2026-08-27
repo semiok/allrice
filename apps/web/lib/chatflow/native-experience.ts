@@ -143,5 +143,11 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
       });
     }
   }
-  return [...items.values()].sort((a, b) => a.sequence - b.sequence);
+  const projected = [...items.values()]
+    .filter((item) => item.kind !== 'context')
+    .sort((a, b) => a.sequence - b.sequence);
+  const lastThink = projected.findLast((item) => item.kind === 'think');
+  return projected.filter(
+    (item) => item.kind !== 'think' || item.id === lastThink?.id,
+  );
 }

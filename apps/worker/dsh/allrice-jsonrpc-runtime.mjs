@@ -11,6 +11,7 @@ import {
   resolveConfigPath,
 } from '@deepseek-ai/dsh-app-boot';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { credentialKey } from '@deepseek-ai/dsh-credentials';
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol';
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server';
@@ -131,8 +132,15 @@ function requiredSessionId(params) {
 class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   authorizationNotify = () => undefined;
   codexModels = null;
+  nativeTools = new Set();
+  nativeToolsRegistered = false;
 
   async initialize(params) {
+    const requestedTools = Array.isArray(params?.nativeTools)
+      ? params.nativeTools.filter((name) => typeof name === 'string')
+      : [];
+    this.nativeTools = new Set(requestedTools);
+    this.registerNativeTools();
     await super.initialize(params);
     return {
       serverInfo: {
@@ -148,6 +156,80 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         close: true,
       },
     };
+  }
+
+  registerNativeTools() {
+    if (this.nativeToolsRegistered || !this.nativeTools.has('web.search')) {
+      return;
+    }
+    this.nativeToolsRegistered = true;
+    this.ctx.systemPrompt.section({
+      name: 'tool:web_search',
+      order: 110,
+      text: 'Use web_search for current information. Provide one to four focused queries, use returned evidence, and cite relevant URLs as Markdown links.',
+    });
+    this.ctx.tools.register(
+      defineTool({
+        name: 'web_search',
+        description:
+          'Search the current web through the AllRice platform Codex Search Provider. Provide one to four focused queries.',
+        parameters: {
+          queries: {
+            type: 'array',
+            required: true,
+            items: { type: 'string' },
+            description: 'One to four non-empty web search queries.',
+          },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              content: { type: 'string', required: true },
+            },
+          },
+          render: (_args, value) => [{ type: 'text', text: value.content }],
+        },
+        timeoutMs: 60_000,
+        isConcurrencySafe: () => true,
+        execute: async (args) => {
+          if (
+            !Array.isArray(args.queries) ||
+            args.queries.length < 1 ||
+            args.queries.length > 4 ||
+            args.queries.some(
+              (query) => typeof query !== 'string' || !query.trim(),
+            )
+          ) {
+            throw new Error(
+              'queries must contain one to four non-empty strings',
+            );
+          }
+          const queries = [
+            ...new Set(args.queries.map((query) => query.trim())),
+          ];
+          const results = await Promise.all(
+            queries.map((query) => this.searchCodex({ query, maxResults: 5 })),
+          );
+          return {
+            content: results
+              .map((result, index) =>
+                results.length === 1
+                  ? result.output
+                  : `### ${queries[index]}\n\n${result.output}`,
+              )
+              .join('\n\n'),
+          };
+        },
+        presentCall: (args) => ({
+          card: 'generic',
+          title: args.queries.join(', '),
+          kind: 'search',
+          rawInput: args.queries.join(', '),
+        }),
+      }),
+    );
   }
 
   async createSession(sessionId) {
