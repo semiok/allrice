@@ -8,8 +8,10 @@ import type {
   SaasCapabilityManifest,
 } from '@allrice/contracts';
 
+import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
+import { AssistantMarkdown } from './assistant-markdown';
 import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
 import chatUi from './dsh-upstream/ChatView.module.css';
 import conversationUi from './dsh-upstream/ConversationRoot.module.css';
@@ -224,7 +226,6 @@ export function ChatFlowClient() {
   const [error, setError] = useState('');
   const [runView, setRunView] = useState<RunView | null>(null);
   const [runTraces, setRunTraces] = useState<Record<string, RunTrace>>({});
-  const [feedback, setFeedback] = useState<Record<string, boolean>>({});
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
     [],
   );
@@ -238,6 +239,7 @@ export function ChatFlowClient() {
   const traceLoads = useRef(new Set<string>());
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const composing = useRef(false);
 
   const tenantHeaders = useMemo<Record<string, string>>(
     () =>
@@ -636,20 +638,56 @@ export function ChatFlowClient() {
   async function sendMessage() {
     const text = draft.trim();
     if (!workspace || !text || busy) return;
+    const clientMessageId = crypto.randomUUID();
+    const optimisticUserId = `optimistic-user:${clientMessageId}`;
+    const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
     setBusy(true);
     setError('');
     try {
       const sessionId = activeId ?? (await createSession());
       if (!sessionId) return;
       setDraft('');
-      const result = await readJson<{ run: { id: string } }>(
+      const createdAt = new Date().toISOString();
+      setHistory((current) =>
+        current && current.session.id === sessionId
+          ? {
+              ...current,
+              messages: [
+                ...current.messages,
+                {
+                  id: optimisticUserId,
+                  role: 'user',
+                  content: { text },
+                  status: 'completed',
+                  runId: null,
+                  createdAt,
+                },
+                {
+                  id: optimisticAssistantId,
+                  role: 'assistant',
+                  content: { text: 'Rice 正在处理…' },
+                  status: 'pending',
+                  runId: null,
+                  createdAt,
+                },
+              ],
+            }
+          : current,
+      );
+      const result = await readJson<{
+        run: { id: string };
+        fallbackRunId: string | null;
+        delivery: 'immediate' | 'steer_pending' | 'follow_up';
+        userMessage: Message;
+        assistantMessage: Message;
+      }>(
         await fetch(
           `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspace.workspaceId}`,
           {
             method: 'POST',
             headers: { 'content-type': 'application/json', ...tenantHeaders },
             body: JSON.stringify({
-              clientMessageId: crypto.randomUUID(),
+              clientMessageId,
               text,
               attachmentIds: pendingAttachments.map((item) => item.id),
               deliveryMode: 'auto',
@@ -658,9 +696,40 @@ export function ChatFlowClient() {
         ),
       );
       setPendingAttachments([]);
-      await loadHistory(sessionId);
+      const assistantRunId =
+        result.delivery === 'immediate' ? result.run.id : result.fallbackRunId;
+      setHistory((current) =>
+        current && current.session.id === sessionId
+          ? {
+              ...current,
+              messages: current.messages.map((message) =>
+                message.id === optimisticUserId
+                  ? result.userMessage
+                  : message.id === optimisticAssistantId
+                    ? {
+                        ...result.assistantMessage,
+                        runId: assistantRunId,
+                      }
+                    : message,
+              ),
+            }
+          : current,
+      );
       void streamRun(result.run.id);
+      void loadHistory(sessionId);
     } catch (cause) {
+      setHistory((current) =>
+        current
+          ? {
+              ...current,
+              messages: current.messages.filter(
+                (message) =>
+                  message.id !== optimisticUserId &&
+                  message.id !== optimisticAssistantId,
+              ),
+            }
+          : current,
+      );
       setDraft(text);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
     } finally {
@@ -682,27 +751,6 @@ export function ChatFlowClient() {
     ).catch((cause) =>
       setError(cause instanceof Error ? cause.message : '停止失败'),
     );
-  }
-
-  async function sendFeedback(message: Message, helpful: boolean) {
-    if (!workspace || !message.runId) return;
-    try {
-      await readJson(
-        await fetch(`/api/v1/runs/${message.runId}/feedback`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...tenantHeaders },
-          body: JSON.stringify({
-            workspaceId: workspace.workspaceId,
-            messageId: message.id,
-            helpful,
-            reason: null,
-          }),
-        }),
-      );
-      setFeedback((current) => ({ ...current, [message.runId!]: helpful }));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '反馈提交失败');
-    }
   }
 
   if (!workspace || !manifest) {
@@ -749,11 +797,30 @@ export function ChatFlowClient() {
           className={styles.composerInput}
           disabled={busy}
           onChange={(event) => setDraft(event.target.value)}
+          onCompositionEnd={() => {
+            window.setTimeout(() => {
+              composing.current = false;
+            }, 10);
+          }}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void sendMessage();
-            }
+            if (
+              !shouldSubmitComposerKey(
+                {
+                  key: event.key,
+                  shiftKey: event.shiftKey,
+                  repeat: event.repeat,
+                  nativeIsComposing: event.nativeEvent.isComposing,
+                  nativeKeyCode: event.nativeEvent.keyCode,
+                },
+                composing.current,
+              )
+            )
+              return;
+            event.preventDefault();
+            void sendMessage();
           }}
           placeholder={
             hero ? '告诉 Rice 你想完成什么工作' : '继续和 Rice 工作…'
@@ -1205,43 +1272,17 @@ export function ChatFlowClient() {
                                   <div
                                     className={`${assistantUi.body} ${styles.assistantCopy}`}
                                   >
-                                    {streamedText || message.content.text}
+                                    <AssistantMarkdown
+                                      text={
+                                        streamedText || message.content.text
+                                      }
+                                    />
                                   </div>
                                 )}
                                 {message.status === 'failed' ? (
                                   <small className={styles.failedMessage}>
                                     这次没有完成。
                                   </small>
-                                ) : null}
-                                {message.status === 'completed' &&
-                                message.runId ? (
-                                  <div
-                                    className={`${assistantUi.actions} ${styles.feedback}`}
-                                  >
-                                    <span>这个结果有帮助吗？</span>
-                                    <button
-                                      aria-pressed={
-                                        feedback[message.runId] === true
-                                      }
-                                      onClick={() =>
-                                        void sendFeedback(message, true)
-                                      }
-                                      type="button"
-                                    >
-                                      有用
-                                    </button>
-                                    <button
-                                      aria-pressed={
-                                        feedback[message.runId] === false
-                                      }
-                                      onClick={() =>
-                                        void sendFeedback(message, false)
-                                      }
-                                      type="button"
-                                    >
-                                      无用
-                                    </button>
-                                  </div>
                                 ) : null}
                               </div>
                             )}
