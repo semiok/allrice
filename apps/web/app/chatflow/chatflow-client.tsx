@@ -8,6 +8,8 @@ import type {
   SaasCapabilityManifest,
 } from '@allrice/contracts';
 
+import { projectNativeExperience } from '../../lib/chatflow/native-experience';
+
 import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
 import chatUi from './dsh-upstream/ChatView.module.css';
 import conversationUi from './dsh-upstream/ConversationRoot.module.css';
@@ -179,44 +181,20 @@ function providerForSession(workspace: Workspace, session?: Session) {
   return `${frozen.model} · DSH`;
 }
 
-function visibleEvent(event: ChatFlowEventEnvelope) {
-  return (
-    event.type.startsWith('tool.') ||
-    event.type.startsWith('context.') ||
-    event.type.startsWith('turn.') ||
-    event.type === 'routing.selected' ||
-    event.type === 'run.retrying' ||
-    event.type === 'run.failed' ||
-    event.type === 'run.canceled'
-  );
-}
-
-function eventLabel(event: ChatFlowEventEnvelope) {
-  const name = String(event.payload.name ?? event.payload.label ?? '');
-  const labels: Record<string, string> = {
-    'turn.started': 'Rice 已开始处理',
-    'turn.completed': '本轮处理完成',
-    'turn.failed': '本轮处理失败',
-    'turn.canceled': '本轮已停止',
-    'routing.selected': '已选择执行引擎',
-    'tool.started': name ? `正在使用 ${name}` : '正在调用工具',
-    'tool.completed': name ? `${name} 已完成` : '工具调用完成',
-    'tool.failed': name ? `${name} 调用失败` : '工具调用失败',
-    'context.compaction.started': '正在整理会话上下文',
-    'context.compaction.completed': '会话上下文已整理',
-    'context.compaction.failed': '会话上下文整理失败',
-    'run.retrying': '连接暂时中断，正在恢复',
-    'run.failed': '本次工作未完成',
-    'run.canceled': '本次工作已停止',
-  };
-  return labels[event.type] ?? event.type;
-}
-
 function assistantDelta(events: ChatFlowEventEnvelope[]) {
   return events
     .filter((event) => event.type === 'assistant.text.delta')
     .map((event) => String(event.payload.text ?? ''))
     .join('');
+}
+
+function nativeExperienceIcon(kind: string) {
+  if (kind === 'context') return '▣';
+  if (kind === 'search') return '◎';
+  if (kind === 'think') return '◉';
+  if (kind === 'todo') return '☷';
+  if (kind === 'compaction') return '↻';
+  return '◇';
 }
 
 function eventsFromSse(text: string) {
@@ -336,7 +314,7 @@ export function ChatFlowClient() {
           const headers: Record<string, string> = { ...tenantHeaders };
           if (cursor) headers['last-event-id'] = cursor;
           const response = await fetch(
-            `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}&contract=chatflow-v2`,
+            `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}`,
             { cache: 'no-store', headers, signal: controller.signal },
           );
           if (!response.ok || !response.body) await readJson(response);
@@ -442,7 +420,7 @@ export function ChatFlowClient() {
       }));
       try {
         const response = await fetch(
-          `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}&contract=chatflow-v2`,
+          `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}`,
           { cache: 'no-store', headers: tenantHeaders },
         );
         if (!response.ok) await readJson(response);
@@ -490,6 +468,16 @@ export function ChatFlowClient() {
       void streamRun(pending.runId);
     }
   }, [history, runView?.runId, streamRun]);
+
+  useEffect(() => {
+    const historicalRunIds = (history?.messages ?? [])
+      .map((message) => message.runId)
+      .filter((value): value is string => Boolean(value));
+    for (const runId of historicalRunIds) {
+      if (runView?.runId === runId) continue;
+      void loadRunTrace(runId);
+    }
+  }, [history, loadRunTrace, runView?.runId]);
 
   useEffect(() => {
     const scrollRegion =
@@ -719,14 +707,6 @@ export function ChatFlowClient() {
 
   if (!workspace || !manifest) {
     return <main className={styles.loading}>正在进入 AllRice ChatFlow…</main>;
-  }
-
-  if (!manifest.features.chatFlowV2) {
-    return (
-      <main className={styles.loading}>
-        ChatFlow 2.0 尚未对当前工作区开放。
-      </main>
-    );
   }
 
   const sessions = workspace.sessions.filter((session) => !session.archivedAt);
@@ -1125,8 +1105,8 @@ export function ChatFlowClient() {
                           : undefined;
                         const traceEvents =
                           messageRun?.events ?? trace?.events ?? [];
-                        const executionEvents =
-                          traceEvents.filter(visibleEvent);
+                        const nativeExperience =
+                          projectNativeExperience(traceEvents);
                         const messageIsRunning =
                           messageRun?.status === 'running' ||
                           messageRun?.status === 'connecting';
@@ -1160,56 +1140,62 @@ export function ChatFlowClient() {
                                   ) : null}
                                   <time>{formatTime(message.createdAt)}</time>
                                 </div>
-                                {message.runId ? (
-                                  <details
-                                    className={styles.executionGroup}
-                                    onToggle={(event) => {
-                                      if (
-                                        event.currentTarget.open &&
-                                        !messageIsRunning
-                                      ) {
-                                        void loadRunTrace(message.runId!);
-                                      }
-                                    }}
+                                {message.runId &&
+                                (nativeExperience.length > 0 ||
+                                  messageIsRunning ||
+                                  trace?.status === 'loading' ||
+                                  trace?.status === 'failed') ? (
+                                  <div
+                                    className={styles.nativeTimeline}
+                                    aria-label="DSH 工作过程"
                                   >
-                                    <summary>
-                                      {messageIsRunning
-                                        ? executionEvents.length
-                                          ? `${executionEvents.length} 条执行动态`
-                                          : '正在准备执行'
-                                        : trace?.status === 'loading'
-                                          ? '正在加载执行记录…'
-                                          : executionEvents.length
-                                            ? `执行记录 · ${executionEvents.length} 条动态`
-                                            : trace?.status === 'failed'
-                                              ? '执行记录加载失败，展开重试'
-                                              : '执行记录'}
-                                    </summary>
-                                    {executionEvents.map((event) => (
-                                      <div key={event.eventId}>
-                                        <i />
-                                        <span>{eventLabel(event)}</span>
-                                        <small>
-                                          {event.sourceEvent?.type ??
-                                            event.harness ??
-                                            ''}
-                                        </small>
+                                    {nativeExperience.map((item) => (
+                                      <div
+                                        className={styles.nativeEvent}
+                                        data-kind={item.kind}
+                                        data-status={item.status}
+                                        key={item.id}
+                                      >
+                                        <span
+                                          className={styles.nativeEventIcon}
+                                          aria-hidden="true"
+                                        >
+                                          {nativeExperienceIcon(item.kind)}
+                                        </span>
+                                        <div>
+                                          <strong>{item.title}</strong>
+                                          {item.detail ? (
+                                            <small>{item.detail}</small>
+                                          ) : null}
+                                        </div>
                                       </div>
                                     ))}
-                                    {!executionEvents.length ? (
-                                      <div>
-                                        <i />
-                                        <span>
-                                          {trace?.status === 'failed'
-                                            ? '暂时无法读取，收起后重新展开即可重试'
-                                            : messageIsRunning
-                                              ? 'Rice 正在理解你的需求'
-                                              : '展开后从 ChatFlow 恢复本次执行记录'}
-                                        </span>
-                                        <small>ChatFlow</small>
+                                    {!nativeExperience.length &&
+                                    trace?.status === 'failed' ? (
+                                      <button
+                                        className={styles.nativeTraceRetry}
+                                        onClick={() =>
+                                          void loadRunTrace(message.runId!)
+                                        }
+                                        type="button"
+                                      >
+                                        工作过程加载失败，点击重试
+                                      </button>
+                                    ) : null}
+                                    {!nativeExperience.length &&
+                                    trace?.status === 'loading' ? (
+                                      <div className={styles.nativeTraceState}>
+                                        正在恢复 DSH 工作过程…
                                       </div>
                                     ) : null}
-                                  </details>
+                                    {!nativeExperience.length &&
+                                    messageIsRunning &&
+                                    trace?.status !== 'loading' ? (
+                                      <div className={styles.nativeTraceState}>
+                                        DSH 正在准备本轮上下文…
+                                      </div>
+                                    ) : null}
+                                  </div>
                                 ) : null}
                                 {messageIsRunning && !streamedText ? (
                                   <div className={chatUi.turnStatus}>

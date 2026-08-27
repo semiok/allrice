@@ -42,7 +42,7 @@ function chatFlowEnvelope(input: {
   const sourceOccurredAt = payload.sourceOccurredAt;
   const nativePayload = payload.nativePayload;
   return ChatFlowEventEnvelopeSchema.parse({
-    schemaVersion: 2,
+    schemaVersion: 3,
     eventId: input.event.eventId,
     organizationId: input.context.organizationId,
     workspaceId: input.workspaceId,
@@ -87,14 +87,11 @@ function encodedEvent(
   event: RunEvent,
   context: RequestContext,
   workspaceId: string,
-  nativeContract: boolean,
 ) {
-  const data = nativeContract
-    ? chatFlowEnvelope({ event, context, workspaceId })
-    : event;
+  const data = chatFlowEnvelope({ event, context, workspaceId });
   return [
     `id: ${formatSseCursor({ runId: event.runId, sequence: event.sequence })}`,
-    `event: ${nativeContract ? 'chatflow-event' : 'run-event'}`,
+    'event: chatflow-event',
     `data: ${JSON.stringify(data)}`,
     '',
     '',
@@ -110,7 +107,6 @@ async function streamEvents(input: {
   initialEvents: RunEvent[];
   afterSequence: number;
   preferNotify: boolean;
-  nativeContract: boolean;
 }) {
   const encoder = new TextEncoder();
   let sequence = input.afterSequence;
@@ -147,14 +143,7 @@ async function streamEvents(input: {
     while (!input.request.signal.aborted) {
       for (const event of pending) {
         input.controller.enqueue(
-          encoder.encode(
-            encodedEvent(
-              event,
-              input.context,
-              input.workspaceId,
-              input.nativeContract,
-            ),
-          ),
+          encoder.encode(encodedEvent(event, input.context, input.workspaceId)),
         );
         sequence = event.sequence;
         incrementChatFlowMetric('eventsDelivered');
@@ -240,18 +229,14 @@ export async function GET(
       workspaceId,
       harness: harness === 'codex' || harness === 'dsh' ? harness : null,
     });
-    const nativeContract =
-      new URL(request.url).searchParams.get('contract') === 'chatflow-v2';
     if (
       new URL(request.url).searchParams.get('format') === 'json' ||
       request.headers.get('accept')?.includes('application/json')
     ) {
       return Response.json({
-        events: nativeContract
-          ? initialEvents.map((event) =>
-              chatFlowEnvelope({ event, context, workspaceId }),
-            )
-          : initialEvents,
+        events: initialEvents.map((event) =>
+          chatFlowEnvelope({ event, context, workspaceId }),
+        ),
       });
     }
     const stream = new ReadableStream<Uint8Array>({
@@ -265,7 +250,6 @@ export async function GET(
           initialEvents,
           afterSequence,
           preferNotify,
-          nativeContract,
         });
       },
     });
@@ -277,10 +261,8 @@ export async function GET(
         connection: 'keep-alive',
         'content-type': 'text/event-stream; charset=utf-8',
         'x-accel-buffering': 'no',
-        'x-allrice-chatflow-version': '2',
-        'x-allrice-chatflow-event-contract': nativeContract
-          ? 'chatflow-native-v2'
-          : 'run-event-v1',
+        'x-allrice-chatflow-version': '3',
+        'x-allrice-chatflow-event-contract': 'chatflow-native-v3',
         'x-allrice-chatflow-transport': preferNotify
           ? 'postgres-notify'
           : 'polling',

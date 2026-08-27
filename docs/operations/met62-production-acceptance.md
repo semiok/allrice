@@ -1,6 +1,6 @@
 # MET-62 production acceptance
 
-MET-62 is the convergence gate for ChatFlow 2.0, the platform model pool and
+MET-62 is the convergence gate for ChatFlow 3.0, the platform model pool and
 the independent SaaS UI. Passing unit tests alone is insufficient: the same
 artifact must pass contracts, build, migration, deployed health and reversible
 rollout checks.
@@ -39,15 +39,11 @@ database readiness and all new ChatFlow UI routes.
 
 ## Cutover and rollback
 
-1. Keep V1 SSE and legacy workspace enabled while the development canary runs.
-2. Enable ChatFlow 2.0 for internal users and compare durable Event IDs against
-   the realtime transcript.
-3. Set `ALLRICE_LEGACY_WORKSPACE_ENABLED=0` for the canary tenant only after the
-   manual matrix passes.
-4. Promote the same image to one production tenant.
-5. Default to the new UI only after stable observation; preserve the flags and
-   previous compatible image for rollback.
+1. Validate the ChatFlow 3.0 native event API and sanitizer in development.
+2. Compare live and refreshed projections by durable Event ID and sequence.
+3. Promote the same immutable image to one production tenant, then all tenants.
+4. Roll back only by deploying the previous compatible release if an incident
+   requires it; do not reactivate a second product UX.
 
-Rollback changes the UI/realtime flags or deploys the previous compatible
-image. It never rewrites Session snapshots, RouteDecision evidence or the usage
+Rollback never rewrites Session snapshots, RouteDecision evidence or the usage
 ledger. PostgreSQL remains authoritative throughout.

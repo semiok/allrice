@@ -37,9 +37,8 @@ export const SaasCapabilityManifestSchema = z
     surfaces: z.array(SaasSurfaceSchema),
     features: z
       .object({
-        chatFlowV2: z.boolean(),
+        chatFlowV3: z.literal(true),
         nativeHarnessEvents: z.boolean(),
-        legacyWorkspace: z.boolean(),
       })
       .strict(),
   })

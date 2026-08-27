@@ -374,7 +374,7 @@ describe('capability route decision', () => {
     expect(plan.selectedToolNames).toEqual(['automation.create']);
   });
 
-  it('prefers web.search when a search request also asks for source links', () => {
+  it('does not pre-route tenant-authorized read-only search tools', () => {
     const input = base();
     const snapshot = withCapabilities(input.snapshot);
     const plan = decideCapabilityRoute({
@@ -383,21 +383,23 @@ describe('capability route decision', () => {
         prompt: '联网查询 SpaceX 是否上市，并给出来源链接',
       },
       executionSnapshot: snapshot,
-      tools,
+      tools: tools.filter((tool) => tool.name !== 'web.search'),
     });
-    expect(plan.selectedToolNames).toEqual(['web.search']);
+    expect(plan.selectedKind).toBe('direct');
+    expect(plan.selectedToolNames).toEqual([]);
+    expect(plan.reasonCodes).toContain('direct_no_capability_match');
   });
 
-  it('treats an exact tool name as explicit intent', () => {
+  it('leaves even an explicitly named read-only tool to the DSH Agent Loop', () => {
     const input = base();
     const snapshot = withCapabilities(input.snapshot);
     const plan = decideCapabilityRoute({
       request: { ...input.request, prompt: '必须使用 web.search 查询' },
       executionSnapshot: snapshot,
-      tools,
+      tools: tools.filter((tool) => tool.name !== 'web.search'),
     });
-    expect(plan.selectedToolNames).toEqual(['web.search']);
-    expect(plan.reasonCodes).toContain('matched_explicit_intent');
+    expect(plan.selectedKind).toBe('direct');
+    expect(plan.selectedToolNames).toEqual([]);
   });
 
   it('fails closed when tenant or actor differs from the frozen snapshot', () => {

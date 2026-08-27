@@ -92,8 +92,223 @@ function sourceMetadata(event: Record<string, unknown>): DshSourceMetadata {
     sourceEventType:
       typeof event.type === 'string' ? event.type : 'dsh/session-event',
     sourceOccurredAt: occurredAt,
-    sourcePayload: record(event.data) ?? {},
+    sourcePayload: safeDshSourcePayload(event),
   };
+}
+
+function shortText(value: unknown, maximum = 240) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, maximum)
+    : undefined;
+}
+
+/**
+ * DSH's event log is intentionally lossless, but ChatFlow is a tenant-facing
+ * audit stream. Keep ordering and presentation facts while excluding prompts,
+ * credentials, raw tool arguments/results and hidden reasoning text.
+ */
+function safeDshSourcePayload(event: Record<string, unknown>) {
+  const type = typeof event.type === 'string' ? event.type : '';
+  const data = record(event.data) ?? {};
+  const turn =
+    typeof data.turn === 'number' || typeof data.turn === 'string'
+      ? data.turn
+      : undefined;
+  const step =
+    typeof data.step === 'number' || typeof data.step === 'string'
+      ? data.step
+      : undefined;
+  const common = {
+    ...(turn === undefined ? {} : { turn }),
+    ...(step === undefined ? {} : { step }),
+  };
+  if (type === 'assistant/chunk') {
+    const chunk = record(data.chunk) ?? {};
+    return {
+      ...common,
+      chunk: {
+        type: shortText(chunk.type),
+        ...(typeof chunk.index === 'number' ? { index: chunk.index } : {}),
+      },
+    };
+  }
+  if (type === 'assistant/message') {
+    const message = record(data.message) ?? {};
+    const content = Array.isArray(message.content) ? message.content : [];
+    return {
+      ...common,
+      interrupted: data.interrupted === true,
+      contentTypes: content
+        .map((block) => shortText(record(block)?.type, 80))
+        .filter(Boolean),
+    };
+  }
+  if (type === 'request/context') {
+    return {
+      provider: shortText(data.provider, 120),
+      model: shortText(data.model, 160),
+      ...(typeof data.contextWindow === 'number'
+        ? { contextWindow: data.contextWindow }
+        : {}),
+    };
+  }
+  if (type === 'request/header') {
+    return { reason: shortText(data.reason, 80) };
+  }
+  if (type === 'tool/call') {
+    return {
+      ...common,
+      callId: shortText(data.callId, 160),
+      name: shortText(data.name, 160),
+    };
+  }
+  if (type === 'tool/result') {
+    const message = record(data.message) ?? {};
+    const resultBlock = Array.isArray(message.content)
+      ? record(message.content[0])
+      : null;
+    const error = record(data.error);
+    return {
+      ...common,
+      callId: shortText(
+        resultBlock?.toolCallId ?? message.toolCallId ?? message.callId,
+        160,
+      ),
+      ...(error
+        ? {
+            error: {
+              name: shortText(error.name, 120),
+              code: shortText(error.code, 120),
+            },
+          }
+        : {}),
+    };
+  }
+  if (type === 'user/message') {
+    const source = record(data.source);
+    return {
+      ...common,
+      source: source
+        ? {
+            kind: shortText(source.kind, 80),
+            plugin: shortText(source.plugin, 120),
+            label: shortText(source.label ?? source.name, 160),
+          }
+        : undefined,
+    };
+  }
+  if (type === 'todo/write') {
+    return {
+      count: Array.isArray(data.todos) ? data.todos.length : 0,
+      completed: Array.isArray(data.todos)
+        ? data.todos.filter((todo) => record(todo)?.status === 'completed')
+            .length
+        : 0,
+    };
+  }
+  if (type.startsWith('compaction/')) {
+    return {
+      compactionId: shortText(data.compactionId, 160),
+      failed: Boolean(data.error),
+    };
+  }
+  return common;
+}
+
+function nativeEventView(event: Record<string, unknown>) {
+  const type = typeof event.type === 'string' ? event.type : '';
+  const data = record(event.data) ?? {};
+  const source = sourceMetadata(event);
+  if (type === 'request/context') {
+    const provider = shortText(data.provider, 120);
+    const model = shortText(data.model, 160);
+    return {
+      type: 'native.event' as const,
+      presentation: 'context' as const,
+      status: 'info' as const,
+      label: '模型上下文',
+      ...(provider || model
+        ? { summary: [provider, model].filter(Boolean).join(' · ') }
+        : {}),
+      ...source,
+    };
+  }
+  if (type === 'request/header') {
+    return {
+      type: 'native.event' as const,
+      presentation: 'context' as const,
+      status: 'completed' as const,
+      label: '上下文已注入',
+      ...source,
+    };
+  }
+  if (type === 'user/message') {
+    const messageSource = record(data.source);
+    if (!messageSource || messageSource.kind === 'human') return null;
+    const label = shortText(
+      messageSource.label ?? messageSource.name ?? messageSource.plugin,
+      160,
+    );
+    return {
+      type: 'native.event' as const,
+      presentation: 'context' as const,
+      status: 'completed' as const,
+      label: '上下文注入',
+      ...(label ? { summary: label } : {}),
+      ...source,
+    };
+  }
+  if (type === 'todo/write') {
+    const count = Array.isArray(data.todos) ? data.todos.length : 0;
+    return {
+      type: 'native.event' as const,
+      presentation: 'todo' as const,
+      status: 'updated' as const,
+      label: '任务计划已更新',
+      ...(count ? { summary: `${count} 项` } : {}),
+      ...source,
+    };
+  }
+  if (type.startsWith('compaction/')) {
+    const phase = type.slice('compaction/'.length);
+    return {
+      type: 'native.event' as const,
+      presentation: 'compaction' as const,
+      status:
+        phase === 'start'
+          ? ('started' as const)
+          : data.error
+            ? ('failed' as const)
+            : phase === 'end'
+              ? ('completed' as const)
+              : ('updated' as const),
+      label:
+        phase === 'start'
+          ? '正在整理会话上下文'
+          : phase === 'end'
+            ? '会话上下文已整理'
+            : '上下文摘要已生成',
+      ...source,
+    };
+  }
+  if (type === 'tool/call' || type === 'tool/result') {
+    const name = shortText(data.name, 160);
+    const failed = Boolean(data.error);
+    return {
+      type: 'native.event' as const,
+      presentation:
+        name === 'web.search' ? ('search' as const) : ('tool' as const),
+      status:
+        type === 'tool/call'
+          ? ('started' as const)
+          : failed
+            ? ('failed' as const)
+            : ('completed' as const),
+      label: name ?? (type === 'tool/call' ? '工具调用' : '工具调用完成'),
+      ...source,
+    };
+  }
+  return null;
 }
 
 function textBlocks(value: unknown) {
@@ -345,7 +560,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ? 'assistant/message'
             : event.type === 'usage.updated'
               ? 'assistant/message:usage'
-              : event.source === 'tool_broker'
+              : 'source' in event && event.source === 'tool_broker'
                 ? 'allrice/tool-broker'
                 : 'dsh/tool';
       await input.onEvent(
@@ -395,6 +610,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
           onDelta: async (text, source) =>
             emit({ type: 'assistant.delta', text, ...source }),
+          onNative: async (event) => emit(event),
         });
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;
@@ -441,6 +657,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
           name: toolCall.name,
           label: toolCall.name,
           source: 'tool_broker',
+          sourceEventType: 'allrice/tool-broker',
+          sourcePayload: {
+            presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+            status: 'started',
+            query:
+              toolCall.name === 'web.search' &&
+              typeof toolCall.arguments.query === 'string'
+                ? toolCall.arguments.query.slice(0, 500)
+                : undefined,
+          },
         });
         try {
           const toolResult = await input.onToolCall(toolCall);
@@ -451,6 +677,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
             label: toolCall.name,
             source: 'tool_broker',
             summary: toolResult.summary,
+            sourceEventType: 'allrice/tool-broker',
+            sourcePayload: {
+              presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+              status: 'completed',
+              summary: toolResult.summary,
+            },
             ...(toolResult.itemCount === undefined
               ? {}
               : { itemCount: toolResult.itemCount }),
@@ -468,6 +700,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
             label: toolCall.name,
             source: 'tool_broker',
             summary: error instanceof Error ? error.message : 'tool failed',
+            sourceEventType: 'allrice/tool-broker',
+            sourcePayload: {
+              presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+              status: 'failed',
+            },
           });
           throw error;
         }
@@ -680,6 +917,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     signal: AbortSignal;
     onTurn(turnId: string): Promise<void>;
     onDelta(text: string, source: DshSourceMetadata): Promise<void>;
+    onNative(event: HarnessEventPayload): Promise<void>;
   }) {
     let rawAnswer = '';
     let answer = '';
@@ -696,6 +934,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
     let completionSource: DshSourceMetadata | undefined;
     let usageSource: DshSourceMetadata | undefined;
+    const activeReasoningBlocks = new Set<number>();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
       if (
@@ -711,6 +950,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const data = record(event?.data);
       if (!event || !data) return;
       const source = sourceMetadata(event);
+      const nativeView = nativeEventView(event);
+      if (nativeView) await input.onNative(nativeView);
       if (event.type === 'turn/start') {
         const turn =
           typeof data.turn === 'number' || typeof data.turn === 'string'
@@ -721,6 +962,40 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       if (event.type === 'assistant/chunk') {
         const chunk = record(data.chunk);
+        const chunkIndex =
+          typeof chunk?.index === 'number' ? chunk.index : undefined;
+        const block = record(chunk?.block);
+        const startsReasoning =
+          chunk?.type === 'block-start' && chunk.blockType === 'reasoning';
+        const streamsReasoning = chunk?.type === 'reasoning-delta';
+        if (
+          chunkIndex !== undefined &&
+          (startsReasoning || streamsReasoning) &&
+          !activeReasoningBlocks.has(chunkIndex)
+        ) {
+          activeReasoningBlocks.add(chunkIndex);
+          await input.onNative({
+            type: 'native.event',
+            presentation: 'think',
+            status: 'started',
+            label: 'Rice 正在思考',
+            ...source,
+          });
+        }
+        if (
+          chunk?.type === 'block-end' &&
+          chunkIndex !== undefined &&
+          (activeReasoningBlocks.has(chunkIndex) || block?.kind === 'reasoning')
+        ) {
+          activeReasoningBlocks.delete(chunkIndex);
+          await input.onNative({
+            type: 'native.event',
+            presentation: 'think',
+            status: 'completed',
+            label: '思考完成',
+            ...source,
+          });
+        }
         if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') {
           return;
         }

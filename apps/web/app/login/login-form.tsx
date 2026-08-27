@@ -26,7 +26,7 @@ export function LoginForm(props: {
     if (response.ok) {
       const result = (await response.json()) as { homePath?: string };
       window.location.assign(
-        result.homePath ?? props.bootstrap?.homePath ?? '/workspace',
+        result.homePath ?? props.bootstrap?.homePath ?? '/chatflow',
       );
     } else {
       setError('登录失败，请检查账号和密码。');

@@ -33,6 +33,7 @@ export const RunEventTypeSchema = z.enum([
   'step.compensated',
   'assistant.text.delta',
   'assistant.text.completed',
+  'harness.native',
   'tool.started',
   'tool.completed',
   'tool.failed',
@@ -134,7 +135,7 @@ export type RunEvent = z.infer<typeof RunEventSchema>;
 
 export const ChatFlowEventEnvelopeSchema = z
   .object({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     eventId: UuidSchema,
     organizationId: UuidSchema,
     workspaceId: UuidSchema,
@@ -188,6 +189,7 @@ function runtimeEventCategory(type: RunEventType): RuntimeEventCategory {
   if (type === 'usage.updated') return 'usage';
   if (type.startsWith('routing.')) return 'routing';
   if (type.startsWith('assistant.')) return 'assistant';
+  if (type === 'harness.native') return 'system';
   if (type.startsWith('tool.')) return 'tool';
   if (type.startsWith('step.')) return 'workflow';
   if (type.startsWith('approval.')) return 'approval';

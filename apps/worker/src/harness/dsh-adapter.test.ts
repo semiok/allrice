@@ -167,6 +167,26 @@ describe('DshHarnessAdapter', () => {
     expect(result.answer).toBe('visible answer');
     expect(streamed).toBe('visible answer');
     expect(streamed).not.toContain('private reasoning');
+    const nativeEvents = events.filter(
+      (event) => event.type === 'native.event',
+    );
+    expect(nativeEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          presentation: 'think',
+          status: 'started',
+        }),
+        expect.objectContaining({
+          presentation: 'think',
+          status: 'completed',
+        }),
+      ]),
+    );
+    expect(JSON.stringify(nativeEvents)).not.toContain('private reasoning');
+    expect(JSON.stringify(events)).not.toContain(
+      'system-secret-that-must-not-reach-chatflow',
+    );
+    expect(JSON.stringify(events)).not.toContain('secret-token');
   });
 
   it('routes tool envelopes only through the AllRice Tool Broker callback', async () => {

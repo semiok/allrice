@@ -90,7 +90,7 @@ describe('AllRice Runtime Contract V1', () => {
     const runId = randomUUID();
     expect(
       ChatFlowEventEnvelopeSchema.parse({
-        schemaVersion: 2,
+        schemaVersion: 3,
         eventId: randomUUID(),
         organizationId,
         workspaceId,

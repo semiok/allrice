@@ -8,8 +8,6 @@ describe('SaaS capability manifest', () => {
       member: true,
       tenantAdmin: false,
       platformAdmin: false,
-      chatFlowV2: true,
-      legacyWorkspace: true,
     });
 
     expect(manifest.roles).toEqual(['member']);
@@ -24,8 +22,6 @@ describe('SaaS capability manifest', () => {
       member: true,
       tenantAdmin: true,
       platformAdmin: false,
-      chatFlowV2: true,
-      legacyWorkspace: true,
     });
     expect(tenantAdmin.actions).toContain('model_policy:manage');
     expect(tenantAdmin.actions).not.toContain('model_connection:manage');
@@ -34,11 +30,9 @@ describe('SaaS capability manifest', () => {
       member: true,
       tenantAdmin: true,
       platformAdmin: true,
-      chatFlowV2: true,
-      legacyWorkspace: false,
     });
     expect(platformAdmin.actions).toContain('model_connection:manage');
     expect(platformAdmin.surfaces).toContain('platform_admin');
-    expect(platformAdmin.features.legacyWorkspace).toBe(false);
+    expect(platformAdmin.features.chatFlowV3).toBe(true);
   });
 });

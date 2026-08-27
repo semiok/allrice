@@ -19,6 +19,8 @@ vi.mock('@allrice/database', () => ({
 import {
   executeRiceTool,
   riceToolDefinitionsForCapabilities,
+  riceToolDefinitionsForTurn,
+  riceToolRisk,
 } from './tool-broker.js';
 
 function executionContext(): ExecutionContext {
@@ -58,6 +60,25 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(
       riceToolDefinitionsForCapabilities(['storage:read']),
     ).not.toContainEqual(expect.objectContaining({ name: 'web.search' }));
+  });
+
+  it('keeps authorized read-only tools available without pre-routing side effects', () => {
+    expect(riceToolRisk('web.search')).toBe('read_only');
+    expect(riceToolRisk('automation.create')).toBe('side_effect');
+    expect(
+      riceToolDefinitionsForTurn(
+        ['network:outbound', 'automation:write'],
+        ['web.search', 'web.fetch', 'automation.create'],
+        [],
+      ).map((tool) => tool.name),
+    ).toEqual(['web.search', 'web.fetch']);
+    expect(
+      riceToolDefinitionsForTurn(
+        ['network:outbound', 'automation:write'],
+        ['web.search', 'web.fetch', 'automation.create'],
+        ['automation.create'],
+      ).map((tool) => tool.name),
+    ).toEqual(['web.search', 'web.fetch', 'automation.create']);
   });
 
   it('returns hosted search output and sources through the normalized tool result', async () => {

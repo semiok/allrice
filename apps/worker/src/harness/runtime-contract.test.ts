@@ -87,4 +87,31 @@ describe('normalizeHarnessRunEvent', () => {
       }),
     });
   });
+
+  it('preserves a sanitized DSH-native presentation event', () => {
+    const event: HarnessEvent = {
+      ...envelope('dsh'),
+      sourceEventId: 'dsh:12',
+      sourceEventType: 'request/context',
+      sourceOccurredAt: '2026-08-27T12:00:00.000Z',
+      sourcePayload: { provider: 'openai-codex', model: 'gpt-5.6-luna' },
+      type: 'native.event',
+      presentation: 'context',
+      status: 'info',
+      label: '模型上下文',
+      summary: 'openai-codex · gpt-5.6-luna',
+    };
+    expect(normalizeHarnessRunEvent(event)).toMatchObject({
+      type: 'harness.native',
+      payload: {
+        source: 'dsh',
+        presentation: 'context',
+        label: '模型上下文',
+        nativePayload: {
+          provider: 'openai-codex',
+          model: 'gpt-5.6-luna',
+        },
+      },
+    });
+  });
 });

@@ -520,40 +520,85 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.executionGroup {
-  margin: 8px 0 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 10px;
-  background: var(--dsw-alias-bg-base);
+.nativeTimeline {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 14px;
 }
 
-.executionGroup summary {
-  padding: 8px 10px;
+.nativeEvent {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
+  line-height: 1.45;
+}
+
+.nativeEventIcon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.nativeEvent > div {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.nativeEvent strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 500;
+}
+
+.nativeEvent small {
+  display: block;
+  margin-top: 1px;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-caption);
+}
+
+.nativeEvent[data-kind='search'] .nativeEventIcon,
+.nativeEvent[data-kind='think'] .nativeEventIcon {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.nativeEvent[data-status='started'] .nativeEventIcon {
+  animation: nativeEventPulse 1.4s ease-in-out infinite;
+}
+
+.nativeEvent[data-status='failed'] strong,
+.nativeEvent[data-status='failed'] .nativeEventIcon {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.nativeTraceState,
+.nativeTraceRetry {
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.nativeTraceRetry {
   cursor: pointer;
 }
 
-.executionGroup > div {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-}
-
-.executionGroup > div i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--dsw-alias-state-business-primary);
-}
-
-.executionGroup > div small {
-  color: var(--dsw-alias-label-caption);
+@keyframes nativeEventPulse {
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .recover {

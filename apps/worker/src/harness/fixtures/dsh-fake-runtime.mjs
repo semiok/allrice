@@ -49,6 +49,28 @@ function assistant(sessionId, turn, text) {
   event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
 }
 
+function reasoning(sessionId, turn) {
+  event(sessionId, 'assistant/chunk', {
+    turn,
+    step: 0,
+    chunk: { type: 'block-start', index: 0, blockType: 'reasoning' },
+  });
+  event(sessionId, 'assistant/chunk', {
+    turn,
+    step: 0,
+    chunk: { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
+  });
+  event(sessionId, 'assistant/chunk', {
+    turn,
+    step: 0,
+    chunk: {
+      type: 'block-end',
+      index: 0,
+      block: { kind: 'reasoning', text: 'private reasoning' },
+    },
+  });
+}
+
 const lines = createInterface({ input: process.stdin });
 lines.on('line', (line) => {
   const frame = JSON.parse(line);
@@ -106,6 +128,19 @@ lines.on('line', (line) => {
   });
   notify('session.status', { sessionId, status: 'running' });
   event(sessionId, 'turn/start', { turn });
+  event(sessionId, 'request/header', {
+    reason: 'initial',
+    header: {
+      system: 'system-secret-that-must-not-reach-chatflow',
+      tools: [{ name: 'secret-tool', inputSchema: { token: 'secret-token' } }],
+      config: { provider: initializedProvider, model: 'fake' },
+    },
+  });
+  event(sessionId, 'request/context', {
+    provider: initializedProvider,
+    model: 'fake',
+    contextWindow: 128000,
+  });
   if (prompt.includes('hang forever')) return;
   let text;
   if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
@@ -124,7 +159,8 @@ lines.on('line', (line) => {
       hasOpenAiCompatible: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
     });
   } else if (prompt.includes('think-first')) {
-    text = '<think>private reasoning</think>\n\nvisible answer';
+    reasoning(sessionId, turn);
+    text = 'visible answer';
   } else {
     text = `turn-${turn}`;
   }

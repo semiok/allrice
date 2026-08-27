@@ -613,7 +613,7 @@ export function EmployeeHubClient({
             返回与 Rice 工作
           </button>
         ) : (
-          <Link className="primary-action" href="/workspace">
+          <Link className="primary-action" href="/chatflow">
             返回与 Rice 工作
           </Link>
         )}
@@ -1685,7 +1685,7 @@ export function EmployeeHubClient({
       <AppSidebar
         active="employees"
         action={
-          <Link className="new-chat" href="/workspace">
+          <Link className="new-chat" href="/chatflow">
             ＋ 新建任务
           </Link>
         }

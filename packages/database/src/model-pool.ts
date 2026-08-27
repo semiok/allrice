@@ -134,8 +134,6 @@ export async function getSaasCapabilities(context: RequestContext) {
     member: context.actor.type === 'user',
     tenantAdmin: tenantAdmin(context, workspaceId),
     platformAdmin: await isPlatformAdmin(context),
-    chatFlowV2: process.env.ALLRICE_CHATFLOW_V2_ENABLED !== '0',
-    legacyWorkspace: process.env.ALLRICE_LEGACY_WORKSPACE_ENABLED !== '0',
   });
 }
 
@@ -143,8 +141,6 @@ export function buildSaasCapabilityManifest(input: {
   member: boolean;
   tenantAdmin: boolean;
   platformAdmin: boolean;
-  chatFlowV2: boolean;
-  legacyWorkspace: boolean;
 }) {
   const roles = [
     ...(input.member ? (['member'] as const) : []),
@@ -182,9 +178,8 @@ export function buildSaasCapabilityManifest(input: {
       ...(input.platformAdmin ? (['platform_admin'] as const) : []),
     ],
     features: {
-      chatFlowV2: input.chatFlowV2,
+      chatFlowV3: true,
       nativeHarnessEvents: true,
-      legacyWorkspace: input.legacyWorkspace,
     },
   });
 }

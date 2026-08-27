@@ -27,6 +27,18 @@ export function normalizeHarnessRunEvent(
       : {}),
     ...(event.sourcePayload ? { nativePayload: event.sourcePayload } : {}),
   };
+  if (event.type === 'native.event') {
+    return {
+      type: 'harness.native',
+      payload: {
+        ...envelope,
+        presentation: event.presentation,
+        status: event.status,
+        label: event.label,
+        ...(event.summary ? { summary: event.summary } : {}),
+      },
+    };
+  }
   if (event.type === 'assistant.completed') {
     return {
       type: 'assistant.text.completed',

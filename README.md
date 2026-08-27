@@ -4,7 +4,7 @@ AllRice is a browser-first, self-hosted AI workspace for enterprise employees. I
 
 > Current version: **0.1.0 baseline**
 >
-> Current delivery: **ChatFlow 2.0, platform model governance and the SaaS employee framework**
+> Current delivery: **ChatFlow 3.0, platform model governance and the SaaS employee framework**
 >
 > Product plan: [AllRice MET-38](https://linear.app/metasnowsky/issue/MET-38/allrice-%E5%BC%80%E5%B7%A5%E8%AE%A1%E5%88%92%E7%8B%AC%E7%AB%8B%E5%9F%BA%E7%BA%BF%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E4%B8%8E-mvp-%E5%9E%82%E7%9B%B4%E9%97%AD%E7%8E%AF)
 
@@ -25,11 +25,11 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - a platform-managed model pool with per-employee selection and immutable
   Session routing snapshots; the default is **GPT-5.6 Luna · 极高** through
   the DSH `openai-codex` Provider route.
-- a role-aware Web UI 2.0 shell: members, tenant administrators and platform
+- a role-aware SaaS shell: members, tenant administrators and platform
   administrators use one application but receive different authorized controls.
-- a new independent `/chatflow` product UI and `/chatflow/employees` employee
-  studio. The legacy workspace remains a reversible rollback path until the
-  MET-62 production gates are passed.
+- `/chatflow` is the only conversation product UI and `/chatflow/employees` is
+  the employee studio. `/workspace` redirects to ChatFlow 3.0; there is no
+  product-level legacy chat fallback.
 - platform quotas, durable usage accounting, explicit fallback, Provider
   circuit breakers and audited emergency kill switches.
 
@@ -54,8 +54,8 @@ AllRice uses **ChatFlow Runtime** as its Provider-neutral SaaS conversation
 control plane. ChatFlow manages Session, Run, event delivery, context recovery,
 authorization and Provider routing while DSH is the single execution Harness.
 Codex subscription, MiniMax and later APIs are Provider routes inside DSH, not
-peer Harnesses. Its convergence is explicitly
-dual-track rather than a big-bang replacement; see the
+peer Harnesses. ChatFlow 3.0 persists a sanitized DSH-native event stream and
+projects it in native order without reassembling a second execution UX; see the
 [ChatFlow Runtime architecture](docs/architecture/chatflow-runtime.md).
 Provider connections and employee model selection are defined in the
 [platform model pool architecture](docs/architecture/platform-model-pool.md).

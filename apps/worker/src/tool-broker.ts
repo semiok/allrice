@@ -20,6 +20,8 @@ const readableMediaTypes = new Set([
   'application/json',
 ]);
 
+export type RiceToolRisk = 'read_only' | 'side_effect' | 'secret_bearing';
+
 export const riceToolDefinitions = [
   {
     name: 'workspace.file.list',
@@ -118,8 +120,22 @@ const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'automation.create': 'automation:write',
 };
 
+const toolRisks: Readonly<Record<string, RiceToolRisk>> = {
+  'workspace.file.list': 'read_only',
+  'workspace.file.read': 'read_only',
+  'workspace.memory.search': 'read_only',
+  'workspace.session.search': 'read_only',
+  'web.search': 'read_only',
+  'web.fetch': 'read_only',
+  'automation.create': 'side_effect',
+};
+
 export function riceToolCapability(name: string) {
   return toolCapabilities[name] ?? null;
+}
+
+export function riceToolRisk(name: string) {
+  return toolRisks[name] ?? null;
 }
 
 export function riceToolDefinitionsForCapabilities(
@@ -131,6 +147,27 @@ export function riceToolDefinitionsForCapabilities(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
       capabilities.includes(toolCapabilities[definition.name]!),
+  );
+}
+
+/**
+ * Stable DSH turn capability set. Tenant-authorized read-only tools are always
+ * visible to the native Agent Loop; side-effect and secret-bearing tools only
+ * become visible after an explicit Skill/Workflow/Tool route selected them.
+ */
+export function riceToolDefinitionsForTurn(
+  capabilities: SkillCapability[],
+  allowedToolNames: readonly string[] | undefined,
+  selectedToolNames: readonly string[],
+) {
+  const selected = new Set(selectedToolNames);
+  return riceToolDefinitionsForCapabilities(
+    capabilities,
+    allowedToolNames,
+  ).filter(
+    (definition) =>
+      riceToolRisk(definition.name) === 'read_only' ||
+      selected.has(definition.name),
   );
 }
 
