@@ -20,6 +20,44 @@ export const HarnessCapabilitiesSchema = z
   .strict();
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilitiesSchema>;
 
+/**
+ * Product-facing capability names. The UI and employee router may use this
+ * matrix for discovery, but authorization always remains in AllRice.
+ */
+export const RuntimeCapabilityNameSchema = z.enum([
+  'persistent_threads',
+  'assistant_streaming',
+  'tool_events',
+  'usage_events',
+  'interrupt',
+  'active_turn_steer',
+  'context_compaction',
+  'thread_recovery',
+]);
+export type RuntimeCapabilityName = z.infer<typeof RuntimeCapabilityNameSchema>;
+
+export const HarnessCapabilityMatrixSchema = z
+  .record(RuntimeCapabilityNameSchema, z.boolean())
+  .readonly();
+export type HarnessCapabilityMatrix = z.infer<
+  typeof HarnessCapabilityMatrixSchema
+>;
+
+export function harnessCapabilityMatrix(
+  capabilities: HarnessCapabilities,
+): HarnessCapabilityMatrix {
+  return HarnessCapabilityMatrixSchema.parse({
+    persistent_threads: capabilities.persistentThreads,
+    assistant_streaming: capabilities.assistantDeltas,
+    tool_events: capabilities.toolEvents,
+    usage_events: capabilities.usageEvents,
+    interrupt: capabilities.interrupt,
+    active_turn_steer: capabilities.steer,
+    context_compaction: capabilities.compact,
+    thread_recovery: capabilities.recover,
+  });
+}
+
 const HarnessEventEnvelopeSchema = z.object({
   schemaVersion: z.literal(1),
   harness: HarnessKindSchema,
@@ -29,6 +67,8 @@ const HarnessEventEnvelopeSchema = z.object({
   threadId: z.string().trim().min(1).nullable(),
   turnId: z.string().trim().min(1).nullable(),
   messageId: UuidSchema,
+  sourceEventId: z.string().trim().min(1).max(240).optional(),
+  sourceOccurredAt: z.string().datetime().optional(),
 });
 
 export const HarnessEventSchema = z.discriminatedUnion('type', [

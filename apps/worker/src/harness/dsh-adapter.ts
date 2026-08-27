@@ -19,6 +19,7 @@ import {
   DeploymentDshCredentialResolver,
   type DshCredentialResolver,
 } from './dsh-credential-resolver.js';
+import { DSH_DISTRIBUTION_CURRENT_VERSION } from './dsh-distribution.js';
 import {
   DshProtocolClient,
   type DshNotification,
@@ -195,6 +196,7 @@ function visibleModelText(text: string) {
 
 export class DshHarnessAdapter implements HarnessAdapter {
   readonly kind = 'dsh' as const;
+  readonly contextStrategy = 'harness-native' as const;
   readonly capabilities = {
     persistentThreads: true,
     assistantDeltas: true,
@@ -518,6 +520,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
+        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true };

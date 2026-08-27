@@ -15,6 +15,12 @@ Employee run snapshot
   -> durable RunEvent stream
 ```
 
+This adapter boundary is hosted by
+[AllRice ChatFlow Runtime](chatflow-runtime.md), the multi-Harness SaaS
+conversation control plane. ChatFlow owns product Session/Run/Event authority;
+the adapter preserves each Harness's native session, agent loop and streaming
+semantics.
+
 ## Boundary
 
 `EmployeeKernelRequest` is provider-neutral. It is assembled from the immutable
@@ -32,18 +38,23 @@ Provider-specific events must be normalized before leaving an adapter.
 
 ## Current support
 
-The production router registers `CodexHarnessAdapter`. It wraps the existing
-persistent Codex app-server runtime, preserves one active turn per conversation,
-and exposes the current capability matrix:
+The production router registers both `CodexHarnessAdapter` and
+`DshHarnessAdapter`.
 
-- persistent threads, tool events, usage events, interrupt and recovery: yes;
-- assistant delta forwarding, active-turn steer and explicit compact: not yet.
+- Codex wraps the persistent Codex App Server thread and forwards native agent
+  message deltas, tool events, usage, steer and compaction lifecycle.
+- DSH runs the pinned headless DSH SDK distribution as one restricted JSON-RPC
+  runtime per active AllRice conversation and forwards native session/turn,
+  assistant chunk and usage events.
+- Both adapters execute tenant capabilities only through the AllRice Tool
+  Broker and publish the same durable HarnessEvent boundary.
+- Unsupported behavior remains explicit in each adapter's capability matrix;
+  for example, the pinned DSH protocol does not expose active-turn steer.
 
-DSH is a planned adapter and is deliberately not registered until it passes the
-same adapter conformance and tenant-isolation checks.
+## Follow-on convergence
 
-## Follow-on phases
-
-- MET-64 enables durable assistant delta streaming through this event boundary.
-- MET-65 implements provider-neutral checkpoints and compaction/recovery.
-- MET-66 adds steer and a durable follow-up queue with explicit ownership.
+MET-79 converges the working adapter paths behind ChatFlow Runtime without a
+big-bang rewrite. The current PostgreSQL RunEvent plus resumable SSE path stays
+as the durable/fallback track while a PostgreSQL `LISTEN/NOTIFY` realtime track
+is introduced. Redis Streams or NATS is a measured scale-up option, not a V1
+prerequisite and never a replacement for durable Session/Run/Event authority.

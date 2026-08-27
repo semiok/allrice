@@ -8,8 +8,8 @@
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
-  background: #f5f6f2;
-  color: #152018;
+  background: var(--ar-canvas, #f5f6f2);
+  color: var(--ar-text, #152018);
 }
 
 html {
@@ -118,9 +118,9 @@ h1 {
 }
 
 article {
-  background: #fff;
-  border: 1px solid #dce2dc;
-  border-radius: 18px;
+  background: var(--ar-surface, #fff);
+  border: 1px solid var(--ar-border, #dce2dc);
+  border-radius: var(--ar-radius-md, 18px);
   min-height: 150px;
   padding: 24px;
 }
@@ -176,7 +176,7 @@ a {
 }
 
 .workspace-shell {
-  background: #edf0eb;
+  background: var(--ar-surface-muted, #edf0eb);
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr) 290px;
   min-height: 100vh;
@@ -185,7 +185,7 @@ a {
 
 .workspace-sidebar,
 .memory-panel {
-  background: #f8faf7;
+  background: var(--ar-surface-subtle, #f8faf7);
   display: flex;
   flex-direction: column;
   gap: 20px;

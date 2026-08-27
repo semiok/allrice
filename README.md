@@ -39,6 +39,13 @@ AllRice 0.1 runs independently with its own database and local invitation model.
 
 ## Architecture
 
+AllRice uses **ChatFlow Runtime** as its multi-Harness SaaS conversation
+control plane. ChatFlow manages Session, Run, event delivery, context recovery,
+authorization and Harness routing while Codex, DSH and future Harnesses retain
+their native agent loops and streaming execution. Its convergence is explicitly
+dual-track rather than a big-bang replacement; see the
+[ChatFlow Runtime architecture](docs/architecture/chatflow-runtime.md).
+
 ```text
 Browser
   -> reverse proxy
@@ -46,7 +53,9 @@ Browser
        -> PostgreSQL + pgvector
        -> mounted object storage
        -> persistent job records
-            -> worker (AI / Skill / Scheduler / Memory / Artifact)
+            -> ChatFlow Runtime
+                 -> worker (Session / Run / Event / recovery)
+                 -> Harness Router (Codex / DSH / future Harnesses)
 ```
 
 Application processes are `web` and `worker`. Scheduler is a module inside the Worker in V1. PostgreSQL, mounted storage, and the reverse proxy are infrastructure services.

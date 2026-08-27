@@ -13,6 +13,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 ## Architecture and development
 
 - [System architecture](architecture/README.md)
+- [AllRice ChatFlow Runtime](architecture/chatflow-runtime.md)
 - [V1 core contracts](architecture/v1-core-contracts.md)
 - [V1 contract test matrix](architecture/v1-contract-test-matrix.md)
 - [Development workflow](development/README.md)
@@ -38,6 +39,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 | OpenRice integration    | Boundary frozen          | MET-49           | [README](features/openrice-integration/README.md) |
 | OpenRice migration      | Planned                  | MET-46           | [README](features/migration/README.md)            |
 | Operations and recovery | Baseline definitions     | MET-47           | [README](features/operations/README.md)           |
+| ChatFlow Runtime        | Convergence planned      | MET-79           | [README](architecture/chatflow-runtime.md)        |
 
 ## Documentation rule
 

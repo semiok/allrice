@@ -5,8 +5,15 @@
 AllRice V1 provides an employee-facing AI workspace for a small, fixed enterprise user base. It favors a modular monolith and operational clarity over microservice scale.
 
 The employee execution boundary is documented in [Harness Adapter and Employee Kernel](harness-adapter.md).
+The multi-Harness SaaS conversation control plane and its no-big-bang,
+dual-track convergence plan are documented in
+[AllRice ChatFlow Runtime](chatflow-runtime.md).
 The first-class Agent Skill, Workflow and Knowledge model is documented in
 [Agent capability foundation](agent-capability-foundation.md).
+DSH version isolation is documented in
+[DSH upstream governance](../operations/dsh-upstream-governance.md), and the
+product migration switch is documented in
+[framework rollout](../operations/framework-rollout.md).
 
 ## Runtime topology
 
@@ -14,6 +21,7 @@ The first-class Agent Skill, Workflow and Knowledge model is documented in
 Browser
   -> reverse proxy
   -> Web process
+       -> ChatFlow Runtime (Session / Run / Event / recovery / Harness routing)
        -> PostgreSQL + pgvector
        -> object storage abstraction
        -> persistent Job / Run records

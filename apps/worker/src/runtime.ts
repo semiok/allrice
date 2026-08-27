@@ -48,6 +48,7 @@ import { executeCodexSkill } from './codex.js';
 import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
+import { normalizeHarnessRunEvent } from './harness/runtime-contract.js';
 import { getHarnessRouter } from './harness/router.js';
 import { buildAuthorizedKnowledgeContext } from './knowledge.js';
 import { decideCapabilityRoute } from './routing/capability-router.js';
@@ -196,6 +197,21 @@ async function executeHandler(
       runId: execution.context.runId,
       workerId: execution.context.worker.id,
     };
+    const appendChatFlowEvent = (
+      type:
+        | 'session.bound'
+        | 'turn.started'
+        | 'turn.completed'
+        | 'turn.failed'
+        | 'turn.canceled'
+        | 'routing.selected',
+      payload: Record<string, unknown>,
+    ) =>
+      appendJobEvent({
+        ...workflowLease,
+        type,
+        payload,
+      });
     let runtime: Awaited<ReturnType<typeof acquireConversationRuntime>>;
     try {
       runtime = await acquireConversationRuntime({
@@ -320,6 +336,17 @@ async function executeHandler(
           false,
         );
       }
+      await appendChatFlowEvent('routing.selected', {
+        source: routeDecision.harness,
+        selectedKind: routeDecision.selectedKind,
+        selectedCandidateId: routeDecision.selectedCandidateId,
+        provider: routeDecision.provider,
+        model: routeDecision.model,
+        reasonCodes: routeDecision.reasonCodes,
+        fallback: routeDecision.reasonCodes.some((reason) =>
+          reason.includes('fallback'),
+        ),
+      });
       const providerSnapshot = replayProviderSnapshot({
         decision: routeDecision,
         original: resolved.providerSnapshot,
@@ -581,10 +608,21 @@ async function executeHandler(
                     onEvent: onHarnessEvent,
                     tools: [],
                     threadId: runtime.threadId,
-                    onThreadBound: async ({ threadId }) => {
+                    onThreadBound: async ({
+                      threadId,
+                      resumed,
+                      replacedThreadId,
+                    }) => {
                       runtime = await bindConversationThread({
                         ...ownership,
                         threadId,
+                      });
+                      await appendChatFlowEvent('session.bound', {
+                        source: adapter.kind,
+                        threadId,
+                        generation: runtime.generation,
+                        resumed,
+                        replacedThreadId,
                       });
                       return { generation: runtime.generation };
                     },
@@ -594,7 +632,19 @@ async function executeHandler(
                         threadId,
                         turnId,
                       });
+                      await appendChatFlowEvent('turn.started', {
+                        source: adapter.kind,
+                        threadId,
+                        turnId,
+                        generation: runtime.generation,
+                      });
                     },
+                  });
+                  await appendChatFlowEvent('turn.completed', {
+                    source: adapter.kind,
+                    threadId: stepResult.threadId ?? runtime.threadId,
+                    turnId: stepResult.turnId ?? runtime.activeTurnId,
+                    generation: runtime.generation,
                   });
                   usage.inputTokens += stepResult.usage.inputTokens;
                   usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
@@ -674,10 +724,21 @@ async function executeHandler(
                         })
                     : undefined,
                 threadId: runtime.threadId,
-                onThreadBound: async ({ threadId }) => {
+                onThreadBound: async ({
+                  threadId,
+                  resumed,
+                  replacedThreadId,
+                }) => {
                   runtime = await bindConversationThread({
                     ...ownership,
                     threadId,
+                  });
+                  await appendChatFlowEvent('session.bound', {
+                    source: adapter.kind,
+                    threadId,
+                    generation: runtime.generation,
+                    resumed,
+                    replacedThreadId,
                   });
                   return { generation: runtime.generation };
                 },
@@ -686,6 +747,12 @@ async function executeHandler(
                     ...ownership,
                     threadId,
                     turnId,
+                  });
+                  await appendChatFlowEvent('turn.started', {
+                    source: adapter.kind,
+                    threadId,
+                    turnId,
+                    generation: runtime.generation,
                   });
                   steerLoop = (async () => {
                     while (steerPolling && !signal.aborted) {
@@ -751,6 +818,14 @@ async function executeHandler(
                   });
                 });
               });
+      if (routeDecision.selectedKind !== 'workflow') {
+        await appendChatFlowEvent('turn.completed', {
+          source: adapter.kind,
+          threadId: result.threadId ?? runtime.threadId,
+          turnId: result.turnId ?? runtime.activeTurnId,
+          generation: runtime.generation,
+        });
+      }
       routeUsage = result.usage;
       runtime = await clearConversationTurn(ownership);
       const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
@@ -786,7 +861,6 @@ async function executeHandler(
       if (
         runtime.threadId &&
         adapter.capabilities.compact &&
-        adapter.compact &&
         shouldCreateContextCheckpoint({
           estimatedTokens,
           thresholdTokens: runtime.compactThresholdTokens,
@@ -796,7 +870,24 @@ async function executeHandler(
         })
       ) {
         try {
-          await adapter.compact({ threadId: runtime.threadId });
+          if (adapter.contextStrategy === 'chatflow-managed') {
+            if (!adapter.compact) {
+              throw new Error(
+                'Harness advertises managed compaction without an implementation',
+              );
+            }
+            await appendJobEvent({
+              ...workflowLease,
+              type: 'context.compaction.started',
+              payload: { source: adapter.kind, threadId: runtime.threadId },
+            });
+            await adapter.compact({ threadId: runtime.threadId });
+            await appendJobEvent({
+              ...workflowLease,
+              type: 'context.compaction.completed',
+              payload: { source: adapter.kind, threadId: runtime.threadId },
+            });
+          }
           const evidence = await listContextCheckpointEvidence({
             organizationId: execution.context.organizationId,
             workspaceId: execution.context.workspaceId!,
@@ -819,7 +910,26 @@ async function executeHandler(
             estimatedTokens,
             messageCount: checkpointMessages.length,
           });
+          await appendJobEvent({
+            ...workflowLease,
+            type: 'context.checkpoint.created',
+            payload: {
+              source: adapter.kind,
+              threadId: runtime.threadId,
+              estimatedTokens,
+              contextStrategy: adapter.contextStrategy,
+            },
+          });
         } catch (error) {
+          await appendJobEvent({
+            ...workflowLease,
+            type: 'context.compaction.failed',
+            payload: {
+              source: adapter.kind,
+              threadId: runtime.threadId,
+              message: error instanceof Error ? error.message : 'unknown error',
+            },
+          }).catch(() => undefined);
           console.error('[M5] Context checkpoint maintenance failed', {
             sessionId: input.sessionId,
             runId: execution.context.runId,
@@ -857,6 +967,17 @@ async function executeHandler(
         throw error;
       }
       outcome = signal.aborted ? 'interrupted' : 'error';
+      if (runtime.activeTurnId) {
+        await appendChatFlowEvent(
+          signal.aborted ? 'turn.canceled' : 'turn.failed',
+          {
+            source: routeDecision?.harness ?? kernel.harness,
+            threadId: runtime.threadId,
+            turnId: runtime.activeTurnId,
+            generation: runtime.generation,
+          },
+        ).catch(() => undefined);
+      }
       errorCode =
         error instanceof HandlerError ? error.code : 'CONVERSATION_FAILED';
       if (routeDecision) {
@@ -1057,69 +1178,13 @@ async function appendHarnessEvent(input: {
   leaseToken: string;
   event: HarnessEvent;
 }) {
-  const { event } = input;
-  const type =
-    event.type === 'assistant.completed'
-      ? 'assistant.text.completed'
-      : event.type === 'assistant.delta'
-        ? 'assistant.text.delta'
-        : event.type === 'usage.updated'
-          ? 'heartbeat'
-          : event.type === 'tool.started'
-            ? 'tool.started'
-            : event.type === 'tool.failed'
-              ? 'tool.failed'
-              : 'tool.completed';
+  const normalized = normalizeHarnessRunEvent(input.event);
   await appendJobEvent({
     workerId: input.workerId,
     jobId: input.jobId,
     leaseToken: input.leaseToken,
-    type,
-    payload:
-      event.type === 'assistant.completed' || event.type === 'assistant.delta'
-        ? {
-            source: event.harness,
-            text: event.text,
-            generation: event.generation,
-            turnId: event.turnId,
-            messageId: event.messageId,
-            attempt: event.attempt,
-            order: event.order,
-            ...(event.type === 'assistant.delta' && event.orderStart
-              ? { orderStart: event.orderStart }
-              : {}),
-          }
-        : event.type === 'usage.updated'
-          ? {
-              source: event.harness,
-              generation: event.generation,
-              turnId: event.turnId,
-              messageId: event.messageId,
-              attempt: event.attempt,
-              order: event.order,
-              usage: {
-                inputTokens: event.inputTokens,
-                cachedInputTokens: event.cachedInputTokens,
-                outputTokens: event.outputTokens,
-              },
-            }
-          : {
-              source:
-                event.source === 'tool_broker' ? 'tool_broker' : event.harness,
-              toolCallId: event.toolCallId,
-              name: event.name,
-              label: event.label,
-              status: event.type.split('.')[1],
-              generation: event.generation,
-              turnId: event.turnId,
-              messageId: event.messageId,
-              ...(event.summary ? { summary: event.summary } : {}),
-              ...(event.itemCount === undefined
-                ? {}
-                : { itemCount: event.itemCount }),
-              attempt: event.attempt,
-              order: event.order,
-            },
+    type: normalized.type,
+    payload: normalized.payload,
   });
 }
 
