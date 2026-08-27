@@ -14,11 +14,18 @@ import {
   type RequestContext,
   type SkillCapability,
 } from '@allrice/contracts';
+import type postgres from 'postgres';
 
 import { DataAccessError } from './data.ts';
 import { getDatabase } from './index.ts';
 import { enqueueRun } from './queue.ts';
 import { resolveWorkspaceId } from './workspace.ts';
+
+type JsonValue = Parameters<postgres.TransactionSql['json']>[0];
+
+function toJsonValue(value: unknown): JsonValue {
+  return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
 
 interface CatalogRow {
   id: string;
@@ -184,12 +191,16 @@ export async function publishSkillVersion(
       versions = await transaction<VersionRow[]>`
         insert into allrice_skill_versions (
           organization_id, workspace_id, catalog_skill_id, version, status,
-          capabilities, compatibility, artifact_object_id, source, published_at
+          capabilities, compatibility, artifact_object_id, source,
+          agent_metadata, agent_name, agent_description, agent_publisher,
+          published_at
         ) values (
           ${context.organizationId}, ${workspaceId}, ${catalog.id},
           ${skill.version}, 'published', ${transaction.json(skill.capabilities)},
           ${transaction.json({ api: 'v1' })}, ${artifactObjectId},
-          ${transaction.json(skill.source)}, now()
+          ${transaction.json(skill.source)},
+          ${transaction.json(toJsonValue(skill.agentMetadata))}, ${skill.name},
+          ${skill.description}, ${skill.publisher}, now()
         )
         returning *,
           (select object_key from allrice_storage_objects where id = artifact_object_id) as object_key,

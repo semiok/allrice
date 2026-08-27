@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
-import { DataAccessError, QueueError } from '@allrice/database';
+import {
+  DataAccessError,
+  IdentityError,
+  QueueError,
+  WorkflowRuntimeError,
+} from '@allrice/database';
 
 export function executionErrorResponse(error: unknown) {
   const requestId = randomUUID();
@@ -8,7 +13,20 @@ export function executionErrorResponse(error: unknown) {
   let code = 'VALIDATION_FAILED';
   let message = 'Execution request validation failed';
   let retryable = false;
-  if (error instanceof DataAccessError) {
+  if (error instanceof IdentityError) {
+    if (error.code === 'authentication_failed') {
+      status = 401;
+      code = 'AUTHENTICATION_REQUIRED';
+      message = 'Authentication required';
+    } else if (
+      error.code === 'authorization_denied' ||
+      error.code === 'tenant_context_invalid'
+    ) {
+      status = 403;
+      code = 'AUTHORIZATION_DENIED';
+      message = 'Access denied';
+    }
+  } else if (error instanceof DataAccessError) {
     if (error.code === 'authentication_required') {
       status = 401;
       code = 'AUTHENTICATION_REQUIRED';
@@ -39,6 +57,24 @@ export function executionErrorResponse(error: unknown) {
       status = 403;
       code = 'AUTHORIZATION_DENIED';
       message = 'Frozen execution policy denied this run';
+    }
+  } else if (error instanceof WorkflowRuntimeError) {
+    if (error.code === 'not_found') {
+      status = 404;
+      code = 'RESOURCE_NOT_FOUND';
+      message = 'Workflow run not found';
+    } else if (error.code === 'conflict' || error.code === 'lease_lost') {
+      status = 409;
+      code = 'CONFLICT';
+      message = 'Workflow state changed; refresh and retry';
+    } else if (error.code === 'approval_required') {
+      status = 409;
+      code = 'APPROVAL_REQUIRED';
+      message = 'Workflow is waiting for approval';
+    } else if (error.code === 'needs_attention') {
+      status = 409;
+      code = 'WORKFLOW_NEEDS_ATTENTION';
+      message = 'Workflow requires manual intervention';
     }
   } else {
     console.error('Unhandled execution request error', {

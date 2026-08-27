@@ -102,11 +102,19 @@ const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'automation.create': 'automation:write',
 };
 
+export function riceToolCapability(name: string) {
+  return toolCapabilities[name] ?? null;
+}
+
 export function riceToolDefinitionsForCapabilities(
   capabilities: SkillCapability[],
+  allowedToolNames?: readonly string[],
 ) {
-  return riceToolDefinitions.filter((definition) =>
-    capabilities.includes(toolCapabilities[definition.name]!),
+  const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
+  return riceToolDefinitions.filter(
+    (definition) =>
+      (!allowed || allowed.has(definition.name)) &&
+      capabilities.includes(toolCapabilities[definition.name]!),
   );
 }
 

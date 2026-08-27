@@ -13,6 +13,30 @@ export const SkillCapabilitySchema = z.enum([
 ]);
 export type SkillCapability = z.infer<typeof SkillCapabilitySchema>;
 
+export const AgentSkillRiskLevelSchema = z.enum([
+  'low',
+  'medium',
+  'high',
+  'critical',
+]);
+
+export const AgentSkillMetadataSchema = z
+  .object({
+    applicableScenarios: z
+      .array(z.string().trim().min(1).max(300))
+      .max(24)
+      .default([]),
+    inputSchema: z.record(z.string(), z.unknown()).default({}),
+    outputSchema: z.record(z.string(), z.unknown()).default({}),
+    requiredToolRefs: z
+      .array(z.string().trim().min(1).max(240))
+      .max(32)
+      .default([]),
+    riskLevel: AgentSkillRiskLevelSchema.default('low'),
+  })
+  .strict();
+export type AgentSkillMetadata = z.infer<typeof AgentSkillMetadataSchema>;
+
 export const SkillSourceSchema = z
   .object({
     repository: z.string().url(),
@@ -98,6 +122,13 @@ export const ImportSkillInputSchema = z
     publisher: z.string().min(1).max(120),
     version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
     capabilities: z.array(SkillCapabilitySchema).max(16),
+    agentMetadata: AgentSkillMetadataSchema.default({
+      applicableScenarios: [],
+      inputSchema: {},
+      outputSchema: {},
+      requiredToolRefs: [],
+      riskLevel: 'low',
+    }),
     source: SkillSourceSchema,
     bundle: SkillArtifactBundleSchema,
   })
@@ -159,6 +190,27 @@ export const CodexExecutionSnapshotSchema = z
   .strict();
 export type CodexExecutionSnapshot = z.infer<
   typeof CodexExecutionSnapshotSchema
+>;
+
+export const DshExecutionSnapshotSchema = z
+  .object({
+    provider: z.literal('dsh'),
+    authMode: z.literal('allrice_credential'),
+    route: z.enum(['deepseek-official', 'openai-compatible']),
+    model: z.string().min(1).max(200),
+    reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
+    credentialReference: z.string().min(1).max(255),
+    baseUrl: z.string().url().max(2_000).nullable(),
+  })
+  .strict();
+export type DshExecutionSnapshot = z.infer<typeof DshExecutionSnapshotSchema>;
+
+export const HarnessExecutionSnapshotSchema = z.union([
+  CodexExecutionSnapshotSchema,
+  DshExecutionSnapshotSchema,
+]);
+export type HarnessExecutionSnapshot = z.infer<
+  typeof HarnessExecutionSnapshotSchema
 >;
 
 export const SkillInstallationSchema = z

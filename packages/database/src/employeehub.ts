@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import {
   AssignEmployeeVersionInputSchema,
   CreateEmployeeInputSchema,
-  CodexExecutionSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
   EmployeeAdminMemberSchema,
   EmployeeExecutionSnapshotSchema,
@@ -11,8 +10,10 @@ import {
   EmployeeManifestSchema,
   EmployeePromptSnapshotSchema,
   EmployeeUserProfileSchema,
+  EmployeeUserProfilePolicySchema,
   EmployeeVersionSnapshotSchema,
   FrozenEmployeeSkillBindingSchema,
+  HarnessExecutionSnapshotSchema,
   ManageEmployeeAssignmentsInputSchema,
   PublishEmployeeVersionInputSchema,
   SetDefaultEmployeeInputSchema,
@@ -27,6 +28,11 @@ import {
 
 import { DataAccessError } from './data.ts';
 import {
+  resolveEmployeeCapabilitiesForRun,
+  synchronizeEmployeeSkillBindings,
+} from './capability-registry.ts';
+import {
+  applyEmployeeUserProfilePolicy,
   employeeManifest,
   employeeManifestChecksum,
   riceEmployeeKey,
@@ -68,13 +74,6 @@ interface EmployeeDirectoryRow extends EmployeeVersionRow {
   assigned_user_ids: string[];
 }
 
-interface SkillBindingRow {
-  installation_id: string;
-  skill_version_id: string;
-  declared_capabilities: SkillCapability[];
-  granted_capabilities: SkillCapability[];
-}
-
 export interface FrozenSkillBinding {
   installationId: string;
   skillVersionId: string;
@@ -91,7 +90,9 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 export function resolveEmployeeCapabilities(
   employeeCapabilities: SkillCapability[],
   skillBindings: FrozenSkillBinding[],
+  deniedCapabilities: SkillCapability[] = [],
 ) {
+  const denied = new Set(deniedCapabilities);
   const skillGranted = new Set(
     skillBindings.flatMap((binding) =>
       binding.grantedCapabilities.filter((capability) =>
@@ -101,7 +102,8 @@ export function resolveEmployeeCapabilities(
   );
   return employeeCapabilities.filter(
     (capability) =>
-      !skillGatedCapabilities.has(capability) || skillGranted.has(capability),
+      !denied.has(capability) &&
+      (!skillGatedCapabilities.has(capability) || skillGranted.has(capability)),
   );
 }
 
@@ -111,7 +113,7 @@ export interface EmployeeRunBinding {
   sessionId: string;
   userMessageId: string;
   assistantMessageId: string;
-  providerSnapshot: ReturnType<typeof CodexExecutionSnapshotSchema.parse>;
+  providerSnapshot: ReturnType<typeof HarnessExecutionSnapshotSchema.parse>;
   skillVersionIds: string[];
   skillBindings: FrozenSkillBinding[];
   executionSnapshot: Omit<
@@ -455,6 +457,13 @@ export async function createEmployee(context: RequestContext, input: unknown) {
         ${actorId}, false, true, ${actorId}
       )
     `;
+    await synchronizeEmployeeSkillBindings(transaction, {
+      organizationId: context.organizationId,
+      workspaceId,
+      employeeId: createdId,
+      skillVersionIds: manifest.skillVersionIds,
+      actorId,
+    });
     await transaction`
       insert into allrice_audit_events (
         organization_id, workspace_id, actor_id, action, resource_type,
@@ -503,7 +512,22 @@ export async function publishEmployeeVersion(
     if (!employee) {
       throw new EmployeeHubError('not_found');
     }
-    const skillVersionIds = [...new Set(publication.skillVersionIds)].sort();
+    const selectedSkillRows =
+      publication.skillVersionIds === undefined
+        ? await transaction<{ skill_version_id: string }[]>`
+            select skill_version_id
+            from allrice_employee_agent_skill_bindings
+            where organization_id = ${context.organizationId}
+              and workspace_id = ${workspaceId}
+              and employee_id = ${employee.id} and enabled
+            order by skill_version_id
+          `
+        : publication.skillVersionIds.map((skillVersionId) => ({
+            skill_version_id: skillVersionId,
+          }));
+    const skillVersionIds = [
+      ...new Set(selectedSkillRows.map((row) => row.skill_version_id)),
+    ].sort();
     if (skillVersionIds.length > 0) {
       const installed = await transaction<{ id: string }[]>`
         select v.id
@@ -566,6 +590,31 @@ export async function publishEmployeeVersion(
         (currentManifest.success && currentManifest.data.schemaVersion === 2
           ? currentManifest.data.identity.safetyBoundaries
           : undefined),
+      identity:
+        publication.identity ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.identity
+          : undefined),
+      runtimePolicy:
+        publication.runtimePolicy ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.runtimePolicy
+          : undefined),
+      securityPolicy:
+        publication.securityPolicy ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.securityPolicy
+          : undefined),
+      userProfilePolicy:
+        publication.userProfilePolicy ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.userProfilePolicy
+          : undefined),
+      toolNames:
+        publication.toolNames ??
+        (currentManifest.success && currentManifest.data.schemaVersion === 2
+          ? currentManifest.data.capabilityBindings.toolNames
+          : undefined),
     });
     const checksum = employeeManifestChecksum(manifest);
     const next = await transaction<{ version: number }[]>`
@@ -610,6 +659,13 @@ export async function publishEmployeeVersion(
         and employee_id = ${employee.id}
         and active
     `;
+    await synchronizeEmployeeSkillBindings(transaction, {
+      organizationId: context.organizationId,
+      workspaceId,
+      employeeId: employee.id,
+      skillVersionIds: manifest.skillVersionIds,
+      actorId,
+    });
     await transaction`
       insert into allrice_audit_events (
         organization_id, workspace_id, actor_id, action, resource_type,
@@ -846,7 +902,7 @@ export async function assignEmployeeVersion(
       and v.organization_id = a.organization_id
       and v.workspace_id = a.workspace_id
       and v.employee_id = a.employee_id
-      and v.provider_snapshot ->> 'provider' = 'codex'
+      and v.provider_snapshot ->> 'provider' in ('codex', 'dsh')
       and e.id = a.employee_id
     returning a.id as assignment_id, a.user_id, a.organization_id,
       a.workspace_id, a.is_default, a.active, e.employee_key, v.*
@@ -942,44 +998,34 @@ export async function prepareEmployeeRunBinding(input: {
   const assignment = rows[0];
   if (!assignment) throw new EmployeeHubError('not_found');
   const manifest = EmployeeManifestSchema.safeParse(assignment.manifest);
-  if (!manifest.success || manifest.data.provider.provider !== 'codex') {
+  if (
+    !manifest.success ||
+    (manifest.data.provider.provider !== 'codex' &&
+      manifest.data.provider.provider !== 'dsh')
+  ) {
     throw new EmployeeHubError('provider_invalid');
   }
-  const skillVersionIds = manifest.data.skillVersionIds;
-  const bindings =
-    skillVersionIds.length === 0
-      ? []
-      : await sql<SkillBindingRow[]>`
-          select i.id as installation_id, v.id as skill_version_id,
-            v.capabilities as declared_capabilities,
-            i.granted_capabilities
-          from allrice_skill_versions v
-          join allrice_skill_installations i
-            on i.pinned_version_id = v.id
-           and i.organization_id = v.organization_id
-           and i.workspace_id = v.workspace_id
-          join allrice_storage_objects o on o.id = v.artifact_object_id
-          where v.id in ${sql(skillVersionIds)}
-            and v.organization_id = ${input.context.organizationId}
-            and v.workspace_id = ${input.workspaceId}
-            and v.status = 'published' and o.state = 'ready' and o.immutable
-            and i.owner_id is null and i.enabled
-        `;
-  if (
-    new Set(bindings.map((binding) => binding.skill_version_id)).size !==
-    skillVersionIds.length
-  ) {
-    throw new EmployeeHubError('skill_not_installed');
-  }
-  const skillBindings = bindings.map((binding) => ({
-    installationId: binding.installation_id,
-    skillVersionId: binding.skill_version_id,
-    declaredCapabilities: binding.declared_capabilities,
-    grantedCapabilities: binding.granted_capabilities,
+  const capabilityDirectory = await resolveEmployeeCapabilitiesForRun({
+    organizationId: input.context.organizationId,
+    workspaceId: input.workspaceId,
+    employeeId: assignment.employee_id,
+    actorId,
+  });
+  const skillBindings = capabilityDirectory.agentSkills.map((binding) => ({
+    installationId: binding.installationId,
+    skillVersionId: binding.revision.id,
+    declaredCapabilities: binding.revision.declaredCapabilities,
+    grantedCapabilities: binding.grantedCapabilities,
   }));
+  const skillVersionIds = skillBindings.map(
+    (binding) => binding.skillVersionId,
+  );
   const grantedCapabilities = resolveEmployeeCapabilities(
     manifest.data.capabilities,
     skillBindings,
+    manifest.data.schemaVersion === 2
+      ? manifest.data.securityPolicy.deniedCapabilities
+      : [],
   );
   const profiles = await sql<{ profile: unknown; display_name: string }[]>`
     select coalesce(p.profile, jsonb_build_object(
@@ -996,12 +1042,25 @@ export async function prepareEmployeeRunBinding(input: {
      and p.employee_id = ${assignment.employee_id}
     where u.id = ${actorId}
   `;
-  const userProfile = EmployeeUserProfileSchema.parse(
+  const storedUserProfile = EmployeeUserProfileSchema.parse(
     profiles[0]?.profile ?? {
       schemaVersion: 1,
       displayName: null,
       preferences: {},
     },
+  );
+  const userProfilePolicy = EmployeeUserProfilePolicySchema.parse(
+    manifest.data.schemaVersion === 2
+      ? manifest.data.userProfilePolicy
+      : {
+          enabled: true,
+          fields: ['displayName', 'preferences'],
+          scope: 'employee_user',
+        },
+  );
+  const userProfile = applyEmployeeUserProfilePolicy(
+    storedUserProfile,
+    userProfilePolicy,
   );
   return {
     employeeAssignmentId: assignment.assignment_id,
@@ -1009,13 +1068,13 @@ export async function prepareEmployeeRunBinding(input: {
     sessionId: UuidSchema.parse(input.sessionId),
     userMessageId: UuidSchema.parse(input.userMessageId),
     assistantMessageId: UuidSchema.parse(input.assistantMessageId),
-    providerSnapshot: CodexExecutionSnapshotSchema.parse(
+    providerSnapshot: HarnessExecutionSnapshotSchema.parse(
       manifest.data.provider,
     ),
     skillVersionIds,
     skillBindings,
     executionSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       employee: {
         id: assignment.employee_id,
         key: assignment.employee_key,
@@ -1034,9 +1093,26 @@ export async function prepareEmployeeRunBinding(input: {
       capabilitySnapshot: {
         declaredCapabilities: manifest.data.capabilities,
         grantedCapabilities,
-        bindings: capabilityBindings(manifest.data),
+        bindings: {
+          ...capabilityBindings(manifest.data),
+          skillVersionIds,
+          knowledgeScopes: [
+            ...new Set(
+              capabilityDirectory.knowledge.flatMap(
+                (binding) => binding.revision.definition.allowedScopes,
+              ),
+            ),
+          ],
+          workflowIds: capabilityDirectory.workflows.map(
+            (binding) => binding.revision.id,
+          ),
+        },
         skillBindings:
           FrozenEmployeeSkillBindingSchema.array().parse(skillBindings),
+        agentSkills: capabilityDirectory.agentSkills,
+        workflows: capabilityDirectory.workflows,
+        knowledge: capabilityDirectory.knowledge,
+        resolvedForActorId: actorId,
       },
       userProfile,
     },
@@ -1143,7 +1219,9 @@ export async function resolveEmployeeExecution(input: {
     });
   }
   return {
-    providerSnapshot: CodexExecutionSnapshotSchema.parse(row.provider_snapshot),
+    providerSnapshot: HarnessExecutionSnapshotSchema.parse(
+      row.provider_snapshot,
+    ),
     promptSnapshot,
     executionSnapshot: executionSnapshot.success
       ? executionSnapshot.data
@@ -1163,6 +1241,9 @@ export async function resolveEmployeeExecution(input: {
               )?.declaredCapabilities ?? [],
             grantedCapabilities: binding.grantedCapabilities,
           })),
+          manifest.schemaVersion === 2
+            ? manifest.securityPolicy.deniedCapabilities
+            : [],
         ),
   };
 }

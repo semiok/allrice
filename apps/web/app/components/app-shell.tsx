@@ -15,6 +15,7 @@ export interface WorkspaceSidebarSession {
   id: string;
   title: string;
   employeeVersionId: string;
+  harness: 'codex' | 'dsh';
   updatedAt: string;
 }
 
@@ -99,9 +100,16 @@ function WorkspaceSidebar({
                       onClick={() => onSelectSession(session.id)}
                     >
                       <strong>{session.title}</strong>
-                      <span>
-                        最近工作 ·{' '}
-                        {new Date(session.updatedAt).toLocaleDateString()}
+                      <span className="employee-session-meta">
+                        <span>
+                          最近工作 ·{' '}
+                          {new Date(session.updatedAt).toLocaleDateString()}
+                        </span>
+                        <em
+                          className={`session-harness-badge session-harness-${session.harness}`}
+                        >
+                          {session.harness === 'dsh' ? 'DSH' : 'Codex'}
+                        </em>
                       </span>
                     </button>
                   ))}

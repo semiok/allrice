@@ -43,6 +43,16 @@ describe('Rice capability intersection', () => {
     ).toEqual(['model:invoke']);
   });
 
+  it('applies the employee deny list after Skill grants', () => {
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'network:outbound'],
+        [binding],
+        ['network:outbound'],
+      ),
+    ).toEqual(['model:invoke']);
+  });
+
   it('keeps employee configuration behind an active workspace admin role', () => {
     const actorId = randomUUID();
     const organizationId = randomUUID();

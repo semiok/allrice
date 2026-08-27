@@ -16,6 +16,7 @@ import {
 
 import { closeCodexAppServerClients, probeCodexProvider } from './codex.js';
 import { executeClaimedJob } from './runtime.js';
+import { closeHarnessAdapters } from './harness/router.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -222,6 +223,7 @@ async function shutdown(signal: string) {
   for (const abort of activeAborters) abort();
   server.close();
   await Promise.allSettled(activeExecutions);
+  await closeHarnessAdapters();
   await closeCodexAppServerClients();
   await closeDatabase();
   process.exit(0);

@@ -1,4 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+
+import {
+  EmployeeKernelRequestSchema,
+  RouteDecisionSchema,
+  type HarnessEvent,
+  type HarnessExecutionSnapshot,
+  type RouteDecision,
+} from '@allrice/contracts';
 
 import {
   ConversationRuntimeError,
@@ -9,17 +17,22 @@ import {
   buildExtractiveContextSummary,
   clearConversationTurn,
   claimConversationSteer,
+  completeRouteDecision,
   completeJob,
   consumeConversationSteer,
   effectiveContextTokens,
   estimateConversationTokens,
   failJob,
   heartbeatJob,
+  getCodexProviderStatus,
   getLatestContextCheckpoint,
+  getWorkflowExecution,
   listContextCheckpointEvidence,
   recordConversationTurn,
   recordConversationUsage,
+  recordRouteDecision,
   recordToolBrokerAudit,
+  ensureWorkflowRunForExecution,
   rejectConversationSteer,
   releaseConversationRuntime,
   resolveEmployeeExecution,
@@ -34,13 +47,45 @@ import { prepareExecutionIsolation } from './isolation.js';
 import { executeCodexSkill } from './codex.js';
 import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
-import type { HarnessEvent } from '@allrice/contracts';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
-import { HarnessRouter } from './harness/router.js';
+import { getHarnessRouter } from './harness/router.js';
+import { buildAuthorizedKnowledgeContext } from './knowledge.js';
+import { decideCapabilityRoute } from './routing/capability-router.js';
+import { executeDurableWorkflow, WorkflowPaused } from './workflow-engine.js';
 import {
   executeRiceTool,
+  riceToolCapability,
   riceToolDefinitionsForCapabilities,
 } from './tool-broker.js';
+
+function providerName(snapshot: HarnessExecutionSnapshot) {
+  return snapshot.provider === 'codex' ? 'codex' : snapshot.route;
+}
+
+function replayProviderSnapshot(input: {
+  decision: RouteDecision;
+  original: HarnessExecutionSnapshot;
+  reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+}): HarnessExecutionSnapshot {
+  if (input.decision.harness === 'codex') {
+    return {
+      provider: 'codex',
+      authMode: 'chatgpt_subscription',
+      model: input.decision.model,
+      reasoningEffort:
+        input.reasoningEffort === 'none' ? 'low' : input.reasoningEffort,
+      sandbox: 'workspace-write',
+    };
+  }
+  if (input.original.provider !== 'dsh') {
+    throw new HandlerError(
+      'ROUTE_REPLAY_INVALID',
+      'Stored DSH route cannot be reconstructed from this execution snapshot',
+      false,
+    );
+  }
+  return { ...input.original, model: input.decision.model };
+}
 
 function objectInput(input: unknown): Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
@@ -87,6 +132,12 @@ async function executeHandler(
   isolation: Awaited<ReturnType<typeof prepareExecutionIsolation>>,
   signal: AbortSignal,
   onHarnessEvent: (event: HarnessEvent) => Promise<void>,
+  workflowLease: {
+    workerId: string;
+    jobId: string;
+    leaseToken: string;
+    leaseMs: number;
+  },
 ) {
   if (execution.payload.type === 'allrice.employee.run') {
     const input = objectInput(execution.payload.input);
@@ -145,12 +196,13 @@ async function executeHandler(
       runId: execution.context.runId,
       workerId: execution.context.worker.id,
     };
-    let runtime;
+    let runtime: Awaited<ReturnType<typeof acquireConversationRuntime>>;
     try {
       runtime = await acquireConversationRuntime({
         ...ownership,
         ownerId: execution.job.ownerId,
         configChecksum,
+        compactThresholdTokens: contextCompactThreshold(),
       });
     } catch (error) {
       if (
@@ -167,152 +219,546 @@ async function executeHandler(
     }
     let outcome: 'idle' | 'interrupted' | 'error' = 'error';
     let errorCode: string | undefined;
+    let routeDecision: RouteDecision | null = null;
+    let routeUsage = {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    };
     try {
-      const tools = riceToolDefinitionsForCapabilities(
+      const executionSnapshot = resolved.executionSnapshot;
+      if (!executionSnapshot) {
+        throw new HandlerError(
+          'EMPLOYEE_SNAPSHOT_REQUIRED',
+          'Capability routing requires a frozen employee execution snapshot',
+          false,
+        );
+      }
+      const capabilitySnapshot =
+        executionSnapshot.schemaVersion === 2
+          ? executionSnapshot.capabilitySnapshot
+          : null;
+      const allowedToolNames =
+        executionSnapshot.employee.definition.schemaVersion === 2
+          ? executionSnapshot.employee.definition.capabilityBindings.toolNames
+          : undefined;
+      const authorizedTools = riceToolDefinitionsForCapabilities(
         resolved.grantedCapabilities,
+        allowedToolNames,
       );
-      const adapter = new HarnessRouter().resolve(kernel.harness);
+      const routePlan = decideCapabilityRoute({
+        request: {
+          schemaVersion: 1,
+          runId: execution.context.runId,
+          organizationId: execution.context.organizationId,
+          workspaceId: execution.context.workspaceId!,
+          actorId: executionSnapshot.tenantContext.actorId,
+          employeeId: executionSnapshot.employee.id,
+          generation: runtime.generation,
+          attempt: execution.job.attempt,
+          prompt: kernel.userRequest,
+        },
+        executionSnapshot,
+        tools: authorizedTools.flatMap((tool) => {
+          const requiredCapability = riceToolCapability(tool.name);
+          return requiredCapability ? [{ ...tool, requiredCapability }] : [];
+        }),
+      });
+      const codexStatus = await getCodexProviderStatus();
+      const selectedHarness = getHarnessRouter().select({
+        runtimePolicy: executionSnapshot.runtimePolicy,
+        providerSnapshot: resolved.providerSnapshot,
+        providerHealth: {
+          codex: ['disconnected', 'error'].includes(codexStatus.status)
+            ? 'unavailable'
+            : 'available',
+          dsh: 'available',
+        },
+      });
+      const proposedDecision = RouteDecisionSchema.parse({
+        schemaVersion: 1,
+        id: randomUUID(),
+        runId: execution.context.runId,
+        organizationId: execution.context.organizationId,
+        workspaceId: execution.context.workspaceId!,
+        actorId: executionSnapshot.tenantContext.actorId,
+        employeeId: executionSnapshot.employee.id,
+        inputChecksum: `sha256:${createHash('sha256')
+          .update(kernel.userRequest)
+          .digest('hex')}`,
+        candidates: routePlan.candidates,
+        selectedKind: routePlan.selectedKind,
+        selectedCandidateId: routePlan.selectedCandidateId,
+        harness: selectedHarness.adapter.kind,
+        provider: providerName(selectedHarness.providerSnapshot),
+        model: selectedHarness.providerSnapshot.model,
+        generation: runtime.generation,
+        attempt: execution.job.attempt,
+        reasonCodes: [
+          ...new Set([...routePlan.reasonCodes, selectedHarness.reasonCode]),
+        ],
+        createdAt: new Date().toISOString(),
+      });
+      routeDecision = await recordRouteDecision(proposedDecision);
+      if (
+        routeDecision.inputChecksum !== proposedDecision.inputChecksum ||
+        routeDecision.employeeId !== proposedDecision.employeeId
+      ) {
+        throw new HandlerError(
+          'ROUTE_REPLAY_CONFLICT',
+          'Stored routing decision does not match this immutable run input',
+          false,
+        );
+      }
+      const selectedCandidate = routeDecision.candidates.find(
+        (candidate) => candidate.id === routeDecision!.selectedCandidateId,
+      );
+      if (!selectedCandidate?.authorized) {
+        throw new HandlerError(
+          'ROUTE_NOT_AUTHORIZED',
+          'Stored routing decision is no longer executable',
+          false,
+        );
+      }
+      const providerSnapshot = replayProviderSnapshot({
+        decision: routeDecision,
+        original: resolved.providerSnapshot,
+        reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
+      });
+      const adapter = getHarnessRouter().resolve(routeDecision.harness);
+      if (adapter.isConfigured && !adapter.isConfigured(providerSnapshot)) {
+        throw new HandlerError(
+          'PROVIDER_UNAVAILABLE',
+          'Stored harness route is unavailable in this deployment',
+          true,
+        );
+      }
+      const revisionId = routeDecision.selectedCandidateId
+        .split(':')
+        .slice(1)
+        .join(':');
+      const routePlanMatchesStoredDecision =
+        routeDecision.selectedCandidateId === routePlan.selectedCandidateId;
+      const selectedSkillVersionIds = routePlanMatchesStoredDecision
+        ? routePlan.selectedSkillVersionIds
+        : routeDecision.selectedKind === 'agent_skill'
+          ? [revisionId]
+          : [];
+      const selectedKnowledgeRevisionIds = routePlanMatchesStoredDecision
+        ? routePlan.selectedKnowledgeRevisionIds
+        : routeDecision.selectedKind === 'knowledge'
+          ? [revisionId]
+          : [];
+      const skillRequiredTools =
+        routeDecision.selectedKind === 'agent_skill' &&
+        executionSnapshot.schemaVersion === 2
+          ? (executionSnapshot.capabilitySnapshot.agentSkills.find(
+              (binding) => binding.revision.id === revisionId,
+            )?.revision.metadata.requiredToolRefs ?? [])
+          : [];
+      const selectedWorkflow =
+        routeDecision.selectedKind === 'workflow' && capabilitySnapshot
+          ? capabilitySnapshot.workflows.find(
+              (binding) => binding.revision.id === revisionId,
+            )
+          : undefined;
+      const workflowToolNames =
+        selectedWorkflow?.revision.definition.steps.flatMap((step) => {
+          const name = step.input.toolName;
+          return step.kind === 'tool' && typeof name === 'string' ? [name] : [];
+        }) ?? [];
+      const selectedToolNames =
+        routeDecision.selectedKind === 'tool'
+          ? [revisionId]
+          : routeDecision.selectedKind === 'workflow'
+            ? workflowToolNames
+            : skillRequiredTools;
+      const tools = authorizedTools.filter((tool) =>
+        selectedToolNames.includes(tool.name),
+      );
+      const selectedStorageObjects = resolved.skillArtifacts
+        .filter((artifact) =>
+          selectedSkillVersionIds.includes(artifact.skillVersionId),
+        )
+        .map((artifact) => artifact.storageObject);
+      const knowledge = await buildAuthorizedKnowledgeContext({
+        context: execution.context,
+        employeeId: executionSnapshot.employee.id,
+        knowledgeRevisionIds: selectedKnowledgeRevisionIds,
+        query: kernel.userRequest,
+        storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      });
+      const routedKernel = EmployeeKernelRequestSchema.parse({
+        ...kernel,
+        harness: routeDecision.harness,
+        systemInstructions: [
+          kernel.systemInstructions,
+          `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Use only the capabilities and tools supplied for this turn.`,
+        ].join('\n\n'),
+        authorizedMemoryContext: [
+          kernel.authorizedMemoryContext,
+          knowledge.context,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+        grantedCapabilities: [
+          ...new Set([
+            'model:invoke' as const,
+            ...selectedCandidate.requiredCapabilities,
+          ]),
+        ].filter((capability) =>
+          resolved.grantedCapabilities.includes(capability),
+        ),
+        skillVersionIds: selectedSkillVersionIds,
+      });
       let steerPolling = true;
       let steerLoop: Promise<void> | undefined;
-      const result = await adapter
-        .execute({
-          kernel,
-          storageObjects: resolved.skillArtifacts.map(
-            (artifact) => artifact.storageObject,
-          ),
-          workDirectory: isolation.workDirectory,
-          executionEnvironment: isolation.environment,
-          providerSnapshot: resolved.providerSnapshot,
-          signal,
-          attempt: execution.job.attempt,
-          generation: runtime.generation,
-          onEvent: async (event) => {
-            if (
-              event.type === 'tool.completed' &&
-              event.source === 'harness' &&
-              (event.name === 'web.search' || event.name === 'web.fetch')
-            ) {
-              await recordToolBrokerAudit({
+      const workflowCitations: typeof knowledge.citations = [];
+      const result =
+        routeDecision.selectedKind === 'workflow'
+          ? await (async () => {
+              if (!selectedWorkflow || !capabilitySnapshot) {
+                throw new HandlerError(
+                  'WORKFLOW_SNAPSHOT_MISSING',
+                  'Selected workflow is missing from the frozen employee snapshot',
+                  false,
+                );
+              }
+              await ensureWorkflowRunForExecution({
                 context: execution.context,
-                toolName: event.name,
-                metadata: {
-                  skillVersionIds: resolved.skillArtifacts.map(
-                    (artifact) => artifact.skillVersionId,
-                  ),
-                  capability: 'network:outbound',
+                ownerId: execution.job.ownerId,
+                employeeId: executionSnapshot.employee.id,
+                workflowRevisionId: selectedWorkflow.revision.id,
+                sessionId: kernel.sessionId,
+                value: { request: kernel.userRequest },
+              });
+              const usage = {
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+              };
+              const durable = await executeDurableWorkflow({
+                execution,
+                ...workflowLease,
+                storageRoot:
+                  process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                evaluation: {
+                  routingAccurate: true,
+                  citationsAccurate: true,
+                  approvalExpected:
+                    selectedWorkflow.revision.definition.steps.some(
+                      (step) => step.approval === 'required',
+                    ),
+                },
+                executeStep: async ({ step, value, idempotencyKey }) => {
+                  if (step.kind === 'knowledge') {
+                    const allowed = new Set(
+                      capabilitySnapshot.knowledge
+                        .filter((binding) => binding.effective)
+                        .map((binding) => binding.revision.id),
+                    );
+                    const configured = step.input.knowledgeRevisionIds;
+                    const requested = Array.isArray(configured)
+                      ? configured.filter(
+                          (item): item is string =>
+                            typeof item === 'string' && allowed.has(item),
+                        )
+                      : [];
+                    const revisionIds = requested.length
+                      ? requested
+                      : [...allowed];
+                    const retrieved = await buildAuthorizedKnowledgeContext({
+                      context: execution.context,
+                      employeeId: executionSnapshot.employee.id,
+                      knowledgeRevisionIds: revisionIds,
+                      query:
+                        typeof step.input.query === 'string'
+                          ? step.input.query
+                          : kernel.userRequest,
+                      storageRoot:
+                        process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                    });
+                    workflowCitations.push(...retrieved.citations);
+                    return {
+                      output: {
+                        context: retrieved.context,
+                        citations: retrieved.citations,
+                      },
+                    };
+                  }
+                  if (step.kind === 'tool') {
+                    const name = step.input.toolName;
+                    if (
+                      typeof name !== 'string' ||
+                      !tools.some((tool) => tool.name === name)
+                    ) {
+                      throw new HandlerError(
+                        'WORKFLOW_TOOL_DENIED',
+                        'Workflow tool is not in the frozen authorized tool set',
+                        false,
+                      );
+                    }
+                    const configuredArguments = step.input.arguments;
+                    const argumentsValue =
+                      configuredArguments &&
+                      typeof configuredArguments === 'object' &&
+                      !Array.isArray(configuredArguments)
+                        ? (configuredArguments as Record<string, unknown>)
+                        : value;
+                    const toolResult = await executeRiceTool({
+                      context: execution.context,
+                      capabilities: resolved.grantedCapabilities,
+                      storageRoot:
+                        process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                      sessionId: kernel.sessionId,
+                      call: {
+                        id: idempotencyKey,
+                        name,
+                        arguments: argumentsValue,
+                      },
+                    });
+                    return {
+                      output: toolResult,
+                      sideEffectCommitted: step.sideEffect !== 'none',
+                    };
+                  }
+                  if (step.kind !== 'model' && step.kind !== 'agent_skill') {
+                    throw new HandlerError(
+                      'WORKFLOW_STEP_UNSUPPORTED',
+                      `Workflow step ${step.kind} cannot execute directly`,
+                      false,
+                    );
+                  }
+                  const requestedSkillId =
+                    step.kind === 'agent_skill' &&
+                    typeof step.input.agentSkillRevisionId === 'string'
+                      ? step.input.agentSkillRevisionId
+                      : null;
+                  const allowedSkillIds = new Set(
+                    capabilitySnapshot.agentSkills
+                      .filter((binding) => binding.effective)
+                      .map((binding) => binding.revision.id),
+                  );
+                  if (
+                    requestedSkillId &&
+                    !allowedSkillIds.has(requestedSkillId)
+                  ) {
+                    throw new HandlerError(
+                      'WORKFLOW_SKILL_DENIED',
+                      'Workflow skill is not in the frozen authorized skill set',
+                      false,
+                    );
+                  }
+                  const skillIds = requestedSkillId ? [requestedSkillId] : [];
+                  const stepKernel = EmployeeKernelRequestSchema.parse({
+                    ...routedKernel,
+                    systemInstructions: [
+                      routedKernel.systemInstructions,
+                      `Execute only workflow step ${step.key} (${step.name}). Return this step's business result; the Workflow Engine controls progression, approval and retry.`,
+                    ].join('\n\n'),
+                    userRequest: JSON.stringify(value),
+                    authorizedMemoryContext: [
+                      routedKernel.authorizedMemoryContext,
+                      JSON.stringify(value.dependencies),
+                    ]
+                      .filter(Boolean)
+                      .join('\n\n'),
+                    skillVersionIds: skillIds,
+                  });
+                  const stepResult = await adapter.execute({
+                    kernel: stepKernel,
+                    storageObjects: resolved.skillArtifacts
+                      .filter((artifact) =>
+                        skillIds.includes(artifact.skillVersionId),
+                      )
+                      .map((artifact) => artifact.storageObject),
+                    workDirectory: isolation.workDirectory,
+                    executionEnvironment: isolation.environment,
+                    providerSnapshot,
+                    signal,
+                    attempt: execution.job.attempt,
+                    generation: runtime.generation,
+                    onEvent: onHarnessEvent,
+                    tools: [],
+                    threadId: runtime.threadId,
+                    onThreadBound: async ({ threadId }) => {
+                      runtime = await bindConversationThread({
+                        ...ownership,
+                        threadId,
+                      });
+                      return { generation: runtime.generation };
+                    },
+                    onTurnStarted: async ({ threadId, turnId }) => {
+                      runtime = await recordConversationTurn({
+                        ...ownership,
+                        threadId,
+                        turnId,
+                      });
+                    },
+                  });
+                  usage.inputTokens += stepResult.usage.inputTokens;
+                  usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
+                  usage.outputTokens += stepResult.usage.outputTokens;
+                  return { output: { answer: stepResult.answer } };
                 },
               });
-            }
-            await onHarnessEvent(event);
-          },
-          tools,
-          onToolCall:
-            tools.length > 0
-              ? (call) =>
-                  executeRiceTool({
-                    context: execution.context,
-                    capabilities: resolved.grantedCapabilities,
-                    storageRoot:
-                      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                    skillVersionIds: resolved.skillArtifacts.map(
-                      (artifact) => artifact.skillVersionId,
-                    ),
-                    sessionId:
-                      typeof input.sessionId === 'string'
-                        ? input.sessionId
-                        : undefined,
-                    call,
-                  })
-              : undefined,
-          threadId: runtime.threadId,
-          onThreadBound: async ({ threadId }) => {
-            runtime = await bindConversationThread({
-              ...ownership,
-              threadId,
-            });
-            return { generation: runtime.generation };
-          },
-          onTurnStarted: async ({ threadId, turnId }) => {
-            runtime = await recordConversationTurn({
-              ...ownership,
-              threadId,
-              turnId,
-            });
-            steerLoop = (async () => {
-              while (steerPolling && !signal.aborted) {
-                const command = await claimConversationSteer({
-                  organizationId: ownership.organizationId,
-                  workspaceId: ownership.workspaceId,
-                  sessionId: ownership.sessionId,
-                  workerId: ownership.workerId,
-                  generation: runtime.generation,
-                  turnId,
-                });
-                if (!command) {
-                  await new Promise((resolve) => setTimeout(resolve, 150));
-                  continue;
-                }
-                if (!adapter.capabilities.steer || !adapter.steer) {
-                  await rejectConversationSteer({
-                    commandId: command.id,
-                    workerId: ownership.workerId,
-                    errorCode: 'HARNESS_STEER_UNSUPPORTED',
+              const answers = Object.values(durable.output).flatMap((value) =>
+                value &&
+                typeof value === 'object' &&
+                typeof (value as { answer?: unknown }).answer === 'string'
+                  ? [(value as { answer: string }).answer]
+                  : [],
+              );
+              return {
+                answer:
+                  answers.at(-1) ??
+                  `工作流已完成，共执行 ${selectedWorkflow.revision.definition.steps.length} 个步骤。`,
+                usage,
+                provider: providerName(providerSnapshot),
+                model: providerSnapshot.model,
+                threadId: runtime.threadId,
+                turnId: runtime.activeTurnId,
+              };
+            })()
+          : await adapter
+              .execute({
+                kernel: routedKernel,
+                storageObjects: selectedStorageObjects,
+                workDirectory: isolation.workDirectory,
+                executionEnvironment: isolation.environment,
+                providerSnapshot,
+                signal,
+                attempt: execution.job.attempt,
+                generation: runtime.generation,
+                onEvent: async (event) => {
+                  if (
+                    event.type === 'tool.completed' &&
+                    event.source === 'harness' &&
+                    (event.name === 'web.search' || event.name === 'web.fetch')
+                  ) {
+                    await recordToolBrokerAudit({
+                      context: execution.context,
+                      toolName: event.name,
+                      metadata: {
+                        skillVersionIds: resolved.skillArtifacts
+                          .map((artifact) => artifact.skillVersionId)
+                          .filter((skillVersionId) =>
+                            selectedSkillVersionIds.includes(skillVersionId),
+                          ),
+                        capability: 'network:outbound',
+                      },
+                    });
+                  }
+                  await onHarnessEvent(event);
+                },
+                tools,
+                onToolCall:
+                  tools.length > 0
+                    ? (call) =>
+                        executeRiceTool({
+                          context: execution.context,
+                          capabilities: resolved.grantedCapabilities,
+                          storageRoot:
+                            process.env.ALLRICE_STORAGE_ROOT ??
+                            '.local/storage',
+                          skillVersionIds: resolved.skillArtifacts
+                            .map((artifact) => artifact.skillVersionId)
+                            .filter((skillVersionId) =>
+                              selectedSkillVersionIds.includes(skillVersionId),
+                            ),
+                          sessionId:
+                            typeof input.sessionId === 'string'
+                              ? input.sessionId
+                              : undefined,
+                          call,
+                        })
+                    : undefined,
+                threadId: runtime.threadId,
+                onThreadBound: async ({ threadId }) => {
+                  runtime = await bindConversationThread({
+                    ...ownership,
+                    threadId,
                   });
-                  continue;
-                }
-                try {
-                  await adapter.steer({
+                  return { generation: runtime.generation };
+                },
+                onTurnStarted: async ({ threadId, turnId }) => {
+                  runtime = await recordConversationTurn({
+                    ...ownership,
                     threadId,
                     turnId,
-                    message: command.message,
-                    clientUserMessageId: command.clientUserMessageId,
                   });
-                  await consumeConversationSteer({
-                    commandId: command.id,
-                    workerId: ownership.workerId,
-                  });
-                } catch (error) {
-                  await rejectConversationSteer({
-                    commandId: command.id,
-                    workerId: ownership.workerId,
-                    errorCode: 'STEER_REJECTED',
-                  });
-                  console.error('[M5] Active turn steer failed', {
+                  steerLoop = (async () => {
+                    while (steerPolling && !signal.aborted) {
+                      const command = await claimConversationSteer({
+                        organizationId: ownership.organizationId,
+                        workspaceId: ownership.workspaceId,
+                        sessionId: ownership.sessionId,
+                        workerId: ownership.workerId,
+                        generation: runtime.generation,
+                        turnId,
+                      });
+                      if (!command) {
+                        await new Promise((resolve) =>
+                          setTimeout(resolve, 150),
+                        );
+                        continue;
+                      }
+                      if (!adapter.capabilities.steer || !adapter.steer) {
+                        await rejectConversationSteer({
+                          commandId: command.id,
+                          workerId: ownership.workerId,
+                          errorCode: 'HARNESS_STEER_UNSUPPORTED',
+                        });
+                        continue;
+                      }
+                      try {
+                        await adapter.steer({
+                          threadId,
+                          turnId,
+                          message: command.message,
+                          clientUserMessageId: command.clientUserMessageId,
+                        });
+                        await consumeConversationSteer({
+                          commandId: command.id,
+                          workerId: ownership.workerId,
+                        });
+                      } catch (error) {
+                        await rejectConversationSteer({
+                          commandId: command.id,
+                          workerId: ownership.workerId,
+                          errorCode: 'STEER_REJECTED',
+                        });
+                        console.error('[M5] Active turn steer failed', {
+                          sessionId: input.sessionId,
+                          turnId,
+                          message:
+                            error instanceof Error
+                              ? error.message
+                              : 'unknown error',
+                        });
+                      }
+                    }
+                  })();
+                },
+              })
+              .finally(async () => {
+                steerPolling = false;
+                await steerLoop?.catch((error) => {
+                  console.error('[M5] Active turn steer polling failed', {
                     sessionId: input.sessionId,
-                    turnId,
                     message:
                       error instanceof Error ? error.message : 'unknown error',
                   });
-                }
-              }
-            })();
-          },
-        })
-        .finally(async () => {
-          steerPolling = false;
-          await steerLoop?.catch((error) => {
-            console.error('[M5] Active turn steer polling failed', {
-              sessionId: input.sessionId,
-              message: error instanceof Error ? error.message : 'unknown error',
-            });
-          });
-        });
+                });
+              });
+      routeUsage = result.usage;
       runtime = await clearConversationTurn(ownership);
-      if (result.usage.inputTokens > 0) {
-        runtime = await recordConversationUsage({
-          ...ownership,
-          generation: runtime.generation,
-          inputTokens: result.usage.inputTokens,
-          cachedInputTokens: result.usage.cachedInputTokens,
-        });
-      }
       const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
         (message) =>
           message.id
             ? [{ id: message.id, role: message.role, text: message.text }]
             : [],
       );
-      const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;
       const applicationEstimatedTokens = estimateConversationTokens(
         [
           kernel.bootstrapConversation,
@@ -320,17 +766,30 @@ async function executeHandler(
           kernel.userRequest,
         ].join('\n'),
       );
-      const estimatedTokens = effectiveContextTokens({
-        applicationEstimatedTokens,
-        observedDynamicTokens: runtime.dynamicContextTokens,
-      });
+      if (result.usage.inputTokens > 0) {
+        runtime = await recordConversationUsage({
+          ...ownership,
+          generation: runtime.generation,
+          inputTokens: result.usage.inputTokens,
+          cachedInputTokens: result.usage.cachedInputTokens,
+          applicationEstimatedTokens,
+        });
+      }
+      const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;
+      const estimatedTokens =
+        result.usage.inputTokens > 0
+          ? runtime.contextPressureTokens
+          : effectiveContextTokens({
+              applicationEstimatedTokens,
+              observedDynamicTokens: runtime.dynamicContextTokens,
+            });
       if (
         runtime.threadId &&
         adapter.capabilities.compact &&
         adapter.compact &&
         shouldCreateContextCheckpoint({
           estimatedTokens,
-          thresholdTokens: contextCompactThreshold(),
+          thresholdTokens: runtime.compactThresholdTokens,
           coveredThroughMessageId,
           latestCoveredThroughMessageId:
             checkpoint?.coveredThroughMessageId ?? null,
@@ -368,12 +827,62 @@ async function executeHandler(
           });
         }
       }
+      await completeRouteDecision({
+        organizationId: execution.context.organizationId,
+        workspaceId: execution.context.workspaceId!,
+        outcome: {
+          decisionId: routeDecision.id,
+          status: 'succeeded',
+          ...routeUsage,
+          costCents: 0,
+          errorCode: null,
+          completedAt: new Date().toISOString(),
+        },
+      });
       outcome = 'idle';
-      return result;
+      return {
+        ...result,
+        citations: [...knowledge.citations, ...workflowCitations].filter(
+          (citation, index, values) =>
+            values.findIndex(
+              (candidate) =>
+                candidate.type === citation.type &&
+                candidate.id === citation.id,
+            ) === index,
+        ),
+      };
     } catch (error) {
+      if (error instanceof WorkflowPaused) {
+        outcome = 'idle';
+        throw error;
+      }
       outcome = signal.aborted ? 'interrupted' : 'error';
       errorCode =
         error instanceof HandlerError ? error.code : 'CONVERSATION_FAILED';
+      if (routeDecision) {
+        const decision = routeDecision;
+        await completeRouteDecision({
+          organizationId: execution.context.organizationId,
+          workspaceId: execution.context.workspaceId!,
+          outcome: {
+            decisionId: decision.id,
+            status: signal.aborted ? 'canceled' : 'failed',
+            ...routeUsage,
+            costCents: 0,
+            errorCode,
+            completedAt: new Date().toISOString(),
+          },
+        }).catch((outcomeError: unknown) => {
+          console.error('[M5] Route outcome persistence failed', {
+            runId: execution.context.runId,
+            routeDecisionId: decision.id,
+            message:
+              outcomeError instanceof Error
+                ? outcomeError.message
+                : 'unknown error',
+          });
+        });
+      }
       throw error;
     } finally {
       try {
@@ -395,6 +904,49 @@ async function executeHandler(
         }
       }
     }
+  }
+  if (execution.payload.type === 'allrice.workflow.run') {
+    const workflow = await getWorkflowExecution({
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId!,
+      runId: execution.context.runId,
+    });
+    return executeDurableWorkflow({
+      execution,
+      ...workflowLease,
+      storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      executeStep: async ({ step, value }) => {
+        if (step.kind !== 'knowledge') {
+          throw new HandlerError(
+            'WORKFLOW_CHAT_CONTEXT_REQUIRED',
+            'Model, Skill and Tool workflow steps must start from an employee conversation',
+            false,
+          );
+        }
+        const configured = step.input.knowledgeRevisionIds;
+        const knowledgeRevisionIds = Array.isArray(configured)
+          ? configured.filter(
+              (item): item is string => typeof item === 'string',
+            )
+          : [];
+        const retrieved = await buildAuthorizedKnowledgeContext({
+          context: execution.context,
+          employeeId: workflow.employeeId,
+          knowledgeRevisionIds,
+          query:
+            typeof step.input.query === 'string'
+              ? step.input.query
+              : JSON.stringify(value.workflowInput),
+          storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+        });
+        return {
+          output: {
+            context: retrieved.context,
+            citations: retrieved.citations,
+          },
+        };
+      },
+    });
   }
   if (execution.payload.type === 'allrice.skill.run') {
     const input = objectInput(execution.payload.input);
@@ -667,6 +1219,12 @@ export async function executeClaimedJob(input: {
       isolation,
       controller.signal,
       (event) => eventBatcher.accept(event),
+      {
+        workerId: input.workerId,
+        jobId: input.jobId,
+        leaseToken: input.leaseToken,
+        leaseMs: input.leaseMs,
+      },
     );
     await eventBatcher.flush();
     if (controller.signal.aborted || input.stopping()) return;
@@ -684,6 +1242,7 @@ export async function executeClaimedJob(input: {
       result,
     });
   } catch (error) {
+    if (error instanceof WorkflowPaused) return;
     if (controller.signal.aborted || input.stopping() || isLeaseLoss(error)) {
       return;
     }

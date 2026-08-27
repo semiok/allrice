@@ -21,7 +21,19 @@ interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
     text: string;
-    citations: { type: string; id: string; label: string }[];
+    citations: {
+      type: string;
+      id: string;
+      label: string;
+      documentId?: string;
+      locator?: {
+        sourceRef: string;
+        chunk: number;
+        start: number;
+        end: number;
+      };
+      updatedAt?: string;
+    }[];
   };
   attachments: Attachment[];
   status: 'pending' | 'completed' | 'failed';
@@ -39,12 +51,26 @@ interface Session {
   archivedAt: string | null;
 }
 
+interface SessionContextStatus {
+  pressureTokens: number;
+  thresholdTokens: number;
+  remainingTokens: number;
+  percentage: number;
+  compactionDue: boolean;
+}
+
 interface RiceVersionChoice {
   id: string;
   version: number;
   manifest: {
     name: string;
     description?: string;
+    provider?: {
+      provider: string;
+    };
+    runtimePolicy?: {
+      harness: 'codex' | 'dsh';
+    };
     partnerProfile?: {
       role: string;
       mission: string;
@@ -187,6 +213,7 @@ interface AutomationToast {
 interface HistoryPayload {
   session: Session;
   messages: Message[];
+  contextStatus: SessionContextStatus;
 }
 
 interface RunEvent {
@@ -218,6 +245,32 @@ interface WorkspaceMemory {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试。';
+}
+
+function SessionContextMeter({ status }: { status: SessionContextStatus }) {
+  const label = status.compactionDue
+    ? '上下文 100% · 待压缩'
+    : `上下文 ${status.percentage}%`;
+  return (
+    <div
+      className={`session-context-status${
+        status.percentage >= 80 ? ' session-context-status-warning' : ''
+      }`}
+      title={`当前 ${status.pressureTokens.toLocaleString()} / ${status.thresholdTokens.toLocaleString()} tokens；达到 100% 后自动压缩`}
+    >
+      <span>{label}</span>
+      <span
+        aria-label={`会话上下文使用 ${status.percentage}%，达到 100% 后自动压缩`}
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={status.percentage}
+        className="session-context-meter"
+        role="progressbar"
+      >
+        <span style={{ width: `${status.percentage}%` }} />
+      </span>
+    </div>
+  );
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -297,24 +350,103 @@ function starterPrompts(employee: RiceEmployeeChoice | undefined) {
   );
 }
 
-function RunDetails({ events }: { events: RunEvent[] }) {
+function RunDetails({
+  events,
+  workspaceId,
+}: {
+  events: RunEvent[];
+  workspaceId: string;
+}) {
+  const [deciding, setDeciding] = useState(false);
   const tools = new Map<string, RunEvent>();
+  const steps = new Map<string, RunEvent>();
   for (const event of events) {
-    if (!event.type.startsWith('tool.')) continue;
-    const id = String(event.payload.toolCallId ?? event.eventId);
-    const previous = tools.get(id);
-    if (!previous || event.sequence > previous.sequence) tools.set(id, event);
+    if (event.type.startsWith('tool.')) {
+      const id = String(event.payload.toolCallId ?? event.eventId);
+      const previous = tools.get(id);
+      if (!previous || event.sequence > previous.sequence) tools.set(id, event);
+    }
+    if (event.type.startsWith('step.')) {
+      const key = String(event.payload.stepKey ?? event.eventId);
+      const previous = steps.get(key);
+      if (!previous || event.sequence > previous.sequence)
+        steps.set(key, event);
+    }
   }
   const retries = events.filter((event) => event.type === 'run.retrying');
-  if (tools.size === 0 && retries.length === 0) return null;
+  const decidedApprovals = new Set(
+    events
+      .filter((event) => event.type === 'approval.decided')
+      .map((event) => String(event.payload.approvalId ?? '')),
+  );
+  const pendingApproval = [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === 'approval.requested' &&
+        !decidedApprovals.has(String(event.payload.approvalId ?? '')),
+    );
+  if (tools.size === 0 && retries.length === 0 && steps.size === 0) return null;
+  async function decide(decision: 'approved' | 'rejected') {
+    const approvalId = pendingApproval?.payload.approvalId;
+    if (typeof approvalId !== 'string') return;
+    setDeciding(true);
+    try {
+      await readJson(
+        await fetch(`/api/v1/workflow-approvals/${approvalId}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            decision,
+            reason: decision === 'approved' ? '用户确认继续' : '用户拒绝执行',
+          }),
+        }),
+      );
+      window.location.reload();
+    } finally {
+      setDeciding(false);
+    }
+  }
   return (
     <details className="run-details">
       <summary>
+        {steps.size ? `执行记录 · ${steps.size} 个步骤` : ''}
+        {steps.size && tools.size ? ' · ' : ''}
         {tools.size ? `${tools.size} 个工具调用` : ''}
-        {tools.size && retries.length ? ' · ' : ''}
+        {(steps.size || tools.size) && retries.length ? ' · ' : ''}
         {retries.length ? `${retries.length} 次重试` : ''}
       </summary>
       <div className="tool-list">
+        {[...steps.values()].map((event) => (
+          <div className="tool-row" key={String(event.payload.stepKey)}>
+            <span
+              className={`tool-state tool-state-${
+                event.type === 'step.completed'
+                  ? 'completed'
+                  : event.type === 'step.retrying'
+                    ? 'started'
+                    : event.type === 'step.waiting_approval'
+                      ? 'started'
+                      : 'started'
+              }`}
+            />
+            <div>
+              <strong>
+                {String(event.payload.name ?? event.payload.stepKey)}
+              </strong>
+              <small>
+                {event.type === 'step.completed'
+                  ? '已完成'
+                  : event.type === 'step.waiting_approval'
+                    ? '等待你的确认'
+                    : event.type === 'step.retrying'
+                      ? `正在重试 · 第 ${String(event.payload.attempt ?? '?')} 次`
+                      : '正在执行'}
+              </small>
+            </div>
+          </div>
+        ))}
         {[...tools.values()].map((event) => (
           <div
             className="tool-row"
@@ -349,6 +481,19 @@ function RunDetails({ events }: { events: RunEvent[] }) {
             </div>
           </div>
         ))}
+        {pendingApproval ? (
+          <div className="workflow-approval-actions">
+            <span>
+              {String(pendingApproval.payload.summary ?? '此步骤需要确认')}
+            </span>
+            <button disabled={deciding} onClick={() => void decide('rejected')}>
+              拒绝
+            </button>
+            <button disabled={deciding} onClick={() => void decide('approved')}>
+              同意并继续
+            </button>
+          </div>
+        ) : null}
       </div>
     </details>
   );
@@ -706,6 +851,17 @@ export function WorkspaceClient({
       : 'AI员工版本';
   }
 
+  function employeeHarness(versionId: string): 'codex' | 'dsh' {
+    const version = riceVersions.find((item) => item.id === versionId);
+    if (
+      version?.manifest.runtimePolicy?.harness === 'dsh' ||
+      version?.manifest.provider?.provider === 'dsh'
+    ) {
+      return 'dsh';
+    }
+    return 'codex';
+  }
+
   function employeeForVersion(versionId: string) {
     return workspace?.employees.find((employee) =>
       employee.versions.some((version) => version.id === versionId),
@@ -793,7 +949,17 @@ export function WorkspaceClient({
         sessions: [result.session, ...workspace.sessions],
       });
       setActiveId(result.session.id);
-      setHistory({ session: result.session, messages: [] });
+      setHistory({
+        session: result.session,
+        messages: [],
+        contextStatus: {
+          pressureTokens: 0,
+          thresholdTokens: 40_000,
+          remainingTokens: 40_000,
+          percentage: 0,
+          compactionDue: false,
+        },
+      });
       setNewTaskOpen(false);
       setEmployeePickerOpen(false);
       window.history.replaceState(null, '', window.location.pathname);
@@ -954,6 +1120,7 @@ export function WorkspaceClient({
               id: session.id,
               title: session.title,
               employeeVersionId: session.employeeVersionId,
+              harness: employeeHarness(session.employeeVersionId),
               updatedAt: session.updatedAt,
             })),
           })),
@@ -1230,9 +1397,20 @@ export function WorkspaceClient({
                           }}
                         >
                           <strong>{session.title}</strong>
-                          <span>
-                            {employeeVersionLabel(session.employeeVersionId)} ·{' '}
-                            {new Date(session.updatedAt).toLocaleDateString()}
+                          <span className="employee-session-meta">
+                            <span>
+                              {employeeVersionLabel(session.employeeVersionId)}{' '}
+                              ·{' '}
+                              {new Date(session.updatedAt).toLocaleDateString()}
+                            </span>
+                            <em
+                              className={`session-harness-badge session-harness-${employeeHarness(session.employeeVersionId)}`}
+                            >
+                              {employeeHarness(session.employeeVersionId) ===
+                              'dsh'
+                                ? 'DSH'
+                                : 'Codex'}
+                            </em>
                           </span>
                         </button>
                       ))}
@@ -1390,7 +1568,27 @@ export function WorkspaceClient({
                   ) : null}
                 </div>
                 <MessageContent text={text} />
-                {message.runId ? <RunDetails events={events} /> : null}
+                {message.content.citations.length > 0 ? (
+                  <div className="citation-list" aria-label="回答来源">
+                    <strong>来源</strong>
+                    {message.content.citations.map(
+                      (citation, citationIndex) => (
+                        <span key={`${citation.type}-${citation.id}`}>
+                          [{citationIndex + 1}] {citation.label}
+                          {citation.locator
+                            ? ` · 第 ${citation.locator.chunk + 1} 段`
+                            : ''}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                ) : null}
+                {message.runId && workspace ? (
+                  <RunDetails
+                    events={events}
+                    workspaceId={workspace.workspaceId}
+                  />
+                ) : null}
                 {message.status === 'pending' ? (
                   <div className="message-progress">
                     <span className="thinking-dot" />
@@ -1503,6 +1701,7 @@ export function WorkspaceClient({
                   <option value="private">保持私有</option>
                   <option value="workspace">工作区公开</option>
                 </select>
+                <SessionContextMeter status={history.contextStatus} />
               </div>
               <button
                 className="send-action"

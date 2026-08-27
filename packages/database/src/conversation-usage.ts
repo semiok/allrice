@@ -19,3 +19,23 @@ export function effectiveContextTokens(input: {
     input.observedDynamicTokens,
   );
 }
+
+export const defaultContextCompactThreshold = 40_000;
+
+export function sessionCompactionStatus(input: {
+  pressureTokens: number;
+  thresholdTokens: number;
+}) {
+  const pressureTokens = Math.max(0, Math.floor(input.pressureTokens));
+  const thresholdTokens = Math.max(1, Math.floor(input.thresholdTokens));
+  return {
+    pressureTokens,
+    thresholdTokens,
+    remainingTokens: Math.max(0, thresholdTokens - pressureTokens),
+    percentage: Math.min(
+      100,
+      Math.floor((pressureTokens / thresholdTokens) * 100),
+    ),
+    compactionDue: pressureTokens >= thresholdTokens,
+  };
+}

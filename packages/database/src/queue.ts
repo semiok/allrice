@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   CancelRunInputSchema,
+  ChatCitationSchema,
   CreateRunInputSchema,
   EmployeeExecutionSnapshotSchema,
   ExecutionContextSchema,
@@ -452,6 +453,11 @@ export async function enqueueRun(
       expectedGeneration?: number;
       hasAttachments: boolean;
     };
+    workflowBinding?: {
+      employeeId: string;
+      workflowRevisionId: string;
+      sessionId: string | null;
+    };
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
@@ -587,6 +593,15 @@ export async function enqueueRun(
                     },
                   ]
                 : []),
+              ...(options.workflowBinding
+                ? ['storage_object', 'memory', 'chat_session'].map(
+                    (resourceType) => ({
+                      resourceType,
+                      action: 'resource:read' as const,
+                      workspaceId,
+                    }),
+                  )
+                : []),
             ],
           }),
         )},
@@ -619,6 +634,9 @@ export async function enqueueRun(
               options.skillBinding || options.employeeBinding ? 'codex' : null,
             skillVersionIds:
               options.employeeBinding?.skillVersionIds ?? undefined,
+            workflowRevisionId:
+              options.workflowBinding?.workflowRevisionId ?? undefined,
+            employeeId: options.workflowBinding?.employeeId ?? undefined,
           }),
         )},
         ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}
@@ -936,7 +954,7 @@ async function transitionTerminal(
         ? (employeeRun.prompt_snapshot as Record<string, unknown>)
         : {};
     const memories = Array.isArray(prompt.memories) ? prompt.memories : [];
-    const citations = memories.flatMap((memory) => {
+    const memoryCitations = memories.flatMap((memory) => {
       if (!memory || typeof memory !== 'object') return [];
       const item = memory as Record<string, unknown>;
       return typeof item.id === 'string' && typeof item.content === 'string'
@@ -949,6 +967,19 @@ async function transitionTerminal(
           ]
         : [];
     });
+    const executionCitations = Array.isArray(result.citations)
+      ? result.citations.flatMap((citation) => {
+          const parsed = ChatCitationSchema.safeParse(citation);
+          return parsed.success ? [parsed.data] : [];
+        })
+      : [];
+    const citations = [...executionCitations, ...memoryCitations].filter(
+      (citation, index, values) =>
+        values.findIndex(
+          (candidate) =>
+            candidate.type === citation.type && candidate.id === citation.id,
+        ) === index,
+    );
     const failureText =
       input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'

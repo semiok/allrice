@@ -73,5 +73,8 @@ describe('persistent queue maintenance decisions', () => {
         now,
       ),
     ).toBe('none');
+    expect(
+      queueMaintenanceAction(job({ status: 'waiting_approval' }), now),
+    ).toBe('none');
   });
 });

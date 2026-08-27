@@ -1,8 +1,8 @@
 # EmployeeHub
 
-> Status: **Employee Definition V2 / Phase 1.1 implemented**
+> Status: **Employee Definition V2 / Phase 1.1 and capability foundation / Phase 2.1 implemented**
 >
-> Linear: **MET-45, MET-60, MET-63**
+> Linear: **MET-45, MET-60, MET-61, MET-63, MET-68**
 
 ## Product model
 
@@ -75,6 +75,14 @@ files or credentials between users.
   employee and requires an administrator.
 - `PATCH /api/v1/employees/:assignmentId/default` lets a user choose among the
   employees already assigned to them.
+- `GET|PUT /api/v1/employees/:employeeId/capabilities` reads or atomically
+  replaces exact Agent Skill, Workflow and Knowledge revision bindings for an
+  administrator.
+- `/api/v1/admin/capabilities` provides administrator-only catalog, publication
+  and lifecycle endpoints for the Phase 2 configuration center.
+
+The capability lifecycle, Knowledge ACL and execution-freezing rules are in
+[Agent capability foundation](../../architecture/agent-capability-foundation.md).
 
 ## Security invariant
 

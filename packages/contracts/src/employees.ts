@@ -1,8 +1,15 @@
 import { z } from 'zod';
 
+import {
+  FrozenAgentSkillBindingSchema,
+  FrozenKnowledgeBindingSchema,
+  FrozenWorkflowBindingSchema,
+} from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import {
   CodexExecutionSnapshotSchema,
+  DshExecutionSnapshotSchema,
+  HarnessExecutionSnapshotSchema,
   SkillCapabilitySchema,
 } from './skills.ts';
 
@@ -18,6 +25,7 @@ export const LegacyEmployeeProviderSchema = z
 
 export const EmployeeProviderSnapshotSchema = z.union([
   CodexExecutionSnapshotSchema,
+  DshExecutionSnapshotSchema,
   LegacyEmployeeProviderSchema,
 ]);
 
@@ -60,6 +68,7 @@ export const EmployeeIdentitySchema = z
     safetyBoundaries: z.array(z.string().trim().min(1).max(500)).max(32),
   })
   .strict();
+export type EmployeeIdentity = z.infer<typeof EmployeeIdentitySchema>;
 
 export const EmployeeRuntimePolicySchema = z
   .object({
@@ -69,8 +78,46 @@ export const EmployeeRuntimePolicySchema = z
     reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
     timeoutMs: z.number().int().min(1_000).max(3_600_000),
     fallbackModels: z.array(z.string().trim().min(1).max(200)).max(8),
+    credentialReference: z.string().trim().min(1).max(255).optional(),
+    baseUrl: z.string().url().max(2_000).nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((policy, context) => {
+    if (policy.harness === 'codex') {
+      if (policy.provider !== 'codex' || policy.reasoningEffort === 'none') {
+        context.addIssue({
+          code: 'custom',
+          message: 'Codex requires the codex provider and reasoning',
+        });
+      }
+      return;
+    }
+    if (
+      policy.provider !== 'deepseek-official' &&
+      policy.provider !== 'openai-compatible'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['provider'],
+        message: 'DSH requires a supported provider route',
+      });
+    }
+    if (!policy.credentialReference) {
+      context.addIssue({
+        code: 'custom',
+        path: ['credentialReference'],
+        message: 'DSH requires an AllRice credential reference',
+      });
+    }
+    if (policy.provider === 'openai-compatible' && !policy.baseUrl) {
+      context.addIssue({
+        code: 'custom',
+        path: ['baseUrl'],
+        message: 'OpenAI-compatible DSH routes require a base URL',
+      });
+    }
+  });
+export type EmployeeRuntimePolicy = z.infer<typeof EmployeeRuntimePolicySchema>;
 
 export const EmployeeCapabilityBindingsSchema = z
   .object({
@@ -97,6 +144,20 @@ export const EmployeeSecurityPolicySchema = z
     deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
   })
   .strict();
+export type EmployeeSecurityPolicy = z.infer<
+  typeof EmployeeSecurityPolicySchema
+>;
+
+export const EmployeeUserProfilePolicySchema = z
+  .object({
+    enabled: z.boolean(),
+    fields: z.array(z.enum(['displayName', 'preferences'])).max(2),
+    scope: z.literal('employee_user'),
+  })
+  .strict();
+export type EmployeeUserProfilePolicy = z.infer<
+  typeof EmployeeUserProfilePolicySchema
+>;
 
 const EmployeeManifestV1Schema = z
   .object({
@@ -129,6 +190,11 @@ export const EmployeeDefinitionSchema = z
     skillVersionIds: z.array(UuidSchema).max(32),
     capabilityBindings: EmployeeCapabilityBindingsSchema,
     securityPolicy: EmployeeSecurityPolicySchema,
+    userProfilePolicy: EmployeeUserProfilePolicySchema.default({
+      enabled: true,
+      fields: ['displayName', 'preferences'],
+      scope: 'employee_user',
+    }),
     partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
   })
   .strict()
@@ -228,7 +294,7 @@ export const PublishEmployeeVersionInputSchema = z
   .object({
     workspaceId: UuidSchema,
     employeeId: UuidSchema,
-    skillVersionIds: z.array(UuidSchema).max(32).default([]),
+    skillVersionIds: z.array(UuidSchema).max(32).optional(),
     partnerProfile: PartnerProfileSchema.optional(),
     appearance: EmployeeAppearanceSchema.optional(),
     applicableScenarios: z
@@ -243,6 +309,11 @@ export const PublishEmployeeVersionInputSchema = z
       .array(z.string().trim().min(1).max(500))
       .max(32)
       .optional(),
+    identity: EmployeeIdentitySchema.optional(),
+    runtimePolicy: EmployeeRuntimePolicySchema.optional(),
+    securityPolicy: EmployeeSecurityPolicySchema.optional(),
+    userProfilePolicy: EmployeeUserProfilePolicySchema.optional(),
+    toolNames: z.array(z.string().trim().min(1).max(160)).max(64).optional(),
   })
   .strict();
 
@@ -268,6 +339,7 @@ export const EmployeeUserProfileSchema = z
     preferences: z.record(z.string(), z.unknown()),
   })
   .strict();
+export type EmployeeUserProfile = z.infer<typeof EmployeeUserProfileSchema>;
 
 export const FrozenEmployeeSkillBindingSchema = z
   .object({
@@ -278,7 +350,7 @@ export const FrozenEmployeeSkillBindingSchema = z
   })
   .strict();
 
-export const EmployeeExecutionSnapshotSchema = z
+export const EmployeeExecutionSnapshotV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     employee: z
@@ -320,6 +392,28 @@ export const EmployeeExecutionSnapshotSchema = z
     createdAt: TimestampSchema,
   })
   .strict();
+
+export const EmployeeExecutionSnapshotV2Schema =
+  EmployeeExecutionSnapshotV1Schema.extend({
+    schemaVersion: z.literal(2),
+    capabilitySnapshot: z
+      .object({
+        declaredCapabilities: z.array(SkillCapabilitySchema).max(16),
+        grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
+        bindings: EmployeeCapabilityBindingsSchema,
+        skillBindings: z.array(FrozenEmployeeSkillBindingSchema).max(32),
+        agentSkills: z.array(FrozenAgentSkillBindingSchema).max(32),
+        workflows: z.array(FrozenWorkflowBindingSchema).max(32),
+        knowledge: z.array(FrozenKnowledgeBindingSchema).max(32),
+        resolvedForActorId: UuidSchema,
+      })
+      .strict(),
+  }).strict();
+
+export const EmployeeExecutionSnapshotSchema = z.discriminatedUnion(
+  'schemaVersion',
+  [EmployeeExecutionSnapshotV1Schema, EmployeeExecutionSnapshotV2Schema],
+);
 export type EmployeeExecutionSnapshot = z.infer<
   typeof EmployeeExecutionSnapshotSchema
 >;
@@ -375,7 +469,7 @@ export const EmployeeRunSchema = z
     userMessageId: UuidSchema,
     assistantMessageId: UuidSchema,
     status: EmployeeRunStatusSchema,
-    providerSnapshot: CodexExecutionSnapshotSchema,
+    providerSnapshot: HarnessExecutionSnapshotSchema,
     skillVersionIds: z.array(UuidSchema),
     createdAt: TimestampSchema,
     startedAt: TimestampSchema.nullable(),

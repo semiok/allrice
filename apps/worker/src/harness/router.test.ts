@@ -52,4 +52,89 @@ describe('HarnessRouter', () => {
       'Harness dsh is not available',
     );
   });
+
+  it('selects the configured primary harness', () => {
+    const codex = new CodexHarnessAdapter();
+    const router = new HarnessRouter([codex]);
+    const selection = router.select({
+      runtimePolicy: {
+        harness: 'codex',
+        provider: 'codex',
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'high',
+        timeoutMs: 300_000,
+        fallbackModels: [],
+      },
+      providerSnapshot: {
+        provider: 'codex',
+        authMode: 'chatgpt_subscription',
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'high',
+        sandbox: 'workspace-write',
+      },
+    });
+    expect(selection).toMatchObject({
+      adapter: codex,
+      reasonCode: 'primary_harness_selected',
+    });
+  });
+
+  it('uses an explicit cross-harness fallback when the primary is unavailable', () => {
+    const codex = new CodexHarnessAdapter();
+    const dsh = new FakeDshAdapter();
+    const selection = new HarnessRouter([codex, dsh]).select({
+      runtimePolicy: {
+        harness: 'dsh',
+        provider: 'deepseek-official',
+        model: 'deepseek-chat',
+        reasoningEffort: 'high',
+        timeoutMs: 300_000,
+        fallbackModels: ['codex/gpt-5.6-luna'],
+        credentialReference: 'tenant/deepseek',
+      },
+      providerSnapshot: {
+        provider: 'dsh',
+        authMode: 'allrice_credential',
+        route: 'deepseek-official',
+        model: 'deepseek-chat',
+        reasoningEffort: 'high',
+        credentialReference: 'tenant/deepseek',
+        baseUrl: null,
+      },
+      providerHealth: { dsh: 'unavailable', codex: 'available' },
+    });
+    expect(selection.adapter).toBe(codex);
+    expect(selection.reasonCode).toBe('fallback_harness_selected');
+    expect(selection.providerSnapshot).toMatchObject({
+      provider: 'codex',
+      model: 'gpt-5.6-luna',
+    });
+  });
+
+  it('fails explicitly when neither primary nor fallback is available', () => {
+    const router = new HarnessRouter([new FakeDshAdapter()]);
+    expect(() =>
+      router.select({
+        runtimePolicy: {
+          harness: 'dsh',
+          provider: 'deepseek-official',
+          model: 'deepseek-chat',
+          reasoningEffort: 'high',
+          timeoutMs: 300_000,
+          fallbackModels: ['codex/gpt-5.6-luna'],
+          credentialReference: 'tenant/deepseek',
+        },
+        providerSnapshot: {
+          provider: 'dsh',
+          authMode: 'allrice_credential',
+          route: 'deepseek-official',
+          model: 'deepseek-chat',
+          reasoningEffort: 'high',
+          credentialReference: 'tenant/deepseek',
+          baseUrl: null,
+        },
+        providerHealth: { dsh: 'unavailable', codex: 'unavailable' },
+      }),
+    ).toThrow('No configured and healthy harness route');
+  });
 });

@@ -1,6 +1,6 @@
 import type {
-  CodexExecutionSnapshot,
   EmployeeKernelRequest,
+  HarnessExecutionSnapshot,
   HarnessCapabilities,
   HarnessEvent,
   StorageObject,
@@ -22,7 +22,7 @@ export interface HarnessToolResult {
 
 export interface HarnessExecutionInput {
   kernel: EmployeeKernelRequest;
-  providerSnapshot: CodexExecutionSnapshot;
+  providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
@@ -60,6 +60,7 @@ export interface HarnessExecutionResult {
 export interface HarnessAdapter {
   readonly kind: 'codex' | 'dsh';
   readonly capabilities: HarnessCapabilities;
+  isConfigured?(snapshot: HarnessExecutionSnapshot): boolean;
   execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult>;
   interrupt?(input: { threadId: string; turnId: string }): Promise<void>;
   steer?(input: {
@@ -70,4 +71,5 @@ export interface HarnessAdapter {
   }): Promise<void>;
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
+  close?(): Promise<void>;
 }

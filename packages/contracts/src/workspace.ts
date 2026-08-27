@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
+import { KnowledgeCitationSchema } from './knowledge.ts';
 
 export const EmployeeVersionSchema = z
   .object({
@@ -28,13 +29,16 @@ export const EmployeeAssignmentSchema = z
   })
   .strict();
 
-export const ChatCitationSchema = z
-  .object({
-    type: z.enum(['memory', 'file']),
-    id: UuidSchema,
-    label: z.string().min(1).max(200),
-  })
-  .strict();
+export const ChatCitationSchema = z.union([
+  z
+    .object({
+      type: z.enum(['memory', 'file']),
+      id: UuidSchema,
+      label: z.string().min(1).max(200),
+    })
+    .strict(),
+  KnowledgeCitationSchema,
+]);
 
 export const ChatMessageContentSchema = z
   .object({

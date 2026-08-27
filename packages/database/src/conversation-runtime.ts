@@ -3,7 +3,10 @@ import type postgres from 'postgres';
 import { z } from 'zod';
 
 import { getDatabase } from './index.ts';
-import { conversationUsageWatermark } from './conversation-usage.ts';
+import {
+  conversationUsageWatermark,
+  effectiveContextTokens,
+} from './conversation-usage.ts';
 
 const ChecksumSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const ThreadIdSchema = z.string().trim().min(1).max(255);
@@ -28,6 +31,8 @@ interface ConversationRuntimeRow {
   last_input_tokens: number | null;
   last_cached_input_tokens: number | null;
   dynamic_context_tokens: number;
+  compact_threshold_tokens: number;
+  context_pressure_tokens: number;
 }
 
 export class ConversationRuntimeError extends Error {
@@ -69,6 +74,8 @@ function mapBinding(row: ConversationRuntimeRow) {
     lastInputTokens: row.last_input_tokens,
     lastCachedInputTokens: row.last_cached_input_tokens,
     dynamicContextTokens: row.dynamic_context_tokens,
+    compactThresholdTokens: row.compact_threshold_tokens,
+    contextPressureTokens: row.context_pressure_tokens,
   };
 }
 
@@ -80,6 +87,7 @@ export async function acquireConversationRuntime(input: {
   runId: string;
   workerId: string;
   configChecksum: string;
+  compactThresholdTokens: number;
 }) {
   const values = {
     organizationId: UuidSchema.parse(input.organizationId),
@@ -89,15 +97,23 @@ export async function acquireConversationRuntime(input: {
     runId: UuidSchema.parse(input.runId),
     workerId: UuidSchema.parse(input.workerId),
     configChecksum: ChecksumSchema.parse(input.configChecksum),
+    compactThresholdTokens: z
+      .number()
+      .int()
+      .min(1_000)
+      .max(1_000_000)
+      .parse(input.compactThresholdTokens),
   };
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     await transaction`
       insert into allrice_conversation_runtimes (
-        organization_id, workspace_id, session_id, owner_id, config_checksum
+        organization_id, workspace_id, session_id, owner_id, config_checksum,
+        compact_threshold_tokens
       ) values (
         ${values.organizationId}, ${values.workspaceId}, ${values.sessionId},
-        ${values.ownerId}, ${values.configChecksum}
+        ${values.ownerId}, ${values.configChecksum},
+        ${values.compactThresholdTokens}
       ) on conflict (session_id) do nothing
     `;
     const rows = await transaction<ConversationRuntimeRow[]>`
@@ -142,6 +158,8 @@ export async function acquireConversationRuntime(input: {
           last_input_tokens = ${configChanged ? null : current.last_input_tokens},
           last_cached_input_tokens = ${configChanged ? null : current.last_cached_input_tokens},
           dynamic_context_tokens = ${configChanged ? 0 : current.dynamic_context_tokens},
+          compact_threshold_tokens = ${values.compactThresholdTokens},
+          context_pressure_tokens = ${configChanged ? 0 : current.context_pressure_tokens},
           last_error_code = null, last_started_at = now(), updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -224,6 +242,7 @@ export async function bindConversationThread(input: {
           last_input_tokens = ${changed ? null : current.last_input_tokens},
           last_cached_input_tokens = ${changed ? null : current.last_cached_input_tokens},
           dynamic_context_tokens = ${changed ? 0 : current.dynamic_context_tokens},
+          context_pressure_tokens = ${changed ? 0 : current.context_pressure_tokens},
           active_turn_id = null, updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -241,6 +260,7 @@ export async function recordConversationUsage(input: {
   generation: number;
   inputTokens: number;
   cachedInputTokens: number;
+  applicationEstimatedTokens: number;
 }) {
   const values = {
     ...ownedValues(input),
@@ -251,6 +271,11 @@ export async function recordConversationUsage(input: {
       .int()
       .nonnegative()
       .parse(input.cachedInputTokens),
+    applicationEstimatedTokens: z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(input.applicationEstimatedTokens),
   };
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
@@ -262,12 +287,17 @@ export async function recordConversationUsage(input: {
       baselineInputTokens: current.usage_baseline_input_tokens,
       inputTokens: values.inputTokens,
     });
+    const contextPressureTokens = effectiveContextTokens({
+      applicationEstimatedTokens: values.applicationEstimatedTokens,
+      observedDynamicTokens: watermark.dynamicContextTokens,
+    });
     const rows = await transaction<ConversationRuntimeRow[]>`
       update allrice_conversation_runtimes
       set usage_baseline_input_tokens = ${watermark.baselineInputTokens},
           last_input_tokens = ${watermark.inputTokens},
           last_cached_input_tokens = ${values.cachedInputTokens},
           dynamic_context_tokens = ${watermark.dynamicContextTokens},
+          context_pressure_tokens = ${contextPressureTokens},
           updated_at = now()
       where session_id = ${values.sessionId}
       returning *

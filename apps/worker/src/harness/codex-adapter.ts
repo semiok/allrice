@@ -34,7 +34,14 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     recover: true,
   } as const;
 
+  isConfigured(snapshot: HarnessExecutionInput['providerSnapshot']) {
+    return snapshot.provider === 'codex';
+  }
+
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+    if (input.providerSnapshot.provider !== 'codex') {
+      throw new TypeError('Codex harness requires a Codex provider snapshot');
+    }
     let order = 0;
     let generation = input.generation;
     let threadId = input.threadId ?? null;

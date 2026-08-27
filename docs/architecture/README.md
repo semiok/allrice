@@ -5,6 +5,8 @@
 AllRice V1 provides an employee-facing AI workspace for a small, fixed enterprise user base. It favors a modular monolith and operational clarity over microservice scale.
 
 The employee execution boundary is documented in [Harness Adapter and Employee Kernel](harness-adapter.md).
+The first-class Agent Skill, Workflow and Knowledge model is documented in
+[Agent capability foundation](agent-capability-foundation.md).
 
 ## Runtime topology
 
@@ -66,6 +68,7 @@ MET-49 freezes the following before business implementation:
 - Run, RunEvent, Artifact, Approval and Audit;
 - SSE Last-Event-ID, replay and reconnect;
 - Skill Version, Artifact, Installation and capability grants;
+- Agent Skill, Workflow and Knowledge revisions, employee bindings and ACLs;
 - Storage keys, signed access, retention and backup;
 - API and migration version compatibility.
 
