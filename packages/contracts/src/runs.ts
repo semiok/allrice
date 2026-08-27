@@ -33,6 +33,7 @@ export const RunEventTypeSchema = z.enum([
   'step.compensated',
   'assistant.text.delta',
   'assistant.text.completed',
+  'harness.native',
   'tool.started',
   'tool.completed',
   'tool.failed',
@@ -132,6 +133,34 @@ export const RunEventSchema = z
   .strict();
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
+export const ChatFlowEventEnvelopeSchema = z
+  .object({
+    schemaVersion: z.literal(3),
+    eventId: UuidSchema,
+    organizationId: UuidSchema,
+    workspaceId: UuidSchema,
+    conversationId: UuidSchema.nullable(),
+    runId: UuidSchema,
+    generation: z.number().int().nonnegative().nullable(),
+    cursor: z.string().trim().min(1),
+    sequence: z.number().int().nonnegative(),
+    harness: HarnessEventSourceSchema.nullable(),
+    type: RunEventTypeSchema,
+    occurredAt: TimestampSchema,
+    sourceEvent: z
+      .object({
+        id: z.string().trim().min(1).max(240),
+        type: z.string().trim().min(1).max(240),
+        occurredAt: TimestampSchema,
+        payload: z.record(z.string(), z.unknown()),
+      })
+      .strict()
+      .nullable(),
+    payload: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export type ChatFlowEventEnvelope = z.infer<typeof ChatFlowEventEnvelopeSchema>;
+
 /**
  * Stable presentation envelope shared by Codex, DSH and future harnesses.
  * It intentionally wraps the durable RunEvent instead of exposing a harness
@@ -160,6 +189,7 @@ function runtimeEventCategory(type: RunEventType): RuntimeEventCategory {
   if (type === 'usage.updated') return 'usage';
   if (type.startsWith('routing.')) return 'routing';
   if (type.startsWith('assistant.')) return 'assistant';
+  if (type === 'harness.native') return 'system';
   if (type.startsWith('tool.')) return 'tool';
   if (type.startsWith('step.')) return 'workflow';
   if (type.startsWith('approval.')) return 'approval';

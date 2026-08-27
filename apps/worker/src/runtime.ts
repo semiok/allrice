@@ -5,6 +5,7 @@ import {
   RouteDecisionSchema,
   type HarnessEvent,
   type HarnessExecutionSnapshot,
+  type ResolvedModelTarget,
   type RouteDecision,
 } from '@allrice/contracts';
 
@@ -12,6 +13,7 @@ import {
   ConversationRuntimeError,
   QueueError,
   acquireConversationRuntime,
+  admitModelExecution,
   appendJobEvent,
   bindConversationThread,
   buildExtractiveContextSummary,
@@ -26,8 +28,10 @@ import {
   heartbeatJob,
   getCodexProviderStatus,
   getLatestContextCheckpoint,
+  getModelGovernanceSnapshot,
   getWorkflowExecution,
   listContextCheckpointEvidence,
+  listFailedRouteDecisions,
   recordConversationTurn,
   recordConversationUsage,
   recordRouteDecision,
@@ -36,46 +40,97 @@ import {
   rejectConversationSteer,
   releaseConversationRuntime,
   resolveEmployeeExecution,
-  resolveSkillExecution,
+  assertQuotaAvailable,
   saveContextCheckpoint,
   shouldCreateContextCheckpoint,
+  ModelGovernanceError,
   startClaimedJob,
   type ClaimedExecution,
 } from '@allrice/database';
 
+import { AgentLoopGuard, AgentLoopGuardError } from './agent-loop-guard.js';
 import { prepareExecutionIsolation } from './isolation.js';
-import { executeCodexSkill } from './codex.js';
 import { assembleEmployeeKernel } from './employee-kernel.js';
 import { HandlerError } from './errors.js';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
 import { normalizeHarnessRunEvent } from './harness/runtime-contract.js';
-import { getHarnessRouter } from './harness/router.js';
+import {
+  classifyProviderFailure,
+  failedDecisionRouteKey,
+  getHarnessRouter,
+  harnessRouteKey,
+} from './harness/router.js';
 import { buildAuthorizedKnowledgeContext } from './knowledge.js';
+import { estimateModelCostCents } from './model-cost.js';
 import { decideCapabilityRoute } from './routing/capability-router.js';
 import { executeDurableWorkflow, WorkflowPaused } from './workflow-engine.js';
 import {
   executeRiceTool,
   riceToolCapability,
   riceToolDefinitionsForCapabilities,
+  riceToolDefinitionsForTurn,
+  riceToolRisk,
 } from './tool-broker.js';
 
 function providerName(snapshot: HarnessExecutionSnapshot) {
-  return snapshot.provider === 'codex' ? 'codex' : snapshot.route;
+  return snapshot.provider === 'codex' ? 'openai-codex' : snapshot.route;
+}
+
+function providerSnapshotForModelTarget(
+  target: ResolvedModelTarget,
+): HarnessExecutionSnapshot {
+  return target.provider === 'openai-codex' || target.harness === 'codex'
+    ? {
+        provider: 'dsh',
+        authMode: 'platform_subscription',
+        route: 'openai-codex',
+        model: target.model,
+        reasoningEffort:
+          target.reasoningEffort === 'none' ? 'low' : target.reasoningEffort,
+        credentialReference:
+          target.credentialReference ?? 'deployment:codex-default',
+        baseUrl: null,
+      }
+    : {
+        provider: 'dsh',
+        authMode: 'allrice_credential',
+        route:
+          target.provider === 'deepseek-official'
+            ? 'deepseek-official'
+            : 'openai-compatible',
+        model: target.model,
+        reasoningEffort: target.reasoningEffort,
+        credentialReference: target.credentialReference!,
+        baseUrl: target.baseUrl,
+      };
 }
 
 function replayProviderSnapshot(input: {
   decision: RouteDecision;
   original: HarnessExecutionSnapshot;
+  fallbacks?: readonly HarnessExecutionSnapshot[];
   reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 }): HarnessExecutionSnapshot {
-  if (input.decision.harness === 'codex') {
+  const frozen = [input.original, ...(input.fallbacks ?? [])].find(
+    (snapshot) =>
+      (snapshot.provider === 'codex' ? 'codex' : 'dsh') ===
+        input.decision.harness && snapshot.model === input.decision.model,
+  );
+  if (frozen) return frozen;
+  if (
+    input.decision.harness === 'codex' ||
+    input.decision.provider === 'openai-codex' ||
+    input.decision.provider === 'codex'
+  ) {
     return {
-      provider: 'codex',
-      authMode: 'chatgpt_subscription',
+      provider: 'dsh',
+      authMode: 'platform_subscription',
+      route: 'openai-codex',
       model: input.decision.model,
       reasoningEffort:
         input.reasoningEffort === 'none' ? 'low' : input.reasoningEffort,
-      sandbox: 'workspace-write',
+      credentialReference: 'deployment:codex-default',
+      baseUrl: null,
     };
   }
   if (input.original.provider !== 'dsh') {
@@ -241,6 +296,23 @@ async function executeHandler(
       cachedInputTokens: 0,
       outputTokens: 0,
     };
+    let routeCostCents = 0;
+    const loopGuard = new AgentLoopGuard();
+    const guardedHarnessEvent = async (event: HarnessEvent) => {
+      try {
+        loopGuard.observe(event);
+      } catch (error) {
+        if (error instanceof AgentLoopGuardError) {
+          throw new HandlerError(
+            error.code,
+            'Agent execution was stopped by the loop guard',
+            false,
+          );
+        }
+        throw error;
+      }
+      await onHarnessEvent(event);
+    };
     try {
       const executionSnapshot = resolved.executionSnapshot;
       if (!executionSnapshot) {
@@ -277,20 +349,166 @@ async function executeHandler(
         executionSnapshot,
         tools: authorizedTools.flatMap((tool) => {
           const requiredCapability = riceToolCapability(tool.name);
-          return requiredCapability ? [{ ...tool, requiredCapability }] : [];
+          return requiredCapability && riceToolRisk(tool.name) !== 'read_only'
+            ? [{ ...tool, requiredCapability }]
+            : [];
         }),
       });
       const codexStatus = await getCodexProviderStatus();
+      const frozenModelSnapshot =
+        executionSnapshot.schemaVersion === 2
+          ? executionSnapshot.modelSnapshot
+          : undefined;
+      const fallbackSnapshots =
+        executionSnapshot.schemaVersion === 2
+          ? (executionSnapshot.modelSnapshot?.resolvedFallbacks.map(
+              providerSnapshotForModelTarget,
+            ) ?? [])
+          : [];
+      const governance = frozenModelSnapshot
+        ? await getModelGovernanceSnapshot({
+            organizationId: execution.context.organizationId,
+            connectionIds: [
+              frozenModelSnapshot.connectionId,
+              ...frozenModelSnapshot.resolvedFallbacks.map(
+                (target) => target.connectionId,
+              ),
+            ],
+          })
+        : null;
+      if (governance) {
+        try {
+          assertQuotaAvailable(governance.quota);
+        } catch (error) {
+          if (error instanceof ModelGovernanceError) {
+            throw new HandlerError(
+              error.code,
+              error.scope
+                ? `The ${error.scope} model resource limit has been reached`
+                : 'The organization model quota has been reached',
+              false,
+            );
+          }
+          throw error;
+        }
+      }
+      const failedRoutes = await listFailedRouteDecisions({
+        organizationId: execution.context.organizationId,
+        workspaceId: execution.context.workspaceId!,
+        runId: execution.context.runId,
+        beforeAttempt: execution.job.attempt,
+      });
+      const allowedFallbacks = new Set(frozenModelSnapshot?.fallbackOn ?? []);
+      const eligibleFailures = failedRoutes.flatMap((failed) => {
+        const condition = classifyProviderFailure(failed.errorCode);
+        return condition && allowedFallbacks.has(condition)
+          ? [{ ...failed, condition }]
+          : [];
+      });
+      const previousFallback = eligibleFailures.at(-1) ?? null;
+      const codexUnavailable = ['disconnected', 'error'].includes(
+        codexStatus.status,
+      );
+      const blockedConnections = new Map(
+        (governance?.providers ?? [])
+          .filter(
+            (provider) =>
+              provider.killSwitch || provider.circuitState === 'open',
+          )
+          .map((provider) => [provider.connectionId, provider] as const),
+      );
+      const governanceExcludedRoutes = [
+        ...(frozenModelSnapshot &&
+        blockedConnections.has(frozenModelSnapshot.connectionId)
+          ? [harnessRouteKey(resolved.providerSnapshot)]
+          : []),
+        ...(frozenModelSnapshot?.resolvedFallbacks ?? [])
+          .filter((target) => blockedConnections.has(target.connectionId))
+          .map((target) =>
+            harnessRouteKey(providerSnapshotForModelTarget(target)),
+          ),
+        ...(resolved.providerSnapshot.provider === 'dsh' &&
+        resolved.providerSnapshot.route === 'openai-codex' &&
+        codexUnavailable
+          ? [harnessRouteKey(resolved.providerSnapshot)]
+          : []),
+      ];
+      const primaryGovernance = frozenModelSnapshot
+        ? blockedConnections.get(frozenModelSnapshot.connectionId)
+        : undefined;
+      const primaryUnavailable =
+        Boolean(primaryGovernance) ||
+        ((resolved.providerSnapshot.provider === 'codex' ||
+          (resolved.providerSnapshot.provider === 'dsh' &&
+            resolved.providerSnapshot.route === 'openai-codex')) &&
+          codexUnavailable);
+      const preflightFallbackAllowed =
+        !primaryUnavailable || allowedFallbacks.has('provider_unavailable');
       const selectedHarness = getHarnessRouter().select({
         runtimePolicy: executionSnapshot.runtimePolicy,
         providerSnapshot: resolved.providerSnapshot,
+        fallbackSnapshots: preflightFallbackAllowed ? fallbackSnapshots : [],
+        excludedRoutes: [
+          ...eligibleFailures.map(({ decision }) =>
+            failedDecisionRouteKey(decision),
+          ),
+          ...governanceExcludedRoutes,
+        ],
+        allowRuntimePolicyFallbacks: executionSnapshot.schemaVersion !== 2,
         providerHealth: {
-          codex: ['disconnected', 'error'].includes(codexStatus.status)
-            ? 'unavailable'
-            : 'available',
           dsh: 'available',
         },
       });
+      const selectedFallback = frozenModelSnapshot?.resolvedFallbacks.find(
+        (target) =>
+          harnessRouteKey(providerSnapshotForModelTarget(target)) ===
+          harnessRouteKey(selectedHarness.providerSnapshot),
+      );
+      if (frozenModelSnapshot) {
+        try {
+          // Resource limits and release controls belong to the route that will
+          // actually execute. Charging the frozen primary here would make a
+          // successful fallback consume the wrong Provider budget.
+          await admitModelExecution({
+            organizationId: execution.context.organizationId,
+            workspaceId: execution.context.workspaceId!,
+            userId: executionSnapshot.tenantContext.actorId,
+            employeeId: executionSnapshot.employee.id,
+            connectionId:
+              selectedFallback?.connectionId ??
+              frozenModelSnapshot.connectionId,
+            requestedTokens: frozenModelSnapshot.runLimits.maxTotalTokens,
+            requestedRuntimeMs: frozenModelSnapshot.runLimits.timeoutMs,
+          });
+        } catch (error) {
+          if (error instanceof ModelGovernanceError) {
+            throw new HandlerError(
+              error.code,
+              error.scope
+                ? `The ${error.scope} model resource limit has been reached`
+                : 'The organization model quota has been reached',
+              false,
+            );
+          }
+          throw error;
+        }
+      }
+      const fallbackCondition =
+        previousFallback?.condition ??
+        (selectedHarness.reasonCode === 'fallback_provider_selected' &&
+        primaryUnavailable
+          ? ('provider_unavailable' as const)
+          : null);
+      const fallbackReasonCode =
+        fallbackCondition === 'provider_unavailable'
+          ? ('fallback_condition_provider_unavailable' as const)
+          : fallbackCondition === 'rate_limited'
+            ? ('fallback_condition_rate_limited' as const)
+            : fallbackCondition === 'timeout'
+              ? ('fallback_condition_timeout' as const)
+              : fallbackCondition === 'transient_error'
+                ? ('fallback_condition_transient_error' as const)
+                : null;
       const proposedDecision = RouteDecisionSchema.parse({
         schemaVersion: 1,
         id: randomUUID(),
@@ -308,10 +526,25 @@ async function executeHandler(
         harness: selectedHarness.adapter.kind,
         provider: providerName(selectedHarness.providerSnapshot),
         model: selectedHarness.providerSnapshot.model,
+        modelConnectionId:
+          selectedFallback?.connectionId ??
+          frozenModelSnapshot?.connectionId ??
+          null,
+        modelCatalogEntryId:
+          selectedFallback?.modelCatalogEntryId ??
+          frozenModelSnapshot?.modelCatalogEntryId ??
+          null,
+        modelPolicyRevision: frozenModelSnapshot?.policyRevision ?? null,
+        fallbackFromDecisionId: previousFallback?.decision.id ?? null,
+        fallbackCondition,
         generation: runtime.generation,
         attempt: execution.job.attempt,
         reasonCodes: [
-          ...new Set([...routePlan.reasonCodes, selectedHarness.reasonCode]),
+          ...new Set([
+            ...routePlan.reasonCodes,
+            selectedHarness.reasonCode,
+            ...(fallbackReasonCode ? [fallbackReasonCode] : []),
+          ]),
         ],
         createdAt: new Date().toISOString(),
       });
@@ -346,10 +579,13 @@ async function executeHandler(
         fallback: routeDecision.reasonCodes.some((reason) =>
           reason.includes('fallback'),
         ),
+        fallbackFromDecisionId: routeDecision.fallbackFromDecisionId,
+        fallbackCondition: routeDecision.fallbackCondition,
       });
       const providerSnapshot = replayProviderSnapshot({
         decision: routeDecision,
         original: resolved.providerSnapshot,
+        fallbacks: fallbackSnapshots,
         reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
       });
       const adapter = getHarnessRouter().resolve(routeDecision.harness);
@@ -400,9 +636,15 @@ async function executeHandler(
           : routeDecision.selectedKind === 'workflow'
             ? workflowToolNames
             : skillRequiredTools;
-      const tools = authorizedTools.filter((tool) =>
-        selectedToolNames.includes(tool.name),
+      const tools = riceToolDefinitionsForTurn(
+        resolved.grantedCapabilities,
+        allowedToolNames,
+        selectedToolNames,
       );
+      const turnToolCapabilities = tools.flatMap((tool) => {
+        const capability = riceToolCapability(tool.name);
+        return capability ? [capability] : [];
+      });
       const selectedStorageObjects = resolved.skillArtifacts
         .filter((artifact) =>
           selectedSkillVersionIds.includes(artifact.skillVersionId),
@@ -420,7 +662,8 @@ async function executeHandler(
         harness: routeDecision.harness,
         systemInstructions: [
           kernel.systemInstructions,
-          `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Use only the capabilities and tools supplied for this turn.`,
+          `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
+          `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set; decide whether to call them using the native DSH Agent Loop. Side-effect tools are available only when explicitly selected. Use only the capabilities and tools supplied for this turn.`,
         ].join('\n\n'),
         authorizedMemoryContext: [
           kernel.authorizedMemoryContext,
@@ -432,12 +675,37 @@ async function executeHandler(
           ...new Set([
             'model:invoke' as const,
             ...selectedCandidate.requiredCapabilities,
+            ...turnToolCapabilities,
           ]),
         ].filter((capability) =>
           resolved.grantedCapabilities.includes(capability),
         ),
         skillVersionIds: selectedSkillVersionIds,
       });
+      const runLimits =
+        executionSnapshot.schemaVersion === 2
+          ? executionSnapshot.modelSnapshot?.runLimits
+          : undefined;
+      if (runLimits) {
+        const estimatedInputTokens = estimateConversationTokens(
+          [
+            routedKernel.systemInstructions,
+            routedKernel.bootstrapConversation,
+            routedKernel.authorizedMemoryContext,
+            routedKernel.userRequest,
+          ].join('\n'),
+        );
+        if (
+          estimatedInputTokens > runLimits.maxInputTokens ||
+          estimatedInputTokens > runLimits.maxTotalTokens
+        ) {
+          throw new HandlerError(
+            'MODEL_INPUT_BUDGET_EXCEEDED',
+            'Frozen employee model input budget was exceeded',
+            false,
+          );
+        }
+      }
       let steerPolling = true;
       let steerLoop: Promise<void> | undefined;
       const workflowCitations: typeof knowledge.citations = [];
@@ -605,7 +873,8 @@ async function executeHandler(
                     signal,
                     attempt: execution.job.attempt,
                     generation: runtime.generation,
-                    onEvent: onHarnessEvent,
+                    maxOutputTokens: runLimits?.maxOutputTokens,
+                    onEvent: guardedHarnessEvent,
                     tools: [],
                     threadId: runtime.threadId,
                     onThreadBound: async ({
@@ -680,6 +949,7 @@ async function executeHandler(
                 signal,
                 attempt: execution.job.attempt,
                 generation: runtime.generation,
+                maxOutputTokens: runLimits?.maxOutputTokens,
                 onEvent: async (event) => {
                   if (
                     event.type === 'tool.completed' &&
@@ -699,7 +969,7 @@ async function executeHandler(
                       },
                     });
                   }
-                  await onHarnessEvent(event);
+                  await guardedHarnessEvent(event);
                 },
                 tools,
                 onToolCall:
@@ -827,6 +1097,25 @@ async function executeHandler(
         });
       }
       routeUsage = result.usage;
+      routeCostCents = estimateModelCostCents({
+        provider: result.provider,
+        model: result.model,
+        ...result.usage,
+      });
+      if (
+        runLimits &&
+        (result.usage.outputTokens > runLimits.maxOutputTokens ||
+          result.usage.inputTokens + result.usage.outputTokens >
+            runLimits.maxTotalTokens ||
+          (runLimits.maxCostCents !== null &&
+            routeCostCents > runLimits.maxCostCents))
+      ) {
+        throw new HandlerError(
+          'MODEL_OUTPUT_BUDGET_EXCEEDED',
+          'Frozen employee model output budget was exceeded',
+          false,
+        );
+      }
       runtime = await clearConversationTurn(ownership);
       const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
         (message) =>
@@ -944,8 +1233,9 @@ async function executeHandler(
           decisionId: routeDecision.id,
           status: 'succeeded',
           ...routeUsage,
-          costCents: 0,
+          costCents: routeCostCents,
           errorCode: null,
+          failureCategory: null,
           completedAt: new Date().toISOString(),
         },
       });
@@ -989,8 +1279,9 @@ async function executeHandler(
             decisionId: decision.id,
             status: signal.aborted ? 'canceled' : 'failed',
             ...routeUsage,
-            costCents: 0,
+            costCents: routeCostCents,
             errorCode,
+            failureCategory: classifyProviderFailure(errorCode),
             completedAt: new Date().toISOString(),
           },
         }).catch((outcomeError: unknown) => {
@@ -1066,80 +1357,6 @@ async function executeHandler(
             citations: retrieved.citations,
           },
         };
-      },
-    });
-  }
-  if (execution.payload.type === 'allrice.skill.run') {
-    const input = objectInput(execution.payload.input);
-    if (
-      typeof input.installationId !== 'string' ||
-      typeof input.skillVersionId !== 'string' ||
-      typeof input.prompt !== 'string'
-    ) {
-      throw new HandlerError(
-        'SKILL_INPUT_INVALID',
-        'Skill execution input is invalid',
-        false,
-      );
-    }
-    const resolved = await resolveSkillExecution({
-      organizationId: execution.context.organizationId,
-      workspaceId: execution.context.workspaceId!,
-      ownerId: execution.job.ownerId,
-      runId: execution.context.runId,
-      installationId: input.installationId,
-      skillVersionId: input.skillVersionId,
-    });
-    return executeCodexSkill({
-      storageObject: resolved.storageObject,
-      workDirectory: isolation.workDirectory,
-      executionEnvironment: isolation.environment,
-      prompt: input.prompt,
-      providerSnapshot: resolved.providerSnapshot,
-      grantedCapabilities: resolved.grantedCapabilities,
-      signal,
-      onEvent: async (event) => {
-        const type =
-          event.kind === 'message'
-            ? 'assistant.completed'
-            : event.kind === 'usage'
-              ? 'usage.updated'
-              : event.status === 'started'
-                ? 'tool.started'
-                : event.status === 'failed'
-                  ? 'tool.failed'
-                  : 'tool.completed';
-        await onHarnessEvent({
-          schemaVersion: 1,
-          harness: 'codex',
-          generation: 0,
-          attempt: execution.job.attempt,
-          order: 1,
-          threadId: null,
-          turnId: null,
-          messageId: execution.context.runId,
-          ...(event.kind === 'message'
-            ? { type, text: event.text ?? '' }
-            : event.kind === 'usage'
-              ? {
-                  type,
-                  inputTokens: event.usage?.inputTokens ?? 0,
-                  cachedInputTokens: event.usage?.cachedInputTokens ?? 0,
-                  outputTokens: event.usage?.outputTokens ?? 0,
-                }
-              : {
-                  type,
-                  toolCallId: event.toolCallId ?? `${event.name}-unknown`,
-                  name: event.name ?? 'unknown',
-                  label: event.label ?? event.name ?? '工具调用',
-                  source:
-                    event.source === 'tool_broker' ? 'tool_broker' : 'harness',
-                  ...(event.summary ? { summary: event.summary } : {}),
-                  ...(event.itemCount === undefined
-                    ? {}
-                    : { itemCount: event.itemCount }),
-                }),
-        } as HarnessEvent);
       },
     });
   }

@@ -1,0 +1,17 @@
+# The authenticated AllRice platform console owns the platform DSH credential
+# store. Tenant runtimes receive only frozen provider references and never this
+# file. The path is deployment-owned and is not configurable from the browser.
+- id: credentials
+  config:
+    path: !!js process.env.DSH_CREDENTIALS_PATH
+    watch: true
+
+# The standalone DSH WebUI keeps its native Search tool, while AllRice replaces
+# the bundled DeepSeek-key-only implementation with the platform Codex OAuth
+# search provider. This uses the same openai-codex grant managed by Models.
+- id: web
+  config:
+    searchProvider: codex-subscription
+
+- id: web-search-deepseek
+  disabled: true

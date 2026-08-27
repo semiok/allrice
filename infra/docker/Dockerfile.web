@@ -7,6 +7,7 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/storage/package.json packages/storage/package.json
 COPY packages/ui/package.json packages/ui/package.json
+COPY patches patches
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm --filter @allrice/web... build

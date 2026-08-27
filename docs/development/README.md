@@ -17,16 +17,13 @@ An `.env` file is optional. The default path provisions a private development da
 - Node.js 22+
 - pnpm 11+
 - Docker Desktop, or Docker Engine with the Compose plugin
-- Codex CLI, signed in with the ChatGPT subscription account used for SkillRun
+- a platform administrator who can complete DSH's Codex subscription OAuth
 
-AllRice does not use an OpenAI API key. Before the first local start, run:
-
-```bash
-codex login
-codex login status
-```
-
-This is a one-time deployment authorization step; `pnpm doctor` verifies it.
+AllRice does not require an OpenAI API key or Codex CLI for employee model
+execution. After the first local start, sign in as a platform administrator and
+authorize the Codex subscription in the model console. The browser sees only a
+public device-code challenge; DSH stores and refreshes the OAuth grant in its
+private credential store.
 
 The repository pins pnpm in `package.json` and the Node major in `.nvmrc`. Run `pnpm doctor` before setup when diagnosing a teammate's machine.
 
@@ -72,27 +69,26 @@ For a native local installation, install PostgreSQL 17 and the matching pgvector
 
 Copy `.env.example` to `.env` only when changing defaults. The bootstrap script loads this root file and passes one consistent environment to migration, Web, and Worker.
 
-| Variable                          | Default             | Purpose                                                         |
-| --------------------------------- | ------------------- | --------------------------------------------------------------- |
-| `DATABASE_URL`                    | blank               | Existing database override; blank enables the dev container     |
-| `ALLRICE_DEV_DB_PORT`             | `54329`             | Loopback host port for the development database                 |
-| `POSTGRES_DB`                     | `allrice`           | Database created by Compose                                     |
-| `POSTGRES_USER`                   | `allrice`           | Database user created by Compose                                |
-| `POSTGRES_PASSWORD`               | `allrice`           | Local default; must be changed for shared/production deployment |
-| `ALLRICE_WEB_PORT`                | `3000`              | Native Web development port                                     |
-| `ALLRICE_WORKER_PORT`             | `3101`              | Native Worker health port                                       |
-| `ALLRICE_WORKER_POLL_INTERVAL_MS` | `1000`              | Persistent Queue maintenance and claim cadence                  |
-| `ALLRICE_WORKER_LEASE_MS`         | `30000`             | Worker claim lease duration                                     |
-| `ALLRICE_WORKER_HEARTBEAT_MS`     | `10000`             | Active execution heartbeat cadence                              |
-| `ALLRICE_WORKER_CONCURRENCY`      | `1`                 | Maximum executions per Worker process                           |
-| `ALLRICE_EXECUTION_ROOT`          | `.local/executions` | Ignored tenant/run/attempt scratch root                         |
-| `ALLRICE_STORAGE_ROOT`            | `.local/storage`    | Ignored native-development storage directory                    |
-| `ALLRICE_CODEX_COMMAND`           | `codex`             | Codex CLI executable                                            |
-| `ALLRICE_CODEX_AUTH_HOME`         | current `~/.codex`  | Deployment-owned subscription credential directory              |
-| `ALLRICE_CODEX_MODEL`             | `gpt-5.6-luna`      | Model pinned into new Skill and Employee versions/runs          |
-| `ALLRICE_CODEX_REASONING_EFFORT`  | `high`              | Reasoning pinned into new Skill and Employee versions/runs      |
-| `ALLRICE_STORAGE_SIGNING_SECRET`  | dev-only fallback   | HMAC secret; required in production, minimum 32 bytes           |
-| `ALLRICE_PROXY_PORT`              | `8080`              | Host port for the full Compose deployment                       |
+| Variable                             | Default               | Purpose                                                         |
+| ------------------------------------ | --------------------- | --------------------------------------------------------------- |
+| `DATABASE_URL`                       | blank                 | Existing database override; blank enables the dev container     |
+| `ALLRICE_DEV_DB_PORT`                | `54329`               | Loopback host port for the development database                 |
+| `POSTGRES_DB`                        | `allrice`             | Database created by Compose                                     |
+| `POSTGRES_USER`                      | `allrice`             | Database user created by Compose                                |
+| `POSTGRES_PASSWORD`                  | `allrice`             | Local default; must be changed for shared/production deployment |
+| `ALLRICE_WEB_PORT`                   | `3000`                | Native Web development port                                     |
+| `ALLRICE_WORKER_PORT`                | `3101`                | Native Worker health port                                       |
+| `ALLRICE_WORKER_POLL_INTERVAL_MS`    | `1000`                | Persistent Queue maintenance and claim cadence                  |
+| `ALLRICE_WORKER_LEASE_MS`            | `30000`               | Worker claim lease duration                                     |
+| `ALLRICE_WORKER_HEARTBEAT_MS`        | `10000`               | Active execution heartbeat cadence                              |
+| `ALLRICE_WORKER_CONCURRENCY`         | `1`                   | Maximum executions per Worker process                           |
+| `ALLRICE_EXECUTION_ROOT`             | `.local/executions`   | Ignored tenant/run/attempt scratch root                         |
+| `ALLRICE_STORAGE_ROOT`               | `.local/storage`      | Ignored native-development storage directory                    |
+| `ALLRICE_DSH_CODEX_MODEL`            | `gpt-5.6-luna`        | DSH Codex Provider model pinned into new employee runs          |
+| `ALLRICE_DSH_CODEX_REASONING_EFFORT` | `xhigh`               | DSH Codex Provider reasoning effort                             |
+| `ALLRICE_DSH_PLATFORM_HOME`          | `.local/dsh-platform` | Private DSH Provider credential/configuration directory         |
+| `ALLRICE_STORAGE_SIGNING_SECRET`     | dev-only fallback     | HMAC secret; required in production, minimum 32 bytes           |
+| `ALLRICE_PROXY_PORT`                 | `8080`                | Host port for the full Compose deployment                       |
 
 Do not commit `.env`; it is ignored because it may contain credentials.
 
@@ -143,8 +139,8 @@ This prevents the misleading state where liveness passes but a teammate is devel
 - **Port `54329` is already allocated**: set `ALLRICE_DEV_DB_PORT` to another free port in `.env`. The bootstrap constructs the matching connection URL automatically.
 - **`permission denied to create extension vector`**: have a PostgreSQL administrator install pgvector and run `CREATE EXTENSION vector;` in the AllRice database.
 - **Migration mismatch**: run `pnpm db:setup`. Do not edit migration history or the database migration table by hand.
-- **SkillHub provider status says `run_codex_login`**: run `codex login` as the Worker deployment user. For Compose, run `docker compose run --rm worker codex login --device-auth` so the credential is stored in the dedicated named volume.
-- **SkillHub provider status says `codex_cli_not_found`**: install the Codex CLI or set `ALLRICE_CODEX_COMMAND` to its absolute executable path.
+- **Codex Provider says authorization is required**: sign in as a platform administrator, open the model console and complete the DSH device-code flow. Do not copy a Codex CLI credential file.
+- **DSH credential status is disconnected**: verify the Worker can write `ALLRICE_DSH_PLATFORM_HOME`, then restart the authorization flow from the model console.
 - **Web/Worker port already used**: override `ALLRICE_WEB_PORT` or `ALLRICE_WORKER_PORT` in `.env`.
 - **Liveness is 200 but readiness is 503**: run `pnpm db:verify`; readiness deliberately includes database connectivity.
 

@@ -1,5 +1,5 @@
 import { ExecuteSkillInputSchema } from '@allrice/contracts';
-import { DataAccessError, enqueueSkillRun } from '@allrice/database';
+import { DataAccessError, SkillHubError } from '@allrice/database';
 
 import { getRequestContext } from '../../../../../lib/identity/session';
 import { skillHubErrorResponse } from '../../../../../lib/skillhub/responses';
@@ -10,12 +10,8 @@ export async function POST(request: Request) {
   try {
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
-    const input = ExecuteSkillInputSchema.parse(await request.json());
-    const result = await enqueueSkillRun(context, input);
-    return Response.json(
-      { run: result.run, idempotentReplay: !result.created },
-      { status: result.created ? 201 : 200 },
-    );
+    ExecuteSkillInputSchema.parse(await request.json());
+    throw new SkillHubError('conversation_required');
   } catch (error) {
     return skillHubErrorResponse(error);
   }

@@ -1,4 +1,12 @@
 :8080 {
   encode zstd gzip
-  reverse_proxy web:3000
+
+  @dsh_admin host allrice-dsh.bplabs.xyz allrice-dsh.traditionow.ai
+  handle @dsh_admin {
+    reverse_proxy dsh-admin:3081
+  }
+
+  handle {
+    reverse_proxy web:3000
+  }
 }

@@ -36,10 +36,13 @@ function createAdapter() {
     credentialResolver: { resolve: async () => ({ apiKey: 'test-secret' }) },
     runtimeCommand: process.execPath,
     runtimeArgs: [
-      resolve('apps/worker/src/harness/fixtures/dsh-fake-runtime.mjs'),
+      resolve(import.meta.dirname, 'fixtures/dsh-fake-runtime.mjs'),
     ],
     runtimeRoot: resolve('.local/test-dsh-runtime'),
-    cordisConfig: resolve('apps/worker/dsh/allrice-restricted.cordis.yml'),
+    cordisConfig: resolve(
+      import.meta.dirname,
+      '../../dsh/allrice-restricted.cordis.yml',
+    ),
     requestTimeoutMs: 5_000,
   });
   adapters.push(adapter);
@@ -164,6 +167,26 @@ describe('DshHarnessAdapter', () => {
     expect(result.answer).toBe('visible answer');
     expect(streamed).toBe('visible answer');
     expect(streamed).not.toContain('private reasoning');
+    const nativeEvents = events.filter(
+      (event) => event.type === 'native.event',
+    );
+    expect(nativeEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          presentation: 'think',
+          status: 'started',
+        }),
+        expect.objectContaining({
+          presentation: 'think',
+          status: 'completed',
+        }),
+      ]),
+    );
+    expect(JSON.stringify(nativeEvents)).not.toContain('private reasoning');
+    expect(JSON.stringify(events)).not.toContain(
+      'system-secret-that-must-not-reach-chatflow',
+    );
+    expect(JSON.stringify(events)).not.toContain('secret-token');
   });
 
   it('routes tool envelopes only through the AllRice Tool Broker callback', async () => {
@@ -195,6 +218,48 @@ describe('DshHarnessAdapter', () => {
         .map((event) => ('text' in event ? event.text : ''))
         .join(''),
     ).not.toContain('allrice_tool_call');
+  });
+
+  it('accepts a single tool envelope after a harmless model preamble', async () => {
+    const adapter = createAdapter();
+    const calls: string[] = [];
+    const result = await adapter.execute(
+      executionInput({
+        prompt: 'use-tool-with-preamble',
+        onToolCall: async (call) => {
+          calls.push(call.name);
+          return {
+            modelContent: '[{"id":"one"}]',
+            summary: 'one file',
+            itemCount: 1,
+          };
+        },
+      }),
+    );
+    expect(calls).toEqual(['workspace.file.list']);
+    expect(result.answer).toBe('tool-finished');
+    expect(result.answer).not.toContain('allrice_tool_call');
+  });
+
+  it('accepts a single tool envelope before a harmless model postamble', async () => {
+    const adapter = createAdapter();
+    const calls: string[] = [];
+    const result = await adapter.execute(
+      executionInput({
+        prompt: 'use-tool-with-postamble',
+        onToolCall: async (call) => {
+          calls.push(call.name);
+          return {
+            modelContent: '[{"id":"one"}]',
+            summary: 'one file',
+            itemCount: 1,
+          };
+        },
+      }),
+    );
+    expect(calls).toEqual(['workspace.file.list']);
+    expect(result.answer).toBe('tool-finished');
+    expect(result.answer).not.toContain('allrice_tool_call');
   });
 
   it.each(['deepseek-official', 'openai-compatible'] as const)(
@@ -245,7 +310,7 @@ describe('DshHarnessAdapter', () => {
     expect(recovered.answer).toBe('turn-1');
   });
 
-  it('compacts by closing native state before AllRice checkpoint rehydration', async () => {
+  it('uses DSH native compaction without replacing the live session', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;
     const input = executionInput({ prompt: 'before compact' });
@@ -257,6 +322,6 @@ describe('DshHarnessAdapter', () => {
     const after = await adapter.execute(
       executionInput({ prompt: 'after compact', threadId }),
     );
-    expect(after.answer).toBe('turn-1');
+    expect(after.answer).toBe('turn-2');
   });
 });

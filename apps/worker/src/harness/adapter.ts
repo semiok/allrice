@@ -6,12 +6,16 @@ import type {
   StorageObject,
 } from '@allrice/contracts';
 
-import type { CodexDynamicToolDefinition } from '../codex-app-server.js';
-
 export interface HarnessToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+}
+
+export interface HarnessToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
 }
 
 export interface HarnessToolResult {
@@ -29,8 +33,9 @@ export interface HarnessExecutionInput {
   signal: AbortSignal;
   attempt: number;
   generation: number;
+  maxOutputTokens?: number;
   threadId?: string | null;
-  tools: readonly CodexDynamicToolDefinition[];
+  tools: readonly HarnessToolDefinition[];
   onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>;
   onEvent: (event: HarnessEvent) => Promise<void>;
   onThreadBound?: (input: {

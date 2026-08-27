@@ -1,5 +1,6 @@
 import {
   formatSseCursor,
+  ChatFlowEventEnvelopeSchema,
   isTerminalRunStatus,
   parseSseCursor,
   type RequestContext,
@@ -23,11 +24,75 @@ import { createChatFlowWaiter } from '../../../../../../lib/chatflow/waiter';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-function encodedEvent(event: RunEvent) {
+function chatFlowEnvelope(input: {
+  event: RunEvent;
+  context: RequestContext;
+  workspaceId: string;
+}) {
+  const payload =
+    input.event.payload !== null &&
+    typeof input.event.payload === 'object' &&
+    !Array.isArray(input.event.payload)
+      ? (input.event.payload as Record<string, unknown>)
+      : { value: input.event.payload };
+  const source = payload.source;
+  const generation = payload.generation;
+  const sourceEventId = payload.sourceEventId;
+  const sourceEventType = payload.sourceEventType;
+  const sourceOccurredAt = payload.sourceOccurredAt;
+  const nativePayload = payload.nativePayload;
+  return ChatFlowEventEnvelopeSchema.parse({
+    schemaVersion: 3,
+    eventId: input.event.eventId,
+    organizationId: input.context.organizationId,
+    workspaceId: input.workspaceId,
+    conversationId:
+      typeof payload.conversationId === 'string'
+        ? payload.conversationId
+        : null,
+    runId: input.event.runId,
+    generation:
+      typeof generation === 'number' && Number.isInteger(generation)
+        ? generation
+        : null,
+    cursor: formatSseCursor({
+      runId: input.event.runId,
+      sequence: input.event.sequence,
+    }),
+    sequence: input.event.sequence,
+    harness: source === 'codex' || source === 'dsh' ? source : null,
+    type: input.event.type,
+    occurredAt: input.event.occurredAt,
+    sourceEvent:
+      typeof sourceEventId === 'string' &&
+      typeof sourceEventType === 'string' &&
+      typeof sourceOccurredAt === 'string'
+        ? {
+            id: sourceEventId,
+            type: sourceEventType,
+            occurredAt: sourceOccurredAt,
+            payload:
+              nativePayload !== null &&
+              typeof nativePayload === 'object' &&
+              !Array.isArray(nativePayload)
+                ? (nativePayload as Record<string, unknown>)
+                : {},
+          }
+        : null,
+    payload,
+  });
+}
+
+function encodedEvent(
+  event: RunEvent,
+  context: RequestContext,
+  workspaceId: string,
+) {
+  const data = chatFlowEnvelope({ event, context, workspaceId });
   return [
     `id: ${formatSseCursor({ runId: event.runId, sequence: event.sequence })}`,
-    'event: run-event',
-    `data: ${JSON.stringify(event)}`,
+    'event: chatflow-event',
+    `data: ${JSON.stringify(data)}`,
     '',
     '',
   ].join('\n');
@@ -77,7 +142,9 @@ async function streamEvents(input: {
     if (!notifyActive) incrementChatFlowMetric('pollingConnections');
     while (!input.request.signal.aborted) {
       for (const event of pending) {
-        input.controller.enqueue(encoder.encode(encodedEvent(event)));
+        input.controller.enqueue(
+          encoder.encode(encodedEvent(event, input.context, input.workspaceId)),
+        );
         sequence = event.sequence;
         incrementChatFlowMetric('eventsDelivered');
       }
@@ -166,7 +233,11 @@ export async function GET(
       new URL(request.url).searchParams.get('format') === 'json' ||
       request.headers.get('accept')?.includes('application/json')
     ) {
-      return Response.json({ events: initialEvents });
+      return Response.json({
+        events: initialEvents.map((event) =>
+          chatFlowEnvelope({ event, context, workspaceId }),
+        ),
+      });
     }
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -190,6 +261,8 @@ export async function GET(
         connection: 'keep-alive',
         'content-type': 'text/event-stream; charset=utf-8',
         'x-accel-buffering': 'no',
+        'x-allrice-chatflow-version': '3',
+        'x-allrice-chatflow-event-contract': 'chatflow-native-v3',
         'x-allrice-chatflow-transport': preferNotify
           ? 'postgres-notify'
           : 'polling',

@@ -6,6 +6,7 @@ import {
   FrozenWorkflowBindingSchema,
 } from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { SessionModelSnapshotSchema } from './models.ts';
 import {
   CodexExecutionSnapshotSchema,
   DshExecutionSnapshotSchema,
@@ -87,12 +88,14 @@ export const EmployeeRuntimePolicySchema = z
       if (policy.provider !== 'codex' || policy.reasoningEffort === 'none') {
         context.addIssue({
           code: 'custom',
-          message: 'Codex requires the codex provider and reasoning',
+          message:
+            'Legacy Codex Harness policies are read-only and normalized to DSH at execution',
         });
       }
       return;
     }
     if (
+      policy.provider !== 'openai-codex' &&
       policy.provider !== 'deepseek-official' &&
       policy.provider !== 'openai-compatible'
     ) {
@@ -396,6 +399,7 @@ export const EmployeeExecutionSnapshotV1Schema = z
 export const EmployeeExecutionSnapshotV2Schema =
   EmployeeExecutionSnapshotV1Schema.extend({
     schemaVersion: z.literal(2),
+    modelSnapshot: SessionModelSnapshotSchema.optional(),
     capabilitySnapshot: z
       .object({
         declaredCapabilities: z.array(SkillCapabilitySchema).max(16),

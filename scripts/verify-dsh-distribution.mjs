@@ -55,6 +55,18 @@ assert(
   ledger.schemaVersion === 1 && Array.isArray(ledger.patches),
   'invalid patch ledger',
 );
+assert(
+  ledger.patches.some(
+    (patch) =>
+      patch.id === 'allrice-jsonrpc-lifecycle-v1' &&
+      patch.upstreamVersion === distribution.current.version,
+  ),
+  'AllRice protocol extension must be recorded against the approved upstream',
+);
+assert(
+  !profile.includes('@deepseek-ai/dsh-sdk-jsonrpc-server'),
+  'restricted profile must leave JSON-RPC ownership to the AllRice protocol adapter',
+);
 
 for (const [name, version] of Object.entries(
   workerPackage.dependencies ?? {},

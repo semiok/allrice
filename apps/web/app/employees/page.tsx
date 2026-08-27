@@ -1,11 +1,5 @@
-import { AppShell } from '../components/app-shell';
-import { readFrameworkRolloutPolicy } from '../../lib/framework/rollout';
+import { redirect } from 'next/navigation';
 
 export default function EmployeesPage() {
-  return (
-    <AppShell
-      initialPanel="employees"
-      rolloutPolicy={readFrameworkRolloutPolicy()}
-    />
-  );
+  redirect('/chatflow/employees');
 }

@@ -5,6 +5,7 @@ import {
   CreateChatSessionInputSchema,
   CreateWorkspaceMemoryInputSchema,
   EmployeeManifestSchema,
+  SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
   UpdateChatSessionInputSchema,
   UuidSchema,
@@ -39,7 +40,7 @@ import {
 
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
-const riceVersion = 8;
+const riceVersion = 9;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -514,9 +515,10 @@ export async function createChatSession(
     if (!assignments[0]) throw new DataAccessError('authorization_denied');
     assignment = mapAssignment(assignments[0]);
   }
-  const employeeVersionId = parsed.employeeVersionId
-    ? UuidSchema.parse(parsed.employeeVersionId)
-    : assignment.employeeVersionId;
+  // New Sessions always use the assignment's current published version.
+  // Browser state can be stale after an administrator updates an employee;
+  // accepting its version would silently pin a new Session to old abilities.
+  const employeeVersionId = assignment.employeeVersionId;
   const versions = await sql<{ id: string }[]>`
     select id from allrice_employee_versions
     where id = ${employeeVersionId}
@@ -1046,7 +1048,7 @@ export async function sendChatMessage(
           assistantMessageId: binding.assistantMessageId,
         },
         maxAttempts: 2,
-        timeoutMs: 300_000,
+        timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
       },
       {
         employeeBinding: binding,
@@ -1395,12 +1397,41 @@ export async function getEmployeeWorkspace(
   ]);
   const { listEmployeeHub } = await import('./employeehub.ts');
   const employeeHub = await listEmployeeHub(context, assignment.workspaceId);
+  const sessionIds = sessions.sessions.map((session) => session.id);
+  const sql = getDatabase();
+  const modelRows =
+    sessionIds.length === 0
+      ? []
+      : await sql<{ session_id: string; snapshot: unknown }[]>`
+          select session_id, snapshot
+          from allrice_session_model_snapshots
+          where organization_id = ${context.organizationId}
+            and workspace_id = ${assignment.workspaceId}
+            and session_id in ${sql(sessionIds)}
+        `;
+  const sessionModels = modelRows.flatMap((row) => {
+    const parsed = SessionModelSnapshotSchema.safeParse(row.snapshot);
+    if (!parsed.success) return [];
+    const snapshot = parsed.data;
+    return [
+      {
+        sessionId: row.session_id,
+        // Legacy snapshots are readable, but the public SaaS runtime is DSH.
+        harness: 'dsh' as const,
+        provider:
+          snapshot.provider === 'codex' ? 'openai-codex' : snapshot.provider,
+        model: snapshot.model,
+        reasoningEffort: snapshot.reasoningEffort,
+      },
+    ];
+  });
   return {
     organizationId: context.organizationId,
     workspaceId: assignment.workspaceId,
     employee: assignment,
     employees: employeeHub.assignments,
     sessions: sessions.sessions,
+    sessionModels,
     memories,
   };
 }

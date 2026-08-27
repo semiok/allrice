@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  test: {
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.next/**'],
+  },
   resolve: {
     alias: {
       '@allrice/contracts': fileURLToPath(

@@ -49,11 +49,21 @@ function base(input?: {
       timeoutMs: 300_000,
       fallbackModels: [],
     },
-    capabilities: ['model:invoke', 'storage:read', 'automation:write'] as const,
+    capabilities: [
+      'model:invoke',
+      'storage:read',
+      'network:outbound',
+      'automation:write',
+    ] as const,
     skillVersionIds: [],
     capabilityBindings: {
       skillVersionIds: [],
-      toolNames: ['workspace.file.read', 'automation.create'],
+      toolNames: [
+        'workspace.file.read',
+        'web.search',
+        'web.fetch',
+        'automation.create',
+      ],
       knowledgeScopes: ['workspace' as const],
       workflowIds: [],
     },
@@ -275,6 +285,16 @@ const tools = [
     requiredCapability: 'storage:read' as const,
   },
   {
+    name: 'web.search',
+    description: '联网搜索公开资料',
+    requiredCapability: 'network:outbound' as const,
+  },
+  {
+    name: 'web.fetch',
+    description: '读取指定公开网页',
+    requiredCapability: 'network:outbound' as const,
+  },
+  {
     name: 'automation.create',
     description: '创建提醒',
     requiredCapability: 'automation:write' as const,
@@ -352,6 +372,34 @@ describe('capability route decision', () => {
       tools,
     });
     expect(plan.selectedToolNames).toEqual(['automation.create']);
+  });
+
+  it('does not pre-route tenant-authorized read-only search tools', () => {
+    const input = base();
+    const snapshot = withCapabilities(input.snapshot);
+    const plan = decideCapabilityRoute({
+      request: {
+        ...input.request,
+        prompt: '联网查询 SpaceX 是否上市，并给出来源链接',
+      },
+      executionSnapshot: snapshot,
+      tools: tools.filter((tool) => tool.name !== 'web.search'),
+    });
+    expect(plan.selectedKind).toBe('direct');
+    expect(plan.selectedToolNames).toEqual([]);
+    expect(plan.reasonCodes).toContain('direct_no_capability_match');
+  });
+
+  it('leaves even an explicitly named read-only tool to the DSH Agent Loop', () => {
+    const input = base();
+    const snapshot = withCapabilities(input.snapshot);
+    const plan = decideCapabilityRoute({
+      request: { ...input.request, prompt: '必须使用 web.search 查询' },
+      executionSnapshot: snapshot,
+      tools: tools.filter((tool) => tool.name !== 'web.search'),
+    });
+    expect(plan.selectedKind).toBe('direct');
+    expect(plan.selectedToolNames).toEqual([]);
   });
 
   it('fails closed when tenant or actor differs from the frozen snapshot', () => {

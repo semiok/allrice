@@ -14,14 +14,31 @@ export function normalizeHarnessRunEvent(
     generation: event.generation,
     threadId: event.threadId,
     turnId: event.turnId,
+    conversationId: event.sessionId,
     messageId: event.messageId,
     attempt: event.attempt,
     order: event.order,
     ...(event.sourceEventId ? { sourceEventId: event.sourceEventId } : {}),
+    ...(event.sourceEventType
+      ? { sourceEventType: event.sourceEventType }
+      : {}),
     ...(event.sourceOccurredAt
       ? { sourceOccurredAt: event.sourceOccurredAt }
       : {}),
+    ...(event.sourcePayload ? { nativePayload: event.sourcePayload } : {}),
   };
+  if (event.type === 'native.event') {
+    return {
+      type: 'harness.native',
+      payload: {
+        ...envelope,
+        presentation: event.presentation,
+        status: event.status,
+        label: event.label,
+        ...(event.summary ? { summary: event.summary } : {}),
+      },
+    };
+  }
   if (event.type === 'assistant.completed') {
     return {
       type: 'assistant.text.completed',

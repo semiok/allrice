@@ -229,6 +229,15 @@ const managedMinimaxRuntime = {
   baseUrl: 'https://api.minimaxi.com/v1',
 };
 
+const managedCodexRuntime = {
+  harness: 'dsh' as const,
+  provider: 'openai-codex',
+  model: 'gpt-5.6-luna',
+  reasoningEffort: 'xhigh' as const,
+  credentialReference: 'deployment:codex-default',
+  baseUrl: null,
+};
+
 const managedDeepseekRuntime = {
   harness: 'dsh' as const,
   provider: 'deepseek-official',
@@ -269,17 +278,21 @@ function createDraft(manifest: EmployeeDefinition): Draft {
       behaviorRules: [],
       safetyBoundaries: [],
     },
-    runtimePolicy: manifest.runtimePolicy ?? {
-      harness: 'codex',
-      provider: manifest.provider.provider,
-      model: manifest.provider.model,
-      reasoningEffort:
-        manifest.provider.reasoningEffort === 'none'
-          ? 'low'
-          : (manifest.provider.reasoningEffort as 'low' | 'medium' | 'high'),
-      timeoutMs: 300_000,
-      fallbackModels: [],
-    },
+    runtimePolicy: manifest.runtimePolicy
+      ? {
+          ...manifest.runtimePolicy,
+          harness: 'dsh',
+          provider:
+            manifest.runtimePolicy.harness === 'codex' ||
+            manifest.runtimePolicy.provider === 'codex'
+              ? 'openai-codex'
+              : manifest.runtimePolicy.provider,
+        }
+      : {
+          ...managedCodexRuntime,
+          timeoutMs: 300_000,
+          fallbackModels: [],
+        },
     securityPolicy: manifest.securityPolicy ?? {
       dataScopes: ['workspace', 'employee', 'user'],
       connectorIdentityModes: ['user'],
@@ -600,7 +613,7 @@ export function EmployeeHubClient({
             返回与 Rice 工作
           </button>
         ) : (
-          <Link className="primary-action" href="/workspace">
+          <Link className="primary-action" href="/chatflow">
             返回与 Rice 工作
           </Link>
         )}
@@ -1265,85 +1278,52 @@ export function EmployeeHubClient({
                   </div>
                   <div className="employee-inline-fields">
                     <label>
-                      Harness
-                      <select
-                        disabled={disabled}
-                        value={draft.runtimePolicy.harness}
-                        onChange={(event) =>
-                          setDraft((current) => {
-                            if (!current) return current;
-                            return event.target.value === 'dsh'
-                              ? {
-                                  ...current,
-                                  runtimePolicy: {
-                                    ...current.runtimePolicy,
-                                    ...managedMinimaxRuntime,
-                                  },
-                                }
-                              : {
-                                  ...current,
-                                  runtimePolicy: {
-                                    ...current.runtimePolicy,
-                                    harness: 'codex',
-                                    provider: 'codex',
-                                    model: 'gpt-5.6-luna',
-                                    reasoningEffort: 'high',
-                                    credentialReference: undefined,
-                                    baseUrl: undefined,
-                                  },
-                                };
-                          })
-                        }
-                      >
-                        <option value="codex">Codex Harness</option>
-                        <option value="dsh">DeepSeek Harness</option>
-                      </select>
+                      执行引擎
+                      <input disabled value="DSH Harness" />
                     </label>
                     <label>
                       Provider
-                      {draft.runtimePolicy.harness === 'codex' ? (
-                        <input value="ChatGPT 订阅授权" disabled />
-                      ) : (
-                        <select
-                          disabled={disabled}
-                          value={draft.runtimePolicy.provider}
-                          onChange={(event) =>
-                            setDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    runtimePolicy: {
-                                      ...current.runtimePolicy,
-                                      ...(event.target.value ===
-                                      'openai-compatible'
-                                        ? managedMinimaxRuntime
-                                        : managedDeepseekRuntime),
-                                    },
-                                  }
-                                : current,
-                            )
-                          }
-                        >
-                          <option value="deepseek-official">
-                            DeepSeek 官方 API
-                          </option>
-                          <option value="openai-compatible">
-                            MiniMax（平台托管）
-                          </option>
-                        </select>
-                      )}
+                      <select
+                        disabled={disabled}
+                        value={draft.runtimePolicy.provider}
+                        onChange={(event) =>
+                          setDraft((current) => {
+                            if (!current) return current;
+                            const provider = event.target.value;
+                            return {
+                              ...current,
+                              runtimePolicy: {
+                                ...current.runtimePolicy,
+                                ...(provider === 'openai-codex'
+                                  ? managedCodexRuntime
+                                  : provider === 'openai-compatible'
+                                    ? managedMinimaxRuntime
+                                    : managedDeepseekRuntime),
+                              },
+                            };
+                          })
+                        }
+                      >
+                        <option value="openai-codex">
+                          Codex 订阅（DSH Provider）
+                        </option>
+                        <option value="deepseek-official">
+                          DeepSeek 官方 API
+                        </option>
+                        <option value="openai-compatible">
+                          MiniMax（平台托管）
+                        </option>
+                      </select>
                     </label>
                   </div>
-                  {draft.runtimePolicy.harness === 'dsh' ? (
-                    <div className="employee-config-card employee-runtime-note">
-                      <p className="eyebrow">平台托管凭据</p>
-                      <h3>已由 AllRice 服务端配置</h3>
-                      <p>
-                        管理员无需填写 API Key 或 Base URL；凭据只会在执行时注入
-                        DSH Worker，不会进入员工配置、任务快照或浏览器。
-                      </p>
-                    </div>
-                  ) : null}
+                  <div className="employee-config-card employee-runtime-note">
+                    <p className="eyebrow">平台托管凭据</p>
+                    <h3>已由 AllRice 服务端配置</h3>
+                    <p>
+                      管理员无需填写 API Key 或 Base URL；凭据只会在执行时注入
+                      DSH Worker，不会进入员工配置、任务快照或浏览器。
+                    </p>
+                  </div>
                   <label>
                     模型
                     <input
@@ -1385,9 +1365,7 @@ export function EmployeeHubClient({
                           )
                         }
                       >
-                        {draft.runtimePolicy.harness === 'dsh' ? (
-                          <option value="none">Off</option>
-                        ) : null}
+                        <option value="none">Off</option>
                         <option value="low">Low</option>
                         <option value="medium">Medium</option>
                         <option value="high">High</option>
@@ -1453,11 +1431,7 @@ export function EmployeeHubClient({
                 </div>
                 <section className="employee-config-card employee-runtime-note">
                   <p className="eyebrow">当前执行内核</p>
-                  <h3>
-                    {draft.runtimePolicy.harness === 'codex'
-                      ? 'Codex Harness'
-                      : 'DeepSeek Harness'}
-                  </h3>
+                  <h3>DSH Harness</h3>
                   <p>
                     会话、工具调用、权限快照和执行证据由 AllRice
                     管理；普通用户不会直接选择底层模型。
@@ -1466,18 +1440,14 @@ export function EmployeeHubClient({
                     <div>
                       <dt>授权方式</dt>
                       <dd>
-                        {draft.runtimePolicy.harness === 'codex'
-                          ? 'ChatGPT subscription'
+                        {draft.runtimePolicy.provider === 'openai-codex'
+                          ? 'DSH managed ChatGPT subscription'
                           : 'AllRice credential binding'}
                       </dd>
                     </div>
                     <div>
                       <dt>沙箱</dt>
-                      <dd>
-                        {draft.runtimePolicy.harness === 'codex'
-                          ? 'Workspace write'
-                          : 'No host tools · Tool Broker only'}
-                      </dd>
+                      <dd>No host tools · Tool Broker only</dd>
                     </div>
                     <div>
                       <dt>配置来源</dt>
@@ -1715,7 +1685,7 @@ export function EmployeeHubClient({
       <AppSidebar
         active="employees"
         action={
-          <Link className="new-chat" href="/workspace">
+          <Link className="new-chat" href="/chatflow">
             ＋ 新建任务
           </Link>
         }

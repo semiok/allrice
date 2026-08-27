@@ -248,7 +248,7 @@ export function AutomationClient({ embedded = false }: { embedded?: boolean }) {
         <AppSidebar
           active="automation"
           action={
-            <Link className="new-chat" href="/workspace">
+            <Link className="new-chat" href="/chatflow">
               ＋ 新建对话
             </Link>
           }
@@ -360,7 +360,7 @@ export function AutomationClient({ embedded = false }: { embedded?: boolean }) {
                     {task.lastSessionId ? (
                       <Link
                         className="automation-open-conversation"
-                        href={`/workspace?sessionId=${encodeURIComponent(task.lastSessionId)}`}
+                        href={`/chatflow?sessionId=${encodeURIComponent(task.lastSessionId)}`}
                       >
                         打开最近对话
                       </Link>

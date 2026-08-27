@@ -300,44 +300,6 @@ function toolLabel(name: unknown) {
   return labels[String(name)] ?? String(name || '工具调用');
 }
 
-function approvalPolicyLabel(policy: string | undefined) {
-  return (
-    {
-      confirm_side_effects: '有副作用的动作先确认',
-      confirm_external: '外部动作先确认',
-      autonomous: '在授权范围内自动执行',
-    }[policy ?? 'confirm_side_effects'] ?? '有副作用的动作先确认'
-  );
-}
-
-function starterPrompts(employee: RiceEmployeeChoice | undefined) {
-  const key = employee?.employeeKey ?? '';
-  const starters: Record<string, string[]> = {
-    'builtin-ecommerce-analyst': [
-      '请根据工作区资料做一份经营晨报，先给结论，再列出异常、数据缺口和今天的行动建议。',
-      '分析最近的经营数据，找出最值得关注的 3 个变化，并说明每个变化对应的证据和下一步。',
-    ],
-    'builtin-short-video-growth': [
-      '请结合工作区资料和近期节气，制定一周内容计划，给出选题、开头话术、素材和优先级。',
-      '把这个文化主题拆成 3 个适合短视频的内容方向，并分别说明受众、看点和风险。',
-    ],
-    'builtin-sales-coach': [
-      '请整理重点客户和项目跟进清单，按紧急程度排序，并给出下一次沟通建议。',
-      '根据现有客户资料，找出可能的合作机会、证据和需要先确认的问题。',
-    ],
-    'builtin-growth-strategist': [
-      '请把这个项目拆成目标、里程碑、负责人、风险和本周可执行的 3 个动作。',
-      '请复盘最近的项目或活动，区分事实、问题根因和下一轮应该验证的改进方案。',
-    ],
-  };
-  return (
-    starters[key] ?? [
-      '请先确认这个任务的目标、可用资料和交付格式，再给出执行计划并开始处理。',
-      '把我的目标拆成可执行的步骤，标出需要我确认的决定和你可以直接完成的部分。',
-    ]
-  );
-}
-
 function RunDetails({
   events,
   workspaceId,
@@ -586,42 +548,61 @@ export function WorkspaceClient({
       if (!workspace || streamingRuns.current.has(runId)) return;
       streamingRuns.current.add(runId);
       const existing = eventsByRun[runId] ?? [];
-      const headers: Record<string, string> = { ...tenantHeaders };
       const last = existing.at(-1);
-      if (last) headers['last-event-id'] = `${runId}:${last.sequence}`;
+      let lastSequence = last?.sequence ?? -1;
+      let reconnects = 0;
       try {
-        const response = await fetch(
-          `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}`,
-          { headers, cache: 'no-store' },
-        );
-        if (!response.ok || !response.body) await readJson(response);
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          buffer += decoder.decode(chunk.value, { stream: true });
-          const blocks = buffer.split('\n\n');
-          buffer = blocks.pop() ?? '';
-          for (const block of blocks) {
-            const data = block
-              .split('\n')
-              .filter((line) => line.startsWith('data: '))
-              .map((line) => line.slice(6))
-              .join('\n');
-            if (!data) continue;
-            const event = JSON.parse(data) as RunEvent;
-            setEventsByRun((current) => {
-              const values = current[runId] ?? [];
-              if (values.some((value) => value.eventId === event.eventId))
-                return current;
-              return { ...current, [runId]: [...values, event] };
-            });
+        while (reconnects <= 5) {
+          const headers: Record<string, string> = { ...tenantHeaders };
+          if (lastSequence >= 0) {
+            headers['last-event-id'] = `${runId}:${lastSequence}`;
+          }
+          try {
+            const response = await fetch(
+              `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}`,
+              { headers, cache: 'no-store' },
+            );
+            if (!response.ok || !response.body) await readJson(response);
+            const reader = response.body!.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+              const chunk = await reader.read();
+              if (chunk.done) break;
+              buffer += decoder.decode(chunk.value, { stream: true });
+              const blocks = buffer.split('\n\n');
+              buffer = blocks.pop() ?? '';
+              for (const block of blocks) {
+                const data = block
+                  .split('\n')
+                  .filter((line) => line.startsWith('data: '))
+                  .map((line) => line.slice(6))
+                  .join('\n');
+                if (!data) continue;
+                const event = JSON.parse(data) as RunEvent;
+                lastSequence = Math.max(lastSequence, event.sequence);
+                setEventsByRun((current) => {
+                  const values = current[runId] ?? [];
+                  if (values.some((value) => value.eventId === event.eventId))
+                    return current;
+                  return { ...current, [runId]: [...values, event] };
+                });
+              }
+            }
+            break;
+          } catch (cause) {
+            reconnects += 1;
+            if (reconnects > 5) throw cause;
+            await new Promise((resolve) =>
+              window.setTimeout(
+                resolve,
+                Math.min(250 * 2 ** reconnects, 2_000),
+              ),
+            );
           }
         }
       } catch (cause) {
-        setError(`实时连接中断：${errorMessage(cause)}`);
+        setError(`实时连接多次恢复失败：${errorMessage(cause)}`);
       } finally {
         streamingRuns.current.delete(runId);
         const currentSessionId = sessionId ?? activeId;
@@ -850,7 +831,6 @@ export function WorkspaceClient({
           body: JSON.stringify({
             workspaceId: workspace.workspaceId,
             employeeAssignmentId: selectedEmployee.id,
-            employeeVersionId: selectedEmployee.currentVersion.id,
             title: draft.trim() ? draft.trim().slice(0, 60) : '新的任务',
           }),
         }),
@@ -1256,11 +1236,6 @@ export function WorkspaceClient({
     );
   }
 
-  const contextEmployee = history
-    ? (employeeForVersion(history.session.employeeVersionId) ??
-      selectedEmployee)
-    : selectedEmployee;
-
   return (
     <main
       className={`workspace-shell rice-workspace${hideSidebar ? ' workspace-panel-only' : ''}`}
@@ -1390,61 +1365,6 @@ export function WorkspaceClient({
         </header>
 
         <div className="message-list" aria-live="polite">
-          {!history && newTaskOpen ? (
-            <section className="task-launchpad" aria-label="任务启动助手">
-              <div className="task-launchpad-heading">
-                <div className="rice-empty-avatar">✦</div>
-                <div>
-                  <p className="eyebrow">BOT BRIEF</p>
-                  <h3>
-                    {selectedEmployee?.currentVersion.manifest.name ??
-                      'AI工作伙伴'}
-                    <span>已准备好接手任务</span>
-                  </h3>
-                  <p>
-                    {selectedEmployee?.currentVersion.manifest.partnerProfile
-                      ?.mission ??
-                      selectedEmployee?.currentVersion.manifest.description ??
-                      '描述目标后，我会先梳理范围，再推进可交付结果。'}
-                  </p>
-                </div>
-              </div>
-              <div className="task-launchpad-meta">
-                <span>
-                  角色：
-                  {selectedEmployee?.currentVersion.manifest.partnerProfile
-                    ?.role ?? '通用工作伙伴'}
-                </span>
-                <span>
-                  {selectedEmployee?.currentVersion.manifest.skillVersionIds
-                    ?.length ?? 0}{' '}
-                  个 Skill
-                </span>
-                <span>{selectedEmployee?.memoryCount ?? 0} 条专属记忆</span>
-                <span>
-                  {approvalPolicyLabel(
-                    selectedEmployee?.currentVersion.manifest.partnerProfile
-                      ?.approvalPolicy,
-                  )}
-                </span>
-              </div>
-              <div className="task-starter-heading">
-                <strong>从一个清晰的任务目标开始</strong>
-                <span>点击示例会填入输入框，你可以继续修改</span>
-              </div>
-              <div className="task-starters">
-                {starterPrompts(selectedEmployee).map((prompt) => (
-                  <button
-                    type="button"
-                    key={prompt}
-                    onClick={() => setDraft(prompt)}
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            </section>
-          ) : null}
           {history?.messages.map((message, index) => {
             const events = message.runId
               ? (eventsByRun[message.runId] ?? [])
@@ -1768,73 +1688,6 @@ export function WorkspaceClient({
           </p>
         ) : null}
       </section>
-
-      <aside className="workspace-context-rail">
-        <div className="workspace-rail-heading">
-          <span>工作上下文</span>
-          <span className="workspace-live-dot">LIVE</span>
-        </div>
-        <div className="workspace-agent-card">
-          <div className="workspace-agent-avatar">✦</div>
-          <p className="workspace-rail-kicker">当前 AI 员工</p>
-          <h3>
-            {contextEmployee?.currentVersion.manifest.name ?? 'AI工作伙伴'}
-          </h3>
-          <p>
-            {contextEmployee?.currentVersion.manifest.partnerProfile?.role ??
-              '通用工作伙伴'}
-          </p>
-          <div className="workspace-agent-rule" />
-          <small>
-            {contextEmployee?.currentVersion.manifest.partnerProfile?.mission ??
-              '理解目标、推进任务，并交付可继续协作的结果。'}
-          </small>
-        </div>
-        <div className="workspace-rail-section">
-          <div className="workspace-rail-section-title">工作状态</div>
-          <div className="workspace-status-row">
-            <span className="workspace-status-icon">
-              {history ? '◉' : '＋'}
-            </span>
-            <div>
-              <strong>{history ? '任务上下文已连接' : '等待新的任务'}</strong>
-              <span>
-                {history
-                  ? `使用 ${employeeVersionLabel(history.session.employeeVersionId)}`
-                  : '描述目标后，员工会先梳理范围'}
-              </span>
-            </div>
-          </div>
-        </div>
-        <div className="workspace-rail-section">
-          <div className="workspace-rail-section-title">执行边界</div>
-          <p className="workspace-rail-note">
-            {approvalPolicyLabel(
-              contextEmployee?.currentVersion.manifest.partnerProfile
-                ?.approvalPolicy,
-            )}
-          </p>
-          <p className="workspace-rail-note muted-note">
-            权限由工作区策略和已授权 Skill 共同决定。
-          </p>
-        </div>
-        <div className="workspace-rail-section workspace-rail-footer">
-          <div className="workspace-rail-stats">
-            <span>
-              <strong>
-                {contextEmployee?.currentVersion.manifest.skillVersionIds
-                  ?.length ?? 0}
-              </strong>
-              Skills
-            </span>
-            <span>
-              <strong>{contextEmployee?.memoryCount ?? 0}</strong>
-              记忆
-            </span>
-          </div>
-          <Link href="/employees">管理 AI 员工 →</Link>
-        </div>
-      </aside>
 
       {filePickerOpen ? (
         <div

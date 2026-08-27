@@ -133,7 +133,9 @@ if (
   workspace.workspaceId !== workspaceId ||
   workspace.employee.version.name !== 'Rice' ||
   workspace.employee.version.model !==
-    (process.env.ALLRICE_CODEX_MODEL ?? 'gpt-5.6-luna') ||
+    (process.env.ALLRICE_DSH_CODEX_MODEL ??
+      process.env.ALLRICE_CODEX_MODEL ??
+      'gpt-5.6-luna') ||
   workspace.employees?.[0]?.currentVersion?.manifest?.name !== 'Rice'
 ) {
   throw new Error('default employee workspace was not provisioned correctly');

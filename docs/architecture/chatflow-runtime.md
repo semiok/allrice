@@ -1,166 +1,94 @@
-# AllRice ChatFlow Runtime
+# AllRice ChatFlow 3.0 Runtime
 
-> Status: dual-track convergence implemented under
-> [MET-79](https://linear.app/metasnowsky/issue/MET-79/allrice-chatflow-runtime多-harness-对话控制平面收敛与双轨迁移).
+> Authority: [MET-88](https://linear.app/metasnowsky/issue/MET-88)
 
-**AllRice ChatFlow is the multi-Harness SaaS conversation control plane. It
-manages Session, Run, event delivery, context recovery, authorization and
-Harness routing.**
+**AllRice ChatFlow is the tenant-safe SaaS conversation control plane above
+DSH. It manages Session, Run, durable event delivery, context recovery,
+authorization and Provider routing. DSH is the single execution Harness.**
 
-ChatFlow Runtime is not a Harness. It does not implement model inference, an
-agent loop, token generation or a provider's internal tool planner. Codex, DSH
-and future Harnesses retain their native sessions, agent loops, streaming
-events and execution semantics. ChatFlow turns those capabilities into one
-tenant-safe, durable and recoverable AllRice product experience.
+ChatFlow is not a Harness and does not implement model inference, an agent
+loop, token generation or a second tool planner. Codex subscription, MiniMax
+and future APIs are Providers inside DSH.
 
 ```text
 AllRice SaaS Platform
-└── ChatFlow Runtime
-    ├── Session / Run / Turn Controller
-    ├── Realtime Event Gateway
-    ├── Context & Checkpoint
-    ├── Tenant Policy / Tool Broker
-    └── Harness Router
-        ├── CodexHarnessAdapter
-        ├── DshHarnessAdapter
-        └── FutureHarnessAdapter
+└── ChatFlow 3.0
+    ├── Session / Run / Turn authority
+    ├── tenant policy and Tool Broker
+    ├── durable native-event gateway
+    ├── context checkpoint and recovery
+    └── DSH Adapter
+        └── DSH Provider Router
+            ├── openai-codex
+            ├── openai-compatible
+            └── deepseek-official
 ```
 
 ## Ownership
 
-| ChatFlow Runtime owns                        | Harness owns                              |
-| -------------------------------------------- | ----------------------------------------- |
-| Product Session, Run and Turn identity       | Native thread/session execution           |
-| Tenant authorization and frozen run policy   | Model inference and agent loop            |
-| Tool Broker enforcement and audit            | Tool selection and native tool events     |
-| Durable RunEvent order and replay            | Native streaming event production         |
-| Browser delivery, reconnect and backpressure | Provider protocol and token generation    |
-| Cross-Worker/Harness recovery checkpoints    | Live-session context while runtime exists |
-| Harness routing, fallback and capabilities   | Capability-specific execution semantics   |
+| ChatFlow owns                               | DSH owns                               |
+| ------------------------------------------- | -------------------------------------- |
+| Product Session, Run and tenant identity    | Native session execution               |
+| Frozen employee and Provider policy         | Model inference and agent loop         |
+| Tool authorization, isolation and audit     | Authorized tool selection              |
+| Durable event order, replay and browser SSE | Native streaming event production      |
+| Cross-Worker checkpoint and recovery        | Live-session context                   |
+| Quota, circuit breaker and Provider routing | Provider protocol and token generation |
 
-The browser never connects directly to a Harness runtime. A Harness may request
-an operation, but AllRice remains the authority that decides whether the
-tenant, employee and actor may execute it.
+The browser never connects directly to DSH. DSH may request a capability, but
+AllRice decides whether the tenant, employee and actor may execute it. The
+authorized read-only tool set is visible to DSH on every turn; side-effecting
+and secret-bearing operations still require explicit AllRice policy.
 
-## Current path
+## Native experience contract
 
-Codex App Server and the DSH SDK runtime already emit native deltas. Their
-adapters normalize those events, and the Worker batches assistant deltas for up
-to 80 ms or 512 characters before persisting ordered RunEvents. The Web SSE
-route currently discovers new durable events by polling PostgreSQL every 150
-ms. Last-Event-ID and the RunEvent sequence provide replay after reconnect.
+DSH's `session.event` order is the source of the user-facing work process.
+ChatFlow 3.0 stores two complementary fields:
 
-This is real Harness streaming, not a final answer split into synthetic token
-chunks. ChatFlow now commits those events to PostgreSQL and uses a transactional
-`LISTEN/NOTIFY` wake-up to remove avoidable delivery latency. The original 150
-ms query loop remains an automatic fallback and recovery path.
+- normalized fields for tenant governance, Run state, usage and auditing;
+- a sanitized `sourceEvent` projection for DSH Context, Think, Search, Tool,
+  Todo and Compaction presentation.
 
-The implementation exposes `GET /api/v1/admin/chatflow` to organization admins
-for rollout policy and process-local delivery counters. Set
-`ALLRICE_CHATFLOW_REALTIME=0` for an emergency return to polling, or use
-`ALLRICE_CHATFLOW_REALTIME_ROLLOUT_JSON` for organization, workspace, employee
-revision and Harness canaries.
+System prompts, credentials, raw tool arguments/results and hidden reasoning
+text are never copied into the tenant event stream. Only safe labels, state,
+model route metadata and approved summaries are retained. Assistant text is
+stored in the canonical assistant events.
 
-Stage 3 does **not** immediately delete polling. Controlled retirement remains
-behind the exit gates below. Redis Streams and NATS are represented only by the
-transport-neutral wake-up contract until measured scale justifies either
-dependency.
+The Run event endpoint exposes only the ChatFlow 3.0 envelope. The browser
+renders native events in source order and updates the same block in place as
+its state changes. The completed
+view and replayed view use the same projector, so finishing a turn does not
+replace the working UI or erase its process.
 
-## Non-negotiable migration rule
+There is no ChatFlow 2.0 product track, legacy event projector or keyword-based
+capability pre-router. Historical runs without native events remain readable as
+answer-only transcript entries.
 
-**Do not perform a big-bang replacement. ChatFlow must migrate on dual tracks.**
+## Delivery and recovery
 
-```text
-Harness native event
-├── durable track  → PostgreSQL RunEvent (source of truth)
-└── realtime track → event notification → SSE Gateway → browser
-```
+PostgreSQL RunEvent rows are authoritative. The Worker commits events before
+the Web delivers them. PostgreSQL `LISTEN/NOTIFY` wakes the SSE gateway; the
+gateway then reads rows by `run_id` and sequence. `Last-Event-ID`, durable
+cursors and Event ID deduplication restore an interrupted browser stream.
 
-1. Existing durable RunEvents and resumable SSE remain available until the new
-   realtime path has passed the exit gates.
-2. Every native event enters both the durable and realtime paths. Realtime
-   delivery never becomes the only copy of an event.
-3. A realtime failure, browser reconnect or Worker restart must recover from
-   PostgreSQL using the last durable sequence.
-4. Rollout is gated by Harness, employee and workspace, with an emergency-off
-   switch that returns traffic to the current path.
-5. Duplicate logic is removed only after event integrity, recovery and latency
-   targets remain healthy through canary and rollback drills.
-6. ChatFlow does not simulate token streaming, reimplement an agent loop, or
-   compact the same context independently while a Harness is already doing so.
+The short polling waiter is retained only as an infrastructure failure fallback
+for missed notifications, not as an alternative product experience. When
+measured fan-out or independent-consumer requirements outgrow PostgreSQL,
+notifications may be replaced by Redis Streams or NATS without changing the
+ChatFlow 3.0 event contract or PostgreSQL business-data authority.
 
-## Realtime infrastructure path
+## Release safety
 
-The first realtime implementation should use PostgreSQL `LISTEN/NOTIFY`. It
-fits the current modular-monolith deployment and avoids adding infrastructure
-before the traffic requires it. A notification is only a wake-up signal: the
-SSE Gateway reads the authoritative RunEvent rows by `run_id` and `sequence`.
-
-When fan-out, throughput or independent consumer requirements outgrow
-PostgreSQL notifications, the realtime distribution layer may move to Redis
-Streams or NATS. That migration must preserve the ChatFlow Event Contract and
-must not replace PostgreSQL authority for Session, Run, RunEvent, audit or
-context checkpoints.
-
-## Three-stage convergence
-
-### Stage 1 — native event contract, no UX change
-
-- Freeze ChatFlow terminology, ownership and the canonical event contract.
-- Preserve Harness source identity, source event ID, generation, attempt, turn,
-  order and timestamp when normalizing Codex and DSH events.
-- Add replay fixtures and conformance tests from real Codex App Server and DSH
-  SDK event sequences.
-- Drive UI actions from the Harness Capability Matrix; never emulate an
-  unsupported capability.
-- Prohibit synthetic streaming from a completed answer.
-- Prefer native context management while a Harness runtime is live; reserve
-  AllRice checkpoints for cross-Worker, cross-Harness and disaster recovery.
-- Record baseline latency, recovery, event-integrity and database-load metrics.
-
-The existing PostgreSQL plus SSE path remains unchanged in this stage.
-
-### Stage 2 — dual-track realtime gateway
-
-- Add PostgreSQL `LISTEN/NOTIFY` after the durable event boundary.
-- Wake the SSE Gateway and read authoritative events by sequence.
-- Keep the existing 150 ms polling loop as an automatic fallback.
-- Complete Last-Event-ID reconnect, gap fill, deduplication, strict ordering,
-  heartbeat, batching, backpressure and slow-client handling.
-- Emit acknowledged stop/cancel events.
-- Add runtime affinity and cross-replica recovery constraints.
-- Canary by workspace, employee and Harness with emergency-off.
-
-The realtime track is successful only if losing it does not interrupt the
-conversation and the durable track can reconstruct the exact transcript.
-
-### Stage 3 — unified experience and controlled retirement
-
-- Render common thinking/working, tool, approval, compaction, recovery and
-  routing states through one ChatFlow event registry.
-- Preserve Harness differences: Codex may expose active-turn steer while a DSH
-  session without steer queues the next message.
-- Prefer native structured tool events and retire the DSH text tool envelope
-  only after the upstream protocol and Tool Broker bridge pass conformance.
-- Introduce unified observability and evaluation dashboards.
-- Retire polling and duplicate context logic one reversible step at a time.
-- Move realtime fan-out to Redis Streams or NATS only when measured scale
-  requires it.
-
-## Exit gates
-
-The old path cannot be retired until canary and rollback exercises demonstrate
-acceptable first-token latency, inter-delta latency, stop latency, zero event
-loss and reordering, bounded duplication, successful reconnect and Session
-recovery, stable tool completion, Codex/DSH contract conformance and acceptable
-database connection/query load.
+ChatFlow 3.0 is a single product path. Safety comes from normal operational
+controls: tested database migrations, immutable container images, Git release
+rollback, Provider circuit breakers and durable replay. It does not come from
+shipping two conversation experiences or keeping the old UI selectable.
 
 ## Non-goals
 
 - creating another Harness;
-- copying the Codex or DSH Web UI;
-- allowing browsers to connect directly to Harness runtimes;
-- replacing durable business data with Redis or NATS;
-- enabling shell or host filesystem access outside the Tool Broker/sandbox
-  policy;
-- replacing the current conversation system in one release.
+- exposing DSH, shell or host filesystem access directly to tenants;
+- storing raw chain-of-thought, prompts, credentials or unrestricted tool IO;
+- letting the browser bypass AllRice authorization;
+- replacing PostgreSQL Session, Run, RunEvent or audit authority with Redis or
+  NATS.

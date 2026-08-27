@@ -128,6 +128,64 @@ export class DshProtocolClient {
     return result.messageId;
   }
 
+  async interrupt(sessionId: string) {
+    return this.request('session/interrupt', { sessionId }, 10_000);
+  }
+
+  async steer(sessionId: string, text: string) {
+    return this.request('session/steer', { sessionId, text }, 10_000);
+  }
+
+  async compact(sessionId: string) {
+    return this.request('session/compact', { sessionId });
+  }
+
+  async recover(sessionId: string) {
+    return this.request('session/recover', { sessionId });
+  }
+
+  async closeSession(sessionId: string) {
+    return this.request('session/close', { sessionId }, 10_000);
+  }
+
+  async providerStatus() {
+    return this.request('provider/status', undefined, 10_000);
+  }
+
+  async authorizeCodex() {
+    return this.request('provider/authorize-codex', undefined, 20 * 60_000);
+  }
+
+  async cancelCodexAuthorization() {
+    return this.request('provider/cancel-codex', undefined, 10_000);
+  }
+
+  async searchCodexWeb(query: string, maxResults = 5) {
+    const result = await this.request(
+      'provider/web-search',
+      { query, maxResults },
+      70_000,
+    );
+    if (
+      result.provider !== 'codex-hosted-search' ||
+      typeof result.query !== 'string' ||
+      typeof result.output !== 'string' ||
+      !Array.isArray(result.results)
+    ) {
+      throw new HandlerError(
+        'DSH_PROTOCOL_MISMATCH',
+        'DSH runtime returned a malformed Codex search response',
+        false,
+      );
+    }
+    return {
+      provider: 'codex-hosted-search' as const,
+      query: result.query,
+      output: result.output,
+      results: result.results,
+    };
+  }
+
   async close() {
     if (this.closing) return this.closed;
     this.closing = true;

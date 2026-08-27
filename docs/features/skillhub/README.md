@@ -68,8 +68,14 @@ summarization service or fallback chain is included.
 
 ## Network execution
 
-Search uses the deployment's Codex/ChatGPT subscription through Codex Hosted
-Search. AllRice does not accept or store an OpenAI API key for this flow.
+`web.search` is a host-executed Tool Broker operation. It uses the deployment's
+Codex/ChatGPT subscription through the official Codex Hosted Search endpoint.
+The DSH credential plane remains the only owner of the Codex OAuth grant:
+AllRice obtains a refreshed access token through DSH for each search and does
+not accept or store a separate OpenAI API key for this flow. Search results are
+normalized to answer text and source records before returning to the active DSH
+turn.
+
 Browser automation, computer use, shell, unified exec, user MCP servers and
 host project rules remain disabled.
 

@@ -4,7 +4,7 @@ AllRice is a browser-first, self-hosted AI workspace for enterprise employees. I
 
 > Current version: **0.1.0 baseline**
 >
-> Current delivery: **MET-51 Rice conversation runtime plus MET-53–55 governed Skills**
+> Current delivery: **ChatFlow 3.0, platform model governance and the SaaS employee framework**
 >
 > Product plan: [AllRice MET-38](https://linear.app/metasnowsky/issue/MET-38/allrice-%E5%BC%80%E5%B7%A5%E8%AE%A1%E5%88%92%E7%8B%AC%E7%AB%8B%E5%9F%BA%E7%BA%BF%E5%A5%91%E7%BA%A6%E5%86%BB%E7%BB%93%E4%B8%8E-mvp-%E5%9E%82%E7%9B%B4%E9%97%AD%E7%8E%AF)
 
@@ -21,10 +21,21 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
 - an administrator-facing SkillHub with audited immutable artifacts, workspace grants and direct Rice binding;
-- one ordinary-user entry, **与 Rice 工作**, backed by a persistent Codex conversation thread and tenant-scoped tools.
+- one ordinary-user entry, **与 Rice 工作**, backed by a persistent DSH conversation session and tenant-scoped tools.
+- a platform-managed model pool with per-employee selection and immutable
+  Session routing snapshots; the default is **GPT-5.6 Luna · 极高** through
+  the DSH `openai-codex` Provider route.
+- a role-aware SaaS shell: members, tenant administrators and platform
+  administrators use one application but receive different authorized controls.
+- `/chatflow` is the only conversation product UI and `/chatflow/employees` is
+  the employee studio. `/workspace` redirects to ChatFlow 3.0; there is no
+  product-level legacy chat fallback.
+- platform quotas, durable usage accounting, explicit fallback, Provider
+  circuit breakers and audited emergency kill switches.
 
-The Worker executes the isolated `allrice.system.echo`, version-pinned
-`allrice.skill.run` and Rice `allrice.employee.run` handlers. Chat persists a
+The Worker executes the isolated `allrice.system.echo` and Rice
+`allrice.employee.run` handlers. Skills are version-pinned employee capabilities,
+not a second standalone Harness. Chat persists a
 pending response, returns the durable Run immediately and restores the final
 answer from PostgreSQL.
 
@@ -39,12 +50,15 @@ AllRice 0.1 runs independently with its own database and local invitation model.
 
 ## Architecture
 
-AllRice uses **ChatFlow Runtime** as its multi-Harness SaaS conversation
+AllRice uses **ChatFlow Runtime** as its Provider-neutral SaaS conversation
 control plane. ChatFlow manages Session, Run, event delivery, context recovery,
-authorization and Harness routing while Codex, DSH and future Harnesses retain
-their native agent loops and streaming execution. Its convergence is explicitly
-dual-track rather than a big-bang replacement; see the
+authorization and Provider routing while DSH is the single execution Harness.
+Codex subscription, MiniMax and later APIs are Provider routes inside DSH, not
+peer Harnesses. ChatFlow 3.0 persists a sanitized DSH-native event stream and
+projects it in native order without reassembling a second execution UX; see the
 [ChatFlow Runtime architecture](docs/architecture/chatflow-runtime.md).
+Provider connections and employee model selection are defined in the
+[platform model pool architecture](docs/architecture/platform-model-pool.md).
 
 ```text
 Browser
@@ -55,7 +69,8 @@ Browser
        -> persistent job records
             -> ChatFlow Runtime
                  -> worker (Session / Run / Event / recovery)
-                 -> Harness Router (Codex / DSH / future Harnesses)
+                 -> DSH Harness -> Provider Router
+                      -> openai-codex / openai-compatible / deepseek-official
 ```
 
 Application processes are `web` and `worker`. Scheduler is a module inside the Worker in V1. PostgreSQL, mounted storage, and the reverse proxy are infrastructure services.
@@ -87,7 +102,7 @@ Requirements:
 - Node.js 22+
 - pnpm 11+
 - Docker Desktop (or Docker Engine with Compose)
-- Codex CLI authenticated using `codex login` with a ChatGPT subscription
+- a platform administrator who can complete DSH's Codex subscription OAuth
 
 ```bash
 git clone https://github.com/semiok/allrice.git
@@ -119,22 +134,30 @@ Default endpoints:
 
 The readiness endpoints require a working database. The liveness endpoints only prove that the process is running. Stop the development database with `pnpm db:dev:down`; its named volume is retained for the next run.
 
-Open `http://localhost:3000/skillhub` after accepting the first administrator
-invitation. Codex credentials remain in the deployment environment; AllRice
-stores only secret-free connection health.
+Open `http://localhost:3000/chatflow` after accepting the first administrator
+invitation. The platform administrator authorizes the Codex subscription from
+the model console. DSH stores and refreshes the OAuth grant in its private
+credential store; AllRice stores only public flow state, connection health and
+opaque deployment references.
 
 Administrators can open `http://localhost:3000/skillhub` to import an approved
 Skill, add it to the workspace and configure it for Rice. The internal immutable
 configuration history is not exposed to ordinary employees.
+
+Run the MET-62 product and runtime gate with `pnpm met62:verify`. Set
+`ALLRICE_ACCEPTANCE_BASE_URL=http://localhost:3000` to include deployed HTTP
+readiness and new-UI route checks.
 
 ## Docker Compose
 
 ```bash
 cp .env.example .env
 docker compose build worker
-docker compose run --rm worker codex login --device-auth
 docker compose up --build --wait
 ```
+
+After first sign-in, authorize the Codex subscription from the AllRice platform
+model console. Do not copy a Codex CLI token into the application container.
 
 Set a non-default `POSTGRES_PASSWORD` in `.env` before using this path outside a local machine. The proxy listens on `http://localhost:8080`. PostgreSQL and application storage use named volumes. Compose is the V1 deployment shape; Kubernetes and Redis are explicitly out of scope.
 

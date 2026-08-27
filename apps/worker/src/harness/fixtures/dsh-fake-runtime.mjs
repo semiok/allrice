@@ -49,6 +49,28 @@ function assistant(sessionId, turn, text) {
   event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
 }
 
+function reasoning(sessionId, turn) {
+  event(sessionId, 'assistant/chunk', {
+    turn,
+    step: 0,
+    chunk: { type: 'block-start', index: 0, blockType: 'reasoning' },
+  });
+  event(sessionId, 'assistant/chunk', {
+    turn,
+    step: 0,
+    chunk: { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
+  });
+  event(sessionId, 'assistant/chunk', {
+    turn,
+    step: 0,
+    chunk: {
+      type: 'block-end',
+      index: 0,
+      block: { kind: 'reasoning', text: 'private reasoning' },
+    },
+  });
+}
+
 const lines = createInterface({ input: process.stdin });
 lines.on('line', (line) => {
   const frame = JSON.parse(line);
@@ -67,6 +89,31 @@ lines.on('line', (line) => {
     setImmediate(() => process.exit(0));
     return;
   }
+  if (frame.method === 'session/interrupt') {
+    respond(frame.id, { interrupted: true });
+    notify('session.status', {
+      sessionId: frame.params.sessionId,
+      status: 'idle',
+    });
+    return;
+  }
+  if (frame.method === 'session/compact') {
+    respond(frame.id, { compacted: true, compactionId: `compact-${seq++}` });
+    return;
+  }
+  if (frame.method === 'session/recover') {
+    respond(frame.id, { recovered: true, sequence: seq });
+    return;
+  }
+  if (frame.method === 'session/steer') {
+    respond(frame.id, { messageId: `steer-${seq++}` });
+    return;
+  }
+  if (frame.method === 'session/close') {
+    turns.delete(frame.params.sessionId);
+    respond(frame.id, { closed: true });
+    return;
+  }
   if (frame.method !== 'session/prompt') return;
   const { sessionId, contentBlocks } = frame.params;
   const prompt = contentBlocks.map((block) => block.text ?? '').join('');
@@ -81,10 +128,29 @@ lines.on('line', (line) => {
   });
   notify('session.status', { sessionId, status: 'running' });
   event(sessionId, 'turn/start', { turn });
+  event(sessionId, 'request/header', {
+    reason: 'initial',
+    header: {
+      system: 'system-secret-that-must-not-reach-chatflow',
+      tools: [{ name: 'secret-tool', inputSchema: { token: 'secret-token' } }],
+      config: { provider: initializedProvider, model: 'fake' },
+    },
+  });
+  event(sessionId, 'request/context', {
+    provider: initializedProvider,
+    model: 'fake',
+    contextWindow: 128000,
+  });
   if (prompt.includes('hang forever')) return;
   let text;
   if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
     text = 'tool-finished';
+  } else if (prompt.includes('use-tool-with-preamble')) {
+    text =
+      'I will check that now.\n<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';
+  } else if (prompt.includes('use-tool-with-postamble')) {
+    text =
+      '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>I will summarize after the tool returns.';
   } else if (prompt.includes('use-tool')) {
     text =
       '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';
@@ -96,7 +162,8 @@ lines.on('line', (line) => {
       hasOpenAiCompatible: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
     });
   } else if (prompt.includes('think-first')) {
-    text = '<think>private reasoning</think>\n\nvisible answer';
+    reasoning(sessionId, turn);
+    text = 'visible answer';
   } else {
     text = `turn-${turn}`;
   }

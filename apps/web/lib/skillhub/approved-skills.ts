@@ -39,7 +39,7 @@ function agentMetadata(
     inputSchema: { type: 'object', required: ['request'] },
     outputSchema: { type: 'object', required: ['result'] },
     requiredToolRefs: capabilities.includes('network:outbound')
-      ? ['codex-hosted-search']
+      ? ['web.search', 'web.fetch']
       : [],
     riskLevel: capabilities.includes('secret:use')
       ? 'high'
@@ -93,13 +93,14 @@ function openClawCandidate(input: {
   sourcePath: string;
   capabilities: ApprovedCandidate['capabilities'];
   instructions: string;
+  version?: string;
 }): ApprovedCandidate {
   return validateApprovedSkillCandidate({
     slug: input.slug,
     name: input.name,
     description: input.description,
     publisher: 'openclaw/openclaw · AllRice audited adaptation',
-    version: '1.0.0',
+    version: input.version ?? '1.0.0',
     capabilities: input.capabilities,
     agentMetadata: agentMetadata(input.description, input.capabilities),
     source: {
@@ -488,6 +489,7 @@ export const approvedSkillCandidates: Readonly<
       '用 Codex 订阅内置的 Hosted Search 查找近期资料，并给出可核验来源。',
     sourcePath: 'docs/tools/web.md',
     capabilities: ['model:invoke', 'network:outbound'],
+    version: '1.0.1',
     instructions: `---
 name: web-research
 description: Research current information with the policy-provided hosted web search.

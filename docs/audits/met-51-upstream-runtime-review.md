@@ -4,6 +4,11 @@ Reviewed on 2026-08-06 before changing AllRice's Rice conversation runtime.
 The review used pinned upstream commits so future maintainers can reproduce the
 comparison even after the upstream default branches move.
 
+> Historical design review: MET-85/MET-81 later converged production execution
+> onto one DSH Harness. The Codex app-server path described below is retained
+> only as decision history; Codex subscription is now the DSH
+> `openai-codex` Provider route.
+
 ## Sources
 
 | Project      | Reviewed commit                            | License | Relevant source                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |

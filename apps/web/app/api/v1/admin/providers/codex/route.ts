@@ -1,4 +1,10 @@
-import { DataAccessError, getCodexProviderStatus } from '@allrice/database';
+import {
+  DataAccessError,
+  getCodexAuthorization,
+  getCodexProviderGrant,
+  getCodexProviderStatus,
+  isPlatformAdmin,
+} from '@allrice/database';
 
 import { getRequestContext } from '../../../../../../lib/identity/session';
 import { skillHubErrorResponse } from '../../../../../../lib/skillhub/responses';
@@ -11,17 +17,15 @@ export async function GET(request: Request) {
     if (!context || context.actor.type !== 'user') {
       throw new DataAccessError('authentication_required');
     }
-    if (
-      !context.memberships.some(
-        (membership) =>
-          membership.active &&
-          membership.organizationId === context.organizationId &&
-          membership.role === 'admin',
-      )
-    ) {
+    if (!(await isPlatformAdmin(context))) {
       throw new DataAccessError('authorization_denied');
     }
-    return Response.json({ provider: await getCodexProviderStatus() });
+    const [provider, grant, authorization] = await Promise.all([
+      getCodexProviderStatus(),
+      getCodexProviderGrant(context),
+      getCodexAuthorization(context),
+    ]);
+    return Response.json({ provider, grant, authorization });
   } catch (error) {
     return skillHubErrorResponse(error);
   }

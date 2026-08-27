@@ -1,0 +1,30 @@
+diff --git a/lib/client.js b/lib/client.js
+index 91e3d13af5b748dffb8e9668fadef423704bbe01..b2211e0fde94a6d075adddd6d5d5c0ad26856e4d 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -10251,6 +10251,16 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
+ 			const parts = hostname.split(".");
+ 			return parts.length === 4 && parts[0] === "127" && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+ 		}
++		/**
++		* AllRice places the unmodified DSH host behind its authenticated administrator
++		* gateway. The gateway injects this marker only into an already authenticated
++		* HTML shell; the Host still enforces the session before privileged RPCs reach
++		* the loopback-only DSH process.
++		*/
++		function isAuthenticatedAllRiceAdmin() {
++			const marker = globalThis.document?.querySelector('meta[name="allrice-dsh-admin"][content="authenticated"]');
++			return marker !== void 0 && marker !== null;
++		}
+ 		//#endregion
+ 		//#region lib/types/client/index.js
+ 		/** Required services (none — this is the wire root). */
+@@ -10279,7 +10289,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
+ 			};
+ 			const handle = {
+ 				api,
+-				isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
++				isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname) || isAuthenticatedAllRiceAdmin(),
+ 				hostDescription: {
+ 					getSnapshot: () => description,
+ 					subscribe: (listener) => {

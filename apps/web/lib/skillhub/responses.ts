@@ -34,6 +34,10 @@ export function skillHubErrorResponse(error: unknown) {
       status = 403;
       code = 'CAPABILITY_DENIED';
       message = 'Requested skill capability was not granted';
+    } else if (error.code === 'conversation_required') {
+      status = 409;
+      code = 'EMPLOYEE_CONVERSATION_REQUIRED';
+      message = 'Add this skill to an AI employee and use it in a conversation';
     } else {
       status = 422;
       code = 'ARTIFACT_INVALID';

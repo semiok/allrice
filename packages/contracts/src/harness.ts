@@ -66,12 +66,30 @@ const HarnessEventEnvelopeSchema = z.object({
   order: z.number().int().positive(),
   threadId: z.string().trim().min(1).nullable(),
   turnId: z.string().trim().min(1).nullable(),
+  sessionId: UuidSchema,
   messageId: UuidSchema,
   sourceEventId: z.string().trim().min(1).max(240).optional(),
+  sourceEventType: z.string().trim().min(1).max(240).optional(),
   sourceOccurredAt: z.string().datetime().optional(),
+  sourcePayload: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const HarnessEventSchema = z.discriminatedUnion('type', [
+  HarnessEventEnvelopeSchema.extend({
+    type: z.literal('native.event'),
+    presentation: z.enum([
+      'context',
+      'think',
+      'tool',
+      'search',
+      'todo',
+      'compaction',
+      'lifecycle',
+    ]),
+    status: z.enum(['started', 'updated', 'completed', 'failed', 'info']),
+    label: z.string().trim().min(1).max(240),
+    summary: z.string().trim().min(1).max(1_000).optional(),
+  }).strict(),
   HarnessEventEnvelopeSchema.extend({
     type: z.literal('assistant.delta'),
     text: z.string(),

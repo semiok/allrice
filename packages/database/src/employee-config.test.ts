@@ -18,14 +18,16 @@ describe('Rice employee manifest', () => {
     expect(manifest.schemaVersion).toBe(2);
     expect(manifest.name).toBe('Rice');
     expect(manifest.provider).toMatchObject({
-      provider: 'codex',
-      authMode: 'chatgpt_subscription',
-      reasoningEffort: 'high',
+      provider: 'dsh',
+      route: 'openai-codex',
+      authMode: 'platform_subscription',
+      reasoningEffort: 'xhigh',
     });
     expect(manifest.skillVersionIds).toEqual([first, second].sort());
     if (manifest.schemaVersion === 2) {
       expect(manifest.isDefaultRice).toBe(true);
-      expect(manifest.runtimePolicy.harness).toBe('codex');
+      expect(manifest.runtimePolicy.harness).toBe('dsh');
+      expect(manifest.runtimePolicy.provider).toBe('openai-codex');
       expect(manifest.capabilityBindings.skillVersionIds).toEqual(
         manifest.skillVersionIds,
       );
@@ -75,12 +77,14 @@ describe('Rice employee manifest', () => {
         safetyBoundaries: ['不得读取其他工作区。'],
       },
       runtimePolicy: {
-        harness: 'codex',
-        provider: 'codex',
+        harness: 'dsh',
+        provider: 'openai-codex',
         model: 'gpt-5.6-luna',
         reasoningEffort: 'high',
         timeoutMs: 180_000,
         fallbackModels: [],
+        credentialReference: 'deployment:codex-default',
+        baseUrl: null,
       },
       securityPolicy: {
         dataScopes: ['workspace', 'employee', 'user'],

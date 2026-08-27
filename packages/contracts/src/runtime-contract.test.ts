@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ChatFlowEventEnvelopeSchema,
   canonicalizeRunEvent,
   harnessCapabilityMatrix,
   type HarnessCapabilities,
@@ -80,5 +81,35 @@ describe('AllRice Runtime Contract V1', () => {
       context_compaction: true,
       thread_recovery: true,
     });
+  });
+
+  it('wraps native harness events with SaaS ownership and a durable cursor', () => {
+    const organizationId = randomUUID();
+    const workspaceId = randomUUID();
+    const conversationId = randomUUID();
+    const runId = randomUUID();
+    expect(
+      ChatFlowEventEnvelopeSchema.parse({
+        schemaVersion: 3,
+        eventId: randomUUID(),
+        organizationId,
+        workspaceId,
+        conversationId,
+        runId,
+        generation: 2,
+        cursor: `${runId}:7`,
+        sequence: 7,
+        harness: 'dsh',
+        type: 'assistant.text.delta',
+        occurredAt: new Date().toISOString(),
+        sourceEvent: {
+          id: 'dsh:41',
+          type: 'assistant/chunk',
+          occurredAt: new Date().toISOString(),
+          payload: { chunk: { type: 'text-delta', text: 'Rice' } },
+        },
+        payload: { source: 'dsh', text: 'Rice' },
+      }),
+    ).toMatchObject({ organizationId, workspaceId, conversationId, runId });
   });
 });

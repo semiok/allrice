@@ -307,7 +307,7 @@ export function SkillHubClient() {
       <AppSidebar
         active={null}
         action={
-          <Link className="new-chat" href="/workspace">
+          <Link className="new-chat" href="/chatflow">
             ＋ 新建任务
           </Link>
         }
@@ -324,7 +324,7 @@ export function SkillHubClient() {
                 管理员审核并添加工作区技能，再决定每个 AI员工可以使用哪些能力。
               </p>
             </div>
-            <Link href="/workspace">返回工作台</Link>
+            <Link href="/chatflow">返回与 Rice 工作</Link>
           </header>
 
           <section className="skillhub-section">
