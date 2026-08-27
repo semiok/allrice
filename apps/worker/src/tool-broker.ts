@@ -10,6 +10,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import type { ExecutionContext, SkillCapability } from '@allrice/contracts';
 
 import { HandlerError } from './errors.js';
+import { searchCodexHostedWeb } from './codex-search-broker.js';
 import { fetchPublicWebPage } from './web-fetch.js';
 
 const maximumReadableBytes = 200_000;
@@ -66,6 +67,20 @@ export const riceToolDefinitions = [
     },
   },
   {
+    name: 'web.search',
+    description:
+      '使用平台已授权的 Codex Hosted Search 检索互联网。返回最新搜索摘要和来源，不需要第三方搜索 API Key。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 2000 },
+        maxResults: { type: 'integer', minimum: 1, maximum: 10 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'web.fetch',
     description:
       '读取公开 HTTP/HTTPS 网页的正文。会阻止内网地址、重新校验重定向，并将结果标记为不可信外部内容。',
@@ -98,6 +113,7 @@ const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'workspace.file.read': 'storage:read',
   'workspace.memory.search': 'storage:read',
   'workspace.session.search': 'storage:read',
+  'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
   'automation.create': 'automation:write',
 };
@@ -181,6 +197,7 @@ export async function executeRiceTool(input: {
   skillVersionIds?: string[];
   sessionId?: string;
   call: RiceToolCall;
+  codexSearch?: typeof searchCodexHostedWeb;
 }): Promise<RiceToolResult> {
   const requiredCapability = toolCapabilities[input.call.name];
   if (!requiredCapability) {
@@ -256,6 +273,30 @@ export async function executeRiceTool(input: {
         modelContent: JSON.stringify(sessions),
         summary: `找到 ${sessions.length} 个相关对话`,
         itemCount: sessions.length,
+      };
+    } else if (input.call.name === 'web.search') {
+      const query = stringValue(args.query, 'query');
+      if (query.length > 2_000) {
+        throw new HandlerError(
+          'TOOL_INPUT_INVALID',
+          'query 不能超过 2000 个字符',
+          false,
+        );
+      }
+      const search = await (input.codexSearch ?? searchCodexHostedWeb)(
+        query,
+        limitValue(args.maxResults, 5, 10),
+      );
+      result = {
+        modelContent: JSON.stringify({
+          provider: search.provider,
+          query: search.query,
+          retrievedAt: new Date().toISOString(),
+          output: search.output,
+          sources: search.results,
+        }),
+        summary: `已通过 Codex 检索“${query}”`,
+        itemCount: search.results.length,
       };
     } else if (input.call.name === 'web.fetch') {
       const page = await fetchPublicWebPage(stringValue(args.url, 'url'));

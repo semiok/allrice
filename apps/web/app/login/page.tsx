@@ -1,6 +1,19 @@
+import { headers } from 'next/headers';
+
+import {
+  portalAuthEnabled,
+  portalPublicView,
+  resolvePortal,
+} from '../../lib/portal/config';
 import { LoginForm } from './login-form';
 
-export default function LoginPage() {
+export const dynamic = 'force-dynamic';
+
+export default async function LoginPage() {
+  const portal = portalAuthEnabled()
+    ? resolvePortal((await headers()).get('host'))
+    : null;
+  const publicPortal = portal ? portalPublicView(portal) : null;
   return (
     <main className="auth-shell">
       <section className="auth-brand-panel">
@@ -25,10 +38,25 @@ export default function LoginPage() {
       </section>
       <section className="auth-form-panel">
         <div className="auth-panel">
-          <p className="eyebrow">ALLRICE · INVITATION ONLY</p>
-          <h1>登录工作台</h1>
-          <p className="lede">仅限已接受邀请并激活的账号。</p>
-          <LoginForm />
+          <p className="eyebrow">
+            {publicPortal
+              ? 'ALLRICE · PRIVATE PORTAL'
+              : 'ALLRICE · INVITATION ONLY'}
+          </p>
+          <h1>{publicPortal?.title ?? '登录工作台'}</h1>
+          <p className="lede">
+            {publicPortal?.subtitle ?? '仅限已接受邀请并激活的账号。'}
+          </p>
+          <LoginForm
+            bootstrap={
+              publicPortal
+                ? {
+                    username: publicPortal.username,
+                    homePath: publicPortal.homePath,
+                  }
+                : undefined
+            }
+          />
           <p className="auth-form-footnote">
             你的工作区数据只会在授权范围内被访问。
           </p>

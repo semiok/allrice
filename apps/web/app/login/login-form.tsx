@@ -2,7 +2,9 @@
 
 import { useState, type FormEvent } from 'react';
 
-export function LoginForm() {
+export function LoginForm(props: {
+  bootstrap?: { username: string; homePath: string };
+}) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
 
@@ -15,30 +17,49 @@ export function LoginForm() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        email: data.get('email'),
+        ...(props.bootstrap
+          ? { username: data.get('username') }
+          : { email: data.get('email') }),
         password: data.get('password'),
       }),
     });
-    if (response.ok) window.location.assign('/workspace');
-    else {
-      setError('登录失败，请检查邮箱、密码或账号状态。');
+    if (response.ok) {
+      const result = (await response.json()) as { homePath?: string };
+      window.location.assign(
+        result.homePath ?? props.bootstrap?.homePath ?? '/workspace',
+      );
+    } else {
+      setError('登录失败，请检查账号和密码。');
       setPending(false);
     }
   }
 
   return (
     <form onSubmit={submit} className="auth-form">
-      <label>
-        邮箱
-        <input name="email" type="email" autoComplete="email" required />
-      </label>
+      {props.bootstrap ? (
+        <label>
+          账号
+          <input
+            name="username"
+            type="text"
+            autoComplete="username"
+            defaultValue={props.bootstrap.username}
+            required
+          />
+        </label>
+      ) : (
+        <label>
+          邮箱
+          <input name="email" type="email" autoComplete="email" required />
+        </label>
+      )}
       <label>
         密码
         <input
           name="password"
           type="password"
           autoComplete="current-password"
-          minLength={12}
+          minLength={props.bootstrap ? 1 : 12}
           required
         />
       </label>

@@ -110,6 +110,9 @@ lines.on('line', (line) => {
   let text;
   if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
     text = 'tool-finished';
+  } else if (prompt.includes('use-tool-with-preamble')) {
+    text =
+      'I will check that now.\n<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';
   } else if (prompt.includes('use-tool')) {
     text =
       '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';

@@ -76,5 +76,8 @@ describe('AllRice DSH protocol runtime', () => {
       configured: false,
       writable: true,
     });
+    await expect(
+      client.searchCodexWeb('AllRice hosted search contract'),
+    ).rejects.toMatchObject({ code: 'DSH_REQUEST_FAILED' });
   }, 20_000);
 });

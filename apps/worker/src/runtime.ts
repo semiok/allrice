@@ -652,6 +652,7 @@ async function executeHandler(
         harness: routeDecision.harness,
         systemInstructions: [
           kernel.systemInstructions,
+          `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
           `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Use only the capabilities and tools supplied for this turn.`,
         ].join('\n\n'),
         authorizedMemoryContext: [

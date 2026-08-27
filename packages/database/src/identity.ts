@@ -339,6 +339,96 @@ export async function createSession(userId: string) {
   return { id: session.id, token, expiresAt: expiresAt.toISOString() };
 }
 
+/**
+ * Provisions the deliberately small, deployment-owned principals used by the
+ * temporary multi-domain portal. This is not a public sign-up path: callers
+ * must authenticate the bootstrap credential before invoking it, and neither
+ * the credential nor its hash is stored in the AllRice identity tables.
+ *
+ * The function is intentionally idempotent so a fresh development deployment
+ * can materialize the platform and tenant boundaries from trusted server
+ * configuration without invitation links.
+ */
+export async function ensureBootstrapPortalPrincipal(input: {
+  organizationSlug: string;
+  organizationName: string;
+  workspaceSlug: string;
+  workspaceName: string;
+  email: string;
+  displayName: string;
+  role: Role;
+}) {
+  const email = EmailSchema.parse(input.email);
+  const passwordHash = await hashPassword(
+    randomBytes(32).toString('base64url'),
+  );
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    const organizations = await transaction<{ id: string }[]>`
+      insert into allrice_organizations (slug, name)
+      values (${input.organizationSlug}, ${input.organizationName})
+      on conflict (slug) do update set name = excluded.name
+      returning id
+    `;
+    const organization = organizations[0];
+    if (!organization)
+      throw new Error('portal organization provisioning failed');
+
+    const workspaces = await transaction<{ id: string }[]>`
+      insert into allrice_workspaces (organization_id, slug, name)
+      values (${organization.id}, ${input.workspaceSlug}, ${input.workspaceName})
+      on conflict (organization_id, slug) do update set name = excluded.name
+      returning id
+    `;
+    const workspace = workspaces[0];
+    if (!workspace) throw new Error('portal workspace provisioning failed');
+
+    const existingUsers = await transaction<UserRow[]>`
+      select id, email, display_name, password_hash, status
+      from allrice_users where email = ${email}
+      for update
+    `;
+    let user = existingUsers[0];
+    if (!user) {
+      const users = await transaction<UserRow[]>`
+        insert into allrice_users (email, display_name, password_hash, status)
+        values (${email}, ${input.displayName}, ${passwordHash}, 'active')
+        returning id, email, display_name, password_hash, status
+      `;
+      user = users[0];
+    } else if (user.status !== 'active') {
+      const users = await transaction<UserRow[]>`
+        update allrice_users
+        set display_name = ${input.displayName}, status = 'active', updated_at = now()
+        where id = ${user.id}
+        returning id, email, display_name, password_hash, status
+      `;
+      user = users[0];
+    }
+    if (!user) throw new Error('portal user provisioning failed');
+
+    await transaction`
+      insert into allrice_memberships (
+        organization_id, workspace_id, user_id, role, active
+      ) values (
+        ${organization.id}, null, ${user.id}, ${input.role}, true
+      )
+      on conflict (organization_id, workspace_id, user_id)
+      do update set role = excluded.role, active = true, updated_at = now()
+    `;
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name,
+      },
+      organizationId: organization.id,
+      workspaceId: workspace.id,
+    };
+  });
+}
+
 export async function login(input: unknown) {
   const credentials = LoginInputSchema.parse(input);
   const sql = getDatabase();

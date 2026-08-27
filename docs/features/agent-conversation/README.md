@@ -22,7 +22,8 @@ conversation navigation.
 6. The conversation harness exposes four tenant-data tools:
    `workspace.file.list`, `workspace.file.read`,
    `workspace.memory.search`, or `workspace.session.search`. A bound reviewed
-   network Skill can additionally activate the guarded `web.fetch` reader.
+   network Skill can additionally activate `web.search` through the deployment
+   Codex subscription and the guarded `web.fetch` page reader.
 7. Every tool request is re-authorized against the frozen execution policy and
    audited. Skill installation never grants tenant data access by itself.
 8. DSH assistant deltas are normalized by the HarnessAdapter, batched by an

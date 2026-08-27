@@ -831,7 +831,6 @@ export function WorkspaceClient({
           body: JSON.stringify({
             workspaceId: workspace.workspaceId,
             employeeAssignmentId: selectedEmployee.id,
-            employeeVersionId: selectedEmployee.currentVersion.id,
             title: draft.trim() ? draft.trim().slice(0, 60) : '新的任务',
           }),
         }),

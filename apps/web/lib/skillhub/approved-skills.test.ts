@@ -34,6 +34,14 @@ describe('approved SkillHub imports', () => {
     );
   });
 
+  it('routes network skills through AllRice web tools', () => {
+    expect(
+      approvedSkillCandidates['openclaw-web-research']?.agentMetadata,
+    ).toMatchObject({
+      requiredToolRefs: ['web.search', 'web.fetch'],
+    });
+  });
+
   it('rejects an imported skill that asks for a host executable', () => {
     const candidate = structuredClone(
       approvedSkillCandidates['openclaw-weather']!,

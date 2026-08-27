@@ -40,7 +40,7 @@ import {
 
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
-const riceVersion = 8;
+const riceVersion = 9;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -515,9 +515,10 @@ export async function createChatSession(
     if (!assignments[0]) throw new DataAccessError('authorization_denied');
     assignment = mapAssignment(assignments[0]);
   }
-  const employeeVersionId = parsed.employeeVersionId
-    ? UuidSchema.parse(parsed.employeeVersionId)
-    : assignment.employeeVersionId;
+  // New Sessions always use the assignment's current published version.
+  // Browser state can be stale after an administrator updates an employee;
+  // accepting its version would silently pin a new Session to old abilities.
+  const employeeVersionId = assignment.employeeVersionId;
   const versions = await sql<{ id: string }[]>`
     select id from allrice_employee_versions
     where id = ${employeeVersionId}

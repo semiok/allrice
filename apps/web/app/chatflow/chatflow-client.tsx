@@ -106,6 +106,11 @@ interface RunView {
   events: ChatFlowEventEnvelope[];
 }
 
+interface RunTrace {
+  status: 'loading' | 'loaded' | 'failed';
+  events: ChatFlowEventEnvelope[];
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   if (response.status === 401) {
     window.location.assign('/login?next=/chatflow');
@@ -179,6 +184,7 @@ function visibleEvent(event: ChatFlowEventEnvelope) {
     event.type.startsWith('tool.') ||
     event.type.startsWith('context.') ||
     event.type.startsWith('turn.') ||
+    event.type === 'routing.selected' ||
     event.type === 'run.retrying' ||
     event.type === 'run.failed' ||
     event.type === 'run.canceled'
@@ -192,6 +198,7 @@ function eventLabel(event: ChatFlowEventEnvelope) {
     'turn.completed': '本轮处理完成',
     'turn.failed': '本轮处理失败',
     'turn.canceled': '本轮已停止',
+    'routing.selected': '已选择执行引擎',
     'tool.started': name ? `正在使用 ${name}` : '正在调用工具',
     'tool.completed': name ? `${name} 已完成` : '工具调用完成',
     'tool.failed': name ? `${name} 调用失败` : '工具调用失败',
@@ -212,6 +219,23 @@ function assistantDelta(events: ChatFlowEventEnvelope[]) {
     .join('');
 }
 
+function eventsFromSse(text: string) {
+  const events: ChatFlowEventEnvelope[] = [];
+  for (const block of text.split('\n\n')) {
+    const data = block
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => line.slice(6))
+      .join('\n');
+    if (!data) continue;
+    const event = JSON.parse(data) as ChatFlowEventEnvelope;
+    if (!events.some((item) => item.eventId === event.eventId)) {
+      events.push(event);
+    }
+  }
+  return events;
+}
+
 export function ChatFlowClient() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
@@ -221,6 +245,7 @@ export function ChatFlowClient() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [runView, setRunView] = useState<RunView | null>(null);
+  const [runTraces, setRunTraces] = useState<Record<string, RunTrace>>({});
   const [feedback, setFeedback] = useState<Record<string, boolean>>({});
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
     [],
@@ -232,6 +257,7 @@ export function ChatFlowClient() {
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const activeStream = useRef<AbortController | null>(null);
+  const traceLoads = useRef(new Set<string>());
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
@@ -389,10 +415,52 @@ export function ChatFlowClient() {
           );
         }
       }
+      if (terminal) {
+        setRunTraces((current) => ({
+          ...current,
+          [runId]: { status: 'loaded', events: accumulated },
+        }));
+      }
       if (activeId) await loadHistory(activeId).catch(() => undefined);
       await loadWorkspace().catch(() => undefined);
     },
     [activeId, loadHistory, loadWorkspace, tenantHeaders, workspace],
+  );
+
+  const loadRunTrace = useCallback(
+    async (runId: string) => {
+      if (
+        !workspace ||
+        runTraces[runId]?.status === 'loaded' ||
+        traceLoads.current.has(runId)
+      )
+        return;
+      traceLoads.current.add(runId);
+      setRunTraces((current) => ({
+        ...current,
+        [runId]: { status: 'loading', events: current[runId]?.events ?? [] },
+      }));
+      try {
+        const response = await fetch(
+          `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}&contract=chatflow-v2`,
+          { cache: 'no-store', headers: tenantHeaders },
+        );
+        if (!response.ok) await readJson(response);
+        const events = eventsFromSse(await response.text());
+        setRunTraces((current) => ({
+          ...current,
+          [runId]: { status: 'loaded', events },
+        }));
+      } catch {
+        setRunTraces((current) => ({
+          ...current,
+          [runId]: { status: 'failed', events: [] },
+        }));
+      } finally {
+        traceLoads.current.delete(runId);
+      }
+    },
+    [runTraces, tenantHeaders, workspace],
   );
 
   useEffect(() => {
@@ -407,6 +475,8 @@ export function ChatFlowClient() {
       return;
     }
     setRunView(null);
+    setRunTraces({});
+    traceLoads.current.clear();
     loadHistory(activeId).catch((cause) =>
       setError(cause instanceof Error ? cause.message : '会话加载失败'),
     );
@@ -458,7 +528,6 @@ export function ChatFlowClient() {
         body: JSON.stringify({
           workspaceId: workspace.workspaceId,
           employeeAssignmentId: employee.id,
-          employeeVersionId: employee.currentVersion.id,
           title: draft.trim().slice(0, 60) || '新的工作',
         }),
       }),
@@ -666,8 +735,6 @@ export function ChatFlowClient() {
     ? employeeForSession(workspace, activeSession)
     : (workspace.employees.find((employee) => employee.isDefault) ??
       workspace.employees[0]);
-  const liveText = runView ? assistantDelta(runView.events) : '';
-  const visibleEvents = runView?.events.filter(visibleEvent) ?? [];
   const isRunning =
     runView?.status === 'running' || runView?.status === 'connecting';
   const isEmptyConversation = !history?.messages.length && !runView;
@@ -1048,113 +1115,153 @@ export function ChatFlowClient() {
                 <div className={chatUi.root}>
                   <div className={chatUi.scroll} data-chat-scroll>
                     <div className={chatUi.column}>
-                      {history?.messages.map((message) => (
-                        <div className={chatUi.flowItem} key={message.id}>
-                          {message.role === 'user' ? (
-                            <div className={messageUi.userRow}>
-                              <div className={messageUi.userStack}>
-                                <div className={messageUi.bubble}>
-                                  {message.content.text}
-                                </div>
-                              </div>
-                              <div className={styles.messageMeta}>
-                                <span>你</span>
-                                <time>{formatTime(message.createdAt)}</time>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className={assistantUi.root}>
-                              <div className={styles.assistantIdentity}>
-                                <i aria-hidden="true" />
-                                <span>Rice</span>
-                                <time>{formatTime(message.createdAt)}</time>
-                              </div>
-                              <div
-                                className={`${assistantUi.body} ${styles.assistantCopy}`}
-                              >
-                                {message.content.text}
-                              </div>
-                              {message.status === 'failed' ? (
-                                <small className={styles.failedMessage}>
-                                  这次没有完成。
-                                </small>
-                              ) : null}
-                              {message.status === 'completed' &&
-                              message.runId ? (
-                                <div
-                                  className={`${assistantUi.actions} ${styles.feedback}`}
-                                >
-                                  <span>这个结果有帮助吗？</span>
-                                  <button
-                                    aria-pressed={
-                                      feedback[message.runId] === true
-                                    }
-                                    onClick={() =>
-                                      void sendFeedback(message, true)
-                                    }
-                                    type="button"
-                                  >
-                                    有用
-                                  </button>
-                                  <button
-                                    aria-pressed={
-                                      feedback[message.runId] === false
-                                    }
-                                    onClick={() =>
-                                      void sendFeedback(message, false)
-                                    }
-                                    type="button"
-                                  >
-                                    无用
-                                  </button>
-                                </div>
-                              ) : null}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-
-                      {isRunning ? (
-                        <div className={chatUi.flowItem}>
-                          <div className={assistantUi.root}>
-                            <div className={styles.assistantIdentity}>
-                              <i aria-hidden="true" />
-                              <span>Rice</span>
-                              <span className={styles.runningDot} />
-                              <span>正在工作</span>
-                            </div>
-                            {visibleEvents.length ? (
-                              <details className={styles.executionGroup}>
-                                <summary>
-                                  {visibleEvents.length} 条执行动态
-                                </summary>
-                                {visibleEvents.map((event) => (
-                                  <div key={event.eventId}>
-                                    <i />
-                                    <span>{eventLabel(event)}</span>
-                                    <small>
-                                      {event.sourceEvent?.type ??
-                                        event.harness ??
-                                        ''}
-                                    </small>
+                      {history?.messages.map((message) => {
+                        const messageRun =
+                          message.runId && runView?.runId === message.runId
+                            ? runView
+                            : null;
+                        const trace = message.runId
+                          ? runTraces[message.runId]
+                          : undefined;
+                        const traceEvents =
+                          messageRun?.events ?? trace?.events ?? [];
+                        const executionEvents =
+                          traceEvents.filter(visibleEvent);
+                        const messageIsRunning =
+                          messageRun?.status === 'running' ||
+                          messageRun?.status === 'connecting';
+                        const streamedText = messageRun
+                          ? assistantDelta(messageRun.events)
+                          : '';
+                        return (
+                          <div className={chatUi.flowItem} key={message.id}>
+                            {message.role === 'user' ? (
+                              <div className={messageUi.userRow}>
+                                <div className={messageUi.userStack}>
+                                  <div className={messageUi.bubble}>
+                                    {message.content.text}
                                   </div>
-                                ))}
-                              </details>
-                            ) : null}
-                            {liveText ? (
-                              <div
-                                className={`${assistantUi.body} ${styles.assistantCopy}`}
-                              >
-                                {liveText}
+                                </div>
+                                <div className={styles.messageMeta}>
+                                  <span>你</span>
+                                  <time>{formatTime(message.createdAt)}</time>
+                                </div>
                               </div>
                             ) : (
-                              <div className={chatUi.turnStatus}>
-                                Rice 正在理解你的需求…
+                              <div className={assistantUi.root}>
+                                <div className={styles.assistantIdentity}>
+                                  <i aria-hidden="true" />
+                                  <span>Rice</span>
+                                  {messageIsRunning ? (
+                                    <>
+                                      <span className={styles.runningDot} />
+                                      <span>正在工作</span>
+                                    </>
+                                  ) : null}
+                                  <time>{formatTime(message.createdAt)}</time>
+                                </div>
+                                {message.runId ? (
+                                  <details
+                                    className={styles.executionGroup}
+                                    onToggle={(event) => {
+                                      if (
+                                        event.currentTarget.open &&
+                                        !messageIsRunning
+                                      ) {
+                                        void loadRunTrace(message.runId!);
+                                      }
+                                    }}
+                                  >
+                                    <summary>
+                                      {messageIsRunning
+                                        ? executionEvents.length
+                                          ? `${executionEvents.length} 条执行动态`
+                                          : '正在准备执行'
+                                        : trace?.status === 'loading'
+                                          ? '正在加载执行记录…'
+                                          : executionEvents.length
+                                            ? `执行记录 · ${executionEvents.length} 条动态`
+                                            : trace?.status === 'failed'
+                                              ? '执行记录加载失败，展开重试'
+                                              : '执行记录'}
+                                    </summary>
+                                    {executionEvents.map((event) => (
+                                      <div key={event.eventId}>
+                                        <i />
+                                        <span>{eventLabel(event)}</span>
+                                        <small>
+                                          {event.sourceEvent?.type ??
+                                            event.harness ??
+                                            ''}
+                                        </small>
+                                      </div>
+                                    ))}
+                                    {!executionEvents.length ? (
+                                      <div>
+                                        <i />
+                                        <span>
+                                          {trace?.status === 'failed'
+                                            ? '暂时无法读取，收起后重新展开即可重试'
+                                            : messageIsRunning
+                                              ? 'Rice 正在理解你的需求'
+                                              : '展开后从 ChatFlow 恢复本次执行记录'}
+                                        </span>
+                                        <small>ChatFlow</small>
+                                      </div>
+                                    ) : null}
+                                  </details>
+                                ) : null}
+                                {messageIsRunning && !streamedText ? (
+                                  <div className={chatUi.turnStatus}>
+                                    Rice 正在理解你的需求…
+                                  </div>
+                                ) : (
+                                  <div
+                                    className={`${assistantUi.body} ${styles.assistantCopy}`}
+                                  >
+                                    {streamedText || message.content.text}
+                                  </div>
+                                )}
+                                {message.status === 'failed' ? (
+                                  <small className={styles.failedMessage}>
+                                    这次没有完成。
+                                  </small>
+                                ) : null}
+                                {message.status === 'completed' &&
+                                message.runId ? (
+                                  <div
+                                    className={`${assistantUi.actions} ${styles.feedback}`}
+                                  >
+                                    <span>这个结果有帮助吗？</span>
+                                    <button
+                                      aria-pressed={
+                                        feedback[message.runId] === true
+                                      }
+                                      onClick={() =>
+                                        void sendFeedback(message, true)
+                                      }
+                                      type="button"
+                                    >
+                                      有用
+                                    </button>
+                                    <button
+                                      aria-pressed={
+                                        feedback[message.runId] === false
+                                      }
+                                      onClick={() =>
+                                        void sendFeedback(message, false)
+                                      }
+                                      type="button"
+                                    >
+                                      无用
+                                    </button>
+                                  </div>
+                                ) : null}
                               </div>
                             )}
                           </div>
-                        </div>
-                      ) : null}
+                        );
+                      })}
 
                       {runView?.status === 'failed' ||
                       runView?.status === 'canceled' ? (

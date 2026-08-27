@@ -378,6 +378,8 @@ export function employeeManifest(input: {
         'workspace.file.read',
         'workspace.memory.search',
         'workspace.session.search',
+        'web.search',
+        'web.fetch',
         'automation.create',
       ],
       knowledgeScopes: ['workspace', 'employee', 'user'],

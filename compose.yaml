@@ -43,6 +43,16 @@ services:
       ALLRICE_STORAGE_ROOT: /var/lib/allrice/storage
       ALLRICE_STORAGE_SIGNING_SECRET: ${ALLRICE_STORAGE_SIGNING_SECRET:?set ALLRICE_STORAGE_SIGNING_SECRET to at least 32 random bytes}
       ALLRICE_WEB_PORT: 3000
+      ALLRICE_PORTAL_AUTH_ENABLED: ${ALLRICE_PORTAL_AUTH_ENABLED:-0}
+      ALLRICE_PORTAL_SESSION_SECRET: ${ALLRICE_PORTAL_SESSION_SECRET:-}
+      ALLRICE_PLATFORM_ADMIN_USER: ${ALLRICE_PLATFORM_ADMIN_USER:-admin}
+      ALLRICE_PLATFORM_ADMIN_PASSWORD: ${ALLRICE_PLATFORM_ADMIN_PASSWORD:-}
+      ALLRICE_PLATFORM_BOOTSTRAP_EMAIL: ${ALLRICE_PLATFORM_BOOTSTRAP_EMAIL:-semiokshen@gmail.com}
+      ALLRICE_SNOW_USER: ${ALLRICE_SNOW_USER:-snow}
+      ALLRICE_SNOW_PASSWORD: ${ALLRICE_SNOW_PASSWORD:-}
+      ALLRICE_DRINK_USER: ${ALLRICE_DRINK_USER:-drink}
+      ALLRICE_DRINK_PASSWORD: ${ALLRICE_DRINK_PASSWORD:-}
+      ALLRICE_PLATFORM_ADMIN_EMAILS: ${ALLRICE_PLATFORM_ADMIN_EMAILS:-semiokshen@gmail.com}
       DATABASE_URL: postgres://${POSTGRES_USER:-allrice}:${POSTGRES_PASSWORD:-allrice}@postgres:5432/${POSTGRES_DB:-allrice}
     healthcheck:
       test:
@@ -58,6 +68,36 @@ services:
     restart: unless-stopped
     volumes:
       - storage-data:/var/lib/allrice/storage
+
+  dsh-admin:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.dsh-admin
+    environment:
+      ALLRICE_DSH_ADMIN_HOST: 0.0.0.0
+      ALLRICE_DSH_ADMIN_PORT: 3081
+      ALLRICE_DSH_WEBUI_PORT: 3080
+      ALLRICE_DSH_ADMIN_USER: ${ALLRICE_DSH_ADMIN_USER:-admin}
+      ALLRICE_DSH_ADMIN_PASSWORD: ${ALLRICE_DSH_ADMIN_PASSWORD:-}
+      ALLRICE_DSH_ADMIN_SESSION_SECRET: ${ALLRICE_DSH_ADMIN_SESSION_SECRET:-}
+      ALLRICE_DSH_ADMIN_SECURE_COOKIE: ${ALLRICE_DSH_ADMIN_SECURE_COOKIE:-1}
+      ALLRICE_DSH_ADMIN_HOME: /var/lib/allrice/dsh-admin
+      ALLRICE_DSH_ADMIN_CREDENTIALS_PATH: /var/lib/allrice/dsh-platform/.credentials.yaml
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:3081/health/live',{headers:{host:'allrice-dsh.bplabs.xyz'}}).then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    volumes:
+      - dsh-admin-data:/var/lib/allrice/dsh-admin
+      - dsh-platform-data:/var/lib/allrice/dsh-platform
 
   worker:
     build:
@@ -79,6 +119,7 @@ services:
       ALLRICE_CODEX_COMMAND: codex
       ALLRICE_CODEX_MODEL: ${ALLRICE_CODEX_MODEL:-gpt-5.6-luna}
       ALLRICE_CODEX_REASONING_EFFORT: ${ALLRICE_CODEX_REASONING_EFFORT:-high}
+      ALLRICE_DSH_PLATFORM_HOME: /var/lib/allrice/dsh-platform
       DATABASE_URL: postgres://${POSTGRES_USER:-allrice}:${POSTGRES_PASSWORD:-allrice}@postgres:5432/${POSTGRES_DB:-allrice}
     healthcheck:
       test:
@@ -94,11 +135,14 @@ services:
     volumes:
       - storage-data:/var/lib/allrice/storage
       - codex-data:/var/lib/allrice/codex
+      - dsh-platform-data:/var/lib/allrice/dsh-platform
     restart: unless-stopped
 
   proxy:
     image: caddy:2-alpine
     depends_on:
+      dsh-admin:
+        condition: service_healthy
       web:
         condition: service_healthy
     ports:
@@ -111,3 +155,5 @@ volumes:
   postgres-data:
   storage-data:
   codex-data:
+  dsh-admin-data:
+  dsh-platform-data:

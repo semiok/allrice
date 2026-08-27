@@ -1,0 +1,60 @@
+import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
+
+import { portalAuthEnabled, resolvePortal } from './lib/portal/config';
+import {
+  portalSessionCookieName,
+  verifyPortalSession,
+} from './lib/portal/session';
+
+const publicPaths = new Set([
+  '/login',
+  '/api/v1/auth/login',
+  '/api/health/live',
+  '/api/health/ready',
+]);
+
+export function proxy(request: NextRequest) {
+  if (!portalAuthEnabled()) return NextResponse.next();
+
+  const portal = resolvePortal(request.headers.get('host'));
+  if (!portal) {
+    return new NextResponse('Unknown AllRice portal host', { status: 421 });
+  }
+
+  if (publicPaths.has(request.nextUrl.pathname)) return NextResponse.next();
+
+  const session = verifyPortalSession(
+    request.cookies.get(portalSessionCookieName)?.value,
+    portal,
+  );
+  if (session) {
+    const tenantForbidden =
+      portal.kind === 'tenant' &&
+      (request.nextUrl.pathname.startsWith('/api/v1/admin') ||
+        request.nextUrl.pathname.startsWith('/chatflow/admin') ||
+        request.nextUrl.pathname.startsWith('/chatflow/employees') ||
+        request.nextUrl.pathname.startsWith('/employees') ||
+        request.nextUrl.pathname.startsWith('/skillhub'));
+    if (tenantForbidden) {
+      if (request.nextUrl.pathname.startsWith('/api/')) {
+        return Response.json(
+          { error: 'authorization_denied' },
+          { status: 403 },
+        );
+      }
+      return NextResponse.redirect(new URL(portal.homePath, request.url));
+    }
+    return NextResponse.next();
+  }
+
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    return Response.json({ error: 'authentication_required' }, { status: 401 });
+  }
+  const login = new URL('/login', request.url);
+  return NextResponse.redirect(login);
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};

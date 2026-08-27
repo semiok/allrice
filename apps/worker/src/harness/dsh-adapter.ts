@@ -28,7 +28,7 @@ import {
 
 const toolEnvelopePrefix = '<allrice_tool_call>';
 const toolEnvelopePattern =
-  /^<allrice_tool_call>\s*([\s\S]*?)\s*<\/allrice_tool_call>$/;
+  /<allrice_tool_call>\s*([\s\S]*?)\s*<\/allrice_tool_call>\s*$/;
 const maximumToolCallsPerTurn = 8;
 
 interface DshRuntime {
@@ -175,8 +175,17 @@ function toolBridgeInstructions(input: HarnessExecutionInput) {
 }
 
 function parseToolCall(text: string): HarnessToolCall | null {
-  const match = toolEnvelopePattern.exec(text.trim());
+  const candidate = text.trim();
+  const match = toolEnvelopePattern.exec(candidate);
   if (!match?.[1]) return null;
+  const prefix = candidate.slice(0, match.index);
+  if (prefix.includes(toolEnvelopePrefix)) {
+    throw new HandlerError(
+      'DSH_TOOL_ENVELOPE_INVALID',
+      'DSH returned more than one AllRice tool envelope',
+      false,
+    );
+  }
   let value: unknown;
   try {
     value = JSON.parse(match[1]);

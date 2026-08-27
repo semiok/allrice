@@ -160,6 +160,32 @@ export class DshProtocolClient {
     return this.request('provider/cancel-codex', undefined, 10_000);
   }
 
+  async searchCodexWeb(query: string, maxResults = 5) {
+    const result = await this.request(
+      'provider/web-search',
+      { query, maxResults },
+      70_000,
+    );
+    if (
+      result.provider !== 'codex-hosted-search' ||
+      typeof result.query !== 'string' ||
+      typeof result.output !== 'string' ||
+      !Array.isArray(result.results)
+    ) {
+      throw new HandlerError(
+        'DSH_PROTOCOL_MISMATCH',
+        'DSH runtime returned a malformed Codex search response',
+        false,
+      );
+    }
+    return {
+      provider: 'codex-hosted-search' as const,
+      query: result.query,
+      output: result.output,
+      results: result.results,
+    };
+  }
+
   async close() {
     if (this.closing) return this.closed;
     this.closing = true;

@@ -161,7 +161,19 @@ function toolTerms(name: string, description: string) {
     'workspace.file.read': ['读取文件', '打开文件', 'read file'],
     'workspace.memory.search': ['记忆', '以前说过', 'memory'],
     'workspace.session.search': ['历史对话', '之前的对话', 'conversation'],
-    'web.fetch': ['网页', '链接', '网址', 'http://', 'https://', 'url'],
+    'web.search': ['联网', '搜索', '查一下', '最新', 'search web', 'online'],
+    'web.fetch': [
+      '打开网页',
+      '读取网页',
+      '打开链接',
+      '读取链接',
+      '这个链接',
+      '该链接',
+      '网址',
+      'http://',
+      'https://',
+      'url',
+    ],
     'automation.create': ['提醒', '定时', '稍后', 'remind', 'schedule'],
   };
   return [name, description, ...(specific[name] ?? [])];
@@ -347,7 +359,7 @@ export function decideCapabilityRoute(input: {
         score: 0,
       }),
       terms: toolTerms(tool.name, tool.description),
-      explicitTerms: familyTerms.tool,
+      explicitTerms: [tool.name, ...familyTerms.tool],
     });
   }
   let matchedExplicitIntent = false;

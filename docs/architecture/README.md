@@ -13,6 +13,8 @@ The platform-managed Provider, model and employee selection boundary is
 documented in [Platform-managed model pool](platform-model-pool.md).
 The first-class Agent Skill, Workflow and Knowledge model is documented in
 [Agent capability foundation](agent-capability-foundation.md).
+The official, isolated DSH engineering WebUI and its authenticated publication
+boundary are documented in [DSH administrator console](dsh-admin-console.md).
 DSH version isolation is documented in
 [DSH upstream governance](../operations/dsh-upstream-governance.md), and the
 product migration switch is documented in
@@ -23,7 +25,7 @@ product migration switch is documented in
 ```text
 Browser
   -> reverse proxy
-  -> Web process
+  -> AllRice Web process
        -> ChatFlow Runtime (Session / Run / Event / recovery / Provider routing)
        -> PostgreSQL + pgvector
        -> object storage abstraction
@@ -34,9 +36,19 @@ Browser
                  -> Skill runtime
                  -> Memory
                  -> Artifact
+
+Platform engineer browser
+  -> reverse proxy
+  -> authenticated DSH administrator gateway
+       -> official DSH WebHost/WebUI on loopback
+       -> isolated administrator DSH home
 ```
 
-Only two AllRice application processes exist in V1: Web and Worker. Scheduler is code inside Worker, not a separately deployed process. Infrastructure consists of PostgreSQL, mounted storage, and a reverse proxy.
+The tenant execution plane remains two AllRice application processes: Web and
+Worker. Scheduler is code inside Worker, not a separately deployed process.
+MET-87 adds one isolated engineering-only DSH administrator gateway; it never
+executes a tenant Run and is not a third SaaS business service. Infrastructure
+consists of PostgreSQL, mounted storage, and a reverse proxy.
 
 ## Authority
 
