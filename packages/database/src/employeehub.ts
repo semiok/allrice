@@ -77,36 +77,51 @@ interface EmployeeDirectoryRow extends EmployeeVersionRow {
   assigned_user_ids: string[];
 }
 
-export interface FrozenSkillBinding {
-  installationId: string;
-  skillVersionId: string;
-  declaredCapabilities: SkillCapability[];
-  grantedCapabilities: SkillCapability[];
-}
-
 const skillGatedCapabilities = new Set<SkillCapability>([
   'network:outbound',
   'storage:write',
   'secret:use',
 ]);
 
+const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
+  'web.search': 'network:outbound',
+  'web.fetch': 'network:outbound',
+  'local.fs.list': 'storage:read',
+  'local.fs.search': 'storage:read',
+  'local.fs.read': 'storage:read',
+  'local.git.status': 'storage:read',
+  'local.git.diff': 'storage:read',
+};
+
+export function nativeSkillCapabilityGrants(
+  requiredToolRefs: readonly string[],
+) {
+  return [
+    ...new Set(
+      requiredToolRefs.flatMap((tool) => {
+        const capability = nativeSkillToolCapabilities[tool];
+        return capability ? [capability] : [];
+      }),
+    ),
+  ];
+}
+
 export function resolveEmployeeCapabilities(
   employeeCapabilities: SkillCapability[],
-  skillBindings: FrozenSkillBinding[],
+  nativeSkills: readonly { requiredToolRefs: readonly string[] }[],
   deniedCapabilities: SkillCapability[] = [],
 ) {
   const denied = new Set(deniedCapabilities);
-  const skillGranted = new Set(
-    skillBindings.flatMap((binding) =>
-      binding.grantedCapabilities.filter((capability) =>
-        binding.declaredCapabilities.includes(capability),
-      ),
+  const nativeSkillGranted = new Set(
+    nativeSkills.flatMap((skill) =>
+      nativeSkillCapabilityGrants(skill.requiredToolRefs),
     ),
   );
   return employeeCapabilities.filter(
     (capability) =>
       !denied.has(capability) &&
-      (!skillGatedCapabilities.has(capability) || skillGranted.has(capability)),
+      (!skillGatedCapabilities.has(capability) ||
+        nativeSkillGranted.has(capability)),
   );
 }
 
@@ -118,7 +133,8 @@ export interface EmployeeRunBinding {
   assistantMessageId: string;
   providerSnapshot: ReturnType<typeof HarnessExecutionSnapshotSchema.parse>;
   skillVersionIds: string[];
-  skillBindings: FrozenSkillBinding[];
+  /** Legacy immutable run evidence; DSH-native authorization does not read it. */
+  skillBindings: ReturnType<typeof FrozenEmployeeSkillBindingSchema.parse>[];
   nativeSkills: ReturnType<typeof DshNativeSkillSnapshotSchema.parse>[];
   executionSnapshot: Omit<
     Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
@@ -1017,11 +1033,39 @@ export async function prepareEmployeeRunBinding(input: {
     employeeId: assignment.employee_id,
     actorId,
   });
+  const nativeSkillRows = await sql<
+    {
+      id: string;
+      name: string;
+      description: string;
+      content: string;
+      checksum: string;
+      model_invocable: boolean;
+      user_invocable: boolean;
+      required_tool_refs: string[];
+    }[]
+  >`
+    select skill.id, skill.name, skill.description, skill.content,
+      skill.checksum, skill.model_invocable, skill.user_invocable,
+      skill.required_tool_refs
+    from allrice_employee_dsh_skill_bindings binding
+    join allrice_dsh_skills skill
+      on skill.organization_id = binding.organization_id
+     and skill.workspace_id = binding.workspace_id
+     and skill.id = binding.skill_id
+    where binding.organization_id = ${input.context.organizationId}
+      and binding.workspace_id = ${input.workspaceId}
+      and binding.employee_id = ${assignment.employee_id}
+      and binding.enabled and skill.enabled
+    order by skill.name, skill.id
+  `;
   const skillBindings: EmployeeRunBinding['skillBindings'] = [];
   const skillVersionIds: string[] = [];
   const grantedCapabilities = resolveEmployeeCapabilities(
     manifest.data.capabilities,
-    skillBindings,
+    nativeSkillRows.map((skill) => ({
+      requiredToolRefs: skill.required_tool_refs,
+    })),
     manifest.data.schemaVersion === 2
       ? manifest.data.securityPolicy.deniedCapabilities
       : [],
@@ -1106,32 +1150,6 @@ export async function prepareEmployeeRunBinding(input: {
     fallbackModels: [],
     timeoutMs: modelSnapshot.runLimits.timeoutMs,
   });
-  const nativeSkillRows = await sql<
-    {
-      id: string;
-      name: string;
-      description: string;
-      content: string;
-      checksum: string;
-      model_invocable: boolean;
-      user_invocable: boolean;
-      required_tool_refs: unknown;
-    }[]
-  >`
-    select skill.id, skill.name, skill.description, skill.content,
-      skill.checksum, skill.model_invocable, skill.user_invocable,
-      skill.required_tool_refs
-    from allrice_employee_dsh_skill_bindings binding
-    join allrice_dsh_skills skill
-      on skill.organization_id = binding.organization_id
-     and skill.workspace_id = binding.workspace_id
-     and skill.id = binding.skill_id
-    where binding.organization_id = ${input.context.organizationId}
-      and binding.workspace_id = ${input.workspaceId}
-      and binding.employee_id = ${assignment.employee_id}
-      and binding.enabled and skill.enabled
-    order by skill.name, skill.id
-  `;
   const nativeSkills = nativeSkillRows.map((skill) =>
     DshNativeSkillSnapshotSchema.parse({
       id: skill.id,
@@ -1275,16 +1293,7 @@ export async function resolveEmployeeExecution(input: {
       ? executionSnapshot.data.capabilitySnapshot.grantedCapabilities
       : resolveEmployeeCapabilities(
           manifest.capabilities,
-          skillBindings.map((binding) => ({
-            installationId: binding.installationId,
-            skillVersionId: binding.skillVersionId,
-            declaredCapabilities:
-              artifacts.find(
-                (artifact) =>
-                  artifact.skillVersionId === binding.skillVersionId,
-              )?.declaredCapabilities ?? [],
-            grantedCapabilities: binding.grantedCapabilities,
-          })),
+          nativeSkills,
           manifest.schemaVersion === 2
             ? manifest.securityPolicy.deniedCapabilities
             : [],
