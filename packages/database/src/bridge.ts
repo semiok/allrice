@@ -421,18 +421,25 @@ export async function createBridgeFolderGrant(token: string, input: unknown) {
   const device = await authenticatedDevice(token);
   const parsed = CreateBridgeFolderGrantInputSchema.parse(input);
   const sql = getDatabase();
-  const rows = await sql<GrantRow[]>`
-    insert into allrice_bridge_folder_grants (
-      organization_id, workspace_id, owner_id, device_id, label,
-      root_fingerprint
-    ) values (
-      ${device.organization_id}, ${device.workspace_id}, ${device.owner_id},
-      ${device.id}, ${parsed.label}, ${parsed.rootFingerprint}
-    ) on conflict (device_id, root_fingerprint) do update set
-      label = excluded.label, revoked_at = null
-    returning id, device_id, label, root_fingerprint, created_at, revoked_at
-  `;
-  const grant = rows[0]!;
+  const grant = await sql.begin(async (transaction) => {
+    await transaction`
+      update allrice_bridge_folder_grants set revoked_at = now()
+      where device_id = ${device.id} and revoked_at is null
+        and root_fingerprint <> ${parsed.rootFingerprint}
+    `;
+    const rows = await transaction<GrantRow[]>`
+      insert into allrice_bridge_folder_grants (
+        organization_id, workspace_id, owner_id, device_id, label,
+        root_fingerprint
+      ) values (
+        ${device.organization_id}, ${device.workspace_id}, ${device.owner_id},
+        ${device.id}, ${parsed.label}, ${parsed.rootFingerprint}
+      ) on conflict (device_id, root_fingerprint) do update set
+        label = excluded.label, revoked_at = null
+      returning id, device_id, label, root_fingerprint, created_at, revoked_at
+    `;
+    return rows[0]!;
+  });
   await audit({
     organizationId: device.organization_id,
     workspaceId: device.workspace_id,
@@ -759,13 +766,15 @@ export async function dispatchBridgeCommand(input: {
     60_000,
   );
   const sql = getDatabase();
-  const targets = await sql<{ device_id: string; grant_id: string }[]>`
-    select d.id as device_id, g.id as grant_id
+  const targets = await sql<
+    { device_id: string; grant_id: string; grant_label: string }[]
+  >`
+    select d.id as device_id, g.id as grant_id, g.label as grant_label
     from allrice_bridge_devices d
     join lateral (
-      select id from allrice_bridge_folder_grants
+      select id, label from allrice_bridge_folder_grants
       where device_id = d.id and revoked_at is null
-      order by created_at limit 1
+      order by created_at desc limit 1
     ) g on true
     where d.organization_id = ${input.context.organizationId}
       and d.workspace_id = ${workspaceId} and d.owner_id = ${ownerId}
@@ -814,6 +823,7 @@ export async function dispatchBridgeCommand(input: {
       return {
         output: command.result,
         summary: command.summary ?? `已在本地执行 ${command.capability}`,
+        workspaceLabel: target.grant_label,
       };
     }
     if (['failed', 'expired', 'canceled'].includes(command.status)) {

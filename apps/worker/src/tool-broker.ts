@@ -435,9 +435,10 @@ export async function executeRiceTool(input: {
       result = {
         modelContent: JSON.stringify({
           source: 'rice-bridge',
+          localWorkspace: bridge.workspaceLabel,
           output: bridge.output,
         }),
-        summary: bridge.summary,
+        summary: `${bridge.workspaceLabel} · ${bridge.summary}`,
       };
     } else if (input.call.name === 'automation.create') {
       const delayMinutes = args.delayMinutes;

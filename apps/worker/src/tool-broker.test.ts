@@ -84,6 +84,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     dispatchBridgeCommand.mockResolvedValue({
       output: { path: 'README.md', content: '# Rice' },
       summary: '已读取 README.md',
+      workspaceLabel: 'AI-what',
     });
     const context = executionContext();
     const callId = randomUUID();
@@ -107,8 +108,10 @@ describe('Codex hosted search Tool Broker integration', () => {
     });
     expect(JSON.parse(result.modelContent)).toMatchObject({
       source: 'rice-bridge',
+      localWorkspace: 'AI-what',
       output: { path: 'README.md' },
     });
+    expect(result.summary).toBe('AI-what · 已读取 README.md');
   });
 
   it('keeps authorized read-only tools available without pre-routing side effects', () => {
