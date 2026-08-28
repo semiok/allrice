@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   PlatformEmployeeDefinition,
   PlatformEmployeeSummary,
+  PlatformEmployeeTestRun,
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
@@ -152,6 +153,10 @@ export function EmployeeProduction() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [testPrompt, setTestPrompt] = useState(
+    '请用一句话说明你的名字、职责和工作方式。不要调用任何工具。',
+  );
+  const [testRuns, setTestRuns] = useState<PlatformEmployeeTestRun[]>([]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -184,6 +189,40 @@ export function EmployeeProduction() {
     void load();
   }, []);
 
+  const loadTestRuns = useCallback(async (employeeId: string) => {
+    const result = await api<{ testRuns: PlatformEmployeeTestRun[] }>(
+      `/api/v1/admin/platform-employees/${employeeId}/test-runs`,
+    );
+    setTestRuns(result.testRuns);
+    return result.testRuns;
+  }, []);
+
+  useEffect(() => {
+    if (tab !== 'debug' || !selectedId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const runs = await loadTestRuns(selectedId);
+        if (
+          !cancelled &&
+          runs.some((run) => run.status === 'queued' || run.status === 'running')
+        ) {
+          timer = setTimeout(() => void poll(), 1_500);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : '读取测试结果失败');
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [loadTestRuns, selectedId, tab]);
+
   const selected = useMemo(
     () => directory?.employees.find((item) => item.id === selectedId) ?? null,
     [directory, selectedId],
@@ -198,6 +237,7 @@ export function EmployeeProduction() {
     setSelectedWorkspaces(employee.assignedWorkspaceIds);
     setMessage('');
     setError('');
+    setTestRuns([]);
   }
 
   function update(path: string[], value: unknown) {
@@ -279,6 +319,34 @@ export function EmployeeProduction() {
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '发布失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runIsolatedTest() {
+    if (!selectedId || !testPrompt.trim()) return;
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const result = await api<{
+        queued: boolean;
+        valid: boolean;
+        errors: string[];
+        testRun: PlatformEmployeeTestRun | null;
+      }>(`/api/v1/admin/platform-employees/${selectedId}/test-runs`, {
+        method: 'POST',
+        body: JSON.stringify({ prompt: testPrompt }),
+      });
+      if (!result.queued || !result.testRun) {
+        throw new Error(result.errors.join('\n') || '员工草稿未通过编译');
+      }
+      setTestRuns((current) => [result.testRun!, ...current]);
+      setMessage('隔离 DSH 测试已进入 Worker 队列，结果会自动刷新。');
+      window.setTimeout(() => void loadTestRuns(selectedId), 1_200);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '隔离测试启动失败');
     } finally {
       setBusy(false);
     }
@@ -492,16 +560,84 @@ export function EmployeeProduction() {
       <>
         <p className={styles.notice}>
           编译会校验 Provider、Skill、工具依赖、Bridge 权限和 DSH Runtime
-          Profile。隔离测试 Session 后续直接使用同一份冻结快照。
+          Profile。隔离测试使用同一份草稿快照，但不会连接租户数据、Tool Broker
+          或本地 Bridge。
         </p>
-        <button
-          className={styles.button}
-          data-primary="true"
-          disabled={busy}
-          onClick={() => void compile()}
-        >
-          {busy ? '校验中…' : '编译并验证 Runtime Profile'}
-        </button>
+        <label className={`${styles.field} ${styles.fieldWide}`}>
+          <span>测试任务</span>
+          <textarea
+            value={testPrompt}
+            onChange={(event) => setTestPrompt(event.target.value)}
+          />
+        </label>
+        <div className={styles.actions}>
+          <button
+            className={styles.button}
+            disabled={busy}
+            onClick={() => void compile()}
+          >
+            编译 Runtime Profile
+          </button>
+          <button
+            className={styles.button}
+            data-primary="true"
+            disabled={busy || !testPrompt.trim()}
+            onClick={() => void runIsolatedTest()}
+          >
+            {busy ? '提交中…' : '运行隔离 DSH 测试'}
+          </button>
+        </div>
+        <div className={styles.testRuns}>
+          {testRuns.length === 0 ? (
+            <p className={styles.muted}>还没有隔离测试记录。</p>
+          ) : (
+            testRuns.map((run) => (
+              <article className={styles.testRun} key={run.id}>
+                <header>
+                  <strong>{run.status}</strong>
+                  <time>{new Date(run.createdAt).toLocaleString('zh-CN')}</time>
+                </header>
+                <p className={styles.testPrompt}>{run.input.prompt}</p>
+                {run.output?.events.length ? (
+                  <ol className={styles.testEvents}>
+                    {run.output.events
+                      .filter(
+                        (event) =>
+                          event.type === 'native.event' ||
+                          event.type.startsWith('tool.'),
+                      )
+                      .map((event, index) => (
+                        <li key={`${run.id}-${event.order}-${index}`}>
+                          {event.type === 'native.event'
+                            ? `${event.label}${event.summary ? ` · ${event.summary}` : ''}`
+                            : event.type === 'tool.started' ||
+                                event.type === 'tool.completed' ||
+                                event.type === 'tool.failed'
+                              ? `${event.name} · ${event.type.replace('tool.', '')}`
+                              : event.type}
+                        </li>
+                      ))}
+                  </ol>
+                ) : null}
+                {run.output?.answer ? (
+                  <pre className={styles.testAnswer}>{run.output.answer}</pre>
+                ) : null}
+                {run.output?.usage ? (
+                  <small className={styles.muted}>
+                    {run.output.provider} · {run.output.model} · 输入{' '}
+                    {run.output.usage.inputTokens} / 输出{' '}
+                    {run.output.usage.outputTokens} tokens
+                  </small>
+                ) : null}
+                {run.output?.error ? (
+                  <p className={styles.error}>
+                    {run.output.error.code} · {run.output.error.message}
+                  </p>
+                ) : null}
+              </article>
+            ))
+          )}
+        </div>
       </>
     );
   } else {

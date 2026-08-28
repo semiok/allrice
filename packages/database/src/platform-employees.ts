@@ -5,10 +5,15 @@ import {
   PlatformEmployeeRevisionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   PlatformEmployeeSummarySchema,
+  PlatformEmployeeTestRunOutputSchema,
+  PlatformEmployeeTestRunSchema,
+  CreatePlatformEmployeeTestRunInputSchema,
+  DshNativeSkillSnapshotSchema,
   PublishPlatformEmployeeInputSchema,
   UpdatePlatformEmployeeInputSchema,
   UuidSchema,
   type PlatformEmployeeDefinition,
+  type PlatformEmployeeTestRunOutput,
 } from '@allrice/contracts';
 
 import {
@@ -55,6 +60,18 @@ interface EmployeeRow {
   created_at: Date;
   updated_at: Date;
   assigned_workspace_ids: string[];
+}
+
+interface TestRunRow {
+  id: string;
+  employee_id: string;
+  revision_id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  input: unknown;
+  output: unknown | null;
+  created_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
 }
 
 function checksum(value: unknown) {
@@ -191,6 +208,187 @@ export async function listPlatformNativeSkills() {
   `;
 }
 
+function testRunSnapshot(row: TestRunRow) {
+  return PlatformEmployeeTestRunSchema.parse({
+    id: row.id,
+    employeeId: row.employee_id,
+    revisionId: row.revision_id,
+    status: row.status,
+    input: row.input,
+    output: row.output,
+    createdAt: row.created_at.toISOString(),
+    startedAt: row.started_at?.toISOString() ?? null,
+    completedAt: row.completed_at?.toISOString() ?? null,
+  });
+}
+
+export async function listPlatformEmployeeTestRuns(
+  employeeIdInput: string,
+  limitInput = 10,
+) {
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const limit = Math.min(Math.max(Math.trunc(limitInput), 1), 50);
+  const sql = getDatabase();
+  const rows = await sql<TestRunRow[]>`
+    select id, employee_id, revision_id, status, input, output,
+      created_at, started_at, completed_at
+    from allrice_platform_employee_test_runs
+    where employee_id = ${employeeId}
+    order by created_at desc, id desc
+    limit ${limit}
+  `;
+  return rows.map(testRunSnapshot);
+}
+
+export async function queuePlatformEmployeeTestRun(
+  employeeIdInput: string,
+  input: unknown,
+  actorLabel = 'platform-admin',
+) {
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const parsed = CreatePlatformEmployeeTestRunInputSchema.parse(input);
+  const compilation = await compilePlatformEmployee(employeeId, actorLabel);
+  if (!compilation.valid || !compilation.runtimeProfile) {
+    return { queued: false as const, ...compilation, testRun: null };
+  }
+  const sql = getDatabase();
+  const rows = await sql<TestRunRow[]>`
+    insert into allrice_platform_employee_test_runs (
+      employee_id, revision_id, requested_by_label, status, input
+    ) values (
+      ${employeeId}, ${compilation.revisionId}, ${actorLabel}, 'queued',
+      ${sql.json(parsed)}
+    )
+    returning id, employee_id, revision_id, status, input, output,
+      created_at, started_at, completed_at
+  `;
+  const row = rows[0];
+  if (!row) throw new Error('platform_employee_test_queue_failed');
+  return {
+    queued: true as const,
+    valid: true,
+    errors: [] as string[],
+    warnings: compilation.warnings,
+    testRun: testRunSnapshot(row),
+  };
+}
+
+export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
+  const workerId = UuidSchema.parse(workerIdInput);
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    await transaction`
+      update allrice_platform_employee_test_runs
+      set status = 'failed', completed_at = now(),
+        output = ${transaction.json({
+          answer: null,
+          provider: null,
+          model: null,
+          threadId: null,
+          usage: null,
+          events: [],
+          error: {
+            code: 'TEST_WORKER_TIMEOUT',
+            message: '隔离测试 Worker 超时，任务已终止。',
+          },
+        })}
+      where status = 'running'
+        and started_at < now() - interval '15 minutes'
+    `;
+    const rows = await transaction<
+      (TestRunRow & { runtime_profile: unknown; definition: unknown })[]
+    >`
+      select test.id, test.employee_id, test.revision_id, test.status,
+        test.input, test.output, test.created_at, test.started_at,
+        test.completed_at, revision.runtime_profile, revision.definition
+      from allrice_platform_employee_test_runs test
+      join allrice_platform_employee_revisions revision
+        on revision.id = test.revision_id
+      where test.status = 'queued' and revision.status = 'testing'
+        and revision.runtime_profile is not null
+      order by test.created_at, test.id
+      for update of test skip locked
+      limit 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    await transaction`
+      update allrice_platform_employee_test_runs
+      set status = 'running', worker_id = ${workerId}, started_at = now()
+      where id = ${row.id}
+    `;
+    const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse(
+      row.runtime_profile,
+    );
+    const definition = PlatformEmployeeDefinitionSchema.parse(row.definition);
+    const skillRows =
+      runtimeProfile.nativeSkillIds.length === 0
+        ? []
+        : await transaction<
+            {
+              id: string;
+              name: string;
+              description: string;
+              content: string;
+              checksum: string;
+              model_invocable: boolean;
+              user_invocable: boolean;
+              required_tool_refs: string[];
+            }[]
+          >`
+            select id, name, description, content, checksum, model_invocable,
+              user_invocable, required_tool_refs
+            from allrice_platform_dsh_skills
+            where id in ${transaction(runtimeProfile.nativeSkillIds)} and enabled
+          `;
+    const nativeSkills = skillRows.map((skill) =>
+      DshNativeSkillSnapshotSchema.parse({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        content: skill.content,
+        checksum: skill.checksum,
+        invocation: {
+          modelInvocable: skill.model_invocable,
+          userInvocable: skill.user_invocable,
+        },
+        requiredToolRefs: skill.required_tool_refs,
+      }),
+    );
+    return {
+      id: row.id,
+      employeeId: row.employee_id,
+      revisionId: row.revision_id,
+      input: CreatePlatformEmployeeTestRunInputSchema.parse(row.input),
+      runtimeProfile,
+      definition,
+      nativeSkills,
+    };
+  });
+}
+
+export async function completePlatformEmployeeTestRun(
+  testRunIdInput: string,
+  outputInput: PlatformEmployeeTestRunOutput,
+) {
+  const testRunId = UuidSchema.parse(testRunIdInput);
+  const output = PlatformEmployeeTestRunOutputSchema.parse(outputInput);
+  const persistedOutput: unknown = JSON.parse(JSON.stringify(output));
+  const status = output.error ? 'failed' : 'succeeded';
+  const sql = getDatabase();
+  const rows = await sql<TestRunRow[]>`
+    update allrice_platform_employee_test_runs
+    set status = ${status}, output = ${sql.json(persistedOutput as never)},
+      completed_at = now()
+    where id = ${testRunId} and status = 'running'
+    returning id, employee_id, revision_id, status, input, output,
+      created_at, started_at, completed_at
+  `;
+  const row = rows[0];
+  if (!row) throw new Error('platform_employee_test_not_running');
+  return testRunSnapshot(row);
+}
+
 export async function savePlatformEmployeeDraft(
   employeeIdInput: string,
   input: unknown,
@@ -312,6 +510,12 @@ export async function compilePlatformEmployee(
     if (definition.modelPolicy.provider !== 'openai-codex') {
       warnings.push('非 Codex Provider 需要平台凭证和可用性检查后才能发布。');
     }
+    if (
+      definition.modelPolicy.provider === 'openai-compatible' &&
+      !definition.modelPolicy.baseUrl
+    ) {
+      errors.push('OpenAI Compatible Provider 必须配置 Base URL。');
+    }
     const profile =
       errors.length === 0
         ? PlatformEmployeeRuntimeProfileSchema.parse({
@@ -323,6 +527,7 @@ export async function compilePlatformEmployee(
             reasoningEffort: definition.modelPolicy.reasoningEffort,
             timeoutMs: definition.modelPolicy.timeoutMs,
             credentialReference: definition.modelPolicy.credentialReference,
+            baseUrl: definition.modelPolicy.baseUrl,
             systemPrompt: definition.systemPrompt,
             nativeSkillIds: skills.map((skill) => skill.id),
             nativeSkillChecksums: skills.map((skill) => skill.checksum),

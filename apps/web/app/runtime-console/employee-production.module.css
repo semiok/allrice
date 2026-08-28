@@ -230,6 +230,57 @@
   border-radius: 11px;
 }
 
+.testRuns {
+  display: grid;
+  gap: 12px;
+}
+
+.testRun {
+  padding: 16px;
+  background: #1c1f22;
+  border: 1px solid #3b4045;
+  border-radius: 12px;
+}
+
+.testRun header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.testRun time,
+.testRun small {
+  color: #9299a2;
+  font-size: 12px;
+}
+
+.testPrompt {
+  margin: 12px 0;
+  color: #b5bbc3;
+}
+
+.testEvents {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  padding-left: 22px;
+  color: #aab0b8;
+  font-size: 13px;
+}
+
+.testAnswer {
+  overflow-x: auto;
+  margin: 12px 0;
+  padding: 13px;
+  color: #edf0f2;
+  font: inherit;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  background: #151719;
+  border-radius: 9px;
+}
+
 .error {
   color: #ff9c9c;
   border-color: #713d42;

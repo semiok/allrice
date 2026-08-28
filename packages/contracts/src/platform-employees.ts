@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { HarnessEventSchema } from './harness.ts';
 
 export const PlatformEmployeeStatusSchema = z.enum([
   'draft',
@@ -108,6 +109,7 @@ export const PlatformEmployeeRuntimeProfileSchema = z
     reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
     timeoutMs: z.number().int().min(1_000).max(3_600_000),
     credentialReference: z.string().trim().min(1).max(255),
+    baseUrl: z.string().url().max(2_000).nullable().default(null),
     systemPrompt: z.string().trim().min(1).max(30_000),
     nativeSkillIds: z.array(UuidSchema).max(64),
     nativeSkillChecksums: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)),
@@ -161,3 +163,63 @@ export const PublishPlatformEmployeeInputSchema = z
     workspaceIds: z.array(UuidSchema).min(1).max(500),
   })
   .strict();
+
+export const PlatformEmployeeTestRunStatusSchema = z.enum([
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
+export const CreatePlatformEmployeeTestRunInputSchema = z
+  .object({
+    prompt: z.string().trim().min(1).max(10_000),
+  })
+  .strict();
+
+export const PlatformEmployeeTestRunOutputSchema = z
+  .object({
+    answer: z.string().max(200_000).nullable(),
+    provider: z.string().trim().min(1).max(120).nullable(),
+    model: z.string().trim().min(1).max(200).nullable(),
+    threadId: z.string().trim().min(1).max(500).nullable(),
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative(),
+        cachedInputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    events: z.array(HarnessEventSchema).max(500),
+    error: z
+      .object({
+        code: z.string().trim().min(1).max(160),
+        message: z.string().trim().min(1).max(2_000),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export type PlatformEmployeeTestRunOutput = z.infer<
+  typeof PlatformEmployeeTestRunOutputSchema
+>;
+
+export const PlatformEmployeeTestRunSchema = z
+  .object({
+    id: UuidSchema,
+    employeeId: UuidSchema,
+    revisionId: UuidSchema,
+    status: PlatformEmployeeTestRunStatusSchema,
+    input: CreatePlatformEmployeeTestRunInputSchema,
+    output: PlatformEmployeeTestRunOutputSchema.nullable(),
+    createdAt: TimestampSchema,
+    startedAt: TimestampSchema.nullable(),
+    completedAt: TimestampSchema.nullable(),
+  })
+  .strict();
+
+export type PlatformEmployeeTestRun = z.infer<
+  typeof PlatformEmployeeTestRunSchema
+>;

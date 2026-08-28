@@ -23,6 +23,7 @@ import {
 } from './codex-auth-broker.js';
 import { executeClaimedJob } from './runtime.js';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
+import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -74,8 +75,10 @@ let lastDatabaseError: string | undefined;
 let stopping = false;
 let tickRunning = false;
 let automationTickRunning = false;
+let platformEmployeeTestTickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
+let platformEmployeeTestAborter: AbortController | null = null;
 
 async function refreshReadiness() {
   try {
@@ -212,6 +215,26 @@ async function automationTick() {
   }
 }
 
+async function platformEmployeeTestTick() {
+  if (platformEmployeeTestTickRunning || stopping || !databaseReady) return;
+  platformEmployeeTestTickRunning = true;
+  platformEmployeeTestAborter = new AbortController();
+  try {
+    await executeNextPlatformEmployeeTest({
+      workerId,
+      executionRoot,
+      signal: platformEmployeeTestAborter.signal,
+    });
+  } catch (error) {
+    console.error('[MET-93] platform employee test failed', {
+      message: error instanceof Error ? error.message : 'unknown error',
+    });
+  } finally {
+    platformEmployeeTestAborter = null;
+    platformEmployeeTestTickRunning = false;
+  }
+}
+
 await refreshReadiness();
 await recoverCodexAuthorizationFlows();
 await refreshCodexProviderStatus();
@@ -232,12 +255,17 @@ const automationTimer = setInterval(
   () => void automationTick(),
   pollIntervalMs,
 );
+const platformEmployeeTestTimer = setInterval(
+  () => void platformEmployeeTestTick(),
+  pollIntervalMs,
+);
 const codexAuthorizationTimer = setInterval(
   () => codexAuthorizationBroker.tick(),
   pollIntervalMs,
 );
 void tick();
 void automationTick();
+void platformEmployeeTestTick();
 codexAuthorizationBroker.tick();
 void refreshDshRuntimeInventory();
 
@@ -257,8 +285,10 @@ async function shutdown(signal: string) {
   clearInterval(dshRuntimeInventoryTimer);
   clearInterval(queueTimer);
   clearInterval(automationTimer);
+  clearInterval(platformEmployeeTestTimer);
   clearInterval(codexAuthorizationTimer);
   for (const abort of activeAborters) abort();
+  platformEmployeeTestAborter?.abort();
   server.close();
   await Promise.allSettled(activeExecutions);
   await codexAuthorizationBroker.close();

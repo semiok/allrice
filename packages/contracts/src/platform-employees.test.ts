@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
+  PlatformEmployeeTestRunSchema,
 } from './platform-employees.ts';
 
 const riceDefinition = {
@@ -71,5 +72,34 @@ describe('platform employee production contract', () => {
       securityPolicy: riceDefinition.securityPolicy,
     });
     expect(profile.harness).toBe('dsh');
+    expect(profile.baseUrl).toBeNull();
+  });
+
+  it('accepts a durable isolated DSH test result', () => {
+    const now = new Date().toISOString();
+    const testRun = PlatformEmployeeTestRunSchema.parse({
+      id: '10000000-0000-4000-8000-000000000001',
+      employeeId: '10000000-0000-4000-8000-000000000002',
+      revisionId: '10000000-0000-4000-8000-000000000003',
+      status: 'succeeded',
+      input: { prompt: '介绍你的职责。' },
+      output: {
+        answer: '我是 Rice。',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-luna',
+        threadId: 'dsh-isolated-test',
+        usage: {
+          inputTokens: 20,
+          cachedInputTokens: 0,
+          outputTokens: 8,
+        },
+        events: [],
+        error: null,
+      },
+      createdAt: now,
+      startedAt: now,
+      completedAt: now,
+    });
+    expect(testRun.output?.answer).toBe('我是 Rice。');
   });
 });
