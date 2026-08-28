@@ -2,6 +2,7 @@
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import {
@@ -216,9 +217,71 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   codexModels = null;
   nativeTools = new Set();
   nativeToolsRegistered = new Set();
+  pendingUserQuestions = new Map();
+  userQuestionNotify = () => undefined;
   toolBrokerRequest = async () => {
     throw new Error('AllRice Tool Broker transport is unavailable');
   };
+
+  installUserQuestionProvider() {
+    if (!this.ctx.userQuestions) return;
+    this.ctx.userQuestions.registerProvider({
+      ask: (request) => {
+        const session = [...this.sessions.entries()].find(
+          ([, record]) => record.handle.agent === request.agent,
+        );
+        if (!session) {
+          throw new Error(
+            'AllRice could not bind the user question to a live Session',
+          );
+        }
+        const [sessionId] = session;
+        if (this.pendingUserQuestions.has(sessionId)) {
+          throw new Error(
+            'A user question is already pending for this Session',
+          );
+        }
+        const questionId = `question-${randomUUID()}`;
+        return new Promise((resolveQuestion, rejectQuestion) => {
+          const abort = () => {
+            this.pendingUserQuestions.delete(sessionId);
+            rejectQuestion(
+              new Error(
+                'ask_user_question was aborted before the user answered',
+              ),
+            );
+          };
+          request.signal?.addEventListener('abort', abort, { once: true });
+          this.pendingUserQuestions.set(sessionId, {
+            questionId,
+            questions: request.questions,
+            resolve: (answer) => {
+              request.signal?.removeEventListener('abort', abort);
+              resolveQuestion(answer);
+            },
+            reject: (error) => {
+              request.signal?.removeEventListener('abort', abort);
+              rejectQuestion(error);
+            },
+          });
+          this.userQuestionNotify({
+            sessionId,
+            questionId,
+            questions: request.questions.map((question) => ({
+              id: question.id,
+              question: question.question,
+              header: question.header ?? null,
+              options: (question.options ?? []).map((option) => ({
+                label: option.label,
+                description: option.description ?? null,
+              })),
+              multiSelect: question.multiSelect === true,
+            })),
+          });
+        });
+      },
+    });
+  }
 
   async initialize(params) {
     const requestedTools = Array.isArray(params?.nativeTools)
@@ -397,6 +460,11 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     const record = this.sessions.get(sessionId);
     if (!record) return { interrupted: false };
+    const pendingQuestion = this.pendingUserQuestions.get(sessionId);
+    if (pendingQuestion) {
+      this.pendingUserQuestions.delete(sessionId);
+      pendingQuestion.reject(new Error('User question was interrupted'));
+    }
     record.handle.agent.cancel({ kind: 'user' }, { keepInbox: true });
     await record.handle.agent.whenIdle();
     return { interrupted: true };
@@ -406,6 +474,30 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     if (typeof params.text !== 'string' || !params.text.trim()) {
       throw new TypeError('steer text is required');
+    }
+    const pendingQuestion = this.pendingUserQuestions.get(sessionId);
+    if (pendingQuestion) {
+      this.pendingUserQuestions.delete(sessionId);
+      const answerText = params.text.trim();
+      const answers = pendingQuestion.questions.map((question, index) => {
+        if (index > 0) return { id: question.id, selected: [] };
+        const selected = (question.options ?? []).find(
+          (option) => option.label === answerText,
+        );
+        return selected
+          ? { id: question.id, selected: [selected.label] }
+          : { id: question.id, selected: [], custom: answerText };
+      });
+      pendingQuestion.resolve({ answers });
+      this.userQuestionNotify({
+        sessionId,
+        questionId: pendingQuestion.questionId,
+        answered: true,
+      });
+      return {
+        messageId: pendingQuestion.questionId,
+        answeredQuestion: true,
+      };
     }
     const record = await this.getOrCreateSession(sessionId);
     const message = createUserMessage({
@@ -450,6 +542,13 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     const record = this.sessions.get(sessionId);
     if (!record) return { closed: false };
+    const pendingQuestion = this.pendingUserQuestions.get(sessionId);
+    if (pendingQuestion) {
+      this.pendingUserQuestions.delete(sessionId);
+      pendingQuestion.reject(
+        new Error('Session closed while awaiting an answer'),
+      );
+    }
     this.sessions.delete(sessionId);
     await record.handle.dispose();
     return { closed: true };
@@ -602,6 +701,7 @@ const transport = new JsonRpcLineTransport(process.stdin, process.stdout);
 const server = new AllRiceHarnessSdkJsonRpcServer(ctx, transport, {
   maxTokensAsSuccess: false,
 });
+server.installUserQuestionProvider();
 server.toolBrokerRequest = (params, signal) =>
   transport.request('allrice/tool-call', params, signal);
 server.authorizationNotify = (notice) =>
@@ -611,6 +711,13 @@ server.authorizationNotify = (notice) =>
     url: notice.url ?? null,
     code: notice.code ?? null,
   });
+server.userQuestionNotify = (notice) =>
+  transport.notify(
+    notice.answered
+      ? 'session.user-question-answered'
+      : 'session.user-question',
+    notice,
+  );
 let exiting = false;
 
 async function disposeAndExit(code) {

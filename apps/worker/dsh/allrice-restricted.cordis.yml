@@ -18,12 +18,26 @@
   config:
     providers:
       openai-codex:
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+          backoff:
+            initialDelayMs: 500
+            maxDelayMs: 4000
+            jitterRatio: 0.1
         models:
           - id: !!js process.env.DSH_CODEX_MODEL ?? 'gpt-5.6-luna'
       openai-compatible:
         apiKeyEnv: OPENAI_COMPATIBLE_API_KEY
         api: openai-completions
         baseURL: !!js process.env.OPENAI_COMPATIBLE_BASE_URL ?? 'https://unused.invalid/v1'
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+          backoff:
+            initialDelayMs: 500
+            maxDelayMs: 4000
+            jitterRatio: 0.1
         models:
           - id: !!js process.env.DSH_OPENAI_COMPATIBLE_MODEL ?? 'allrice-unused'
             contextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 200000)
@@ -57,8 +71,39 @@
 - id: session-checkpoints
   name: '@deepseek-ai/dsh-session-checkpoint-policy'
 
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
+
+- id: tool-call-timeout-policy
+  name: '@deepseek-ai/dsh-tool-call-timeout-policy'
+
+- id: repeat-tool-reminder
+  name: '@deepseek-ai/dsh-repeat-tool-reminder'
+  config:
+    thresholds: [3, 5, 8]
+    exclude: [todo_write]
+    argumentsPreviewChars: 500
+
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: false
+
 - id: token-meter
   name: '@deepseek-ai/dsh-token-meter'
+
+- id: tool-result-pruner
+  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+  config:
+    thresholdChars: 8192
+    headChars: 4096
+    tailChars: 1024
 
 - id: compaction-basic
   name: '@deepseek-ai/dsh-compaction-basic'

@@ -1067,6 +1067,38 @@ export class DshHarnessAdapter implements HarnessAdapter {
     >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
+      if (notification.method === 'session.user-question') {
+        const questions = Array.isArray(notification.params.questions)
+          ? notification.params.questions
+          : [];
+        const first = record(questions[0]);
+        const summary = shortText(first?.question, 500);
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'context',
+          status: 'started',
+          label: 'Rice 需要你确认',
+          ...(summary ? { summary } : {}),
+          sourceEventId: `dsh:${shortText(notification.params.questionId, 180) ?? randomUUID()}`,
+          sourceEventType: 'session/user-question',
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: { questionCount: questions.length },
+        });
+        return;
+      }
+      if (notification.method === 'session.user-question-answered') {
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'context',
+          status: 'completed',
+          label: '已收到你的回答',
+          sourceEventId: `dsh:${shortText(notification.params.questionId, 180) ?? randomUUID()}:answered`,
+          sourceEventType: 'session/user-question-answered',
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: {},
+        });
+        return;
+      }
       if (
         notification.method === 'session.status' &&
         notification.params.status === 'idle'
