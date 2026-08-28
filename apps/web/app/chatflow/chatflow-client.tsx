@@ -220,6 +220,23 @@ function nativeExperienceIcon(kind: string) {
   return '◇';
 }
 
+function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
+  if (!textarea) return;
+
+  textarea.style.height = 'auto';
+  const configuredMaxHeight = Number.parseFloat(
+    window.getComputedStyle(textarea).maxHeight,
+  );
+  const maxHeight = Number.isFinite(configuredMaxHeight)
+    ? configuredMaxHeight
+    : 336;
+  const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY =
+    textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 function eventsFromSse(text: string) {
   const events: ChatFlowEventEnvelope[] = [];
   for (const block of text.split('\n\n')) {
@@ -267,6 +284,7 @@ export function ChatFlowClient() {
   const transcriptColumn = useRef<HTMLDivElement | null>(null);
   const followTranscript = useRef(true);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const composerInput = useRef<HTMLTextAreaElement | null>(null);
   const composing = useRef(false);
 
   const scrollToTranscriptBottom = useCallback(() => {
@@ -535,6 +553,25 @@ export function ChatFlowClient() {
   useLayoutEffect(() => {
     if (followTranscript.current) scrollToTranscriptBottom();
   }, [history, runView, scrollToTranscriptBottom]);
+
+  useLayoutEffect(() => {
+    resizeComposerTextarea(composerInput.current);
+  }, [activeId, draft, history?.messages.length, sidebarCollapsed, workspace]);
+
+  useEffect(() => {
+    const textarea = composerInput.current;
+    if (!textarea || typeof ResizeObserver === 'undefined') return;
+
+    let previousWidth = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = textarea.clientWidth;
+      if (nextWidth === previousWidth) return;
+      previousWidth = nextWidth;
+      resizeComposerTextarea(textarea);
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [activeId, history?.messages.length, workspace]);
 
   useEffect(() => {
     const column = transcriptColumn.current;
@@ -990,7 +1027,10 @@ export function ChatFlowClient() {
           aria-label="给 Rice 的消息"
           className={styles.composerInput}
           disabled={busy}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            resizeComposerTextarea(event.currentTarget);
+          }}
           onCompositionEnd={() => {
             window.setTimeout(() => {
               composing.current = false;
@@ -1020,6 +1060,7 @@ export function ChatFlowClient() {
             hero ? '告诉 Rice 你想完成什么工作' : '继续和 Rice 工作…'
           }
           rows={hero ? 3 : 2}
+          ref={composerInput}
           value={draft}
         />
         <div className={inputUi.row}>

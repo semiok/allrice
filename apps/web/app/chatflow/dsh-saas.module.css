@@ -490,11 +490,13 @@
 }
 
 .composerInput {
+  box-sizing: border-box;
   width: 100%;
   min-height: 48px;
-  max-height: 260px;
+  max-height: var(--dsh-composer-text-max-height, 336px);
+  height: auto;
   resize: none;
-  overflow-y: auto;
+  overflow-y: hidden;
   padding: 2px 16px 0;
   border: 0;
   outline: 0;
