@@ -73,8 +73,6 @@ export function assembleEmployeeKernel(input: {
       ? `Authorized memory snapshot:\n${memories}`
       : '',
     grantedCapabilities: input.resolved.grantedCapabilities,
-    skillVersionIds: input.resolved.skillArtifacts.map(
-      (artifact) => artifact.skillVersionId,
-    ),
+    skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
   });
 }

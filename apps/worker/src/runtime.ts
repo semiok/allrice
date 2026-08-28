@@ -817,9 +817,7 @@ async function executeHandler(
                       ? step.input.agentSkillRevisionId
                       : null;
                   const allowedSkillIds = new Set(
-                    capabilitySnapshot.agentSkills
-                      .filter((binding) => binding.effective)
-                      .map((binding) => binding.revision.id),
+                    resolved.nativeSkills.map((skill) => skill.id),
                   );
                   if (
                     requestedSkillId &&
@@ -850,11 +848,7 @@ async function executeHandler(
                   const stepResult = await adapter.execute({
                     kernel: stepKernel,
                     nativeSkills: resolved.nativeSkills,
-                    storageObjects: resolved.skillArtifacts
-                      .filter((artifact) =>
-                        skillIds.includes(artifact.skillVersionId),
-                      )
-                      .map((artifact) => artifact.storageObject),
+                    storageObjects: [],
                     workDirectory: isolation.workDirectory,
                     executionEnvironment: isolation.environment,
                     providerSnapshot,

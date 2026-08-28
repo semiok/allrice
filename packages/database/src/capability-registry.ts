@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import {
-  AgentSkillRevisionSchema,
   CapabilityCatalogSchema,
   CreateKnowledgeSourceInputSchema,
   CreateWorkflowInputSchema,
   EmployeeCapabilityDirectorySchema,
-  FrozenAgentSkillBindingSchema,
   FrozenKnowledgeBindingSchema,
   FrozenWorkflowBindingSchema,
   KnowledgeAclEntrySchema,
@@ -21,7 +19,6 @@ import {
   type EmployeeCapabilityDirectory,
   type KnowledgeAclEntry,
   type RequestContext,
-  type SkillCapability,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 
@@ -37,34 +34,6 @@ function toJsonValue(value: unknown): JsonValue {
   return serialized === undefined
     ? null
     : (JSON.parse(serialized) as JsonValue);
-}
-
-interface AgentSkillRevisionRow {
-  skill_version_id: string;
-  agent_skill_id: string;
-  slug: string;
-  name: string;
-  description: string;
-  publisher: string;
-  version: string;
-  status: 'draft' | 'published' | 'deprecated' | 'revoked';
-  checksum: string;
-  source: unknown;
-  agent_metadata: unknown;
-  declared_capabilities: SkillCapability[];
-  published_at: Date | null;
-}
-
-interface AgentSkillBindingRow extends AgentSkillRevisionRow {
-  binding_id: string;
-  installation_id: string;
-  granted_capabilities: SkillCapability[];
-  binding_enabled: boolean;
-  installation_enabled: boolean;
-  pinned: boolean;
-  storage_ready: boolean;
-  bound_by: string;
-  bound_at: Date;
 }
 
 interface WorkflowRevisionRow {
@@ -256,47 +225,6 @@ async function audit(
   `;
 }
 
-function mapAgentSkillRevision(row: AgentSkillRevisionRow) {
-  return AgentSkillRevisionSchema.parse({
-    kind: 'agent_skill',
-    id: row.skill_version_id,
-    agentSkillId: row.agent_skill_id,
-    slug: row.slug,
-    name: row.name,
-    description: row.description,
-    publisher: row.publisher,
-    revision: row.version,
-    status: row.status,
-    checksum: row.checksum,
-    source: row.source,
-    metadata: row.agent_metadata,
-    declaredCapabilities: row.declared_capabilities,
-    publishedAt: row.published_at?.toISOString() ?? null,
-  });
-}
-
-function mapAgentSkill(row: AgentSkillBindingRow) {
-  const disabledReason = !row.binding_enabled
-    ? 'binding_disabled'
-    : !row.installation_enabled || !row.pinned
-      ? 'installation_disabled'
-      : row.status !== 'published'
-        ? 'revision_unavailable'
-        : !row.storage_ready
-          ? 'source_unavailable'
-          : null;
-  return FrozenAgentSkillBindingSchema.parse({
-    bindingId: row.binding_id,
-    installationId: row.installation_id,
-    revision: mapAgentSkillRevision(row),
-    grantedCapabilities: row.granted_capabilities,
-    effective: disabledReason === null,
-    disabledReason,
-    boundBy: row.bound_by,
-    boundAt: row.bound_at.toISOString(),
-  });
-}
-
 function mapWorkflowRevision(row: WorkflowRevisionRow) {
   return WorkflowRevisionSchema.parse({
     kind: 'workflow',
@@ -427,35 +355,7 @@ async function loadEmployeeCapabilityDirectory(input: {
   adminView: boolean;
 }): Promise<EmployeeCapabilityDirectory> {
   const sql = getDatabase();
-  const [skillRows, workflowRows, knowledgeRows] = await Promise.all([
-    sql<AgentSkillBindingRow[]>`
-      select b.id as binding_id, b.installation_id,
-        b.granted_capabilities, b.bound_by, b.bound_at,
-        b.enabled as binding_enabled, i.enabled as installation_enabled,
-        (i.pinned_version_id = v.id) as pinned,
-        (o.state = 'ready' and o.immutable) as storage_ready,
-        v.id as skill_version_id, c.id as agent_skill_id, c.slug,
-        v.agent_name as name, v.agent_description as description,
-        v.agent_publisher as publisher, v.version, v.status,
-        v.agent_checksum as checksum, v.source, v.agent_metadata,
-        v.capabilities as declared_capabilities,
-        v.published_at
-      from allrice_employee_agent_skill_bindings b
-      join allrice_skill_installations i on i.id = b.installation_id
-      join allrice_skill_versions v on v.id = b.skill_version_id
-      join allrice_catalog_skills c on c.id = v.catalog_skill_id
-      join allrice_storage_objects o on o.id = v.artifact_object_id
-      where b.organization_id = ${input.organizationId}
-        and b.workspace_id = ${input.workspaceId}
-        and b.employee_id = ${input.employeeId}
-        and i.owner_id is null
-        and b.enabled
-        and (${input.adminView} or (
-          i.enabled and i.pinned_version_id = v.id
-          and v.status = 'published' and o.state = 'ready' and o.immutable
-        ))
-      order by c.name, v.version, b.id
-    `,
+  const [workflowRows, knowledgeRows] = await Promise.all([
     sql<WorkflowBindingRow[]>`
       select b.id as binding_id, b.bound_by, b.bound_at,
         b.enabled as binding_enabled, (w.status = 'active') as source_active,
@@ -507,7 +407,7 @@ async function loadEmployeeCapabilityDirectory(input: {
     .filter((binding) => binding !== null);
   return EmployeeCapabilityDirectorySchema.parse({
     employeeId: input.employeeId,
-    agentSkills: skillRows.map(mapAgentSkill),
+    agentSkills: [],
     workflows: workflowRows.map(mapWorkflow),
     knowledge,
   });
@@ -520,30 +420,7 @@ export async function listCapabilityCatalog(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   requireCapabilityAdmin(context, workspaceId);
   const sql = getDatabase();
-  const [skillRows, workflowRows, knowledgeRows] = await Promise.all([
-    sql<
-      (AgentSkillRevisionRow & {
-        installation_id: string;
-        granted_capabilities: SkillCapability[];
-      })[]
-    >`
-      select i.id as installation_id, i.granted_capabilities,
-        v.id as skill_version_id, c.id as agent_skill_id, c.slug,
-        v.agent_name as name, v.agent_description as description,
-        v.agent_publisher as publisher, v.version, v.status,
-        v.agent_checksum as checksum, v.source, v.agent_metadata,
-        v.capabilities as declared_capabilities,
-        v.published_at
-      from allrice_skill_installations i
-      join allrice_skill_versions v on v.id = i.pinned_version_id
-      join allrice_catalog_skills c on c.id = v.catalog_skill_id
-      join allrice_storage_objects o on o.id = v.artifact_object_id
-      where i.organization_id = ${context.organizationId}
-        and i.workspace_id = ${workspaceId}
-        and i.owner_id is null and i.enabled
-        and v.status = 'published' and o.state = 'ready' and o.immutable
-      order by c.name, v.version, i.id
-    `,
+  const [workflowRows, knowledgeRows] = await Promise.all([
     sql<WorkflowRevisionRow[]>`
       select distinct on (w.id)
         r.id as revision_id, w.id as workflow_id, w.slug,
@@ -584,11 +461,7 @@ export async function listCapabilityCatalog(
     groupedKnowledge.set(row.revision_id, current);
   }
   return CapabilityCatalogSchema.parse({
-    agentSkills: skillRows.map((row) => ({
-      installationId: row.installation_id,
-      grantedCapabilities: row.granted_capabilities,
-      revision: mapAgentSkillRevision(row),
-    })),
+    agentSkills: [],
     workflows: workflowRows.map(mapWorkflowRevision),
     knowledge: [...groupedKnowledge.values()].map(mapKnowledgeRevision),
   });
@@ -646,20 +519,14 @@ export async function updateCapabilityRevisionStatus(
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
   requireCapabilityAdmin(context, workspaceId);
   const revisionId = UuidSchema.parse(revisionIdInput);
+  if (update.kind === 'agent_skill') {
+    throw new CapabilityRegistryError('invalid_binding');
+  }
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const rows =
-      update.kind === 'agent_skill'
+      update.kind === 'workflow'
         ? await transaction<{ id: string }[]>`
-            update allrice_skill_versions set status = ${update.status}
-            where id = ${revisionId}
-              and organization_id = ${context.organizationId}
-              and workspace_id = ${workspaceId}
-              and status in ('published', 'deprecated')
-            returning id
-          `
-        : update.kind === 'workflow'
-          ? await transaction<{ id: string }[]>`
               update allrice_workflow_revisions set status = ${update.status}
               where id = ${revisionId}
                 and organization_id = ${context.organizationId}
@@ -667,7 +534,7 @@ export async function updateCapabilityRevisionStatus(
                 and status in ('published', 'deprecated')
               returning id
             `
-          : await transaction<{ id: string }[]>`
+        : await transaction<{ id: string }[]>`
               update allrice_knowledge_revisions set status = ${update.status}
               where id = ${revisionId}
                 and organization_id = ${context.organizationId}
@@ -1081,13 +948,11 @@ export async function manageEmployeeCapabilities(
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
   const userId = requireCapabilityAdmin(context, workspaceId);
   const employeeId = UuidSchema.parse(update.employeeId);
-  const skillVersionIds = update.agentSkills.map(
-    (binding) => binding.skillVersionId,
-  );
+  const skillVersionIds: string[] = [];
   const workflowRevisionIds = [...new Set(update.workflowRevisionIds)].sort();
   const knowledgeRevisionIds = [...new Set(update.knowledgeRevisionIds)].sort();
   if (
-    new Set(skillVersionIds).size !== skillVersionIds.length ||
+    update.agentSkills.length > 0 ||
     workflowRevisionIds.length !== update.workflowRevisionIds.length ||
     knowledgeRevisionIds.length !== update.knowledgeRevisionIds.length
   ) {
@@ -1103,46 +968,6 @@ export async function manageEmployeeCapabilities(
       for update
     `;
     if (!employees[0]) throw new CapabilityRegistryError('not_found');
-
-    if (update.agentSkills.length > 0) {
-      const installationIds = update.agentSkills.map(
-        (binding) => binding.installationId,
-      );
-      const rows = await transaction<
-        {
-          installation_id: string;
-          skill_version_id: string;
-          declared_capabilities: SkillCapability[];
-        }[]
-      >`
-        select i.id as installation_id, v.id as skill_version_id,
-          v.capabilities as declared_capabilities
-        from allrice_skill_installations i
-        join allrice_skill_versions v on v.id = i.pinned_version_id
-        join allrice_storage_objects o on o.id = v.artifact_object_id
-        where i.organization_id = ${context.organizationId}
-          and i.workspace_id = ${workspaceId}
-          and i.id in ${transaction(installationIds)}
-          and v.id in ${transaction(skillVersionIds)}
-          and i.owner_id is null and i.enabled
-          and v.status = 'published' and o.state = 'ready' and o.immutable
-      `;
-      const byInstallation = new Map(
-        rows.map((row) => [row.installation_id, row]),
-      );
-      for (const binding of update.agentSkills) {
-        const row = byInstallation.get(binding.installationId);
-        if (
-          !row ||
-          row.skill_version_id !== binding.skillVersionId ||
-          binding.grantedCapabilities.some(
-            (capability) => !row.declared_capabilities.includes(capability),
-          )
-        ) {
-          throw new CapabilityRegistryError('invalid_binding');
-        }
-      }
-    }
 
     if (workflowRevisionIds.length > 0) {
       const rows = await transaction<{ id: string }[]>`
@@ -1177,12 +1002,6 @@ export async function manageEmployeeCapabilities(
     }
 
     await transaction`
-      update allrice_employee_agent_skill_bindings set enabled = false,
-        updated_at = now()
-      where organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId} and employee_id = ${employeeId}
-    `;
-    await transaction`
       update allrice_employee_workflow_bindings set enabled = false,
         updated_at = now()
       where organization_id = ${context.organizationId}
@@ -1195,24 +1014,6 @@ export async function manageEmployeeCapabilities(
         and workspace_id = ${workspaceId} and employee_id = ${employeeId}
     `;
 
-    for (const binding of update.agentSkills) {
-      await transaction`
-        insert into allrice_employee_agent_skill_bindings (
-          organization_id, workspace_id, employee_id, installation_id,
-          skill_version_id, granted_capabilities, enabled, bound_by, bound_at
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${employeeId},
-          ${binding.installationId}, ${binding.skillVersionId},
-          ${transaction.json(toJsonValue(binding.grantedCapabilities))}, true,
-          ${userId}, now()
-        )
-        on conflict (organization_id, workspace_id, employee_id, skill_version_id)
-        do update set installation_id = excluded.installation_id,
-          granted_capabilities = excluded.granted_capabilities,
-          enabled = true, bound_by = excluded.bound_by,
-          bound_at = excluded.bound_at, updated_at = now()
-      `;
-    }
     for (const revisionId of workflowRevisionIds) {
       await transaction`
         insert into allrice_employee_workflow_bindings (
@@ -1275,64 +1076,8 @@ export async function synchronizeEmployeeSkillBindings(
   },
 ) {
   const skillVersionIds = [...new Set(input.skillVersionIds)].sort();
-  await transaction`
-    update allrice_employee_agent_skill_bindings set enabled = false,
-      updated_at = now()
-    where organization_id = ${input.organizationId}
-      and workspace_id = ${input.workspaceId}
-      and employee_id = ${input.employeeId}
-  `;
-  if (skillVersionIds.length === 0) {
-    await transaction`
-      update allrice_employees
-      set skill_bindings_managed_at = now(), updated_at = now()
-      where organization_id = ${input.organizationId}
-        and workspace_id = ${input.workspaceId} and id = ${input.employeeId}
-    `;
-    return;
-  }
-  const installations = await transaction<
-    {
-      installation_id: string;
-      skill_version_id: string;
-      granted_capabilities: SkillCapability[];
-    }[]
-  >`
-    select i.id as installation_id, v.id as skill_version_id,
-      i.granted_capabilities
-    from allrice_skill_versions v
-    join allrice_skill_installations i
-      on i.pinned_version_id = v.id
-     and i.organization_id = v.organization_id
-     and i.workspace_id = v.workspace_id
-    where v.organization_id = ${input.organizationId}
-      and v.workspace_id = ${input.workspaceId}
-      and v.id in ${transaction(skillVersionIds)}
-      and v.status = 'published' and i.owner_id is null and i.enabled
-  `;
-  if (
-    new Set(installations.map((row) => row.skill_version_id)).size !==
-    skillVersionIds.length
-  ) {
+  if (skillVersionIds.length > 0) {
     throw new CapabilityRegistryError('invalid_binding');
-  }
-  for (const installation of installations) {
-    await transaction`
-      insert into allrice_employee_agent_skill_bindings (
-        organization_id, workspace_id, employee_id, installation_id,
-        skill_version_id, granted_capabilities, enabled, bound_by, bound_at
-      ) values (
-        ${input.organizationId}, ${input.workspaceId}, ${input.employeeId},
-        ${installation.installation_id}, ${installation.skill_version_id},
-        ${transaction.json(toJsonValue(installation.granted_capabilities))}, true,
-        ${input.actorId}, now()
-      )
-      on conflict (organization_id, workspace_id, employee_id, skill_version_id)
-      do update set installation_id = excluded.installation_id,
-        granted_capabilities = excluded.granted_capabilities,
-        enabled = true, bound_by = excluded.bound_by,
-        bound_at = excluded.bound_at, updated_at = now()
-    `;
   }
   await transaction`
     update allrice_employees

@@ -19,13 +19,13 @@ import {
   ManageEmployeeAssignmentsInputSchema,
   PublishEmployeeVersionInputSchema,
   SetDefaultEmployeeInputSchema,
-  StorageObjectSchema,
   UpdateEmployeeStatusInputSchema,
   UuidSchema,
   type EmployeeManifest,
   type EmployeeExecutionSnapshot,
   type RequestContext,
   type SkillCapability,
+  type StorageObjectSchema,
 } from '@allrice/contracts';
 
 import { DataAccessError } from './data.ts';
@@ -309,16 +309,12 @@ export async function listEmployeeHub(
       enabled: boolean;
     }[]
   >`
-    select i.id as installation_id, v.id as skill_version_id,
-      c.name, v.version, i.enabled
-    from allrice_skill_installations i
-    join allrice_skill_versions v on v.id = i.pinned_version_id
-    join allrice_catalog_skills c on c.id = i.catalog_skill_id
-    where i.organization_id = ${context.organizationId}
-      and i.workspace_id = ${workspaceId}
-      and i.owner_id is null
-      and v.status = 'published'
-    order by c.name, v.version
+    select id as installation_id, id as skill_version_id,
+      name, 'native'::text as version, enabled
+    from allrice_dsh_skills
+    where organization_id = ${context.organizationId}
+      and workspace_id = ${workspaceId}
+    order by name, id
   `;
   const memoryCounts = await sql<{ employee_id: string; count: number }[]>`
     select employee_id, count(*)::integer
@@ -444,25 +440,7 @@ export async function createEmployee(context: RequestContext, input: unknown) {
   const sql = getDatabase();
   const employeeId = await sql.begin(async (transaction) => {
     if (creation.skillVersionIds.length > 0) {
-      const installed = await transaction<{ id: string }[]>`
-        select v.id
-        from allrice_skill_versions v
-        join allrice_skill_installations i
-          on i.pinned_version_id = v.id
-         and i.organization_id = v.organization_id
-         and i.workspace_id = v.workspace_id
-        where v.id in ${transaction(creation.skillVersionIds)}
-          and v.organization_id = ${context.organizationId}
-          and v.workspace_id = ${workspaceId}
-          and v.status = 'published'
-          and i.owner_id is null and i.enabled
-      `;
-      if (
-        new Set(installed.map((row) => row.id)).size !==
-        creation.skillVersionIds.length
-      ) {
-        throw new EmployeeHubError('skill_not_installed');
-      }
+      throw new EmployeeHubError('skill_not_installed');
     }
     const employees = await transaction<{ id: string }[]>`
       insert into allrice_employees (
@@ -552,41 +530,14 @@ export async function publishEmployeeVersion(
     if (!employee) {
       throw new EmployeeHubError('not_found');
     }
-    const selectedSkillRows =
-      publication.skillVersionIds === undefined
-        ? await transaction<{ skill_version_id: string }[]>`
-            select skill_version_id
-            from allrice_employee_agent_skill_bindings
-            where organization_id = ${context.organizationId}
-              and workspace_id = ${workspaceId}
-              and employee_id = ${employee.id} and enabled
-            order by skill_version_id
-          `
-        : publication.skillVersionIds.map((skillVersionId) => ({
-            skill_version_id: skillVersionId,
-          }));
+    const selectedSkillRows = (publication.skillVersionIds ?? []).map(
+      (skillVersionId) => ({ skill_version_id: skillVersionId }),
+    );
     const skillVersionIds = [
       ...new Set(selectedSkillRows.map((row) => row.skill_version_id)),
     ].sort();
     if (skillVersionIds.length > 0) {
-      const installed = await transaction<{ id: string }[]>`
-        select v.id
-        from allrice_skill_versions v
-        join allrice_skill_installations i
-          on i.pinned_version_id = v.id
-         and i.organization_id = v.organization_id
-         and i.workspace_id = v.workspace_id
-        where v.id in ${transaction(skillVersionIds)}
-          and v.organization_id = ${context.organizationId}
-          and v.workspace_id = ${workspaceId}
-          and v.status = 'published'
-          and i.owner_id is null and i.enabled
-      `;
-      if (
-        new Set(installed.map((row) => row.id)).size !== skillVersionIds.length
-      ) {
-        throw new EmployeeHubError('skill_not_installed');
-      }
+      throw new EmployeeHubError('skill_not_installed');
     }
     const current = await transaction<{ manifest: unknown }[]>`
       select manifest from allrice_employee_versions
@@ -1066,15 +1017,8 @@ export async function prepareEmployeeRunBinding(input: {
     employeeId: assignment.employee_id,
     actorId,
   });
-  const skillBindings = capabilityDirectory.agentSkills.map((binding) => ({
-    installationId: binding.installationId,
-    skillVersionId: binding.revision.id,
-    declaredCapabilities: binding.revision.declaredCapabilities,
-    grantedCapabilities: binding.grantedCapabilities,
-  }));
-  const skillVersionIds = skillBindings.map(
-    (binding) => binding.skillVersionId,
-  );
+  const skillBindings: EmployeeRunBinding['skillBindings'] = [];
+  const skillVersionIds: string[] = [];
   const grantedCapabilities = resolveEmployeeCapabilities(
     manifest.data.capabilities,
     skillBindings,
@@ -1249,7 +1193,7 @@ export async function prepareEmployeeRunBinding(input: {
         },
         skillBindings:
           FrozenEmployeeSkillBindingSchema.array().parse(skillBindings),
-        agentSkills: capabilityDirectory.agentSkills,
+        agentSkills: [],
         workflows: capabilityDirectory.workflows,
         knowledge: capabilityDirectory.knowledge,
         resolvedForActorId: actorId,
@@ -1317,52 +1261,6 @@ export async function resolveEmployeeExecution(input: {
     grantedCapabilities: SkillCapability[];
     storageObject: ReturnType<typeof StorageObjectSchema.parse>;
   }[] = [];
-  for (const binding of skillBindings) {
-    const objects = await sql<
-      {
-        id: string;
-        organization_id: string;
-        workspace_id: string;
-        owner_id: string;
-        object_key: string;
-        checksum: string;
-        media_type: string;
-        size_bytes: number | string;
-        retention_until: Date | null;
-        deleted_at: Date | null;
-        immutable: boolean;
-        capabilities: SkillCapability[];
-      }[]
-    >`
-      select o.*, v.capabilities
-      from allrice_skill_versions v
-      join allrice_storage_objects o on o.id = v.artifact_object_id
-      where v.id = ${UuidSchema.parse(binding.skillVersionId)}
-        and v.organization_id = ${input.organizationId}
-        and v.workspace_id = ${input.workspaceId}
-        and o.state = 'ready' and o.immutable
-    `;
-    const object = objects[0];
-    if (!object) throw new EmployeeHubError('not_found');
-    artifacts.push({
-      skillVersionId: binding.skillVersionId,
-      declaredCapabilities: object.capabilities,
-      grantedCapabilities: binding.grantedCapabilities,
-      storageObject: StorageObjectSchema.parse({
-        id: object.id,
-        organizationId: object.organization_id,
-        workspaceId: object.workspace_id,
-        ownerId: object.owner_id,
-        key: object.object_key,
-        checksum: object.checksum,
-        mediaType: object.media_type,
-        sizeBytes: Number(object.size_bytes),
-        retentionUntil: object.retention_until?.toISOString() ?? null,
-        deletedAt: object.deleted_at?.toISOString() ?? null,
-        immutable: object.immutable,
-      }),
-    });
-  }
   return {
     providerSnapshot: HarnessExecutionSnapshotSchema.parse(
       row.provider_snapshot,
