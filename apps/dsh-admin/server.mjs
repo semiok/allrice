@@ -27,7 +27,7 @@ const trustedAdminMeta =
 const allowedHosts = new Set(
   (
     process.env.ALLRICE_DSH_ADMIN_ALLOWED_HOSTS ??
-    'allrice-dsh.bplabs.xyz,allrice-dsh.traditionow.ai,localhost,127.0.0.1'
+    'dsh.bplabs.xyz,dsh.traditionow.ai,localhost,127.0.0.1'
   )
     .split(',')
     .map((host) => host.trim().toLowerCase())

@@ -24,7 +24,11 @@ describe('host-bound bootstrap portals', () => {
     expect(resolvePortal('allrice-admin.bplabs.xyz')?.key).toBe(
       'platform-admin',
     );
+    expect(resolvePortal('allrice-dsh.bplabs.xyz')?.key).toBe(
+      'runtime-console',
+    );
     expect(resolvePortal('allrice-snow.bplabs.xyz')?.key).toBe('snow');
+    expect(resolvePortal('dsh.bplabs.xyz')).toBeNull();
     expect(resolvePortal('attacker.invalid')).toBeNull();
   });
 

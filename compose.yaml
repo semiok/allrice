@@ -89,7 +89,7 @@ services:
           'CMD',
           'node',
           '-e',
-          "fetch('http://localhost:3081/health/live',{headers:{host:'allrice-dsh.bplabs.xyz'}}).then(r=>{if(!r.ok)process.exit(1)})",
+          "fetch('http://localhost:3081/health/live',{headers:{host:'dsh.bplabs.xyz'}}).then(r=>{if(!r.ok)process.exit(1)})",
         ]
       interval: 10s
       timeout: 5s

@@ -1,3 +1,5 @@
+/* global document, window */
+
 window.__ModuleLoader__.load({
   id: '@allrice/dsh-runtime-diff',
   factory: (require) => {

@@ -1,8 +1,8 @@
 :8080 {
   encode zstd gzip
 
-  @dsh_admin host allrice-dsh.bplabs.xyz allrice-dsh.traditionow.ai
-  handle @dsh_admin {
+  @dsh_lab host dsh.bplabs.xyz dsh.traditionow.ai
+  handle @dsh_lab {
     reverse_proxy dsh-admin:3081
   }
 

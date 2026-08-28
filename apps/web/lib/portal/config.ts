@@ -1,7 +1,7 @@
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
-  key: 'platform-admin' | 'snow' | 'drink';
+  key: 'platform-admin' | 'runtime-console' | 'snow' | 'drink';
   kind: PortalKind;
   title: string;
   subtitle: string;
@@ -30,6 +30,26 @@ const definitions: readonly PortalDefinition[] = [
     username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
     passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
     homePath: '/chatflow/admin',
+    principal: {
+      organizationSlug: 'allrice-platform',
+      organizationName: 'AllRice Platform',
+      workspaceSlug: 'control-plane',
+      workspaceName: 'Platform Control Plane',
+      email:
+        process.env.ALLRICE_PLATFORM_BOOTSTRAP_EMAIL ?? 'semiokshen@gmail.com',
+      displayName: 'AllRice Platform Administrator',
+      role: 'admin',
+    },
+  },
+  {
+    key: 'runtime-console',
+    kind: 'platform_admin',
+    title: 'AllRice Runtime Console',
+    subtitle: '查看真实 Worker DSH Runtime、Session 与原生事件。',
+    hosts: ['allrice-dsh.bplabs.xyz', 'allrice-dsh.traditionow.ai'],
+    username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
+    passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
+    homePath: '/runtime-console',
     principal: {
       organizationSlug: 'allrice-platform',
       organizationName: 'AllRice Platform',

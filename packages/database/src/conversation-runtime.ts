@@ -35,6 +35,21 @@ interface ConversationRuntimeRow {
   context_pressure_tokens: number;
 }
 
+interface DshRuntimeInventoryRow extends ConversationRuntimeRow {
+  organization_slug: string;
+  organization_name: string;
+  workspace_slug: string;
+  workspace_name: string;
+  session_title: string;
+  owner_email: string;
+  employee_name: string | null;
+  provider_snapshot: unknown;
+  last_started_at: Date | string | null;
+  last_completed_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
 export class ConversationRuntimeError extends Error {
   constructor(
     public readonly code:
@@ -77,6 +92,114 @@ function mapBinding(row: ConversationRuntimeRow) {
     compactThresholdTokens: row.compact_threshold_tokens,
     contextPressureTokens: row.context_pressure_tokens,
   };
+}
+
+function timestamp(value: Date | string | null) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * Platform-only, redacted inventory for the Runtime Console. This deliberately
+ * exposes durable runtime identity and lifecycle facts, never prompts,
+ * credentials, tool arguments, host paths or raw provider configuration.
+ */
+export async function listDshRuntimeInventory(limit = 100) {
+  const safeLimit = z.number().int().min(1).max(500).parse(limit);
+  const sql = getDatabase();
+  const rows = await sql<DshRuntimeInventoryRow[]>`
+    select runtime.*, organization.slug as organization_slug,
+      organization.name as organization_name,
+      workspace.slug as workspace_slug, workspace.name as workspace_name,
+      session.title as session_title, owner.email as owner_email,
+      employee.name as employee_name,
+      latest_run.provider_snapshot
+    from allrice_conversation_runtimes runtime
+    join allrice_organizations organization
+      on organization.id = runtime.organization_id
+    join allrice_workspaces workspace
+      on workspace.id = runtime.workspace_id
+      and workspace.organization_id = runtime.organization_id
+    join allrice_chat_sessions session
+      on session.id = runtime.session_id
+      and session.organization_id = runtime.organization_id
+      and session.workspace_id = runtime.workspace_id
+    join allrice_users owner on owner.id = runtime.owner_id
+    left join lateral (
+      select employee_run.employee_version_id, employee_run.provider_snapshot
+      from allrice_employee_runs employee_run
+      where employee_run.organization_id = runtime.organization_id
+        and employee_run.workspace_id = runtime.workspace_id
+        and employee_run.session_id = runtime.session_id
+      order by employee_run.created_at desc
+      limit 1
+    ) latest_run on true
+    left join allrice_employee_versions employee_version
+      on employee_version.id = latest_run.employee_version_id
+      and employee_version.organization_id = runtime.organization_id
+      and employee_version.workspace_id = runtime.workspace_id
+    left join allrice_employees employee
+      on employee.id = employee_version.employee_id
+      and employee.organization_id = runtime.organization_id
+      and employee.workspace_id = runtime.workspace_id
+    order by
+      case runtime.state when 'running' then 0 when 'error' then 1 else 2 end,
+      runtime.updated_at desc
+    limit ${safeLimit}
+  `;
+  return rows.map((row) => {
+    const provider = z
+      .object({
+        provider: z.string().optional(),
+        route: z.string().optional(),
+        model: z.string().optional(),
+        reasoningEffort: z.string().optional(),
+      })
+      .passthrough()
+      .safeParse(row.provider_snapshot);
+    return {
+      organization: {
+        id: row.organization_id,
+        slug: row.organization_slug,
+        name: row.organization_name,
+      },
+      workspace: {
+        id: row.workspace_id,
+        slug: row.workspace_slug,
+        name: row.workspace_name,
+      },
+      owner: { id: row.owner_id, email: row.owner_email },
+      session: {
+        id: row.session_id,
+        title: row.session_title,
+        employeeName: row.employee_name,
+      },
+      runtime: {
+        harness: 'dsh' as const,
+        state: row.state,
+        threadId: row.thread_id,
+        generation: row.thread_generation,
+        activeRunId: row.active_run_id,
+        activeTurnId: row.active_turn_id,
+        workerId: row.worker_id,
+        configFingerprint: row.config_checksum.slice(0, 19),
+        lastErrorCode: row.last_error_code,
+        contextPressureTokens: row.context_pressure_tokens,
+        compactThresholdTokens: row.compact_threshold_tokens,
+        lastStartedAt: timestamp(row.last_started_at),
+        lastCompletedAt: timestamp(row.last_completed_at),
+        createdAt: timestamp(row.created_at),
+        updatedAt: timestamp(row.updated_at),
+      },
+      provider: provider.success
+        ? {
+            provider: provider.data.provider ?? 'dsh',
+            route: provider.data.route ?? 'unknown',
+            model: provider.data.model ?? 'unknown',
+            reasoningEffort: provider.data.reasoningEffort ?? 'unknown',
+          }
+        : null,
+    };
+  });
 }
 
 export async function acquireConversationRuntime(input: {
