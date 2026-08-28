@@ -3,6 +3,18 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { HarnessEventSchema } from './harness.ts';
 
+export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
+  'dsh-0.1.1-rc.2-b150a55' as const;
+export const PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS = [
+  '@deepseek-ai/dsh-llm-retry',
+  '@deepseek-ai/dsh-tool-call-timeout-policy',
+  '@deepseek-ai/dsh-compaction-tool-result-pruner',
+  '@deepseek-ai/dsh-repeat-tool-reminder',
+  '@deepseek-ai/dsh-user-questions',
+  '@deepseek-ai/dsh-tool-ask-user',
+  '@deepseek-ai/dsh-tool-todo',
+] as const;
+
 export const PlatformEmployeeStatusSchema = z.enum([
   'draft',
   'testing',
@@ -103,6 +115,12 @@ export const PlatformEmployeeRuntimeProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
     harness: z.literal('dsh'),
+    distributionGeneration: z
+      .literal(PLATFORM_EMPLOYEE_DSH_DISTRIBUTION)
+      .default(PLATFORM_EMPLOYEE_DSH_DISTRIBUTION),
+    approvedPluginIds: z
+      .array(z.enum(PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS))
+      .default([...PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS]),
     employeeKey: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     provider: z.string().trim().min(1).max(120),
     model: z.string().trim().min(1).max(200),
@@ -155,6 +173,14 @@ export type PlatformEmployeeSummary = z.infer<
 export const UpdatePlatformEmployeeInputSchema = z
   .object({
     definition: PlatformEmployeeDefinitionSchema,
+  })
+  .strict();
+
+export const CreatePlatformEmployeeInputSchema = z
+  .object({
+    key: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    name: z.string().trim().min(1).max(120),
+    sourceEmployeeId: UuidSchema.optional(),
   })
   .strict();
 
@@ -223,3 +249,37 @@ export const PlatformEmployeeTestRunSchema = z
 export type PlatformEmployeeTestRun = z.infer<
   typeof PlatformEmployeeTestRunSchema
 >;
+
+export const PlatformEmployeeAuditEventSchema = z
+  .object({
+    id: UuidSchema,
+    employeeId: UuidSchema,
+    action: z.string().trim().min(1).max(160),
+    actorLabel: z.string().trim().min(1).max(255),
+    details: z.record(z.string(), z.unknown()),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+
+export type PlatformEmployeeAuditEvent = z.infer<
+  typeof PlatformEmployeeAuditEventSchema
+>;
+
+export const DisablePlatformEmployeeInputSchema = z
+  .object({
+    reason: z.string().trim().min(1).max(1_000),
+  })
+  .strict();
+
+export const RollbackPlatformEmployeeInputSchema = z
+  .object({
+    revisionId: UuidSchema.optional(),
+    reason: z.string().trim().min(1).max(1_000),
+  })
+  .strict();
+
+export const ArchivePlatformEmployeeInputSchema = z
+  .object({
+    reason: z.string().trim().min(1).max(1_000),
+  })
+  .strict();

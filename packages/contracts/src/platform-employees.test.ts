@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DisablePlatformEmployeeInputSchema,
+  CreatePlatformEmployeeInputSchema,
   PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeAuditEventSchema,
   PlatformEmployeeRuntimeProfileSchema,
+  PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
   PlatformEmployeeTestRunSchema,
+  RollbackPlatformEmployeeInputSchema,
 } from './platform-employees.ts';
 
 const riceDefinition = {
@@ -72,6 +77,12 @@ describe('platform employee production contract', () => {
       securityPolicy: riceDefinition.securityPolicy,
     });
     expect(profile.harness).toBe('dsh');
+    expect(profile.distributionGeneration).toBe(
+      PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
+    );
+    expect(profile.approvedPluginIds).toContain(
+      '@deepseek-ai/dsh-repeat-tool-reminder',
+    );
     expect(profile.baseUrl).toBeNull();
   });
 
@@ -101,5 +112,38 @@ describe('platform employee production contract', () => {
       completedAt: now,
     });
     expect(testRun.output?.answer).toBe('我是 Rice。');
+  });
+
+  it('requires an operator reason for destructive lifecycle changes', () => {
+    expect(() => DisablePlatformEmployeeInputSchema.parse({ reason: '' })).toThrow();
+    expect(
+      RollbackPlatformEmployeeInputSchema.parse({
+        revisionId: '10000000-0000-4000-8000-000000000003',
+        reason: '恢复上一个稳定发布。',
+      }).reason,
+    ).toBe('恢复上一个稳定发布。');
+  });
+
+  it('accepts an immutable employee audit event', () => {
+    expect(
+      PlatformEmployeeAuditEventSchema.parse({
+        id: '10000000-0000-4000-8000-000000000004',
+        employeeId: '10000000-0000-4000-8000-000000000002',
+        action: 'employee.published',
+        actorLabel: 'platform-admin',
+        details: { workspaceCount: 2 },
+        createdAt: new Date().toISOString(),
+      }).action,
+    ).toBe('employee.published');
+  });
+
+  it('accepts a future employee draft cloned from a platform employee', () => {
+    expect(
+      CreatePlatformEmployeeInputSchema.parse({
+        key: 'code-reviewer',
+        name: '代码审查官',
+        sourceEmployeeId: '10000000-0000-4000-8000-000000000002',
+      }).key,
+    ).toBe('code-reviewer');
   });
 });

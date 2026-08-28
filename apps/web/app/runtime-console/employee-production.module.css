@@ -34,6 +34,50 @@
   margin-top: 22px;
 }
 
+.createToggle {
+  width: 100%;
+  padding: 10px 12px;
+  margin-top: 18px;
+  color: #d7dbe0;
+  font: inherit;
+  cursor: pointer;
+  background: #25282c;
+  border: 1px solid #464b51;
+  border-radius: 10px;
+}
+
+.createForm {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  margin-top: 10px;
+  background: #202327;
+  border: 1px solid #3b4045;
+  border-radius: 12px;
+}
+
+.createForm label {
+  display: grid;
+  gap: 5px;
+  color: #bfc4ca;
+  font-size: 12px;
+}
+
+.createForm input {
+  min-width: 0;
+  padding: 9px 10px;
+  color: #f4f5f6;
+  font: inherit;
+  background: #151719;
+  border: 1px solid #464b51;
+  border-radius: 8px;
+}
+
+.createForm small {
+  color: #9299a2;
+  line-height: 1.45;
+}
+
 .employee,
 .button,
 .tab {
@@ -279,6 +323,59 @@
   white-space: pre-wrap;
   background: #151719;
   border-radius: 9px;
+}
+
+.dangerZone,
+.audit {
+  display: grid;
+  gap: 12px;
+  padding: 17px;
+  border: 1px solid #4a3c3e;
+  border-radius: 12px;
+}
+
+.dangerZone h3,
+.audit h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.dangerButton {
+  width: fit-content;
+  padding: 9px 14px;
+  color: #ffb7b7;
+  font: inherit;
+  cursor: pointer;
+  background: #3b2225;
+  border: 1px solid #754046;
+  border-radius: 10px;
+}
+
+.dangerButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.audit {
+  border-color: #3b4045;
+}
+
+.audit > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid #30343a;
+}
+
+.audit > div:last-child {
+  border-bottom: 0;
+}
+
+.audit span {
+  color: #9299a2;
+  font-size: 12px;
+  text-align: right;
 }
 
 .error {

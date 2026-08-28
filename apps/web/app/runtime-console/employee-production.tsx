@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type {
   PlatformEmployeeDefinition,
+  PlatformEmployeeAuditEvent,
   PlatformEmployeeSummary,
   PlatformEmployeeTestRun,
 } from '@allrice/contracts';
@@ -37,6 +38,8 @@ const tabs = [
   ['basic', '基础'],
   ['persona', '人设'],
   ['skills', '技能'],
+  ['workflows', 'Workflow'],
+  ['knowledge', 'Knowledge'],
   ['model', '模型'],
   ['tools', '工具'],
   ['security', '安全'],
@@ -157,8 +160,17 @@ export function EmployeeProduction() {
     '请用一句话说明你的名字、职责和工作方式。不要调用任何工具。',
   );
   const [testRuns, setTestRuns] = useState<PlatformEmployeeTestRun[]>([]);
+  const [auditEvents, setAuditEvents] = useState<PlatformEmployeeAuditEvent[]>(
+    [],
+  );
+  const [disableReason, setDisableReason] = useState('');
+  const [rollbackReason, setRollbackReason] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [newEmployeeKey, setNewEmployeeKey] = useState('');
+  const [newEmployeeName, setNewEmployeeName] = useState('');
+  const [archiveReason, setArchiveReason] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (preferredId?: string) => {
     setBusy(true);
     try {
       const result = await api<DirectoryResponse>(
@@ -166,7 +178,10 @@ export function EmployeeProduction() {
       );
       setDirectory(result);
       const nextId =
-        selectedId &&
+        preferredId &&
+        result.employees.some((employee) => employee.id === preferredId)
+          ? preferredId
+          : selectedId &&
         result.employees.some((employee) => employee.id === selectedId)
           ? selectedId
           : (result.employees[0]?.id ?? null);
@@ -223,6 +238,17 @@ export function EmployeeProduction() {
     };
   }, [loadTestRuns, selectedId, tab]);
 
+  useEffect(() => {
+    if (tab !== 'publish' || !selectedId) return;
+    void api<{ auditEvents: PlatformEmployeeAuditEvent[] }>(
+      `/api/v1/admin/platform-employees/${selectedId}/lifecycle`,
+    )
+      .then((result) => setAuditEvents(result.auditEvents))
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : '读取审计记录失败'),
+      );
+  }, [selectedId, tab]);
+
   const selected = useMemo(
     () => directory?.employees.find((item) => item.id === selectedId) ?? null,
     [directory, selectedId],
@@ -238,6 +264,7 @@ export function EmployeeProduction() {
     setMessage('');
     setError('');
     setTestRuns([]);
+    setAuditEvents([]);
   }
 
   function update(path: string[], value: unknown) {
@@ -267,6 +294,36 @@ export function EmployeeProduction() {
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createEmployee() {
+    if (!newEmployeeKey.trim() || !newEmployeeName.trim()) return;
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const result = await api<{ employee: Employee }>(
+        '/api/v1/admin/platform-employees',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            key: newEmployeeKey.trim(),
+            name: newEmployeeName.trim(),
+            sourceEmployeeId: selectedId ?? undefined,
+          }),
+        },
+      );
+      setShowCreate(false);
+      setNewEmployeeKey('');
+      setNewEmployeeName('');
+      setTab('basic');
+      setMessage('已创建平台员工草稿，尚未测试或发布给任何租户。');
+      await load(result.employee.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '创建员工失败');
     } finally {
       setBusy(false);
     }
@@ -347,6 +404,72 @@ export function EmployeeProduction() {
       window.setTimeout(() => void loadTestRuns(selectedId), 1_200);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '隔离测试启动失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disableEmployee() {
+    if (!selectedId || !disableReason.trim()) return;
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      await api(`/api/v1/admin/platform-employees/${selectedId}/lifecycle`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'disable', reason: disableReason }),
+      });
+      setDisableReason('');
+      setMessage('员工已停用，租户的新会话和后续调用不再获得该员工。');
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '停用失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rollbackEmployee() {
+    if (!selectedId || !rollbackReason.trim()) return;
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const result = await api<{ revision: number }>(
+        `/api/v1/admin/platform-employees/${selectedId}/lifecycle`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'rollback',
+            reason: rollbackReason,
+          }),
+        },
+      );
+      setRollbackReason('');
+      setMessage(`已回滚到发布 revision ${result.revision}，仅影响租户新 Session。`);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '回滚失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function archiveEmployee() {
+    if (!selectedId || !archiveReason.trim()) return;
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      await api(`/api/v1/admin/platform-employees/${selectedId}/lifecycle`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'archive', reason: archiveReason }),
+      });
+      setArchiveReason('');
+      setMessage('员工已归档并从全部租户撤回。');
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '归档失败');
     } finally {
       setBusy(false);
     }
@@ -460,6 +583,20 @@ export function EmployeeProduction() {
     ) : (
       <p className={styles.notice}>
         平台原生 Skill 库当前为空。先审核并迁移 Skill，再装配给 Rice。
+      </p>
+    );
+  } else if (tab === 'workflows') {
+    panel = (
+      <p className={styles.notice}>
+        Workflow 是独立的确定性流程能力，不伪装成 Skill。平台级 Workflow
+        发布目录尚未启用，因此当前草稿不能引用租户 Workflow。
+      </p>
+    );
+  } else if (tab === 'knowledge') {
+    panel = (
+      <p className={styles.notice}>
+        Knowledge 是独立的受权限知识能力，不伪装成 Skill。平台级 Knowledge
+        发布目录尚未启用，因此当前草稿不能引用租户 Knowledge。
       </p>
     );
   } else if (tab === 'model') {
@@ -664,6 +801,81 @@ export function EmployeeProduction() {
         >
           {busy ? '发布中…' : '发布到所选租户'}
         </button>
+        <section className={styles.dangerZone}>
+          <h3>回滚发布</h3>
+          <p className={styles.muted}>
+            将当前分配的租户恢复到上一个不可变发布快照；已有 Session 保持原快照。
+          </p>
+          <Field
+            label="回滚原因"
+            value={rollbackReason}
+            wide
+            onChange={setRollbackReason}
+          />
+          <button
+            className={styles.button}
+            disabled={busy || !rollbackReason.trim()}
+            onClick={() => void rollbackEmployee()}
+          >
+            回滚到上一发布
+          </button>
+        </section>
+        <section className={styles.dangerZone}>
+          <h3>停用员工</h3>
+          <p className={styles.muted}>
+            停用会撤回全部租户分配，不删除不可变版本和审计记录。重新发布可恢复。
+          </p>
+          <Field
+            label="停用原因"
+            value={disableReason}
+            wide
+            onChange={setDisableReason}
+          />
+          <button
+            className={styles.dangerButton}
+            disabled={busy || !disableReason.trim()}
+            onClick={() => void disableEmployee()}
+          >
+            停用并撤回租户分配
+          </button>
+        </section>
+        <section className={styles.audit}>
+          <h3>审计记录</h3>
+          {auditEvents.length ? (
+            auditEvents.map((event) => (
+              <div key={event.id}>
+                <strong>{event.action}</strong>
+                <span>
+                  {new Date(event.createdAt).toLocaleString('zh-CN')} ·{' '}
+                  {event.actorLabel}
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className={styles.muted}>还没有生命周期审计记录。</p>
+          )}
+        </section>
+        {selected.employeeKey !== 'rice' ? (
+          <section className={styles.dangerZone}>
+            <h3>归档员工</h3>
+            <p className={styles.muted}>
+              归档会撤回全部租户分配并从员工目录隐藏；Rice 不允许归档。
+            </p>
+            <Field
+              label="归档原因"
+              value={archiveReason}
+              wide
+              onChange={setArchiveReason}
+            />
+            <button
+              className={styles.dangerButton}
+              disabled={busy || !archiveReason.trim()}
+              onClick={() => void archiveEmployee()}
+            >
+              归档员工
+            </button>
+          </section>
+        ) : null}
       </>
     );
   }
@@ -673,6 +885,43 @@ export function EmployeeProduction() {
       <aside className={styles.rail}>
         <h2>AI 员工</h2>
         <p className={styles.muted}>平台生产后台 · 租户不可见</p>
+        <button
+          className={styles.createToggle}
+          disabled={busy}
+          onClick={() => setShowCreate((current) => !current)}
+        >
+          + 新建员工草稿
+        </button>
+        {showCreate ? (
+          <div className={styles.createForm}>
+            <label>
+              <span>员工名称</span>
+              <input
+                value={newEmployeeName}
+                onChange={(event) => setNewEmployeeName(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>员工 Key</span>
+              <input
+                placeholder="lowercase-key"
+                value={newEmployeeKey}
+                onChange={(event) => setNewEmployeeKey(event.target.value)}
+              />
+            </label>
+            <small>从当前员工复制为未发布草稿，不继承租户分配。</small>
+            <button
+              className={styles.button}
+              data-primary="true"
+              disabled={
+                busy || !newEmployeeName.trim() || !newEmployeeKey.trim()
+              }
+              onClick={() => void createEmployee()}
+            >
+              创建草稿
+            </button>
+          </div>
+        ) : null}
         <div className={styles.employeeList}>
           {directory.employees.map((employee) => (
             <button

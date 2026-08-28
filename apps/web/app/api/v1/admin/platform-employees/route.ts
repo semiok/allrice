@@ -1,4 +1,5 @@
 import {
+  createPlatformEmployeeDraft,
   listPlatformEmployees,
   listPlatformEmployeeWorkspaces,
   listPlatformNativeSkills,
@@ -19,6 +20,23 @@ export async function GET(request: Request) {
       listPlatformEmployeeWorkspaces(),
     ]);
     return Response.json({ employees, skills, workspaces });
+  } catch (error) {
+    return executionErrorResponse(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const context = await requirePlatformAdminContext(request);
+    return Response.json(
+      {
+        employee: await createPlatformEmployeeDraft(
+          await request.json(),
+          context.actor.id,
+        ),
+      },
+      { status: 201 },
+    );
   } catch (error) {
     return executionErrorResponse(error);
   }

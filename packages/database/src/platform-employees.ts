@@ -1,15 +1,24 @@
 import { createHash } from 'node:crypto';
 
+import type postgres from 'postgres';
+
 import {
   PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeAuditEventSchema,
   PlatformEmployeeRevisionSchema,
   PlatformEmployeeRuntimeProfileSchema,
+  PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS,
+  PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
   PlatformEmployeeSummarySchema,
   PlatformEmployeeTestRunOutputSchema,
   PlatformEmployeeTestRunSchema,
+  ArchivePlatformEmployeeInputSchema,
+  CreatePlatformEmployeeInputSchema,
   CreatePlatformEmployeeTestRunInputSchema,
   DshNativeSkillSnapshotSchema,
+  DisablePlatformEmployeeInputSchema,
   PublishPlatformEmployeeInputSchema,
+  RollbackPlatformEmployeeInputSchema,
   UpdatePlatformEmployeeInputSchema,
   UuidSchema,
   type PlatformEmployeeDefinition,
@@ -74,8 +83,60 @@ interface TestRunRow {
   completed_at: Date | null;
 }
 
+interface AuditRow {
+  id: string;
+  employee_id: string;
+  action: string;
+  actor_label: string;
+  details: Record<string, unknown>;
+  created_at: Date;
+}
+
 function checksum(value: unknown) {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+async function recordPlatformEmployeeAudit(input: {
+  employeeId: string;
+  action: string;
+  actorLabel: string;
+  details?: Record<string, unknown>;
+}) {
+  const sql = getDatabase();
+  await sql`
+    insert into allrice_platform_employee_audit_events (
+      employee_id, action, actor_label, details
+    ) values (
+      ${UuidSchema.parse(input.employeeId)}, ${input.action},
+      ${input.actorLabel}, ${sql.json((input.details ?? {}) as never)}
+    )
+  `;
+}
+
+export async function listPlatformEmployeeAuditEvents(
+  employeeIdInput: string,
+  limitInput = 50,
+) {
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const limit = Math.min(Math.max(Math.trunc(limitInput), 1), 200);
+  const sql = getDatabase();
+  const rows = await sql<AuditRow[]>`
+    select id, employee_id, action, actor_label, details, created_at
+    from allrice_platform_employee_audit_events
+    where employee_id = ${employeeId}
+    order by created_at desc, id desc
+    limit ${limit}
+  `;
+  return rows.map((row) =>
+    PlatformEmployeeAuditEventSchema.parse({
+      id: row.id,
+      employeeId: row.employee_id,
+      action: row.action,
+      actorLabel: row.actor_label,
+      details: row.details,
+      createdAt: row.created_at.toISOString(),
+    }),
+  );
 }
 
 function revisionSnapshot(row: RevisionRow | undefined) {
@@ -164,6 +225,88 @@ export async function getPlatformEmployee(employeeIdInput: string) {
     where employee.id = ${employeeId}
   `;
   return (await hydrateEmployees(rows))[0] ?? null;
+}
+
+export async function createPlatformEmployeeDraft(
+  input: unknown,
+  actorLabel = 'platform-admin',
+) {
+  const parsed = CreatePlatformEmployeeInputSchema.parse(input);
+  const sql = getDatabase();
+  const employeeId = await sql.begin(async (transaction) => {
+    const sourceRows = parsed.sourceEmployeeId
+      ? await transaction<{ definition: unknown }[]>`
+          select revision.definition
+          from allrice_platform_employees employee
+          join allrice_platform_employee_revisions revision
+            on revision.id = coalesce(
+              employee.current_draft_revision_id,
+              employee.current_published_revision_id
+            )
+          where employee.id = ${parsed.sourceEmployeeId}
+            and employee.status <> 'archived'
+        `
+      : await transaction<{ definition: unknown }[]>`
+          select revision.definition
+          from allrice_platform_employees employee
+          join allrice_platform_employee_revisions revision
+            on revision.id = coalesce(
+              employee.current_draft_revision_id,
+              employee.current_published_revision_id
+            )
+          where employee.employee_key = 'rice'
+            and employee.status <> 'archived'
+        `;
+    const source = sourceRows[0];
+    if (!source) throw new Error('platform_employee_clone_source_not_found');
+    const definition = PlatformEmployeeDefinitionSchema.parse({
+      ...PlatformEmployeeDefinitionSchema.parse(source.definition),
+      key: parsed.key,
+      name: parsed.name,
+      description: `${parsed.name} 的平台管理员草稿。`,
+    });
+    const employees = await transaction<{ id: string }[]>`
+      insert into allrice_platform_employees (
+        employee_key, name, description, status,
+        created_by_label, updated_by_label
+      ) values (
+        ${definition.key}, ${definition.name}, ${definition.description},
+        'draft', ${actorLabel}, ${actorLabel}
+      ) returning id
+    `;
+    const createdEmployeeId = employees[0]?.id;
+    if (!createdEmployeeId) throw new Error('platform_employee_create_failed');
+    const revisions = await transaction<{ id: string }[]>`
+      insert into allrice_platform_employee_revisions (
+        employee_id, revision, status, definition, checksum,
+        validation_report, created_by_label
+      ) values (
+        ${createdEmployeeId}, 1, 'draft', ${transaction.json(definition)},
+        ${checksum(definition)},
+        ${transaction.json({ valid: false, errors: [], warnings: [] })},
+        ${actorLabel}
+      ) returning id
+    `;
+    const revisionId = revisions[0]?.id;
+    if (!revisionId) throw new Error('platform_employee_revision_failed');
+    await transaction`
+      update allrice_platform_employees
+      set current_draft_revision_id = ${revisionId}
+      where id = ${createdEmployeeId}
+    `;
+    return createdEmployeeId;
+  });
+  await recordPlatformEmployeeAudit({
+    employeeId,
+    action: 'employee.created',
+    actorLabel,
+    details: {
+      sourceEmployeeId: parsed.sourceEmployeeId ?? 'rice',
+      key: parsed.key,
+      name: parsed.name,
+    },
+  });
+  return getPlatformEmployee(employeeId);
 }
 
 export async function listPlatformEmployeeWorkspaces() {
@@ -264,6 +407,12 @@ export async function queuePlatformEmployeeTestRun(
   `;
   const row = rows[0];
   if (!row) throw new Error('platform_employee_test_queue_failed');
+  await recordPlatformEmployeeAudit({
+    employeeId,
+    action: 'employee.test.queued',
+    actorLabel,
+    details: { testRunId: row.id, revisionId: compilation.revisionId },
+  });
   return {
     queued: true as const,
     valid: true,
@@ -386,7 +535,104 @@ export async function completePlatformEmployeeTestRun(
   `;
   const row = rows[0];
   if (!row) throw new Error('platform_employee_test_not_running');
+  await recordPlatformEmployeeAudit({
+    employeeId: row.employee_id,
+    action:
+      status === 'succeeded'
+        ? 'employee.test.succeeded'
+        : 'employee.test.failed',
+    actorLabel: 'platform-test-worker',
+    details: { testRunId, revisionId: row.revision_id },
+  });
   return testRunSnapshot(row);
+}
+
+export async function disablePlatformEmployee(
+  employeeIdInput: string,
+  input: unknown,
+  actorLabel = 'platform-admin',
+) {
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const { reason } = DisablePlatformEmployeeInputSchema.parse(input);
+  const sql = getDatabase();
+  const result = await sql.begin(async (transaction) => {
+    const employees = await transaction<{ id: string }[]>`
+      select id from allrice_platform_employees
+      where id = ${employeeId} and status <> 'archived'
+      for update
+    `;
+    if (!employees[0]) throw new Error('platform_employee_not_found');
+    const assignments = await transaction<
+      {
+        organization_id: string;
+        workspace_id: string;
+        tenant_employee_id: string | null;
+      }[]
+    >`
+      update allrice_platform_employee_tenant_assignments
+      set active = false, updated_at = now()
+      where employee_id = ${employeeId} and active
+      returning organization_id, workspace_id, tenant_employee_id
+    `;
+    for (const assignment of assignments) {
+      if (!assignment.tenant_employee_id) continue;
+      await transaction`
+        update allrice_employee_assignments
+        set active = false, updated_at = now()
+        where organization_id = ${assignment.organization_id}
+          and workspace_id = ${assignment.workspace_id}
+          and employee_id = ${assignment.tenant_employee_id}
+      `;
+      await transaction`
+        update allrice_employees
+        set status = 'disabled', updated_at = now()
+        where organization_id = ${assignment.organization_id}
+          and workspace_id = ${assignment.workspace_id}
+          and id = ${assignment.tenant_employee_id}
+      `;
+    }
+    await transaction`
+      update allrice_platform_employees
+      set status = 'disabled', updated_by_label = ${actorLabel},
+        updated_at = now()
+      where id = ${employeeId}
+    `;
+    return { disabledWorkspaceCount: assignments.length };
+  });
+  await recordPlatformEmployeeAudit({
+    employeeId,
+    action: 'employee.disabled',
+    actorLabel,
+    details: { reason, ...result },
+  });
+  return { employeeId, ...result };
+}
+
+export async function archivePlatformEmployee(
+  employeeIdInput: string,
+  input: unknown,
+  actorLabel = 'platform-admin',
+) {
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const { reason } = ArchivePlatformEmployeeInputSchema.parse(input);
+  const employee = await getPlatformEmployee(employeeId);
+  if (!employee) throw new Error('platform_employee_not_found');
+  if (employee.employeeKey === 'rice')
+    throw new Error('platform_employee_rice_cannot_be_archived');
+  await disablePlatformEmployee(employeeId, { reason }, actorLabel);
+  const sql = getDatabase();
+  await sql`
+    update allrice_platform_employees
+    set status = 'archived', updated_by_label = ${actorLabel}, updated_at = now()
+    where id = ${employeeId}
+  `;
+  await recordPlatformEmployeeAudit({
+    employeeId,
+    action: 'employee.archived',
+    actorLabel,
+    details: { reason },
+  });
+  return { employeeId, archived: true };
 }
 
 export async function savePlatformEmployeeDraft(
@@ -507,6 +753,21 @@ export async function compilePlatformEmployee(
     ) {
       errors.push('Bridge 已禁用，但员工仍配置了 local.* 工具');
     }
+    if (definition.securityPolicy.approvalPolicy === 'autonomous') {
+      errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
+    }
+    if (definition.securityPolicy.connectorIdentityModes.includes('service')) {
+      errors.push('平台当前未开放 Service Connector 身份给 AI 员工');
+    }
+    if (definition.capabilities.workflowRevisionIds.length > 0) {
+      errors.push('平台 Workflow 发布目录尚未启用，不能引用租户 Workflow revision');
+    }
+    if (definition.capabilities.knowledgeRevisionIds.length > 0) {
+      errors.push('平台 Knowledge 发布目录尚未启用，不能引用租户 Knowledge revision');
+    }
+    if (definition.capabilities.connectorRefs.length > 0) {
+      errors.push('Connector 必须在租户发布时绑定，草稿不能引用租户 Connector');
+    }
     if (definition.modelPolicy.provider !== 'openai-codex') {
       warnings.push('非 Codex Provider 需要平台凭证和可用性检查后才能发布。');
     }
@@ -521,6 +782,8 @@ export async function compilePlatformEmployee(
         ? PlatformEmployeeRuntimeProfileSchema.parse({
             schemaVersion: 1,
             harness: 'dsh',
+            distributionGeneration: PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
+            approvedPluginIds: [...PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS],
             employeeKey: definition.key,
             provider: definition.modelPolicy.provider,
             model: definition.modelPolicy.model,
@@ -598,6 +861,164 @@ function tenantManifest(definition: PlatformEmployeeDefinition) {
   });
 }
 
+async function materializePlatformEmployeeRevision(
+  transaction: postgres.TransactionSql,
+  input: {
+    employeeId: string;
+    revision: RevisionRow;
+    definition: PlatformEmployeeDefinition;
+    workspaceIds: string[];
+    actorLabel: string;
+  },
+) {
+  const manifest = tenantManifest(input.definition);
+  const manifestChecksum = employeeManifestChecksum(manifest);
+  for (const workspaceId of input.workspaceIds) {
+    const workspaces = await transaction<
+      { id: string; organization_id: string }[]
+    >`
+      select id, organization_id from allrice_workspaces
+      where id = ${workspaceId} and archived_at is null
+    `;
+    const workspace = workspaces[0];
+    if (!workspace) throw new Error(`workspace_not_found:${workspaceId}`);
+    const actors = await transaction<{ id: string }[]>`
+      select membership.user_id as id
+      from allrice_memberships membership
+      join allrice_users actor on actor.id = membership.user_id
+      where membership.organization_id = ${workspace.organization_id}
+        and (membership.workspace_id is null or membership.workspace_id = ${workspace.id})
+        and membership.active and actor.status = 'active'
+      order by case membership.role when 'admin' then 0 when 'member' then 1 else 2 end,
+        membership.created_at, membership.id
+      limit 1
+    `;
+    const actorId = actors[0]?.id;
+    if (!actorId)
+      throw new Error(`workspace_has_no_active_member:${workspaceId}`);
+    const tenantKey =
+      input.definition.key === 'rice'
+        ? 'default-assistant'
+        : input.definition.key;
+    const employees = await transaction<{ id: string }[]>`
+      insert into allrice_employees (
+        organization_id, workspace_id, employee_key, name, status
+      ) values (
+        ${workspace.organization_id}, ${workspace.id}, ${tenantKey},
+        ${input.definition.name}, 'active'
+      )
+      on conflict (organization_id, workspace_id, employee_key)
+      do update set name = excluded.name, status = 'active', updated_at = now()
+      returning id
+    `;
+    const tenantEmployeeId = employees[0]?.id;
+    if (!tenantEmployeeId)
+      throw new Error('tenant_employee_materialize_failed');
+    const nextVersions = await transaction<{ version: number }[]>`
+      select coalesce(max(version), 0)::integer + 1 as version
+      from allrice_employee_versions where employee_id = ${tenantEmployeeId}
+    `;
+    const versions = await transaction<{ id: string }[]>`
+      insert into allrice_employee_versions (
+        organization_id, workspace_id, employee_id, version, name,
+        description, model, system_prompt, capabilities, manifest,
+        provider_snapshot, skill_version_ids, config_checksum
+      ) values (
+        ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
+        ${nextVersions[0]?.version ?? 1}, ${manifest.name},
+        ${manifest.description}, ${manifest.provider.model},
+        ${manifest.systemPrompt}, ${transaction.json(manifest.capabilities)},
+        ${transaction.json(manifest)}, ${transaction.json(manifest.provider)},
+        ${transaction.json([])}, ${manifestChecksum}
+      ) returning id
+    `;
+    const tenantVersionId = versions[0]?.id;
+    if (!tenantVersionId) throw new Error('tenant_employee_version_failed');
+    await transaction`
+      update allrice_employee_assignments
+      set employee_version_id = ${tenantVersionId}, active = true, updated_at = now()
+      where organization_id = ${workspace.organization_id}
+        and workspace_id = ${workspace.id}
+        and employee_id = ${tenantEmployeeId}
+    `;
+    await transaction`
+      insert into allrice_employee_assignments (
+        organization_id, workspace_id, employee_id, employee_version_id,
+        user_id, is_default, active, assigned_by
+      )
+      select ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
+        ${tenantVersionId}, member.user_id,
+        ${input.definition.key === 'rice'}, true, ${actorId}
+      from (
+        select distinct membership.user_id
+        from allrice_memberships membership
+        join allrice_users member_user on member_user.id = membership.user_id
+        where membership.organization_id = ${workspace.organization_id}
+          and (membership.workspace_id is null or membership.workspace_id = ${workspace.id})
+          and membership.active and member_user.status = 'active'
+      ) member
+      on conflict (organization_id, workspace_id, user_id, employee_id)
+      do update set employee_version_id = excluded.employee_version_id,
+        active = true, assigned_by = excluded.assigned_by,
+        assigned_at = now(), updated_at = now()
+    `;
+    await transaction`
+      delete from allrice_employee_dsh_skill_bindings
+      where organization_id = ${workspace.organization_id}
+        and workspace_id = ${workspace.id}
+        and employee_id = ${tenantEmployeeId}
+    `;
+    for (const platformSkillId of input.definition.capabilities.nativeSkillIds) {
+      const materialized = await transaction<{ id: string }[]>`
+        insert into allrice_dsh_skills (
+          organization_id, workspace_id, name, description, content,
+          checksum, model_invocable, user_invocable, required_tool_refs,
+          enabled, created_by
+        )
+        select ${workspace.organization_id}, ${workspace.id}, name,
+          description, content, checksum, model_invocable, user_invocable,
+          required_tool_refs, enabled, ${actorId}
+        from allrice_platform_dsh_skills where id = ${platformSkillId}
+        on conflict (organization_id, workspace_id, name)
+        do update set description = excluded.description,
+          content = excluded.content, checksum = excluded.checksum,
+          model_invocable = excluded.model_invocable,
+          user_invocable = excluded.user_invocable,
+          required_tool_refs = excluded.required_tool_refs,
+          enabled = excluded.enabled, updated_at = now()
+        returning id
+      `;
+      const skillId = materialized[0]?.id;
+      if (!skillId) throw new Error('tenant_skill_materialize_failed');
+      await transaction`
+        insert into allrice_employee_dsh_skill_bindings (
+          organization_id, workspace_id, employee_id, skill_id, bound_by
+        ) values (
+          ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
+          ${skillId}, ${actorId}
+        )
+      `;
+    }
+    await transaction`
+      insert into allrice_platform_employee_tenant_assignments (
+        employee_id, revision_id, organization_id, workspace_id,
+        tenant_employee_id, tenant_employee_version_id, active,
+        assigned_by_label
+      ) values (
+        ${input.employeeId}, ${input.revision.id}, ${workspace.organization_id},
+        ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
+        ${input.actorLabel}
+      )
+      on conflict (employee_id, workspace_id) do update set
+        revision_id = excluded.revision_id,
+        tenant_employee_id = excluded.tenant_employee_id,
+        tenant_employee_version_id = excluded.tenant_employee_version_id,
+        active = true, assigned_by_label = excluded.assigned_by_label,
+        assigned_at = now(), updated_at = now()
+    `;
+  }
+}
+
 export async function publishPlatformEmployee(
   employeeIdInput: string,
   input: unknown,
@@ -608,7 +1029,62 @@ export async function publishPlatformEmployee(
   const compilation = await compilePlatformEmployee(employeeId, actorLabel);
   if (!compilation.valid) return compilation;
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
+  const successfulTests = await sql<{ id: string }[]>`
+    select id from allrice_platform_employee_test_runs
+    where employee_id = ${employeeId}
+      and revision_id = ${compilation.revisionId}
+      and status = 'succeeded'
+      and completed_at >= now() - interval '24 hours'
+    order by completed_at desc limit 1
+  `;
+  if (!successfulTests[0]) {
+    return {
+      ...compilation,
+      valid: false,
+      errors: ['发布前必须完成一次 24 小时内成功的隔离 DSH 测试。'],
+    };
+  }
+  const uniqueWorkspaceIds = [...new Set(workspaceIds)];
+  const activeWorkspaces = await sql<{ id: string }[]>`
+    select id from allrice_workspaces
+    where id in ${sql(uniqueWorkspaceIds)} and archived_at is null
+  `;
+  if (activeWorkspaces.length !== uniqueWorkspaceIds.length) {
+    return {
+      ...compilation,
+      valid: false,
+      errors: ['发布目标包含不存在、已归档或越权的工作区。'],
+    };
+  }
+  if (compilation.runtimeProfile?.provider === 'openai-codex') {
+    const statuses = await sql<
+      { status: string; checked_at: Date | null }[]
+    >`
+      select status, checked_at from allrice_provider_status
+      where provider = 'codex'
+    `;
+    const provider = statuses[0];
+    if (
+      provider?.status !== 'connected' ||
+      !provider.checked_at ||
+      provider.checked_at.getTime() < Date.now() - 120_000
+    ) {
+      return {
+        ...compilation,
+        valid: false,
+        errors: ['Codex 订阅 Provider 当前不可用或健康状态已过期。'],
+      };
+    }
+  } else {
+    return {
+      ...compilation,
+      valid: false,
+      errors: [
+        `Provider ${compilation.runtimeProfile?.provider ?? 'unknown'} 尚未通过平台生产健康门禁。`,
+      ],
+    };
+  }
+  const published = await sql.begin(async (transaction) => {
     const revisions = await transaction<RevisionRow[]>`
       select revision.*
       from allrice_platform_employees employee
@@ -623,150 +1099,13 @@ export async function publishPlatformEmployee(
     const definition = PlatformEmployeeDefinitionSchema.parse(
       revision.definition,
     );
-    const manifest = tenantManifest(definition);
-    const manifestChecksum = employeeManifestChecksum(manifest);
-    for (const workspaceId of workspaceIds) {
-      const workspaces = await transaction<
-        { id: string; organization_id: string }[]
-      >`
-        select id, organization_id from allrice_workspaces
-        where id = ${workspaceId} and archived_at is null
-      `;
-      const workspace = workspaces[0];
-      if (!workspace) throw new Error(`workspace_not_found:${workspaceId}`);
-      const actors = await transaction<{ id: string }[]>`
-        select membership.user_id as id
-        from allrice_memberships membership
-        join allrice_users actor on actor.id = membership.user_id
-        where membership.organization_id = ${workspace.organization_id}
-          and (membership.workspace_id is null or membership.workspace_id = ${workspace.id})
-          and membership.active and actor.status = 'active'
-        order by case membership.role when 'admin' then 0 when 'member' then 1 else 2 end,
-          membership.created_at, membership.id
-        limit 1
-      `;
-      const actorId = actors[0]?.id;
-      if (!actorId)
-        throw new Error(`workspace_has_no_active_member:${workspaceId}`);
-      const tenantKey =
-        definition.key === 'rice' ? 'default-assistant' : definition.key;
-      const employees = await transaction<{ id: string }[]>`
-        insert into allrice_employees (
-          organization_id, workspace_id, employee_key, name, status
-        ) values (
-          ${workspace.organization_id}, ${workspace.id}, ${tenantKey},
-          ${definition.name}, 'active'
-        )
-        on conflict (organization_id, workspace_id, employee_key)
-        do update set name = excluded.name, status = 'active', updated_at = now()
-        returning id
-      `;
-      const tenantEmployeeId = employees[0]?.id;
-      if (!tenantEmployeeId)
-        throw new Error('tenant_employee_materialize_failed');
-      const nextVersions = await transaction<{ version: number }[]>`
-        select coalesce(max(version), 0)::integer + 1 as version
-        from allrice_employee_versions where employee_id = ${tenantEmployeeId}
-      `;
-      const versions = await transaction<{ id: string }[]>`
-        insert into allrice_employee_versions (
-          organization_id, workspace_id, employee_id, version, name,
-          description, model, system_prompt, capabilities, manifest,
-          provider_snapshot, skill_version_ids, config_checksum
-        ) values (
-          ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
-          ${nextVersions[0]?.version ?? 1}, ${manifest.name},
-          ${manifest.description}, ${manifest.provider.model},
-          ${manifest.systemPrompt}, ${transaction.json(manifest.capabilities)},
-          ${transaction.json(manifest)}, ${transaction.json(manifest.provider)},
-          ${transaction.json([])}, ${manifestChecksum}
-        ) returning id
-      `;
-      const tenantVersionId = versions[0]?.id;
-      if (!tenantVersionId) throw new Error('tenant_employee_version_failed');
-      await transaction`
-        update allrice_employee_assignments
-        set employee_version_id = ${tenantVersionId}, active = true, updated_at = now()
-        where organization_id = ${workspace.organization_id}
-          and workspace_id = ${workspace.id}
-          and employee_id = ${tenantEmployeeId}
-      `;
-      await transaction`
-        insert into allrice_employee_assignments (
-          organization_id, workspace_id, employee_id, employee_version_id,
-          user_id, is_default, active, assigned_by
-        )
-        select ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
-          ${tenantVersionId}, member.user_id,
-          ${definition.key === 'rice'}, true, ${actorId}
-        from (
-          select distinct membership.user_id
-          from allrice_memberships membership
-          join allrice_users member_user on member_user.id = membership.user_id
-          where membership.organization_id = ${workspace.organization_id}
-            and (membership.workspace_id is null or membership.workspace_id = ${workspace.id})
-            and membership.active and member_user.status = 'active'
-        ) member
-        on conflict (organization_id, workspace_id, user_id, employee_id)
-        do update set employee_version_id = excluded.employee_version_id,
-          active = true, assigned_by = excluded.assigned_by,
-          assigned_at = now(), updated_at = now()
-      `;
-      await transaction`
-        delete from allrice_employee_dsh_skill_bindings
-        where organization_id = ${workspace.organization_id}
-          and workspace_id = ${workspace.id}
-          and employee_id = ${tenantEmployeeId}
-      `;
-      for (const platformSkillId of definition.capabilities.nativeSkillIds) {
-        const materialized = await transaction<{ id: string }[]>`
-          insert into allrice_dsh_skills (
-            organization_id, workspace_id, name, description, content,
-            checksum, model_invocable, user_invocable, required_tool_refs,
-            enabled, created_by
-          )
-          select ${workspace.organization_id}, ${workspace.id}, name,
-            description, content, checksum, model_invocable, user_invocable,
-            required_tool_refs, enabled, ${actorId}
-          from allrice_platform_dsh_skills where id = ${platformSkillId}
-          on conflict (organization_id, workspace_id, name)
-          do update set description = excluded.description,
-            content = excluded.content, checksum = excluded.checksum,
-            model_invocable = excluded.model_invocable,
-            user_invocable = excluded.user_invocable,
-            required_tool_refs = excluded.required_tool_refs,
-            enabled = excluded.enabled, updated_at = now()
-          returning id
-        `;
-        const skillId = materialized[0]?.id;
-        if (!skillId) throw new Error('tenant_skill_materialize_failed');
-        await transaction`
-          insert into allrice_employee_dsh_skill_bindings (
-            organization_id, workspace_id, employee_id, skill_id, bound_by
-          ) values (
-            ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
-            ${skillId}, ${actorId}
-          )
-        `;
-      }
-      await transaction`
-        insert into allrice_platform_employee_tenant_assignments (
-          employee_id, revision_id, organization_id, workspace_id,
-          tenant_employee_id, tenant_employee_version_id, active,
-          assigned_by_label
-        ) values (
-          ${employeeId}, ${revision.id}, ${workspace.organization_id},
-          ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
-          ${actorLabel}
-        )
-        on conflict (employee_id, workspace_id) do update set
-          revision_id = excluded.revision_id,
-          tenant_employee_id = excluded.tenant_employee_id,
-          tenant_employee_version_id = excluded.tenant_employee_version_id,
-          active = true, assigned_by_label = excluded.assigned_by_label,
-          assigned_at = now(), updated_at = now()
-      `;
-    }
+    await materializePlatformEmployeeRevision(transaction, {
+      employeeId,
+      revision,
+      definition,
+      workspaceIds: uniqueWorkspaceIds,
+      actorLabel,
+    });
     await transaction`
       update allrice_platform_employee_revisions
       set status = 'published', published_by_label = ${actorLabel},
@@ -783,7 +1122,7 @@ export async function publishPlatformEmployee(
       valid: true,
       employeeId,
       revisionId: revision.id,
-      workspaceIds,
+      workspaceIds: uniqueWorkspaceIds,
       runtimeProfile: PlatformEmployeeRuntimeProfileSchema.parse(
         revision.runtime_profile,
       ),
@@ -791,4 +1130,89 @@ export async function publishPlatformEmployee(
       warnings: [],
     };
   });
+  await recordPlatformEmployeeAudit({
+    employeeId,
+    action: 'employee.published',
+    actorLabel,
+    details: {
+      revisionId: published.revisionId,
+      workspaceIds: published.workspaceIds,
+      testRunId: successfulTests[0].id,
+    },
+  });
+  return published;
+}
+
+export async function rollbackPlatformEmployee(
+  employeeIdInput: string,
+  input: unknown,
+  actorLabel = 'platform-admin',
+) {
+  const employeeId = UuidSchema.parse(employeeIdInput);
+  const { revisionId, reason } = RollbackPlatformEmployeeInputSchema.parse(input);
+  const sql = getDatabase();
+  const rolledBack = await sql.begin(async (transaction) => {
+    const employees = await transaction<
+      { current_published_revision_id: string | null }[]
+    >`
+      select current_published_revision_id from allrice_platform_employees
+      where id = ${employeeId} and status <> 'archived'
+      for update
+    `;
+    const employee = employees[0];
+    if (!employee) throw new Error('platform_employee_not_found');
+    const revisions = revisionId
+      ? await transaction<RevisionRow[]>`
+          select * from allrice_platform_employee_revisions
+          where employee_id = ${employeeId} and id = ${revisionId}
+            and status = 'published'
+        `
+      : await transaction<RevisionRow[]>`
+          select * from allrice_platform_employee_revisions
+          where employee_id = ${employeeId} and status = 'published'
+            and id <> ${employee.current_published_revision_id}
+          order by revision desc limit 1
+        `;
+    const target = revisions[0];
+    if (!target?.runtime_profile)
+      throw new Error('platform_employee_rollback_revision_not_found');
+    const definition = PlatformEmployeeDefinitionSchema.parse(target.definition);
+    const targets = await transaction<{ workspace_id: string }[]>`
+      select workspace_id
+      from allrice_platform_employee_tenant_assignments
+      where employee_id = ${employeeId}
+      order by active desc, updated_at desc, workspace_id
+    `;
+    const workspaceIds = [...new Set(targets.map((row) => row.workspace_id))];
+    if (workspaceIds.length === 0)
+      throw new Error('platform_employee_rollback_has_no_tenant_targets');
+    await materializePlatformEmployeeRevision(transaction, {
+      employeeId,
+      revision: target,
+      definition,
+      workspaceIds,
+      actorLabel,
+    });
+    await transaction`
+      update allrice_platform_employees
+      set status = 'published', current_draft_revision_id = ${target.id},
+        current_published_revision_id = ${target.id},
+        updated_by_label = ${actorLabel}, updated_at = now()
+      where id = ${employeeId}
+    `;
+    return {
+      employeeId,
+      revisionId: target.id,
+      revision: target.revision,
+      previousRevisionId: employee.current_published_revision_id,
+      workspaceIds,
+    };
+  });
+  await recordPlatformEmployeeAudit({
+    employeeId,
+    action: 'employee.rolled_back',
+    actorLabel,
+    details: { reason, ...rolledBack },
+  });
+  return rolledBack;
 }
