@@ -4,7 +4,6 @@ import {
   ChatMessageContentSchema,
   CreateChatSessionInputSchema,
   CreateWorkspaceMemoryInputSchema,
-  EmployeeManifestSchema,
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
   UpdateChatSessionInputSchema,
@@ -27,9 +26,7 @@ import {
 } from './data.ts';
 import { getDatabase } from './index.ts';
 import {
-  builtInEmployeeManifests,
   employeeManifestChecksum,
-  employeeManifestTemplateChecksum,
   riceEmployeeKey,
   riceManifest,
 } from './employee-config.ts';
@@ -302,111 +299,6 @@ export async function ensureDefaultEmployee(
         end,
         updated_at = now()
     `;
-    for (const builtIn of builtInEmployeeManifests()) {
-      const builtInEmployees = await transaction<{ id: string }[]>`
-        insert into allrice_employees (
-          organization_id, workspace_id, employee_key, name
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${builtIn.key}, ${builtIn.name}
-        )
-        on conflict (organization_id, workspace_id, employee_key)
-        do update set name = excluded.name, updated_at = now()
-        returning id
-      `;
-      const builtInEmployeeId = builtInEmployees[0]?.id;
-      if (!builtInEmployeeId)
-        throw new Error('built-in employee provisioning failed');
-      const currentBuiltInVersions = await transaction<
-        {
-          id: string;
-          version: number;
-          config_checksum: string;
-          manifest: unknown;
-        }[]
-      >`
-        select id, version, config_checksum, manifest
-        from allrice_employee_versions
-        where employee_id = ${builtInEmployeeId}
-        order by version desc
-        limit 1
-      `;
-      let builtInVersionId = currentBuiltInVersions[0]?.id;
-      if (!builtInVersionId) {
-        const builtInChecksum = employeeManifestChecksum(builtIn);
-        const insertedVersions = await transaction<{ id: string }[]>`
-          insert into allrice_employee_versions (
-            organization_id, workspace_id, employee_id, version, name, model,
-            system_prompt, capabilities, config_checksum, description, manifest,
-            provider_snapshot, skill_version_ids
-          ) values (
-            ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId}, 1,
-            ${builtIn.name}, ${builtIn.provider.model}, ${builtIn.systemPrompt},
-            ${transaction.json(builtIn.capabilities)}, ${builtInChecksum},
-            ${builtIn.description}, ${transaction.json(builtIn)},
-            ${transaction.json(builtIn.provider)},
-            ${transaction.json(builtIn.skillVersionIds)}
-          ) returning id
-        `;
-        builtInVersionId = insertedVersions[0]?.id;
-      } else {
-        const currentManifest = EmployeeManifestSchema.safeParse(
-          currentBuiltInVersions[0]?.manifest,
-        );
-        const templateChanged =
-          !currentManifest.success ||
-          employeeManifestTemplateChecksum(currentManifest.data) !==
-            employeeManifestTemplateChecksum(builtIn);
-        if (templateChanged) {
-          const skillVersionIds = currentManifest.success
-            ? currentManifest.data.skillVersionIds
-            : builtIn.skillVersionIds;
-          const nextManifest = EmployeeManifestSchema.parse(
-            builtIn.schemaVersion === 2
-              ? {
-                  ...builtIn,
-                  skillVersionIds,
-                  capabilityBindings: {
-                    ...builtIn.capabilityBindings,
-                    skillVersionIds,
-                  },
-                }
-              : { ...builtIn, skillVersionIds },
-          );
-          const nextChecksum = employeeManifestChecksum(nextManifest);
-          const nextVersions = await transaction<{ version: number }[]>`
-            select coalesce(max(version), 0)::integer + 1 as version
-            from allrice_employee_versions
-            where employee_id = ${builtInEmployeeId}
-          `;
-          const insertedVersions = await transaction<{ id: string }[]>`
-            insert into allrice_employee_versions (
-              organization_id, workspace_id, employee_id, version, name, model,
-              system_prompt, capabilities, config_checksum, description, manifest,
-              provider_snapshot, skill_version_ids
-            ) values (
-              ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId},
-              ${nextVersions[0]?.version ?? 1}, ${builtIn.name},
-              ${nextManifest.provider.model}, ${nextManifest.systemPrompt},
-              ${transaction.json(nextManifest.capabilities)}, ${nextChecksum},
-              ${nextManifest.description}, ${transaction.json(nextManifest)},
-              ${transaction.json(nextManifest.provider)},
-              ${transaction.json(nextManifest.skillVersionIds)}
-            ) returning id
-          `;
-          builtInVersionId = insertedVersions[0]?.id;
-        }
-      }
-      if (!builtInVersionId)
-        throw new Error('built-in employee version missing');
-      await transaction`
-        update allrice_employee_assignments
-        set employee_version_id = ${builtInVersionId}, updated_at = now()
-        where organization_id = ${context.organizationId}
-          and workspace_id = ${workspaceId}
-          and employee_id = ${builtInEmployeeId}
-          and active
-      `;
-    }
     const rows = await transaction<AssignmentRow[]>`
       select
         a.id as assignment_id, a.employee_id, a.employee_version_id,
@@ -902,22 +794,9 @@ export async function sendChatMessage(
   `;
   const currentAssignment = employeeRows[0];
   if (!currentAssignment) throw new DataAccessError('not_found');
-  // A Session keeps its conversation history, while each Run remains pinned to
-  // an immutable employee snapshot. Refreshing the Session binding here lets an
-  // administrator add tools or change the model without forcing the user to
-  // abandon an existing conversation.
-  if (session.employee_version_id !== currentAssignment.employee_version_id) {
-    await sql`
-      update allrice_chat_sessions
-      set employee_version_id = ${currentAssignment.employee_version_id},
-        updated_at = now()
-      where id = ${session.id}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and employee_assignment_id = ${session.employee_assignment_id}
-    `;
-    session.employee_version_id = currentAssignment.employee_version_id;
-  }
+  // Published employee revisions apply to new Sessions. Existing Sessions stay
+  // pinned to the employee version selected when they were created, so a
+  // platform rollout cannot silently change an in-flight conversation.
   const memories = await recallForReply(
     context,
     workspaceId,

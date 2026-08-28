@@ -42,6 +42,7 @@ export * from './saas.ts';
 export * from './knowledge.ts';
 export * from './models.ts';
 export * from './provider-auth.ts';
+export * from './platform-employees.ts';
 export * from './quality.ts';
 export * from './secrets.ts';
 export * from './skills.ts';

@@ -20,16 +20,18 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - detailed feature documentation with implementation status, security boundaries, data ownership, APIs, and acceptance criteria.
 - an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
-- platform-managed DSH-native Skills with employee-level assembly and immutable per-Run snapshots;
+- an empty-by-default, platform-managed DSH-native Skill registry with
+  employee-level assembly and immutable per-Run snapshots;
 - one ordinary-user entry, **与 Rice 工作**, backed by a persistent DSH conversation session and tenant-scoped tools.
 - a platform-managed model pool with per-employee selection and immutable
   Session routing snapshots; the default is **GPT-5.6 Luna · 极高** through
   the DSH `openai-codex` Provider route.
 - a role-aware SaaS shell: members, tenant administrators and platform
   administrators use one application but receive different authorized controls.
-- `/chatflow` is the only conversation product UI and `/chatflow/employees` is
-  the employee studio. `/workspace` redirects to ChatFlow 3.0; there is no
-  product-level legacy chat fallback.
+- `/chatflow` is the only tenant conversation product UI. Employee production
+  lives in the platform-only `allrice-dsh.*` Runtime Console; tenant employee
+  configuration routes redirect back to ChatFlow. `/workspace` redirects to
+  ChatFlow 3.0 and there is no product-level legacy chat fallback.
 - platform quotas, durable usage accounting, explicit fallback, Provider
   circuit breakers and audited emergency kill switches.
 

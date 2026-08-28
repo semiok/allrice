@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { runtimeCapabilityCatalog } from './runtime-capability-catalog';
+import { EmployeeProduction } from './employee-production';
 import styles from './runtime-console.module.css';
 
 interface RuntimeInventoryItem {
@@ -110,7 +111,9 @@ function runtimeStateLabel(item: RuntimeInventoryItem) {
 }
 
 export function RuntimeConsole() {
-  const [view, setView] = useState<'runtimes' | 'capabilities'>('runtimes');
+  const [view, setView] = useState<'runtimes' | 'employees' | 'capabilities'>(
+    'runtimes',
+  );
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -242,6 +245,12 @@ export function RuntimeConsole() {
 
       <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
         <button
+          aria-current={view === 'employees' ? 'page' : undefined}
+          onClick={() => setView('employees')}
+        >
+          AI 员工
+        </button>
+        <button
           aria-current={view === 'runtimes' ? 'page' : undefined}
           onClick={() => setView('runtimes')}
         >
@@ -255,7 +264,9 @@ export function RuntimeConsole() {
         </button>
       </nav>
 
-      {view === 'capabilities' ? (
+      {view === 'employees' ? (
+        <EmployeeProduction />
+      ) : view === 'capabilities' ? (
         <CapabilitySourceView />
       ) : (
         <>

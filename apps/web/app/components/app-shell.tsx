@@ -223,13 +223,6 @@ export function AppShell({
               <span className="v2-nav-label">管理</span>
               <button
                 type="button"
-                className={activePanel === 'employees' ? 'active' : ''}
-                onClick={() => setActivePanel('employees')}
-              >
-                <span>◇</span> AI 员工
-              </button>
-              <button
-                type="button"
                 className={activePanel === 'model-pool' ? 'active' : ''}
                 onClick={() => setActivePanel('model-pool')}
               >

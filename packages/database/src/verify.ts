@@ -278,13 +278,78 @@ try {
     from allrice_employees
     where employee_key <> 'default-assistant'
   `;
+  const resetSkillRows = await sql<
+    { tenant_skills: string; platform_skills: string }[]
+  >`
+    select
+      (select count(*)::text from allrice_dsh_skills) as tenant_skills,
+      case
+        when to_regclass('allrice_platform_dsh_skills') is null then '0'
+        else (select count(*)::text from allrice_platform_dsh_skills)
+      end as platform_skills
+  `;
+  const resetMigrationApplied = expectedMigrations.includes(
+    '0049_rice_only_platform_reset.sql',
+  );
   if (
     expectedMigrations.includes('0047_rice_only_employee_baseline.sql') &&
-    (employeeBaselineRows[0]?.version !== '0047' ||
-      employeeBaselineRows[0]?.migration_mode !== 'fresh-only' ||
-      nonRiceEmployeeRows[0]?.count !== '0')
+    (employeeBaselineRows[0]?.version !==
+      (resetMigrationApplied ? '0049' : '0047') ||
+      employeeBaselineRows[0]?.migration_mode !==
+        (resetMigrationApplied ? 'platform-reset' : 'fresh-only') ||
+      nonRiceEmployeeRows[0]?.count !== '0' ||
+      (resetMigrationApplied &&
+        (resetSkillRows[0]?.tenant_skills !== '0' ||
+          resetSkillRows[0]?.platform_skills !== '0')))
   ) {
     throw new Error('Rice-only employee baseline is missing or invalid');
+  }
+
+  const platformEmployeeRows = await sql<
+    {
+      version: string | undefined;
+      authority: string | undefined;
+      harness: string | undefined;
+    }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'authority' as authority,
+      value ->> 'harness' as harness
+    from allrice_runtime_metadata
+    where key = 'platform-employee-production'
+  `;
+  const platformEmployeeTables = await sql<
+    {
+      employees: string | null;
+      revisions: string | null;
+      assignments: string | null;
+      skills: string | null;
+    }[]
+  >`
+    select to_regclass('allrice_platform_employees')::text as employees,
+      to_regclass('allrice_platform_employee_revisions')::text as revisions,
+      to_regclass('allrice_platform_employee_tenant_assignments')::text as assignments,
+      to_regclass('allrice_platform_dsh_skills')::text as skills
+  `;
+  const platformRiceRows = await sql<{ count: string }[]>`
+    select count(*)::text as count
+    from allrice_platform_employees
+    where employee_key = 'rice' and current_published_revision_id is not null
+  `;
+  if (
+    expectedMigrations.includes('0048_platform_employee_production.sql') &&
+    (platformEmployeeRows[0]?.version !== '0048' ||
+      platformEmployeeRows[0]?.authority !== 'allrice-control-plane' ||
+      platformEmployeeRows[0]?.harness !== 'dsh' ||
+      !platformEmployeeTables[0]?.employees ||
+      !platformEmployeeTables[0]?.revisions ||
+      !platformEmployeeTables[0]?.assignments ||
+      !platformEmployeeTables[0]?.skills ||
+      platformRiceRows[0]?.count !== '1')
+  ) {
+    throw new Error(
+      'Platform employee production schema is missing or invalid',
+    );
   }
 
   const employeeHubRows = await sql<

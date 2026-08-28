@@ -26,7 +26,6 @@ function navClass(active: boolean) {
 export function AppNavigation({
   active,
   actionsDisabled,
-  showEmployeeAdmin = false,
   onFiles,
   onMemory,
   onNavigate,
@@ -78,16 +77,6 @@ export function AppNavigation({
           自动化
         </>,
       )}
-      {showEmployeeAdmin
-        ? destination(
-            'employees',
-            '/employees',
-            <>
-              <span className="primary-menu-icon">✦</span>
-              AI员工配置
-            </>,
-          )
-        : null}
     </nav>
   );
 }

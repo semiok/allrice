@@ -1332,18 +1332,6 @@ export function ChatFlowClient() {
             {!sidebarCollapsed ? (
               <>
                 <nav className={styles.saasNavigation}>
-                  <Link href="/chatflow/employees">
-                    <span aria-hidden="true">♙</span>
-                    {manifest.surfaces.includes('tenant_admin')
-                      ? '员工配置'
-                      : '可用员工'}
-                  </Link>
-                  {manifest.surfaces.includes('tenant_admin') ? (
-                    <Link href="/chatflow/governance">
-                      <span aria-hidden="true">⌁</span>
-                      评测与发布
-                    </Link>
-                  ) : null}
                   {manifest.surfaces.includes('platform_admin') ? (
                     <Link href="/chatflow/admin">
                       <span aria-hidden="true">⚙</span>

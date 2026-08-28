@@ -82,13 +82,13 @@ but promotion must still follow the review and immutable-bundle path above.
 
 ## Temporary portals
 
-| Host family       | Surface                 | Current authority                |
-| ----------------- | ----------------------- | -------------------------------- |
-| `dsh.*`           | Official DSH WebUI      | Isolated DSH Lab administrator   |
-| `allrice-dsh.*`   | AllRice Runtime Console | ChatFlow read-only runtime facts |
-| `allrice-admin.*` | AllRice control plane   | One platform administrator       |
-| `allrice-snow.*`  | AllRice workspace       | Snow member principal            |
-| `allrice-drink.*` | AllRice workspace       | Drink member principal           |
+| Host family       | Surface                 | Current authority                              |
+| ----------------- | ----------------------- | ---------------------------------------------- |
+| `dsh.*`           | Official DSH WebUI      | Isolated DSH Lab administrator                 |
+| `allrice-dsh.*`   | AllRice Runtime Console | Runtime facts and platform employee production |
+| `allrice-admin.*` | AllRice control plane   | One platform administrator                     |
+| `allrice-snow.*`  | AllRice workspace       | Snow member principal                          |
+| `allrice-drink.*` | AllRice workspace       | Drink member principal                         |
 
 The bootstrap adapter is replaceable. A future SSO/RBAC implementation must
 continue producing the same trusted server-side portal, actor, organization
@@ -103,7 +103,10 @@ MET-90 separates the standalone Lab from the SaaS runtime surface. The Lab at
 phases, the Worker's native-event gateway. It must not start a second DSH Home
 or attach a second client directly to a tenant JSON-RPC process.
 
-The first phase is deliberately read-only: it shows tenant-safe organization,
+Runtime inventory remains read-only: it shows tenant-safe organization,
 workspace, Session, Worker lease, Thread generation, frozen Provider/model
-identity, context pressure and lifecycle state. Prompts, credentials, host
-paths, raw tool arguments and hidden reasoning are never part of this API.
+identity, context pressure and lifecycle state. MET-93 adds a separate
+platform-authorized employee production module backed by AllRice PostgreSQL;
+it does not make tenant runtimes or DSH Homes mutable. Prompts, credentials,
+host paths, raw tool arguments and hidden reasoning are never part of the
+runtime inventory API.

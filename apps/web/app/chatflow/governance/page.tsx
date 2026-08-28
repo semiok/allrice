@@ -1,5 +1,5 @@
-import { EmployeeGovernance } from './employee-governance';
+import { redirect } from 'next/navigation';
 
 export default function ChatFlowGovernancePage() {
-  return <EmployeeGovernance />;
+  redirect('/chatflow');
 }
