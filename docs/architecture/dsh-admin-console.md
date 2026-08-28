@@ -29,9 +29,9 @@ failed patch is a release blocker rather than permission to bypass the
 gateway.
 
 The temporary bootstrap password and both session signing keys live only in
-deployment environment variables. Unknown hosts fail with HTTP 421. The DSH,
-platform-admin, Snow and Drink cookies are host-only and cannot select another
-portal or tenant.
+deployment environment variables. Unknown hosts fail with HTTP 421. The DSH
+Lab, AllRice Runtime Console and Snow cookies are host-only and cannot select
+another portal or tenant.
 
 ## Authority boundary
 
@@ -82,12 +82,11 @@ but promotion must still follow the review and immutable-bundle path above.
 
 ## Temporary portals
 
-| Host family       | Surface                 | Current authority                              |
-| ----------------- | ----------------------- | ---------------------------------------------- |
-| `dsh.*`           | Official DSH WebUI      | Isolated DSH Lab administrator                 |
-| `allrice-dsh.*`   | AllRice Runtime Console | Runtime facts and platform employee production |
-| `allrice-admin.*` | AllRice control plane   | One platform administrator                     |
-| `allrice-snow.*`  | AllRice workspace       | Snow member principal                          |
+| Host family      | Surface                 | Current authority                                          |
+| ---------------- | ----------------------- | ---------------------------------------------------------- |
+| `dsh.*`          | Official DSH WebUI      | Isolated DSH Lab administrator                             |
+| `allrice-dsh.*`  | AllRice Runtime Console | Runtime facts, employee production and platform governance |
+| `allrice-snow.*` | AllRice workspace       | Snow member principal                                      |
 
 The bootstrap adapter is replaceable. A future SSO/RBAC implementation must
 continue producing the same trusted server-side portal, actor, organization
@@ -109,3 +108,8 @@ platform-authorized employee production module backed by AllRice PostgreSQL;
 it does not make tenant runtimes or DSH Homes mutable. Prompts, credentials,
 host paths, raw tool arguments and hidden reasoning are never part of the
 runtime inventory API.
+
+Provider authorization, model release, circuit breaking, quota and usage
+governance are also first-class Runtime Console modules. AllRice does not
+operate a separate `allrice-admin.*` website or retain the historical
+`/chatflow/admin` compatibility route.

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { PlatformConsole } from '../chatflow/admin/platform-console';
+import { GovernanceConsole } from './governance-console';
 import { runtimeCapabilityCatalog } from './runtime-capability-catalog';
 import { EmployeeProduction } from './employee-production';
 import styles from './runtime-console.module.css';
@@ -298,7 +298,7 @@ export function RuntimeConsole() {
       ) : view === 'capabilities' ? (
         <CapabilitySourceView />
       ) : view === 'governance' ? (
-        <PlatformConsole embedded />
+        <GovernanceConsole />
       ) : (
         <>
           <section className={styles.summary}>

@@ -1,7 +1,7 @@
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
-  key: 'platform-admin' | 'runtime-console' | 'snow';
+  key: 'runtime-console' | 'snow';
   kind: PortalKind;
   title: string;
   subtitle: string;
@@ -21,26 +21,6 @@ export interface PortalDefinition {
 }
 
 const definitions: readonly PortalDefinition[] = [
-  {
-    key: 'platform-admin',
-    kind: 'platform_admin',
-    title: 'AllRice 平台管理',
-    subtitle: '配置员工、模型、Skill 与平台能力。',
-    hosts: ['allrice-admin.bplabs.xyz', 'allrice-admin.traditionow.ai'],
-    username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
-    passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
-    homePath: '/runtime-console?view=governance',
-    principal: {
-      organizationSlug: 'allrice-platform',
-      organizationName: 'AllRice Platform',
-      workspaceSlug: 'control-plane',
-      workspaceName: 'Platform Control Plane',
-      email:
-        process.env.ALLRICE_PLATFORM_BOOTSTRAP_EMAIL ?? 'semiokshen@gmail.com',
-      displayName: 'AllRice Platform Administrator',
-      role: 'admin',
-    },
-  },
   {
     key: 'runtime-console',
     kind: 'platform_admin',

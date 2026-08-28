@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
 
-import styles from './platform-console.module.css';
+import styles from './governance-console.module.css';
 
 interface Connection {
   id: string;
@@ -77,7 +77,7 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export function PlatformConsole({ embedded = false }: { embedded?: boolean }) {
+export function GovernanceConsole() {
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -222,14 +222,10 @@ export function PlatformConsole({ embedded = false }: { embedded?: boolean }) {
   }
 
   if (!manifest)
-    return (
-      <div className={embedded ? styles.embeddedLoading : styles.loading}>
-        正在加载平台控制台…
-      </div>
-    );
+    return <div className={styles.embeddedLoading}>正在加载平台控制台…</div>;
   if (!manifest.roles.includes('platform_admin')) {
     return (
-      <div className={embedded ? styles.embeddedDenied : styles.denied}>
+      <div className={styles.embeddedDenied}>
         <h1>平台管理员专用</h1>
         <p>租户管理员可以配置员工，但不能查看平台 Provider 或授权状态。</p>
         <Link href="/chatflow">返回 ChatFlow</Link>
@@ -238,10 +234,9 @@ export function PlatformConsole({ embedded = false }: { embedded?: boolean }) {
   }
 
   return (
-    <div className={embedded ? styles.embedded : styles.page}>
+    <div className={styles.embedded}>
       <header className={styles.header}>
         <div>
-          {!embedded ? <Link href="/chatflow">← 返回 ChatFlow</Link> : null}
           <p>PLATFORM OPERATIONS</p>
           <h1>模型与运行治理</h1>
           <span>平台统一托管凭据、Provider 可用性、租户额度和生产熔断。</span>
