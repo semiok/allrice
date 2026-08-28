@@ -80,6 +80,40 @@
   font-weight: 750;
 }
 
+.viewNav {
+  height: 52px;
+  padding: 0 24px;
+  display: flex;
+  align-items: stretch;
+  gap: 24px;
+  border-bottom: 1px solid #303236;
+  background: #18191c;
+}
+.viewNav button {
+  position: relative;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: #8f939b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.viewNav button[aria-current='page'] {
+  color: #f2f3f4;
+}
+.viewNav button[aria-current='page']::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: #f2f3f4;
+  content: '';
+}
+
 .summary {
   min-height: 92px;
   display: grid;
@@ -121,9 +155,170 @@
 }
 
 .content {
-  min-height: calc(100vh - 168px);
+  min-height: calc(100vh - 220px);
   display: grid;
   grid-template-columns: minmax(310px, 370px) 1fr;
+}
+
+.capabilityPage {
+  min-height: calc(100vh - 128px);
+  padding: 38px clamp(24px, 5vw, 72px) 56px;
+  background: #121315;
+}
+.capabilityHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 32px;
+  padding-bottom: 30px;
+  border-bottom: 1px solid #303236;
+}
+.capabilityHeader p,
+.capabilityHeader h1,
+.capabilityHeader span {
+  margin: 0;
+}
+.capabilityHeader p {
+  margin-bottom: 8px;
+  color: #6f94ff;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+.capabilityHeader h1 {
+  font-size: clamp(30px, 4vw, 48px);
+  letter-spacing: -0.04em;
+}
+.capabilityHeader div > span {
+  display: block;
+  max-width: 680px;
+  margin-top: 12px;
+  color: #8f939b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.capabilityHeader aside {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 5px 12px;
+  align-items: baseline;
+  padding: 16px 18px;
+  border: 1px solid #34363b;
+  border-radius: 14px;
+  background: #191a1d;
+}
+.capabilityHeader aside strong {
+  color: #f2f3f4;
+  font-size: 18px;
+}
+.capabilityHeader aside span {
+  color: #858991;
+  font-size: 11px;
+}
+.capabilityGroups {
+  display: grid;
+  gap: 18px;
+  margin-top: 24px;
+}
+.capabilityGroup {
+  overflow: hidden;
+  border: 1px solid #34363b;
+  border-radius: 16px;
+  background: #191a1d;
+}
+.capabilityGroup > header {
+  padding: 18px 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid #303236;
+}
+.capabilityGroup h2,
+.capabilityGroup p {
+  margin: 0;
+}
+.capabilityGroup h2 {
+  font-size: 17px;
+}
+.capabilityGroup header p {
+  max-width: 760px;
+  margin-top: 7px;
+  color: #858991;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.capabilityGroup header > span,
+.capabilityGroup li > span {
+  flex: none;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #26282c;
+  color: #a7abb2;
+  font-size: 10px;
+  font-weight: 750;
+}
+.capabilityGroup[data-source='migrated'] header > span {
+  background: #1d3828;
+  color: #76d69b;
+}
+.capabilityGroup[data-source='allrice'] header > span {
+  background: #202d4c;
+  color: #85a9ff;
+}
+.capabilityGroup[data-source='blocked'] header > span {
+  background: #3a2526;
+  color: #ff9699;
+}
+.capabilityGroup ul {
+  margin: 0;
+  padding: 0 20px;
+  list-style: none;
+}
+.capabilityGroup li {
+  min-height: 94px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 15px 0;
+  border-bottom: 1px solid #2d2f33;
+}
+.capabilityGroup li:last-child {
+  border-bottom: 0;
+}
+.capabilityGroup li div {
+  min-width: 0;
+}
+.capabilityGroup li strong {
+  display: block;
+  font-size: 14px;
+}
+.capabilityGroup code {
+  display: block;
+  max-width: 100%;
+  margin-top: 5px;
+  overflow: hidden;
+  color: #7f9fe9;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.capabilityGroup li p {
+  margin-top: 7px;
+  color: #8f939b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.capabilityFooter {
+  margin-top: 20px;
+  padding: 15px 18px;
+  border: 1px dashed #3a3d42;
+  border-radius: 12px;
+  color: #81858d;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .sidebar {
   border-right: 1px solid #303236;
