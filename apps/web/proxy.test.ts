@@ -10,6 +10,14 @@ describe('Rice Bridge portal boundary', () => {
         '/api/v1/bridge/device/commands/6f9619ff-8b86-d011-b42d-00cf4fc964ff/complete',
       ),
     ).toBe(true);
+    expect(
+      isBridgeDeviceApiPath('/api/v1/bridge/device/workspace-selections/next'),
+    ).toBe(true);
+    expect(
+      isBridgeDeviceApiPath(
+        '/api/v1/bridge/device/workspace-selections/6f9619ff-8b86-d011-b42d-00cf4fc964ff/complete',
+      ),
+    ).toBe(true);
   });
 
   it('keeps browser device management behind the portal session', () => {
