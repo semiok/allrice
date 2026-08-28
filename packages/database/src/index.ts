@@ -53,3 +53,4 @@ export * from './model-pool.ts';
 export * from './provider-auth.ts';
 export * from './model-governance.ts';
 export * from './employee-quality.ts';
+export * from './dsh-runtime-registry.ts';

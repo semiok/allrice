@@ -14,6 +14,7 @@ import type {
   HarnessAdapter,
   HarnessExecutionInput,
   HarnessExecutionResult,
+  HarnessRuntimeProcessSnapshot,
   HarnessToolCall,
 } from './adapter.js';
 import {
@@ -60,8 +61,19 @@ function isDshNativeTool(name: string) {
 
 interface DshRuntime {
   client: DshProtocolClient;
+  id: string;
   fingerprint: string;
   sessionId: string;
+  organizationId: string;
+  workspaceId: string;
+  productSessionId: string;
+  ownerId: string;
+  providerRoute: string;
+  model: string;
+  reasoningEffort: string;
+  nativeTools: string[];
+  startedAt: string;
+  lastActivityAt: string;
 }
 
 interface DshAdapterOptions {
@@ -580,6 +592,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       threadId,
       systemInstructions,
     });
+    runtime.lastActivityAt = new Date().toISOString();
     runtime.client.setRequestHandler(async (method, params) => {
       if (method !== 'allrice/tool-call') {
         throw new HandlerError(
@@ -792,6 +805,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       throw error;
     } finally {
+      runtime.lastActivityAt = new Date().toISOString();
       runtime.client.setRequestHandler(null);
     }
     return {
@@ -838,6 +852,24 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const runtimes = [...this.runtimes.values()];
     this.runtimes.clear();
     await Promise.allSettled(runtimes.map((runtime) => runtime.client.close()));
+  }
+
+  runtimeInventory(): readonly HarnessRuntimeProcessSnapshot[] {
+    return [...this.runtimes.values()].map((runtime) => ({
+      id: runtime.id,
+      organizationId: runtime.organizationId,
+      workspaceId: runtime.workspaceId,
+      sessionId: runtime.productSessionId,
+      ownerId: runtime.ownerId,
+      threadId: runtime.sessionId,
+      providerRoute: runtime.providerRoute,
+      model: runtime.model,
+      reasoningEffort: runtime.reasoningEffort,
+      profileFingerprint: runtime.fingerprint,
+      nativeTools: [...runtime.nativeTools],
+      startedAt: runtime.startedAt,
+      lastActivityAt: runtime.lastActivityAt,
+    }));
   }
 
   private async runtimeFor(input: {
@@ -962,6 +994,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
       environment.OPENAI_COMPATIBLE_API_KEY = credential!.apiKey;
       environment.OPENAI_COMPATIBLE_BASE_URL = input.snapshot.baseUrl!;
     }
+    const nativeTools = input.input.tools
+      .map((tool) => tool.name)
+      .filter(isDshNativeTool);
+    const startedAt = new Date().toISOString();
     const runtime: DshRuntime = {
       client: new DshProtocolClient({
         command: this.runtimeCommand,
@@ -970,17 +1006,26 @@ export class DshHarnessAdapter implements HarnessAdapter {
         environment,
         requestTimeoutMs: this.requestTimeoutMs,
       }),
+      id: randomUUID(),
       fingerprint,
       sessionId: input.threadId,
+      organizationId,
+      workspaceId,
+      productSessionId: input.input.kernel.sessionId,
+      ownerId,
+      providerRoute: input.snapshot.route,
+      model: input.snapshot.model,
+      reasoningEffort: input.snapshot.reasoningEffort,
+      nativeTools,
+      startedAt,
+      lastActivityAt: startedAt,
     };
     try {
       await runtime.client.initialize({
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
-        nativeTools: input.input.tools
-          .map((tool) => tool.name)
-          .filter(isDshNativeTool),
+        nativeTools,
         maxTokens: input.input.maxOutputTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });

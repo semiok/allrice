@@ -62,6 +62,22 @@ export interface HarnessExecutionResult {
   turnId?: string | null;
 }
 
+export interface HarnessRuntimeProcessSnapshot {
+  id: string;
+  organizationId: string;
+  workspaceId: string;
+  sessionId: string;
+  ownerId: string;
+  threadId: string;
+  providerRoute: string;
+  model: string;
+  reasoningEffort: string;
+  profileFingerprint: string;
+  nativeTools: string[];
+  startedAt: string;
+  lastActivityAt: string;
+}
+
 /**
  * Provider boundary owned by AllRice ChatFlow Runtime.
  *
@@ -86,5 +102,6 @@ export interface HarnessAdapter {
   }): Promise<void>;
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
+  runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
   close?(): Promise<void>;
 }

@@ -31,6 +31,18 @@ interface RuntimeInventoryItem {
     model: string;
     reasoningEffort: string;
   } | null;
+  process: {
+    id: string;
+    status: 'live' | 'offline';
+    workerId: string | null;
+    providerRoute: string | null;
+    model: string | null;
+    reasoningEffort: string | null;
+    nativeTools: string[];
+    startedAt: string | null;
+    lastActivityAt: string | null;
+    lastSeenAt: string | null;
+  } | null;
 }
 
 interface RuntimeConsoleResponse {
@@ -109,7 +121,7 @@ export function RuntimeConsole() {
     [data, selectedId],
   );
   const running = data?.runtimes.filter(
-    (item) => item.runtime.state === 'running',
+    (item) => item.process?.status === 'live',
   ).length;
   const bound = data?.runtimes.filter((item) => item.runtime.threadId).length;
 
@@ -170,14 +182,24 @@ export function RuntimeConsole() {
                 key={item.session.id}
                 onClick={() => setSelectedId(item.session.id)}
               >
-                <i data-state={item.runtime.state} />
+                <i
+                  data-state={
+                    item.process?.status === 'live'
+                      ? 'running'
+                      : item.runtime.state
+                  }
+                />
                 <span>
                   <strong>{item.session.title}</strong>
                   <small>
                     {item.organization.slug} / {item.workspace.slug}
                   </small>
                 </span>
-                <em>{item.runtime.state}</em>
+                <em>
+                  {item.process?.status === 'live'
+                    ? 'live process'
+                    : item.runtime.state}
+                </em>
               </button>
             ))}
             {data && data.runtimes.length === 0 ? (
@@ -243,6 +265,27 @@ export function RuntimeConsole() {
                     <div>
                       <dt>Fingerprint</dt>
                       <dd>{selected.runtime.configFingerprint}…</dd>
+                    </div>
+                  </dl>
+                </article>
+                <article>
+                  <p>Worker 子进程</p>
+                  <dl>
+                    <div>
+                      <dt>Process</dt>
+                      <dd>{selected.process?.id ?? '没有活跃进程记录'}</dd>
+                    </div>
+                    <div>
+                      <dt>状态</dt>
+                      <dd>{selected.process?.status ?? 'not-started'}</dd>
+                    </div>
+                    <div>
+                      <dt>最近心跳</dt>
+                      <dd>{time(selected.process?.lastSeenAt ?? null)}</dd>
+                    </div>
+                    <div>
+                      <dt>Native Tools</dt>
+                      <dd>{selected.process?.nativeTools.join(', ') || '—'}</dd>
                     </div>
                   </dl>
                 </article>

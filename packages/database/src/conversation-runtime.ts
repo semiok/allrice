@@ -48,6 +48,16 @@ interface DshRuntimeInventoryRow extends ConversationRuntimeRow {
   last_completed_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
+  process_id: string | null;
+  process_status: 'live' | 'offline' | null;
+  process_worker_id: string | null;
+  process_provider_route: string | null;
+  process_model: string | null;
+  process_reasoning_effort: string | null;
+  process_native_tools: unknown;
+  process_started_at: Date | string | null;
+  process_last_activity_at: Date | string | null;
+  process_last_seen_at: Date | string | null;
 }
 
 export class ConversationRuntimeError extends Error {
@@ -112,7 +122,17 @@ export async function listDshRuntimeInventory(limit = 100) {
       workspace.slug as workspace_slug, workspace.name as workspace_name,
       session.title as session_title, owner.email as owner_email,
       employee.name as employee_name,
-      latest_run.provider_snapshot
+      latest_run.provider_snapshot,
+      runtime_process.id as process_id,
+      runtime_process.process_status,
+      runtime_process.worker_id as process_worker_id,
+      runtime_process.provider_route as process_provider_route,
+      runtime_process.model as process_model,
+      runtime_process.reasoning_effort as process_reasoning_effort,
+      runtime_process.native_tools as process_native_tools,
+      runtime_process.started_at as process_started_at,
+      runtime_process.last_activity_at as process_last_activity_at,
+      runtime_process.last_seen_at as process_last_seen_at
     from allrice_conversation_runtimes runtime
     join allrice_organizations organization
       on organization.id = runtime.organization_id
@@ -141,6 +161,21 @@ export async function listDshRuntimeInventory(limit = 100) {
       on employee.id = employee_version.employee_id
       and employee.organization_id = runtime.organization_id
       and employee.workspace_id = runtime.workspace_id
+    left join lateral (
+      select process.*,
+        case
+          when process.status = 'live'
+            and process.last_seen_at >= now() - interval '15 seconds'
+          then 'live'
+          else 'offline'
+        end as process_status
+      from allrice_dsh_runtime_instances process
+      where process.organization_id = runtime.organization_id
+        and process.workspace_id = runtime.workspace_id
+        and process.session_id = runtime.session_id
+      order by process.last_seen_at desc
+      limit 1
+    ) runtime_process on true
     order by
       case runtime.state when 'running' then 0 when 'error' then 1 else 2 end,
       runtime.updated_at desc
@@ -196,6 +231,23 @@ export async function listDshRuntimeInventory(limit = 100) {
             route: provider.data.route ?? 'unknown',
             model: provider.data.model ?? 'unknown',
             reasoningEffort: provider.data.reasoningEffort ?? 'unknown',
+          }
+        : null,
+      process: row.process_id
+        ? {
+            id: row.process_id,
+            status: row.process_status ?? 'offline',
+            workerId: row.process_worker_id,
+            providerRoute: row.process_provider_route,
+            model: row.process_model,
+            reasoningEffort: row.process_reasoning_effort,
+            nativeTools: z.array(z.string()).safeParse(row.process_native_tools)
+              .success
+              ? (row.process_native_tools as string[])
+              : [],
+            startedAt: timestamp(row.process_started_at),
+            lastActivityAt: timestamp(row.process_last_activity_at),
+            lastSeenAt: timestamp(row.process_last_seen_at),
           }
         : null,
     };
