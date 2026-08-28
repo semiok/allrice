@@ -116,6 +116,10 @@ interface BridgeDevice {
   platform: 'macos-arm64';
   status: 'online' | 'offline' | 'revoked';
   lastSeenAt: string | null;
+  folderGrants: Array<{
+    id: string;
+    label: string;
+  }>;
 }
 
 interface BridgePairing {
@@ -674,24 +678,31 @@ export function ChatFlowClient() {
     }
   }
 
-  async function loadBridgeDevices(open = false) {
-    if (!workspace) return;
-    setBridgeBusy(true);
-    try {
-      const result = await readJson<{ devices: BridgeDevice[] }>(
-        await fetch(
-          `/api/v1/bridge/devices?workspaceId=${workspace.workspaceId}`,
-          { cache: 'no-store', headers: tenantHeaders },
-        ),
-      );
-      setBridgeDevices(result.devices);
-      if (open) setBridgeOpen(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '本地电脑状态加载失败');
-    } finally {
-      setBridgeBusy(false);
-    }
-  }
+  const loadBridgeDevices = useCallback(
+    async (open = false, quiet = false) => {
+      if (!workspace) return;
+      if (!quiet) setBridgeBusy(true);
+      try {
+        const result = await readJson<{ devices: BridgeDevice[] }>(
+          await fetch(
+            `/api/v1/bridge/devices?workspaceId=${workspace.workspaceId}`,
+            { cache: 'no-store', headers: tenantHeaders },
+          ),
+        );
+        setBridgeDevices(result.devices);
+        if (open) setBridgeOpen(true);
+      } catch (cause) {
+        if (!quiet) {
+          setError(
+            cause instanceof Error ? cause.message : '本地电脑状态加载失败',
+          );
+        }
+      } finally {
+        if (!quiet) setBridgeBusy(false);
+      }
+    },
+    [tenantHeaders, workspace],
+  );
 
   async function createBridgePairing() {
     if (!workspace) return;
@@ -735,6 +746,18 @@ export function ChatFlowClient() {
       setBridgeBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!workspace) {
+      setBridgeDevices([]);
+      return;
+    }
+    void loadBridgeDevices(false, true);
+    const timer = window.setInterval(() => {
+      void loadBridgeDevices(false, true);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [loadBridgeDevices, workspace]);
 
   async function addWorkspaceFile(file: WorkspaceFile) {
     if (!workspace) return;
@@ -897,6 +920,11 @@ export function ChatFlowClient() {
   const isRunning =
     runView?.status === 'running' || runView?.status === 'connecting';
   const isEmptyConversation = !history?.messages.length && !runView;
+  const selectedBridgeDevice = bridgeDevices.find(
+    (device) => device.status !== 'revoked' && device.folderGrants.length > 0,
+  );
+  const localWorkspaceOnline = selectedBridgeDevice?.status === 'online';
+  const localWorkspaceLabel = selectedBridgeDevice?.folderGrants[0]?.label;
 
   const renderComposer = (hero = false) => (
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
@@ -1044,10 +1072,36 @@ export function ChatFlowClient() {
         </div>
       </div>
       <div className={styles.composerStatus}>
-        <span>
-          Session 上下文 {history?.contextStatus.percentage ?? 0}%
-          {history?.contextStatus.compactionDue ? ' · 即将自动压缩' : ''}
-        </span>
+        <div className={styles.composerStatusLeft}>
+          <button
+            aria-label={
+              localWorkspaceOnline
+                ? `本地工作区 ${localWorkspaceLabel}`
+                : '本地工作区离线'
+            }
+            className={`${styles.localWorkspaceStatus} ${
+              localWorkspaceOnline
+                ? styles.localWorkspaceOnline
+                : styles.localWorkspaceOffline
+            }`}
+            onClick={() => void loadBridgeDevices(true)}
+            title={
+              localWorkspaceOnline
+                ? `Rice Bridge 已连接：${localWorkspaceLabel}`
+                : localWorkspaceLabel
+                  ? `${localWorkspaceLabel} 已选择，但 Rice Bridge 当前离线`
+                  : '尚未连接 Rice Bridge 或选择本地授权文件夹'
+            }
+            type="button"
+          >
+            <span aria-hidden="true" />
+            {localWorkspaceLabel ?? '本地工作区离线'}
+          </button>
+          <span>
+            Session 上下文 {history?.contextStatus.percentage ?? 0}%
+            {history?.contextStatus.compactionDue ? ' · 即将自动压缩' : ''}
+          </span>
+        </div>
         {isRunning ? (
           <button onClick={() => void cancelRun()} type="button">
             停止本轮
@@ -1586,6 +1640,16 @@ export function ChatFlowClient() {
                         {device.status === 'online' ? '在线' : '离线'} · Apple
                         Silicon
                       </small>
+                      {device.folderGrants.length ? (
+                        <small>
+                          本地工作区：
+                          {device.folderGrants
+                            .map((grant) => grant.label)
+                            .join('、')}
+                        </small>
+                      ) : (
+                        <small>尚未选择本地工作区</small>
+                      )}
                     </div>
                     <button
                       disabled={bridgeBusy}

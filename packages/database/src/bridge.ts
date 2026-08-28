@@ -316,9 +316,26 @@ export async function listBridgeDevices(
     from allrice_bridge_devices
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId} and owner_id = ${ownerId}
-    order by created_at desc
+    order by last_seen_at desc nulls last, created_at desc
   `;
-  return rows.map((row) => mapDevice(row));
+  if (rows.length === 0) return [];
+  const grants = await sql<GrantRow[]>`
+    select id, device_id, label, root_fingerprint, created_at, revoked_at
+    from allrice_bridge_folder_grants
+    where device_id in ${sql(rows.map((row) => row.id))}
+      and revoked_at is null
+    order by created_at
+  `;
+  const grantsByDevice = new Map<string, BridgeFolderGrant[]>();
+  for (const row of grants) {
+    const current = grantsByDevice.get(row.device_id) ?? [];
+    current.push(mapGrant(row));
+    grantsByDevice.set(row.device_id, current);
+  }
+  return rows.map((row) => ({
+    ...mapDevice(row),
+    folderGrants: grantsByDevice.get(row.id) ?? [],
+  }));
 }
 
 export async function heartbeatBridgeDevice(token: string) {

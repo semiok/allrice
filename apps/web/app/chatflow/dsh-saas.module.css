@@ -559,6 +559,56 @@
   line-height: 16px;
 }
 
+.composerStatusLeft {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.composerStatus .localWorkspaceStatus {
+  display: inline-flex;
+  width: auto;
+  max-width: 220px;
+  height: 22px;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 7px;
+  background: transparent;
+  font-size: 10px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.localWorkspaceStatus > span {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.composerStatus .localWorkspaceOnline {
+  background: #edf9f2;
+  color: #168a50;
+}
+
+.localWorkspaceOnline > span {
+  background: #20b26b;
+}
+
+.composerStatus .localWorkspaceOffline {
+  background: #fff0ed;
+  color: #c94f45;
+}
+
+.localWorkspaceOffline > span {
+  background: #e4564d;
+}
+
 .composerStatus button {
   border: 0;
   background: transparent;
