@@ -1564,7 +1564,8 @@ export function ChatFlowClient() {
                   <strong>{bridgePairing.code}</strong>
                   <small>十分钟内，在 Snow 的 Mac 终端运行：</small>
                   <code>
-                    rice-bridge pair --server {window.location.origin} --code{' '}
+                    pnpm --filter @allrice/rice-bridge exec rice-bridge pair
+                    --server {window.location.origin} --code{' '}
                     {bridgePairing.code}
                   </code>
                 </div>

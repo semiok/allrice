@@ -15,8 +15,11 @@ v0.1 支持 Apple Silicon macOS，且只提供：
 ## 开发安装
 
 ```bash
+git clone --branch feat/met-89-rice-bridge-v01 --single-branch \
+  https://github.com/semiok/allrice.git
+cd allrice
 pnpm install
-pnpm --filter @allrice/rice-bridge build
+pnpm --filter @allrice/rice-bridge... build
 pnpm --filter @allrice/rice-bridge exec rice-bridge
 ```
 
