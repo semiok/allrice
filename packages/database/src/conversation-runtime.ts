@@ -33,6 +33,11 @@ interface ConversationRuntimeRow {
   dynamic_context_tokens: number;
   compact_threshold_tokens: number;
   context_pressure_tokens: number;
+  dsh_context_as_of_seq: number | null;
+  dsh_context_pressure_tokens: number | null;
+  dsh_context_projected_tokens: number | null;
+  dsh_context_window_tokens: number | null;
+  dsh_context_observed_at: Date | string | null;
 }
 
 interface DshRuntimeInventoryRow extends ConversationRuntimeRow {
@@ -196,6 +201,11 @@ function mapBinding(row: ConversationRuntimeRow) {
     dynamicContextTokens: row.dynamic_context_tokens,
     compactThresholdTokens: row.compact_threshold_tokens,
     contextPressureTokens: row.context_pressure_tokens,
+    dshContextAsOfSeq: row.dsh_context_as_of_seq,
+    dshContextPressureTokens: row.dsh_context_pressure_tokens,
+    dshContextProjectedTokens: row.dsh_context_projected_tokens,
+    dshContextWindowTokens: row.dsh_context_window_tokens,
+    dshContextObservedAt: timestamp(row.dsh_context_observed_at),
   };
 }
 
@@ -467,6 +477,11 @@ export async function acquireConversationRuntime(input: {
           dynamic_context_tokens = ${configChanged ? 0 : current.dynamic_context_tokens},
           compact_threshold_tokens = ${values.compactThresholdTokens},
           context_pressure_tokens = ${configChanged ? 0 : current.context_pressure_tokens},
+          dsh_context_as_of_seq = ${configChanged ? null : current.dsh_context_as_of_seq},
+          dsh_context_pressure_tokens = ${configChanged ? null : current.dsh_context_pressure_tokens},
+          dsh_context_projected_tokens = ${configChanged ? null : current.dsh_context_projected_tokens},
+          dsh_context_window_tokens = ${configChanged ? null : current.dsh_context_window_tokens},
+          dsh_context_observed_at = ${configChanged ? null : current.dsh_context_observed_at},
           last_error_code = null, last_started_at = now(), updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -550,6 +565,11 @@ export async function bindConversationThread(input: {
           last_cached_input_tokens = ${changed ? null : current.last_cached_input_tokens},
           dynamic_context_tokens = ${changed ? 0 : current.dynamic_context_tokens},
           context_pressure_tokens = ${changed ? 0 : current.context_pressure_tokens},
+          dsh_context_as_of_seq = ${changed ? null : current.dsh_context_as_of_seq},
+          dsh_context_pressure_tokens = ${changed ? null : current.dsh_context_pressure_tokens},
+          dsh_context_projected_tokens = ${changed ? null : current.dsh_context_projected_tokens},
+          dsh_context_window_tokens = ${changed ? null : current.dsh_context_window_tokens},
+          dsh_context_observed_at = ${changed ? null : current.dsh_context_observed_at},
           active_turn_id = null, updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -605,6 +625,56 @@ export async function recordConversationUsage(input: {
           last_cached_input_tokens = ${values.cachedInputTokens},
           dynamic_context_tokens = ${watermark.dynamicContextTokens},
           context_pressure_tokens = ${contextPressureTokens},
+          updated_at = now()
+      where session_id = ${values.sessionId}
+      returning *
+    `;
+    return mapBinding(rows[0]!);
+  });
+}
+
+export async function recordConversationNativeContext(input: {
+  organizationId: string;
+  workspaceId: string;
+  sessionId: string;
+  runId: string;
+  workerId: string;
+  generation: number;
+  asOfSeq?: number;
+  pressureTokens?: number;
+  projectedTokens?: number;
+  contextWindow: number;
+}) {
+  const values = {
+    ...ownedValues(input),
+    generation: z.number().int().nonnegative().parse(input.generation),
+    asOfSeq:
+      input.asOfSeq === undefined
+        ? null
+        : z.number().int().nonnegative().parse(input.asOfSeq),
+    pressureTokens:
+      input.pressureTokens === undefined
+        ? null
+        : z.number().int().nonnegative().parse(input.pressureTokens),
+    projectedTokens:
+      input.projectedTokens === undefined
+        ? null
+        : z.number().int().nonnegative().parse(input.projectedTokens),
+    contextWindow: z.number().int().positive().parse(input.contextWindow),
+  };
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    const current = await lockedOwnedRuntime(transaction, values);
+    if (current.thread_generation !== values.generation) {
+      throw new ConversationRuntimeError('conversation_ownership_lost');
+    }
+    const rows = await transaction<ConversationRuntimeRow[]>`
+      update allrice_conversation_runtimes
+      set dsh_context_as_of_seq = ${values.asOfSeq},
+          dsh_context_pressure_tokens = ${values.pressureTokens},
+          dsh_context_projected_tokens = ${values.projectedTokens},
+          dsh_context_window_tokens = ${values.contextWindow},
+          dsh_context_observed_at = now(),
           updated_at = now()
       where session_id = ${values.sessionId}
       returning *

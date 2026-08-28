@@ -60,6 +60,12 @@ export interface HarnessExecutionResult {
   model: string;
   threadId?: string | null;
   turnId?: string | null;
+  nativeContextPressure?: {
+    asOfSeq?: number;
+    pressureTokens?: number;
+    projectedTokens?: number;
+    contextWindow: number;
+  } | null;
 }
 
 export interface HarnessRuntimeProcessSnapshot {

@@ -76,6 +76,10 @@ describe('AllRice DSH protocol runtime', () => {
     await expect(client.compact('dsh-not-live')).resolves.toMatchObject({
       compacted: false,
     });
+    await expect(client.sessionProjection('dsh-not-live')).resolves.toEqual({
+      asOfSeq: undefined,
+      contextPressure: null,
+    });
     await expect(client.closeSession('dsh-not-live')).resolves.toMatchObject({
       closed: false,
     });

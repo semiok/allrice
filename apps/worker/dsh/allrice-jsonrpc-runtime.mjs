@@ -524,6 +524,37 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     };
   }
 
+  async sessionProjection(params) {
+    const sessionId = requiredSessionId(params);
+    const record = this.sessions.get(sessionId);
+    const projections = this.ctx.get('sessionProjections');
+    if (!record || !projections) {
+      return { asOfSeq: null, contextPressure: null };
+    }
+    const snapshot = projections.snapshot(record.handle.agent.session);
+    const value = snapshot.values?.contextPressure;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { asOfSeq: snapshot.asOfSeq, contextPressure: null };
+    }
+    const pressureTokens = Number(value.pressureTokens);
+    const projectedTokens = Number(value.projectedTokens);
+    const contextWindow = Number(value.contextWindow);
+    return {
+      asOfSeq: snapshot.asOfSeq,
+      contextPressure: {
+        ...(Number.isInteger(pressureTokens) && pressureTokens >= 0
+          ? { pressureTokens }
+          : {}),
+        ...(Number.isInteger(projectedTokens) && projectedTokens >= 0
+          ? { projectedTokens }
+          : {}),
+        ...(Number.isInteger(contextWindow) && contextWindow > 0
+          ? { contextWindow }
+          : {}),
+      },
+    };
+  }
+
   async recover(params) {
     const sessionId = requiredSessionId(params);
     const current = this.sessions.get(sessionId);
@@ -665,6 +696,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         return this.steer(params);
       case 'session/compact':
         return this.compact(params);
+      case 'session/projection':
+        return this.sessionProjection(params);
       case 'session/recover':
         return this.recover(params);
       case 'session/close':

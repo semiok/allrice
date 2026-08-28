@@ -728,9 +728,20 @@ export async function getChatSessionHistory(
       m.id
   `;
   const runtimes = await sql<
-    { context_pressure_tokens: number; compact_threshold_tokens: number }[]
+    {
+      context_pressure_tokens: number;
+      compact_threshold_tokens: number;
+      dsh_context_as_of_seq: number | null;
+      dsh_context_pressure_tokens: number | null;
+      dsh_context_projected_tokens: number | null;
+      dsh_context_window_tokens: number | null;
+      dsh_context_observed_at: Date | string | null;
+    }[]
   >`
-    select context_pressure_tokens, compact_threshold_tokens
+    select context_pressure_tokens, compact_threshold_tokens,
+      dsh_context_as_of_seq, dsh_context_pressure_tokens,
+      dsh_context_projected_tokens, dsh_context_window_tokens,
+      dsh_context_observed_at
     from allrice_conversation_runtimes
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
@@ -742,12 +753,41 @@ export async function getChatSessionHistory(
     thresholdTokens:
       runtimes[0]?.compact_threshold_tokens ?? defaultContextCompactThreshold,
   });
+  const nativeRuntime = runtimes[0];
+  const nativeUsedTokens =
+    nativeRuntime?.dsh_context_projected_tokens ??
+    nativeRuntime?.dsh_context_pressure_tokens ??
+    null;
+  const nativeWindowTokens = nativeRuntime?.dsh_context_window_tokens ?? null;
+  const nativeContextStatus =
+    nativeUsedTokens !== null &&
+    nativeWindowTokens !== null &&
+    nativeWindowTokens > 0
+      ? {
+          source: 'dsh' as const,
+          usedTokens: nativeUsedTokens,
+          contextWindowTokens: nativeWindowTokens,
+          percentage: Math.min(
+            100,
+            Math.max(
+              0,
+              Math.round((nativeUsedTokens / nativeWindowTokens) * 100),
+            ),
+          ),
+          asOfSeq: nativeRuntime?.dsh_context_as_of_seq ?? null,
+          observedAt:
+            nativeRuntime?.dsh_context_observed_at instanceof Date
+              ? nativeRuntime.dsh_context_observed_at.toISOString()
+              : (nativeRuntime?.dsh_context_observed_at ?? null),
+        }
+      : null;
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
   );
   return {
     session: mapSession(row),
     contextStatus,
+    nativeContextStatus,
     messages: messages.map((message) =>
       mapMessage(context, message, attachments.get(message.id) ?? []),
     ),

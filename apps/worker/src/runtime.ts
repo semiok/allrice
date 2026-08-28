@@ -33,6 +33,7 @@ import {
   listContextCheckpointEvidence,
   listFailedRouteDecisions,
   recordConversationTurn,
+  recordConversationNativeContext,
   recordConversationUsage,
   recordRouteDecision,
   recordToolBrokerAudit,
@@ -1137,6 +1138,13 @@ async function executeHandler(
           inputTokens: result.usage.inputTokens,
           cachedInputTokens: result.usage.cachedInputTokens,
           applicationEstimatedTokens,
+        });
+      }
+      if ('nativeContextPressure' in result && result.nativeContextPressure) {
+        runtime = await recordConversationNativeContext({
+          ...ownership,
+          generation: runtime.generation,
+          ...result.nativeContextPressure,
         });
       }
       const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;

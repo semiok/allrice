@@ -97,6 +97,14 @@ interface History {
     thresholdTokens: number;
     compactionDue: boolean;
   };
+  nativeContextStatus: {
+    source: 'dsh';
+    usedTokens: number;
+    contextWindowTokens: number;
+    percentage: number;
+    asOfSeq: number | null;
+    observedAt: string | null;
+  } | null;
 }
 
 interface Attachment {
@@ -636,6 +644,7 @@ export function ChatFlowClient() {
         thresholdTokens: 40_000,
         compactionDue: false,
       },
+      nativeContextStatus: null,
     });
     return result.session.id;
   }
@@ -1173,10 +1182,13 @@ export function ChatFlowClient() {
             <span aria-hidden="true" />
             {localWorkspaceLabel ?? '本地工作区离线'}
           </button>
-          <span>
-            Session 上下文 {history?.contextStatus.percentage ?? 0}%
-            {history?.contextStatus.compactionDue ? ' · 即将自动压缩' : ''}
-          </span>
+          {history?.nativeContextStatus ? (
+            <span
+              title={`DSH 原生上下文投影：约 ${history.nativeContextStatus.usedTokens.toLocaleString()} / ${history.nativeContextStatus.contextWindowTokens.toLocaleString()} tokens`}
+            >
+              Session 上下文 {history.nativeContextStatus.percentage}%
+            </span>
+          ) : null}
         </div>
         {isRunning ? (
           <button onClick={() => void cancelRun()} type="button">

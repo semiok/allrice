@@ -142,6 +142,17 @@ lines.on('line', (line) => {
     respond(frame.id, { compacted: true, compactionId: `compact-${seq++}` });
     return;
   }
+  if (frame.method === 'session/projection') {
+    respond(frame.id, {
+      asOfSeq: seq - 1,
+      contextPressure: {
+        pressureTokens: 12000,
+        projectedTokens: 13516,
+        contextWindow: 200000,
+      },
+    });
+    return;
+  }
   if (frame.method === 'session/recover') {
     respond(frame.id, { recovered: true, sequence: seq });
     return;

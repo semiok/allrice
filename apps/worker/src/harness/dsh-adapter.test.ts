@@ -151,6 +151,11 @@ describe('DshHarnessAdapter', () => {
       cachedInputTokens: 3,
       outputTokens: 5,
     });
+    expect(result.nativeContextPressure).toMatchObject({
+      pressureTokens: 12000,
+      projectedTokens: 13516,
+      contextWindow: 200000,
+    });
     expect(started).toHaveLength(1);
   });
 

@@ -815,6 +815,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
       model: snapshot.model,
       threadId,
       turnId,
+      nativeContextPressure: await runtime.client
+        .sessionProjection(runtime.sessionId)
+        .then((projection) =>
+          projection.contextPressure
+            ? {
+                ...(projection.asOfSeq === undefined
+                  ? {}
+                  : { asOfSeq: projection.asOfSeq }),
+                ...projection.contextPressure,
+              }
+            : null,
+        )
+        .catch(() => null),
     };
   }
 

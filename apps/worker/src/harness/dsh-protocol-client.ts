@@ -151,6 +151,31 @@ export class DshProtocolClient {
     return this.request('session/compact', { sessionId });
   }
 
+  async sessionProjection(sessionId: string) {
+    const result = await this.request(
+      'session/projection',
+      { sessionId },
+      10_000,
+    );
+    const pressure = record(result.contextPressure);
+    const optionalCount = (value: unknown) =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0
+        ? value
+        : undefined;
+    const contextWindow = optionalCount(pressure?.contextWindow);
+    return {
+      asOfSeq: optionalCount(result.asOfSeq),
+      contextPressure:
+        pressure && contextWindow && contextWindow > 0
+          ? {
+              pressureTokens: optionalCount(pressure.pressureTokens),
+              projectedTokens: optionalCount(pressure.projectedTokens),
+              contextWindow,
+            }
+          : null,
+    };
+  }
+
   async recover(sessionId: string) {
     return this.request('session/recover', { sessionId });
   }
