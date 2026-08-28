@@ -852,16 +852,36 @@ export async function sendChatMessage(
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
-  const employeeRows = await sql<{ employee_id: string }[]>`
-    select employee_id from allrice_employee_assignments
+  const employeeRows = await sql<
+    { employee_id: string; employee_version_id: string }[]
+  >`
+    select employee_id, employee_version_id from allrice_employee_assignments
     where id = ${session.employee_assignment_id}
       and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
   `;
+  const currentAssignment = employeeRows[0];
+  if (!currentAssignment) throw new DataAccessError('not_found');
+  // A Session keeps its conversation history, while each Run remains pinned to
+  // an immutable employee snapshot. Refreshing the Session binding here lets an
+  // administrator add tools or change the model without forcing the user to
+  // abandon an existing conversation.
+  if (session.employee_version_id !== currentAssignment.employee_version_id) {
+    await sql`
+      update allrice_chat_sessions
+      set employee_version_id = ${currentAssignment.employee_version_id},
+        updated_at = now()
+      where id = ${session.id}
+        and organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and employee_assignment_id = ${session.employee_assignment_id}
+    `;
+    session.employee_version_id = currentAssignment.employee_version_id;
+  }
   const memories = await recallForReply(
     context,
     workspaceId,
-    employeeRows[0]?.employee_id,
+    currentAssignment.employee_id,
     message.text,
   );
   const result = await sql.begin(async (transaction) => {
