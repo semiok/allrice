@@ -730,6 +730,27 @@ export function ChatFlowClient() {
     }
   }
 
+  async function requestBridgeWorkspaceSelection(device: BridgeDevice) {
+    if (!workspace) return;
+    setBridgeBusy(true);
+    setBridgeRecoveryActive(true);
+    try {
+      await readJson(
+        await fetch(
+          `/api/v1/bridge/devices/${device.id}/workspace-selection?workspaceId=${workspace.workspaceId}`,
+          { method: 'POST', headers: tenantHeaders },
+        ),
+      );
+    } catch (cause) {
+      setBridgeRecoveryActive(false);
+      setError(
+        cause instanceof Error ? cause.message : '无法打开本地文件夹选择器',
+      );
+    } finally {
+      setBridgeBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (!workspace) {
       setBridgeDevices([]);
@@ -913,6 +934,9 @@ export function ChatFlowClient() {
   const isEmptyConversation = !history?.messages.length && !runView;
   const selectedBridgeDevice = bridgeDevices.find(
     (device) => device.status !== 'revoked' && device.folderGrants.length > 0,
+  );
+  const onlineBridgeDevice = bridgeDevices.find(
+    (device) => device.status === 'online',
   );
   const localWorkspaceOnline = selectedBridgeDevice?.status === 'online';
   const localWorkspaceLabel = selectedBridgeDevice?.folderGrants[0]?.label;
@@ -1599,23 +1623,45 @@ export function ChatFlowClient() {
             {!localWorkspaceOnline ? (
               <section className={styles.bridgeRecovery}>
                 <div>
-                  <strong>本地工作区当前离线</strong>
-                  <p>
-                    如果 RiceBridge 正在运行，先在终端按 Control + C
-                    停止，再双击 Snow Mac 桌面的 RiceBridge。程序会弹出 macOS
-                    文件夹选择器；选择完成后保持终端窗口开启。
-                  </p>
+                  <strong>
+                    {onlineBridgeDevice
+                      ? 'Bridge 在线，工作区未连接'
+                      : 'Bridge 当前离线'}
+                  </strong>
+                  {onlineBridgeDevice ? (
+                    <p>
+                      点击“选择工作区”后，Snow Mac 会立即弹出 macOS
+                      文件夹选择器。选择完成后，这里会自动显示文件夹名称。
+                    </p>
+                  ) : (
+                    <p>
+                      请先双击 Snow Mac 桌面的
+                      RiceBridge，并保持终端窗口开启；Bridge
+                      上线后即可从这里选择工作区。
+                    </p>
+                  )}
+                  <a
+                    className={styles.bridgeClientDownload}
+                    href="/api/v1/bridge/client/macos-arm64"
+                  >
+                    下载支持网页唤起的 RiceBridge v0.2
+                  </a>
                 </div>
                 <button
                   className={styles.bridgeRecoveryPrimary}
-                  disabled={bridgeBusy}
+                  disabled={bridgeBusy || !onlineBridgeDevice}
                   onClick={() => {
-                    setBridgeRecoveryActive(true);
-                    void loadBridgeDevices(false, true);
+                    if (onlineBridgeDevice) {
+                      void requestBridgeWorkspaceSelection(onlineBridgeDevice);
+                    }
                   }}
                   type="button"
                 >
-                  {bridgeRecoveryActive ? '等待本地选择…' : '选择工作区'}
+                  {bridgeRecoveryActive
+                    ? '等待本地选择…'
+                    : onlineBridgeDevice
+                      ? '选择工作区'
+                      : '等待 Bridge 上线'}
                 </button>
                 {bridgeRecoveryActive ? (
                   <small>

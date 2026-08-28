@@ -275,6 +275,17 @@
   line-height: 18px;
 }
 
+.bridgeClientDownload {
+  color: var(--dsw-alias-link-default);
+  font-size: 12px;
+  line-height: 18px;
+  text-decoration: none;
+}
+
+.bridgeClientDownload:hover {
+  text-decoration: underline;
+}
+
 .bridgeRecovery .bridgeRecoveryPrimary {
   border-color: transparent;
   background: var(--dsw-alias-button-primary-fill);

@@ -39,6 +39,21 @@ function fallbackTokenPath() {
 }
 
 export async function readConfig() {
+  const staticDeviceId = process.env.ALLRICE_BRIDGE_STATIC_DEVICE_ID;
+  if (staticDeviceId) {
+    const existing = await readFile(configPath(), 'utf8')
+      .then((value) => JSON.parse(value) as BridgeConfig)
+      .catch(() => null);
+    return {
+      server:
+        process.env.ALLRICE_BRIDGE_STATIC_SERVER ??
+        'https://allrice-snow.bplabs.xyz',
+      deviceId: staticDeviceId,
+      deviceName:
+        process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME ?? 'Snow Mac M5',
+      grants: existing?.deviceId === staticDeviceId ? existing.grants : [],
+    };
+  }
   return JSON.parse(await readFile(configPath(), 'utf8')) as BridgeConfig;
 }
 

@@ -1,16 +1,20 @@
 #!/usr/bin/env node
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { arch, hostname, platform } from 'node:os';
 import { basename } from 'node:path';
+import { promisify } from 'node:util';
 
 import {
   BridgeCapabilities,
   BridgeCommandSchema,
+  BridgeWorkspaceSelectionRequestSchema,
   PairBridgeDeviceResponseSchema,
   type BridgeCommand,
   type BridgeDevice,
   type BridgeFolderGrant,
+  type BridgeWorkspaceSelectionRequest,
 } from '@allrice/contracts';
 
 import { bridgeRequest } from './client.js';
@@ -23,6 +27,8 @@ import {
   type BridgeConfig,
 } from './config.js';
 import { LocalExecutionError, executeLocalCommand } from './executor.js';
+
+const execFileAsync = promisify(execFile);
 
 function option(args: string[], name: string) {
   const index = args.indexOf(name);
@@ -78,11 +84,9 @@ async function pair(args: string[]) {
   console.info(`Rice Bridge 已连接：${response.device.name}`);
 }
 
-async function grant(args: string[]) {
-  const path = args[0];
-  if (!path) throw new Error('grant requires a folder path');
+async function createFolderGrant(path: string, name?: string) {
   const rootPath = await realpath(path);
-  const label = option(args, '--name') ?? basename(rootPath);
+  const label = name ?? basename(rootPath);
   const rootFingerprint = createHash('sha256').update(rootPath).digest('hex');
   const { config, token } = await credentials(await readConfig());
   const response = await bridgeRequest<{ grant: BridgeFolderGrant }>({
@@ -103,6 +107,13 @@ async function grant(args: string[]) {
   };
   await writeConfig(next);
   console.info(`已授权文件夹：${label}`);
+  return response.grant;
+}
+
+async function grant(args: string[]) {
+  const path = args[0];
+  if (!path) throw new Error('grant requires a folder path');
+  await createFolderGrant(path, option(args, '--name'));
 }
 
 async function status() {
@@ -166,6 +177,53 @@ async function complete(
   }
 }
 
+async function chooseWorkspaceFolder() {
+  if (platform() !== 'darwin') {
+    throw new Error('Native workspace selection requires macOS');
+  }
+  const result = await execFileAsync('/usr/bin/osascript', [
+    '-e',
+    'POSIX path of (choose folder with prompt "选择 Rice 的本地工作区")',
+  ]);
+  return result.stdout.trim();
+}
+
+async function completeWorkspaceSelection(
+  config: BridgeConfig,
+  token: string,
+  request: BridgeWorkspaceSelectionRequest,
+) {
+  try {
+    const rootPath = await chooseWorkspaceFolder();
+    const grant = await createFolderGrant(rootPath);
+    await bridgeRequest({
+      server: config.server,
+      path: `/api/v1/bridge/device/workspace-selections/${request.id}/complete`,
+      method: 'POST',
+      token,
+      body: {
+        leaseToken: request.leaseToken,
+        status: 'succeeded',
+        grantId: grant.id,
+      },
+    });
+    console.info(`✓ 本地工作区已切换为：${grant.label}`);
+  } catch {
+    await bridgeRequest({
+      server: config.server,
+      path: `/api/v1/bridge/device/workspace-selections/${request.id}/complete`,
+      method: 'POST',
+      token,
+      body: {
+        leaseToken: request.leaseToken,
+        status: 'failed',
+        errorCode: 'NATIVE_PICKER_CANCELED',
+      },
+    }).catch(() => undefined);
+    console.info('未选择新的本地工作区。');
+  }
+}
+
 async function start() {
   let { config, token } = await credentials(await readConfig());
   let stopping = false;
@@ -188,6 +246,22 @@ async function start() {
           token,
         });
         lastHeartbeatAt = Date.now();
+      }
+      const selection = await bridgeRequest<{ request: unknown }>({
+        server: config.server,
+        path: '/api/v1/bridge/device/workspace-selections/next',
+        method: 'POST',
+        token,
+      });
+      if (selection.request) {
+        await completeWorkspaceSelection(
+          config,
+          token,
+          BridgeWorkspaceSelectionRequestSchema.parse(selection.request),
+        );
+        ({ config, token } = await credentials(await readConfig()));
+        reconnectDelayMs = 1_000;
+        continue;
       }
       const response = await bridgeRequest<{ command: unknown }>({
         server: config.server,
@@ -241,15 +315,20 @@ function help() {
   );
 }
 
-const [command, ...args] = process.argv.slice(2);
-try {
+async function main() {
+  const [requestedCommand, ...args] = process.argv.slice(2);
+  const command =
+    requestedCommand ??
+    (process.env.ALLRICE_BRIDGE_AUTOSTART === '1' ? 'start' : undefined);
   if (command === 'pair') await pair(args);
   else if (command === 'grant') await grant(args);
   else if (command === 'start') await start();
   else if (command === 'status') await status();
   else if (command === 'revoke') await revoke();
   else help();
-} catch (error) {
+}
+
+void main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
-}
+});

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BridgeCommandPayloadSchema,
   CompleteBridgeCommandInputSchema,
+  CompleteBridgeWorkspaceSelectionInputSchema,
 } from './bridge.js';
 
 describe('Rice Bridge v0.1 contracts', () => {
@@ -43,5 +44,21 @@ describe('Rice Bridge v0.1 contracts', () => {
         summary: 'failed',
       }),
     ).toThrow();
+  });
+
+  it('requires a grant for successful native workspace selection', () => {
+    expect(() =>
+      CompleteBridgeWorkspaceSelectionInputSchema.parse({
+        leaseToken: '9f437b6c-cbd8-4ba5-86d4-cb6119789f1d',
+        status: 'succeeded',
+      }),
+    ).toThrow();
+    expect(
+      CompleteBridgeWorkspaceSelectionInputSchema.parse({
+        leaseToken: '9f437b6c-cbd8-4ba5-86d4-cb6119789f1d',
+        status: 'succeeded',
+        grantId: '53b852df-f389-4d37-b9d0-e1d6773921a2',
+      }),
+    ).toMatchObject({ status: 'succeeded' });
   });
 });

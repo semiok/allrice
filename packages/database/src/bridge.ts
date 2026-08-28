@@ -5,7 +5,9 @@ import {
   BridgeCommandSchema,
   BridgeDeviceSchema,
   BridgeFolderGrantSchema,
+  BridgeWorkspaceSelectionRequestSchema,
   CompleteBridgeCommandInputSchema,
+  CompleteBridgeWorkspaceSelectionInputSchema,
   CreateBridgeFolderGrantInputSchema,
   CreateBridgePairingInputSchema,
   PairBridgeDeviceInputSchema,
@@ -15,6 +17,7 @@ import {
   type BridgeCommandPayload,
   type BridgeDevice,
   type BridgeFolderGrant,
+  type BridgeWorkspaceSelectionRequest,
   type ExecutionContext,
   type RequestContext,
 } from '@allrice/contracts';
@@ -69,6 +72,14 @@ interface CommandRow {
   result: unknown | null;
   summary: string | null;
   error_code: string | null;
+}
+
+interface WorkspaceSelectionRow {
+  id: string;
+  device_id: string;
+  status: BridgeWorkspaceSelectionRequest['status'];
+  lease_token: string | null;
+  requested_at: Date;
 }
 
 interface AuthenticatedDeviceRow extends DeviceRow {
@@ -165,6 +176,19 @@ function mapCommand(row: CommandRow): BridgeCommand {
     leaseToken: row.lease_token,
     createdAt: row.created_at.toISOString(),
     timeoutAt: row.timeout_at.toISOString(),
+  });
+}
+
+function mapWorkspaceSelection(
+  row: WorkspaceSelectionRow,
+): BridgeWorkspaceSelectionRequest {
+  if (!row.lease_token) throw new BridgeDataError('lease_lost');
+  return BridgeWorkspaceSelectionRequestSchema.parse({
+    id: row.id,
+    deviceId: row.device_id,
+    status: row.status,
+    leaseToken: row.lease_token,
+    requestedAt: row.requested_at.toISOString(),
   });
 }
 
@@ -509,6 +533,134 @@ export async function revokeBridgeFolderGrant(
     requestId: context.requestId,
     metadata: { deviceId: grant.device_id, label: grant.label },
   });
+}
+
+export async function requestBridgeWorkspaceSelection(
+  context: RequestContext,
+  workspaceIdInput: string,
+  deviceIdInput: string,
+) {
+  const workspaceId = UuidSchema.parse(workspaceIdInput);
+  const deviceId = UuidSchema.parse(deviceIdInput);
+  const ownerId = requireWorkspaceMember(context, workspaceId);
+  const sql = getDatabase();
+  const request = await sql.begin(async (transaction) => {
+    const devices = await transaction<{ id: string }[]>`
+      select id from allrice_bridge_devices
+      where id = ${deviceId}
+        and organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and owner_id = ${ownerId}
+        and revoked_at is null
+        and last_seen_at > now() - (${onlineWindowSeconds} * interval '1 second')
+      for update
+    `;
+    if (!devices[0]) throw new BridgeDataError('device_offline');
+    await transaction`
+      update allrice_bridge_workspace_selection_requests
+      set status = 'canceled', completed_at = now(), updated_at = now(),
+        error_code = 'superseded'
+      where device_id = ${deviceId} and status in ('queued', 'claimed')
+    `;
+    const rows = await transaction<WorkspaceSelectionRow[]>`
+      insert into allrice_bridge_workspace_selection_requests (
+        organization_id, workspace_id, owner_id, device_id
+      ) values (
+        ${context.organizationId}, ${workspaceId}, ${ownerId}, ${deviceId}
+      ) returning id, device_id, status, lease_token, requested_at
+    `;
+    return rows[0]!;
+  });
+  await sql`select pg_notify('allrice_bridge_workspace_selection', ${deviceId})`;
+  await audit({
+    organizationId: context.organizationId,
+    workspaceId,
+    actorId: ownerId,
+    action: 'bridge.workspace_selection.request',
+    resourceType: 'bridge_workspace_selection',
+    resourceId: request.id,
+    reason: 'workspace_owner_requested_native_picker',
+    requestId: context.requestId,
+    metadata: { deviceId },
+  });
+  return { id: request.id, status: request.status };
+}
+
+export async function claimNextBridgeWorkspaceSelection(token: string) {
+  const device = await authenticatedDevice(token);
+  const leaseToken = randomUUID();
+  const sql = getDatabase();
+  const request = await sql.begin(async (transaction) => {
+    await transaction`
+      update allrice_bridge_workspace_selection_requests
+      set status = 'failed', completed_at = now(), updated_at = now(),
+        error_code = 'selection_timeout'
+      where device_id = ${device.id} and status = 'claimed'
+        and claimed_at < now() - interval '10 minutes'
+    `;
+    const rows = await transaction<WorkspaceSelectionRow[]>`
+      with candidate as (
+        select id from allrice_bridge_workspace_selection_requests
+        where device_id = ${device.id} and status = 'queued'
+        order by requested_at for update skip locked limit 1
+      )
+      update allrice_bridge_workspace_selection_requests request
+      set status = 'claimed', lease_token = ${leaseToken},
+        claimed_at = now(), updated_at = now()
+      from candidate where request.id = candidate.id
+      returning request.id, request.device_id, request.status,
+        request.lease_token, request.requested_at
+    `;
+    await transaction`
+      update allrice_bridge_devices set last_seen_at = now(), updated_at = now()
+      where id = ${device.id}
+    `;
+    return rows[0] ?? null;
+  });
+  return request ? mapWorkspaceSelection(request) : null;
+}
+
+export async function completeBridgeWorkspaceSelection(
+  token: string,
+  requestIdInput: string,
+  input: unknown,
+) {
+  const device = await authenticatedDevice(token);
+  const requestId = UuidSchema.parse(requestIdInput);
+  const parsed = CompleteBridgeWorkspaceSelectionInputSchema.parse(input);
+  const sql = getDatabase();
+  if (parsed.status === 'succeeded') {
+    const grants = await sql<{ id: string }[]>`
+      select id from allrice_bridge_folder_grants
+      where id = ${parsed.grantId!} and device_id = ${device.id}
+        and organization_id = ${device.organization_id}
+        and workspace_id = ${device.workspace_id}
+        and owner_id = ${device.owner_id} and revoked_at is null
+    `;
+    if (!grants[0]) throw new BridgeDataError('grant_missing');
+  }
+  const rows = await sql<{ id: string }[]>`
+    update allrice_bridge_workspace_selection_requests set
+      status = ${parsed.status}, selected_grant_id = ${parsed.grantId ?? null},
+      error_code = ${parsed.errorCode ?? null}, completed_at = now(),
+      updated_at = now()
+    where id = ${requestId} and device_id = ${device.id}
+      and lease_token = ${parsed.leaseToken} and status = 'claimed'
+    returning id
+  `;
+  if (!rows[0]) throw new BridgeDataError('lease_lost');
+  await audit({
+    organizationId: device.organization_id,
+    workspaceId: device.workspace_id,
+    actorId: device.owner_id,
+    action: 'bridge.workspace_selection.complete',
+    resourceType: 'bridge_workspace_selection',
+    resourceId: requestId,
+    decision: parsed.status === 'succeeded' ? 'allowed' : 'denied',
+    reason: parsed.errorCode ?? 'native_picker_confirmed_local_root',
+    metadata: { deviceId: device.id, grantId: parsed.grantId ?? null },
+  });
+  return { status: parsed.status };
 }
 
 export async function claimNextBridgeCommand(token: string) {

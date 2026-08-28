@@ -165,6 +165,52 @@ export const BridgeFolderGrantSchema = z
   .strict();
 export type BridgeFolderGrant = z.infer<typeof BridgeFolderGrantSchema>;
 
+export const BridgeWorkspaceSelectionStatusSchema = z.enum([
+  'queued',
+  'claimed',
+  'succeeded',
+  'failed',
+  'canceled',
+]);
+
+export const BridgeWorkspaceSelectionRequestSchema = z
+  .object({
+    id: UuidSchema,
+    deviceId: UuidSchema,
+    status: BridgeWorkspaceSelectionStatusSchema,
+    leaseToken: UuidSchema,
+    requestedAt: TimestampSchema,
+  })
+  .strict();
+export type BridgeWorkspaceSelectionRequest = z.infer<
+  typeof BridgeWorkspaceSelectionRequestSchema
+>;
+
+export const CompleteBridgeWorkspaceSelectionInputSchema = z
+  .object({
+    leaseToken: UuidSchema,
+    status: z.enum(['succeeded', 'failed']),
+    grantId: UuidSchema.optional(),
+    errorCode: z.string().trim().min(1).max(120).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.status === 'succeeded' && !value.grantId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['grantId'],
+        message: 'successful workspace selection requires a folder grant',
+      });
+    }
+    if (value.status === 'failed' && !value.errorCode) {
+      context.addIssue({
+        code: 'custom',
+        path: ['errorCode'],
+        message: 'failed workspace selection requires an error code',
+      });
+    }
+  });
+
 export const BridgeCommandStatusSchema = z.enum([
   'queued',
   'claimed',
