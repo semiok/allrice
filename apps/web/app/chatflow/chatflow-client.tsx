@@ -751,6 +751,26 @@ export function ChatFlowClient() {
     }
   }
 
+  async function downloadBridgeClient() {
+    setBridgeBusy(true);
+    try {
+      const response = await fetch('/api/v1/bridge/client/macos-arm64', {
+        headers: tenantHeaders,
+      });
+      if (!response.ok) await readJson(response);
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'RiceBridge-v0.2.zip';
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'RiceBridge 下载失败');
+    } finally {
+      setBridgeBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (!workspace) {
       setBridgeDevices([]);
@@ -1640,12 +1660,14 @@ export function ChatFlowClient() {
                       上线后即可从这里选择工作区。
                     </p>
                   )}
-                  <a
+                  <button
                     className={styles.bridgeClientDownload}
-                    href="/api/v1/bridge/client/macos-arm64"
+                    disabled={bridgeBusy}
+                    onClick={() => void downloadBridgeClient()}
+                    type="button"
                   >
                     下载支持网页唤起的 RiceBridge v0.2
-                  </a>
+                  </button>
                 </div>
                 <button
                   className={styles.bridgeRecoveryPrimary}

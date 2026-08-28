@@ -276,7 +276,11 @@
 }
 
 .bridgeClientDownload {
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--dsw-alias-link-default);
+  cursor: pointer;
   font-size: 12px;
   line-height: 18px;
   text-decoration: none;
