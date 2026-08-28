@@ -100,6 +100,14 @@ function percentage(value: number, maximum: number) {
   return Math.min(100, Math.round((value / maximum) * 100));
 }
 
+function runtimeStateLabel(item: RuntimeInventoryItem) {
+  if (item.process?.status === 'live') return 'LIVE';
+  if (item.runtime.state === 'running') return '运行中';
+  if (item.runtime.state === 'error') return '历史失败';
+  if (item.runtime.state === 'interrupted') return '已中断';
+  return '已结束';
+}
+
 export function RuntimeConsole() {
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -283,11 +291,7 @@ export function RuntimeConsole() {
                     {item.organization.slug} / {item.workspace.slug}
                   </small>
                 </span>
-                <em>
-                  {item.process?.status === 'live'
-                    ? 'live process'
-                    : item.runtime.state}
-                </em>
+                <em>{runtimeStateLabel(item)}</em>
               </button>
             ))}
             {data && data.runtimes.length === 0 ? (
@@ -307,9 +311,13 @@ export function RuntimeConsole() {
                 </div>
                 <span
                   className={styles.state}
-                  data-state={selected.runtime.state}
+                  data-state={
+                    selected.process?.status === 'live'
+                      ? 'running'
+                      : selected.runtime.state
+                  }
                 >
-                  {selected.runtime.state}
+                  {runtimeStateLabel(selected)}
                 </span>
               </header>
 

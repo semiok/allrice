@@ -272,7 +272,11 @@ export async function listDshRuntimeInventory(limit = 100) {
       limit 1
     ) runtime_process on true
     order by
-      case runtime.state when 'running' then 0 when 'error' then 1 else 2 end,
+      case
+        when runtime_process.process_status = 'live' then 0
+        when runtime.state = 'running' then 1
+        else 2
+      end,
       runtime.updated_at desc
     limit ${safeLimit}
   `;
