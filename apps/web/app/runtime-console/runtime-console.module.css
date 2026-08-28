@@ -264,7 +264,8 @@
   gap: 14px;
 }
 .grid article,
-.lifecycle {
+.lifecycle,
+.timeline {
   padding: 20px;
   border: 1px solid #303237;
   border-radius: 14px;
@@ -343,6 +344,133 @@
   height: 100%;
   border-radius: inherit;
   background: #6f91ff;
+}
+.timeline {
+  margin-top: 14px;
+}
+.timeline > header,
+.timeline > header div,
+.eventList li,
+.eventList li > div > span {
+  display: flex;
+}
+.timeline > header {
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #303237;
+}
+.timeline > header div {
+  flex-direction: column;
+  gap: 5px;
+}
+.timeline > header strong {
+  font-size: 13px;
+}
+.timeline > header span,
+.timeline > header em {
+  color: #777b83;
+  font-size: 11px;
+  font-style: normal;
+}
+.timeline > header em {
+  padding: 6px 9px;
+  border: 1px solid #3b3e44;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.timeline > header em[data-state='running'] {
+  border-color: #326645;
+  color: #63d793;
+  background: #1a2b21;
+}
+.eventList {
+  margin: 0;
+  padding: 10px 0 0;
+  list-style: none;
+}
+.eventList li {
+  position: relative;
+  align-items: flex-start;
+  gap: 13px;
+  padding: 12px 0;
+}
+.eventList li:not(:last-child)::after {
+  position: absolute;
+  top: 42px;
+  bottom: -8px;
+  left: 14px;
+  width: 1px;
+  background: #36393f;
+  content: '';
+}
+.eventList li > i {
+  width: 29px;
+  height: 29px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: #292b30;
+  color: #aeb2ba;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+.eventList li[data-kind='search'] > i {
+  color: #8fb0ff;
+  background: #202c45;
+}
+.eventList li[data-kind='think'] > i {
+  color: #c6a7ff;
+  background: #2c2440;
+}
+.eventList li[data-kind='answer'] > i {
+  color: #7be0a4;
+  background: #20362a;
+}
+.eventList li > div {
+  min-width: 0;
+  flex: 1;
+}
+.eventList li > div > span {
+  align-items: center;
+  gap: 10px;
+}
+.eventList li strong {
+  color: #d8dade;
+  font-size: 13px;
+}
+.eventList li > div em {
+  color: #777b83;
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+.eventList li p {
+  max-height: 220px;
+  margin: 7px 0 0;
+  overflow: auto;
+  color: #9ca0a8;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+.eventList time {
+  flex: 0 0 auto;
+  color: #686c73;
+  font-size: 10px;
+}
+.timelineEmpty,
+.timelineError {
+  margin: 0;
+  padding: 28px 0 10px;
+  color: #777b83;
+  font-size: 12px;
+}
+.timelineError {
+  color: #ff9296;
 }
 .notice {
   margin-top: 14px;

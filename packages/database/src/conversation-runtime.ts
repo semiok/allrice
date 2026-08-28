@@ -60,6 +60,101 @@ interface DshRuntimeInventoryRow extends ConversationRuntimeRow {
   process_last_seen_at: Date | string | null;
 }
 
+interface DshRuntimeEventRow {
+  run_id: string;
+  run_state: string;
+  sequence: number;
+  event_type: string;
+  payload: unknown;
+  occurred_at: Date | string;
+}
+
+const runtimeEventKinds = new Set([
+  'context',
+  'think',
+  'search',
+  'tool',
+  'todo',
+  'compaction',
+  'lifecycle',
+]);
+
+function safeText(value: unknown, maximum = 4_000) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, maximum)
+    : null;
+}
+
+function safeRecord(value: unknown) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function mapDshRuntimeEvent(row: DshRuntimeEventRow) {
+  const payload = safeRecord(row.payload);
+  if (payload.source !== 'dsh' && payload.source !== 'tool_broker') return null;
+  if (row.event_type === 'harness.native') {
+    const presentation = safeText(payload.presentation, 40);
+    if (!presentation || !runtimeEventKinds.has(presentation)) return null;
+    const native = safeRecord(payload.nativePayload);
+    const callId = safeText(native.callId, 160);
+    const key =
+      (presentation === 'tool' || presentation === 'search') && callId
+        ? `tool:${callId}`
+        : presentation === 'think'
+          ? `think:${String(native.turn ?? '')}:${String(native.step ?? '')}:${String(safeRecord(native.chunk).index ?? '')}`
+          : `${row.run_id}:${row.sequence}`;
+    return {
+      id: `${row.run_id}:${row.sequence}`,
+      key,
+      runId: row.run_id,
+      sequence: row.sequence,
+      kind: presentation,
+      status: safeText(payload.status, 40) ?? 'info',
+      title: safeText(payload.label, 240) ?? 'DSH Event',
+      detail: safeText(payload.summary, 1_000),
+      occurredAt: timestamp(row.occurred_at),
+    };
+  }
+  if (row.event_type.startsWith('tool.')) {
+    const native = safeRecord(payload.nativePayload);
+    const name = safeText(payload.name, 160) ?? 'Tool';
+    const toolCallId = safeText(payload.toolCallId, 160);
+    const search = native.presentation === 'search' || name === 'web.search';
+    const query = search ? safeText(native.query, 500) : null;
+    return {
+      id: `${row.run_id}:${row.sequence}`,
+      key: toolCallId ? `tool:${toolCallId}` : `${row.run_id}:${row.sequence}`,
+      runId: row.run_id,
+      sequence: row.sequence,
+      kind: search ? 'search' : 'tool',
+      status: row.event_type.endsWith('.started')
+        ? 'started'
+        : row.event_type.endsWith('.failed')
+          ? 'failed'
+          : 'completed',
+      title: search ? (query ? `Search · ${query}` : 'Search') : name,
+      detail: safeText(payload.summary, 1_000),
+      occurredAt: timestamp(row.occurred_at),
+    };
+  }
+  if (row.event_type === 'assistant.text.completed') {
+    return {
+      id: `${row.run_id}:${row.sequence}`,
+      key: `${row.run_id}:answer`,
+      runId: row.run_id,
+      sequence: row.sequence,
+      kind: 'answer',
+      status: 'completed',
+      title: 'Answer',
+      detail: safeText(payload.text),
+      occurredAt: timestamp(row.occurred_at),
+    };
+  }
+  return null;
+}
+
 export class ConversationRuntimeError extends Error {
   constructor(
     public readonly code:
@@ -252,6 +347,39 @@ export async function listDshRuntimeInventory(limit = 100) {
         : null,
     };
   });
+}
+
+/**
+ * Platform-only DSH event mirror for one Session. Only presentation-safe fields
+ * survive this projection; prompts, tool arguments, credentials, host paths and
+ * hidden chain-of-thought are never returned.
+ */
+export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
+  const sessionId = UuidSchema.parse(sessionIdInput);
+  const sql = getDatabase();
+  const rows = await sql<DshRuntimeEventRow[]>`
+    with latest_run as (
+      select employee_run.run_id
+      from allrice_employee_runs employee_run
+      where employee_run.session_id = ${sessionId}
+      order by employee_run.created_at desc
+      limit 1
+    )
+    select event.run_id, run.state as run_state, event.sequence,
+      event.event_type, event.payload, event.occurred_at
+    from latest_run
+    join allrice_runs run on run.id = latest_run.run_id
+    join allrice_run_events event on event.run_id = latest_run.run_id
+    order by event.sequence
+  `;
+  const first = rows[0];
+  return {
+    sessionId,
+    run: first ? { id: first.run_id, status: first.run_state } : null,
+    events: rows
+      .map(mapDshRuntimeEvent)
+      .filter((event): event is NonNullable<typeof event> => event !== null),
+  };
 }
 
 export async function acquireConversationRuntime(input: {

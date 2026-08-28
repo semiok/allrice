@@ -56,6 +56,34 @@ interface RuntimeConsoleResponse {
   runtimes: RuntimeInventoryItem[];
 }
 
+interface RuntimeTimelineEvent {
+  id: string;
+  key: string;
+  runId: string;
+  sequence: number;
+  kind:
+    | 'context'
+    | 'think'
+    | 'search'
+    | 'tool'
+    | 'todo'
+    | 'compaction'
+    | 'lifecycle'
+    | 'answer';
+  status: string;
+  title: string;
+  detail: string | null;
+  occurredAt: string | null;
+}
+
+interface RuntimeTimelineResponse {
+  timeline: {
+    sessionId: string;
+    run: { id: string; status: string } | null;
+    events: RuntimeTimelineEvent[];
+  };
+}
+
 function time(value: string | null) {
   if (!value) return '—';
   return new Intl.DateTimeFormat('zh-CN', {
@@ -76,6 +104,10 @@ export function RuntimeConsole() {
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [timeline, setTimeline] = useState<
+    RuntimeTimelineResponse['timeline'] | null
+  >(null);
+  const [timelineError, setTimelineError] = useState('');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
   const load = useCallback(async () => {
@@ -116,6 +148,44 @@ export function RuntimeConsole() {
     return () => window.clearInterval(timer);
   }, [load]);
 
+  useEffect(() => {
+    if (!selectedId) {
+      setTimeline(null);
+      return;
+    }
+    let active = true;
+    const loadTimeline = async () => {
+      const response = await fetch(
+        `/api/v1/admin/runtime-console/${selectedId}/events`,
+        { cache: 'no-store' },
+      );
+      const body = (await response.json().catch(() => null)) as
+        RuntimeTimelineResponse | { error?: { message?: string } } | null;
+      if (!response.ok) {
+        throw new Error(
+          (body as { error?: { message?: string } } | null)?.error?.message ??
+            `事件加载失败（${response.status}）`,
+        );
+      }
+      if (!active) return;
+      setTimeline((body as RuntimeTimelineResponse).timeline);
+      setTimelineError('');
+    };
+    void loadTimeline().catch((reason: unknown) =>
+      setTimelineError(
+        reason instanceof Error ? reason.message : '事件加载失败',
+      ),
+    );
+    const timer = window.setInterval(
+      () => void loadTimeline().catch(() => undefined),
+      1_500,
+    );
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedId]);
+
   const selected = useMemo(
     () => data?.runtimes.find((item) => item.session.id === selectedId) ?? null,
     [data, selectedId],
@@ -124,6 +194,24 @@ export function RuntimeConsole() {
     (item) => item.process?.status === 'live',
   ).length;
   const bound = data?.runtimes.filter((item) => item.runtime.threadId).length;
+  const projectedTimeline = useMemo(() => {
+    const items = new Map<string, RuntimeTimelineEvent>();
+    for (const event of timeline?.events ?? []) {
+      const previous = items.get(event.key);
+      items.set(event.key, {
+        ...event,
+        sequence: previous?.sequence ?? event.sequence,
+        title:
+          previous && event.title === '工具调用完成'
+            ? previous.title
+            : event.title,
+        detail: event.detail ?? previous?.detail ?? null,
+      });
+    }
+    return [...items.values()].sort(
+      (left, right) => left.sequence - right.sequence,
+    );
+  }, [timeline]);
 
   return (
     <main className={styles.page}>
@@ -332,10 +420,44 @@ export function RuntimeConsole() {
                 </dl>
               </article>
 
+              <article className={styles.timeline}>
+                <header>
+                  <div>
+                    <strong>DSH Native Event Stream</strong>
+                    <span>按 Harness 原始顺序 · 1.5 秒刷新</span>
+                  </div>
+                  <em data-state={timeline?.run?.status ?? 'idle'}>
+                    {timeline?.run?.status ?? 'no run'}
+                  </em>
+                </header>
+                {timelineError ? (
+                  <p className={styles.timelineError}>{timelineError}</p>
+                ) : projectedTimeline.length ? (
+                  <ol className={styles.eventList}>
+                    {projectedTimeline.map((event) => (
+                      <li key={event.key} data-kind={event.kind}>
+                        <i>{event.kind.slice(0, 1).toUpperCase()}</i>
+                        <div>
+                          <span>
+                            <strong>{event.title}</strong>
+                            <em>{event.status}</em>
+                          </span>
+                          {event.detail ? <p>{event.detail}</p> : null}
+                        </div>
+                        <time>{time(event.occurredAt)}</time>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className={styles.timelineEmpty}>
+                    这个 Session 还没有 DSH 原生事件。
+                  </p>
+                )}
+              </article>
+
               <aside className={styles.notice}>
-                当前阶段只读取 ChatFlow 的真实运行记录，不启动第二个 DSH
-                实例，也不允许从浏览器修改 Runtime。Phase 2 将在这里原样镜像
-                Context、Search、Think、Tool 与 Answer 事件。
+                事件来自真实 Worker Runtime。ChatFlow 仅负责租户边界、持久化和
+                脱敏；这里不会展示原始提示词、工具参数、密钥、宿主机路径或隐藏推理。
               </aside>
             </>
           ) : (
