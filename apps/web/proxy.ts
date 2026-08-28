@@ -14,6 +14,22 @@ const publicPaths = new Set([
   '/api/health/ready',
 ]);
 
+const bridgeDevicePaths = new Set([
+  '/api/v1/bridge/device/pair',
+  '/api/v1/bridge/device/heartbeat',
+  '/api/v1/bridge/device/status',
+  '/api/v1/bridge/device/grants',
+  '/api/v1/bridge/device/commands/next',
+  '/api/v1/bridge/device/revoke',
+]);
+
+export function isBridgeDeviceApiPath(pathname: string) {
+  return (
+    bridgeDevicePaths.has(pathname) ||
+    /^\/api\/v1\/bridge\/device\/commands\/[^/]+\/complete$/.test(pathname)
+  );
+}
+
 export function proxy(request: NextRequest) {
   if (!portalAuthEnabled()) return NextResponse.next();
 
@@ -22,7 +38,12 @@ export function proxy(request: NextRequest) {
     return new NextResponse('Unknown AllRice portal host', { status: 421 });
   }
 
-  if (publicPaths.has(request.nextUrl.pathname)) return NextResponse.next();
+  if (
+    publicPaths.has(request.nextUrl.pathname) ||
+    isBridgeDeviceApiPath(request.nextUrl.pathname)
+  ) {
+    return NextResponse.next();
+  }
 
   const session = verifyPortalSession(
     request.cookies.get(portalSessionCookieName)?.value,
