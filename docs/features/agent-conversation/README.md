@@ -32,10 +32,14 @@ conversation navigation.
    the completed assistant message remains the final conversation authority.
 
 The Worker freezes approved native tool grants into the tenant-isolated DSH
-process. `web.search` uses DSH's native tool protocol and completes within one
-DSH Turn; its safe call/result events are still persisted and audited by
-ChatFlow. Tools without a native adapter continue through the tenant-scoped
-Tool Broker compatibility bridge. Skills are
+process. `web.search` and the five Rice Bridge capabilities (`local.fs.list`,
+`local.fs.search`, `local.fs.read`, `local.git.status`, `local.git.diff`) use
+DSH's native tool protocol and complete within one DSH Turn. Local native calls
+travel back over bidirectional JSON-RPC to the active AllRice Tool Broker,
+which re-authorizes the frozen Run policy, audits the call and dispatches only
+the corresponding structured read-only Bridge command. Their safe call/result
+events are still persisted and audited by ChatFlow. Tools without a native
+adapter continue through the tenant-scoped Tool Broker compatibility bridge. Skills are
 immutable capability context bound to an employee; standalone Skill execution
 is retired because it would create a second execution authority. PostgreSQL
 remains the source of truth for messages, Run ownership and authorization.

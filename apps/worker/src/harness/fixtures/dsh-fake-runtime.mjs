@@ -5,6 +5,7 @@ import { setImmediate } from 'node:timers';
 let seq = 0;
 let initializedProvider = '';
 const turns = new Map();
+const pendingToolRequests = new Map();
 
 function write(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -74,6 +75,46 @@ function reasoning(sessionId, turn, step = 0) {
 const lines = createInterface({ input: process.stdin });
 lines.on('line', (line) => {
   const frame = JSON.parse(line);
+  if (
+    typeof frame.id === 'string' &&
+    !frame.method &&
+    pendingToolRequests.has(frame.id)
+  ) {
+    const pending = pendingToolRequests.get(frame.id);
+    pendingToolRequests.delete(frame.id);
+    event(pending.sessionId, 'tool/result', {
+      turn: pending.turn,
+      step: 1,
+      ...(frame.error ? { error: frame.error } : {}),
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: pending.callId,
+            content: [
+              {
+                type: 'text',
+                text:
+                  frame.result?.modelContent ??
+                  frame.error?.message ??
+                  'tool failed',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    assistant(
+      pending.sessionId,
+      pending.turn,
+      frame.error ? 'native-local-failed' : 'native-local-finished',
+    );
+    notify('session.status', {
+      sessionId: pending.sessionId,
+      status: 'idle',
+    });
+    return;
+  }
   if (frame.method === 'initialize') {
     initializedProvider = frame.params.provider;
     respond(frame.id, {
@@ -188,6 +229,29 @@ lines.on('line', (line) => {
     });
     reasoning(sessionId, turn, 2);
     text = 'native-search-finished';
+  } else if (prompt.includes('native-local')) {
+    reasoning(sessionId, turn, 0);
+    const callId = 'native-local-1';
+    const requestId = 'broker-native-local-1';
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId,
+      name: 'local_fs_list',
+      arguments: JSON.stringify({ path: '.', limit: 20 }),
+    });
+    pendingToolRequests.set(requestId, { sessionId, turn, callId });
+    write({
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'allrice/tool-call',
+      params: {
+        toolCallId: callId,
+        name: 'local.fs.list',
+        arguments: { path: '.', limit: 20 },
+      },
+    });
+    return;
   } else {
     text = `turn-${turn}`;
   }

@@ -30,6 +30,33 @@ const toolEnvelopePrefix = '<allrice_tool_call>';
 const toolEnvelopePattern =
   /<allrice_tool_call>\s*([\s\S]*?)\s*<\/allrice_tool_call>/;
 const maximumToolCallsPerTurn = 8;
+const dshNativeToolNames = new Set([
+  'web.search',
+  'local.fs.list',
+  'local.fs.search',
+  'local.fs.read',
+  'local.git.status',
+  'local.git.diff',
+]);
+const dshBrokerNativeToolNames = new Set([
+  'local.fs.list',
+  'local.fs.search',
+  'local.fs.read',
+  'local.git.status',
+  'local.git.diff',
+]);
+const dshNativeWireNames: Readonly<Record<string, string>> = {
+  web_search: 'web.search',
+  local_fs_list: 'local.fs.list',
+  local_fs_search: 'local.fs.search',
+  local_fs_read: 'local.fs.read',
+  local_git_status: 'local.git.status',
+  local_git_diff: 'local.git.diff',
+};
+
+function isDshNativeTool(name: string) {
+  return dshNativeToolNames.has(name);
+}
 
 interface DshRuntime {
   client: DshProtocolClient;
@@ -356,10 +383,12 @@ function mappedReasoning(
 }
 
 function toolBridgeInstructions(input: HarnessExecutionInput) {
-  const bridgedTools = input.tools.filter((tool) => tool.name !== 'web.search');
+  const bridgedTools = input.tools.filter(
+    (tool) => !isDshNativeTool(tool.name),
+  );
   if (bridgedTools.length === 0) {
-    if (input.tools.some((tool) => tool.name === 'web.search')) {
-      return 'Use the native DSH web_search tool for current information. Do not emit AllRice XML tool envelopes.';
+    if (input.tools.some((tool) => isDshNativeTool(tool.name))) {
+      return 'Use the native DSH tools supplied for this turn. Do not emit AllRice XML tool envelopes. Never claim a tool result unless the native call succeeds.';
     }
     return 'No external tools are available. Never claim that a tool was called.';
   }
@@ -540,6 +569,47 @@ export class DshHarnessAdapter implements HarnessAdapter {
       threadId,
       systemInstructions,
     });
+    runtime.client.setRequestHandler(async (method, params) => {
+      if (method !== 'allrice/tool-call') {
+        throw new HandlerError(
+          'DSH_INBOUND_REQUEST_DENIED',
+          `DSH requested an unsupported Worker method: ${method}`,
+          false,
+        );
+      }
+      const id = shortText(params.toolCallId, 240);
+      const name = shortText(params.name, 160);
+      const args = record(params.arguments);
+      if (!id || !name || !args || !dshBrokerNativeToolNames.has(name)) {
+        throw new HandlerError(
+          'DSH_NATIVE_TOOL_INVALID',
+          'DSH requested an invalid AllRice native tool call',
+          false,
+        );
+      }
+      if (!input.tools.some((tool) => tool.name === name)) {
+        throw new HandlerError(
+          'TOOL_NOT_ALLOWED',
+          `DSH requested an unavailable tool: ${name}`,
+          false,
+        );
+      }
+      if (!input.onToolCall) {
+        throw new HandlerError(
+          'TOOL_NOT_ALLOWED',
+          'No AllRice Tool Broker is available for this execution',
+          false,
+        );
+      }
+      const result = await input.onToolCall({ id, name, arguments: args });
+      return {
+        modelContent: result.modelContent,
+        summary: result.summary,
+        ...(result.itemCount === undefined
+          ? {}
+          : { itemCount: result.itemCount }),
+      };
+    });
     let order = 0;
     let turnId: string | null = null;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -710,6 +780,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       }
       throw error;
+    } finally {
+      runtime.client.setRequestHandler(null);
     }
     return {
       answer,
@@ -813,7 +885,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           systemInstructions: input.systemInstructions,
           nativeTools: input.input.tools
             .map((tool) => tool.name)
-            .filter((name) => name === 'web.search')
+            .filter(isDshNativeTool)
             .sort(),
           credentialDigest: credential
             ? createHash('sha256').update(credential.apiKey).digest('hex')
@@ -897,7 +969,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         model: input.snapshot.model,
         nativeTools: input.input.tools
           .map((tool) => tool.name)
-          .filter((name) => name === 'web.search'),
+          .filter(isDshNativeTool),
         maxTokens: input.input.maxOutputTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
@@ -956,7 +1028,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const callId = shortText(data.callId, 240);
         const rawName = shortText(data.name, 160);
         if (!callId || !rawName) return;
-        const name = rawName === 'web_search' ? 'web.search' : rawName;
+        const name = dshNativeWireNames[rawName] ?? rawName;
         let args: Record<string, unknown> | null = null;
         try {
           args =

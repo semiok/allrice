@@ -14,6 +14,11 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+export type DshInboundRequestHandler = (
+  method: string,
+  params: Record<string, unknown>,
+) => Promise<Record<string, unknown>>;
+
 export interface DshProtocolLaunch {
   command: string;
   args: readonly string[];
@@ -34,6 +39,7 @@ export class DshProtocolClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(value: DshNotification) => void>();
   private readonly closed: Promise<void>;
+  private inboundRequestHandler: DshInboundRequestHandler | null = null;
   private requestId = 0;
   private closing = false;
   private terminalError: Error | null = null;
@@ -77,6 +83,10 @@ export class DshProtocolClient {
   subscribe(listener: (value: DshNotification) => void) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  setRequestHandler(handler: DshInboundRequestHandler | null) {
+    this.inboundRequestHandler = handler;
   }
 
   async initialize(input: {
@@ -257,6 +267,13 @@ export class DshProtocolClient {
       );
       return;
     }
+    if (
+      typeof frame.method === 'string' &&
+      (typeof frame.id === 'number' || typeof frame.id === 'string')
+    ) {
+      void this.handleInboundRequest(frame.id, frame.method, frame.params);
+      return;
+    }
     if (typeof frame.id === 'number') {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
@@ -295,6 +312,39 @@ export class DshProtocolClient {
       for (const listener of this.listeners) {
         listener({ method: frame.method, params });
       }
+    }
+  }
+
+  private async handleInboundRequest(
+    id: number | string,
+    method: string,
+    rawParams: unknown,
+  ) {
+    const params = record(rawParams) ?? {};
+    try {
+      if (!this.inboundRequestHandler) {
+        throw new HandlerError(
+          'DSH_INBOUND_REQUEST_DENIED',
+          'No AllRice Tool Broker request is active',
+          false,
+        );
+      }
+      const result = await this.inboundRequestHandler(method, params);
+      this.child.stdin.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof HandlerError
+          ? error.message
+          : 'AllRice Tool Broker request failed';
+      this.child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32603, message },
+        })}\n`,
+      );
     }
   }
 

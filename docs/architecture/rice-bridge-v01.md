@@ -8,6 +8,7 @@
 AllRice Web
   -> ChatFlow 3.0
   -> DSH
+  -> DSH Native Tool Adapter (bidirectional JSON-RPC)
   -> Tool Broker / Policy / Audit
   -> Durable Bridge Command
   -> Rice Bridge on Snow Mac
@@ -15,6 +16,11 @@ AllRice Web
 ```
 
 Rice Bridge 不是 Harness。Session、模型、提示词、员工配置、租户权限和 DSH Agent Loop 都留在 SaaS。Bridge 不获取模型 Provider 凭证，只持有可撤销的设备令牌。
+
+五项本地能力注册为真正的 DSH Native Tools。DSH 不直接连接设备；每次
+native call 都必须回到当前 Worker Run 的 Tool Broker，再次校验本轮冻结的
+工具清单与 capability 后，才会生成结构化 Bridge command。DSH 子进程不能
+借助反向 JSON-RPC 调用任意 Worker 方法，也不能绕过目录授权或取得 Shell。
 
 ## v0.1 协议
 

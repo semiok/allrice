@@ -21,6 +21,88 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
+const localNativeTools = [
+  {
+    canonicalName: 'local.fs.list',
+    wireName: 'local_fs_list',
+    description:
+      'List files and directories inside the local folder explicitly authorized through Rice Bridge. Read-only; paths are relative to the authorized root.',
+    parameters: {
+      path: {
+        type: 'string',
+        description: 'Relative directory path. Defaults to .',
+      },
+      limit: { type: 'integer', description: 'Maximum entries from 1 to 200.' },
+    },
+  },
+  {
+    canonicalName: 'local.fs.search',
+    wireName: 'local_fs_search',
+    description:
+      'Search text inside files under the local folder explicitly authorized through Rice Bridge. Read-only and confined to the authorized root.',
+    parameters: {
+      path: {
+        type: 'string',
+        description: 'Relative directory path. Defaults to .',
+      },
+      query: {
+        type: 'string',
+        required: true,
+        description: 'Text to search for.',
+      },
+      limit: { type: 'integer', description: 'Maximum matches from 1 to 100.' },
+    },
+  },
+  {
+    canonicalName: 'local.fs.read',
+    wireName: 'local_fs_read',
+    description:
+      'Read one text file under the local folder explicitly authorized through Rice Bridge. Sensitive paths and paths outside the grant are rejected.',
+    parameters: {
+      path: {
+        type: 'string',
+        required: true,
+        description: 'Relative file path.',
+      },
+      maxBytes: {
+        type: 'integer',
+        description: 'Maximum bytes from 1 to 200000.',
+      },
+    },
+  },
+  {
+    canonicalName: 'local.git.status',
+    wireName: 'local_git_status',
+    description:
+      'Read Git working-tree status for a repository inside the Rice Bridge authorized folder. This is a fixed read-only operation, not shell access.',
+    parameters: {
+      path: {
+        type: 'string',
+        description: 'Relative repository path. Defaults to .',
+      },
+    },
+  },
+  {
+    canonicalName: 'local.git.diff',
+    wireName: 'local_git_diff',
+    description:
+      'Read a Git diff for a repository inside the Rice Bridge authorized folder. This is a fixed read-only operation, not shell access.',
+    parameters: {
+      path: {
+        type: 'string',
+        description: 'Relative repository path. Defaults to .',
+      },
+      staged: {
+        type: 'boolean',
+        description: 'Read the staged diff when true.',
+      },
+      maxBytes: {
+        type: 'integer',
+        description: 'Maximum bytes from 1 to 200000.',
+      },
+    },
+  },
+];
 
 function toPiCredential(record) {
   if (record === undefined) return undefined;
@@ -133,7 +215,10 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   authorizationNotify = () => undefined;
   codexModels = null;
   nativeTools = new Set();
-  nativeToolsRegistered = false;
+  nativeToolsRegistered = new Set();
+  toolBrokerRequest = async () => {
+    throw new Error('AllRice Tool Broker transport is unavailable');
+  };
 
   async initialize(params) {
     const requestedTools = Array.isArray(params?.nativeTools)
@@ -159,77 +244,133 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   }
 
   registerNativeTools() {
-    if (this.nativeToolsRegistered || !this.nativeTools.has('web.search')) {
-      return;
-    }
-    this.nativeToolsRegistered = true;
-    this.ctx.systemPrompt.section({
-      name: 'tool:web_search',
-      order: 110,
-      text: 'Use web_search for current information. Provide one to four focused queries, use returned evidence, and cite relevant URLs as Markdown links.',
-    });
-    this.ctx.tools.register(
-      defineTool({
-        name: 'web_search',
-        description:
-          'Search the current web through the AllRice platform Codex Search Provider. Provide one to four focused queries.',
-        parameters: {
-          queries: {
-            type: 'array',
-            required: true,
-            items: { type: 'string' },
-            description: 'One to four non-empty web search queries.',
-          },
-        },
-        output: {
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              content: { type: 'string', required: true },
+    if (
+      this.nativeTools.has('web.search') &&
+      !this.nativeToolsRegistered.has('web.search')
+    ) {
+      this.nativeToolsRegistered.add('web.search');
+      this.ctx.systemPrompt.section({
+        name: 'tool:web_search',
+        order: 110,
+        text: 'Use web_search for current information. Provide one to four focused queries, use returned evidence, and cite relevant URLs as Markdown links.',
+      });
+      this.ctx.tools.register(
+        defineTool({
+          name: 'web_search',
+          description:
+            'Search the current web through the AllRice platform Codex Search Provider. Provide one to four focused queries.',
+          parameters: {
+            queries: {
+              type: 'array',
+              required: true,
+              items: { type: 'string' },
+              description: 'One to four non-empty web search queries.',
             },
           },
-          render: (_args, value) => [{ type: 'text', text: value.content }],
-        },
-        timeoutMs: 60_000,
-        isConcurrencySafe: () => true,
-        execute: async (args) => {
-          if (
-            !Array.isArray(args.queries) ||
-            args.queries.length < 1 ||
-            args.queries.length > 4 ||
-            args.queries.some(
-              (query) => typeof query !== 'string' || !query.trim(),
-            )
-          ) {
-            throw new Error(
-              'queries must contain one to four non-empty strings',
-            );
-          }
-          const queries = [
-            ...new Set(args.queries.map((query) => query.trim())),
-          ];
-          const results = await Promise.all(
-            queries.map((query) => this.searchCodex({ query, maxResults: 5 })),
-          );
-          return {
-            content: results
-              .map((result, index) =>
-                results.length === 1
-                  ? result.output
-                  : `### ${queries[index]}\n\n${result.output}`,
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                content: { type: 'string', required: true },
+              },
+            },
+            render: (_args, value) => [{ type: 'text', text: value.content }],
+          },
+          timeoutMs: 60_000,
+          isConcurrencySafe: () => true,
+          execute: async (args) => {
+            if (
+              !Array.isArray(args.queries) ||
+              args.queries.length < 1 ||
+              args.queries.length > 4 ||
+              args.queries.some(
+                (query) => typeof query !== 'string' || !query.trim(),
               )
-              .join('\n\n'),
-          };
-        },
-        presentCall: (args) => ({
-          card: 'generic',
-          title: args.queries.join(', '),
-          kind: 'search',
-          rawInput: args.queries.join(', '),
+            ) {
+              throw new Error(
+                'queries must contain one to four non-empty strings',
+              );
+            }
+            const queries = [
+              ...new Set(args.queries.map((query) => query.trim())),
+            ];
+            const results = await Promise.all(
+              queries.map((query) =>
+                this.searchCodex({ query, maxResults: 5 }),
+              ),
+            );
+            return {
+              content: results
+                .map((result, index) =>
+                  results.length === 1
+                    ? result.output
+                    : `### ${queries[index]}\n\n${result.output}`,
+                )
+                .join('\n\n'),
+            };
+          },
+          presentCall: (args) => ({
+            card: 'generic',
+            title: args.queries.join(', '),
+            kind: 'search',
+            rawInput: args.queries.join(', '),
+          }),
         }),
-      }),
+      );
+    }
+
+    const requestedLocalTools = localNativeTools.filter(
+      (tool) =>
+        this.nativeTools.has(tool.canonicalName) &&
+        !this.nativeToolsRegistered.has(tool.canonicalName),
     );
+    if (requestedLocalTools.length === 0) return;
+    this.ctx.systemPrompt.section({
+      name: 'tool:allrice_local_bridge',
+      order: 111,
+      text: 'Use the local_fs_* and local_git_* tools for files and repositories in the user-authorized Rice Bridge workspace. These tools are read-only, tenant-scoped, and may only access relative paths under the explicit folder grant. Never claim local access without a successful tool result.',
+    });
+    for (const tool of requestedLocalTools) {
+      this.nativeToolsRegistered.add(tool.canonicalName);
+      this.ctx.tools.register(
+        defineTool({
+          name: tool.wireName,
+          description: tool.description,
+          parameters: tool.parameters,
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                content: { type: 'string', required: true },
+              },
+            },
+            render: (_args, value) => [{ type: 'text', text: value.content }],
+          },
+          timeoutMs: 65_000,
+          isConcurrencySafe: () => true,
+          execute: async (args, exec) => {
+            const response = await this.toolBrokerRequest(
+              {
+                toolCallId: exec.callId,
+                name: tool.canonicalName,
+                arguments: args,
+              },
+              exec.signal,
+            );
+            if (
+              !response ||
+              typeof response !== 'object' ||
+              typeof response.modelContent !== 'string'
+            ) {
+              throw new Error('AllRice Tool Broker returned an invalid result');
+            }
+            return { content: response.modelContent };
+          },
+        }),
+      );
+    }
   }
 
   async createSession(sessionId) {
@@ -461,6 +602,8 @@ const transport = new JsonRpcLineTransport(process.stdin, process.stdout);
 const server = new AllRiceHarnessSdkJsonRpcServer(ctx, transport, {
   maxTokensAsSuccess: false,
 });
+server.toolBrokerRequest = (params, signal) =>
+  transport.request('allrice/tool-call', params, signal);
 server.authorizationNotify = (notice) =>
   transport.notify('provider.authorization', {
     provider: 'openai-codex',

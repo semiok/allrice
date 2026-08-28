@@ -263,6 +263,60 @@ describe('DshHarnessAdapter', () => {
     ]);
   });
 
+  it('routes native local tools through the active AllRice Tool Broker', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const calls: Array<{ id: string; name: string; arguments: unknown }> = [];
+    const input = executionInput({
+      prompt: 'native-local',
+      events,
+      onToolCall: async (call) => {
+        calls.push(call);
+        return {
+          modelContent: JSON.stringify({ entries: ['project-a'] }),
+          summary: '找到 1 个本地项目',
+          itemCount: 1,
+        };
+      },
+    });
+    input.tools = [
+      {
+        name: 'local.fs.list',
+        description: 'List authorized local files',
+        inputSchema: { type: 'object' },
+      },
+    ];
+
+    const result = await adapter.execute(input);
+
+    expect(result.answer).toBe('native-local-finished');
+    expect(calls).toEqual([
+      {
+        id: 'native-local-1',
+        name: 'local.fs.list',
+        arguments: { path: '.', limit: 20 },
+      },
+    ]);
+    expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
+      expect.objectContaining({
+        type: 'tool.started',
+        name: 'local.fs.list',
+        source: 'harness',
+      }),
+      expect.objectContaining({
+        type: 'tool.completed',
+        name: 'local.fs.list',
+        source: 'harness',
+      }),
+    ]);
+    expect(
+      events
+        .filter((event) => event.type === 'assistant.delta')
+        .map((event) => ('text' in event ? event.text : ''))
+        .join(''),
+    ).not.toContain('allrice_tool_call');
+  });
+
   it('accepts a single tool envelope after a harmless model preamble', async () => {
     const adapter = createAdapter();
     const calls: string[] = [];
