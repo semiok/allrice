@@ -1,9 +1,9 @@
----
-name: workspace-briefing
-description: Inspect the currently authorized local workspace and produce a grounded briefing from its files and Git state. Use when a user asks what is in a workspace, how projects are organized, where something lives, what changed, or what context is relevant before starting work.
----
+-- Keep the foundational workspace briefing useful without recursively
+-- inventorying every project. The same reviewed body is propagated to the
+-- platform source and already-materialized tenant copies.
 
-# Workspace Briefing
+update allrice_platform_dsh_skills
+set content = $skill$# Workspace Briefing
 
 Build an evidence-based overview of the local folder explicitly authorized through Rice Bridge. Remain read-only and stay inside that folder.
 
@@ -45,3 +45,28 @@ If the user explicitly asks for a deep audit, explain that it will take longer a
 - Never access paths outside the selected workspace or bypass Rice Bridge restrictions.
 - Do not expose secrets or copy large private documents into the response.
 - If the request requires mutation or execution, finish the read-only briefing and explain that a separately approved capability is required.
+$skill$,
+    checksum = 'sha256:6297b8a52dc0286a9cf9c747b4406d282eba1dae06b562f8a11657d6bad9d0ee',
+    updated_at = now()
+where name = 'workspace-briefing';
+
+update allrice_dsh_skills
+set content = platform.content,
+    description = platform.description,
+    checksum = platform.checksum,
+    model_invocable = platform.model_invocable,
+    user_invocable = platform.user_invocable,
+    required_tool_refs = platform.required_tool_refs,
+    enabled = platform.enabled,
+    updated_at = now()
+from allrice_platform_dsh_skills platform
+where allrice_dsh_skills.name = 'workspace-briefing'
+  and platform.name = allrice_dsh_skills.name;
+
+insert into allrice_runtime_metadata (key, value)
+values (
+  'workspace-briefing-budget',
+  '{"version":"0053","issue":"MET-92","defaultMode":"bounded","deepAudit":"explicit-only"}'::jsonb
+)
+on conflict (key) do update
+set value = excluded.value, updated_at = now();
