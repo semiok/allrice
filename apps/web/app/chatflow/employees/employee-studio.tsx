@@ -482,7 +482,7 @@ export function EmployeeStudio() {
           <Link href="/chatflow">对话</Link>
           <Link href="/chatflow/governance">评测与发布</Link>
           {manifest.surfaces.includes('platform_admin') ? (
-            <Link href="/chatflow/admin">平台管理</Link>
+            <Link href="/runtime-console?view=governance">平台管理</Link>
           ) : null}
         </footer>
       </aside>
@@ -776,7 +776,9 @@ export function EmployeeStudio() {
                   Provider、模型、降级白名单和运行限额；旧会话不会被管理员改动污染。平台凭据始终不可见。
                 </p>
                 {manifest.surfaces.includes('platform_admin') ? (
-                  <Link href="/chatflow/admin">打开 Provider 治理</Link>
+                  <Link href="/runtime-console?view=governance">
+                    打开 Provider 治理
+                  </Link>
                 ) : null}
               </div>
             ) : null}

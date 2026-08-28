@@ -63,7 +63,7 @@ interface Quota {
 
 async function readJson<T>(response: Response): Promise<T> {
   if (response.status === 401) {
-    window.location.assign('/login?next=/chatflow/admin');
+    window.location.assign('/login?next=/runtime-console?view=governance');
     throw new Error('登录状态已失效');
   }
   const body = (await response.json().catch(() => null)) as
@@ -77,7 +77,7 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export function PlatformConsole() {
+export function PlatformConsole({ embedded = false }: { embedded?: boolean }) {
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -222,22 +222,26 @@ export function PlatformConsole() {
   }
 
   if (!manifest)
-    return <main className={styles.loading}>正在加载平台控制台…</main>;
+    return (
+      <div className={embedded ? styles.embeddedLoading : styles.loading}>
+        正在加载平台控制台…
+      </div>
+    );
   if (!manifest.roles.includes('platform_admin')) {
     return (
-      <main className={styles.denied}>
+      <div className={embedded ? styles.embeddedDenied : styles.denied}>
         <h1>平台管理员专用</h1>
         <p>租户管理员可以配置员工，但不能查看平台 Provider 或授权状态。</p>
         <Link href="/chatflow">返回 ChatFlow</Link>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className={styles.page}>
+    <div className={embedded ? styles.embedded : styles.page}>
       <header className={styles.header}>
         <div>
-          <Link href="/chatflow">← 返回 ChatFlow</Link>
+          {!embedded ? <Link href="/chatflow">← 返回 ChatFlow</Link> : null}
           <p>PLATFORM OPERATIONS</p>
           <h1>模型与运行治理</h1>
           <span>平台统一托管凭据、Provider 可用性、租户额度和生产熔断。</span>
@@ -461,6 +465,6 @@ export function PlatformConsole() {
         </section>
       ) : null}
       {notice ? <div className={styles.notice}>{notice}</div> : null}
-    </main>
+    </div>
   );
 }

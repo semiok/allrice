@@ -29,7 +29,7 @@ const definitions: readonly PortalDefinition[] = [
     hosts: ['allrice-admin.bplabs.xyz', 'allrice-admin.traditionow.ai'],
     username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
     passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
-    homePath: '/chatflow/admin',
+    homePath: '/runtime-console?view=governance',
     principal: {
       organizationSlug: 'allrice-platform',
       organizationName: 'AllRice Platform',

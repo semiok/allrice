@@ -1333,7 +1333,7 @@ export function ChatFlowClient() {
               <>
                 <nav className={styles.saasNavigation}>
                   {manifest.surfaces.includes('platform_admin') ? (
-                    <Link href="/chatflow/admin">
+                    <Link href="/runtime-console?view=governance">
                       <span aria-hidden="true">⚙</span>
                       平台管理
                     </Link>

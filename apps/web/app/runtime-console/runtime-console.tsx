@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { PlatformConsole } from '../chatflow/admin/platform-console';
 import { runtimeCapabilityCatalog } from './runtime-capability-catalog';
 import { EmployeeProduction } from './employee-production';
 import styles from './runtime-console.module.css';
@@ -111,9 +112,9 @@ function runtimeStateLabel(item: RuntimeInventoryItem) {
 }
 
 export function RuntimeConsole() {
-  const [view, setView] = useState<'runtimes' | 'employees' | 'capabilities'>(
-    'runtimes',
-  );
+  const [view, setView] = useState<
+    'runtimes' | 'employees' | 'capabilities' | 'governance'
+  >('runtimes');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -122,6 +123,28 @@ export function RuntimeConsole() {
   >(null);
   const [timelineError, setTimelineError] = useState('');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('view');
+    if (
+      requested === 'runtimes' ||
+      requested === 'employees' ||
+      requested === 'capabilities' ||
+      requested === 'governance'
+    ) {
+      setView(requested);
+    }
+  }, []);
+
+  const selectView = useCallback(
+    (next: 'runtimes' | 'employees' | 'capabilities' | 'governance') => {
+      setView(next);
+      const url = new URL(window.location.href);
+      url.searchParams.set('view', next);
+      window.history.replaceState(null, '', url);
+    },
+    [],
+  );
 
   const load = useCallback(async () => {
     const response = await fetch('/api/v1/admin/runtime-console', {
@@ -246,21 +269,27 @@ export function RuntimeConsole() {
       <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
         <button
           aria-current={view === 'employees' ? 'page' : undefined}
-          onClick={() => setView('employees')}
+          onClick={() => selectView('employees')}
         >
           AI 员工
         </button>
         <button
           aria-current={view === 'runtimes' ? 'page' : undefined}
-          onClick={() => setView('runtimes')}
+          onClick={() => selectView('runtimes')}
         >
           Runtime 状态
         </button>
         <button
           aria-current={view === 'capabilities' ? 'page' : undefined}
-          onClick={() => setView('capabilities')}
+          onClick={() => selectView('capabilities')}
         >
           能力来源
+        </button>
+        <button
+          aria-current={view === 'governance' ? 'page' : undefined}
+          onClick={() => selectView('governance')}
+        >
+          模型治理
         </button>
       </nav>
 
@@ -268,6 +297,8 @@ export function RuntimeConsole() {
         <EmployeeProduction />
       ) : view === 'capabilities' ? (
         <CapabilitySourceView />
+      ) : view === 'governance' ? (
+        <PlatformConsole embedded />
       ) : (
         <>
           <section className={styles.summary}>
