@@ -326,7 +326,7 @@ try {
               'sha256:55b4f4fbaa1fd7c033cf97db38ee19f620ab86bd528ab17a3d27647d5926465f')
             or
             (skill.name = 'workspace-briefing' and skill.checksum =
-              'sha256:2dfa4642a16c761a6fa4ccb46b1a139d3385dfeea2a9385edfdc293cf27acb01')
+              'sha256:6297b8a52dc0286a9cf9c747b4406d282eba1dae06b562f8a11657d6bad9d0ee')
           )
       ) as matching_skills
     from allrice_runtime_metadata metadata
