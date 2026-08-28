@@ -327,6 +327,7 @@ export async function listPlatformEmployeeWorkspaces() {
     from allrice_workspaces workspace
     join allrice_organizations organization on organization.id = workspace.organization_id
     where workspace.archived_at is null and organization.archived_at is null
+      and organization.slug <> 'allrice-platform'
     order by organization.name, workspace.name, workspace.id
   `;
 }
@@ -1046,8 +1047,14 @@ export async function publishPlatformEmployee(
   }
   const uniqueWorkspaceIds = [...new Set(workspaceIds)];
   const activeWorkspaces = await sql<{ id: string }[]>`
-    select id from allrice_workspaces
-    where id in ${sql(uniqueWorkspaceIds)} and archived_at is null
+    select workspace.id
+    from allrice_workspaces workspace
+    join allrice_organizations organization
+      on organization.id = workspace.organization_id
+    where workspace.id in ${sql(uniqueWorkspaceIds)}
+      and workspace.archived_at is null
+      and organization.archived_at is null
+      and organization.slug <> 'allrice-platform'
   `;
   if (activeWorkspaces.length !== uniqueWorkspaceIds.length) {
     return {

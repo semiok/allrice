@@ -1,7 +1,7 @@
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
-  key: 'platform-admin' | 'runtime-console' | 'snow' | 'drink';
+  key: 'platform-admin' | 'runtime-console' | 'snow';
   kind: PortalKind;
   title: string;
   subtitle: string;
@@ -86,27 +86,6 @@ const definitions: readonly PortalDefinition[] = [
         process.env.ALLRICE_SNOW_BOOTSTRAP_EMAIL ??
         'snow@bootstrap.allrice.local',
       displayName: 'Snow',
-      role: 'member',
-    },
-  },
-  {
-    key: 'drink',
-    kind: 'tenant',
-    title: 'Drink · AllRice',
-    subtitle: '与分配给 Drink 的 AI 员工一起工作。',
-    hosts: ['allrice-drink.bplabs.xyz', 'allrice-drink.traditionow.ai'],
-    username: process.env.ALLRICE_DRINK_USER ?? 'drink',
-    passwordEnvironmentVariable: 'ALLRICE_DRINK_PASSWORD',
-    homePath: '/chatflow',
-    principal: {
-      organizationSlug: 'drink',
-      organizationName: 'Drink',
-      workspaceSlug: 'default',
-      workspaceName: 'Drink Workspace',
-      email:
-        process.env.ALLRICE_DRINK_BOOTSTRAP_EMAIL ??
-        'drink@bootstrap.allrice.local',
-      displayName: 'Drink',
       role: 'member',
     },
   },

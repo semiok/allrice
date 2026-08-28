@@ -88,7 +88,6 @@ but promotion must still follow the review and immutable-bundle path above.
 | `allrice-dsh.*`   | AllRice Runtime Console | Runtime facts and platform employee production |
 | `allrice-admin.*` | AllRice control plane   | One platform administrator                     |
 | `allrice-snow.*`  | AllRice workspace       | Snow member principal                          |
-| `allrice-drink.*` | AllRice workspace       | Drink member principal                         |
 
 The bootstrap adapter is replaceable. A future SSO/RBAC implementation must
 continue producing the same trusted server-side portal, actor, organization

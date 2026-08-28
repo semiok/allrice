@@ -696,9 +696,10 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p className={styles.notice}>
+          这里直接使用当前草稿创建 Platform Control Plane 隔离调试会话，无需先发布。
           编译会校验 Provider、Skill、工具依赖、Bridge 权限和 DSH Runtime
-          Profile。隔离测试使用同一份草稿快照，但不会连接租户数据、Tool Broker
-          或本地 Bridge。
+          Profile；调试不会创建租户发布记录，也不会连接租户数据、Tool Broker 或本地
+          Bridge。
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
           <span>测试任务</span>
@@ -721,7 +722,7 @@ export function EmployeeProduction() {
             disabled={busy || !testPrompt.trim()}
             onClick={() => void runIsolatedTest()}
           >
-            {busy ? '提交中…' : '运行隔离 DSH 测试'}
+            {busy ? '提交中…' : '使用当前草稿运行 DSH 调试'}
           </button>
         </div>
         <div className={styles.testRuns}>
@@ -781,8 +782,8 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p className={styles.muted}>
-          选择允许使用 Rice
-          的租户工作区。发布生成不可变修订；新会话生效，已有会话保持原版本。
+          这里只显示真实租户工作区，不包含 Platform Control Plane。发布生成不可变修订；
+          新会话生效，已有会话保持原版本。
         </p>
         <Checks
           items={directory.workspaces.map((workspace) => ({
