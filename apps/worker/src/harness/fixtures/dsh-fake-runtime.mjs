@@ -202,6 +202,18 @@ lines.on('line', (line) => {
       hasDeepSeek: Boolean(process.env.DEEPSEEK_API_KEY),
       hasOpenAiCompatible: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
     });
+  } else if (prompt.includes('inspect-mixed-tool-instructions')) {
+    text = JSON.stringify({
+      nativeLocalAdvertised: prompt.includes(
+        'DSH native tools available for this turn: local.fs.list.',
+      ),
+      bridgedToolsAdvertised: prompt.includes(
+        'additional non-native AllRice tools are available',
+      ),
+      incorrectlyClaimsOnlyBridgedTools: prompt.includes(
+        'The only available tools are the AllRice tenant-scoped tools below.',
+      ),
+    });
   } else if (prompt.includes('think-first')) {
     reasoning(sessionId, turn, 0);
     text = 'visible answer';

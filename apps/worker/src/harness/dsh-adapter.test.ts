@@ -317,6 +317,27 @@ describe('DshHarnessAdapter', () => {
     ).not.toContain('allrice_tool_call');
   });
 
+  it('advertises native and bridged tools together without hiding native tools', async () => {
+    const adapter = createAdapter();
+    const input = executionInput({ prompt: 'inspect-mixed-tool-instructions' });
+    input.tools = [
+      ...input.tools,
+      {
+        name: 'local.fs.list',
+        description: 'List authorized local files',
+        inputSchema: { type: 'object' },
+      },
+    ];
+
+    const result = await adapter.execute(input);
+
+    expect(JSON.parse(result.answer)).toEqual({
+      nativeLocalAdvertised: true,
+      bridgedToolsAdvertised: true,
+      incorrectlyClaimsOnlyBridgedTools: false,
+    });
+  });
+
   it('accepts a single tool envelope after a harmless model preamble', async () => {
     const adapter = createAdapter();
     const calls: string[] = [];

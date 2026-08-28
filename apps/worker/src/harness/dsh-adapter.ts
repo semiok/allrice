@@ -383,6 +383,7 @@ function mappedReasoning(
 }
 
 function toolBridgeInstructions(input: HarnessExecutionInput) {
+  const nativeTools = input.tools.filter((tool) => isDshNativeTool(tool.name));
   const bridgedTools = input.tools.filter(
     (tool) => !isDshNativeTool(tool.name),
   );
@@ -398,7 +399,17 @@ function toolBridgeInstructions(input: HarnessExecutionInput) {
     inputSchema: tool.inputSchema,
   }));
   return [
-    'All host capabilities are disabled. The only available tools are the AllRice tenant-scoped tools below.',
+    'All host capabilities are disabled. Use only the tenant-scoped tools supplied by AllRice for this turn.',
+    ...(nativeTools.length
+      ? [
+          `DSH native tools available for this turn: ${nativeTools
+            .map((tool) => tool.name)
+            .join(
+              ', ',
+            )}. Call these through their native DSH function definitions; do not use an AllRice XML envelope for them.`,
+        ]
+      : []),
+    'The following additional non-native AllRice tools are available through the Tool Broker envelope:',
     JSON.stringify(definitions),
     'To call exactly one tool, return only <allrice_tool_call>{"id":"unique-id","name":"tool.name","arguments":{}}</allrice_tool_call>.',
     'Do not wrap that envelope in Markdown. Wait for an <allrice_tool_result> response before continuing.',
