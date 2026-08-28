@@ -291,6 +291,9 @@ try {
   const resetMigrationApplied = expectedMigrations.includes(
     '0049_rice_only_platform_reset.sql',
   );
+  const foundationalSkillsApplied = expectedMigrations.includes(
+    '0052_foundational_dsh_skills.sql',
+  );
   if (
     expectedMigrations.includes('0047_rice_only_employee_baseline.sql') &&
     (employeeBaselineRows[0]?.version !==
@@ -299,10 +302,42 @@ try {
         (resetMigrationApplied ? 'platform-reset' : 'fresh-only') ||
       nonRiceEmployeeRows[0]?.count !== '0' ||
       (resetMigrationApplied &&
+        !foundationalSkillsApplied &&
         (resetSkillRows[0]?.tenant_skills !== '0' ||
           resetSkillRows[0]?.platform_skills !== '0')))
   ) {
     throw new Error('Rice-only employee baseline is missing or invalid');
+  }
+
+  const foundationalSkillRows = await sql<
+    {
+      version: string | undefined;
+      matching_skills: string;
+    }[]
+  >`
+    select metadata.value ->> 'version' as version,
+      (
+        select count(*)::text
+        from allrice_platform_dsh_skills skill
+        where skill.enabled
+          and skill.source = 'allrice'
+          and (
+            (skill.name = 'web-research' and skill.checksum =
+              'sha256:55b4f4fbaa1fd7c033cf97db38ee19f620ab86bd528ab17a3d27647d5926465f')
+            or
+            (skill.name = 'workspace-briefing' and skill.checksum =
+              'sha256:2dfa4642a16c761a6fa4ccb46b1a139d3385dfeea2a9385edfdc293cf27acb01')
+          )
+      ) as matching_skills
+    from allrice_runtime_metadata metadata
+    where metadata.key = 'foundational-dsh-skills'
+  `;
+  if (
+    foundationalSkillsApplied &&
+    (foundationalSkillRows[0]?.version !== '0052' ||
+      foundationalSkillRows[0]?.matching_skills !== '2')
+  ) {
+    throw new Error('Foundational DSH Skills are missing or invalid');
   }
 
   const platformEmployeeRows = await sql<
