@@ -294,6 +294,11 @@ function toolLabel(name: unknown) {
     'workspace.session.search': '检索历史对话',
     'web.search': '联网搜索',
     'web.fetch': '读取公开网页',
+    'local.fs.list': '列出本地授权文件',
+    'local.fs.search': '搜索本地授权文件',
+    'local.fs.read': '读取本地授权文件',
+    'local.git.status': '查看本地 Git 状态',
+    'local.git.diff': '读取本地 Git 差异',
     mcp_tool_call: '调用受控工具',
     command_execution: '运行时工具',
   };

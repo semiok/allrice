@@ -26,6 +26,7 @@ export function makeHealthResponse(
 export * from './api.ts';
 export * from './automation.ts';
 export * from './authorization.ts';
+export * from './bridge.ts';
 export * from './capabilities.ts';
 export * from './chatflow.ts';
 export * from './common.ts';

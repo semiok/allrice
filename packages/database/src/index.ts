@@ -33,6 +33,7 @@ export async function closeDatabase() {
 export * from './identity.ts';
 export * from './data.ts';
 export * from './workspace.ts';
+export * from './bridge.ts';
 export * from './queue.ts';
 export * from './skillhub.ts';
 export * from './employeehub.ts';

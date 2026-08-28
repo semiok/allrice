@@ -446,6 +446,30 @@ try {
     throw new Error('Durable Workflow schema metadata or tables are missing');
   }
 
+  const bridgeRows = await sql<
+    { version: string | undefined; protocol: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'protocol' as protocol
+    from allrice_runtime_metadata where key = 'rice-bridge-schema'
+  `;
+  const bridgeTables = await sql<
+    { devices: string | null; grants: string | null; commands: string | null }[]
+  >`
+    select to_regclass('allrice_bridge_devices')::text as devices,
+      to_regclass('allrice_bridge_folder_grants')::text as grants,
+      to_regclass('allrice_bridge_commands')::text as commands
+  `;
+  if (
+    expectedMigrations.includes('0041_rice_bridge_v01.sql') &&
+    (bridgeRows[0]?.version !== '0041' ||
+      bridgeRows[0]?.protocol !== '1' ||
+      !bridgeTables[0]?.devices ||
+      !bridgeTables[0]?.grants ||
+      !bridgeTables[0]?.commands)
+  ) {
+    throw new Error('Rice Bridge v0.1 schema metadata or tables are missing');
+  }
+
   console.info(
     `[M5] database verified (${appliedMigrations.length} migration, pgvector ${vectorRows[0].version})`,
   );

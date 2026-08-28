@@ -158,6 +158,7 @@
 }
 
 .saasNavigation a,
+.saasNavigation button,
 .saasNavigation > span {
   display: flex;
   align-items: center;
@@ -171,9 +172,122 @@
   text-decoration: none;
 }
 
-.saasNavigation a:hover {
+.saasNavigation button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.saasNavigation a:hover,
+.saasNavigation button:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
+}
+
+.bridgeDialog {
+  max-height: min(720px, 88vh);
+}
+
+.bridgeBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.bridgeBody > p {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.bridgeActions {
+  display: flex;
+  gap: 8px;
+}
+
+.bridgeActions button,
+.bridgeDevices button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.pairingCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.pairingCard strong {
+  font-size: 28px;
+  letter-spacing: 4px;
+}
+
+.pairingCard small {
+  color: var(--dsw-alias-label-caption);
+}
+
+.pairingCard code {
+  overflow-x: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bridgeDevices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bridgeDevices article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+}
+
+.bridgeDevices article div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.bridgeDevices small {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.bridgeOnline,
+.bridgeOffline {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.bridgeOnline {
+  background: #20b26b;
+}
+
+.bridgeOffline {
+  background: var(--dsw-alias-label-caption);
 }
 
 .accountRow {

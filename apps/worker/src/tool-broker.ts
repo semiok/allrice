@@ -1,4 +1,5 @@
 import {
+  dispatchBridgeCommand,
   getToolBrokerFile,
   listToolBrokerFiles,
   createAutomationFromExecutionContext,
@@ -7,7 +8,11 @@ import {
   searchToolBrokerSessions,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
-import type { ExecutionContext, SkillCapability } from '@allrice/contracts';
+import {
+  BridgeCommandPayloadSchema,
+  type ExecutionContext,
+  type SkillCapability,
+} from '@allrice/contracts';
 
 import { HandlerError } from './errors.js';
 import { searchCodexHostedWeb } from './codex-search-broker.js';
@@ -94,6 +99,72 @@ export const riceToolDefinitions = [
     },
   },
   {
+    name: 'local.fs.list',
+    description:
+      '列出当前用户已通过 Rice Bridge 明确授权的 Mac 文件夹内容。仅支持相对路径和只读访问。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', default: '.' },
+        limit: { type: 'integer', minimum: 1, maximum: 200 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local.fs.search',
+    description:
+      '在当前用户已授权的 Mac 文件夹内按文本搜索文件内容。不会访问授权目录之外的文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', default: '.' },
+        query: { type: 'string', minLength: 1, maxLength: 500 },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local.fs.read',
+    description:
+      '读取当前用户已授权的 Mac 文件夹内的单个文本文件。敏感文件与目录越界会被 Bridge 拒绝。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', minLength: 1 },
+        maxBytes: { type: 'integer', minimum: 1, maximum: 200000 },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local.git.status',
+    description:
+      '在当前用户已授权的 Mac 仓库中执行固定只读的 Git status 检查。不能执行任意命令。',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', default: '.' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local.git.diff',
+    description:
+      '在当前用户已授权的 Mac 仓库中读取 Git diff。仅使用固定只读 Git 参数。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', default: '.' },
+        staged: { type: 'boolean', default: false },
+        maxBytes: { type: 'integer', minimum: 1, maximum: 200000 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'automation.create',
     description:
       '当用户明确要求提醒或未来执行某项任务时，创建当前工作区的一次性自动化，并绑定到当前对话。不要在用户没有明确提出未来执行要求时调用。',
@@ -117,6 +188,11 @@ const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'workspace.session.search': 'storage:read',
   'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
+  'local.fs.list': 'storage:read',
+  'local.fs.search': 'storage:read',
+  'local.fs.read': 'storage:read',
+  'local.git.status': 'storage:read',
+  'local.git.diff': 'storage:read',
   'automation.create': 'automation:write',
 };
 
@@ -127,6 +203,11 @@ const toolRisks: Readonly<Record<string, RiceToolRisk>> = {
   'workspace.session.search': 'read_only',
   'web.search': 'read_only',
   'web.fetch': 'read_only',
+  'local.fs.list': 'read_only',
+  'local.fs.search': 'read_only',
+  'local.fs.read': 'read_only',
+  'local.git.status': 'read_only',
+  'local.git.diff': 'read_only',
   'automation.create': 'side_effect',
 };
 
@@ -341,6 +422,22 @@ export async function executeRiceTool(input: {
         modelContent: JSON.stringify(page),
         summary: `已读取 ${new URL(page.url).hostname}`,
         itemCount: 1,
+      };
+    } else if (input.call.name.startsWith('local.')) {
+      const bridge = await dispatchBridgeCommand({
+        context: input.context,
+        payload: BridgeCommandPayloadSchema.parse({
+          capability: input.call.name,
+          arguments: args,
+        }),
+        idempotencyKey: `tool:${input.context.runId}:${input.call.id}`,
+      });
+      result = {
+        modelContent: JSON.stringify({
+          source: 'rice-bridge',
+          output: bridge.output,
+        }),
+        summary: bridge.summary,
       };
     } else if (input.call.name === 'automation.create') {
       const delayMinutes = args.delayMinutes;

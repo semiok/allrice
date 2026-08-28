@@ -208,6 +208,11 @@ const toolLabels: Record<string, string> = {
   'workspace.file.read': '读取工作区文件',
   'workspace.memory.search': '检索工作记忆',
   'workspace.session.search': '检索历史对话',
+  'local.fs.list': '列出本地授权文件',
+  'local.fs.search': '搜索本地授权文件',
+  'local.fs.read': '读取本地授权文件',
+  'local.git.status': '查看本地 Git 状态',
+  'local.git.diff': '读取本地 Git 差异',
   'automation.create': '创建自动化任务',
 };
 
