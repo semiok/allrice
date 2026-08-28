@@ -316,6 +316,7 @@ export async function listBridgeDevices(
     from allrice_bridge_devices
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId} and owner_id = ${ownerId}
+      and revoked_at is null
     order by last_seen_at desc nulls last, created_at desc
   `;
   if (rows.length === 0) return [];

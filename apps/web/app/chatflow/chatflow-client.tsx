@@ -27,6 +27,7 @@ import frameUi from './dsh-upstream/AppFrame.module.css';
 import inputUi from './dsh-upstream/InputBar.module.css';
 import messageUi from './dsh-upstream/MessageItem.module.css';
 import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
+import { DshDialog } from './dsh-upstream/Dialog';
 import styles from './dsh-saas.module.css';
 
 type Visibility = 'private' | 'workspace' | 'organization';
@@ -120,13 +121,6 @@ interface BridgeDevice {
     id: string;
     label: string;
   }>;
-}
-
-interface BridgePairing {
-  id: string;
-  code: string;
-  deviceName: string;
-  expiresAt: string;
 }
 
 interface RunView {
@@ -262,9 +256,6 @@ export function ChatFlowClient() {
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [bridgeOpen, setBridgeOpen] = useState(false);
   const [bridgeDevices, setBridgeDevices] = useState<BridgeDevice[]>([]);
-  const [bridgePairing, setBridgePairing] = useState<BridgePairing | null>(
-    null,
-  );
   const [bridgeBusy, setBridgeBusy] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -703,28 +694,6 @@ export function ChatFlowClient() {
     },
     [tenantHeaders, workspace],
   );
-
-  async function createBridgePairing() {
-    if (!workspace) return;
-    setBridgeBusy(true);
-    try {
-      const result = await readJson<{ pairing: BridgePairing }>(
-        await fetch('/api/v1/bridge/pairings', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...tenantHeaders },
-          body: JSON.stringify({
-            workspaceId: workspace.workspaceId,
-            deviceName: 'Snow 的 Mac',
-          }),
-        }),
-      );
-      setBridgePairing(result.pairing);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '配对码创建失败');
-    } finally {
-      setBridgeBusy(false);
-    }
-  }
 
   async function revokeBridgeDevice(deviceId: string) {
     if (!workspace) return;
@@ -1244,13 +1213,6 @@ export function ChatFlowClient() {
             {!sidebarCollapsed ? (
               <>
                 <nav className={styles.saasNavigation}>
-                  <button
-                    onClick={() => void loadBridgeDevices(true)}
-                    type="button"
-                  >
-                    <span aria-hidden="true">⌘</span>
-                    本地电脑
-                  </button>
                   <Link href="/chatflow/employees">
                     <span aria-hidden="true">♙</span>
                     {manifest.surfaces.includes('tenant_admin')
@@ -1522,149 +1484,97 @@ export function ChatFlowClient() {
       </section>
 
       {filePickerOpen ? (
-        <div
-          className={styles.filePickerBackdrop}
-          onClick={() => setFilePickerOpen(false)}
-          role="presentation"
+        <DshDialog
+          ariaLabel="从工作区添加文件"
+          eyebrow="工作区文件"
+          onClose={() => setFilePickerOpen(false)}
+          title="选择要交给 Rice 的文件"
         >
-          <section
-            aria-label="从工作区添加文件"
-            aria-modal="true"
-            className={styles.filePicker}
-            onClick={(event) => event.stopPropagation()}
-            role="dialog"
-          >
-            <header>
-              <div>
-                <p>工作区文件</p>
-                <h2>选择要交给 Rice 的文件</h2>
-              </div>
-              <button onClick={() => setFilePickerOpen(false)} type="button">
-                ×
+          <div className={styles.fileList}>
+            {workspaceFiles.map((file) => (
+              <button
+                key={file.id}
+                onClick={() => void addWorkspaceFile(file)}
+                type="button"
+              >
+                <span aria-hidden="true">□</span>
+                <div>
+                  <strong>{file.fileName}</strong>
+                  <small>
+                    {file.visibility === 'private' ? '仅自己' : '工作区公开'}
+                    {' · '}
+                    {Math.max(1, Math.ceil(file.sizeBytes / 1024))} KB
+                  </small>
+                </div>
+                <em>添加</em>
               </button>
-            </header>
-            <div className={styles.fileList}>
-              {workspaceFiles.map((file) => (
-                <button
-                  key={file.id}
-                  onClick={() => void addWorkspaceFile(file)}
-                  type="button"
-                >
-                  <span aria-hidden="true">□</span>
-                  <div>
-                    <strong>{file.fileName}</strong>
-                    <small>
-                      {file.visibility === 'private' ? '仅自己' : '工作区公开'}
-                      {' · '}
-                      {Math.max(1, Math.ceil(file.sizeBytes / 1024))} KB
-                    </small>
-                  </div>
-                  <em>添加</em>
-                </button>
-              ))}
-              {workspaceFiles.length === 0 ? (
-                <p>工作区还没有可用文件。</p>
-              ) : null}
-            </div>
-          </section>
-        </div>
+            ))}
+            {workspaceFiles.length === 0 ? (
+              <p>工作区还没有可用文件。</p>
+            ) : null}
+          </div>
+        </DshDialog>
       ) : null}
 
       {bridgeOpen ? (
-        <div
-          className={styles.filePickerBackdrop}
-          onClick={() => setBridgeOpen(false)}
-          role="presentation"
+        <DshDialog
+          ariaLabel="本地工作区状态"
+          bodyClassName={styles.bridgeBody}
+          className={styles.bridgeDialog}
+          eyebrow="Rice Bridge v0.1"
+          onClose={() => setBridgeOpen(false)}
+          title="本地工作区"
         >
-          <section
-            aria-label="连接本地电脑"
-            aria-modal="true"
-            className={`${styles.filePicker} ${styles.bridgeDialog}`}
-            onClick={(event) => event.stopPropagation()}
-            role="dialog"
-          >
-            <header>
-              <div>
-                <p>Rice Bridge v0.1</p>
-                <h2>连接 Snow 的 Mac</h2>
-              </div>
-              <button onClick={() => setBridgeOpen(false)} type="button">
-                ×
-              </button>
-            </header>
-            <div className={styles.bridgeBody}>
-              <p>
-                Bridge 只读取你明确授权的文件夹，不开放
-                Shell，也不会把模型密钥下发到电脑。
-              </p>
-              <div className={styles.bridgeActions}>
-                <button
-                  disabled={bridgeBusy}
-                  onClick={() => void createBridgePairing()}
-                  type="button"
-                >
-                  生成配对码
-                </button>
-                <button
-                  disabled={bridgeBusy}
-                  onClick={() => void loadBridgeDevices()}
-                  type="button"
-                >
-                  刷新状态
-                </button>
-              </div>
-              {bridgePairing ? (
-                <div className={styles.pairingCard}>
-                  <strong>{bridgePairing.code}</strong>
-                  <small>十分钟内，在 Snow 的 Mac 终端运行：</small>
-                  <code>
-                    pnpm --filter @allrice/rice-bridge exec rice-bridge pair
-                    --server {window.location.origin} --code{' '}
-                    {bridgePairing.code}
-                  </code>
+          <div className={styles.bridgeIntro}>
+            <p>
+              Bridge 只读取你明确授权的文件夹，不开放
+              Shell，也不会把模型密钥下发到电脑。
+            </p>
+            <button
+              disabled={bridgeBusy}
+              onClick={() => void loadBridgeDevices()}
+              type="button"
+            >
+              刷新状态
+            </button>
+          </div>
+          <div className={styles.bridgeDevices}>
+            {bridgeDevices.map((device) => (
+              <article key={device.id}>
+                <span
+                  className={
+                    device.status === 'online'
+                      ? styles.bridgeOnline
+                      : styles.bridgeOffline
+                  }
+                />
+                <div>
+                  <strong>{device.name}</strong>
+                  <small>
+                    {device.status === 'online' ? '在线' : '离线'} · Apple
+                    Silicon
+                  </small>
+                  {device.folderGrants.length ? (
+                    <small>
+                      本地工作区：
+                      {device.folderGrants.map((grant) => grant.label).join('、')}
+                    </small>
+                  ) : (
+                    <small>尚未选择本地工作区</small>
+                  )}
                 </div>
-              ) : null}
-              <div className={styles.bridgeDevices}>
-                {bridgeDevices.map((device) => (
-                  <article key={device.id}>
-                    <span
-                      className={
-                        device.status === 'online'
-                          ? styles.bridgeOnline
-                          : styles.bridgeOffline
-                      }
-                    />
-                    <div>
-                      <strong>{device.name}</strong>
-                      <small>
-                        {device.status === 'online' ? '在线' : '离线'} · Apple
-                        Silicon
-                      </small>
-                      {device.folderGrants.length ? (
-                        <small>
-                          本地工作区：
-                          {device.folderGrants
-                            .map((grant) => grant.label)
-                            .join('、')}
-                        </small>
-                      ) : (
-                        <small>尚未选择本地工作区</small>
-                      )}
-                    </div>
-                    <button
-                      disabled={bridgeBusy}
-                      onClick={() => void revokeBridgeDevice(device.id)}
-                      type="button"
-                    >
-                      撤销
-                    </button>
-                  </article>
-                ))}
-                {bridgeDevices.length === 0 ? <p>还没有已配对设备。</p> : null}
-              </div>
-            </div>
-          </section>
-        </div>
+                <button
+                  disabled={bridgeBusy}
+                  onClick={() => void revokeBridgeDevice(device.id)}
+                  type="button"
+                >
+                  断开
+                </button>
+              </article>
+            ))}
+            {bridgeDevices.length === 0 ? <p>本地工作区当前离线。</p> : null}
+          </div>
+        </DshDialog>
       ) : null}
     </main>
   );

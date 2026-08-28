@@ -187,7 +187,7 @@
 }
 
 .bridgeDialog {
-  max-height: min(720px, 88vh);
+  max-height: min(720px, calc(100dvh - 48px));
 }
 
 .bridgeBody {
@@ -195,22 +195,25 @@
   flex-direction: column;
   gap: 16px;
   padding: 20px;
-  overflow-y: auto;
 }
 
-.bridgeBody > p {
+.bridgeIntro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bridgeIntro p {
+  margin: 0;
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 20px;
 }
 
-.bridgeActions {
-  display: flex;
-  gap: 8px;
-}
-
-.bridgeActions button,
+.bridgeIntro button,
 .bridgeDevices button {
+  flex: 0 0 auto;
   min-height: 34px;
   padding: 0 12px;
   border: 1px solid var(--dsw-alias-border-l2);
@@ -218,34 +221,6 @@
   background: var(--dsw-alias-button-elevated-fill);
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
-}
-
-.pairingCard {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 16px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.pairingCard strong {
-  font-size: 28px;
-  letter-spacing: 4px;
-}
-
-.pairingCard small {
-  color: var(--dsw-alias-label-caption);
-}
-
-.pairingCard code {
-  overflow-x: auto;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-base);
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .bridgeDevices {
@@ -819,61 +794,8 @@
   cursor: pointer;
 }
 
-.filePickerBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgb(0 0 0 / 28%);
-}
-
-.filePicker {
-  width: min(560px, 100%);
-  max-height: min(680px, 84vh);
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 18px;
-  background: var(--dsw-specific-input-major);
-  box-shadow: var(--dsw-shadow-lv2);
-}
-
-.filePicker > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 18px 20px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-}
-
-.filePicker p,
-.filePicker h2 {
-  margin: 0;
-}
-
-.filePicker p {
-  color: var(--dsw-alias-label-caption);
-  font-size: 11px;
-}
-
-.filePicker h2 {
-  margin-top: 2px;
-  font-size: 17px;
-  line-height: 24px;
-}
-
-.filePicker header > button {
-  border: 0;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font-size: 22px;
-}
-
 .fileList {
   display: flex;
-  max-height: 520px;
   flex-direction: column;
   gap: 3px;
   padding: 8px;
