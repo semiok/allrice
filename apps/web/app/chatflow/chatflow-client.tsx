@@ -1585,7 +1585,7 @@ export function ChatFlowClient() {
           ariaLabel="本地工作区状态"
           bodyClassName={styles.bridgeBody}
           className={styles.bridgeDialog}
-          eyebrow="Rice Bridge v0.1"
+          eyebrow="Rice Bridge v0.2"
           onClose={() => setBridgeOpen(false)}
           title="本地工作区"
         >
@@ -1687,8 +1687,8 @@ export function ChatFlowClient() {
                 </button>
                 {bridgeRecoveryActive ? (
                   <small>
-                    正在等待 RiceBridge
-                    上线；选择成功后这里会自动显示文件夹名称。
+                    正在等待你在 Snow Mac
+                    完成文件夹选择；选择成功后这里会自动显示文件夹名称。
                   </small>
                 ) : null}
               </section>
