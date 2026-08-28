@@ -257,6 +257,7 @@ export function ChatFlowClient() {
   const [bridgeOpen, setBridgeOpen] = useState(false);
   const [bridgeDevices, setBridgeDevices] = useState<BridgeDevice[]>([]);
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [bridgeRecoveryActive, setBridgeRecoveryActive] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
@@ -681,6 +682,14 @@ export function ChatFlowClient() {
           ),
         );
         setBridgeDevices(result.devices);
+        if (
+          result.devices.some(
+            (device) =>
+              device.status === 'online' && device.folderGrants.length > 0,
+          )
+        ) {
+          setBridgeRecoveryActive(false);
+        }
         if (open) setBridgeOpen(true);
       } catch (cause) {
         if (!quiet) {
@@ -695,22 +704,27 @@ export function ChatFlowClient() {
     [tenantHeaders, workspace],
   );
 
-  async function revokeBridgeDevice(deviceId: string) {
+  async function disconnectBridgeWorkspace(device: BridgeDevice) {
     if (!workspace) return;
     setBridgeBusy(true);
     try {
-      await readJson(
-        await fetch(
-          `/api/v1/bridge/devices/${deviceId}?workspaceId=${workspace.workspaceId}`,
-          { method: 'DELETE', headers: tenantHeaders },
-        ),
-      ).catch((cause) => {
-        if (cause instanceof SyntaxError) return null;
-        throw cause;
-      });
+      await Promise.all(
+        device.folderGrants.map(async (grant) => {
+          await readJson(
+            await fetch(
+              `/api/v1/bridge/grants/${grant.id}?workspaceId=${workspace.workspaceId}`,
+              { method: 'DELETE', headers: tenantHeaders },
+            ),
+          ).catch((cause) => {
+            if (cause instanceof SyntaxError) return null;
+            throw cause;
+          });
+        }),
+      );
+      setBridgeRecoveryActive(false);
       await loadBridgeDevices();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '设备撤销失败');
+      setError(cause instanceof Error ? cause.message : '工作区断开失败');
     } finally {
       setBridgeBusy(false);
     }
@@ -727,6 +741,14 @@ export function ChatFlowClient() {
     }, 15_000);
     return () => window.clearInterval(timer);
   }, [loadBridgeDevices, workspace]);
+
+  useEffect(() => {
+    if (!bridgeRecoveryActive || !workspace) return;
+    const timer = window.setInterval(() => {
+      void loadBridgeDevices(false, true);
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [bridgeRecoveryActive, loadBridgeDevices, workspace]);
 
   async function addWorkspaceFile(file: WorkspaceFile) {
     if (!workspace) return;
@@ -1509,9 +1531,7 @@ export function ChatFlowClient() {
                 <em>添加</em>
               </button>
             ))}
-            {workspaceFiles.length === 0 ? (
-              <p>工作区还没有可用文件。</p>
-            ) : null}
+            {workspaceFiles.length === 0 ? <p>工作区还没有可用文件。</p> : null}
           </div>
         </DshDialog>
       ) : null}
@@ -1557,22 +1577,54 @@ export function ChatFlowClient() {
                   {device.folderGrants.length ? (
                     <small>
                       本地工作区：
-                      {device.folderGrants.map((grant) => grant.label).join('、')}
+                      {device.folderGrants
+                        .map((grant) => grant.label)
+                        .join('、')}
                     </small>
                   ) : (
                     <small>尚未选择本地工作区</small>
                   )}
                 </div>
-                <button
-                  disabled={bridgeBusy}
-                  onClick={() => void revokeBridgeDevice(device.id)}
-                  type="button"
-                >
-                  断开
-                </button>
+                {device.folderGrants.length ? (
+                  <button
+                    disabled={bridgeBusy}
+                    onClick={() => void disconnectBridgeWorkspace(device)}
+                    type="button"
+                  >
+                    断开工作区
+                  </button>
+                ) : null}
               </article>
             ))}
-            {bridgeDevices.length === 0 ? <p>本地工作区当前离线。</p> : null}
+            {!localWorkspaceOnline ? (
+              <section className={styles.bridgeRecovery}>
+                <div>
+                  <strong>本地工作区当前离线</strong>
+                  <p>
+                    如果 RiceBridge 正在运行，先在终端按 Control + C
+                    停止，再双击 Snow Mac 桌面的 RiceBridge。程序会弹出 macOS
+                    文件夹选择器；选择完成后保持终端窗口开启。
+                  </p>
+                </div>
+                <button
+                  className={styles.bridgeRecoveryPrimary}
+                  disabled={bridgeBusy}
+                  onClick={() => {
+                    setBridgeRecoveryActive(true);
+                    void loadBridgeDevices(false, true);
+                  }}
+                  type="button"
+                >
+                  {bridgeRecoveryActive ? '等待本地选择…' : '选择工作区'}
+                </button>
+                {bridgeRecoveryActive ? (
+                  <small>
+                    正在等待 RiceBridge
+                    上线；选择成功后这里会自动显示文件夹名称。
+                  </small>
+                ) : null}
+              </section>
+            ) : null}
           </div>
         </DshDialog>
       ) : null}

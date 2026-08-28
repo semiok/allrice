@@ -250,6 +250,37 @@
   font-size: 11px;
 }
 
+.bridgeRecovery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.bridgeRecovery div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bridgeRecovery p,
+.bridgeRecovery small {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.bridgeRecovery .bridgeRecoveryPrimary {
+  border-color: transparent;
+  background: var(--dsw-alias-button-primary-fill);
+  color: #fff;
+}
+
 .bridgeOnline,
 .bridgeOffline {
   width: 8px;

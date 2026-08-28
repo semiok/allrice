@@ -460,6 +460,57 @@ export async function revokeBridgeDevice(
   });
 }
 
+export async function revokeBridgeFolderGrant(
+  context: RequestContext,
+  workspaceIdInput: string,
+  grantIdInput: string,
+) {
+  const workspaceId = UuidSchema.parse(workspaceIdInput);
+  const grantId = UuidSchema.parse(grantIdInput);
+  const ownerId = requireWorkspaceMember(context, workspaceId);
+  const sql = getDatabase();
+  const grant = await sql.begin(async (transaction) => {
+    const rows = await transaction<
+      { id: string; device_id: string; label: string }[]
+    >`
+      update allrice_bridge_folder_grants folder_grant set revoked_at = now()
+      from allrice_bridge_devices device
+      where folder_grant.id = ${grantId}
+        and folder_grant.device_id = device.id
+        and folder_grant.organization_id = ${context.organizationId}
+        and folder_grant.workspace_id = ${workspaceId}
+        and folder_grant.owner_id = ${ownerId}
+        and device.organization_id = ${context.organizationId}
+        and device.workspace_id = ${workspaceId}
+        and device.owner_id = ${ownerId}
+        and device.revoked_at is null
+        and folder_grant.revoked_at is null
+      returning folder_grant.id, folder_grant.device_id, folder_grant.label
+    `;
+    const row = rows[0];
+    if (!row) throw new DataAccessError('not_found');
+    await transaction`
+      update allrice_bridge_commands
+      set status = 'canceled', completed_at = now(), updated_at = now(),
+        error_code = 'folder_grant_revoked'
+      where folder_grant_id = ${grantId}
+        and status in ('queued', 'claimed', 'running')
+    `;
+    return row;
+  });
+  await audit({
+    organizationId: context.organizationId,
+    workspaceId,
+    actorId: ownerId,
+    action: 'bridge.folder_grant.revoke',
+    resourceType: 'bridge_folder_grant',
+    resourceId: grantId,
+    reason: 'workspace_owner_disconnected_local_root',
+    requestId: context.requestId,
+    metadata: { deviceId: grant.device_id, label: grant.label },
+  });
+}
+
 export async function claimNextBridgeCommand(token: string) {
   const device = await authenticatedDevice(token);
   const leaseToken = randomUUID();
