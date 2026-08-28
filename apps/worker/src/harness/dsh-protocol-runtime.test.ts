@@ -63,6 +63,21 @@ describe('AllRice DSH protocol runtime', () => {
           'local.git.status',
           'local.git.diff',
         ],
+        nativeSkills: [
+          {
+            id: 'skill-contract-test',
+            name: 'allrice-contract-test',
+            description: 'Verify the tenant-frozen AllRice native skill seam.',
+            content:
+              '# Contract test\n\nFollow the contract test instructions.',
+            checksum: `sha256:${'a'.repeat(64)}`,
+            invocation: {
+              modelInvocable: true,
+              userInvocable: true,
+            },
+            requiredToolRefs: ['web.search'],
+          },
+        ],
         maxTokens: 1_024,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       }),

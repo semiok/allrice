@@ -6,7 +6,7 @@ import {
 } from '@allrice/database';
 
 import { getRequestContext } from '../../../../../../../lib/identity/session';
-import { skillHubErrorResponse } from '../../../../../../../lib/skillhub/responses';
+import { apiErrorResponse } from '../../../../../../../lib/api-error-response';
 
 export const runtime = 'nodejs';
 
@@ -19,7 +19,7 @@ export async function GET(request: Request) {
       authorization: await getCodexAuthorization(context, flowId ?? undefined),
     });
   } catch (error) {
-    return skillHubErrorResponse(error);
+    return apiErrorResponse(error);
   }
 }
 
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       { status: 202 },
     );
   } catch (error) {
-    return skillHubErrorResponse(error);
+    return apiErrorResponse(error);
   }
 }
 
@@ -47,6 +47,6 @@ export async function DELETE(request: Request) {
       authorization: await cancelCodexAuthorization(context, flowId),
     });
   } catch (error) {
-    return skillHubErrorResponse(error);
+    return apiErrorResponse(error);
   }
 }

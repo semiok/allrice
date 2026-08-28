@@ -250,19 +250,41 @@ try {
     throw new Error('execution plane schema metadata is missing or invalid');
   }
 
-  const skillHubRows = await sql<
+  const nativeSkillRows = await sql<
     { version: string | undefined; provider: string | undefined }[]
   >`
     select value ->> 'version' as version, value ->> 'provider' as provider
     from allrice_runtime_metadata
-    where key = 'skillhub-schema'
+    where key = 'dsh-native-skills'
   `;
   if (
-    expectedMigrations.includes('0006_skillhub_codex.sql') &&
-    (skillHubRows[0]?.version !== '0006' ||
-      skillHubRows[0]?.provider !== 'codex')
+    expectedMigrations.includes('0046_dsh_native_skills.sql') &&
+    (nativeSkillRows[0]?.version !== '0046' ||
+      nativeSkillRows[0]?.provider !== 'allrice')
   ) {
-    throw new Error('SkillHub/Codex schema metadata is missing or invalid');
+    throw new Error('DSH native Skill schema metadata is missing or invalid');
+  }
+
+  const employeeBaselineRows = await sql<
+    { version: string | undefined; migration_mode: string | undefined }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'migrationMode' as migration_mode
+    from allrice_runtime_metadata
+    where key = 'employee-catalog-baseline'
+  `;
+  const nonRiceEmployeeRows = await sql<{ count: string }[]>`
+    select count(*)::text as count
+    from allrice_employees
+    where employee_key <> 'default-assistant'
+  `;
+  if (
+    expectedMigrations.includes('0047_rice_only_employee_baseline.sql') &&
+    (employeeBaselineRows[0]?.version !== '0047' ||
+      employeeBaselineRows[0]?.migration_mode !== 'fresh-only' ||
+      nonRiceEmployeeRows[0]?.count !== '0')
+  ) {
+    throw new Error('Rice-only employee baseline is missing or invalid');
   }
 
   const employeeHubRows = await sql<

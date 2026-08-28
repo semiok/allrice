@@ -22,6 +22,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
+const maximumNativeSkillBodyBytes = 500_000;
 const localNativeTools = [
   {
     canonicalName: 'local.fs.list',
@@ -212,11 +213,52 @@ function requiredSessionId(params) {
   return params.sessionId;
 }
 
+function nativeSkillSnapshot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('native skill must be an object');
+  }
+  if (
+    typeof value.id !== 'string' ||
+    !value.id ||
+    typeof value.name !== 'string' ||
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.name) ||
+    typeof value.description !== 'string' ||
+    !value.description.trim() ||
+    typeof value.content !== 'string' ||
+    Buffer.byteLength(value.content) > maximumNativeSkillBodyBytes ||
+    typeof value.checksum !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.checksum) ||
+    !value.invocation ||
+    typeof value.invocation !== 'object' ||
+    typeof value.invocation.modelInvocable !== 'boolean' ||
+    typeof value.invocation.userInvocable !== 'boolean' ||
+    !Array.isArray(value.requiredToolRefs) ||
+    value.requiredToolRefs.some(
+      (tool) => typeof tool !== 'string' || !tool.trim(),
+    )
+  ) {
+    throw new TypeError('native skill snapshot is invalid');
+  }
+  return Object.freeze({
+    id: value.id,
+    name: value.name,
+    description: value.description.trim().slice(0, 500),
+    content: value.content,
+    checksum: value.checksum,
+    invocation: Object.freeze({
+      modelInvocable: value.invocation.modelInvocable,
+      userInvocable: value.invocation.userInvocable,
+    }),
+    requiredToolRefs: Object.freeze([...value.requiredToolRefs]),
+  });
+}
+
 class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   authorizationNotify = () => undefined;
   codexModels = null;
   nativeTools = new Set();
   nativeToolsRegistered = new Set();
+  nativeSkillsRegistered = false;
   pendingUserQuestions = new Map();
   userQuestionNotify = () => undefined;
   toolBrokerRequest = async () => {
@@ -288,6 +330,10 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       ? params.nativeTools.filter((name) => typeof name === 'string')
       : [];
     this.nativeTools = new Set(requestedTools);
+    const requestedSkills = Array.isArray(params?.nativeSkills)
+      ? params.nativeSkills.map(nativeSkillSnapshot)
+      : [];
+    this.registerNativeSkills(requestedSkills);
     this.registerNativeTools();
     await super.initialize(params);
     return {
@@ -304,6 +350,56 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         close: true,
       },
     };
+  }
+
+  registerNativeSkills(skills) {
+    if (this.nativeSkillsRegistered) {
+      throw new Error('AllRice native skills were already frozen');
+    }
+    this.nativeSkillsRegistered = true;
+    if (!this.ctx.skills) {
+      throw new Error('DSH native skill registry is unavailable');
+    }
+    const byId = new Map(skills.map((skill) => [skill.id, skill]));
+    this.ctx.skills.registerProvider(() => ({
+      name: 'allrice',
+      list: async () =>
+        skills.map((skill) => ({
+          name: skill.name,
+          description: skill.description,
+          invocation: skill.invocation,
+          source: 'allrice-managed',
+          provider: 'allrice',
+          rank: 100,
+          locator: Object.freeze({ id: skill.id, checksum: skill.checksum }),
+          resourceBase: {
+            kind: 'opaque',
+            description:
+              'Resources are managed by the tenant-scoped AllRice Skill Provider.',
+          },
+        })),
+      get: async (candidate) => {
+        const locator = candidate?.locator;
+        if (!locator || typeof locator !== 'object' || Array.isArray(locator)) {
+          return undefined;
+        }
+        const skill = byId.get(locator.id);
+        if (!skill || locator.checksum !== skill.checksum) return undefined;
+        return {
+          name: skill.name,
+          description: skill.description,
+          invocation: skill.invocation,
+          source: 'allrice-managed',
+          provider: 'allrice',
+          content: skill.content,
+          resourceBase: {
+            kind: 'opaque',
+            description:
+              'Resources are managed by the tenant-scoped AllRice Skill Provider.',
+          },
+        };
+      },
+    }));
   }
 
   registerNativeTools() {

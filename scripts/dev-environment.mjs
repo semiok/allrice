@@ -111,12 +111,6 @@ export async function prepareDevelopmentDatabase() {
   run(pnpmCommand, ['db:migrate']);
   console.info('[setup] Verifying database schema and pgvector...');
   run(pnpmCommand, ['db:verify']);
-  console.info(
-    '[setup] Building shared contracts for local Skill artifact checks...',
-  );
-  run(pnpmCommand, ['--filter', '@allrice/contracts', 'build']);
-  console.info('[setup] Verifying local Skill artifacts...');
-  run(pnpmCommand, ['db:repair']);
   console.info('[setup] Database is ready.');
 
   return process.env.DATABASE_URL;

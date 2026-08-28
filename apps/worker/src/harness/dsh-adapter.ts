@@ -9,7 +9,6 @@ import {
 } from '@allrice/contracts';
 
 import { HandlerError } from '../errors.js';
-import { skillInstructionsForStorageObjects } from '../skill-artifact.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -560,23 +559,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? input.threadId
       : expectedThreadId;
     const existing = this.runtimes.get(threadId);
-    const skillInstructions = await skillInstructionsForStorageObjects(
-      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-      input.storageObjects,
+    const grantedToolNames = new Set(input.tools.map((tool) => tool.name));
+    const nativeSkills = (input.nativeSkills ?? []).filter((skill) =>
+      skill.requiredToolRefs.every((tool) => grantedToolNames.has(tool)),
     );
-    const systemInstructions = [
-      input.kernel.systemInstructions,
-      ...(skillInstructions.length
-        ? [
-            'The following SkillHub instructions are immutable capability context:',
-            ...skillInstructions.flatMap((instructions, index) => [
-              `<skill-${index + 1}>`,
-              instructions,
-              `</skill-${index + 1}>`,
-            ]),
-          ]
-        : []),
-    ].join('\n\n');
+    const systemInstructions = input.kernel.systemInstructions;
     let generation = input.generation;
     if (!input.threadId || input.threadId !== threadId) {
       const bound = await input.onThreadBound?.({
@@ -591,6 +578,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       snapshot,
       threadId,
       systemInstructions,
+      nativeSkills,
     });
     runtime.lastActivityAt = new Date().toISOString();
     runtime.client.setRequestHandler(async (method, params) => {
@@ -890,6 +878,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     snapshot: DshExecutionSnapshot;
     threadId: string;
     systemInstructions: string;
+    nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
   }) {
     if (!this.runtimeCommand) {
       throw new HandlerError(
@@ -943,6 +932,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
             .map((tool) => tool.name)
             .filter(isDshNativeTool)
             .sort(),
+          nativeSkills: input.nativeSkills.map((skill) => ({
+            id: skill.id,
+            checksum: skill.checksum,
+            name: skill.name,
+            invocation: skill.invocation,
+          })),
           credentialDigest: credential
             ? createHash('sha256').update(credential.apiKey).digest('hex')
             : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
@@ -1039,6 +1034,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         provider: input.snapshot.route,
         model: input.snapshot.model,
         nativeTools,
+        nativeSkills: input.nativeSkills,
         maxTokens: input.input.maxOutputTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });

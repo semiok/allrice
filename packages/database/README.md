@@ -4,7 +4,7 @@
 
 ## Implemented scope
 
-Version 0.1 enables pgvector, migration/runtime metadata, the MET-41 identity foundation, MET-42 tenant data, MET-43 Queue/Run execution, MET-44 SkillHub, the Rice EmployeeHub/workspace and the MET-68 Agent Skill / Workflow / Knowledge capability registry. Session, Message, attachment, Memory, RAG chunk, Run, EmployeeRun and storage rows carry organization/workspace/owner fields with composite tenant foreign keys.
+Version 0.1 enables pgvector, migration/runtime metadata, the identity foundation, tenant data, Queue/Run execution, the Rice employee workspace and the DSH-native Agent Skill / Workflow / Knowledge capability registry. Session, Message, attachment, Memory, RAG chunk, Run, EmployeeRun and storage rows carry organization/workspace/owner fields with composite tenant foreign keys.
 
 ## Migration rules
 

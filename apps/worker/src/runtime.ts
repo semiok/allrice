@@ -223,8 +223,8 @@ async function executeHandler(
           employeeVersionId: input.employeeVersionId,
           provider: resolved.providerSnapshot,
           systemPrompt: resolved.promptSnapshot.systemPrompt,
-          skills: resolved.skillArtifacts
-            .map((artifact) => artifact.skillVersionId)
+          skills: resolved.nativeSkills
+            .map((skill) => `${skill.id}:${skill.checksum}`)
             .sort(),
           capabilities: [...resolved.grantedCapabilities].sort(),
         }),
@@ -603,22 +603,11 @@ async function executeHandler(
         .join(':');
       const routePlanMatchesStoredDecision =
         routeDecision.selectedCandidateId === routePlan.selectedCandidateId;
-      const selectedSkillVersionIds = routePlanMatchesStoredDecision
-        ? routePlan.selectedSkillVersionIds
-        : routeDecision.selectedKind === 'agent_skill'
-          ? [revisionId]
-          : [];
+      const selectedSkillVersionIds: string[] = [];
       const selectedKnowledgeRevisionIds = routePlanMatchesStoredDecision
         ? routePlan.selectedKnowledgeRevisionIds
         : routeDecision.selectedKind === 'knowledge'
           ? [revisionId]
-          : [];
-      const skillRequiredTools =
-        routeDecision.selectedKind === 'agent_skill' &&
-        executionSnapshot.schemaVersion === 2
-          ? (executionSnapshot.capabilitySnapshot.agentSkills.find(
-              (binding) => binding.revision.id === revisionId,
-            )?.revision.metadata.requiredToolRefs ?? [])
           : [];
       const selectedWorkflow =
         routeDecision.selectedKind === 'workflow' && capabilitySnapshot
@@ -636,7 +625,7 @@ async function executeHandler(
           ? [revisionId]
           : routeDecision.selectedKind === 'workflow'
             ? workflowToolNames
-            : skillRequiredTools;
+            : [];
       const tools = riceToolDefinitionsForTurn(
         resolved.grantedCapabilities,
         allowedToolNames,
@@ -646,11 +635,8 @@ async function executeHandler(
         const capability = riceToolCapability(tool.name);
         return capability ? [capability] : [];
       });
-      const selectedStorageObjects = resolved.skillArtifacts
-        .filter((artifact) =>
-          selectedSkillVersionIds.includes(artifact.skillVersionId),
-        )
-        .map((artifact) => artifact.storageObject);
+      const selectedStorageObjects: (typeof resolved.skillArtifacts)[number]['storageObject'][] =
+        [];
       const knowledge = await buildAuthorizedKnowledgeContext({
         context: execution.context,
         employeeId: executionSnapshot.employee.id,
@@ -863,6 +849,7 @@ async function executeHandler(
                   });
                   const stepResult = await adapter.execute({
                     kernel: stepKernel,
+                    nativeSkills: resolved.nativeSkills,
                     storageObjects: resolved.skillArtifacts
                       .filter((artifact) =>
                         skillIds.includes(artifact.skillVersionId),
@@ -943,6 +930,7 @@ async function executeHandler(
           : await adapter
               .execute({
                 kernel: routedKernel,
+                nativeSkills: resolved.nativeSkills,
                 storageObjects: selectedStorageObjects,
                 workDirectory: isolation.workDirectory,
                 executionEnvironment: isolation.environment,
@@ -961,11 +949,9 @@ async function executeHandler(
                       context: execution.context,
                       toolName: event.name,
                       metadata: {
-                        skillVersionIds: resolved.skillArtifacts
-                          .map((artifact) => artifact.skillVersionId)
-                          .filter((skillVersionId) =>
-                            selectedSkillVersionIds.includes(skillVersionId),
-                          ),
+                        skillVersionIds: resolved.nativeSkills.map(
+                          (skill) => skill.id,
+                        ),
                         capability: 'network:outbound',
                       },
                     });
@@ -982,11 +968,9 @@ async function executeHandler(
                           storageRoot:
                             process.env.ALLRICE_STORAGE_ROOT ??
                             '.local/storage',
-                          skillVersionIds: resolved.skillArtifacts
-                            .map((artifact) => artifact.skillVersionId)
-                            .filter((skillVersionId) =>
-                              selectedSkillVersionIds.includes(skillVersionId),
-                            ),
+                          skillVersionIds: resolved.nativeSkills.map(
+                            (skill) => skill.id,
+                          ),
                           sessionId:
                             typeof input.sessionId === 'string'
                               ? input.sessionId

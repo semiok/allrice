@@ -1320,11 +1320,6 @@ export function WorkspaceClient({
               );
             })}
           </nav>
-          {workspace.canAdminister ? (
-            <Link className="text-action" href="/skillhub">
-              管理 AI员工技能
-            </Link>
-          ) : null}
           <button className="text-action" onClick={logout}>
             退出登录
           </button>

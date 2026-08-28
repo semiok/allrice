@@ -20,7 +20,7 @@ Version 0.1.0 establishes a runnable employee loop, not the completed SaaS produ
 - detailed feature documentation with implementation status, security boundaries, data ownership, APIs, and acceptance criteria.
 - an invitation-only employee workspace with default versioned AI assignment, persistent Chat/Session, private attachments and explicit Memory.
 - a PostgreSQL-backed Queue/Run/Event execution plane with Scheduler, Worker leases, retries, cancellation, timeout, crash recovery and SSE replay.
-- an administrator-facing SkillHub with audited immutable artifacts, workspace grants and direct Rice binding;
+- platform-managed DSH-native Skills with employee-level assembly and immutable per-Run snapshots;
 - one ordinary-user entry, **与 Rice 工作**, backed by a persistent DSH conversation session and tenant-scoped tools.
 - a platform-managed model pool with per-employee selection and immutable
   Session routing snapshots; the default is **GPT-5.6 Luna · 极高** through
@@ -140,9 +140,9 @@ the model console. DSH stores and refreshes the OAuth grant in its private
 credential store; AllRice stores only public flow state, connection health and
 opaque deployment references.
 
-Administrators can open `http://localhost:3000/skillhub` to import an approved
-Skill, add it to the workspace and configure it for Rice. The internal immutable
-configuration history is not exposed to ordinary employees.
+Reusable employee capabilities are provided through DSH-native Skills. They
+are assembled by the platform administration plane and are not managed through
+a tenant-facing capability marketplace.
 
 Run the MET-62 product and runtime gate with `pnpm met62:verify`. Set
 `ALLRICE_ACCEPTANCE_BASE_URL=http://localhost:3000` to include deployed HTTP

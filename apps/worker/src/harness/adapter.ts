@@ -1,5 +1,6 @@
 import type {
   EmployeeKernelRequest,
+  DshNativeSkillSnapshot,
   HarnessExecutionSnapshot,
   HarnessCapabilities,
   HarnessEvent,
@@ -28,6 +29,7 @@ export interface HarnessExecutionInput {
   kernel: EmployeeKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
+  nativeSkills?: DshNativeSkillSnapshot[];
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
   signal: AbortSignal;

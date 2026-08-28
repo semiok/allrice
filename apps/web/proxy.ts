@@ -59,8 +59,7 @@ export function proxy(request: NextRequest) {
       (request.nextUrl.pathname.startsWith('/api/v1/admin') ||
         request.nextUrl.pathname.startsWith('/chatflow/admin') ||
         request.nextUrl.pathname.startsWith('/chatflow/employees') ||
-        request.nextUrl.pathname.startsWith('/employees') ||
-        request.nextUrl.pathname.startsWith('/skillhub'));
+        request.nextUrl.pathname.startsWith('/employees'));
     if (tenantForbidden) {
       if (request.nextUrl.pathname.startsWith('/api/')) {
         return Response.json(

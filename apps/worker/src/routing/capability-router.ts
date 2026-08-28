@@ -248,44 +248,9 @@ export function decideCapabilityRoute(input: {
         explicitTerms: familyTerms.knowledge,
       });
     }
-    for (const binding of snapshot.capabilitySnapshot.agentSkills) {
-      const requiredCapabilities = unique(binding.grantedCapabilities);
-      const risk = binding.revision.metadata.riskLevel;
-      const requiresApproval =
-        risk === 'high' ||
-        risk === 'critical' ||
-        requiredCapabilities.some((capability) =>
-          ['storage:write', 'secret:use', 'automation:write'].includes(
-            capability,
-          ),
-        );
-      facts.push({
-        candidate: RouteCandidateSchema.parse({
-          id: `agent_skill:${binding.revision.id}`,
-          kind: 'agent_skill',
-          name: binding.revision.name,
-          bindingId: binding.bindingId,
-          requiredCapabilities,
-          risk,
-          requiresApproval,
-          ...authorization({
-            effective: binding.effective,
-            requiredCapabilities,
-            grantedCapabilities,
-            requiresApproval,
-            approvalPolicy,
-          }),
-          score: 0,
-        }),
-        terms: [
-          binding.revision.name,
-          binding.revision.slug,
-          binding.revision.description,
-          ...binding.revision.metadata.applicableScenarios,
-        ],
-        explicitTerms: familyTerms.agent_skill,
-      });
-    }
+    // DSH-native Skills are selected by DSH's own skill-catalog tool. They are
+    // deliberately absent from the AllRice pre-routing candidate list so the
+    // control plane cannot second-guess or duplicate the Harness Agent Loop.
     for (const binding of snapshot.capabilitySnapshot.workflows) {
       const requiredCapabilities = workflowCapabilities(
         binding.revision.definition,
@@ -381,16 +346,7 @@ export function decideCapabilityRoute(input: {
   if (!best) {
     throw new Error('No authorized route can invoke the employee model');
   }
-  let selected = best.score > 1 ? best : candidates[0]!;
-  const matchedKnowledge = authorized.filter(
-    (candidate) => candidate.kind === 'knowledge' && candidate.score > 1,
-  );
-  const matchedSkills = authorized.filter(
-    (candidate) => candidate.kind === 'agent_skill' && candidate.score > 1,
-  );
-  if (matchedKnowledge.length > 0 && matchedSkills.length > 0) {
-    selected = matchedSkills[0]!;
-  }
+  const selected = best.score > 1 ? best : candidates[0]!;
   const reasonCodes: RouteReasonCode[] = [];
   if (selected.kind === 'direct') {
     reasonCodes.push(
@@ -413,16 +369,9 @@ export function decideCapabilityRoute(input: {
     selectedKind: selected.kind,
     selectedCandidateId: selected.id,
     reasonCodes: unique(reasonCodes),
-    selectedSkillVersionIds:
-      selected.kind === 'agent_skill' ? [revisionId] : [],
+    selectedSkillVersionIds: [],
     selectedKnowledgeRevisionIds:
-      selected.kind === 'knowledge'
-        ? [revisionId]
-        : selected.kind === 'agent_skill'
-          ? matchedKnowledge
-              .slice(0, 3)
-              .map((candidate) => candidate.id.split(':').slice(1).join(':'))
-          : [],
+      selected.kind === 'knowledge' ? [revisionId] : [],
     selectedWorkflowRevisionIds:
       selected.kind === 'workflow' ? [revisionId] : [],
     selectedToolNames: selected.kind === 'tool' ? [revisionId] : [],

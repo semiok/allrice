@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
@@ -229,9 +228,6 @@ export function AppShell({
               >
                 <span>◇</span> AI 员工
               </button>
-              <Link href="/skillhub">
-                <span>⌘</span> SkillHub
-              </Link>
               <button
                 type="button"
                 className={activePanel === 'model-pool' ? 'active' : ''}

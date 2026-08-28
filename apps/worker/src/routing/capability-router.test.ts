@@ -311,7 +311,6 @@ describe('capability route decision', () => {
 
   it.each([
     ['请根据知识库查产品定价', 'knowledge'],
-    ['用市场研究技能分析竞品', 'agent_skill'],
     ['运行周报工作流', 'workflow'],
   ] as const)('routes %s to %s', (prompt, expected) => {
     const input = base();
@@ -323,6 +322,21 @@ describe('capability route decision', () => {
     });
     expect(plan.selectedKind).toBe(expected);
     expect(plan.reasonCodes).toContain('minimum_necessary_capability');
+  });
+
+  it('leaves DSH-native Skill selection to the DSH Agent Loop', () => {
+    const input = base();
+    const snapshot = withCapabilities(input.snapshot);
+    const plan = decideCapabilityRoute({
+      request: { ...input.request, prompt: '用市场研究技能分析竞品' },
+      executionSnapshot: snapshot,
+      tools,
+    });
+    expect(plan.selectedKind).toBe('direct');
+    expect(plan.selectedSkillVersionIds).toEqual([]);
+    expect(
+      plan.candidates.some((candidate) => candidate.kind === 'agent_skill'),
+    ).toBe(false);
   });
 
   it('filters side-effect tools before ranking when approval is required', () => {
@@ -413,7 +427,7 @@ describe('capability route decision', () => {
     ).toThrow('frozen tenant snapshot');
   });
 
-  it('uses a stable minimum-capability tie break', () => {
+  it('keeps workflow routing stable when a Skill is also mentioned', () => {
     const input = base();
     const snapshot = withCapabilities(input.snapshot);
     const request = {
@@ -431,10 +445,10 @@ describe('capability route decision', () => {
       tools,
     });
     expect(first.selectedCandidateId).toBe(second.selectedCandidateId);
-    expect(first.reasonCodes).toContain('ambiguous_deterministic_tiebreak');
+    expect(first.selectedKind).toBe('workflow');
   });
 
-  it('combines authorized Knowledge with an Agent Skill without widening tools', () => {
+  it('routes Knowledge while leaving the accompanying Skill to DSH', () => {
     const input = base();
     const snapshot = withCapabilities(input.snapshot);
     const plan = decideCapabilityRoute({
@@ -445,8 +459,8 @@ describe('capability route decision', () => {
       executionSnapshot: snapshot,
       tools,
     });
-    expect(plan.selectedKind).toBe('agent_skill');
-    expect(plan.selectedSkillVersionIds).toHaveLength(1);
+    expect(plan.selectedKind).toBe('knowledge');
+    expect(plan.selectedSkillVersionIds).toEqual([]);
     expect(plan.selectedKnowledgeRevisionIds).toHaveLength(1);
     expect(plan.selectedToolNames).toEqual([]);
   });

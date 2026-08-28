@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 
+import type { DshNativeSkillSnapshot } from '@allrice/contracts';
+
 import { HandlerError } from '../errors.js';
 
 export interface DshNotification {
@@ -94,6 +96,7 @@ export class DshProtocolClient {
     provider: string;
     model: string;
     nativeTools?: string[];
+    nativeSkills?: DshNativeSkillSnapshot[];
     maxTokens?: number;
     expectedVersion?: string;
   }) {

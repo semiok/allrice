@@ -1,15 +1,14 @@
 # Agent capability foundation
 
-> Status: **MET-68 / Employee Framework Phase 2.1 implemented**
+> Status: **MET-92 / DSH-native Skill foundation implemented**
 
 AllRice models an AI employee's abilities as three independent capability
 families. They share publication, binding and audit conventions, but do not
 share a generic JSON table:
 
-- **Agent Skill** describes a reusable, model-invoked ability. In Phase 2.1 it
-  reuses the immutable SkillHub artifact and pinned SkillVersion authority,
-  extended with applicable scenarios, input/output schemas, required Tool
-  references and a risk level.
+- **Agent Skill** is a DSH-native reusable ability. AllRice stores the reviewed
+  definition, required Tool references and invocation policy, then exposes an
+  immutable employee-scoped snapshot through `AllRiceSkillProvider`.
 - **Workflow** describes a deterministic, ordered graph of approved steps.
   Phase 2.1 stores and binds the immutable definition; durable execution is
   delivered by MET-73.
@@ -27,16 +26,14 @@ administrator creates definition
                  -> exact effective binding is frozen into EmployeeRun
 ```
 
-Definitions have an `active` or `archived` catalog status. Revisions have a
-`draft`, `published`, `deprecated` or `revoked` lifecycle. A binding always
-points to one exact published revision; publishing a newer revision never
-silently changes an existing employee.
+DSH-native Skill definitions are enabled or disabled by the platform
+administration plane. A binding points to one exact checksum; changing content
+never mutates a running Session and instead changes the runtime fingerprint for
+the next Session.
 
-Only an active workspace or organization administrator may create, publish,
-archive or bind capabilities. Agent Skill bindings additionally require an
-enabled workspace Skill installation, its pinned published SkillVersion, a
-ready immutable artifact, and grants that are a subset of the Skill's declared
-capabilities.
+Only the platform administration plane may create or bind DSH-native Skills.
+Tenant users do not install Skills. Required Tool references must be present in
+the frozen Run grant or the Skill is omitted from that DSH runtime.
 
 ## Knowledge access
 
@@ -53,24 +50,24 @@ snapshot, prompt or audit metadata.
 
 ## Execution snapshot
 
-`EmployeeExecutionSnapshot` schema version 2 freezes:
+Each EmployeeRun freezes:
 
-- the exact Agent Skill revision, installation and granted capabilities;
+- the exact DSH-native Skill ID, body, checksum, invocation policy and required
+  Tool references;
 - the exact Workflow revision and checksum;
 - the exact Knowledge revision, ACL and actor-effective access entries;
 - the actor for whom the directory was resolved;
 - the existing employee definition, assignment, runtime and policy context.
 
-Catalog edits affect only future runs. A Worker never resolves a moving
+Administration edits affect only future runs. A Worker never resolves a moving
 "latest" capability after it has claimed a run.
 
-## Rolling compatibility
+## Fresh baseline
 
-Migration `0020` backfills existing manifest-based Skill selections into the
-explicit binding table. Migration `0022` temporarily mirrors manifests written
-by an older Web process until the new service explicitly manages that
-employee's bindings. Once `skill_bindings_managed_at` is set, the explicit
-binding table is authoritative and the legacy mirror no longer changes it.
+Migration `0046` removes the legacy catalog, versions, installations,
+artifacts and bindings. Migration `0047` removes unused built-in employees so
+the initial catalog contains only Rice. There is no ID mapping, dual-write or
+fallback path.
 
 ## Administrative API
 
@@ -87,5 +84,5 @@ binding table is authoritative and the legacy mirror no longer changes it.
 - `PUT /api/v1/employees/:id/capabilities` atomically replaces the employee's
   Agent Skill, Workflow and Knowledge bindings.
 
-These APIs are the backend authority for the configuration center planned in
-MET-69. They are not exposed as a new end-user navigation item.
+The legacy capability endpoints are not the DSH-native Skill authority. MET-93
+adds the platform-only employee configuration and publication surface.

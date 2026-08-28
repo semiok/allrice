@@ -1,6 +1,6 @@
 # Web application
 
-The Web application is the employee-facing AllRice process. Version 0.1.0 provides invitation auth, the Rice workspace, EmployeeHub, SkillHub and durable Run-backed Chat APIs.
+The Web application is the employee-facing AllRice process. It provides the Rice workspace and durable Run-backed Chat APIs. DSH-native Skills are assembled in the platform administration plane.
 
 ## Responsibilities
 
@@ -18,6 +18,6 @@ The Web application is the employee-facing AllRice process. Version 0.1.0 provid
 
 ## Boundary
 
-The Web process may create persistent jobs, but the Worker claims and executes them. Browser-supplied role, owner, organization, workspace, EmployeeVersion, SkillVersion, or Policy data is never trusted without server authorization.
+The Web process may create persistent jobs, but the Worker claims and executes them. Browser-supplied role, owner, organization, workspace, EmployeeVersion, DSH-native Skill, or Policy data is never trusted without server authorization.
 
 See [Employee workspace](../../docs/features/employee-workspace/README.md) and [Worker queue](../../docs/features/worker-queue/README.md).

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AssignEmployeeVersionInputSchema,
   CreateEmployeeInputSchema,
+  DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
   EmployeeAdminMemberSchema,
   EmployeeExecutionSnapshotSchema,
@@ -118,6 +119,7 @@ export interface EmployeeRunBinding {
   providerSnapshot: ReturnType<typeof HarnessExecutionSnapshotSchema.parse>;
   skillVersionIds: string[];
   skillBindings: FrozenSkillBinding[];
+  nativeSkills: ReturnType<typeof DshNativeSkillSnapshotSchema.parse>[];
   executionSnapshot: Omit<
     Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
     'tenantContext' | 'createdAt'
@@ -1160,6 +1162,46 @@ export async function prepareEmployeeRunBinding(input: {
     fallbackModels: [],
     timeoutMs: modelSnapshot.runLimits.timeoutMs,
   });
+  const nativeSkillRows = await sql<
+    {
+      id: string;
+      name: string;
+      description: string;
+      content: string;
+      checksum: string;
+      model_invocable: boolean;
+      user_invocable: boolean;
+      required_tool_refs: unknown;
+    }[]
+  >`
+    select skill.id, skill.name, skill.description, skill.content,
+      skill.checksum, skill.model_invocable, skill.user_invocable,
+      skill.required_tool_refs
+    from allrice_employee_dsh_skill_bindings binding
+    join allrice_dsh_skills skill
+      on skill.organization_id = binding.organization_id
+     and skill.workspace_id = binding.workspace_id
+     and skill.id = binding.skill_id
+    where binding.organization_id = ${input.context.organizationId}
+      and binding.workspace_id = ${input.workspaceId}
+      and binding.employee_id = ${assignment.employee_id}
+      and binding.enabled and skill.enabled
+    order by skill.name, skill.id
+  `;
+  const nativeSkills = nativeSkillRows.map((skill) =>
+    DshNativeSkillSnapshotSchema.parse({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      content: skill.content,
+      checksum: skill.checksum,
+      invocation: {
+        modelInvocable: skill.model_invocable,
+        userInvocable: skill.user_invocable,
+      },
+      requiredToolRefs: skill.required_tool_refs,
+    }),
+  );
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
@@ -1169,6 +1211,7 @@ export async function prepareEmployeeRunBinding(input: {
     providerSnapshot,
     skillVersionIds,
     skillBindings,
+    nativeSkills,
     executionSnapshot: {
       schemaVersion: 2,
       employee: {
@@ -1232,12 +1275,14 @@ export async function resolveEmployeeExecution(input: {
       provider_snapshot: unknown;
       skill_bindings: unknown;
       prompt_snapshot: unknown;
+      native_skills: unknown;
       execution_snapshot: unknown;
       system_prompt: string;
       manifest: unknown;
     }[]
   >`
-    select er.provider_snapshot, er.skill_bindings, er.prompt_snapshot,
+    select er.provider_snapshot, er.skill_bindings, er.native_skills,
+      er.prompt_snapshot,
       er.execution_snapshot,
       v.system_prompt, v.manifest
     from allrice_employee_runs er
@@ -1254,6 +1299,9 @@ export async function resolveEmployeeExecution(input: {
   );
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
+  );
+  const nativeSkills = DshNativeSkillSnapshotSchema.array().parse(
+    row.native_skills,
   );
   const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
     row.execution_snapshot,
@@ -1320,6 +1368,7 @@ export async function resolveEmployeeExecution(input: {
       row.provider_snapshot,
     ),
     promptSnapshot,
+    nativeSkills,
     executionSnapshot: executionSnapshot.success
       ? executionSnapshot.data
       : null,

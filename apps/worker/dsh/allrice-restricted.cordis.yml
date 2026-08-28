@@ -62,6 +62,12 @@
     toolBash: false
     toolJobs: false
 
+- id: skill-registry
+  name: '@deepseek-ai/dsh-skill'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:

@@ -1,7 +1,7 @@
 # Rice conversation runtime
 
 MET-51 narrows the ordinary-user product to one entry, **与 Rice 工作**, and
-keeps employee administration and SkillHub configuration outside the primary
+keeps employee administration and DSH-native Skill configuration outside the primary
 conversation navigation.
 
 ## Runtime flow
@@ -25,7 +25,7 @@ conversation navigation.
    network Skill can additionally activate `web.search` through the deployment
    Codex subscription and the guarded `web.fetch` page reader.
 7. Every tool request is re-authorized against the frozen execution policy and
-   audited. Skill installation never grants tenant data access by itself.
+   audited. A Skill definition never grants tenant data access by itself.
 8. DSH assistant deltas are normalized by the HarnessAdapter, batched by an
    80 ms / 512 character Worker window, persisted as ordered RunEvents and
    streamed over resumable SSE. Refresh and reconnect replay the same event IDs;
@@ -94,9 +94,8 @@ Arbitrary shell execution and per-tenant sandboxes are deliberately deferred;
 they require a separate sandbox runner and approval model rather than an
 expansion of the conversation Tool Broker.
 
-Network access follows the SkillHub capability intersection described in the
-[SkillHub guide](../skillhub/README.md). It never turns browser automation or
-shell access back on, and it has no paid-provider fallback.
+Network access follows the frozen employee Tool grants. It never turns browser
+automation or shell access back on, and it has no paid-provider fallback.
 
 See the pinned [MET-51 upstream runtime review](../../audits/met-51-upstream-runtime-review.md)
 for the OpenClaw, Hermes Agent and DeerFlow source comparison and copy decision.
