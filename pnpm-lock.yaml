@@ -43,6 +43,9 @@ importers:
 
   apps/dsh-admin:
     dependencies:
+      '@allrice/dsh-runtime-diff':
+        specifier: workspace:*
+        version: link:../../packages/dsh-runtime-diff
       '@allrice/dsh-web-search-codex':
         specifier: workspace:*
         version: link:../../packages/dsh-web-search-codex
@@ -195,6 +198,8 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  packages/dsh-runtime-diff: {}
 
   packages/dsh-web-search-codex:
     dependencies:

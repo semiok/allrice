@@ -61,6 +61,25 @@ The publish bridge is the only future mutation seam between the administrator
 Harness and production. Direct copying of the administrator DSH home into a
 Worker is prohibited.
 
+## Runtime difference view
+
+The official settings dialog includes an AllRice-owned, read-only
+`Runtime 差异` section. It is registered through DSH's native
+`settings.section` slot, so it follows the upstream dialog layout, theme and
+scroll behavior instead of maintaining a second settings shell.
+
+The section records three explicit sets:
+
+- capabilities shared by the administrator instance and Worker runtime;
+- capabilities available only in the full administrator Web profile;
+- capabilities supplied only by AllRice, such as ChatFlow, Tool Broker,
+  Employee capability assembly and Rice Bridge.
+
+This first version is a reviewed architecture snapshot, not a live publish
+button. It deliberately cannot enable a plugin or mutate a Worker. A future
+sync bridge can replace the snapshot with inventory data and drift status,
+but promotion must still follow the review and immutable-bundle path above.
+
 ## Temporary portals
 
 | Host family       | Surface               | Current authority          |
