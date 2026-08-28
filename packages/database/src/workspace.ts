@@ -40,7 +40,10 @@ import {
 
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
-const riceVersion = 9;
+// Built-in Rice manifests are immutable once published. Bump this whenever
+// the default employee capability contract changes so existing sessions stay
+// frozen while newly provisioned sessions receive the updated tool set.
+const riceVersion = 10;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
