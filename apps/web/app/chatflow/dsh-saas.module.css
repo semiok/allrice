@@ -320,10 +320,37 @@
   border-radius: 10px;
 }
 
-.accountRow > span:last-child {
+.accountRow > span:nth-child(2) {
   display: flex;
   min-width: 0;
   flex-direction: column;
+}
+
+.employeeDetailsButton {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  place-items: center;
+  margin-left: auto;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.employeeDetailsButton:hover,
+.collapsedEmployeeButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.employeeDetailsButton:disabled,
+.collapsedEmployeeButton:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .accountRow strong,
@@ -349,6 +376,207 @@
   height: 28px;
   border-radius: 50%;
   font-size: 12px;
+}
+
+.collapsedEmployeeButton {
+  border: 0;
+  cursor: pointer;
+}
+
+.employeeDetailsDialog {
+  width: min(680px, 100%);
+}
+
+.employeeDetailsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.employeeProfileIntro {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 2px 6px;
+}
+
+.employeeProfileAvatar {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  background: var(--dsw-alias-button-info-fill);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.employeeProfileIntro > div {
+  min-width: 0;
+}
+
+.employeeProfileIntro strong,
+.employeeProfileIntro p,
+.employeeProfileIntro small {
+  margin: 0;
+}
+
+.employeeProfileIntro strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.employeeProfileIntro p,
+.employeeProfileIntro small {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.employeeProfileIntro small {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  white-space: nowrap;
+}
+
+.employeeProfileSection {
+  padding: 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.employeeProfileSection > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.employeeProfileSection > header span {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.employeeProfileSection > header small {
+  color: var(--dsw-alias-label-caption);
+  font-size: 10px;
+}
+
+.employeePersonaGrid,
+.employeeModelGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.employeePersonaGrid > div,
+.employeeModelGrid > div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 9px;
+  background: var(--dsw-specific-input-major);
+}
+
+.employeePersonaGrid dt,
+.employeePersonaGrid dd,
+.employeeModelGrid dt,
+.employeeModelGrid dd {
+  margin: 0;
+}
+
+.employeePersonaGrid dt,
+.employeeModelGrid dt {
+  margin-bottom: 4px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 10px;
+}
+
+.employeePersonaGrid dd,
+.employeeModelGrid dd {
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.employeeRuleList {
+  margin-top: 12px;
+}
+
+.employeeRuleList > strong {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+}
+
+.employeeRuleList ul {
+  display: grid;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding-left: 18px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.employeeSkillList {
+  display: grid;
+  gap: 8px;
+}
+
+.employeeSkillList article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  padding: 10px;
+  border-radius: 9px;
+  background: var(--dsw-specific-input-major);
+}
+
+.employeeSkillList article > span {
+  color: var(--dsw-alias-button-info-fill);
+  font-size: 16px;
+}
+
+.employeeSkillList strong,
+.employeeSkillList p,
+.employeeEmptyState {
+  margin: 0;
+}
+
+.employeeSkillList strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+}
+
+.employeeSkillList p,
+.employeeEmptyState {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+@media (max-width: 640px) {
+  .employeeProfileIntro {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .employeeProfileIntro > small {
+    grid-column: 1 / -1;
+    width: max-content;
+  }
+
+  .employeePersonaGrid,
+  .employeeModelGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .conversationHeader {

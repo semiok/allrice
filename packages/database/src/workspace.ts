@@ -1339,8 +1339,47 @@ export async function getEmployeeWorkspace(
   ]);
   const { listEmployeeHub } = await import('./employeehub.ts');
   const employeeHub = await listEmployeeHub(context, assignment.workspaceId);
+  const assignedEmployeeIds = [
+    ...new Set(employeeHub.assignments.map((item) => item.employeeId)),
+  ];
   const sessionIds = sessions.sessions.map((session) => session.id);
   const sql = getDatabase();
+  const employeeSkillRows =
+    assignedEmployeeIds.length === 0
+      ? []
+      : await sql<
+          {
+            employee_id: string;
+            id: string;
+            name: string;
+            description: string;
+          }[]
+        >`
+          select binding.employee_id, skill.id, skill.name, skill.description
+          from allrice_employee_dsh_skill_bindings binding
+          join allrice_dsh_skills skill
+            on skill.organization_id = binding.organization_id
+           and skill.workspace_id = binding.workspace_id
+           and skill.id = binding.skill_id
+          where binding.organization_id = ${context.organizationId}
+            and binding.workspace_id = ${assignment.workspaceId}
+            and binding.employee_id in ${sql(assignedEmployeeIds)}
+            and binding.enabled and skill.enabled
+          order by binding.employee_id, skill.name, skill.id
+        `;
+  const skillsByEmployee = new Map<
+    string,
+    Array<{ id: string; name: string; description: string }>
+  >();
+  for (const skill of employeeSkillRows) {
+    const skills = skillsByEmployee.get(skill.employee_id) ?? [];
+    skills.push({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+    });
+    skillsByEmployee.set(skill.employee_id, skills);
+  }
   const modelRows =
     sessionIds.length === 0
       ? []
@@ -1372,6 +1411,42 @@ export async function getEmployeeWorkspace(
     workspaceId: assignment.workspaceId,
     employee: assignment,
     employees: employeeHub.assignments,
+    employeeProfiles: employeeHub.assignments.map((item) => {
+      const manifest = item.currentVersion.manifest;
+      const identity =
+        manifest.schemaVersion === 2
+          ? manifest.identity
+          : {
+              role: manifest.partnerProfile.role,
+              mission: manifest.partnerProfile.mission,
+              workStyle: manifest.description,
+              behaviorRules: [] as string[],
+              safetyBoundaries: [] as string[],
+            };
+      const runtimePolicy =
+        manifest.schemaVersion === 2
+          ? manifest.runtimePolicy
+          : {
+              harness: 'dsh' as const,
+              provider: manifest.provider.provider,
+              model: manifest.provider.model,
+              reasoningEffort: manifest.provider.reasoningEffort,
+            };
+      return {
+        assignmentId: item.id,
+        employeeId: item.employeeId,
+        name: manifest.name,
+        description: manifest.description,
+        identity,
+        skills: skillsByEmployee.get(item.employeeId) ?? [],
+        model: {
+          harness: 'dsh' as const,
+          provider: runtimePolicy.provider,
+          model: runtimePolicy.model,
+          reasoningEffort: runtimePolicy.reasoningEffort,
+        },
+      };
+    }),
     sessions: sessions.sessions,
     sessionModels,
     memories,
