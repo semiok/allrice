@@ -12,6 +12,13 @@ const migration = readFileSync(
   ),
   'utf8',
 );
+const localizationMigration = readFileSync(
+  resolve(
+    repositoryRoot,
+    'packages/database/migrations/0054_foundational_skill_chinese_descriptions.sql',
+  ),
+  'utf8',
+);
 
 function skillSource(name: string) {
   const source = readFileSync(
@@ -55,4 +62,24 @@ describe('foundational DSH-native Skills', () => {
         expect(migration).toContain(`"${tool}"`);
     },
   );
+
+  it.each([
+    {
+      name: 'web-research',
+      summary:
+        '使用获准的网页搜索研究最新公开信息，核验重要事实，并提供附有来源的综合结论。',
+    },
+    {
+      name: 'workspace-briefing',
+      summary:
+        '检查当前已授权的本地工作区，根据其中的文件和 Git 状态生成有依据的工作简报。',
+    },
+  ])('publishes a Chinese summary for $name', ({ name, summary }) => {
+    const source = skillSource(name);
+
+    expect(source.frontmatter).toContain('description: ');
+    expect(source.frontmatter).toMatch(/description: .*[一-鿿]/);
+    expect(localizationMigration).toContain(`'${name}'`);
+    expect(localizationMigration).toContain(`'${summary}'`);
+  });
 });

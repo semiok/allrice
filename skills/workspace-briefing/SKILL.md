@@ -1,6 +1,6 @@
 ---
 name: workspace-briefing
-description: Inspect the currently authorized local workspace and produce a grounded briefing from its files and Git state. Use when a user asks what is in a workspace, how projects are organized, where something lives, what changed, or what context is relevant before starting work.
+description: 检查当前已授权的本地工作区，根据其中的文件和 Git 状态生成有依据的工作简报。适用于了解工作区内容、项目结构、文件位置、近期改动，或开始工作前所需的相关背景。
 ---
 
 # Workspace Briefing

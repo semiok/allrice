@@ -1,6 +1,6 @@
 ---
 name: web-research
-description: Research current public information with approved web search, verify important claims, and deliver a source-backed synthesis. Use for news, prices, recent events, changing facts, comparisons, or any request that asks to search, verify, investigate, or cite the web.
+description: 使用获准的网页搜索研究最新公开信息，核验重要事实，并提供附有来源的综合结论。适用于新闻、价格、近期事件、持续变化的事实、对比分析，以及任何需要联网搜索、核实、调查或引用来源的请求。
 ---
 
 # Web Research
