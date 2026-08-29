@@ -1533,7 +1533,7 @@ export function EmployeeHubClient({
                     />
                   </fieldset>
                   <label>
-                    审批策略
+                    操作确认策略
                     <select
                       disabled={disabled}
                       value={draft.securityPolicy.approvalPolicy}
@@ -1553,10 +1553,10 @@ export function EmployeeHubClient({
                       }
                     >
                       <option value="confirm_side_effects">
-                        有副作用的操作先确认
+                        所有修改前询问
                       </option>
-                      <option value="confirm_external">外部操作先确认</option>
-                      <option value="autonomous">授权范围内自动执行</option>
+                      <option value="confirm_external">对外操作前询问</option>
+                      <option value="autonomous">已授权范围内自动执行</option>
                     </select>
                   </label>
                   <fieldset>

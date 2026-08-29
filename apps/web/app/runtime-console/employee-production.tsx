@@ -661,16 +661,16 @@ export function EmployeeProduction() {
     panel = (
       <div className={styles.grid}>
         <label className={styles.field}>
-          <span>副作用审批</span>
+          <span>操作确认策略</span>
           <select
             value={draft.securityPolicy.approvalPolicy}
             onChange={(event) =>
               update(['securityPolicy', 'approvalPolicy'], event.target.value)
             }
           >
-            <option value="confirm_side_effects">副作用前确认</option>
-            <option value="confirm_external">外部动作前确认</option>
-            <option value="autonomous">授权范围内自主</option>
+            <option value="confirm_side_effects">所有修改前询问</option>
+            <option value="confirm_external">对外操作前询问</option>
+            <option value="autonomous">已授权范围内自动执行</option>
           </select>
         </label>
         <label className={styles.field}>

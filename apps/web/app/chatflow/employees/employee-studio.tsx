@@ -786,7 +786,7 @@ export function EmployeeStudio() {
             {tab === 'security' ? (
               <div className={styles.formGrid}>
                 <label>
-                  审批策略
+                  操作确认策略
                   <select
                     value={draft.securityPolicy.approvalPolicy}
                     onChange={(event) =>
@@ -799,9 +799,9 @@ export function EmployeeStudio() {
                       })
                     }
                   >
-                    <option value="confirm_side_effects">有副作用时确认</option>
-                    <option value="confirm_external">对外动作时确认</option>
-                    <option value="autonomous">授权范围内自主</option>
+                    <option value="confirm_side_effects">所有修改前询问</option>
+                    <option value="confirm_external">对外操作前询问</option>
+                    <option value="autonomous">已授权范围内自动执行</option>
                   </select>
                 </label>
                 <label>
