@@ -18,6 +18,7 @@ import type {
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
+import { mergeChatFlowEvents } from '../../lib/chatflow/run-event-buffer';
 
 import { AssistantMarkdown } from './assistant-markdown';
 import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
@@ -245,23 +246,6 @@ function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
     textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
 }
 
-function eventsFromSse(text: string) {
-  const events: ChatFlowEventEnvelope[] = [];
-  for (const block of text.split('\n\n')) {
-    const data = block
-      .split('\n')
-      .filter((line) => line.startsWith('data: '))
-      .map((line) => line.slice(6))
-      .join('\n');
-    if (!data) continue;
-    const event = JSON.parse(data) as ChatFlowEventEnvelope;
-    if (!events.some((item) => item.eventId === event.eventId)) {
-      events.push(event);
-    }
-  }
-  return events;
-}
-
 export function ChatFlowClient() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
@@ -270,7 +254,7 @@ export function ChatFlowClient() {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [runView, setRunView] = useState<RunView | null>(null);
+  const [runViews, setRunViews] = useState<Record<string, RunView>>({});
   const [runTraces, setRunTraces] = useState<Record<string, RunTrace>>({});
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
     [],
@@ -286,7 +270,10 @@ export function ChatFlowClient() {
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
-  const activeStream = useRef<AbortController | null>(null);
+  const activeStreams = useRef(new Map<string, AbortController>());
+  const runEventBuffers = useRef(new Map<string, ChatFlowEventEnvelope[]>());
+  const terminalRunIds = useRef(new Set<string>());
+  const loadedTraceIds = useRef(new Set<string>());
   const traceLoads = useRef(new Set<string>());
   const conversationScroll = useRef<HTMLDivElement | null>(null);
   const transcriptColumn = useRef<HTMLDivElement | null>(null);
@@ -303,15 +290,30 @@ export function ChatFlowClient() {
     setAtTranscriptBottom(true);
   }, []);
 
+  const resetRunState = useCallback(() => {
+    for (const controller of activeStreams.current.values()) {
+      controller.abort();
+    }
+    activeStreams.current.clear();
+    runEventBuffers.current.clear();
+    terminalRunIds.current.clear();
+    loadedTraceIds.current.clear();
+    traceLoads.current.clear();
+    setRunViews({});
+    setRunTraces({});
+  }, []);
+
+  const tenantOrganizationId = workspace?.organizationId;
+  const tenantWorkspaceId = workspace?.workspaceId;
   const tenantHeaders = useMemo<Record<string, string>>(
     () =>
-      workspace
+      tenantOrganizationId && tenantWorkspaceId
         ? {
-            'x-allrice-organization-id': workspace.organizationId,
-            'x-allrice-workspace-id': workspace.workspaceId,
+            'x-allrice-organization-id': tenantOrganizationId,
+            'x-allrice-workspace-id': tenantWorkspaceId,
           }
         : ({} as Record<string, string>),
-    [workspace],
+    [tenantOrganizationId, tenantWorkspaceId],
   );
 
   const loadWorkspace = useCallback(async () => {
@@ -344,35 +346,45 @@ export function ChatFlowClient() {
 
   const loadHistory = useCallback(
     async (sessionId: string) => {
-      if (!workspace) return;
+      if (!tenantWorkspaceId) return;
       const result = await readJson<{ history: History }>(
         await fetch(
-          `/api/v1/sessions/${sessionId}?workspaceId=${workspace.workspaceId}`,
+          `/api/v1/sessions/${sessionId}?workspaceId=${tenantWorkspaceId}`,
           { cache: 'no-store', headers: tenantHeaders },
         ),
       );
       setHistory(result.history);
     },
-    [tenantHeaders, workspace],
+    [tenantHeaders, tenantWorkspaceId],
   );
 
   const streamRun = useCallback(
     async (runId: string) => {
-      if (!workspace) return;
-      activeStream.current?.abort();
+      if (
+        !workspace ||
+        activeStreams.current.has(runId) ||
+        terminalRunIds.current.has(runId)
+      )
+        return;
       const controller = new AbortController();
-      activeStream.current = controller;
-      let cursor: string | null = null;
+      activeStreams.current.set(runId, controller);
+      let accumulated = runEventBuffers.current.get(runId) ?? [];
+      let cursor: string | null = accumulated.at(-1)?.cursor ?? null;
       let reconnects = 0;
       let terminal = false;
-      let accumulated: ChatFlowEventEnvelope[] = [];
-      setRunView({
-        runId,
-        status: 'connecting',
-        cursor: null,
-        reconnects: 0,
-        events: [],
-      });
+      setRunViews((current) => ({
+        ...current,
+        [runId]: {
+          runId,
+          status: 'connecting',
+          cursor,
+          reconnects: 0,
+          events: mergeChatFlowEvents(
+            current[runId]?.events ?? [],
+            accumulated,
+          ),
+        },
+      }));
       while (!terminal && reconnects <= 6 && !controller.signal.aborted) {
         try {
           const headers: Record<string, string> = { ...tenantHeaders };
@@ -385,9 +397,18 @@ export function ChatFlowClient() {
           const reader = response.body!.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
-          setRunView((current) =>
-            current ? { ...current, status: 'running' } : current,
-          );
+          setRunViews((current) => ({
+            ...current,
+            [runId]: {
+              ...(current[runId] ?? {
+                runId,
+                cursor,
+                reconnects,
+                events: accumulated,
+              }),
+              status: 'running',
+            },
+          }));
           while (!controller.signal.aborted) {
             const chunk = await reader.read();
             if (chunk.done) break;
@@ -403,45 +424,66 @@ export function ChatFlowClient() {
               if (!data) continue;
               const event = JSON.parse(data) as ChatFlowEventEnvelope;
               cursor = event.cursor;
-              if (!accumulated.some((item) => item.eventId === event.eventId)) {
-                accumulated = [...accumulated, event];
-              }
+              accumulated = mergeChatFlowEvents(accumulated, [event]);
+              runEventBuffers.current.set(runId, accumulated);
               terminal = [
                 'run.succeeded',
                 'run.failed',
                 'run.canceled',
                 'run.needs_attention',
               ].includes(event.type);
-              setRunView({
-                runId,
-                status:
-                  event.type === 'run.failed'
-                    ? 'failed'
-                    : event.type === 'run.canceled'
-                      ? 'canceled'
-                      : terminal
-                        ? 'completed'
-                        : 'running',
-                cursor,
-                reconnects,
-                events: accumulated,
-              });
+              setRunViews((current) => ({
+                ...current,
+                [runId]: {
+                  runId,
+                  status:
+                    event.type === 'run.failed'
+                      ? 'failed'
+                      : event.type === 'run.canceled'
+                        ? 'canceled'
+                        : terminal
+                          ? 'completed'
+                          : 'running',
+                  cursor,
+                  reconnects,
+                  events: mergeChatFlowEvents(
+                    current[runId]?.events ?? [],
+                    accumulated,
+                  ),
+                },
+              }));
             }
           }
           if (!terminal) {
             reconnects += 1;
-            setRunView((current) =>
-              current ? { ...current, reconnects } : current,
-            );
+            setRunViews((current) => ({
+              ...current,
+              [runId]: current[runId]
+                ? { ...current[runId], reconnects }
+                : {
+                    runId,
+                    status: 'connecting',
+                    cursor,
+                    reconnects,
+                    events: accumulated,
+                  },
+            }));
           }
         } catch (cause) {
           if (controller.signal.aborted) break;
           reconnects += 1;
-          setRunView((current) =>
-            current
-              ? { ...current, status: 'connecting', reconnects }
-              : current,
-          );
+          setRunViews((current) => ({
+            ...current,
+            [runId]: current[runId]
+              ? { ...current[runId], status: 'connecting', reconnects }
+              : {
+                  runId,
+                  status: 'connecting',
+                  cursor,
+                  reconnects,
+                  events: accumulated,
+                },
+          }));
           if (reconnects > 6) {
             setError(
               cause instanceof Error
@@ -457,10 +499,22 @@ export function ChatFlowClient() {
           );
         }
       }
+      if (activeStreams.current.get(runId) === controller) {
+        activeStreams.current.delete(runId);
+      }
+      if (controller.signal.aborted) return;
       if (terminal) {
+        terminalRunIds.current.add(runId);
+        loadedTraceIds.current.add(runId);
         setRunTraces((current) => ({
           ...current,
-          [runId]: { status: 'loaded', events: accumulated },
+          [runId]: {
+            status: 'loaded',
+            events: mergeChatFlowEvents(
+              current[runId]?.events ?? [],
+              accumulated,
+            ),
+          },
         }));
       }
       if (activeId) await loadHistory(activeId).catch(() => undefined);
@@ -473,7 +527,7 @@ export function ChatFlowClient() {
     async (runId: string) => {
       if (
         !workspace ||
-        runTraces[runId]?.status === 'loaded' ||
+        loadedTraceIds.current.has(runId) ||
         traceLoads.current.has(runId)
       )
         return;
@@ -483,15 +537,25 @@ export function ChatFlowClient() {
         [runId]: { status: 'loading', events: current[runId]?.events ?? [] },
       }));
       try {
-        const response = await fetch(
-          `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}`,
-          { cache: 'no-store', headers: tenantHeaders },
+        const result = await readJson<{ events: ChatFlowEventEnvelope[] }>(
+          await fetch(
+            `/api/v1/runs/${runId}/events?workspaceId=${workspace.workspaceId}&format=json`,
+            {
+              cache: 'no-store',
+              headers: { ...tenantHeaders, accept: 'application/json' },
+            },
+          ),
         );
-        if (!response.ok) await readJson(response);
-        const events = eventsFromSse(await response.text());
+        loadedTraceIds.current.add(runId);
         setRunTraces((current) => ({
           ...current,
-          [runId]: { status: 'loaded', events },
+          [runId]: {
+            status: 'loaded',
+            events: mergeChatFlowEvents(
+              current[runId]?.events ?? [],
+              result.events,
+            ),
+          },
         }));
       } catch {
         setRunTraces((current) => ({
@@ -502,7 +566,7 @@ export function ChatFlowClient() {
         traceLoads.current.delete(runId);
       }
     },
-    [runTraces, tenantHeaders, workspace],
+    [tenantHeaders, workspace],
   );
 
   useEffect(() => {
@@ -513,37 +577,36 @@ export function ChatFlowClient() {
 
   useEffect(() => {
     if (!activeId) {
+      resetRunState();
       setHistory(null);
       return;
     }
     followTranscript.current = true;
     setAtTranscriptBottom(true);
-    setRunView(null);
-    setRunTraces({});
-    traceLoads.current.clear();
+    resetRunState();
     loadHistory(activeId).catch((cause) =>
       setError(cause instanceof Error ? cause.message : '会话加载失败'),
     );
-  }, [activeId, loadHistory]);
+  }, [activeId, loadHistory, resetRunState]);
 
   useEffect(() => {
-    const pending = [...(history?.messages ?? [])]
-      .reverse()
-      .find((message) => message.status === 'pending' && message.runId);
-    if (pending?.runId && runView?.runId !== pending.runId) {
-      void streamRun(pending.runId);
+    const pendingRunIds = (history?.messages ?? [])
+      .filter((message) => message.status === 'pending' && message.runId)
+      .map((message) => message.runId as string);
+    for (const runId of pendingRunIds) {
+      void streamRun(runId);
     }
-  }, [history, runView?.runId, streamRun]);
+  }, [history, streamRun]);
 
   useEffect(() => {
     const historicalRunIds = (history?.messages ?? [])
+      .filter((message) => message.status !== 'pending')
       .map((message) => message.runId)
       .filter((value): value is string => Boolean(value));
     for (const runId of historicalRunIds) {
-      if (runView?.runId === runId) continue;
       void loadRunTrace(runId);
     }
-  }, [history, loadRunTrace, runView?.runId]);
+  }, [history, loadRunTrace]);
 
   useEffect(() => {
     const scrollRegion = conversationScroll.current;
@@ -560,7 +623,7 @@ export function ChatFlowClient() {
 
   useLayoutEffect(() => {
     if (followTranscript.current) scrollToTranscriptBottom();
-  }, [history, runView, scrollToTranscriptBottom]);
+  }, [history, runViews, scrollToTranscriptBottom]);
 
   useLayoutEffect(() => {
     resizeComposerTextarea(composerInput.current);
@@ -600,7 +663,10 @@ export function ChatFlowClient() {
 
   useEffect(
     () => () => {
-      activeStream.current?.abort();
+      for (const controller of activeStreams.current.values()) {
+        controller.abort();
+      }
+      activeStreams.current.clear();
     },
     [],
   );
@@ -970,10 +1036,16 @@ export function ChatFlowClient() {
   }
 
   async function cancelRun() {
-    if (!workspace || !runView) return;
+    const targetRun = [...(history?.messages ?? [])]
+      .reverse()
+      .map((message) => (message.runId ? runViews[message.runId] : undefined))
+      .find(
+        (view) => view?.status === 'running' || view?.status === 'connecting',
+      );
+    if (!workspace || !targetRun) return;
     await readJson(
       await fetch(
-        `/api/v1/runs/${runView.runId}/cancel?workspaceId=${workspace.workspaceId}`,
+        `/api/v1/runs/${targetRun.runId}/cancel?workspaceId=${workspace.workspaceId}`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...tenantHeaders },
@@ -995,9 +1067,15 @@ export function ChatFlowClient() {
     ? employeeForSession(workspace, activeSession)
     : (workspace.employees.find((employee) => employee.isDefault) ??
       workspace.employees[0]);
-  const isRunning =
-    runView?.status === 'running' || runView?.status === 'connecting';
-  const isEmptyConversation = !history?.messages.length && !runView;
+  const isRunning = Object.values(runViews).some(
+    (view) => view.status === 'running' || view.status === 'connecting',
+  );
+  const isEmptyConversation =
+    !history?.messages.length && Object.keys(runViews).length === 0;
+  const recoverableRunView = [...(history?.messages ?? [])]
+    .reverse()
+    .map((message) => (message.runId ? runViews[message.runId] : undefined))
+    .find((view) => view?.status === 'failed' || view?.status === 'canceled');
   const selectedBridgeDevice = bridgeDevices.find(
     (device) => device.status !== 'revoked' && device.folderGrants.length > 0,
   );
@@ -1221,10 +1299,9 @@ export function ChatFlowClient() {
                 aria-label="开始新的工作"
                 className={sidebarUi.brand}
                 onClick={() => {
-                  activeStream.current?.abort();
+                  resetRunState();
                   setActiveId(null);
                   setHistory(null);
-                  setRunView(null);
                   setDraft('');
                   setPendingAttachments([]);
                 }}
@@ -1269,10 +1346,9 @@ export function ChatFlowClient() {
           <button
             className={sidebarUi.newSession}
             onClick={() => {
-              activeStream.current?.abort();
+              resetRunState();
               setActiveId(null);
               setHistory(null);
-              setRunView(null);
               setDraft('');
               setPendingAttachments([]);
             }}
@@ -1378,9 +1454,9 @@ export function ChatFlowClient() {
                       <button
                         className={conversationUi.crumb}
                         onClick={() => {
+                          resetRunState();
                           setActiveId(null);
                           setHistory(null);
-                          setRunView(null);
                         }}
                         type="button"
                       >
@@ -1425,10 +1501,9 @@ export function ChatFlowClient() {
                   <div className={chatUi.scroll} data-chat-scroll>
                     <div className={chatUi.column} ref={transcriptColumn}>
                       {history?.messages.map((message) => {
-                        const messageRun =
-                          message.runId && runView?.runId === message.runId
-                            ? runView
-                            : null;
+                        const messageRun = message.runId
+                          ? (runViews[message.runId] ?? null)
+                          : null;
                         const trace = message.runId
                           ? runTraces[message.runId]
                           : undefined;
@@ -1552,11 +1627,15 @@ export function ChatFlowClient() {
                         );
                       })}
 
-                      {runView?.status === 'failed' ||
-                      runView?.status === 'canceled' ? (
+                      {recoverableRunView ? (
                         <button
                           className={styles.recover}
-                          onClick={() => void streamRun(runView.runId)}
+                          onClick={() => {
+                            terminalRunIds.current.delete(
+                              recoverableRunView.runId,
+                            );
+                            void streamRun(recoverableRunView.runId);
+                          }}
                           type="button"
                         >
                           重新连接并恢复执行记录
