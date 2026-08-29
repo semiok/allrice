@@ -528,12 +528,17 @@
 
 .employeeSkillList {
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 8px;
 }
 
 .employeeSkillList article {
   display: grid;
+  min-height: 0;
+  height: auto;
   grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 9px;
   padding: 10px;
   border-radius: 9px;
