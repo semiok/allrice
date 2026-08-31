@@ -1,5 +1,5 @@
-import { EmployeeStudio } from './employee-studio';
+import { redirect } from 'next/navigation';
 
 export default function ChatFlowEmployeesPage() {
-  return <EmployeeStudio />;
+  redirect('/chatflow');
 }

@@ -1,0 +1,43 @@
+import {
+  createPlatformEmployeeDraft,
+  listPlatformEmployees,
+  listPlatformEmployeeWorkspaces,
+  listPlatformNativeSkills,
+} from '@allrice/database';
+
+import { executionErrorResponse } from '../../../../../lib/execution/responses';
+import { requirePlatformAdminContext } from '../../../../../lib/identity/platform-admin';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export async function GET(request: Request) {
+  try {
+    await requirePlatformAdminContext(request);
+    const [employees, skills, workspaces] = await Promise.all([
+      listPlatformEmployees(),
+      listPlatformNativeSkills(),
+      listPlatformEmployeeWorkspaces(),
+    ]);
+    return Response.json({ employees, skills, workspaces });
+  } catch (error) {
+    return executionErrorResponse(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const context = await requirePlatformAdminContext(request);
+    return Response.json(
+      {
+        employee: await createPlatformEmployeeDraft(
+          await request.json(),
+          context.actor.id,
+        ),
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    return executionErrorResponse(error);
+  }
+}

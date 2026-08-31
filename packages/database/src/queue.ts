@@ -436,6 +436,7 @@ export async function enqueueRun(
       providerSnapshot: Record<string, unknown>;
       skillVersionIds: string[];
       skillBindings: unknown[];
+      nativeSkills: unknown[];
       promptSnapshot: Record<string, unknown>;
       executionSnapshot: Omit<
         Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
@@ -726,7 +727,8 @@ export async function enqueueRun(
           run_id, organization_id, workspace_id, owner_id,
           employee_assignment_id, employee_version_id, session_id,
           user_message_id, assistant_message_id, status, provider_snapshot,
-          skill_bindings, prompt_snapshot, execution_snapshot, created_at
+          skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
+          created_at
         ) values (
           ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
           ${options.employeeBinding.employeeAssignmentId},
@@ -738,6 +740,7 @@ export async function enqueueRun(
             toJsonValue(options.employeeBinding.providerSnapshot),
           )},
           ${transaction.json(toJsonValue(options.employeeBinding.skillBindings))},
+          ${transaction.json(toJsonValue(options.employeeBinding.nativeSkills))},
           ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))},
           ${transaction.json(toJsonValue(executionSnapshot))},
           ${executionSnapshot.createdAt}

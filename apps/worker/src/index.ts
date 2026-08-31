@@ -12,6 +12,8 @@ import {
   queueSummary,
   recoverCodexAuthorizationFlows,
   recordCodexProviderStatus,
+  markWorkerDshRuntimesOffline,
+  replaceWorkerDshRuntimeInventory,
   syncAutomationRuns,
 } from '@allrice/database';
 
@@ -20,7 +22,8 @@ import {
   probeDshCodexProvider,
 } from './codex-auth-broker.js';
 import { executeClaimedJob } from './runtime.js';
-import { closeHarnessAdapters } from './harness/router.js';
+import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
+import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -38,6 +41,7 @@ function integerSetting(
 
 const readinessIntervalMs = 5000;
 const codexProviderStatusIntervalMs = 30_000;
+const dshRuntimeInventoryIntervalMs = 5_000;
 const pollIntervalMs = integerSetting(
   'ALLRICE_WORKER_POLL_INTERVAL_MS',
   1000,
@@ -71,8 +75,10 @@ let lastDatabaseError: string | undefined;
 let stopping = false;
 let tickRunning = false;
 let automationTickRunning = false;
+let platformEmployeeTestTickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
+let platformEmployeeTestAborter: AbortController | null = null;
 
 async function refreshReadiness() {
   try {
@@ -95,6 +101,20 @@ async function refreshCodexProviderStatus() {
   } catch (error) {
     console.error('[M5] Codex provider probe failed', {
       message: error instanceof Error ? error.message : 'codex_probe_failed',
+    });
+  }
+}
+
+async function refreshDshRuntimeInventory() {
+  try {
+    await replaceWorkerDshRuntimeInventory({
+      workerId,
+      runtimes: getHarnessRouter().runtimeInventory(),
+    });
+  } catch (error) {
+    console.error('[MET-90] DSH runtime inventory sync failed', {
+      message:
+        error instanceof Error ? error.message : 'runtime_inventory_failed',
     });
   }
 }
@@ -195,6 +215,26 @@ async function automationTick() {
   }
 }
 
+async function platformEmployeeTestTick() {
+  if (platformEmployeeTestTickRunning || stopping || !databaseReady) return;
+  platformEmployeeTestTickRunning = true;
+  platformEmployeeTestAborter = new AbortController();
+  try {
+    await executeNextPlatformEmployeeTest({
+      workerId,
+      executionRoot,
+      signal: platformEmployeeTestAborter.signal,
+    });
+  } catch (error) {
+    console.error('[MET-93] platform employee test failed', {
+      message: error instanceof Error ? error.message : 'unknown error',
+    });
+  } finally {
+    platformEmployeeTestAborter = null;
+    platformEmployeeTestTickRunning = false;
+  }
+}
+
 await refreshReadiness();
 await recoverCodexAuthorizationFlows();
 await refreshCodexProviderStatus();
@@ -206,9 +246,17 @@ const codexProviderStatusTimer = setInterval(
   () => void refreshCodexProviderStatus(),
   codexProviderStatusIntervalMs,
 );
+const dshRuntimeInventoryTimer = setInterval(
+  () => void refreshDshRuntimeInventory(),
+  dshRuntimeInventoryIntervalMs,
+);
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
 const automationTimer = setInterval(
   () => void automationTick(),
+  pollIntervalMs,
+);
+const platformEmployeeTestTimer = setInterval(
+  () => void platformEmployeeTestTick(),
   pollIntervalMs,
 );
 const codexAuthorizationTimer = setInterval(
@@ -217,7 +265,9 @@ const codexAuthorizationTimer = setInterval(
 );
 void tick();
 void automationTick();
+void platformEmployeeTestTick();
 codexAuthorizationBroker.tick();
+void refreshDshRuntimeInventory();
 
 server.listen(port, '0.0.0.0', () => {
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
@@ -232,14 +282,18 @@ async function shutdown(signal: string) {
   stopping = true;
   clearInterval(readinessTimer);
   clearInterval(codexProviderStatusTimer);
+  clearInterval(dshRuntimeInventoryTimer);
   clearInterval(queueTimer);
   clearInterval(automationTimer);
+  clearInterval(platformEmployeeTestTimer);
   clearInterval(codexAuthorizationTimer);
   for (const abort of activeAborters) abort();
+  platformEmployeeTestAborter?.abort();
   server.close();
   await Promise.allSettled(activeExecutions);
   await codexAuthorizationBroker.close();
   await closeHarnessAdapters();
+  await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);
   await closeDatabase();
   process.exit(0);
 }

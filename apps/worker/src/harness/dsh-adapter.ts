@@ -9,11 +9,11 @@ import {
 } from '@allrice/contracts';
 
 import { HandlerError } from '../errors.js';
-import { skillInstructionsForStorageObjects } from '../skill-artifact.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
   HarnessExecutionResult,
+  HarnessRuntimeProcessSnapshot,
   HarnessToolCall,
 } from './adapter.js';
 import {
@@ -30,11 +30,59 @@ const toolEnvelopePrefix = '<allrice_tool_call>';
 const toolEnvelopePattern =
   /<allrice_tool_call>\s*([\s\S]*?)\s*<\/allrice_tool_call>/;
 const maximumToolCallsPerTurn = 8;
+const dshNativeToolNames = new Set([
+  'web.search',
+  'local.fs.list',
+  'local.fs.search',
+  'local.fs.read',
+  'local.git.status',
+  'local.git.diff',
+  'wechat.article.search',
+  'wechat.article.read',
+]);
+const dshBrokerNativeToolNames = new Set([
+  'local.fs.list',
+  'local.fs.search',
+  'local.fs.read',
+  'local.git.status',
+  'local.git.diff',
+  'wechat.article.search',
+  'wechat.article.read',
+]);
+const dshNativeWireNames: Readonly<Record<string, string>> = {
+  web_search: 'web.search',
+  local_fs_list: 'local.fs.list',
+  local_fs_search: 'local.fs.search',
+  local_fs_read: 'local.fs.read',
+  local_git_status: 'local.git.status',
+  local_git_diff: 'local.git.diff',
+  wechat_article_search: 'wechat.article.search',
+  wechat_article_read: 'wechat.article.read',
+};
+
+function isDshNativeTool(name: string) {
+  return dshNativeToolNames.has(name);
+}
+
+function isSearchNativeTool(name: string) {
+  return name === 'web.search' || name === 'wechat.article.search';
+}
 
 interface DshRuntime {
   client: DshProtocolClient;
+  id: string;
   fingerprint: string;
   sessionId: string;
+  organizationId: string;
+  workspaceId: string;
+  productSessionId: string;
+  ownerId: string;
+  providerRoute: string;
+  model: string;
+  reasoningEffort: string;
+  nativeTools: string[];
+  startedAt: string;
+  lastActivityAt: string;
 }
 
 interface DshAdapterOptions {
@@ -291,23 +339,6 @@ function nativeEventView(event: Record<string, unknown>) {
       ...source,
     };
   }
-  if (type === 'tool/call' || type === 'tool/result') {
-    const name = shortText(data.name, 160);
-    const failed = Boolean(data.error);
-    return {
-      type: 'native.event' as const,
-      presentation:
-        name === 'web.search' ? ('search' as const) : ('tool' as const),
-      status:
-        type === 'tool/call'
-          ? ('started' as const)
-          : failed
-            ? ('failed' as const)
-            : ('completed' as const),
-      label: name ?? (type === 'tool/call' ? '工具调用' : '工具调用完成'),
-      ...source,
-    };
-  }
   return null;
 }
 
@@ -373,16 +404,33 @@ function mappedReasoning(
 }
 
 function toolBridgeInstructions(input: HarnessExecutionInput) {
-  if (input.tools.length === 0) {
+  const nativeTools = input.tools.filter((tool) => isDshNativeTool(tool.name));
+  const bridgedTools = input.tools.filter(
+    (tool) => !isDshNativeTool(tool.name),
+  );
+  if (bridgedTools.length === 0) {
+    if (input.tools.some((tool) => isDshNativeTool(tool.name))) {
+      return 'Use the native DSH tools supplied for this turn. Do not emit AllRice XML tool envelopes. Never claim a tool result unless the native call succeeds.';
+    }
     return 'No external tools are available. Never claim that a tool was called.';
   }
-  const definitions = input.tools.map((tool) => ({
+  const definitions = bridgedTools.map((tool) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema,
   }));
   return [
-    'All host capabilities are disabled. The only available tools are the AllRice tenant-scoped tools below.',
+    'All host capabilities are disabled. Use only the tenant-scoped tools supplied by AllRice for this turn.',
+    ...(nativeTools.length
+      ? [
+          `DSH native tools available for this turn: ${nativeTools
+            .map((tool) => tool.name)
+            .join(
+              ', ',
+            )}. Call these through their native DSH function definitions; do not use an AllRice XML envelope for them.`,
+        ]
+      : []),
+    'The following additional non-native AllRice tools are available through the Tool Broker envelope:',
     JSON.stringify(definitions),
     'To call exactly one tool, return only <allrice_tool_call>{"id":"unique-id","name":"tool.name","arguments":{}}</allrice_tool_call>.',
     'Do not wrap that envelope in Markdown. Wait for an <allrice_tool_result> response before continuing.',
@@ -521,23 +569,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? input.threadId
       : expectedThreadId;
     const existing = this.runtimes.get(threadId);
-    const skillInstructions = await skillInstructionsForStorageObjects(
-      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-      input.storageObjects,
+    const grantedToolNames = new Set(input.tools.map((tool) => tool.name));
+    const nativeSkills = (input.nativeSkills ?? []).filter((skill) =>
+      skill.requiredToolRefs.every((tool) => grantedToolNames.has(tool)),
     );
-    const systemInstructions = [
-      input.kernel.systemInstructions,
-      ...(skillInstructions.length
-        ? [
-            'The following SkillHub instructions are immutable capability context:',
-            ...skillInstructions.flatMap((instructions, index) => [
-              `<skill-${index + 1}>`,
-              instructions,
-              `</skill-${index + 1}>`,
-            ]),
-          ]
-        : []),
-    ].join('\n\n');
+    const systemInstructions = input.kernel.systemInstructions;
     let generation = input.generation;
     if (!input.threadId || input.threadId !== threadId) {
       const bound = await input.onThreadBound?.({
@@ -552,6 +588,49 @@ export class DshHarnessAdapter implements HarnessAdapter {
       snapshot,
       threadId,
       systemInstructions,
+      nativeSkills,
+    });
+    runtime.lastActivityAt = new Date().toISOString();
+    runtime.client.setRequestHandler(async (method, params) => {
+      if (method !== 'allrice/tool-call') {
+        throw new HandlerError(
+          'DSH_INBOUND_REQUEST_DENIED',
+          `DSH requested an unsupported Worker method: ${method}`,
+          false,
+        );
+      }
+      const id = shortText(params.toolCallId, 240);
+      const name = shortText(params.name, 160);
+      const args = record(params.arguments);
+      if (!id || !name || !args || !dshBrokerNativeToolNames.has(name)) {
+        throw new HandlerError(
+          'DSH_NATIVE_TOOL_INVALID',
+          'DSH requested an invalid AllRice native tool call',
+          false,
+        );
+      }
+      if (!input.tools.some((tool) => tool.name === name)) {
+        throw new HandlerError(
+          'TOOL_NOT_ALLOWED',
+          `DSH requested an unavailable tool: ${name}`,
+          false,
+        );
+      }
+      if (!input.onToolCall) {
+        throw new HandlerError(
+          'TOOL_NOT_ALLOWED',
+          'No AllRice Tool Broker is available for this execution',
+          false,
+        );
+      }
+      const result = await input.onToolCall({ id, name, arguments: args });
+      return {
+        modelContent: result.modelContent,
+        summary: result.summary,
+        ...(result.itemCount === undefined
+          ? {}
+          : { itemCount: result.itemCount }),
+      };
     });
     let order = 0;
     let turnId: string | null = null;
@@ -607,6 +686,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const result = await this.runOnce({
           runtime,
           prompt,
+          images: callIndex === 0 ? (input.images ?? []) : [],
           signal: input.signal,
           onTurn: async (nextTurnId) => {
             turnId = nextTurnId;
@@ -663,10 +743,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
           source: 'tool_broker',
           sourceEventType: 'allrice/tool-broker',
           sourcePayload: {
-            presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+            presentation: isSearchNativeTool(toolCall.name) ? 'search' : 'tool',
             status: 'started',
             query:
-              toolCall.name === 'web.search' &&
+              isSearchNativeTool(toolCall.name) &&
               typeof toolCall.arguments.query === 'string'
                 ? toolCall.arguments.query.slice(0, 500)
                 : undefined,
@@ -683,7 +763,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             summary: toolResult.summary,
             sourceEventType: 'allrice/tool-broker',
             sourcePayload: {
-              presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+              presentation: isSearchNativeTool(toolCall.name)
+                ? 'search'
+                : 'tool',
               status: 'completed',
               summary: toolResult.summary,
             },
@@ -706,7 +788,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             summary: error instanceof Error ? error.message : 'tool failed',
             sourceEventType: 'allrice/tool-broker',
             sourcePayload: {
-              presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+              presentation: isSearchNativeTool(toolCall.name)
+                ? 'search'
+                : 'tool',
               status: 'failed',
             },
           });
@@ -723,6 +807,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       }
       throw error;
+    } finally {
+      runtime.lastActivityAt = new Date().toISOString();
+      runtime.client.setRequestHandler(null);
     }
     return {
       answer,
@@ -731,6 +818,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
       model: snapshot.model,
       threadId,
       turnId,
+      nativeContextPressure: await runtime.client
+        .sessionProjection(runtime.sessionId)
+        .then((projection) =>
+          projection.contextPressure
+            ? {
+                ...(projection.asOfSeq === undefined
+                  ? {}
+                  : { asOfSeq: projection.asOfSeq }),
+                ...projection.contextPressure,
+              }
+            : null,
+        )
+        .catch(() => null),
     };
   }
 
@@ -770,11 +870,30 @@ export class DshHarnessAdapter implements HarnessAdapter {
     await Promise.allSettled(runtimes.map((runtime) => runtime.client.close()));
   }
 
+  runtimeInventory(): readonly HarnessRuntimeProcessSnapshot[] {
+    return [...this.runtimes.values()].map((runtime) => ({
+      id: runtime.id,
+      organizationId: runtime.organizationId,
+      workspaceId: runtime.workspaceId,
+      sessionId: runtime.productSessionId,
+      ownerId: runtime.ownerId,
+      threadId: runtime.sessionId,
+      providerRoute: runtime.providerRoute,
+      model: runtime.model,
+      reasoningEffort: runtime.reasoningEffort,
+      profileFingerprint: runtime.fingerprint,
+      nativeTools: [...runtime.nativeTools],
+      startedAt: runtime.startedAt,
+      lastActivityAt: runtime.lastActivityAt,
+    }));
+  }
+
   private async runtimeFor(input: {
     input: HarnessExecutionInput;
     snapshot: DshExecutionSnapshot;
     threadId: string;
     systemInstructions: string;
+    nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
   }) {
     if (!this.runtimeCommand) {
       throw new HandlerError(
@@ -824,6 +943,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
         JSON.stringify({
           snapshot: input.snapshot,
           systemInstructions: input.systemInstructions,
+          nativeTools: input.input.tools
+            .map((tool) => tool.name)
+            .filter(isDshNativeTool)
+            .sort(),
+          nativeSkills: input.nativeSkills.map((skill) => ({
+            id: skill.id,
+            checksum: skill.checksum,
+            name: skill.name,
+            invocation: skill.invocation,
+          })),
           credentialDigest: credential
             ? createHash('sha256').update(credential.apiKey).digest('hex')
             : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
@@ -856,6 +985,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       LANG: process.env.LANG ?? 'C.UTF-8',
       DSH_CORDIS_CONFIG: this.cordisConfig,
       DSH_HOME: dshPlatformHome,
+      DSH_RUNTIME_HOME: tenantRoot,
       DSH_CREDENTIALS_PATH: resolve(dshPlatformHome, '.credentials.yaml'),
       DSH_CWD: tenantRoot,
       DSH_SESSION_ROOT: resolve(tenantRoot, 'sessions'),
@@ -888,6 +1018,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
       environment.OPENAI_COMPATIBLE_API_KEY = credential!.apiKey;
       environment.OPENAI_COMPATIBLE_BASE_URL = input.snapshot.baseUrl!;
     }
+    const nativeTools = input.input.tools
+      .map((tool) => tool.name)
+      .filter(isDshNativeTool);
+    const startedAt = new Date().toISOString();
     const runtime: DshRuntime = {
       client: new DshProtocolClient({
         command: this.runtimeCommand,
@@ -896,14 +1030,27 @@ export class DshHarnessAdapter implements HarnessAdapter {
         environment,
         requestTimeoutMs: this.requestTimeoutMs,
       }),
+      id: randomUUID(),
       fingerprint,
       sessionId: input.threadId,
+      organizationId,
+      workspaceId,
+      productSessionId: input.input.kernel.sessionId,
+      ownerId,
+      providerRoute: input.snapshot.route,
+      model: input.snapshot.model,
+      reasoningEffort: input.snapshot.reasoningEffort,
+      nativeTools,
+      startedAt,
+      lastActivityAt: startedAt,
     };
     try {
       await runtime.client.initialize({
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
+        nativeTools,
+        nativeSkills: input.nativeSkills,
         maxTokens: input.input.maxOutputTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
@@ -918,6 +1065,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   private async runOnce(input: {
     runtime: DshRuntime;
     prompt: string;
+    images: HarnessExecutionInput['images'];
     signal: AbortSignal;
     onTurn(turnId: string): Promise<void>;
     onDelta(text: string, source: DshSourceMetadata): Promise<void>;
@@ -939,8 +1087,44 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let completionSource: DshSourceMetadata | undefined;
     let usageSource: DshSourceMetadata | undefined;
     const activeReasoningBlocks = new Set<number>();
+    const activeNativeTools = new Map<
+      string,
+      { name: string; query?: string }
+    >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
+      if (notification.method === 'session.user-question') {
+        const questions = Array.isArray(notification.params.questions)
+          ? notification.params.questions
+          : [];
+        const first = record(questions[0]);
+        const summary = shortText(first?.question, 500);
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'context',
+          status: 'started',
+          label: 'Rice 需要你确认',
+          ...(summary ? { summary } : {}),
+          sourceEventId: `dsh:${shortText(notification.params.questionId, 180) ?? randomUUID()}`,
+          sourceEventType: 'session/user-question',
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: { questionCount: questions.length },
+        });
+        return;
+      }
+      if (notification.method === 'session.user-question-answered') {
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'context',
+          status: 'completed',
+          label: '已收到你的回答',
+          sourceEventId: `dsh:${shortText(notification.params.questionId, 180) ?? randomUUID()}:answered`,
+          sourceEventType: 'session/user-question-answered',
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: {},
+        });
+        return;
+      }
       if (
         notification.method === 'session.status' &&
         notification.params.status === 'idle'
@@ -954,6 +1138,83 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const data = record(event?.data);
       if (!event || !data) return;
       const source = sourceMetadata(event);
+      if (event.type === 'tool/call') {
+        const callId = shortText(data.callId, 240);
+        const rawName = shortText(data.name, 160);
+        if (!callId || !rawName) return;
+        const name = dshNativeWireNames[rawName] ?? rawName;
+        let args: Record<string, unknown> | null = null;
+        try {
+          args =
+            typeof data.arguments === 'string'
+              ? record(JSON.parse(data.arguments))
+              : record(data.arguments);
+        } catch {
+          args = null;
+        }
+        const queries = Array.isArray(args?.queries)
+          ? args.queries.filter((query) => typeof query === 'string')
+          : [];
+        const query = queries.length
+          ? queries.join(' · ').slice(0, 500)
+          : shortText(args?.query, 500);
+        activeNativeTools.set(callId, {
+          name,
+          ...(query ? { query } : {}),
+        });
+        await input.onNative({
+          type: 'tool.started',
+          toolCallId: callId,
+          name,
+          label: name,
+          source: 'harness',
+          ...source,
+          sourcePayload: {
+            ...source.sourcePayload,
+            presentation: isSearchNativeTool(name) ? 'search' : 'tool',
+            status: 'started',
+            ...(query ? { query } : {}),
+          },
+        });
+        return;
+      }
+      if (event.type === 'tool/result') {
+        const message = record(data.message);
+        const firstBlock = Array.isArray(message?.content)
+          ? record(message.content[0])
+          : null;
+        const callId = shortText(
+          firstBlock?.toolCallId ?? message?.toolCallId ?? message?.callId,
+          240,
+        );
+        if (!callId) return;
+        const active = activeNativeTools.get(callId);
+        const name = active?.name ?? 'tool';
+        const failed = Boolean(data.error);
+        await input.onNative({
+          type: failed ? 'tool.failed' : 'tool.completed',
+          toolCallId: callId,
+          name,
+          label: name,
+          source: 'harness',
+          summary: isSearchNativeTool(name)
+            ? failed
+              ? '搜索失败'
+              : '搜索完成'
+            : failed
+              ? '工具执行失败'
+              : '工具执行完成',
+          ...source,
+          sourcePayload: {
+            ...source.sourcePayload,
+            presentation: isSearchNativeTool(name) ? 'search' : 'tool',
+            status: failed ? 'failed' : 'completed',
+            ...(active?.query ? { query: active.query } : {}),
+          },
+        });
+        activeNativeTools.delete(callId);
+        return;
+      }
       const nativeView = nativeEventView(event);
       if (nativeView) await input.onNative(nativeView);
       if (event.type === 'turn/start') {
@@ -1073,7 +1334,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
     input.signal.addEventListener('abort', abort, { once: true });
     if (input.signal.aborted) abort();
     try {
-      await input.runtime.client.prompt(input.runtime.sessionId, input.prompt);
+      await input.runtime.client.prompt(
+        input.runtime.sessionId,
+        input.prompt,
+        input.images,
+      );
       if (!idle) await idlePromise;
       await eventChain;
       if (processingError) throw processingError;

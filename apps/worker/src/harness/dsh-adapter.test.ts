@@ -56,6 +56,7 @@ function executionInput(input: {
   signal?: AbortSignal;
   events?: HarnessEvent[];
   onToolCall?: HarnessExecutionInput['onToolCall'];
+  images?: HarnessExecutionInput['images'];
 }): HarnessExecutionInput {
   const organizationId = randomUUID();
   const workspaceId = randomUUID();
@@ -76,6 +77,7 @@ function executionInput(input: {
       authorizedMemoryContext: '',
       grantedCapabilities: ['model:invoke', 'storage:read'],
       skillVersionIds: [],
+      imageAttachments: [],
     },
     providerSnapshot: input.provider ?? snapshot(),
     storageObjects: [],
@@ -99,6 +101,7 @@ function executionInput(input: {
         inputSchema: { type: 'object' },
       },
     ],
+    images: input.images,
     onToolCall: input.onToolCall,
     onEvent: async (event) => {
       events.push(event);
@@ -107,6 +110,28 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('forwards ordered image attachments to the native DSH prompt', async () => {
+    const adapter = createAdapter();
+    const result = await adapter.execute(
+      executionInput({
+        prompt: 'inspect-images',
+        images: [
+          { mediaType: 'image/png', data: 'aW1hZ2UtMQ==', name: 'one.png' },
+          {
+            mediaType: 'image/jpeg',
+            data: 'aW1hZ2UtMg==',
+            name: 'two.jpg',
+          },
+        ],
+      }),
+    );
+    expect(JSON.parse(result.answer)).toEqual({
+      count: 2,
+      names: ['one.png', 'two.jpg'],
+      mediaTypes: ['image/png', 'image/jpeg'],
+    });
+  });
+
   it('keeps one runtime and session across turns with different tool grants', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;
@@ -150,6 +175,11 @@ describe('DshHarnessAdapter', () => {
       inputTokens: 11,
       cachedInputTokens: 3,
       outputTokens: 5,
+    });
+    expect(result.nativeContextPressure).toMatchObject({
+      pressureTokens: 12000,
+      projectedTokens: 13516,
+      contextWindow: 200000,
     });
     expect(started).toHaveLength(1);
   });
@@ -218,6 +248,177 @@ describe('DshHarnessAdapter', () => {
         .map((event) => ('text' in event ? event.text : ''))
         .join(''),
     ).not.toContain('allrice_tool_call');
+  });
+
+  it('keeps native DSH search inside one turn and projects its tool events', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const calls: string[] = [];
+    const started: string[] = [];
+    const input = executionInput({
+      prompt: 'native-search',
+      events,
+      onToolCall: async (call) => {
+        calls.push(call.name);
+        return { modelContent: 'unused', summary: 'unused' };
+      },
+    });
+    input.tools = [
+      {
+        name: 'web.search',
+        description: 'Search the web',
+        inputSchema: { type: 'object' },
+      },
+    ];
+    input.onTurnStarted = async ({ turnId }) => {
+      started.push(turnId);
+    };
+
+    const result = await adapter.execute(input);
+
+    expect(result.answer).toBe('native-search-finished');
+    expect(started).toHaveLength(1);
+    expect(calls).toEqual([]);
+    expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
+      expect.objectContaining({
+        type: 'tool.started',
+        name: 'web.search',
+        source: 'harness',
+      }),
+      expect.objectContaining({
+        type: 'tool.completed',
+        name: 'web.search',
+        source: 'harness',
+      }),
+    ]);
+  });
+
+  it('routes native local tools through the active AllRice Tool Broker', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const calls: Array<{ id: string; name: string; arguments: unknown }> = [];
+    const input = executionInput({
+      prompt: 'native-local',
+      events,
+      onToolCall: async (call) => {
+        calls.push(call);
+        return {
+          modelContent: JSON.stringify({ entries: ['project-a'] }),
+          summary: '找到 1 个本地项目',
+          itemCount: 1,
+        };
+      },
+    });
+    input.tools = [
+      {
+        name: 'local.fs.list',
+        description: 'List authorized local files',
+        inputSchema: { type: 'object' },
+      },
+    ];
+
+    const result = await adapter.execute(input);
+
+    expect(result.answer).toBe('native-local-finished');
+    expect(calls).toEqual([
+      {
+        id: 'native-local-1',
+        name: 'local.fs.list',
+        arguments: { path: '.', limit: 20 },
+      },
+    ]);
+    expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
+      expect.objectContaining({
+        type: 'tool.started',
+        name: 'local.fs.list',
+        source: 'harness',
+      }),
+      expect.objectContaining({
+        type: 'tool.completed',
+        name: 'local.fs.list',
+        source: 'harness',
+      }),
+    ]);
+    expect(
+      events
+        .filter((event) => event.type === 'assistant.delta')
+        .map((event) => ('text' in event ? event.text : ''))
+        .join(''),
+    ).not.toContain('allrice_tool_call');
+  });
+
+  it('routes cloud WeChat native tools through the active Tool Broker as search events', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const calls: Array<{ id: string; name: string; arguments: unknown }> = [];
+    const input = executionInput({
+      prompt: 'native-wechat',
+      events,
+      onToolCall: async (call) => {
+        calls.push(call);
+        return {
+          modelContent: JSON.stringify({
+            provider: 'sogou-weixin',
+            results: [{ title: 'AllRice' }],
+          }),
+          summary: '找到 1 篇公众号公开文章',
+          itemCount: 1,
+        };
+      },
+    });
+    input.tools = [
+      {
+        name: 'wechat.article.search',
+        description: 'Search public WeChat articles',
+        inputSchema: { type: 'object' },
+      },
+    ];
+
+    const result = await adapter.execute(input);
+
+    expect(result.answer).toBe('native-wechat-finished');
+    expect(calls).toEqual([
+      {
+        id: 'native-wechat-1',
+        name: 'wechat.article.search',
+        arguments: { query: 'AllRice', limit: 3 },
+      },
+    ]);
+    expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
+      expect.objectContaining({
+        type: 'tool.started',
+        name: 'wechat.article.search',
+        source: 'harness',
+        sourcePayload: expect.objectContaining({ presentation: 'search' }),
+      }),
+      expect.objectContaining({
+        type: 'tool.completed',
+        name: 'wechat.article.search',
+        source: 'harness',
+        sourcePayload: expect.objectContaining({ presentation: 'search' }),
+      }),
+    ]);
+  });
+
+  it('advertises native and bridged tools together without hiding native tools', async () => {
+    const adapter = createAdapter();
+    const input = executionInput({ prompt: 'inspect-mixed-tool-instructions' });
+    input.tools = [
+      ...input.tools,
+      {
+        name: 'local.fs.list',
+        description: 'List authorized local files',
+        inputSchema: { type: 'object' },
+      },
+    ];
+
+    const result = await adapter.execute(input);
+
+    expect(JSON.parse(result.answer)).toEqual({
+      nativeLocalAdvertised: true,
+      bridgedToolsAdvertised: true,
+      incorrectlyClaimsOnlyBridgedTools: false,
+    });
   });
 
   it('accepts a single tool envelope after a harmless model preamble', async () => {

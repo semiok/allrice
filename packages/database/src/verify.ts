@@ -250,19 +250,168 @@ try {
     throw new Error('execution plane schema metadata is missing or invalid');
   }
 
-  const skillHubRows = await sql<
+  const nativeSkillRows = await sql<
     { version: string | undefined; provider: string | undefined }[]
   >`
     select value ->> 'version' as version, value ->> 'provider' as provider
     from allrice_runtime_metadata
-    where key = 'skillhub-schema'
+    where key = 'dsh-native-skills'
   `;
   if (
-    expectedMigrations.includes('0006_skillhub_codex.sql') &&
-    (skillHubRows[0]?.version !== '0006' ||
-      skillHubRows[0]?.provider !== 'codex')
+    expectedMigrations.includes('0046_dsh_native_skills.sql') &&
+    (nativeSkillRows[0]?.version !== '0046' ||
+      nativeSkillRows[0]?.provider !== 'allrice')
   ) {
-    throw new Error('SkillHub/Codex schema metadata is missing or invalid');
+    throw new Error('DSH native Skill schema metadata is missing or invalid');
+  }
+
+  const employeeBaselineRows = await sql<
+    { version: string | undefined; migration_mode: string | undefined }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'migrationMode' as migration_mode
+    from allrice_runtime_metadata
+    where key = 'employee-catalog-baseline'
+  `;
+  const nonRiceEmployeeRows = await sql<{ count: string }[]>`
+    select count(*)::text as count
+    from allrice_employees
+    where employee_key <> 'default-assistant'
+  `;
+  const resetSkillRows = await sql<
+    { tenant_skills: string; platform_skills: string }[]
+  >`
+    select
+      (select count(*)::text from allrice_dsh_skills) as tenant_skills,
+      case
+        when to_regclass('allrice_platform_dsh_skills') is null then '0'
+        else (select count(*)::text from allrice_platform_dsh_skills)
+      end as platform_skills
+  `;
+  const resetMigrationApplied = expectedMigrations.includes(
+    '0049_rice_only_platform_reset.sql',
+  );
+  const foundationalSkillsApplied = expectedMigrations.includes(
+    '0052_foundational_dsh_skills.sql',
+  );
+  if (
+    expectedMigrations.includes('0047_rice_only_employee_baseline.sql') &&
+    (employeeBaselineRows[0]?.version !==
+      (resetMigrationApplied ? '0049' : '0047') ||
+      employeeBaselineRows[0]?.migration_mode !==
+        (resetMigrationApplied ? 'platform-reset' : 'fresh-only') ||
+      nonRiceEmployeeRows[0]?.count !== '0' ||
+      (resetMigrationApplied &&
+        !foundationalSkillsApplied &&
+        (resetSkillRows[0]?.tenant_skills !== '0' ||
+          resetSkillRows[0]?.platform_skills !== '0')))
+  ) {
+    throw new Error('Rice-only employee baseline is missing or invalid');
+  }
+
+  const foundationalSkillRows = await sql<
+    {
+      version: string | undefined;
+      matching_skills: string;
+    }[]
+  >`
+    select metadata.value ->> 'version' as version,
+      (
+        select count(*)::text
+        from allrice_platform_dsh_skills skill
+        where skill.enabled
+          and skill.source = 'allrice'
+          and (
+            (skill.name = 'web-research' and skill.checksum =
+              'sha256:55b4f4fbaa1fd7c033cf97db38ee19f620ab86bd528ab17a3d27647d5926465f')
+            or
+            (skill.name = 'workspace-briefing' and skill.checksum =
+              'sha256:6297b8a52dc0286a9cf9c747b4406d282eba1dae06b562f8a11657d6bad9d0ee')
+          )
+      ) as matching_skills
+    from allrice_runtime_metadata metadata
+    where metadata.key = 'foundational-dsh-skills'
+  `;
+  if (
+    foundationalSkillsApplied &&
+    (foundationalSkillRows[0]?.version !== '0052' ||
+      foundationalSkillRows[0]?.matching_skills !== '2')
+  ) {
+    throw new Error('Foundational DSH Skills are missing or invalid');
+  }
+
+  const wechatResearchSkillRows = await sql<
+    {
+      version: string | undefined;
+      matching_skills: string;
+    }[]
+  >`
+    select metadata.value ->> 'version' as version,
+      (
+        select count(*)::text
+        from allrice_platform_dsh_skills skill
+        where skill.enabled
+          and skill.source = 'allrice'
+          and skill.name = 'wechat-research'
+          and skill.checksum =
+            'sha256:6cf6bfb84eb99ecf05375813959f62b33cf409a0c2e61fe09dedf5cb6ee689a7'
+      ) as matching_skills
+    from allrice_runtime_metadata metadata
+    where metadata.key = 'wechat-research-skill'
+  `;
+  if (
+    expectedMigrations.includes('0055_wechat_research_skill.sql') &&
+    (wechatResearchSkillRows[0]?.version !== '0055' ||
+      wechatResearchSkillRows[0]?.matching_skills !== '1')
+  ) {
+    throw new Error('WeChat research DSH Skill is missing or invalid');
+  }
+
+  const platformEmployeeRows = await sql<
+    {
+      version: string | undefined;
+      authority: string | undefined;
+      harness: string | undefined;
+    }[]
+  >`
+    select value ->> 'version' as version,
+      value ->> 'authority' as authority,
+      value ->> 'harness' as harness
+    from allrice_runtime_metadata
+    where key = 'platform-employee-production'
+  `;
+  const platformEmployeeTables = await sql<
+    {
+      employees: string | null;
+      revisions: string | null;
+      assignments: string | null;
+      skills: string | null;
+    }[]
+  >`
+    select to_regclass('allrice_platform_employees')::text as employees,
+      to_regclass('allrice_platform_employee_revisions')::text as revisions,
+      to_regclass('allrice_platform_employee_tenant_assignments')::text as assignments,
+      to_regclass('allrice_platform_dsh_skills')::text as skills
+  `;
+  const platformRiceRows = await sql<{ count: string }[]>`
+    select count(*)::text as count
+    from allrice_platform_employees
+    where employee_key = 'rice' and current_published_revision_id is not null
+  `;
+  if (
+    expectedMigrations.includes('0048_platform_employee_production.sql') &&
+    (platformEmployeeRows[0]?.version !== '0048' ||
+      platformEmployeeRows[0]?.authority !== 'allrice-control-plane' ||
+      platformEmployeeRows[0]?.harness !== 'dsh' ||
+      !platformEmployeeTables[0]?.employees ||
+      !platformEmployeeTables[0]?.revisions ||
+      !platformEmployeeTables[0]?.assignments ||
+      !platformEmployeeTables[0]?.skills ||
+      platformRiceRows[0]?.count !== '1')
+  ) {
+    throw new Error(
+      'Platform employee production schema is missing or invalid',
+    );
   }
 
   const employeeHubRows = await sql<
@@ -444,6 +593,30 @@ try {
       !workflowTables[0]?.artifacts)
   ) {
     throw new Error('Durable Workflow schema metadata or tables are missing');
+  }
+
+  const bridgeRows = await sql<
+    { version: string | undefined; protocol: string | undefined }[]
+  >`
+    select value ->> 'version' as version, value ->> 'protocol' as protocol
+    from allrice_runtime_metadata where key = 'rice-bridge-schema'
+  `;
+  const bridgeTables = await sql<
+    { devices: string | null; grants: string | null; commands: string | null }[]
+  >`
+    select to_regclass('allrice_bridge_devices')::text as devices,
+      to_regclass('allrice_bridge_folder_grants')::text as grants,
+      to_regclass('allrice_bridge_commands')::text as commands
+  `;
+  if (
+    expectedMigrations.includes('0041_rice_bridge_v01.sql') &&
+    (bridgeRows[0]?.version !== '0041' ||
+      bridgeRows[0]?.protocol !== '1' ||
+      !bridgeTables[0]?.devices ||
+      !bridgeTables[0]?.grants ||
+      !bridgeTables[0]?.commands)
+  ) {
+    throw new Error('Rice Bridge v0.1 schema metadata or tables are missing');
   }
 
   console.info(

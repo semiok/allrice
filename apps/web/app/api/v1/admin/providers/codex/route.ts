@@ -7,7 +7,7 @@ import {
 } from '@allrice/database';
 
 import { getRequestContext } from '../../../../../../lib/identity/session';
-import { skillHubErrorResponse } from '../../../../../../lib/skillhub/responses';
+import { apiErrorResponse } from '../../../../../../lib/api-error-response';
 
 export const runtime = 'nodejs';
 
@@ -27,6 +27,6 @@ export async function GET(request: Request) {
     ]);
     return Response.json({ provider, grant, authorization });
   } catch (error) {
-    return skillHubErrorResponse(error);
+    return apiErrorResponse(error);
   }
 }

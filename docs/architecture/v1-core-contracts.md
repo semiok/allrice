@@ -49,7 +49,7 @@ retry_wait -- attempts exhausted --> dead_letter
 
 ## Run, Event and SSE
 
-- Run freezes PolicySnapshot, EmployeeVersion and SkillVersion before execution.
+- Run freezes PolicySnapshot, EmployeeVersion and DSH-native Skill snapshots before execution.
 - RunEvent uses a UUID event ID plus a zero-based, gap-free sequence unique within the Run.
 - A terminal event (`run.succeeded`, `run.failed`, `run.canceled`) forbids later events.
 - Persistence commits the Run state and event in one transaction.
@@ -57,11 +57,14 @@ retry_wait -- attempts exhausted --> dead_letter
 - Invalid cursors return `CURSOR_INVALID`; another Run/tenant returns not-found/forbidden without disclosing existence; cursors older than the retained window return `CURSOR_EXPIRED` and require a Run snapshot refresh.
 - Heartbeat events keep intermediaries alive but do not change Run state.
 
-## SkillHub
+## DSH-native Skills
 
-`CatalogSkill -> SkillVersion -> SkillArtifact` is immutable after publication. `SkillInstallation` is tenant/user state and owns `enabled`, `favorite`, `pinnedVersionId`, granted capabilities, timeout and budget.
+`AllRiceSkillProvider` exposes only the enabled Skills bound to the frozen
+employee Run. Tenant users cannot install or modify Skills.
 
-Worker verifies checksum, compatibility and the intersection of declared/granted platform capabilities before materialization. Cache paths are disposable and never authoritative.
+Worker verifies checksums and required Tool references before initializing the
+tenant-isolated DSH runtime. PostgreSQL snapshots are authoritative; DSH
+provider caches are disposable.
 
 ## Storage
 

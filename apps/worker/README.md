@@ -53,4 +53,4 @@ deployments should provide a stable, unique UUID per Worker replica.
 - no arbitrary shell, Connector, multi-provider or unreviewed Skill execution;
 - no independent Scheduler deployment.
 
-See [Worker queue](../../docs/features/worker-queue/README.md), [SkillHub](../../docs/features/skillhub/README.md), and [Operations](../../docs/features/operations/README.md).
+See [Worker queue](../../docs/features/worker-queue/README.md), [Agent capability foundation](../../docs/architecture/agent-capability-foundation.md), and [Operations](../../docs/features/operations/README.md).

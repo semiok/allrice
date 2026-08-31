@@ -255,7 +255,6 @@ export function AutomationClient({ embedded = false }: { embedded?: boolean }) {
           className="automation-sidebar"
           footer={
             <div className="automation-sidebar-bottom">
-              <Link href="/skillhub">管理 Rice 技能</Link>
               <div className="automation-user">
                 <span>A</span>
                 <small>当前工作区</small>

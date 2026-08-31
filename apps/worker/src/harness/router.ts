@@ -128,6 +128,12 @@ export class HarnessRouter {
       ),
     );
   }
+
+  runtimeInventory() {
+    return [...this.adapters.values()].flatMap((adapter) =>
+      adapter.runtimeInventory ? [...adapter.runtimeInventory()] : [],
+    );
+  }
 }
 
 export function harnessRouteKey(snapshot: HarnessExecutionSnapshot) {

@@ -7,7 +7,9 @@ import {
   type HarnessExecutionSnapshot,
   type ResolvedModelTarget,
   type RouteDecision,
+  type PromptImageAttachment,
 } from '@allrice/contracts';
+import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
   ConversationRuntimeError,
@@ -33,6 +35,7 @@ import {
   listContextCheckpointEvidence,
   listFailedRouteDecisions,
   recordConversationTurn,
+  recordConversationNativeContext,
   recordConversationUsage,
   recordRouteDecision,
   recordToolBrokerAudit,
@@ -64,6 +67,7 @@ import { buildAuthorizedKnowledgeContext } from './knowledge.js';
 import { estimateModelCostCents } from './model-cost.js';
 import { decideCapabilityRoute } from './routing/capability-router.js';
 import { executeDurableWorkflow, WorkflowPaused } from './workflow-engine.js';
+import type { HarnessImageInput } from './harness/adapter.js';
 import {
   executeRiceTool,
   riceToolCapability,
@@ -74,6 +78,83 @@ import {
 
 function providerName(snapshot: HarnessExecutionSnapshot) {
   return snapshot.provider === 'codex' ? 'openai-codex' : snapshot.route;
+}
+
+const maximumImageBytes = 20 * 1024 * 1024;
+const maximumImageBatchBytes = 200 * 1024 * 1024;
+
+async function readImageBytes(
+  storage: LocalStorageAdapter,
+  attachment: PromptImageAttachment,
+) {
+  if (attachment.object.sizeBytes > maximumImageBytes) {
+    throw new HandlerError(
+      'IMAGE_ATTACHMENT_TOO_LARGE',
+      `${attachment.fileName} exceeds the 20 MiB image limit`,
+      false,
+    );
+  }
+  const stream = await storage.get(attachment.object);
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  const checksum = createHash('sha256');
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maximumImageBytes) {
+        throw new HandlerError(
+          'IMAGE_ATTACHMENT_TOO_LARGE',
+          `${attachment.fileName} exceeds the 20 MiB image limit`,
+          false,
+        );
+      }
+      checksum.update(chunk.value);
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const digest = `sha256:${checksum.digest('hex')}`;
+  if (
+    bytes !== attachment.object.sizeBytes ||
+    digest !== attachment.object.checksum
+  ) {
+    throw new HandlerError(
+      'IMAGE_ATTACHMENT_INTEGRITY_FAILED',
+      `${attachment.fileName} no longer matches its immutable Run snapshot`,
+      false,
+    );
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+}
+
+async function loadHarnessImages(
+  attachments: readonly PromptImageAttachment[],
+): Promise<readonly HarnessImageInput[]> {
+  const total = attachments.reduce(
+    (sum, attachment) => sum + attachment.object.sizeBytes,
+    0,
+  );
+  if (total > maximumImageBatchBytes) {
+    throw new HandlerError(
+      'IMAGE_ATTACHMENT_BATCH_TOO_LARGE',
+      'Image attachments exceed the 200 MiB per-message limit',
+      false,
+    );
+  }
+  const storage = new LocalStorageAdapter(
+    process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+  );
+  return Promise.all(
+    attachments.map(async (attachment) => ({
+      mediaType: attachment.object.mediaType,
+      data: (await readImageBytes(storage, attachment)).toString('base64'),
+      name: attachment.fileName,
+    })),
+  );
 }
 
 function providerSnapshotForModelTarget(
@@ -222,8 +303,8 @@ async function executeHandler(
           employeeVersionId: input.employeeVersionId,
           provider: resolved.providerSnapshot,
           systemPrompt: resolved.promptSnapshot.systemPrompt,
-          skills: resolved.skillArtifacts
-            .map((artifact) => artifact.skillVersionId)
+          skills: resolved.nativeSkills
+            .map((skill) => `${skill.id}:${skill.checksum}`)
             .sort(),
           capabilities: [...resolved.grantedCapabilities].sort(),
         }),
@@ -245,6 +326,7 @@ async function executeHandler(
       resolved,
     };
     const kernel = assembleEmployeeKernel({ ...kernelInput, checkpoint });
+    const harnessImages = await loadHarnessImages(kernel.imageAttachments);
     const ownership = {
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
@@ -602,22 +684,11 @@ async function executeHandler(
         .join(':');
       const routePlanMatchesStoredDecision =
         routeDecision.selectedCandidateId === routePlan.selectedCandidateId;
-      const selectedSkillVersionIds = routePlanMatchesStoredDecision
-        ? routePlan.selectedSkillVersionIds
-        : routeDecision.selectedKind === 'agent_skill'
-          ? [revisionId]
-          : [];
+      const selectedSkillVersionIds: string[] = [];
       const selectedKnowledgeRevisionIds = routePlanMatchesStoredDecision
         ? routePlan.selectedKnowledgeRevisionIds
         : routeDecision.selectedKind === 'knowledge'
           ? [revisionId]
-          : [];
-      const skillRequiredTools =
-        routeDecision.selectedKind === 'agent_skill' &&
-        executionSnapshot.schemaVersion === 2
-          ? (executionSnapshot.capabilitySnapshot.agentSkills.find(
-              (binding) => binding.revision.id === revisionId,
-            )?.revision.metadata.requiredToolRefs ?? [])
           : [];
       const selectedWorkflow =
         routeDecision.selectedKind === 'workflow' && capabilitySnapshot
@@ -635,7 +706,7 @@ async function executeHandler(
           ? [revisionId]
           : routeDecision.selectedKind === 'workflow'
             ? workflowToolNames
-            : skillRequiredTools;
+            : [];
       const tools = riceToolDefinitionsForTurn(
         resolved.grantedCapabilities,
         allowedToolNames,
@@ -645,11 +716,8 @@ async function executeHandler(
         const capability = riceToolCapability(tool.name);
         return capability ? [capability] : [];
       });
-      const selectedStorageObjects = resolved.skillArtifacts
-        .filter((artifact) =>
-          selectedSkillVersionIds.includes(artifact.skillVersionId),
-        )
-        .map((artifact) => artifact.storageObject);
+      const selectedStorageObjects: (typeof resolved.skillArtifacts)[number]['storageObject'][] =
+        [];
       const knowledge = await buildAuthorizedKnowledgeContext({
         context: execution.context,
         employeeId: executionSnapshot.employee.id,
@@ -830,9 +898,7 @@ async function executeHandler(
                       ? step.input.agentSkillRevisionId
                       : null;
                   const allowedSkillIds = new Set(
-                    capabilitySnapshot.agentSkills
-                      .filter((binding) => binding.effective)
-                      .map((binding) => binding.revision.id),
+                    resolved.nativeSkills.map((skill) => skill.id),
                   );
                   if (
                     requestedSkillId &&
@@ -862,11 +928,9 @@ async function executeHandler(
                   });
                   const stepResult = await adapter.execute({
                     kernel: stepKernel,
-                    storageObjects: resolved.skillArtifacts
-                      .filter((artifact) =>
-                        skillIds.includes(artifact.skillVersionId),
-                      )
-                      .map((artifact) => artifact.storageObject),
+                    nativeSkills: resolved.nativeSkills,
+                    storageObjects: [],
+                    images: [],
                     workDirectory: isolation.workDirectory,
                     executionEnvironment: isolation.environment,
                     providerSnapshot,
@@ -942,7 +1006,9 @@ async function executeHandler(
           : await adapter
               .execute({
                 kernel: routedKernel,
+                nativeSkills: resolved.nativeSkills,
                 storageObjects: selectedStorageObjects,
+                images: harnessImages,
                 workDirectory: isolation.workDirectory,
                 executionEnvironment: isolation.environment,
                 providerSnapshot,
@@ -954,17 +1020,18 @@ async function executeHandler(
                   if (
                     event.type === 'tool.completed' &&
                     event.source === 'harness' &&
-                    (event.name === 'web.search' || event.name === 'web.fetch')
+                    (event.name === 'web.search' ||
+                      event.name === 'web.fetch' ||
+                      event.name === 'wechat.article.search' ||
+                      event.name === 'wechat.article.read')
                   ) {
                     await recordToolBrokerAudit({
                       context: execution.context,
                       toolName: event.name,
                       metadata: {
-                        skillVersionIds: resolved.skillArtifacts
-                          .map((artifact) => artifact.skillVersionId)
-                          .filter((skillVersionId) =>
-                            selectedSkillVersionIds.includes(skillVersionId),
-                          ),
+                        skillVersionIds: resolved.nativeSkills.map(
+                          (skill) => skill.id,
+                        ),
                         capability: 'network:outbound',
                       },
                     });
@@ -981,11 +1048,9 @@ async function executeHandler(
                           storageRoot:
                             process.env.ALLRICE_STORAGE_ROOT ??
                             '.local/storage',
-                          skillVersionIds: resolved.skillArtifacts
-                            .map((artifact) => artifact.skillVersionId)
-                            .filter((skillVersionId) =>
-                              selectedSkillVersionIds.includes(skillVersionId),
-                            ),
+                          skillVersionIds: resolved.nativeSkills.map(
+                            (skill) => skill.id,
+                          ),
                           sessionId:
                             typeof input.sessionId === 'string'
                               ? input.sessionId
@@ -1137,6 +1202,13 @@ async function executeHandler(
           inputTokens: result.usage.inputTokens,
           cachedInputTokens: result.usage.cachedInputTokens,
           applicationEstimatedTokens,
+        });
+      }
+      if ('nativeContextPressure' in result && result.nativeContextPressure) {
+        runtime = await recordConversationNativeContext({
+          ...ownership,
+          generation: runtime.generation,
+          ...result.nativeContextPressure,
         });
       }
       const coveredThroughMessageId = checkpointMessages.at(-1)?.id ?? null;

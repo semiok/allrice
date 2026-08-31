@@ -208,6 +208,11 @@ const toolLabels: Record<string, string> = {
   'workspace.file.read': '读取工作区文件',
   'workspace.memory.search': '检索工作记忆',
   'workspace.session.search': '检索历史对话',
+  'local.fs.list': '列出本地授权文件',
+  'local.fs.search': '搜索本地授权文件',
+  'local.fs.read': '读取本地授权文件',
+  'local.git.status': '查看本地 Git 状态',
+  'local.git.diff': '读取本地 Git 差异',
   'automation.create': '创建自动化任务',
 };
 
@@ -595,8 +600,8 @@ export function EmployeeHubClient({
   const unavailableKnowledge =
     bindings?.knowledge.filter((binding) => !binding.effective) ?? [];
   const content = !hub.canAdminister ? (
-    <div className="skillhub-shell employeehub-shell">
-      <header className="skillhub-header">
+    <div className="employee-surface-shell employeehub-shell">
+      <header className="employee-surface-header">
         <div>
           <p className="eyebrow">ALLRICE · AI EMPLOYEES</p>
           <h1>AI员工由管理员配置</h1>
@@ -620,8 +625,8 @@ export function EmployeeHubClient({
       </header>
     </div>
   ) : (
-    <div className="skillhub-shell employeehub-shell independent-employee-shell">
-      <header className="skillhub-header employee-admin-header">
+    <div className="employee-surface-shell employeehub-shell independent-employee-shell">
+      <header className="employee-surface-header employee-admin-header">
         <div>
           <p className="eyebrow">ALLRICE · EMPLOYEE ADMIN</p>
           <h1>AI员工配置中心</h1>
@@ -1085,7 +1090,7 @@ export function EmployeeHubClient({
                     ))}
                   </div>
                   {!catalog?.agentSkills.length ? (
-                    <p className="muted">SkillHub 暂无已安装的工作区 Skill。</p>
+                    <p className="muted">暂未为该员工装配 DSH 原生 Skill。</p>
                   ) : null}
                   {unavailableSkills.map((binding) => (
                     <div
@@ -1528,7 +1533,7 @@ export function EmployeeHubClient({
                     />
                   </fieldset>
                   <label>
-                    审批策略
+                    操作确认策略
                     <select
                       disabled={disabled}
                       value={draft.securityPolicy.approvalPolicy}
@@ -1548,10 +1553,10 @@ export function EmployeeHubClient({
                       }
                     >
                       <option value="confirm_side_effects">
-                        有副作用的操作先确认
+                        所有修改前询问
                       </option>
-                      <option value="confirm_external">外部操作先确认</option>
-                      <option value="autonomous">授权范围内自动执行</option>
+                      <option value="confirm_external">对外操作前询问</option>
+                      <option value="autonomous">已授权范围内自动执行</option>
                     </select>
                   </label>
                   <fieldset>
@@ -1668,7 +1673,7 @@ export function EmployeeHubClient({
           <div className="employee-save-feedback" aria-live="polite">
             {notice ? <p className="employee-notice">{notice}</p> : null}
             {error ? (
-              <p className="skillhub-error" role="alert">
+              <p className="surface-error" role="alert">
                 {error}
               </p>
             ) : null}
@@ -1690,13 +1695,6 @@ export function EmployeeHubClient({
           </Link>
         }
         className="app-page-sidebar"
-        footer={
-          hub.canAdminister ? (
-            <div className="app-sidebar-footer">
-              <Link href="/skillhub">管理 AI员工技能</Link>
-            </div>
-          ) : null
-        }
         showEmployeeAdmin={hub.canAdminister}
       />
       <section className="app-page-content">{content}</section>

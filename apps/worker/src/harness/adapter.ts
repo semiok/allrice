@@ -1,9 +1,11 @@
 import type {
   EmployeeKernelRequest,
+  DshNativeSkillSnapshot,
   HarnessExecutionSnapshot,
   HarnessCapabilities,
   HarnessEvent,
   StorageObject,
+  ImageMediaType,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -24,10 +26,18 @@ export interface HarnessToolResult {
   itemCount?: number;
 }
 
+export interface HarnessImageInput {
+  mediaType: ImageMediaType;
+  data: string;
+  name: string;
+}
+
 export interface HarnessExecutionInput {
   kernel: EmployeeKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
+  images?: readonly HarnessImageInput[];
+  nativeSkills?: DshNativeSkillSnapshot[];
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
   signal: AbortSignal;
@@ -60,6 +70,28 @@ export interface HarnessExecutionResult {
   model: string;
   threadId?: string | null;
   turnId?: string | null;
+  nativeContextPressure?: {
+    asOfSeq?: number;
+    pressureTokens?: number;
+    projectedTokens?: number;
+    contextWindow: number;
+  } | null;
+}
+
+export interface HarnessRuntimeProcessSnapshot {
+  id: string;
+  organizationId: string;
+  workspaceId: string;
+  sessionId: string;
+  ownerId: string;
+  threadId: string;
+  providerRoute: string;
+  model: string;
+  reasoningEffort: string;
+  profileFingerprint: string;
+  nativeTools: string[];
+  startedAt: string;
+  lastActivityAt: string;
 }
 
 /**
@@ -86,5 +118,6 @@ export interface HarnessAdapter {
   }): Promise<void>;
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
+  runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
   close?(): Promise<void>;
 }

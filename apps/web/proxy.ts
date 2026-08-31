@@ -14,6 +14,26 @@ const publicPaths = new Set([
   '/api/health/ready',
 ]);
 
+const bridgeDevicePaths = new Set([
+  '/api/v1/bridge/device/pair',
+  '/api/v1/bridge/device/heartbeat',
+  '/api/v1/bridge/device/status',
+  '/api/v1/bridge/device/grants',
+  '/api/v1/bridge/device/commands/next',
+  '/api/v1/bridge/device/workspace-selections/next',
+  '/api/v1/bridge/device/revoke',
+]);
+
+export function isBridgeDeviceApiPath(pathname: string) {
+  return (
+    bridgeDevicePaths.has(pathname) ||
+    /^\/api\/v1\/bridge\/device\/commands\/[^/]+\/complete$/.test(pathname) ||
+    /^\/api\/v1\/bridge\/device\/workspace-selections\/[^/]+\/complete$/.test(
+      pathname,
+    )
+  );
+}
+
 export function proxy(request: NextRequest) {
   if (!portalAuthEnabled()) return NextResponse.next();
 
@@ -22,7 +42,12 @@ export function proxy(request: NextRequest) {
     return new NextResponse('Unknown AllRice portal host', { status: 421 });
   }
 
-  if (publicPaths.has(request.nextUrl.pathname)) return NextResponse.next();
+  if (
+    publicPaths.has(request.nextUrl.pathname) ||
+    isBridgeDeviceApiPath(request.nextUrl.pathname)
+  ) {
+    return NextResponse.next();
+  }
 
   const session = verifyPortalSession(
     request.cookies.get(portalSessionCookieName)?.value,
@@ -32,10 +57,8 @@ export function proxy(request: NextRequest) {
     const tenantForbidden =
       portal.kind === 'tenant' &&
       (request.nextUrl.pathname.startsWith('/api/v1/admin') ||
-        request.nextUrl.pathname.startsWith('/chatflow/admin') ||
         request.nextUrl.pathname.startsWith('/chatflow/employees') ||
-        request.nextUrl.pathname.startsWith('/employees') ||
-        request.nextUrl.pathname.startsWith('/skillhub'));
+        request.nextUrl.pathname.startsWith('/employees'));
     if (tenantForbidden) {
       if (request.nextUrl.pathname.startsWith('/api/')) {
         return Response.json(

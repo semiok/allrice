@@ -1,0 +1,25 @@
+{
+  "name": "@allrice/dsh-runtime-diff",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "typecheck": "node --check index.js && node --check client.js"
+  }
+}

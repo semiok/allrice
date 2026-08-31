@@ -5,6 +5,7 @@ import { setImmediate } from 'node:timers';
 let seq = 0;
 let initializedProvider = '';
 const turns = new Map();
+const pendingToolRequests = new Map();
 
 function write(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -49,20 +50,20 @@ function assistant(sessionId, turn, text) {
   event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
 }
 
-function reasoning(sessionId, turn) {
+function reasoning(sessionId, turn, step = 0) {
   event(sessionId, 'assistant/chunk', {
     turn,
-    step: 0,
+    step,
     chunk: { type: 'block-start', index: 0, blockType: 'reasoning' },
   });
   event(sessionId, 'assistant/chunk', {
     turn,
-    step: 0,
+    step,
     chunk: { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
   });
   event(sessionId, 'assistant/chunk', {
     turn,
-    step: 0,
+    step,
     chunk: {
       type: 'block-end',
       index: 0,
@@ -74,6 +75,46 @@ function reasoning(sessionId, turn) {
 const lines = createInterface({ input: process.stdin });
 lines.on('line', (line) => {
   const frame = JSON.parse(line);
+  if (
+    typeof frame.id === 'string' &&
+    !frame.method &&
+    pendingToolRequests.has(frame.id)
+  ) {
+    const pending = pendingToolRequests.get(frame.id);
+    pendingToolRequests.delete(frame.id);
+    event(pending.sessionId, 'tool/result', {
+      turn: pending.turn,
+      step: 1,
+      ...(frame.error ? { error: frame.error } : {}),
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: pending.callId,
+            content: [
+              {
+                type: 'text',
+                text:
+                  frame.result?.modelContent ??
+                  frame.error?.message ??
+                  'tool failed',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    assistant(
+      pending.sessionId,
+      pending.turn,
+      frame.error ? pending.failureAnswer : pending.successAnswer,
+    );
+    notify('session.status', {
+      sessionId: pending.sessionId,
+      status: 'idle',
+    });
+    return;
+  }
   if (frame.method === 'initialize') {
     initializedProvider = frame.params.provider;
     respond(frame.id, {
@@ -101,6 +142,17 @@ lines.on('line', (line) => {
     respond(frame.id, { compacted: true, compactionId: `compact-${seq++}` });
     return;
   }
+  if (frame.method === 'session/projection') {
+    respond(frame.id, {
+      asOfSeq: seq - 1,
+      contextPressure: {
+        pressureTokens: 12000,
+        projectedTokens: 13516,
+        contextWindow: 200000,
+      },
+    });
+    return;
+  }
   if (frame.method === 'session/recover') {
     respond(frame.id, { recovered: true, sequence: seq });
     return;
@@ -115,7 +167,7 @@ lines.on('line', (line) => {
     return;
   }
   if (frame.method !== 'session/prompt') return;
-  const { sessionId, contentBlocks } = frame.params;
+  const { sessionId, contentBlocks, images = [] } = frame.params;
   const prompt = contentBlocks.map((block) => block.text ?? '').join('');
   const turn = (turns.get(sessionId) ?? 0) + 1;
   turns.set(sessionId, turn);
@@ -143,7 +195,13 @@ lines.on('line', (line) => {
   });
   if (prompt.includes('hang forever')) return;
   let text;
-  if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
+  if (prompt.includes('inspect-images')) {
+    text = JSON.stringify({
+      count: images.length,
+      names: images.map((image) => image.name),
+      mediaTypes: images.map((image) => image.mediaType),
+    });
+  } else if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
     text = 'tool-finished';
   } else if (prompt.includes('use-tool-with-preamble')) {
     text =
@@ -161,9 +219,103 @@ lines.on('line', (line) => {
       hasDeepSeek: Boolean(process.env.DEEPSEEK_API_KEY),
       hasOpenAiCompatible: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
     });
+  } else if (prompt.includes('inspect-mixed-tool-instructions')) {
+    text = JSON.stringify({
+      nativeLocalAdvertised: prompt.includes(
+        'DSH native tools available for this turn: local.fs.list.',
+      ),
+      bridgedToolsAdvertised: prompt.includes(
+        'additional non-native AllRice tools are available',
+      ),
+      incorrectlyClaimsOnlyBridgedTools: prompt.includes(
+        'The only available tools are the AllRice tenant-scoped tools below.',
+      ),
+    });
   } else if (prompt.includes('think-first')) {
-    reasoning(sessionId, turn);
+    reasoning(sessionId, turn, 0);
     text = 'visible answer';
+  } else if (prompt.includes('native-search')) {
+    reasoning(sessionId, turn, 0);
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId: 'native-search-1',
+      name: 'web_search',
+      arguments: JSON.stringify({ queries: ['NVIDIA price'] }),
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 1,
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'native-search-1',
+            content: [{ type: 'text', text: 'search evidence' }],
+          },
+        ],
+      },
+    });
+    reasoning(sessionId, turn, 2);
+    text = 'native-search-finished';
+  } else if (prompt.includes('native-local')) {
+    reasoning(sessionId, turn, 0);
+    const callId = 'native-local-1';
+    const requestId = 'broker-native-local-1';
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId,
+      name: 'local_fs_list',
+      arguments: JSON.stringify({ path: '.', limit: 20 }),
+    });
+    pendingToolRequests.set(requestId, {
+      sessionId,
+      turn,
+      callId,
+      successAnswer: 'native-local-finished',
+      failureAnswer: 'native-local-failed',
+    });
+    write({
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'allrice/tool-call',
+      params: {
+        toolCallId: callId,
+        name: 'local.fs.list',
+        arguments: { path: '.', limit: 20 },
+      },
+    });
+    return;
+  } else if (prompt.includes('native-wechat')) {
+    reasoning(sessionId, turn, 0);
+    const callId = 'native-wechat-1';
+    const requestId = 'broker-native-wechat-1';
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId,
+      name: 'wechat_article_search',
+      arguments: JSON.stringify({ query: 'AllRice', limit: 3 }),
+    });
+    pendingToolRequests.set(requestId, {
+      sessionId,
+      turn,
+      callId,
+      successAnswer: 'native-wechat-finished',
+      failureAnswer: 'native-wechat-failed',
+    });
+    write({
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'allrice/tool-call',
+      params: {
+        toolCallId: callId,
+        name: 'wechat.article.search',
+        arguments: { query: 'AllRice', limit: 3 },
+      },
+    });
+    return;
   } else {
     text = `turn-${turn}`;
   }

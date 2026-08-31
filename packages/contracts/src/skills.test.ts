@@ -1,53 +1,35 @@
 import { describe, expect, it } from 'vitest';
 
-import { SkillArtifactBundleSchema } from './skills.js';
+import { DshNativeSkillSnapshotSchema } from './skills.js';
 
-describe('Skill artifact contract', () => {
-  it('accepts a unique SKILL.md and regular relative files', () => {
+describe('DSH native skill snapshot contract', () => {
+  it('accepts one immutable employee-scoped skill definition', () => {
     expect(
-      SkillArtifactBundleSchema.parse({
-        schemaVersion: 1,
-        entrypoint: 'SKILL.md',
-        files: [
-          { path: 'SKILL.md', content: '# Safe skill' },
-          { path: 'references/source.md', content: 'source' },
-        ],
-      }).files,
-    ).toHaveLength(2);
+      DshNativeSkillSnapshotSchema.parse({
+        id: 'b3f3c647-c17d-4d24-af8f-2cd11d8f463a',
+        name: 'web-research',
+        description: 'Research current public information with citations.',
+        content: '# Web research\n\nUse the approved search tool.',
+        checksum: `sha256:${'a'.repeat(64)}`,
+        invocation: { modelInvocable: true, userInvocable: false },
+        requiredToolRefs: ['web.search'],
+      }),
+    ).toMatchObject({
+      name: 'web-research',
+      requiredToolRefs: ['web.search'],
+    });
   });
 
-  it.each(['../secret', '/etc/passwd', 'dir\\file'])(
-    'rejects unsafe artifact path %s',
-    (path) => {
-      expect(() =>
-        SkillArtifactBundleSchema.parse({
-          schemaVersion: 1,
-          entrypoint: 'SKILL.md',
-          files: [
-            { path: 'SKILL.md', content: '# Safe skill' },
-            { path, content: 'unsafe' },
-          ],
-        }),
-      ).toThrow();
-    },
-  );
-
-  it('rejects duplicate files and a missing entrypoint', () => {
+  it('rejects a mutable display name or an invalid checksum', () => {
     expect(() =>
-      SkillArtifactBundleSchema.parse({
-        schemaVersion: 1,
-        entrypoint: 'SKILL.md',
-        files: [
-          { path: 'SKILL.md', content: 'one' },
-          { path: 'SKILL.md', content: 'two' },
-        ],
-      }),
-    ).toThrow();
-    expect(() =>
-      SkillArtifactBundleSchema.parse({
-        schemaVersion: 1,
-        entrypoint: 'SKILL.md',
-        files: [{ path: 'README.md', content: 'missing' }],
+      DshNativeSkillSnapshotSchema.parse({
+        id: 'b3f3c647-c17d-4d24-af8f-2cd11d8f463a',
+        name: 'Web Research',
+        description: 'Research current public information with citations.',
+        content: '# Web research',
+        checksum: 'latest',
+        invocation: { modelInvocable: true, userInvocable: false },
+        requiredToolRefs: [],
       }),
     ).toThrow();
   });

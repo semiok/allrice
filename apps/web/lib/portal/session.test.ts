@@ -21,10 +21,13 @@ describe('host-bound bootstrap portals', () => {
   });
 
   it('resolves known hosts and rejects an untrusted host', () => {
-    expect(resolvePortal('allrice-admin.bplabs.xyz')?.key).toBe(
-      'platform-admin',
+    expect(resolvePortal('allrice-dsh.bplabs.xyz')?.key).toBe(
+      'runtime-console',
     );
     expect(resolvePortal('allrice-snow.bplabs.xyz')?.key).toBe('snow');
+    expect(resolvePortal('allrice-admin.bplabs.xyz')).toBeNull();
+    expect(resolvePortal('allrice-drink.bplabs.xyz')).toBeNull();
+    expect(resolvePortal('dsh.bplabs.xyz')).toBeNull();
     expect(resolvePortal('attacker.invalid')).toBeNull();
   });
 
@@ -41,7 +44,7 @@ describe('host-bound bootstrap portals', () => {
 
   it('binds a signed session to one portal', () => {
     const snow = resolvePortal('allrice-snow.bplabs.xyz')!;
-    const drink = resolvePortal('allrice-drink.bplabs.xyz')!;
+    const platform = resolvePortal('allrice-dsh.bplabs.xyz')!;
     const issued = createPortalSession({
       portal: snow,
       subject: '11111111-1111-4111-8111-111111111111',
@@ -50,7 +53,7 @@ describe('host-bound bootstrap portals', () => {
     });
 
     expect(verifyPortalSession(issued.value, snow)?.portalKey).toBe('snow');
-    expect(verifyPortalSession(issued.value, drink)).toBeNull();
+    expect(verifyPortalSession(issued.value, platform)).toBeNull();
     expect(verifyPortalSession(`${issued.value}tampered`, snow)).toBeNull();
   });
 });

@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
@@ -222,16 +221,6 @@ export function AppShell({
           {tenantAdmin ? (
             <nav className="v2-admin-nav" aria-label="管理控制台">
               <span className="v2-nav-label">管理</span>
-              <button
-                type="button"
-                className={activePanel === 'employees' ? 'active' : ''}
-                onClick={() => setActivePanel('employees')}
-              >
-                <span>◇</span> AI 员工
-              </button>
-              <Link href="/skillhub">
-                <span>⌘</span> SkillHub
-              </Link>
               <button
                 type="button"
                 className={activePanel === 'model-pool' ? 'active' : ''}

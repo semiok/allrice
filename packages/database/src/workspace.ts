@@ -4,7 +4,6 @@ import {
   ChatMessageContentSchema,
   CreateChatSessionInputSchema,
   CreateWorkspaceMemoryInputSchema,
-  EmployeeManifestSchema,
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
   UpdateChatSessionInputSchema,
@@ -13,6 +12,7 @@ import {
   type ChatMessageSchema,
   type ChatSessionSchema,
   type EmployeeAssignmentSchema,
+  type ImageMediaType,
   type RequestContext,
   type Visibility,
   type WorkspaceMemorySchema,
@@ -27,9 +27,7 @@ import {
 } from './data.ts';
 import { getDatabase } from './index.ts';
 import {
-  builtInEmployeeManifests,
   employeeManifestChecksum,
-  employeeManifestTemplateChecksum,
   riceEmployeeKey,
   riceManifest,
 } from './employee-config.ts';
@@ -40,7 +38,10 @@ import {
 
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
-const riceVersion = 9;
+// Built-in Rice manifests are immutable once published. Bump this whenever
+// the default employee capability contract changes so existing sessions stay
+// frozen while newly provisioned sessions receive the updated tool set.
+const riceVersion = 10;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -299,111 +300,6 @@ export async function ensureDefaultEmployee(
         end,
         updated_at = now()
     `;
-    for (const builtIn of builtInEmployeeManifests()) {
-      const builtInEmployees = await transaction<{ id: string }[]>`
-        insert into allrice_employees (
-          organization_id, workspace_id, employee_key, name
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${builtIn.key}, ${builtIn.name}
-        )
-        on conflict (organization_id, workspace_id, employee_key)
-        do update set name = excluded.name, updated_at = now()
-        returning id
-      `;
-      const builtInEmployeeId = builtInEmployees[0]?.id;
-      if (!builtInEmployeeId)
-        throw new Error('built-in employee provisioning failed');
-      const currentBuiltInVersions = await transaction<
-        {
-          id: string;
-          version: number;
-          config_checksum: string;
-          manifest: unknown;
-        }[]
-      >`
-        select id, version, config_checksum, manifest
-        from allrice_employee_versions
-        where employee_id = ${builtInEmployeeId}
-        order by version desc
-        limit 1
-      `;
-      let builtInVersionId = currentBuiltInVersions[0]?.id;
-      if (!builtInVersionId) {
-        const builtInChecksum = employeeManifestChecksum(builtIn);
-        const insertedVersions = await transaction<{ id: string }[]>`
-          insert into allrice_employee_versions (
-            organization_id, workspace_id, employee_id, version, name, model,
-            system_prompt, capabilities, config_checksum, description, manifest,
-            provider_snapshot, skill_version_ids
-          ) values (
-            ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId}, 1,
-            ${builtIn.name}, ${builtIn.provider.model}, ${builtIn.systemPrompt},
-            ${transaction.json(builtIn.capabilities)}, ${builtInChecksum},
-            ${builtIn.description}, ${transaction.json(builtIn)},
-            ${transaction.json(builtIn.provider)},
-            ${transaction.json(builtIn.skillVersionIds)}
-          ) returning id
-        `;
-        builtInVersionId = insertedVersions[0]?.id;
-      } else {
-        const currentManifest = EmployeeManifestSchema.safeParse(
-          currentBuiltInVersions[0]?.manifest,
-        );
-        const templateChanged =
-          !currentManifest.success ||
-          employeeManifestTemplateChecksum(currentManifest.data) !==
-            employeeManifestTemplateChecksum(builtIn);
-        if (templateChanged) {
-          const skillVersionIds = currentManifest.success
-            ? currentManifest.data.skillVersionIds
-            : builtIn.skillVersionIds;
-          const nextManifest = EmployeeManifestSchema.parse(
-            builtIn.schemaVersion === 2
-              ? {
-                  ...builtIn,
-                  skillVersionIds,
-                  capabilityBindings: {
-                    ...builtIn.capabilityBindings,
-                    skillVersionIds,
-                  },
-                }
-              : { ...builtIn, skillVersionIds },
-          );
-          const nextChecksum = employeeManifestChecksum(nextManifest);
-          const nextVersions = await transaction<{ version: number }[]>`
-            select coalesce(max(version), 0)::integer + 1 as version
-            from allrice_employee_versions
-            where employee_id = ${builtInEmployeeId}
-          `;
-          const insertedVersions = await transaction<{ id: string }[]>`
-            insert into allrice_employee_versions (
-              organization_id, workspace_id, employee_id, version, name, model,
-              system_prompt, capabilities, config_checksum, description, manifest,
-              provider_snapshot, skill_version_ids
-            ) values (
-              ${context.organizationId}, ${workspaceId}, ${builtInEmployeeId},
-              ${nextVersions[0]?.version ?? 1}, ${builtIn.name},
-              ${nextManifest.provider.model}, ${nextManifest.systemPrompt},
-              ${transaction.json(nextManifest.capabilities)}, ${nextChecksum},
-              ${nextManifest.description}, ${transaction.json(nextManifest)},
-              ${transaction.json(nextManifest.provider)},
-              ${transaction.json(nextManifest.skillVersionIds)}
-            ) returning id
-          `;
-          builtInVersionId = insertedVersions[0]?.id;
-        }
-      }
-      if (!builtInVersionId)
-        throw new Error('built-in employee version missing');
-      await transaction`
-        update allrice_employee_assignments
-        set employee_version_id = ${builtInVersionId}, updated_at = now()
-        where organization_id = ${context.organizationId}
-          and workspace_id = ${workspaceId}
-          and employee_id = ${builtInEmployeeId}
-          and active
-      `;
-    }
     const rows = await transaction<AssignmentRow[]>`
       select
         a.id as assignment_id, a.employee_id, a.employee_version_id,
@@ -725,9 +621,20 @@ export async function getChatSessionHistory(
       m.id
   `;
   const runtimes = await sql<
-    { context_pressure_tokens: number; compact_threshold_tokens: number }[]
+    {
+      context_pressure_tokens: number;
+      compact_threshold_tokens: number;
+      dsh_context_as_of_seq: number | null;
+      dsh_context_pressure_tokens: number | null;
+      dsh_context_projected_tokens: number | null;
+      dsh_context_window_tokens: number | null;
+      dsh_context_observed_at: Date | string | null;
+    }[]
   >`
-    select context_pressure_tokens, compact_threshold_tokens
+    select context_pressure_tokens, compact_threshold_tokens,
+      dsh_context_as_of_seq, dsh_context_pressure_tokens,
+      dsh_context_projected_tokens, dsh_context_window_tokens,
+      dsh_context_observed_at
     from allrice_conversation_runtimes
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
@@ -739,12 +646,41 @@ export async function getChatSessionHistory(
     thresholdTokens:
       runtimes[0]?.compact_threshold_tokens ?? defaultContextCompactThreshold,
   });
+  const nativeRuntime = runtimes[0];
+  const nativeUsedTokens =
+    nativeRuntime?.dsh_context_projected_tokens ??
+    nativeRuntime?.dsh_context_pressure_tokens ??
+    null;
+  const nativeWindowTokens = nativeRuntime?.dsh_context_window_tokens ?? null;
+  const nativeContextStatus =
+    nativeUsedTokens !== null &&
+    nativeWindowTokens !== null &&
+    nativeWindowTokens > 0
+      ? {
+          source: 'dsh' as const,
+          usedTokens: nativeUsedTokens,
+          contextWindowTokens: nativeWindowTokens,
+          percentage: Math.min(
+            100,
+            Math.max(
+              0,
+              Math.round((nativeUsedTokens / nativeWindowTokens) * 100),
+            ),
+          ),
+          asOfSeq: nativeRuntime?.dsh_context_as_of_seq ?? null,
+          observedAt:
+            nativeRuntime?.dsh_context_observed_at instanceof Date
+              ? nativeRuntime.dsh_context_observed_at.toISOString()
+              : (nativeRuntime?.dsh_context_observed_at ?? null),
+        }
+      : null;
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
   );
   return {
     session: mapSession(row),
     contextStatus,
+    nativeContextStatus,
     messages: messages.map((message) =>
       mapMessage(context, message, attachments.get(message.id) ?? []),
     ),
@@ -849,16 +785,23 @@ export async function sendChatMessage(
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
-  const employeeRows = await sql<{ employee_id: string }[]>`
-    select employee_id from allrice_employee_assignments
+  const employeeRows = await sql<
+    { employee_id: string; employee_version_id: string }[]
+  >`
+    select employee_id, employee_version_id from allrice_employee_assignments
     where id = ${session.employee_assignment_id}
       and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
   `;
+  const currentAssignment = employeeRows[0];
+  if (!currentAssignment) throw new DataAccessError('not_found');
+  // Published employee revisions apply to new Sessions. Existing Sessions stay
+  // pinned to the employee version selected when they were created, so a
+  // platform rollout cannot silently change an in-flight conversation.
   const memories = await recallForReply(
     context,
     workspaceId,
-    employeeRows[0]?.employee_id,
+    currentAssignment.employee_id,
     message.text,
   );
   const result = await sql.begin(async (transaction) => {
@@ -1002,11 +945,37 @@ export async function sendChatMessage(
   const attachmentRows =
     message.attachmentIds.length === 0
       ? []
-      : await sql<{ file_name: string }[]>`
-          select file_name from allrice_message_attachments
+      : await sql<{ object_id: string; file_name: string }[]>`
+          select object_id, file_name from allrice_message_attachments
           where message_id = ${result.userMessage.id}
-          order by file_name
         `;
+  const attachmentNames = new Map(
+    attachmentRows.map((attachment) => [
+      attachment.object_id,
+      attachment.file_name,
+    ]),
+  );
+  const attachedFiles = await Promise.all(
+    message.attachmentIds.map((objectId) => getStoredFile(context, objectId)),
+  );
+  const imageMediaTypes = new Set<ImageMediaType>([
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/gif',
+  ]);
+  const imageAttachments = attachedFiles.flatMap((file) =>
+    imageMediaTypes.has(file.object.mediaType as ImageMediaType)
+      ? [
+          {
+            object: file.object as typeof file.object & {
+              mediaType: ImageMediaType;
+            },
+            fileName: attachmentNames.get(file.object.id) ?? 'Attached image',
+          },
+        ]
+      : [],
+  );
   const userRequest = attachmentRows.length
     ? `${message.text}\n\nAttached files: ${attachmentRows
         .map((attachment) => attachment.file_name)
@@ -1031,6 +1000,7 @@ export async function sendChatMessage(
         })),
         memories,
         userRequest,
+        imageAttachments,
       },
     });
     const { enqueueRun, getRun } = await import('./queue.ts');
@@ -1397,8 +1367,47 @@ export async function getEmployeeWorkspace(
   ]);
   const { listEmployeeHub } = await import('./employeehub.ts');
   const employeeHub = await listEmployeeHub(context, assignment.workspaceId);
+  const assignedEmployeeIds = [
+    ...new Set(employeeHub.assignments.map((item) => item.employeeId)),
+  ];
   const sessionIds = sessions.sessions.map((session) => session.id);
   const sql = getDatabase();
+  const employeeSkillRows =
+    assignedEmployeeIds.length === 0
+      ? []
+      : await sql<
+          {
+            employee_id: string;
+            id: string;
+            name: string;
+            description: string;
+          }[]
+        >`
+          select binding.employee_id, skill.id, skill.name, skill.description
+          from allrice_employee_dsh_skill_bindings binding
+          join allrice_dsh_skills skill
+            on skill.organization_id = binding.organization_id
+           and skill.workspace_id = binding.workspace_id
+           and skill.id = binding.skill_id
+          where binding.organization_id = ${context.organizationId}
+            and binding.workspace_id = ${assignment.workspaceId}
+            and binding.employee_id in ${sql(assignedEmployeeIds)}
+            and binding.enabled and skill.enabled
+          order by binding.employee_id, skill.name, skill.id
+        `;
+  const skillsByEmployee = new Map<
+    string,
+    Array<{ id: string; name: string; description: string }>
+  >();
+  for (const skill of employeeSkillRows) {
+    const skills = skillsByEmployee.get(skill.employee_id) ?? [];
+    skills.push({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+    });
+    skillsByEmployee.set(skill.employee_id, skills);
+  }
   const modelRows =
     sessionIds.length === 0
       ? []
@@ -1430,6 +1439,42 @@ export async function getEmployeeWorkspace(
     workspaceId: assignment.workspaceId,
     employee: assignment,
     employees: employeeHub.assignments,
+    employeeProfiles: employeeHub.assignments.map((item) => {
+      const manifest = item.currentVersion.manifest;
+      const identity =
+        manifest.schemaVersion === 2
+          ? manifest.identity
+          : {
+              role: manifest.partnerProfile.role,
+              mission: manifest.partnerProfile.mission,
+              workStyle: manifest.description,
+              behaviorRules: [] as string[],
+              safetyBoundaries: [] as string[],
+            };
+      const runtimePolicy =
+        manifest.schemaVersion === 2
+          ? manifest.runtimePolicy
+          : {
+              harness: 'dsh' as const,
+              provider: manifest.provider.provider,
+              model: manifest.provider.model,
+              reasoningEffort: manifest.provider.reasoningEffort,
+            };
+      return {
+        assignmentId: item.id,
+        employeeId: item.employeeId,
+        name: manifest.name,
+        description: manifest.description,
+        identity,
+        skills: skillsByEmployee.get(item.employeeId) ?? [],
+        model: {
+          harness: 'dsh' as const,
+          provider: runtimePolicy.provider,
+          model: runtimePolicy.model,
+          reasoningEffort: runtimePolicy.reasoningEffort,
+        },
+      };
+    }),
     sessions: sessions.sessions,
     sessionModels,
     memories,

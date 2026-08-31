@@ -1,6 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 
+import type { DshNativeSkillSnapshot } from '@allrice/contracts';
+import type { HarnessImageInput } from './adapter.js';
+
 import { HandlerError } from '../errors.js';
 
 export interface DshNotification {
@@ -13,6 +16,11 @@ interface PendingRequest {
   reject(error: Error): void;
   timer: NodeJS.Timeout;
 }
+
+export type DshInboundRequestHandler = (
+  method: string,
+  params: Record<string, unknown>,
+) => Promise<Record<string, unknown>>;
 
 export interface DshProtocolLaunch {
   command: string;
@@ -34,6 +42,7 @@ export class DshProtocolClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(value: DshNotification) => void>();
   private readonly closed: Promise<void>;
+  private inboundRequestHandler: DshInboundRequestHandler | null = null;
   private requestId = 0;
   private closing = false;
   private terminalError: Error | null = null;
@@ -79,10 +88,16 @@ export class DshProtocolClient {
     return () => this.listeners.delete(listener);
   }
 
+  setRequestHandler(handler: DshInboundRequestHandler | null) {
+    this.inboundRequestHandler = handler;
+  }
+
   async initialize(input: {
     cwd: string;
     provider: string;
     model: string;
+    nativeTools?: string[];
+    nativeSkills?: DshNativeSkillSnapshot[];
     maxTokens?: number;
     expectedVersion?: string;
   }) {
@@ -113,10 +128,15 @@ export class DshProtocolClient {
     return { name: serverInfo.name, version: serverInfo.version };
   }
 
-  async prompt(sessionId: string, text: string) {
+  async prompt(
+    sessionId: string,
+    text: string,
+    images: readonly HarnessImageInput[] = [],
+  ) {
     const result = await this.request('session/prompt', {
       sessionId,
       contentBlocks: [{ type: 'text', text }],
+      images,
     });
     if (typeof result.messageId !== 'string' || !result.messageId) {
       throw new HandlerError(
@@ -138,6 +158,31 @@ export class DshProtocolClient {
 
   async compact(sessionId: string) {
     return this.request('session/compact', { sessionId });
+  }
+
+  async sessionProjection(sessionId: string) {
+    const result = await this.request(
+      'session/projection',
+      { sessionId },
+      10_000,
+    );
+    const pressure = record(result.contextPressure);
+    const optionalCount = (value: unknown) =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0
+        ? value
+        : undefined;
+    const contextWindow = optionalCount(pressure?.contextWindow);
+    return {
+      asOfSeq: optionalCount(result.asOfSeq),
+      contextPressure:
+        pressure && contextWindow && contextWindow > 0
+          ? {
+              pressureTokens: optionalCount(pressure.pressureTokens),
+              projectedTokens: optionalCount(pressure.projectedTokens),
+              contextWindow,
+            }
+          : null,
+    };
   }
 
   async recover(sessionId: string) {
@@ -256,6 +301,13 @@ export class DshProtocolClient {
       );
       return;
     }
+    if (
+      typeof frame.method === 'string' &&
+      (typeof frame.id === 'number' || typeof frame.id === 'string')
+    ) {
+      void this.handleInboundRequest(frame.id, frame.method, frame.params);
+      return;
+    }
     if (typeof frame.id === 'number') {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
@@ -294,6 +346,39 @@ export class DshProtocolClient {
       for (const listener of this.listeners) {
         listener({ method: frame.method, params });
       }
+    }
+  }
+
+  private async handleInboundRequest(
+    id: number | string,
+    method: string,
+    rawParams: unknown,
+  ) {
+    const params = record(rawParams) ?? {};
+    try {
+      if (!this.inboundRequestHandler) {
+        throw new HandlerError(
+          'DSH_INBOUND_REQUEST_DENIED',
+          'No AllRice Tool Broker request is active',
+          false,
+        );
+      }
+      const result = await this.inboundRequestHandler(method, params);
+      this.child.stdin.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof HandlerError
+          ? error.message
+          : 'AllRice Tool Broker request failed';
+      this.child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32603, message },
+        })}\n`,
+      );
     }
   }
 

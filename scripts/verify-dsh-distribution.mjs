@@ -11,21 +11,32 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const [upstream, distribution, ledger, workerPackage, profile, runtimePin] =
-  await Promise.all([
-    json('apps/worker/dsh/upstream.json'),
-    json('apps/worker/dsh/distribution.json'),
-    json('apps/worker/dsh/patch-ledger.json'),
-    json('apps/worker/package.json'),
-    readFile(
-      resolve(root, 'apps/worker/dsh/allrice-restricted.cordis.yml'),
-      'utf8',
-    ),
-    readFile(
-      resolve(root, 'apps/worker/src/harness/dsh-distribution.ts'),
-      'utf8',
-    ),
-  ]);
+const [
+  upstream,
+  distribution,
+  ledger,
+  workerPackage,
+  profile,
+  runtimePin,
+  platformEmployeeContract,
+] = await Promise.all([
+  json('apps/worker/dsh/upstream.json'),
+  json('apps/worker/dsh/distribution.json'),
+  json('apps/worker/dsh/patch-ledger.json'),
+  json('apps/worker/package.json'),
+  readFile(
+    resolve(root, 'apps/worker/dsh/allrice-restricted.cordis.yml'),
+    'utf8',
+  ),
+  readFile(
+    resolve(root, 'apps/worker/src/harness/dsh-distribution.ts'),
+    'utf8',
+  ),
+  readFile(
+    resolve(root, 'packages/contracts/src/platform-employees.ts'),
+    'utf8',
+  ),
+]);
 
 assert(distribution.schemaVersion === 1, 'distribution schema must be v1');
 assert(distribution.current, 'a current DSH generation is required');
@@ -48,7 +59,8 @@ assert(
 );
 assert(
   runtimePin.includes(`'${distribution.current.version}'`) &&
-    runtimePin.includes(`'${distribution.current.generation}'`),
+    runtimePin.includes('PLATFORM_EMPLOYEE_DSH_DISTRIBUTION') &&
+    platformEmployeeContract.includes(`'${distribution.current.generation}'`),
   'runtime version guard must match the approved current distribution',
 );
 assert(

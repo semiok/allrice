@@ -40,6 +40,13 @@ AllRice decides whether the tenant, employee and actor may execute it. The
 authorized read-only tool set is visible to DSH on every turn; side-effecting
 and secret-bearing operations still require explicit AllRice policy.
 
+For native-capable operations such as `web.search`, AllRice freezes the grant
+when it creates the tenant-isolated DSH process and DSH executes the tool inside
+the same native Turn. This preserves DSH's agent loop and avoids a second model
+Turn. The resulting native tool events still pass through ChatFlow for durable
+ordering, audit and tenant-safe replay. Operations without an approved native
+adapter continue through the Tool Broker compatibility bridge.
+
 ## Native experience contract
 
 DSH's `session.event` order is the source of the user-facing work process.
@@ -55,10 +62,14 @@ model route metadata and approved summaries are retained. Assistant text is
 stored in the canonical assistant events.
 
 The Run event endpoint exposes only the ChatFlow 3.0 envelope. The browser
-renders native events in source order and updates the same block in place as
-its state changes. The completed
-view and replayed view use the same projector, so finishing a turn does not
-replace the working UI or erase its process.
+renders user-relevant native events in source order and updates the same block
+in place as its state changes. Internal context injection remains in the
+durable audit stream but is not repeated in ordinary chat. Multiple private
+reasoning blocks are reduced to the final safe Think summary, matching DSH's
+completed presentation; a normal search answer therefore shows Search + Think,
+not every internal transition. The completed and replayed views use the same
+projector, so finishing a turn does not replace the working UI or erase its
+process.
 
 There is no ChatFlow 2.0 product track, legacy event projector or keyword-based
 capability pre-router. Historical runs without native events remain readable as

@@ -1,6 +1,8 @@
 # AllRice owns identity, tools, authorization, credentials and durable context.
 # This DSH composition deliberately exposes no shell, terminal, filesystem,
-# browser, network, MCP, subagent or dynamic-plugin tools to the model.
+# browser, unrestricted network, MCP, subagent or dynamic-plugin tools. The
+# runtime may register a reviewed native tool only when AllRice freezes that
+# capability into the current tenant Session policy.
 
 - id: credentials
   name: '@deepseek-ai/dsh-credentials-local'
@@ -11,17 +13,42 @@
 - id: authorization
   name: '@deepseek-ai/dsh-authorization'
 
+- id: attachments
+  name: '@deepseek-ai/dsh-attachment-local'
+  config:
+    dshHome: !!js process.env.DSH_RUNTIME_HOME ?? process.env.DSH_HOME
+    maxImageBytes: 20971520
+    maxImagesPerMessage: 20
+    maxMessageImageBytes: 209715200
+    maxImagePixels: 64000000
+    maxImageDimension: 8192
+    normalizedImageMaxDimension: 2048
+
 - id: llm-provider-router
   name: '@deepseek-ai/dsh-llm-pi-ai'
   config:
     providers:
       openai-codex:
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+          backoff:
+            initialDelayMs: 500
+            maxDelayMs: 4000
+            jitterRatio: 0.1
         models:
           - id: !!js process.env.DSH_CODEX_MODEL ?? 'gpt-5.6-luna'
       openai-compatible:
         apiKeyEnv: OPENAI_COMPATIBLE_API_KEY
         api: openai-completions
         baseURL: !!js process.env.OPENAI_COMPATIBLE_BASE_URL ?? 'https://unused.invalid/v1'
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+          backoff:
+            initialDelayMs: 500
+            maxDelayMs: 4000
+            jitterRatio: 0.1
         models:
           - id: !!js process.env.DSH_OPENAI_COMPATIBLE_MODEL ?? 'allrice-unused'
             contextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 200000)
@@ -46,6 +73,12 @@
     toolBash: false
     toolJobs: false
 
+- id: skill-registry
+  name: '@deepseek-ai/dsh-skill'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:
@@ -55,8 +88,42 @@
 - id: session-checkpoints
   name: '@deepseek-ai/dsh-session-checkpoint-policy'
 
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
+
+- id: tool-call-timeout-policy
+  name: '@deepseek-ai/dsh-tool-call-timeout-policy'
+
+- id: repeat-tool-reminder
+  name: '@deepseek-ai/dsh-repeat-tool-reminder'
+  config:
+    thresholds: [3, 5, 8]
+    exclude: [todo_write]
+    argumentsPreviewChars: 500
+
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: false
+
+- id: session-projection
+  name: '@deepseek-ai/dsh-session-projection'
+
 - id: token-meter
   name: '@deepseek-ai/dsh-token-meter'
+
+- id: tool-result-pruner
+  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+  config:
+    thresholdChars: 8192
+    headChars: 4096
+    tailChars: 1024
 
 - id: compaction-basic
   name: '@deepseek-ai/dsh-compaction-basic'

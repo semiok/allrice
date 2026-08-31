@@ -2,7 +2,7 @@
 
 `@allrice/contracts` is the only allowed authority for types that cross Web, Worker, persistence, and streaming boundaries.
 
-Version 0.1.0 defines runtime-validated V1 contracts for tenancy, authorization, Queue, Run/Event, SSE replay, SkillHub, Agent Skill / Workflow / Knowledge revisions and bindings, Storage, API compatibility and health.
+Version 0.1.0 defines runtime-validated contracts for tenancy, authorization, Queue, Run/Event, SSE replay, DSH-native Skill snapshots, Agent Skill / Workflow / Knowledge bindings, Storage, API compatibility and health.
 
 Packages must import these definitions instead of recreating local variants. Boundary data is parsed with the exported Zod schemas; TypeScript types alone are not a trust boundary.
 

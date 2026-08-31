@@ -286,24 +286,24 @@ a {
   width: 100%;
 }
 
-.skillhub-shell {
+.employee-surface-shell {
   margin: 0 auto;
   max-width: 1180px;
   padding: 56px 28px 100px;
 }
 
-.skillhub-header {
+.employee-surface-header {
   align-items: flex-start;
   display: flex;
   gap: 32px;
   justify-content: space-between;
 }
 
-.skillhub-header h1 {
+.employee-surface-header h1 {
   font-size: clamp(3rem, 7vw, 6rem);
 }
 
-.skillhub-header > a {
+.employee-surface-header > a {
   color: #326245;
   font-weight: 700;
   white-space: nowrap;
@@ -348,7 +348,7 @@ a {
   background: #f7a66f;
 }
 
-.skillhub-section,
+.employee-surface-section,
 .skill-runner {
   margin-top: 56px;
 }
@@ -506,7 +506,7 @@ a {
   white-space: pre-wrap;
 }
 
-.skillhub-error {
+.surface-error {
   background: #8e2f2f;
   border-radius: 10px;
   color: white;
@@ -2129,19 +2129,19 @@ textarea {
   text-decoration: none;
 }
 
-/* Employee, SkillHub and Automation surfaces */
-.skillhub-shell,
+/* Employee and Automation surfaces */
+.employee-surface-shell,
 .automation-shell {
   background: var(--rice-paper);
 }
 
-.skillhub-shell {
+.employee-surface-shell {
   max-width: none;
   min-height: 100vh;
   padding: 40px clamp(22px, 5vw, 72px) 88px;
 }
 
-.skillhub-header {
+.employee-surface-header {
   background:
     radial-gradient(circle at 90% 0%, rgb(216 237 139 / 18%), transparent 30%),
     var(--rice-deep);
@@ -2152,27 +2152,27 @@ textarea {
   padding: clamp(26px, 5vw, 54px);
 }
 
-.skillhub-header .eyebrow,
-.skillhub-header .lede {
+.employee-surface-header .eyebrow,
+.employee-surface-header .lede {
   color: #b9d0bd;
 }
 
-.skillhub-header h1 {
+.employee-surface-header h1 {
   font-size: clamp(3rem, 7vw, 6.2rem);
   margin: 18px 0;
 }
 
-.skillhub-header > a,
+.employee-surface-header > a,
 .employee-header-actions a {
   color: var(--rice-lime);
 }
 
-.employeehub-shell .skillhub-header {
+.employeehub-shell .employee-surface-header {
   background:
     linear-gradient(135deg, rgb(216 237 139 / 11%), transparent 50%), #1b4330;
 }
 
-.skillhub-section,
+.employee-surface-section,
 .employee-directory,
 .employee-create-panel,
 .employee-detail-panel {
@@ -2181,7 +2181,7 @@ textarea {
   max-width: 1280px;
 }
 
-.skillhub-section {
+.employee-surface-section {
   margin-top: 28px;
 }
 
@@ -2401,11 +2401,11 @@ textarea {
     min-height: calc(100vh - 235px);
   }
 
-  .skillhub-shell {
+  .employee-surface-shell {
     padding: 20px 14px 54px;
   }
 
-  .skillhub-header,
+  .employee-surface-header,
   .employee-directory,
   .employee-create-panel,
   .employee-detail-panel {
@@ -2413,7 +2413,7 @@ textarea {
     padding: 22px;
   }
 
-  .skillhub-header h1,
+  .employee-surface-header h1,
   .automation-header h1 {
     font-size: 3.5rem;
   }
@@ -3398,7 +3398,7 @@ textarea {
   overflow: auto;
 }
 
-.app-page-content > .skillhub-shell {
+.app-page-content > .employee-surface-shell {
   min-height: 100vh;
 }
 
@@ -4540,7 +4540,7 @@ textarea {
   overflow: auto;
 }
 
-.employee-panel-only .skillhub-shell {
+.employee-panel-only .employee-surface-shell {
   min-height: 100vh;
 }
 
@@ -4917,7 +4917,7 @@ label.employee-toggle {
 }
 
 .employee-notice,
-.skillhub-notice {
+.surface-notice {
   background: #e8f4e6;
   border: 1px solid #cde1ca;
   border-radius: 12px;

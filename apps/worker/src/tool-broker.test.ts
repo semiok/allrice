@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto';
 import type { ExecutionContext } from '@allrice/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { recordToolBrokerAudit } = vi.hoisted(() => ({
+const { dispatchBridgeCommand, recordToolBrokerAudit } = vi.hoisted(() => ({
+  dispatchBridgeCommand: vi.fn(),
   recordToolBrokerAudit: vi.fn(async () => undefined),
 }));
 
 vi.mock('@allrice/database', () => ({
   createAutomationFromExecutionContext: vi.fn(),
+  dispatchBridgeCommand,
   getToolBrokerFile: vi.fn(),
   listToolBrokerFiles: vi.fn(),
   recordToolBrokerAudit,
@@ -49,17 +51,72 @@ function executionContext(): ExecutionContext {
 }
 
 describe('Codex hosted search Tool Broker integration', () => {
-  beforeEach(() => recordToolBrokerAudit.mockClear());
+  beforeEach(() => {
+    dispatchBridgeCommand.mockReset();
+    recordToolBrokerAudit.mockClear();
+  });
 
   it('exposes search only through the outbound-network capability', () => {
     expect(
       riceToolDefinitionsForCapabilities(['network:outbound']).map(
         (tool) => tool.name,
       ),
-    ).toEqual(['web.search', 'web.fetch']);
+    ).toEqual([
+      'web.search',
+      'web.fetch',
+      'wechat.article.search',
+      'wechat.article.read',
+    ]);
     expect(
       riceToolDefinitionsForCapabilities(['storage:read']),
     ).not.toContainEqual(expect.objectContaining({ name: 'web.search' }));
+  });
+
+  it('keeps Bridge tools read-only and dispatches only structured commands', async () => {
+    expect(
+      riceToolDefinitionsForCapabilities(['storage:read']).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        'local.fs.list',
+        'local.fs.search',
+        'local.fs.read',
+        'local.git.status',
+        'local.git.diff',
+      ]),
+    );
+    dispatchBridgeCommand.mockResolvedValue({
+      output: { path: 'README.md', content: '# Rice' },
+      summary: '已读取 README.md',
+      workspaceLabel: 'AI-what',
+    });
+    const context = executionContext();
+    const callId = randomUUID();
+    const result = await executeRiceTool({
+      context,
+      capabilities: ['storage:read'],
+      storageRoot: '.local/storage',
+      call: {
+        id: callId,
+        name: 'local.fs.read',
+        arguments: { path: 'README.md' },
+      },
+    });
+    expect(dispatchBridgeCommand).toHaveBeenCalledWith({
+      context,
+      payload: {
+        capability: 'local.fs.read',
+        arguments: { path: 'README.md', maxBytes: 200_000 },
+      },
+      idempotencyKey: `tool:${context.runId}:${callId}`,
+    });
+    expect(JSON.parse(result.modelContent)).toMatchObject({
+      source: 'rice-bridge',
+      localWorkspace: 'AI-what',
+      output: { path: 'README.md' },
+    });
+    expect(result.summary).toBe('AI-what · 已读取 README.md');
   });
 
   it('keeps authorized read-only tools available without pre-routing side effects', () => {
@@ -117,5 +174,71 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(recordToolBrokerAudit).toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'web.search' }),
     );
+  });
+
+  it('executes cloud WeChat search and article read without Rice Bridge', async () => {
+    const wechatSearch = vi.fn(async () => [
+      {
+        title: 'AllRice 公众号文章',
+        account: 'AllRice',
+        publishedAt: '2026-08-30T00:00:00.000Z',
+        snippet: '云端只读测试',
+        url: 'https://mp.weixin.qq.com/s?__biz=test&mid=1',
+      },
+    ]);
+    const wechatRead = vi.fn(async (url: string) => ({
+      title: 'AllRice 公众号文章',
+      account: 'AllRice',
+      publishedAt: '2026-08-30T00:00:00.000Z',
+      description: '云端只读测试',
+      content:
+        '<external-content source="wechat.article.read" trust="untrusted">正文</external-content>',
+      images: [],
+      url,
+      retrievedAt: '2026-08-30T00:01:00.000Z',
+      truncated: false,
+      externalContent: {
+        source: 'wechat.article.read' as const,
+        untrusted: true as const,
+        wrapped: true as const,
+      },
+    }));
+    const context = executionContext();
+
+    const searchResult = await executeRiceTool({
+      context,
+      capabilities: ['network:outbound'],
+      storageRoot: '.local/storage',
+      call: {
+        id: randomUUID(),
+        name: 'wechat.article.search',
+        arguments: { query: 'AllRice', limit: 2 },
+      },
+      wechatSearch,
+    });
+    expect(wechatSearch).toHaveBeenCalledWith('AllRice', 2);
+    expect(JSON.parse(searchResult.modelContent)).toMatchObject({
+      provider: 'sogou-weixin',
+      results: [{ title: 'AllRice 公众号文章' }],
+    });
+
+    const readResult = await executeRiceTool({
+      context,
+      capabilities: ['network:outbound'],
+      storageRoot: '.local/storage',
+      call: {
+        id: randomUUID(),
+        name: 'wechat.article.read',
+        arguments: {
+          url: 'https://mp.weixin.qq.com/s?__biz=test&mid=1',
+        },
+      },
+      wechatRead,
+    });
+    expect(wechatRead).toHaveBeenCalledWith(
+      'https://mp.weixin.qq.com/s?__biz=test&mid=1',
+    );
+    expect(readResult.summary).toBe('已读取公众号文章《AllRice 公众号文章》');
+    expect(dispatchBridgeCommand).not.toHaveBeenCalled();
   });
 });

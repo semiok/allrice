@@ -37,6 +37,27 @@ export const StorageObjectSchema = z
   .strict();
 export type StorageObject = z.infer<typeof StorageObjectSchema>;
 
+export const ImageMediaTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+export type ImageMediaType = z.infer<typeof ImageMediaTypeSchema>;
+
+/**
+ * Immutable pointer captured with a Run. AllRice remains authoritative for
+ * tenant authorization and original bytes; a Harness may derive its own
+ * normalized runtime copy after this pointer has been resolved by the Worker.
+ */
+export const PromptImageAttachmentSchema = z
+  .object({
+    object: StorageObjectSchema.extend({ mediaType: ImageMediaTypeSchema }),
+    fileName: z.string().trim().min(1).max(255),
+  })
+  .strict();
+export type PromptImageAttachment = z.infer<typeof PromptImageAttachmentSchema>;
+
 export const CreateFileInputSchema = z
   .object({
     workspaceId: UuidSchema,

@@ -1,15 +1,16 @@
 # EmployeeHub
 
-> Status: **Employee Definition V2 / Phase 1.1 and capability foundation / Phase 2.1 implemented**
+> Status: **Rice-only baseline; platform employee administration planned in MET-93**
 >
 > Linear: **MET-45, MET-60, MET-61, MET-63, MET-68**
 
 ## Product model
 
-Rice is the default general-purpose employee. Administrators define and assign
-specialized employees; ordinary members use only the employees assigned to
-them. Employees have no user-facing version concept. AllRice keeps immutable
-internal revisions solely for reproducible execution, rollback and audit.
+Rice is currently the only employee. Specialized employees will be created,
+assembled and published from the platform administration plane in MET-93;
+ordinary tenants only use employees assigned to them. Employees have no
+user-facing version concept. AllRice keeps immutable internal revisions solely
+for reproducible execution and audit.
 
 An Employee Definition contains:
 
@@ -39,7 +40,7 @@ queued. The snapshot includes:
 - exact Employee Definition revision and checksum;
 - exact assignment, assignee, assigning administrator and assignment time;
 - runtime and capability policy;
-- exact SkillVersion grants and Tool / Knowledge / Workflow bindings;
+- exact DSH-native Skill snapshots and Tool / Knowledge / Workflow bindings;
 - organization, workspace, actor and PolicySnapshot identifiers;
 - the employee-scoped user profile used for that run.
 
@@ -57,7 +58,7 @@ Employee Definition
        -> administrator Assignment
             -> Session
                  -> EmployeeRun + immutable ExecutionSnapshot
-                      -> RunStep / SkillRun / Approval / Artifact / AuditEvent
+                      -> RunStep / native DSH event / Approval / AuditEvent
 ```
 
 Assignment grants use of the employee but never copies private Session, Memory,
@@ -66,9 +67,7 @@ files or credentials between users.
 ## API
 
 - `GET /api/v1/employees` returns the caller's assignments. Administrators also
-  receive the employee directory, member directory and configurable Skills.
-- `POST /api/v1/employees` creates a specialized employee or publishes an
-  immutable internal revision; both operations require an administrator.
+  receive the current Rice assignment.
 - `PUT /api/v1/employees/:employeeId/assignments` replaces the employee's
   member assignments and requires an administrator.
 - `PATCH /api/v1/employees/:employeeId/status` enables or disables a specialized
@@ -78,8 +77,8 @@ files or credentials between users.
 - `GET|PUT /api/v1/employees/:employeeId/capabilities` reads or atomically
   replaces exact Agent Skill, Workflow and Knowledge revision bindings for an
   administrator.
-- `/api/v1/admin/capabilities` provides administrator-only catalog, publication
-  and lifecycle endpoints for the Phase 2 configuration center.
+- MET-93 provides the platform-only employee definition, DSH assembly, debug,
+  publication and tenant-assignment APIs.
 
 The capability lifecycle, Knowledge ACL and execution-freezing rules are in
 [Agent capability foundation](../../architecture/agent-capability-foundation.md).
@@ -87,8 +86,8 @@ The capability lifecycle, Knowledge ACL and execution-freezing rules are in
 ## Security invariant
 
 Effective execution permission is the intersection of human Membership,
-EmployeeAssignment, Employee Definition capabilities, enabled and pinned
-SkillInstallation grants, tenant policy and the frozen PolicySnapshot. The
+EmployeeAssignment, Employee Definition capabilities, enabled DSH-native Skill
+bindings, tenant policy and the frozen PolicySnapshot. The
 worker receives no database URL, host shell or arbitrary deployment credentials.
 
 ## Acceptance

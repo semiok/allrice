@@ -55,6 +55,31 @@ describe('AllRice DSH protocol runtime', () => {
         cwd: root,
         provider: 'openai-codex',
         model: 'gpt-5.6-luna',
+        nativeTools: [
+          'web.search',
+          'local.fs.list',
+          'local.fs.search',
+          'local.fs.read',
+          'local.git.status',
+          'local.git.diff',
+          'wechat.article.search',
+          'wechat.article.read',
+        ],
+        nativeSkills: [
+          {
+            id: 'skill-contract-test',
+            name: 'allrice-contract-test',
+            description: 'Verify the tenant-frozen AllRice native skill seam.',
+            content:
+              '# Contract test\n\nFollow the contract test instructions.',
+            checksum: `sha256:${'a'.repeat(64)}`,
+            invocation: {
+              modelInvocable: true,
+              userInvocable: true,
+            },
+            requiredToolRefs: ['web.search'],
+          },
+        ],
         maxTokens: 1_024,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       }),
@@ -67,6 +92,10 @@ describe('AllRice DSH protocol runtime', () => {
     });
     await expect(client.compact('dsh-not-live')).resolves.toMatchObject({
       compacted: false,
+    });
+    await expect(client.sessionProjection('dsh-not-live')).resolves.toEqual({
+      asOfSeq: undefined,
+      contextPressure: null,
     });
     await expect(client.closeSession('dsh-not-live')).resolves.toMatchObject({
       closed: false,

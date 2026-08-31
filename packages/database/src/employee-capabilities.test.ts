@@ -2,18 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canAdministerEmployees,
+  nativeSkillCapabilityGrants,
   resolveEmployeeCapabilities,
-  type FrozenSkillBinding,
 } from './employeehub.js';
 import type { RequestContext } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 
 describe('Rice capability intersection', () => {
-  const binding: FrozenSkillBinding = {
-    installationId: '00000000-0000-4000-8000-000000000001',
-    skillVersionId: '00000000-0000-4000-8000-000000000002',
-    declaredCapabilities: ['model:invoke', 'network:outbound'],
-    grantedCapabilities: ['model:invoke', 'network:outbound'],
+  const webResearch = {
+    requiredToolRefs: ['web.search'],
   };
 
   it('keeps core employee capabilities but gates network behind a bound skill', () => {
@@ -26,19 +23,38 @@ describe('Rice capability intersection', () => {
     expect(
       resolveEmployeeCapabilities(
         ['model:invoke', 'storage:read', 'network:outbound'],
-        [binding],
+        [webResearch],
+      ),
+    ).toEqual(['model:invoke', 'storage:read', 'network:outbound']);
+  });
+
+  it('lets a bound DSH-native Skill grant only the capability implied by its reviewed tools', () => {
+    expect(nativeSkillCapabilityGrants(['web.search'])).toEqual([
+      'network:outbound',
+    ]);
+    expect(
+      nativeSkillCapabilityGrants([
+        'local.fs.list',
+        'local.fs.read',
+        'unknown.tool',
+      ]),
+    ).toEqual(['storage:read']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:read', 'network:outbound'],
+        [webResearch],
       ),
     ).toEqual(['model:invoke', 'storage:read', 'network:outbound']);
   });
 
   it('never lets a skill expand capabilities outside the employee manifest', () => {
-    expect(resolveEmployeeCapabilities(['model:invoke'], [binding])).toEqual([
-      'model:invoke',
-    ]);
+    expect(
+      resolveEmployeeCapabilities(['model:invoke'], [webResearch]),
+    ).toEqual(['model:invoke']);
     expect(
       resolveEmployeeCapabilities(
         ['model:invoke', 'network:outbound'],
-        [{ ...binding, declaredCapabilities: ['model:invoke'] }],
+        [{ requiredToolRefs: ['local.fs.read'] }],
       ),
     ).toEqual(['model:invoke']);
   });
@@ -47,7 +63,7 @@ describe('Rice capability intersection', () => {
     expect(
       resolveEmployeeCapabilities(
         ['model:invoke', 'network:outbound'],
-        [binding],
+        [webResearch],
         ['network:outbound'],
       ),
     ).toEqual(['model:invoke']);

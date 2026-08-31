@@ -33,6 +33,131 @@ interface ConversationRuntimeRow {
   dynamic_context_tokens: number;
   compact_threshold_tokens: number;
   context_pressure_tokens: number;
+  dsh_context_as_of_seq: number | null;
+  dsh_context_pressure_tokens: number | null;
+  dsh_context_projected_tokens: number | null;
+  dsh_context_window_tokens: number | null;
+  dsh_context_observed_at: Date | string | null;
+}
+
+interface DshRuntimeInventoryRow extends ConversationRuntimeRow {
+  organization_slug: string;
+  organization_name: string;
+  workspace_slug: string;
+  workspace_name: string;
+  session_title: string;
+  owner_email: string;
+  employee_name: string | null;
+  provider_snapshot: unknown;
+  last_started_at: Date | string | null;
+  last_completed_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  process_id: string | null;
+  process_status: 'live' | 'offline' | null;
+  process_worker_id: string | null;
+  process_provider_route: string | null;
+  process_model: string | null;
+  process_reasoning_effort: string | null;
+  process_native_tools: unknown;
+  process_started_at: Date | string | null;
+  process_last_activity_at: Date | string | null;
+  process_last_seen_at: Date | string | null;
+}
+
+interface DshRuntimeEventRow {
+  run_id: string;
+  run_state: string;
+  sequence: number;
+  event_type: string;
+  payload: unknown;
+  occurred_at: Date | string;
+}
+
+const runtimeEventKinds = new Set([
+  'context',
+  'think',
+  'search',
+  'tool',
+  'todo',
+  'compaction',
+  'lifecycle',
+]);
+
+function safeText(value: unknown, maximum = 4_000) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, maximum)
+    : null;
+}
+
+function safeRecord(value: unknown) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function mapDshRuntimeEvent(row: DshRuntimeEventRow) {
+  const payload = safeRecord(row.payload);
+  if (payload.source !== 'dsh' && payload.source !== 'tool_broker') return null;
+  if (row.event_type === 'harness.native') {
+    const presentation = safeText(payload.presentation, 40);
+    if (!presentation || !runtimeEventKinds.has(presentation)) return null;
+    const native = safeRecord(payload.nativePayload);
+    const callId = safeText(native.callId, 160);
+    const key =
+      (presentation === 'tool' || presentation === 'search') && callId
+        ? `tool:${callId}`
+        : presentation === 'think'
+          ? `think:${String(native.turn ?? '')}:${String(native.step ?? '')}:${String(safeRecord(native.chunk).index ?? '')}`
+          : `${row.run_id}:${row.sequence}`;
+    return {
+      id: `${row.run_id}:${row.sequence}`,
+      key,
+      runId: row.run_id,
+      sequence: row.sequence,
+      kind: presentation,
+      status: safeText(payload.status, 40) ?? 'info',
+      title: safeText(payload.label, 240) ?? 'DSH Event',
+      detail: safeText(payload.summary, 1_000),
+      occurredAt: timestamp(row.occurred_at),
+    };
+  }
+  if (row.event_type.startsWith('tool.')) {
+    const native = safeRecord(payload.nativePayload);
+    const name = safeText(payload.name, 160) ?? 'Tool';
+    const toolCallId = safeText(payload.toolCallId, 160);
+    const search = native.presentation === 'search' || name === 'web.search';
+    const query = search ? safeText(native.query, 500) : null;
+    return {
+      id: `${row.run_id}:${row.sequence}`,
+      key: toolCallId ? `tool:${toolCallId}` : `${row.run_id}:${row.sequence}`,
+      runId: row.run_id,
+      sequence: row.sequence,
+      kind: search ? 'search' : 'tool',
+      status: row.event_type.endsWith('.started')
+        ? 'started'
+        : row.event_type.endsWith('.failed')
+          ? 'failed'
+          : 'completed',
+      title: search ? (query ? `Search · ${query}` : 'Search') : name,
+      detail: safeText(payload.summary, 1_000),
+      occurredAt: timestamp(row.occurred_at),
+    };
+  }
+  if (row.event_type === 'assistant.text.completed') {
+    return {
+      id: `${row.run_id}:${row.sequence}`,
+      key: `${row.run_id}:answer`,
+      runId: row.run_id,
+      sequence: row.sequence,
+      kind: 'answer',
+      status: 'completed',
+      title: 'Answer',
+      detail: safeText(payload.text),
+      occurredAt: timestamp(row.occurred_at),
+    };
+  }
+  return null;
 }
 
 export class ConversationRuntimeError extends Error {
@@ -76,6 +201,198 @@ function mapBinding(row: ConversationRuntimeRow) {
     dynamicContextTokens: row.dynamic_context_tokens,
     compactThresholdTokens: row.compact_threshold_tokens,
     contextPressureTokens: row.context_pressure_tokens,
+    dshContextAsOfSeq: row.dsh_context_as_of_seq,
+    dshContextPressureTokens: row.dsh_context_pressure_tokens,
+    dshContextProjectedTokens: row.dsh_context_projected_tokens,
+    dshContextWindowTokens: row.dsh_context_window_tokens,
+    dshContextObservedAt: timestamp(row.dsh_context_observed_at),
+  };
+}
+
+function timestamp(value: Date | string | null) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * Platform-only, redacted inventory for the Runtime Console. This deliberately
+ * exposes durable runtime identity and lifecycle facts, never prompts,
+ * credentials, tool arguments, host paths or raw provider configuration.
+ */
+export async function listDshRuntimeInventory(limit = 100) {
+  const safeLimit = z.number().int().min(1).max(500).parse(limit);
+  const sql = getDatabase();
+  const rows = await sql<DshRuntimeInventoryRow[]>`
+    select runtime.*, organization.slug as organization_slug,
+      organization.name as organization_name,
+      workspace.slug as workspace_slug, workspace.name as workspace_name,
+      session.title as session_title, owner.email as owner_email,
+      employee.name as employee_name,
+      latest_run.provider_snapshot,
+      runtime_process.id as process_id,
+      runtime_process.process_status,
+      runtime_process.worker_id as process_worker_id,
+      runtime_process.provider_route as process_provider_route,
+      runtime_process.model as process_model,
+      runtime_process.reasoning_effort as process_reasoning_effort,
+      runtime_process.native_tools as process_native_tools,
+      runtime_process.started_at as process_started_at,
+      runtime_process.last_activity_at as process_last_activity_at,
+      runtime_process.last_seen_at as process_last_seen_at
+    from allrice_conversation_runtimes runtime
+    join allrice_organizations organization
+      on organization.id = runtime.organization_id
+    join allrice_workspaces workspace
+      on workspace.id = runtime.workspace_id
+      and workspace.organization_id = runtime.organization_id
+    join allrice_chat_sessions session
+      on session.id = runtime.session_id
+      and session.organization_id = runtime.organization_id
+      and session.workspace_id = runtime.workspace_id
+    join allrice_users owner on owner.id = runtime.owner_id
+    left join lateral (
+      select employee_run.employee_version_id, employee_run.provider_snapshot
+      from allrice_employee_runs employee_run
+      where employee_run.organization_id = runtime.organization_id
+        and employee_run.workspace_id = runtime.workspace_id
+        and employee_run.session_id = runtime.session_id
+      order by employee_run.created_at desc
+      limit 1
+    ) latest_run on true
+    left join allrice_employee_versions employee_version
+      on employee_version.id = latest_run.employee_version_id
+      and employee_version.organization_id = runtime.organization_id
+      and employee_version.workspace_id = runtime.workspace_id
+    left join allrice_employees employee
+      on employee.id = employee_version.employee_id
+      and employee.organization_id = runtime.organization_id
+      and employee.workspace_id = runtime.workspace_id
+    left join lateral (
+      select process.*,
+        case
+          when process.status = 'live'
+            and process.last_seen_at >= now() - interval '15 seconds'
+          then 'live'
+          else 'offline'
+        end as process_status
+      from allrice_dsh_runtime_instances process
+      where process.organization_id = runtime.organization_id
+        and process.workspace_id = runtime.workspace_id
+        and process.session_id = runtime.session_id
+      order by process.last_seen_at desc
+      limit 1
+    ) runtime_process on true
+    order by
+      case
+        when runtime_process.process_status = 'live' then 0
+        when runtime.state = 'running' then 1
+        else 2
+      end,
+      runtime.updated_at desc
+    limit ${safeLimit}
+  `;
+  return rows.map((row) => {
+    const provider = z
+      .object({
+        provider: z.string().optional(),
+        route: z.string().optional(),
+        model: z.string().optional(),
+        reasoningEffort: z.string().optional(),
+      })
+      .passthrough()
+      .safeParse(row.provider_snapshot);
+    return {
+      organization: {
+        id: row.organization_id,
+        slug: row.organization_slug,
+        name: row.organization_name,
+      },
+      workspace: {
+        id: row.workspace_id,
+        slug: row.workspace_slug,
+        name: row.workspace_name,
+      },
+      owner: { id: row.owner_id, email: row.owner_email },
+      session: {
+        id: row.session_id,
+        title: row.session_title,
+        employeeName: row.employee_name,
+      },
+      runtime: {
+        harness: 'dsh' as const,
+        state: row.state,
+        threadId: row.thread_id,
+        generation: row.thread_generation,
+        activeRunId: row.active_run_id,
+        activeTurnId: row.active_turn_id,
+        workerId: row.worker_id,
+        configFingerprint: row.config_checksum.slice(0, 19),
+        lastErrorCode: row.last_error_code,
+        contextPressureTokens: row.context_pressure_tokens,
+        compactThresholdTokens: row.compact_threshold_tokens,
+        lastStartedAt: timestamp(row.last_started_at),
+        lastCompletedAt: timestamp(row.last_completed_at),
+        createdAt: timestamp(row.created_at),
+        updatedAt: timestamp(row.updated_at),
+      },
+      provider: provider.success
+        ? {
+            provider: provider.data.provider ?? 'dsh',
+            route: provider.data.route ?? 'unknown',
+            model: provider.data.model ?? 'unknown',
+            reasoningEffort: provider.data.reasoningEffort ?? 'unknown',
+          }
+        : null,
+      process: row.process_id
+        ? {
+            id: row.process_id,
+            status: row.process_status ?? 'offline',
+            workerId: row.process_worker_id,
+            providerRoute: row.process_provider_route,
+            model: row.process_model,
+            reasoningEffort: row.process_reasoning_effort,
+            nativeTools: z.array(z.string()).safeParse(row.process_native_tools)
+              .success
+              ? (row.process_native_tools as string[])
+              : [],
+            startedAt: timestamp(row.process_started_at),
+            lastActivityAt: timestamp(row.process_last_activity_at),
+            lastSeenAt: timestamp(row.process_last_seen_at),
+          }
+        : null,
+    };
+  });
+}
+
+/**
+ * Platform-only DSH event mirror for one Session. Only presentation-safe fields
+ * survive this projection; prompts, tool arguments, credentials, host paths and
+ * hidden chain-of-thought are never returned.
+ */
+export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
+  const sessionId = UuidSchema.parse(sessionIdInput);
+  const sql = getDatabase();
+  const rows = await sql<DshRuntimeEventRow[]>`
+    with latest_run as (
+      select employee_run.run_id
+      from allrice_employee_runs employee_run
+      where employee_run.session_id = ${sessionId}
+      order by employee_run.created_at desc
+      limit 1
+    )
+    select event.run_id, run.state as run_state, event.sequence,
+      event.event_type, event.payload, event.occurred_at
+    from latest_run
+    join allrice_runs run on run.id = latest_run.run_id
+    join allrice_run_events event on event.run_id = latest_run.run_id
+    order by event.sequence
+  `;
+  const first = rows[0];
+  return {
+    sessionId,
+    run: first ? { id: first.run_id, status: first.run_state } : null,
+    events: rows
+      .map(mapDshRuntimeEvent)
+      .filter((event): event is NonNullable<typeof event> => event !== null),
   };
 }
 
@@ -160,6 +477,11 @@ export async function acquireConversationRuntime(input: {
           dynamic_context_tokens = ${configChanged ? 0 : current.dynamic_context_tokens},
           compact_threshold_tokens = ${values.compactThresholdTokens},
           context_pressure_tokens = ${configChanged ? 0 : current.context_pressure_tokens},
+          dsh_context_as_of_seq = ${configChanged ? null : current.dsh_context_as_of_seq},
+          dsh_context_pressure_tokens = ${configChanged ? null : current.dsh_context_pressure_tokens},
+          dsh_context_projected_tokens = ${configChanged ? null : current.dsh_context_projected_tokens},
+          dsh_context_window_tokens = ${configChanged ? null : current.dsh_context_window_tokens},
+          dsh_context_observed_at = ${configChanged ? null : current.dsh_context_observed_at},
           last_error_code = null, last_started_at = now(), updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -243,6 +565,11 @@ export async function bindConversationThread(input: {
           last_cached_input_tokens = ${changed ? null : current.last_cached_input_tokens},
           dynamic_context_tokens = ${changed ? 0 : current.dynamic_context_tokens},
           context_pressure_tokens = ${changed ? 0 : current.context_pressure_tokens},
+          dsh_context_as_of_seq = ${changed ? null : current.dsh_context_as_of_seq},
+          dsh_context_pressure_tokens = ${changed ? null : current.dsh_context_pressure_tokens},
+          dsh_context_projected_tokens = ${changed ? null : current.dsh_context_projected_tokens},
+          dsh_context_window_tokens = ${changed ? null : current.dsh_context_window_tokens},
+          dsh_context_observed_at = ${changed ? null : current.dsh_context_observed_at},
           active_turn_id = null, updated_at = now()
       where session_id = ${values.sessionId}
       returning *
@@ -298,6 +625,56 @@ export async function recordConversationUsage(input: {
           last_cached_input_tokens = ${values.cachedInputTokens},
           dynamic_context_tokens = ${watermark.dynamicContextTokens},
           context_pressure_tokens = ${contextPressureTokens},
+          updated_at = now()
+      where session_id = ${values.sessionId}
+      returning *
+    `;
+    return mapBinding(rows[0]!);
+  });
+}
+
+export async function recordConversationNativeContext(input: {
+  organizationId: string;
+  workspaceId: string;
+  sessionId: string;
+  runId: string;
+  workerId: string;
+  generation: number;
+  asOfSeq?: number;
+  pressureTokens?: number;
+  projectedTokens?: number;
+  contextWindow: number;
+}) {
+  const values = {
+    ...ownedValues(input),
+    generation: z.number().int().nonnegative().parse(input.generation),
+    asOfSeq:
+      input.asOfSeq === undefined
+        ? null
+        : z.number().int().nonnegative().parse(input.asOfSeq),
+    pressureTokens:
+      input.pressureTokens === undefined
+        ? null
+        : z.number().int().nonnegative().parse(input.pressureTokens),
+    projectedTokens:
+      input.projectedTokens === undefined
+        ? null
+        : z.number().int().nonnegative().parse(input.projectedTokens),
+    contextWindow: z.number().int().positive().parse(input.contextWindow),
+  };
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    const current = await lockedOwnedRuntime(transaction, values);
+    if (current.thread_generation !== values.generation) {
+      throw new ConversationRuntimeError('conversation_ownership_lost');
+    }
+    const rows = await transaction<ConversationRuntimeRow[]>`
+      update allrice_conversation_runtimes
+      set dsh_context_as_of_seq = ${values.asOfSeq},
+          dsh_context_pressure_tokens = ${values.pressureTokens},
+          dsh_context_projected_tokens = ${values.projectedTokens},
+          dsh_context_window_tokens = ${values.contextWindow},
+          dsh_context_observed_at = now(),
           updated_at = now()
       where session_id = ${values.sessionId}
       returning *

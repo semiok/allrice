@@ -33,8 +33,8 @@ export async function closeDatabase() {
 export * from './identity.ts';
 export * from './data.ts';
 export * from './workspace.ts';
+export * from './bridge.ts';
 export * from './queue.ts';
-export * from './skillhub.ts';
 export * from './employeehub.ts';
 export * from './tool-broker.ts';
 export * from './conversation-runtime.ts';
@@ -50,5 +50,8 @@ export * from './workflow-runtime.ts';
 export * from './chatflow-notifications.ts';
 export * from './model-pool.ts';
 export * from './provider-auth.ts';
+export * from './provider-status.ts';
 export * from './model-governance.ts';
+export * from './platform-employees.ts';
 export * from './employee-quality.ts';
+export * from './dsh-runtime-registry.ts';

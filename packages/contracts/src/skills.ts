@@ -37,6 +37,9 @@ export const AgentSkillMetadataSchema = z
   .strict();
 export type AgentSkillMetadata = z.infer<typeof AgentSkillMetadataSchema>;
 
+// Provenance remains part of the generic capability contract. DSH-native
+// skills use it in the administration plane, without reintroducing a catalog
+// or tenant installation lifecycle.
 export const SkillSourceSchema = z
   .object({
     repository: z.string().url(),
@@ -46,126 +49,25 @@ export const SkillSourceSchema = z
   })
   .strict();
 
-export const SkillArtifactFileSchema = z
+export const DshNativeSkillSnapshotSchema = z
   .object({
-    path: z
-      .string()
-      .min(1)
-      .max(240)
-      .refine(
-        (path) =>
-          !path.startsWith('/') &&
-          !path.includes('\\') &&
-          !path.split('/').includes('..'),
-        'skill file path must be relative and cannot traverse directories',
-      ),
+    id: UuidSchema,
+    name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    description: z.string().trim().min(1).max(500),
     content: z.string().max(500_000),
-  })
-  .strict();
-
-export const SkillArtifactBundleSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    entrypoint: z.literal('SKILL.md'),
-    files: z
-      .array(SkillArtifactFileSchema)
-      .min(1)
-      .max(64)
-      .refine(
-        (files) =>
-          files.some((file) => file.path === 'SKILL.md') &&
-          new Set(files.map((file) => file.path)).size === files.length,
-        'skill bundle needs one unique SKILL.md entrypoint',
-      ),
-  })
-  .strict();
-export type SkillArtifactBundle = z.infer<typeof SkillArtifactBundleSchema>;
-
-export const CatalogSkillSchema = z
-  .object({
-    id: UuidSchema,
-    slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-    name: z.string().min(1).max(120),
-    publisher: z.string().min(1).max(120),
-  })
-  .strict();
-
-export const SkillVersionSchema = z
-  .object({
-    id: UuidSchema,
-    catalogSkillId: UuidSchema,
-    version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
-    status: z.enum(['draft', 'published', 'deprecated', 'revoked']),
-    capabilities: z.array(SkillCapabilitySchema),
-    compatibility: z.object({ api: z.literal('v1') }).strict(),
-    publishedAt: TimestampSchema.nullable(),
-  })
-  .strict();
-
-export const SkillArtifactSchema = z
-  .object({
-    id: UuidSchema,
-    skillVersionId: UuidSchema,
     checksum: ChecksumSchema,
-    objectKey: z.string().min(1).max(1024),
-    sizeBytes: z.number().int().positive(),
-    source: SkillSourceSchema,
+    invocation: z
+      .object({
+        modelInvocable: z.boolean(),
+        userInvocable: z.boolean(),
+      })
+      .strict(),
+    requiredToolRefs: z.array(z.string().trim().min(1).max(240)).max(32),
   })
   .strict();
-
-export const ImportSkillInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-    name: z.string().min(1).max(120),
-    description: z.string().min(1).max(1_000),
-    publisher: z.string().min(1).max(120),
-    version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
-    capabilities: z.array(SkillCapabilitySchema).max(16),
-    agentMetadata: AgentSkillMetadataSchema.default({
-      applicableScenarios: [],
-      inputSchema: {},
-      outputSchema: {},
-      requiredToolRefs: [],
-      riskLevel: 'low',
-    }),
-    source: SkillSourceSchema,
-    bundle: SkillArtifactBundleSchema,
-  })
-  .strict();
-export type ImportSkillInput = z.infer<typeof ImportSkillInputSchema>;
-
-export const InstallSkillInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    skillVersionId: UuidSchema,
-    scope: z.enum(['personal', 'workspace']).default('personal'),
-    grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
-    timeoutMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
-    budgetCents: z.number().int().nonnegative().max(1_000_000).default(0),
-  })
-  .strict();
-
-export const UpdateSkillInstallationInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    enabled: z.boolean().optional(),
-    favorite: z.boolean().optional(),
-  })
-  .strict()
-  .refine(
-    (input) => input.enabled !== undefined || input.favorite !== undefined,
-    'an installation update is required',
-  );
-
-export const ExecuteSkillInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    installationId: UuidSchema,
-    prompt: z.string().min(1).max(100_000),
-    idempotencyKey: z.string().min(1).max(255),
-  })
-  .strict();
+export type DshNativeSkillSnapshot = z.infer<
+  typeof DshNativeSkillSnapshotSchema
+>;
 
 export const CodexProviderStatusSchema = z
   .object({
@@ -234,19 +136,3 @@ export const HarnessExecutionSnapshotSchema = z.union([
 export type HarnessExecutionSnapshot = z.infer<
   typeof HarnessExecutionSnapshotSchema
 >;
-
-export const SkillInstallationSchema = z
-  .object({
-    id: UuidSchema,
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    ownerId: UuidSchema.nullable(),
-    catalogSkillId: UuidSchema,
-    pinnedVersionId: UuidSchema.nullable(),
-    enabled: z.boolean(),
-    favorite: z.boolean(),
-    grantedCapabilities: z.array(SkillCapabilitySchema),
-    timeoutMs: z.number().int().positive().max(3_600_000),
-    budgetCents: z.number().int().nonnegative(),
-  })
-  .strict();

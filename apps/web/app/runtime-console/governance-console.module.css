@@ -1,0 +1,266 @@
+.embedded,
+.embeddedLoading,
+.embeddedDenied {
+  --ink: #f2f3f4;
+  --muted: #8f939b;
+  --line: #34363b;
+  --green: #87d4a5;
+  background: #121315;
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.embedded {
+  min-height: calc(100vh - 128px);
+  padding: 38px clamp(24px, 5vw, 72px) 72px;
+}
+
+.embeddedLoading,
+.embeddedDenied {
+  min-height: calc(100vh - 128px);
+  display: grid;
+  padding: 40px;
+  place-content: center;
+  text-align: center;
+}
+
+.embedded .header > i {
+  background: #263b30;
+  color: #87d4a5;
+}
+
+.embedded .providerGrid article,
+.embedded .quota {
+  background: #191a1d;
+  border-color: #34363b;
+}
+
+.embedded .providerGrid dl,
+.embedded .usage {
+  background: #232529;
+}
+
+.embedded .providerGrid button,
+.embedded .quotaForm button,
+.embedded .quotaForm input {
+  background: #232529;
+  border-color: #404349;
+  color: #e7e8ea;
+}
+
+.embedded .codexAuth button {
+  background: #f2f3f4;
+  border-color: #f2f3f4;
+  color: #17181a;
+}
+
+.embedded .notice {
+  background: #263b30;
+  color: #87d4a5;
+}
+
+.embeddedDenied p {
+  color: var(--muted);
+}
+.embeddedDenied a,
+.header a {
+  color: var(--green);
+  text-decoration: none;
+}
+.header {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+.header p,
+.sectionHeading p {
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  margin: 32px 0 7px;
+}
+.header h1 {
+  font-size: 36px;
+  letter-spacing: -0.04em;
+  margin: 0 0 9px;
+}
+.header span,
+.sectionHeading > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.header > i {
+  background: #e2ede4;
+  border-radius: 999px;
+  color: var(--green);
+  font-size: 11px;
+  font-style: normal;
+  padding: 8px 11px;
+}
+
+.providers,
+.quota {
+  margin-top: 48px;
+}
+.sectionHeading {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 15px;
+}
+.sectionHeading p {
+  margin: 0 0 5px;
+}
+.sectionHeading h2 {
+  font-size: 20px;
+  margin: 0;
+}
+.providerGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+}
+.providerGrid article,
+.quota {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+}
+.providerGrid article > header {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 8px 1fr auto;
+}
+.providerGrid article header > i {
+  border-radius: 50%;
+  height: 8px;
+  width: 8px;
+}
+.ready {
+  background: #47aa73;
+}
+.warning {
+  background: #d4a34a;
+}
+.providerGrid article header span {
+  display: grid;
+  gap: 3px;
+}
+.providerGrid article small,
+.providerGrid article em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+}
+.providerGrid dl {
+  background: #f4f6f2;
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 18px 0;
+  padding: 12px;
+}
+.providerGrid dl div {
+  display: grid;
+  gap: 4px;
+}
+.providerGrid dt {
+  color: var(--muted);
+  font-size: 9px;
+}
+.providerGrid dd {
+  font-size: 12px;
+  margin: 0;
+}
+.providerGrid footer,
+.codexAuth {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.providerGrid button,
+.quotaForm button {
+  background: #fff;
+  border: 1px solid #cdd8d0;
+  border-radius: 8px;
+  color: #315c45;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 8px 10px;
+}
+.codexAuth button {
+  background: var(--green);
+  color: #fff;
+}
+.providerGrid .danger {
+  color: #9a433e;
+}
+.providerGrid .dangerActive {
+  background: #a7423d;
+  border-color: #a7423d;
+  color: #fff;
+}
+
+.quota {
+  padding: 24px;
+}
+.usage {
+  align-items: baseline;
+  background: #f4f6f2;
+  border-radius: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 20px 0;
+  padding: 17px;
+}
+.usage strong {
+  font-size: 24px;
+}
+.usage span {
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 20px;
+}
+.quotaForm {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, 1fr) auto;
+}
+.quotaForm label {
+  color: var(--muted);
+  display: grid;
+  font-size: 10px;
+  gap: 6px;
+}
+.quotaForm input {
+  border: 1px solid #d8e0d9;
+  border-radius: 8px;
+  font: inherit;
+  padding: 9px;
+}
+.notice {
+  background: #e3eee5;
+  border-radius: 10px;
+  color: #2d6347;
+  font-size: 11px;
+  margin-top: 20px;
+  padding: 12px 14px;
+}
+
+@media (max-width: 740px) {
+  .header,
+  .sectionHeading {
+    align-items: start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .quotaForm {
+    grid-template-columns: 1fr;
+  }
+}
