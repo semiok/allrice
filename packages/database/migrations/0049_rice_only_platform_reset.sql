@@ -1,3 +1,13 @@
+-- The migration runner applies every pending migration in one transaction.
+-- Migration 0047 uses these temporary table names with ON COMMIT DROP, so on
+-- a fresh database they still exist when 0049 starts. Clear those transaction-
+-- local snapshots before rebuilding them for the platform reset.
+drop table if exists allrice_legacy_messages;
+drop table if exists allrice_legacy_runs;
+drop table if exists allrice_legacy_sessions;
+drop table if exists allrice_legacy_assignments;
+drop table if exists allrice_legacy_employees;
+
 create temporary table allrice_legacy_employees on commit drop as
 select organization_id, workspace_id, id
 from allrice_employees
@@ -321,4 +331,3 @@ values (
 on conflict (key) do update
 set value = excluded.value,
     updated_at = now();
-
