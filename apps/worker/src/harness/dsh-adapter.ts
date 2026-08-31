@@ -37,6 +37,8 @@ const dshNativeToolNames = new Set([
   'local.fs.read',
   'local.git.status',
   'local.git.diff',
+  'wechat.article.search',
+  'wechat.article.read',
 ]);
 const dshBrokerNativeToolNames = new Set([
   'local.fs.list',
@@ -44,6 +46,8 @@ const dshBrokerNativeToolNames = new Set([
   'local.fs.read',
   'local.git.status',
   'local.git.diff',
+  'wechat.article.search',
+  'wechat.article.read',
 ]);
 const dshNativeWireNames: Readonly<Record<string, string>> = {
   web_search: 'web.search',
@@ -52,10 +56,16 @@ const dshNativeWireNames: Readonly<Record<string, string>> = {
   local_fs_read: 'local.fs.read',
   local_git_status: 'local.git.status',
   local_git_diff: 'local.git.diff',
+  wechat_article_search: 'wechat.article.search',
+  wechat_article_read: 'wechat.article.read',
 };
 
 function isDshNativeTool(name: string) {
   return dshNativeToolNames.has(name);
+}
+
+function isSearchNativeTool(name: string) {
+  return name === 'web.search' || name === 'wechat.article.search';
 }
 
 interface DshRuntime {
@@ -676,6 +686,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const result = await this.runOnce({
           runtime,
           prompt,
+          images: callIndex === 0 ? (input.images ?? []) : [],
           signal: input.signal,
           onTurn: async (nextTurnId) => {
             turnId = nextTurnId;
@@ -732,10 +743,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
           source: 'tool_broker',
           sourceEventType: 'allrice/tool-broker',
           sourcePayload: {
-            presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+            presentation: isSearchNativeTool(toolCall.name) ? 'search' : 'tool',
             status: 'started',
             query:
-              toolCall.name === 'web.search' &&
+              isSearchNativeTool(toolCall.name) &&
               typeof toolCall.arguments.query === 'string'
                 ? toolCall.arguments.query.slice(0, 500)
                 : undefined,
@@ -752,7 +763,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             summary: toolResult.summary,
             sourceEventType: 'allrice/tool-broker',
             sourcePayload: {
-              presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+              presentation: isSearchNativeTool(toolCall.name)
+                ? 'search'
+                : 'tool',
               status: 'completed',
               summary: toolResult.summary,
             },
@@ -775,7 +788,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             summary: error instanceof Error ? error.message : 'tool failed',
             sourceEventType: 'allrice/tool-broker',
             sourcePayload: {
-              presentation: toolCall.name === 'web.search' ? 'search' : 'tool',
+              presentation: isSearchNativeTool(toolCall.name)
+                ? 'search'
+                : 'tool',
               status: 'failed',
             },
           });
@@ -970,6 +985,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       LANG: process.env.LANG ?? 'C.UTF-8',
       DSH_CORDIS_CONFIG: this.cordisConfig,
       DSH_HOME: dshPlatformHome,
+      DSH_RUNTIME_HOME: tenantRoot,
       DSH_CREDENTIALS_PATH: resolve(dshPlatformHome, '.credentials.yaml'),
       DSH_CWD: tenantRoot,
       DSH_SESSION_ROOT: resolve(tenantRoot, 'sessions'),
@@ -1049,6 +1065,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   private async runOnce(input: {
     runtime: DshRuntime;
     prompt: string;
+    images: HarnessExecutionInput['images'];
     signal: AbortSignal;
     onTurn(turnId: string): Promise<void>;
     onDelta(text: string, source: DshSourceMetadata): Promise<void>;
@@ -1154,7 +1171,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           ...source,
           sourcePayload: {
             ...source.sourcePayload,
-            presentation: name === 'web.search' ? 'search' : 'tool',
+            presentation: isSearchNativeTool(name) ? 'search' : 'tool',
             status: 'started',
             ...(query ? { query } : {}),
           },
@@ -1180,18 +1197,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
           name,
           label: name,
           source: 'harness',
-          summary:
-            name === 'web.search'
-              ? failed
-                ? '搜索失败'
-                : '搜索完成'
-              : failed
-                ? '工具执行失败'
-                : '工具执行完成',
+          summary: isSearchNativeTool(name)
+            ? failed
+              ? '搜索失败'
+              : '搜索完成'
+            : failed
+              ? '工具执行失败'
+              : '工具执行完成',
           ...source,
           sourcePayload: {
             ...source.sourcePayload,
-            presentation: name === 'web.search' ? 'search' : 'tool',
+            presentation: isSearchNativeTool(name) ? 'search' : 'tool',
             status: failed ? 'failed' : 'completed',
             ...(active?.query ? { query: active.query } : {}),
           },
@@ -1318,7 +1334,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
     input.signal.addEventListener('abort', abort, { once: true });
     if (input.signal.aborted) abort();
     try {
-      await input.runtime.client.prompt(input.runtime.sessionId, input.prompt);
+      await input.runtime.client.prompt(
+        input.runtime.sessionId,
+        input.prompt,
+        input.images,
+      );
       if (!idle) await idlePromise;
       await eventChain;
       if (processingError) throw processingError;

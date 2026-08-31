@@ -115,7 +115,9 @@ describe('platform employee production contract', () => {
   });
 
   it('requires an operator reason for destructive lifecycle changes', () => {
-    expect(() => DisablePlatformEmployeeInputSchema.parse({ reason: '' })).toThrow();
+    expect(() =>
+      DisablePlatformEmployeeInputSchema.parse({ reason: '' }),
+    ).toThrow();
     expect(
       RollbackPlatformEmployeeInputSchema.parse({
         revisionId: '10000000-0000-4000-8000-000000000003',

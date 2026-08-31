@@ -17,6 +17,7 @@ import {
 import { HandlerError } from './errors.js';
 import { searchCodexHostedWeb } from './codex-search-broker.js';
 import { fetchPublicWebPage } from './web-fetch.js';
+import { readWechatArticle, searchWechatArticles } from './wechat-articles.js';
 
 const maximumReadableBytes = 200_000;
 const readableMediaTypes = new Set([
@@ -91,6 +92,31 @@ export const riceToolDefinitions = [
     name: 'web.fetch',
     description:
       '读取公开 HTTP/HTTPS 网页的正文。会阻止内网地址、重新校验重定向，并将结果标记为不可信外部内容。',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string', format: 'uri' } },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'wechat.article.search',
+    description:
+      '在云端搜索微信公众号公开文章，返回标题、公众号、发布日期、摘要和可读取的原文链接。不需要 Rice Bridge。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 200 },
+        limit: { type: 'integer', minimum: 1, maximum: 10 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'wechat.article.read',
+    description:
+      '在云端读取微信公众号公开文章正文与元数据。只接受 mp.weixin.qq.com 公开文章链接，不访问登录或私有内容。',
     inputSchema: {
       type: 'object',
       properties: { url: { type: 'string', format: 'uri' } },
@@ -188,6 +214,8 @@ const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'workspace.session.search': 'storage:read',
   'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
+  'wechat.article.search': 'network:outbound',
+  'wechat.article.read': 'network:outbound',
   'local.fs.list': 'storage:read',
   'local.fs.search': 'storage:read',
   'local.fs.read': 'storage:read',
@@ -203,6 +231,8 @@ const toolRisks: Readonly<Record<string, RiceToolRisk>> = {
   'workspace.session.search': 'read_only',
   'web.search': 'read_only',
   'web.fetch': 'read_only',
+  'wechat.article.search': 'read_only',
+  'wechat.article.read': 'read_only',
   'local.fs.list': 'read_only',
   'local.fs.search': 'read_only',
   'local.fs.read': 'read_only',
@@ -316,6 +346,8 @@ export async function executeRiceTool(input: {
   sessionId?: string;
   call: RiceToolCall;
   codexSearch?: typeof searchCodexHostedWeb;
+  wechatSearch?: typeof searchWechatArticles;
+  wechatRead?: typeof readWechatArticle;
 }): Promise<RiceToolResult> {
   const requiredCapability = toolCapabilities[input.call.name];
   if (!requiredCapability) {
@@ -421,6 +453,31 @@ export async function executeRiceTool(input: {
       result = {
         modelContent: JSON.stringify(page),
         summary: `已读取 ${new URL(page.url).hostname}`,
+        itemCount: 1,
+      };
+    } else if (input.call.name === 'wechat.article.search') {
+      const query = stringValue(args.query, 'query');
+      const articles = await (input.wechatSearch ?? searchWechatArticles)(
+        query,
+        limitValue(args.limit, 5, 10),
+      );
+      result = {
+        modelContent: JSON.stringify({
+          provider: 'sogou-weixin',
+          query,
+          retrievedAt: new Date().toISOString(),
+          results: articles,
+        }),
+        summary: `找到 ${articles.length} 篇公众号公开文章`,
+        itemCount: articles.length,
+      };
+    } else if (input.call.name === 'wechat.article.read') {
+      const article = await (input.wechatRead ?? readWechatArticle)(
+        stringValue(args.url, 'url'),
+      );
+      result = {
+        modelContent: JSON.stringify(article),
+        summary: `已读取公众号文章《${article.title}》`,
         itemCount: 1,
       };
     } else if (input.call.name.startsWith('local.')) {

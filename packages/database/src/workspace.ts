@@ -12,6 +12,7 @@ import {
   type ChatMessageSchema,
   type ChatSessionSchema,
   type EmployeeAssignmentSchema,
+  type ImageMediaType,
   type RequestContext,
   type Visibility,
   type WorkspaceMemorySchema,
@@ -944,11 +945,37 @@ export async function sendChatMessage(
   const attachmentRows =
     message.attachmentIds.length === 0
       ? []
-      : await sql<{ file_name: string }[]>`
-          select file_name from allrice_message_attachments
+      : await sql<{ object_id: string; file_name: string }[]>`
+          select object_id, file_name from allrice_message_attachments
           where message_id = ${result.userMessage.id}
-          order by file_name
         `;
+  const attachmentNames = new Map(
+    attachmentRows.map((attachment) => [
+      attachment.object_id,
+      attachment.file_name,
+    ]),
+  );
+  const attachedFiles = await Promise.all(
+    message.attachmentIds.map((objectId) => getStoredFile(context, objectId)),
+  );
+  const imageMediaTypes = new Set<ImageMediaType>([
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/gif',
+  ]);
+  const imageAttachments = attachedFiles.flatMap((file) =>
+    imageMediaTypes.has(file.object.mediaType as ImageMediaType)
+      ? [
+          {
+            object: file.object as typeof file.object & {
+              mediaType: ImageMediaType;
+            },
+            fileName: attachmentNames.get(file.object.id) ?? 'Attached image',
+          },
+        ]
+      : [],
+  );
   const userRequest = attachmentRows.length
     ? `${message.text}\n\nAttached files: ${attachmentRows
         .map((attachment) => attachment.file_name)
@@ -973,6 +1000,7 @@ export async function sendChatMessage(
         })),
         memories,
         userRequest,
+        imageAttachments,
       },
     });
     const { enqueueRun, getRun } = await import('./queue.ts');

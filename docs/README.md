@@ -23,6 +23,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 - [AllRice Apache-2.0 license decision](audits/allrice-license-decision.md)
 - [MET-62 production acceptance](operations/met62-production-acceptance.md)
 - [Rice conversation harness and Tool Broker](features/agent-conversation/README.md)
+- [Cloud WeChat article research](features/wechat-research/README.md)
 - [OpenClaw Skill import audit](audits/openclaw-skill-import-audit.md)
 - [Phase 0 readiness review](audits/phase0-readiness-review.md)
 - [Feature README template](templates/feature-readme-template.md)
@@ -38,6 +39,7 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 | Memory                  | Workflow implemented            | MET-42 / MET-50 | [README](features/memory/README.md)                    |
 | Worker and Queue        | Feature implemented             | MET-43 / MET-49 | [README](features/worker-queue/README.md)              |
 | DSH-native Skills       | Platform registry reset         | MET-92 / MET-93 | [README](architecture/platform-employee-production.md) |
+| WeChat article research | Cloud-native Skill implemented  | MET-96          | [README](features/wechat-research/README.md)           |
 | Employee production     | Phase A + compiler implemented  | MET-93          | [README](architecture/platform-employee-production.md) |
 | OpenRice integration    | Boundary frozen                 | MET-49          | [README](features/openrice-integration/README.md)      |
 | OpenRice migration      | Planned                         | MET-46          | [README](features/migration/README.md)                 |

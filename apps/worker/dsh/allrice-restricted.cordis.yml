@@ -13,6 +13,17 @@
 - id: authorization
   name: '@deepseek-ai/dsh-authorization'
 
+- id: attachments
+  name: '@deepseek-ai/dsh-attachment-local'
+  config:
+    dshHome: !!js process.env.DSH_RUNTIME_HOME ?? process.env.DSH_HOME
+    maxImageBytes: 20971520
+    maxImagesPerMessage: 20
+    maxMessageImageBytes: 209715200
+    maxImagePixels: 64000000
+    maxImageDimension: 8192
+    normalizedImageMaxDimension: 2048
+
 - id: llm-provider-router
   name: '@deepseek-ai/dsh-llm-pi-ai'
   config:

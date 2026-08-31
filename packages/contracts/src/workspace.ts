@@ -115,7 +115,7 @@ export const SendChatMessageInputSchema = z
   .object({
     clientMessageId: UuidSchema,
     text: z.string().trim().min(1).max(40_000),
-    attachmentIds: z.array(UuidSchema).max(8).default([]),
+    attachmentIds: z.array(UuidSchema).max(20).default([]),
     deliveryMode: z.enum(['auto', 'steer', 'follow_up']).default('auto'),
     expectedTurnId: z.string().trim().min(1).max(255).optional(),
     expectedGeneration: z.number().int().nonnegative().optional(),
@@ -133,8 +133,9 @@ export const CreateSessionAttachmentInputSchema = z
       'image/png',
       'image/jpeg',
       'image/webp',
+      'image/gif',
     ]),
-    contentBase64: z.string().min(1).max(12_000_000),
+    contentBase64: z.string().min(1).max(28_000_000),
     visibility: VisibilitySchema.default('private'),
   })
   .strict();

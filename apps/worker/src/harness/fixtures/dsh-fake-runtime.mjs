@@ -107,7 +107,7 @@ lines.on('line', (line) => {
     assistant(
       pending.sessionId,
       pending.turn,
-      frame.error ? 'native-local-failed' : 'native-local-finished',
+      frame.error ? pending.failureAnswer : pending.successAnswer,
     );
     notify('session.status', {
       sessionId: pending.sessionId,
@@ -167,7 +167,7 @@ lines.on('line', (line) => {
     return;
   }
   if (frame.method !== 'session/prompt') return;
-  const { sessionId, contentBlocks } = frame.params;
+  const { sessionId, contentBlocks, images = [] } = frame.params;
   const prompt = contentBlocks.map((block) => block.text ?? '').join('');
   const turn = (turns.get(sessionId) ?? 0) + 1;
   turns.set(sessionId, turn);
@@ -195,7 +195,13 @@ lines.on('line', (line) => {
   });
   if (prompt.includes('hang forever')) return;
   let text;
-  if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
+  if (prompt.includes('inspect-images')) {
+    text = JSON.stringify({
+      count: images.length,
+      names: images.map((image) => image.name),
+      mediaTypes: images.map((image) => image.mediaType),
+    });
+  } else if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
     text = 'tool-finished';
   } else if (prompt.includes('use-tool-with-preamble')) {
     text =
@@ -263,7 +269,13 @@ lines.on('line', (line) => {
       name: 'local_fs_list',
       arguments: JSON.stringify({ path: '.', limit: 20 }),
     });
-    pendingToolRequests.set(requestId, { sessionId, turn, callId });
+    pendingToolRequests.set(requestId, {
+      sessionId,
+      turn,
+      callId,
+      successAnswer: 'native-local-finished',
+      failureAnswer: 'native-local-failed',
+    });
     write({
       jsonrpc: '2.0',
       id: requestId,
@@ -272,6 +284,35 @@ lines.on('line', (line) => {
         toolCallId: callId,
         name: 'local.fs.list',
         arguments: { path: '.', limit: 20 },
+      },
+    });
+    return;
+  } else if (prompt.includes('native-wechat')) {
+    reasoning(sessionId, turn, 0);
+    const callId = 'native-wechat-1';
+    const requestId = 'broker-native-wechat-1';
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId,
+      name: 'wechat_article_search',
+      arguments: JSON.stringify({ query: 'AllRice', limit: 3 }),
+    });
+    pendingToolRequests.set(requestId, {
+      sessionId,
+      turn,
+      callId,
+      successAnswer: 'native-wechat-finished',
+      failureAnswer: 'native-wechat-failed',
+    });
+    write({
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'allrice/tool-call',
+      params: {
+        toolCallId: callId,
+        name: 'wechat.article.search',
+        arguments: { query: 'AllRice', limit: 3 },
       },
     });
     return;

@@ -1,4 +1,5 @@
 import {
+  compilePlatformEmployee,
   getPlatformEmployee,
   savePlatformEmployeeDraft,
 } from '@allrice/database';
@@ -30,12 +31,17 @@ export async function PUT(request: Request, routeContext: RouteContext) {
   try {
     const context = await requirePlatformAdminContext(request);
     const { employeeId } = await routeContext.params;
+    const actorLabel =
+      context.actor.type === 'user' ? context.actor.id : 'platform-admin';
+    await savePlatformEmployeeDraft(
+      employeeId,
+      await request.json(),
+      actorLabel,
+    );
+    const validation = await compilePlatformEmployee(employeeId, actorLabel);
     return Response.json({
-      employee: await savePlatformEmployeeDraft(
-        employeeId,
-        await request.json(),
-        context.actor.type === 'user' ? context.actor.id : 'platform-admin',
-      ),
+      employee: await getPlatformEmployee(employeeId),
+      validation,
     });
   } catch (error) {
     return executionErrorResponse(error);

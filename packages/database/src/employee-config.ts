@@ -270,6 +270,8 @@ export function employeeManifest(input: {
         'workspace.session.search',
         'web.search',
         'web.fetch',
+        'wechat.article.search',
+        'wechat.article.read',
         'local.fs.list',
         'local.fs.search',
         'local.fs.read',

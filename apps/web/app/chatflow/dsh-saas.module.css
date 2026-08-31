@@ -696,30 +696,273 @@
 }
 
 .pendingFiles {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  position: relative;
+  min-width: 0;
   padding: 0 12px;
 }
 
-.pendingFiles > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  padding: 4px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+.pendingFileRail {
+  display: flex;
+  gap: 10px;
+  overflow: auto hidden;
+  scrollbar-width: none;
 }
 
-.pendingFiles button {
+.pendingFileRail::-webkit-scrollbar {
+  display: none;
+}
+
+.pendingFileItem {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex: 0 0 64px;
+}
+
+.pendingFileThumbnail,
+.pendingDocument {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 16px;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.pendingFileThumbnail {
+  cursor: zoom-in;
+}
+
+.pendingFileThumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pendingDocument {
+  display: flex;
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 7px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  text-align: center;
+}
+
+.pendingDocument span {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pendingFileRemove,
+.pendingFileRetry {
+  position: absolute;
+  z-index: 2;
   border: 0;
-  background: transparent;
-  color: inherit;
   cursor: pointer;
+}
+
+.pendingFileRemove {
+  top: 4px;
+  right: 4px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--dsw-alias-button-contrast-fill);
+  color: var(--dsw-alias-label-primary-inverted);
+  line-height: 0;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+
+.pendingFileRemove svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  overflow: visible;
+}
+
+.pendingFileRemove path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.pendingFileItem:hover .pendingFileRemove,
+.pendingFileRemove:focus-visible {
+  opacity: 1;
+}
+
+.pendingFileState,
+.pendingFileRetry {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 86%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.pendingFileRetry {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.pendingFileArrow {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 999px;
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-shadow-lv2);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.pendingFileArrow:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.pendingFileArrowLeft {
+  left: 16px;
+}
+
+.pendingFileArrowRight {
+  right: 16px;
+}
+
+.attachmentPreviewDialog {
+  width: min(920px, calc(100vw - 32px));
+}
+
+.attachmentPreviewBody {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  background: var(--dsw-alias-bg-base);
+}
+
+.attachmentPreviewBody img {
+  display: block;
+  max-width: 100%;
+  max-height: min(76vh, 920px);
+  object-fit: contain;
+}
+
+@media (pointer: coarse) {
+  .pendingFileRemove {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pendingFileRemove {
+    transition: none;
+  }
+}
+
+.messageImages {
+  display: flex;
+  max-width: min(640px, 72vw);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.messageImages button,
+.imagePlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.messageImages button {
+  cursor: zoom-in;
+}
+
+.messageImages[data-variant='single'] button,
+.messageImages[data-variant='single'] .imagePlaceholder {
+  width: min(240px, 60vw);
+  height: min(240px, 60vw);
+}
+
+.messageImages[data-variant='tile'] button,
+.messageImages[data-variant='tile'] .imagePlaceholder {
+  width: 64px;
+  height: 64px;
+}
+
+.messageImages img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.imagePlaceholder {
+  padding: 12px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+  text-align: center;
+}
+
+.imageDropOverlay {
+  position: fixed;
+  z-index: 200;
+  inset: 20px;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--dsw-alias-border-selected);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 88%, transparent);
+  pointer-events: none;
+}
+
+.imageDropOverlay > div {
+  display: flex;
+  min-width: min(440px, 80vw);
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 64px 44px;
+  border-radius: 24px;
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-shadow-lv3);
+}
+
+.imageDropOverlay strong {
+  font-size: clamp(24px, 4vw, 40px);
+}
+
+.imageDropOverlay span {
+  color: var(--dsw-alias-label-caption);
+  font-size: 16px;
 }
 
 .composerInput {

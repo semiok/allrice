@@ -38,6 +38,8 @@ const allowedToolNames = new Set([
   'workspace.session.search',
   'web.search',
   'web.fetch',
+  'wechat.article.search',
+  'wechat.article.read',
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
@@ -319,13 +321,39 @@ export async function listPlatformEmployeeWorkspaces() {
       slug: string;
       name: string;
       assigned: boolean;
+      bridgeOnline: boolean;
+      bridgeName: string | null;
+      bridgeWorkspaceLabel: string | null;
+      bridgeLastSeenAt: Date | null;
     }[]
   >`
     select workspace.id, workspace.organization_id as "organizationId",
       organization.name as "organizationName", workspace.slug, workspace.name,
-      false as assigned
+      false as assigned,
+      coalesce(bridge.last_seen_at >= now() - interval '45 seconds', false)
+        as "bridgeOnline",
+      bridge.name as "bridgeName",
+      bridge.workspace_label as "bridgeWorkspaceLabel",
+      bridge.last_seen_at as "bridgeLastSeenAt"
     from allrice_workspaces workspace
     join allrice_organizations organization on organization.id = workspace.organization_id
+    left join lateral (
+      select device.name, device.last_seen_at, folder.label as workspace_label
+      from allrice_bridge_devices device
+      left join lateral (
+        select folder_grant.label
+        from allrice_bridge_folder_grants folder_grant
+        where folder_grant.device_id = device.id
+          and folder_grant.revoked_at is null
+        order by folder_grant.created_at desc, folder_grant.id desc
+        limit 1
+      ) folder on true
+      where device.organization_id = workspace.organization_id
+        and device.workspace_id = workspace.id
+        and device.revoked_at is null
+      order by device.last_seen_at desc nulls last, device.created_at desc
+      limit 1
+    ) bridge on true
     where workspace.archived_at is null and organization.archived_at is null
       and organization.slug <> 'allrice-platform'
     order by organization.name, workspace.name, workspace.id
@@ -391,6 +419,17 @@ export async function queuePlatformEmployeeTestRun(
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
   const parsed = CreatePlatformEmployeeTestRunInputSchema.parse(input);
+  if (!parsed.workspaceId) {
+    return {
+      queued: false as const,
+      valid: false,
+      errors: ['请选择一个租户工作区作为预览环境。'],
+      warnings: [] as string[],
+      runtimeProfile: null,
+      revisionId: null,
+      testRun: null,
+    };
+  }
   const compilation = await compilePlatformEmployee(employeeId, actorLabel);
   if (!compilation.valid || !compilation.runtimeProfile) {
     return { queued: false as const, ...compilation, testRun: null };
@@ -412,7 +451,11 @@ export async function queuePlatformEmployeeTestRun(
     employeeId,
     action: 'employee.test.queued',
     actorLabel,
-    details: { testRunId: row.id, revisionId: compilation.revisionId },
+    details: {
+      testRunId: row.id,
+      revisionId: compilation.revisionId,
+      workspaceId: parsed.workspaceId,
+    },
   });
   return {
     queued: true as const,
@@ -439,7 +482,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
           events: [],
           error: {
             code: 'TEST_WORKER_TIMEOUT',
-            message: '隔离测试 Worker 超时，任务已终止。',
+            message: '配置试用 Worker 超时，任务已终止。',
           },
         })}
       where status = 'running'
@@ -471,6 +514,53 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
       row.runtime_profile,
     );
     const definition = PlatformEmployeeDefinitionSchema.parse(row.definition);
+    const parsedInput = CreatePlatformEmployeeTestRunInputSchema.parse(
+      row.input,
+    );
+    if (!parsedInput.workspaceId) {
+      throw new Error('platform_employee_preview_workspace_required');
+    }
+    const previewRows = await transaction<
+      {
+        workspace_id: string;
+        workspace_name: string;
+        organization_id: string;
+        membership_id: string;
+        owner_id: string;
+        role: 'admin' | 'member' | 'viewer';
+      }[]
+    >`
+      select workspace.id as workspace_id, workspace.name as workspace_name,
+        workspace.organization_id, membership.id as membership_id,
+        membership.user_id as owner_id, membership.role
+      from allrice_workspaces workspace
+      join allrice_organizations organization
+        on organization.id = workspace.organization_id
+      join allrice_memberships membership
+        on membership.organization_id = workspace.organization_id
+        and (membership.workspace_id is null or membership.workspace_id = workspace.id)
+        and membership.active
+      join allrice_users actor
+        on actor.id = membership.user_id and actor.status = 'active'
+      left join allrice_bridge_devices bridge
+        on bridge.organization_id = workspace.organization_id
+        and bridge.workspace_id = workspace.id
+        and bridge.owner_id = membership.user_id
+        and bridge.revoked_at is null
+        and bridge.last_seen_at > now() - interval '45 seconds'
+      where workspace.id = ${parsedInput.workspaceId}
+        and workspace.archived_at is null
+        and organization.archived_at is null
+        and organization.slug <> 'allrice-platform'
+      order by (bridge.id is not null) desc,
+        case membership.role when 'admin' then 0 when 'member' then 1 else 2 end,
+        membership.created_at, membership.id
+      limit 1
+    `;
+    const previewContext = previewRows[0];
+    if (!previewContext) {
+      throw new Error('platform_employee_preview_workspace_unavailable');
+    }
     const skillRows =
       runtimeProfile.nativeSkillIds.length === 0
         ? []
@@ -509,10 +599,18 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
       id: row.id,
       employeeId: row.employee_id,
       revisionId: row.revision_id,
-      input: CreatePlatformEmployeeTestRunInputSchema.parse(row.input),
+      input: parsedInput,
       runtimeProfile,
       definition,
       nativeSkills,
+      previewContext: {
+        workspaceId: previewContext.workspace_id,
+        workspaceName: previewContext.workspace_name,
+        organizationId: previewContext.organization_id,
+        membershipId: previewContext.membership_id,
+        ownerId: previewContext.owner_id,
+        role: previewContext.role,
+      },
     };
   });
 }
@@ -761,10 +859,14 @@ export async function compilePlatformEmployee(
       errors.push('平台当前未开放 Service Connector 身份给 AI 员工');
     }
     if (definition.capabilities.workflowRevisionIds.length > 0) {
-      errors.push('平台 Workflow 发布目录尚未启用，不能引用租户 Workflow revision');
+      errors.push(
+        '平台 Workflow 发布目录尚未启用，不能引用租户 Workflow revision',
+      );
     }
     if (definition.capabilities.knowledgeRevisionIds.length > 0) {
-      errors.push('平台 Knowledge 发布目录尚未启用，不能引用租户 Knowledge revision');
+      errors.push(
+        '平台 Knowledge 发布目录尚未启用，不能引用租户 Knowledge revision',
+      );
     }
     if (definition.capabilities.connectorRefs.length > 0) {
       errors.push('Connector 必须在租户发布时绑定，草稿不能引用租户 Connector');
@@ -969,7 +1071,8 @@ async function materializePlatformEmployeeRevision(
         and workspace_id = ${workspace.id}
         and employee_id = ${tenantEmployeeId}
     `;
-    for (const platformSkillId of input.definition.capabilities.nativeSkillIds) {
+    for (const platformSkillId of input.definition.capabilities
+      .nativeSkillIds) {
       const materialized = await transaction<{ id: string }[]>`
         insert into allrice_dsh_skills (
           organization_id, workspace_id, name, description, content,
@@ -1042,7 +1145,7 @@ export async function publishPlatformEmployee(
     return {
       ...compilation,
       valid: false,
-      errors: ['发布前必须完成一次 24 小时内成功的隔离 DSH 测试。'],
+      errors: ['发布前必须在 24 小时内成功试用一次当前配置。'],
     };
   }
   const uniqueWorkspaceIds = [...new Set(workspaceIds)];
@@ -1064,9 +1167,7 @@ export async function publishPlatformEmployee(
     };
   }
   if (compilation.runtimeProfile?.provider === 'openai-codex') {
-    const statuses = await sql<
-      { status: string; checked_at: Date | null }[]
-    >`
+    const statuses = await sql<{ status: string; checked_at: Date | null }[]>`
       select status, checked_at from allrice_provider_status
       where provider = 'codex'
     `;
@@ -1156,7 +1257,8 @@ export async function rollbackPlatformEmployee(
   actorLabel = 'platform-admin',
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
-  const { revisionId, reason } = RollbackPlatformEmployeeInputSchema.parse(input);
+  const { revisionId, reason } =
+    RollbackPlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
   const rolledBack = await sql.begin(async (transaction) => {
     const employees = await transaction<
@@ -1183,7 +1285,9 @@ export async function rollbackPlatformEmployee(
     const target = revisions[0];
     if (!target?.runtime_profile)
       throw new Error('platform_employee_rollback_revision_not_found');
-    const definition = PlatformEmployeeDefinitionSchema.parse(target.definition);
+    const definition = PlatformEmployeeDefinitionSchema.parse(
+      target.definition,
+    );
     const targets = await transaction<{ workspace_id: string }[]>`
       select workspace_id
       from allrice_platform_employee_tenant_assignments

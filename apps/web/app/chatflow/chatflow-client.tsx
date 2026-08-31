@@ -113,6 +113,7 @@ interface Message {
   status: 'pending' | 'completed' | 'failed';
   runId: string | null;
   createdAt: string;
+  attachments?: Attachment[];
 }
 
 interface History {
@@ -139,6 +140,15 @@ interface Attachment {
   fileName: string;
   mediaType: string;
   sizeBytes: number;
+  previewUrl?: string;
+}
+
+interface PendingAttachment extends Attachment {
+  persistedId: string | null;
+  status: 'draft' | 'uploading' | 'ready' | 'failed';
+  visibility: Visibility;
+  file?: File;
+  error?: string;
 }
 
 interface WorkspaceFile extends Attachment {
@@ -195,12 +205,19 @@ function formatTime(value: string) {
 }
 
 async function fileToBase64(file: File) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 32_768) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
-  }
-  return btoa(binary);
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('文件读取失败'));
+    reader.onload = () => {
+      const value = reader.result;
+      if (typeof value !== 'string') {
+        reject(new Error('文件读取失败'));
+        return;
+      }
+      resolve(value.slice(value.indexOf(',') + 1));
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function employeeForSession(workspace: Workspace, session: Session) {
@@ -276,6 +293,248 @@ function nativeExperienceIcon(kind: string) {
   return '◇';
 }
 
+function isImageAttachment(attachment: Attachment) {
+  return attachment.mediaType.startsWith('image/');
+}
+
+function MessageImageGallery({
+  attachments,
+  tenantHeaders,
+}: {
+  attachments: Attachment[];
+  tenantHeaders: Record<string, string>;
+}) {
+  const images = attachments.filter(isImageAttachment);
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<Attachment | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all(
+      images.map(async (image) => {
+        const signed = await readJson<{ url: string }>(
+          await fetch(`/api/v1/files/${image.id}/sign`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({ lifetimeSeconds: 900 }),
+          }),
+        );
+        return [image.id, signed.url] as const;
+      }),
+    )
+      .then((entries) => {
+        if (active) setUrls(Object.fromEntries(entries));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [attachments, tenantHeaders]);
+
+  if (!images.length) return null;
+  return (
+    <>
+      <div
+        className={styles.messageImages}
+        data-variant={images.length === 1 ? 'single' : 'tile'}
+      >
+        {images.map((image) =>
+          urls[image.id] ? (
+            <button
+              key={image.id}
+              onClick={() => setPreview(image)}
+              title={`查看 ${image.fileName}`}
+              type="button"
+            >
+              <img alt={image.fileName} src={urls[image.id]} />
+            </button>
+          ) : (
+            <span className={styles.imagePlaceholder} key={image.id}>
+              正在加载图片…
+            </span>
+          ),
+        )}
+      </div>
+      {preview && urls[preview.id] ? (
+        <DshDialog
+          ariaLabel={`预览 ${preview.fileName}`}
+          bodyClassName={styles.attachmentPreviewBody}
+          className={styles.attachmentPreviewDialog}
+          onClose={() => setPreview(null)}
+          title={preview.fileName}
+        >
+          <img alt={preview.fileName} src={urls[preview.id]} />
+        </DshDialog>
+      ) : null}
+    </>
+  );
+}
+
+function PendingAttachmentRail({
+  attachments,
+  disabled,
+  onOpen,
+  onRemove,
+  onRetry,
+}: {
+  attachments: PendingAttachment[];
+  disabled: boolean;
+  onOpen: (attachment: PendingAttachment) => void;
+  onRemove: (attachment: PendingAttachment) => void;
+  onRetry: (attachment: PendingAttachment) => void;
+}) {
+  const rail = useRef<HTMLDivElement | null>(null);
+  const previousCount = useRef<number | null>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const updateEdges = useCallback(() => {
+    const element = rail.current;
+    if (!element) return;
+    const left = element.scrollLeft > 1;
+    const right =
+      element.scrollLeft < element.scrollWidth - element.clientWidth - 1;
+    setEdges((current) =>
+      current.left === left && current.right === right
+        ? current
+        : { left, right },
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    const grew =
+      previousCount.current !== null &&
+      attachments.length > previousCount.current;
+    previousCount.current = attachments.length;
+    const element = rail.current;
+    if (!element) return;
+    if (grew) element.scrollLeft = element.scrollWidth - element.clientWidth;
+    updateEdges();
+  }, [attachments.length, updateEdges]);
+
+  useEffect(() => {
+    const element = rail.current;
+    if (!element) return;
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateEdges);
+    observer?.observe(element);
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
+      const scale =
+        event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? element.clientWidth
+            : 1;
+      event.preventDefault();
+      element.scrollBy({
+        left:
+          event.deltaX !== 0
+            ? event.deltaX * scale
+            : Math.sign(event.deltaY) *
+              Math.min(Math.abs(event.deltaY) * scale, 60),
+      });
+    };
+    element.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      observer?.disconnect();
+      element.removeEventListener('wheel', onWheel);
+    };
+  }, [updateEdges]);
+
+  const page = (direction: -1 | 1) => {
+    const element = rail.current;
+    if (!element) return;
+    element.scrollBy({
+      left: direction * Math.max(element.clientWidth - 64, 200),
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 'auto'
+        : 'smooth',
+    });
+  };
+
+  return (
+    <div className={styles.pendingFiles}>
+      {edges.left ? (
+        <button
+          aria-label="向左查看附件"
+          className={`${styles.pendingFileArrow} ${styles.pendingFileArrowLeft}`}
+          onClick={() => page(-1)}
+          type="button"
+        >
+          ‹
+        </button>
+      ) : null}
+      <div
+        aria-label="待发送附件"
+        className={styles.pendingFileRail}
+        onScroll={updateEdges}
+        ref={rail}
+        role="group"
+      >
+        {attachments.map((attachment) => (
+          <div className={styles.pendingFileItem} key={attachment.id}>
+            {attachment.previewUrl ? (
+              <button
+                className={styles.pendingFileThumbnail}
+                disabled={disabled}
+                onClick={() => onOpen(attachment)}
+                title={`查看 ${attachment.fileName}`}
+                type="button"
+              >
+                <img alt={attachment.fileName} src={attachment.previewUrl} />
+              </button>
+            ) : (
+              <div
+                className={styles.pendingDocument}
+                title={attachment.fileName}
+              >
+                <b aria-hidden="true">▧</b>
+                <span>{attachment.fileName}</span>
+              </div>
+            )}
+            {attachment.status === 'uploading' ? (
+              <span className={styles.pendingFileState}>上传中</span>
+            ) : null}
+            {attachment.status === 'failed' ? (
+              <button
+                className={styles.pendingFileRetry}
+                disabled={disabled}
+                onClick={() => onRetry(attachment)}
+                title={attachment.error ?? '上传失败'}
+                type="button"
+              >
+                重试
+              </button>
+            ) : null}
+            <button
+              aria-label={`移除 ${attachment.fileName}`}
+              className={styles.pendingFileRemove}
+              disabled={disabled}
+              onClick={() => onRemove(attachment)}
+              type="button"
+            >
+              <svg aria-hidden="true" viewBox="0 0 12 12">
+                <path d="M3 3l6 6M9 3 3 9" />
+              </svg>
+            </button>
+          </div>
+        ))}
+      </div>
+      {edges.right ? (
+        <button
+          aria-label="向右查看附件"
+          className={`${styles.pendingFileArrow} ${styles.pendingFileArrowRight}`}
+          onClick={() => page(1)}
+          type="button"
+        >
+          ›
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
   if (!textarea) return;
 
@@ -303,9 +562,11 @@ export function ChatFlowClient() {
   const [error, setError] = useState('');
   const [runViews, setRunViews] = useState<Record<string, RunView>>({});
   const [runTraces, setRunTraces] = useState<Record<string, RunTrace>>({});
-  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
-    [],
-  );
+  const [pendingAttachments, setPendingAttachments] = useState<
+    PendingAttachment[]
+  >([]);
+  const [attachmentPreview, setAttachmentPreview] =
+    useState<PendingAttachment | null>(null);
   const [uploadVisibility, setUploadVisibility] =
     useState<Visibility>('private');
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
@@ -316,6 +577,7 @@ export function ChatFlowClient() {
   const [bridgeBusy, setBridgeBusy] = useState(false);
   const [bridgeRecoveryActive, setBridgeRecoveryActive] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [imageDragActive, setImageDragActive] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
   const activeStreams = useRef(new Map<string, AbortController>());
@@ -329,6 +591,18 @@ export function ChatFlowClient() {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
   const composing = useRef(false);
+  const dragDepth = useRef(0);
+  const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
+  pendingAttachmentsRef.current = pendingAttachments;
+
+  useEffect(
+    () => () => {
+      for (const attachment of pendingAttachmentsRef.current) {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      }
+    },
+    [],
+  );
 
   const scrollToTranscriptBottom = useCallback(() => {
     const scrollRegion = conversationScroll.current;
@@ -349,6 +623,26 @@ export function ChatFlowClient() {
     traceLoads.current.clear();
     setRunViews({});
     setRunTraces({});
+  }, []);
+
+  const clearPendingAttachments = useCallback(() => {
+    setPendingAttachments((current) => {
+      for (const attachment of current) {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      }
+      return [];
+    });
+    setAttachmentPreview(null);
+  }, []);
+
+  const removePendingAttachment = useCallback((target: PendingAttachment) => {
+    if (target.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    setAttachmentPreview((current) =>
+      current?.id === target.id ? null : current,
+    );
+    setPendingAttachments((current) =>
+      current.filter((attachment) => attachment.id !== target.id),
+    );
   }, []);
 
   const tenantOrganizationId = workspace?.organizationId;
@@ -763,30 +1057,30 @@ export function ChatFlowClient() {
     return result.session.id;
   }
 
-  async function uploadAttachment(file: File) {
-    if (!workspace) return;
-    if (file.size > 8_000_000) {
-      setError('附件不能超过 8 MB。');
-      return;
+  async function persistPendingAttachment(
+    attachment: PendingAttachment,
+    sessionId: string,
+  ): Promise<Attachment> {
+    if (!workspace) throw new Error('工作区尚未加载');
+    if (attachment.persistedId) {
+      return {
+        id: attachment.persistedId,
+        fileName: attachment.fileName,
+        mediaType: attachment.mediaType,
+        sizeBytes: attachment.sizeBytes,
+        ...(attachment.previewUrl ? { previewUrl: attachment.previewUrl } : {}),
+      };
     }
-    const mediaType =
-      file.type ||
-      (file.name.endsWith('.md')
-        ? 'text/markdown'
-        : file.name.endsWith('.txt')
-          ? 'text/plain'
-          : file.name.endsWith('.json')
-            ? 'application/json'
-            : '');
-    if (!mediaType) {
-      setError('不支持这种附件格式。');
-      return;
-    }
-    setBusy(true);
-    setError('');
+    if (!attachment.file) throw new Error(`${attachment.fileName} 已不可用`);
+
+    setPendingAttachments((current) =>
+      current.map((item) =>
+        item.id === attachment.id
+          ? { ...item, status: 'uploading', error: undefined }
+          : item,
+      ),
+    );
     try {
-      const sessionId = activeId ?? (await createSession());
-      if (!sessionId) return;
       const result = await readJson<{ attachment: Attachment }>(
         await fetch(
           `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
@@ -794,24 +1088,126 @@ export function ChatFlowClient() {
             method: 'POST',
             headers: { 'content-type': 'application/json', ...tenantHeaders },
             body: JSON.stringify({
-              fileName: file.name,
-              mediaType,
-              contentBase64: await fileToBase64(file),
-              visibility: uploadVisibility,
+              fileName: attachment.fileName,
+              mediaType: attachment.mediaType,
+              contentBase64: await fileToBase64(attachment.file),
+              visibility: attachment.visibility,
             }),
           },
         ),
       );
-      setPendingAttachments((current) => [
-        ...current.filter((item) => item.id !== result.attachment.id),
-        result.attachment,
-      ]);
+      setPendingAttachments((current) =>
+        current.map((item) =>
+          item.id === attachment.id
+            ? {
+                ...item,
+                persistedId: result.attachment.id,
+                status: 'ready',
+                error: undefined,
+              }
+            : item,
+        ),
+      );
+      return {
+        ...result.attachment,
+        ...(attachment.previewUrl ? { previewUrl: attachment.previewUrl } : {}),
+      };
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '文件上传失败');
-    } finally {
-      if (fileInput.current) fileInput.current.value = '';
-      setBusy(false);
+      const message = cause instanceof Error ? cause.message : '文件上传失败';
+      setPendingAttachments((current) =>
+        current.map((item) =>
+          item.id === attachment.id
+            ? { ...item, status: 'failed', error: message }
+            : item,
+        ),
+      );
+      throw new Error(`${attachment.fileName}：${message}`);
     }
+  }
+
+  function uploadAttachments(files: FileList | File[]) {
+    if (busy) {
+      setError('当前消息正在发送，请稍后再添加附件。');
+      return;
+    }
+    const selected = [...files];
+    if (!selected.length) return;
+    if (pendingAttachments.length + selected.length > 20) {
+      setError('每条消息最多添加 20 个附件。');
+      return;
+    }
+
+    const accepted: PendingAttachment[] = [];
+    let rejection = '';
+    for (const file of selected) {
+      const lowerName = file.name.toLowerCase();
+      const mediaType =
+        file.type ||
+        (lowerName.endsWith('.md')
+          ? 'text/markdown'
+          : lowerName.endsWith('.txt')
+            ? 'text/plain'
+            : lowerName.endsWith('.json')
+              ? 'application/json'
+              : lowerName.endsWith('.pdf')
+                ? 'application/pdf'
+                : lowerName.endsWith('.gif')
+                  ? 'image/gif'
+                  : '');
+      const supportedImage = [
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+      ].includes(mediaType);
+      const supportedDocument = [
+        'text/plain',
+        'text/markdown',
+        'application/json',
+        'application/pdf',
+      ].includes(mediaType);
+      if (!supportedImage && !supportedDocument) {
+        rejection = '仅支持 PNG、JPG、WebP、GIF、PDF、TXT、MD 和 JSON。';
+        continue;
+      }
+      const sizeLimit = supportedImage ? 20 * 1024 * 1024 : 8_000_000;
+      if (file.size > sizeLimit) {
+        rejection = supportedImage
+          ? '每张图片不能超过 20 MB。'
+          : '附件不能超过 8 MB。';
+        continue;
+      }
+      accepted.push({
+        id: crypto.randomUUID(),
+        persistedId: null,
+        fileName: file.name,
+        mediaType,
+        sizeBytes: file.size,
+        ...(supportedImage ? { previewUrl: URL.createObjectURL(file) } : {}),
+        status: 'draft',
+        visibility: uploadVisibility,
+        file,
+      });
+    }
+
+    const totalBytes = [...pendingAttachments, ...accepted].reduce(
+      (sum, attachment) => sum + attachment.sizeBytes,
+      0,
+    );
+    if (totalBytes > 200 * 1024 * 1024) {
+      for (const attachment of accepted) {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      }
+      setError('每条消息的附件总大小不能超过 200 MB。');
+      return;
+    }
+    if (accepted.length) {
+      setPendingAttachments((current) => [...current, ...accepted]);
+      setError(rejection);
+    } else if (rejection) {
+      setError(rejection);
+    }
+    if (fileInput.current) fileInput.current.value = '';
   }
 
   async function openWorkspaceFiles() {
@@ -969,7 +1365,12 @@ export function ChatFlowClient() {
       );
       setPendingAttachments((current) => [
         ...current.filter((item) => item.id !== file.id),
-        file,
+        {
+          ...file,
+          persistedId: file.id,
+          status: 'ready',
+          visibility: file.visibility,
+        },
       ]);
       setFilePickerOpen(false);
     } catch (cause) {
@@ -982,6 +1383,7 @@ export function ChatFlowClient() {
   async function sendMessage() {
     const text = draft.trim();
     if (!workspace || !text || busy) return;
+    const draftAttachments = [...pendingAttachments];
     const clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
     const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
@@ -992,6 +1394,23 @@ export function ChatFlowClient() {
     try {
       const sessionId = activeId ?? (await createSession());
       if (!sessionId) return;
+      const uploadResults = await Promise.allSettled(
+        draftAttachments.map((attachment) =>
+          persistPendingAttachment(attachment, sessionId),
+        ),
+      );
+      const failedUpload = uploadResults.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
+      if (failedUpload) {
+        throw failedUpload.reason instanceof Error
+          ? failedUpload.reason
+          : new Error('文件上传失败');
+      }
+      const messageAttachments = uploadResults.map(
+        (result) => (result as PromiseFulfilledResult<Attachment>).value,
+      );
       setDraft('');
       const createdAt = new Date().toISOString();
       setHistory((current) =>
@@ -1007,6 +1426,7 @@ export function ChatFlowClient() {
                   status: 'completed',
                   runId: null,
                   createdAt,
+                  attachments: messageAttachments,
                 },
                 {
                   id: optimisticAssistantId,
@@ -1035,13 +1455,13 @@ export function ChatFlowClient() {
             body: JSON.stringify({
               clientMessageId,
               text,
-              attachmentIds: pendingAttachments.map((item) => item.id),
+              attachmentIds: messageAttachments.map((item) => item.id),
               deliveryMode: 'auto',
             }),
           },
         ),
       );
-      setPendingAttachments([]);
+      clearPendingAttachments();
       const assistantRunId =
         result.delivery === 'immediate' ? result.run.id : result.fallbackRunId;
       setHistory((current) =>
@@ -1141,25 +1561,22 @@ export function ChatFlowClient() {
       {error ? <div className={inputUi.notice}>{error}</div> : null}
       <div className={inputUi.card}>
         {pendingAttachments.length ? (
-          <div className={styles.pendingFiles}>
-            {pendingAttachments.map((file) => (
-              <span key={file.id}>
-                <b aria-hidden="true">▧</b>
-                {file.fileName}
-                <button
-                  aria-label={`移除 ${file.fileName}`}
-                  onClick={() =>
-                    setPendingAttachments((current) =>
-                      current.filter((item) => item.id !== file.id),
-                    )
-                  }
-                  type="button"
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-          </div>
+          <PendingAttachmentRail
+            attachments={pendingAttachments}
+            disabled={busy}
+            onOpen={setAttachmentPreview}
+            onRemove={removePendingAttachment}
+            onRetry={(target) => {
+              setPendingAttachments((current) =>
+                current.map((attachment) =>
+                  attachment.id === target.id
+                    ? { ...attachment, status: 'draft', error: undefined }
+                    : attachment,
+                ),
+              );
+              setError('');
+            }}
+          />
         ) : null}
         <textarea
           aria-label="给 Rice 的消息"
@@ -1193,6 +1610,14 @@ export function ChatFlowClient() {
               return;
             event.preventDefault();
             void sendMessage();
+          }}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files].filter((file) =>
+              file.type.startsWith('image/'),
+            );
+            if (!files.length) return;
+            event.preventDefault();
+            uploadAttachments(files);
           }}
           placeholder={
             hero ? '告诉 Rice 你想完成什么工作' : '继续和 Rice 工作…'
@@ -1247,12 +1672,14 @@ export function ChatFlowClient() {
                 </div>
               ) : null}
               <input
-                accept=".txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp"
+                accept=".txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif"
                 hidden
                 onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void uploadAttachment(file);
+                  if (event.target.files) {
+                    uploadAttachments(event.target.files);
+                  }
                 }}
+                multiple
                 ref={fileInput}
                 type="file"
               />
@@ -1332,12 +1759,45 @@ export function ChatFlowClient() {
     <main
       className={`${frameUi.frame} ${styles.shell}`}
       data-details-collapsed="true"
+      onDragEnter={(event) => {
+        if (event.dataTransfer.types.includes('Files')) {
+          event.preventDefault();
+          dragDepth.current += 1;
+          setImageDragActive(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setImageDragActive(false);
+      }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = busy ? 'none' : 'copy';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        dragDepth.current = 0;
+        setImageDragActive(false);
+        if (!busy) uploadAttachments(event.dataTransfer.files);
+      }}
       style={{
         gridTemplateColumns: sidebarCollapsed
           ? '57px minmax(0, 1fr)'
           : '280px minmax(0, 1fr)',
       }}
     >
+      {imageDragActive ? (
+        <div className={styles.imageDropOverlay}>
+          <div>
+            <strong>
+              {busy ? '当前无法添加图片' : '图片拖动到此处即可添加'}
+            </strong>
+            {!busy ? <span>最多 20 张，每张 20 MB</span> : null}
+          </div>
+        </div>
+      ) : null}
       <aside className={frameUi.sidebarCol}>
         <div
           className={`${sidebarUi.root} ${
@@ -1354,7 +1814,7 @@ export function ChatFlowClient() {
                   setActiveId(null);
                   setHistory(null);
                   setDraft('');
-                  setPendingAttachments([]);
+                  clearPendingAttachments();
                 }}
                 type="button"
               >
@@ -1401,7 +1861,7 @@ export function ChatFlowClient() {
               setActiveId(null);
               setHistory(null);
               setDraft('');
-              setPendingAttachments([]);
+              clearPendingAttachments();
             }}
             type="button"
           >
@@ -1419,7 +1879,10 @@ export function ChatFlowClient() {
                       session.id === activeId ? styles.activeRailSession : ''
                     }
                     key={session.id}
-                    onClick={() => setActiveId(session.id)}
+                    onClick={() => {
+                      if (session.id !== activeId) clearPendingAttachments();
+                      setActiveId(session.id);
+                    }}
                     title={session.title}
                     type="button"
                   >
@@ -1437,7 +1900,10 @@ export function ChatFlowClient() {
                         session.id === activeId ? styles.activeSession : ''
                       }
                       key={session.id}
-                      onClick={() => setActiveId(session.id)}
+                      onClick={() => {
+                        if (session.id !== activeId) clearPendingAttachments();
+                        setActiveId(session.id);
+                      }}
                       type="button"
                     >
                       <span>{session.title}</span>
@@ -1590,6 +2056,12 @@ export function ChatFlowClient() {
                             {message.role === 'user' ? (
                               <div className={messageUi.userRow}>
                                 <div className={messageUi.userStack}>
+                                  {message.attachments?.length ? (
+                                    <MessageImageGallery
+                                      attachments={message.attachments}
+                                      tenantHeaders={tenantHeaders}
+                                    />
+                                  ) : null}
                                   <div className={messageUi.bubble}>
                                     {message.content.text}
                                   </div>
@@ -1736,6 +2208,21 @@ export function ChatFlowClient() {
           )}
         </div>
       </section>
+
+      {attachmentPreview?.previewUrl ? (
+        <DshDialog
+          ariaLabel={`预览 ${attachmentPreview.fileName}`}
+          bodyClassName={styles.attachmentPreviewBody}
+          className={styles.attachmentPreviewDialog}
+          onClose={() => setAttachmentPreview(null)}
+          title={attachmentPreview.fileName}
+        >
+          <img
+            alt={attachmentPreview.fileName}
+            src={attachmentPreview.previewUrl}
+          />
+        </DshDialog>
+      ) : null}
 
       {employeeDetailsOpen && activeEmployeeProfile ? (
         <DshDialog

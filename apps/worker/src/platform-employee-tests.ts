@@ -4,7 +4,9 @@ import { resolve } from 'node:path';
 import {
   DshExecutionSnapshotSchema,
   EmployeeKernelRequestSchema,
+  ExecutionContextSchema,
   type HarnessEvent,
+  type SkillCapability,
 } from '@allrice/contracts';
 import {
   claimNextPlatformEmployeeTestRun,
@@ -13,6 +15,11 @@ import {
 
 import { HandlerError } from './errors.js';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
+import {
+  executeRiceTool,
+  riceToolCapability,
+  riceToolDefinitionsForTurn,
+} from './tool-broker.js';
 
 function errorCode(error: unknown) {
   return error instanceof HandlerError
@@ -23,10 +30,9 @@ function errorCode(error: unknown) {
 }
 
 /**
- * Runs a platform draft in a disposable DSH runtime. The UUID-shaped
- * isolation context is intentionally not backed by any tenant rows, and no
- * Tool Broker definitions are supplied, so this path cannot access tenant
- * storage, connectors, Bridge devices or local files.
+ * Runs a platform draft as an ephemeral preview in a selected tenant context.
+ * The draft Runtime Profile is never published, while read-only Tool Broker
+ * calls use the selected workspace's real policy, files and online Bridge.
  */
 export async function executeNextPlatformEmployeeTest(input: {
   workerId: string;
@@ -41,9 +47,6 @@ export async function executeNextPlatformEmployeeTest(input: {
     requestTimeoutMs: test.runtimeProfile.timeoutMs,
   });
   const ids = {
-    organizationId: randomUUID(),
-    workspaceId: randomUUID(),
-    ownerId: randomUUID(),
     assignmentId: randomUUID(),
     versionId: randomUUID(),
     sessionId: randomUUID(),
@@ -52,6 +55,60 @@ export async function executeNextPlatformEmployeeTest(input: {
   };
   const events: HarnessEvent[] = [];
   try {
+    const now = new Date();
+    const executionContext = ExecutionContextSchema.parse({
+      executionId: randomUUID(),
+      runId: randomUUID(),
+      jobId: randomUUID(),
+      worker: { type: 'worker', id: input.workerId },
+      delegatedBy: { type: 'user', id: test.previewContext.ownerId },
+      organizationId: test.previewContext.organizationId,
+      workspaceId: test.previewContext.workspaceId,
+      policySnapshot: {
+        id: randomUUID(),
+        organizationId: test.previewContext.organizationId,
+        subjectId: test.previewContext.ownerId,
+        version: 1,
+        issuedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 60 * 60 * 1_000).toISOString(),
+        memberships: [
+          {
+            id: test.previewContext.membershipId,
+            userId: test.previewContext.ownerId,
+            organizationId: test.previewContext.organizationId,
+            workspaceId: test.previewContext.workspaceId,
+            role: test.previewContext.role,
+            active: true,
+          },
+        ],
+        grants: ['storage_object', 'memory', 'chat_session'].map(
+          (resourceType) => ({
+            resourceType,
+            action: 'resource:read' as const,
+            workspaceId: test.previewContext.workspaceId,
+          }),
+        ),
+      },
+      startedAt: now.toISOString(),
+    });
+    const grantedCapabilities: SkillCapability[] = ['model:invoke'];
+    for (const toolName of test.runtimeProfile.toolNames) {
+      const capability = riceToolCapability(toolName);
+      if (
+        capability &&
+        !test.runtimeProfile.securityPolicy.deniedCapabilities.includes(
+          capability,
+        ) &&
+        !grantedCapabilities.includes(capability)
+      ) {
+        grantedCapabilities.push(capability);
+      }
+    }
+    const tools = riceToolDefinitionsForTurn(
+      grantedCapabilities,
+      test.runtimeProfile.toolNames,
+      [],
+    );
     const snapshot = DshExecutionSnapshotSchema.parse({
       provider: 'dsh',
       authMode:
@@ -77,7 +134,7 @@ export async function executeNextPlatformEmployeeTest(input: {
         userRequest: test.input.prompt,
         bootstrapConversation: '',
         authorizedMemoryContext: '',
-        grantedCapabilities: ['model:invoke'],
+        grantedCapabilities,
         skillVersionIds: test.runtimeProfile.nativeSkillIds,
       }),
       providerSnapshot: snapshot,
@@ -85,16 +142,28 @@ export async function executeNextPlatformEmployeeTest(input: {
       nativeSkills: test.nativeSkills,
       workDirectory: resolve(input.executionRoot, 'platform-employee-tests'),
       executionEnvironment: {
-        ALLRICE_ORGANIZATION_ID: ids.organizationId,
-        ALLRICE_WORKSPACE_ID: ids.workspaceId,
-        ALLRICE_OWNER_ID: ids.ownerId,
-        ALLRICE_PLATFORM_EMPLOYEE_TEST: 'true',
+        ALLRICE_ORGANIZATION_ID: test.previewContext.organizationId,
+        ALLRICE_WORKSPACE_ID: test.previewContext.workspaceId,
+        ALLRICE_OWNER_ID: test.previewContext.ownerId,
+        ALLRICE_PLATFORM_EMPLOYEE_PREVIEW: 'true',
       },
       signal: input.signal,
       attempt: 1,
       generation: 0,
       maxOutputTokens: 8_000,
-      tools: [],
+      tools,
+      onToolCall:
+        tools.length > 0
+          ? (call) =>
+              executeRiceTool({
+                context: executionContext,
+                capabilities: grantedCapabilities,
+                storageRoot:
+                  process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                skillVersionIds: test.nativeSkills.map((skill) => skill.id),
+                call,
+              })
+          : undefined,
       onEvent: async (event) => {
         // The final answer is persisted separately. Keep the safe native
         // timeline, lifecycle and usage events without storing delta spam.
@@ -125,7 +194,7 @@ export async function executeNextPlatformEmployeeTest(input: {
         message:
           error instanceof Error
             ? error.message.slice(0, 2_000)
-            : '隔离 DSH 测试失败。',
+            : 'Snow 预览运行失败。',
       },
     });
   } finally {

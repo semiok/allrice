@@ -200,6 +200,9 @@ export const PlatformEmployeeTestRunStatusSchema = z.enum([
 export const CreatePlatformEmployeeTestRunInputSchema = z
   .object({
     prompt: z.string().trim().min(1).max(10_000),
+    // Nullable for test records created before tenant-backed preview existed.
+    // New preview requests always provide a real tenant workspace.
+    workspaceId: UuidSchema.nullable().default(null),
   })
   .strict();
 

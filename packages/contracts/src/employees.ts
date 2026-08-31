@@ -7,6 +7,7 @@ import {
 } from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { SessionModelSnapshotSchema } from './models.ts';
+import { PromptImageAttachmentSchema } from './storage.ts';
 import {
   CodexExecutionSnapshotSchema,
   DshExecutionSnapshotSchema,
@@ -461,6 +462,7 @@ export const EmployeePromptSnapshotSchema = z
       )
       .max(20),
     userRequest: z.string().min(1).max(100_000),
+    imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
   })
   .strict();
 

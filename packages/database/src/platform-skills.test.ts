@@ -19,6 +19,13 @@ const localizationMigration = readFileSync(
   ),
   'utf8',
 );
+const wechatMigration = readFileSync(
+  resolve(
+    repositoryRoot,
+    'packages/database/migrations/0055_wechat_research_skill.sql',
+  ),
+  'utf8',
+);
 
 function skillSource(name: string) {
   const source = readFileSync(
@@ -46,6 +53,10 @@ describe('foundational DSH-native Skills', () => {
         'local.git.diff',
       ],
     },
+    {
+      name: 'wechat-research',
+      requiredTools: ['wechat.article.search', 'wechat.article.read'],
+    },
   ])(
     'keeps $name source and database seed aligned',
     ({ name, requiredTools }) => {
@@ -55,11 +66,11 @@ describe('foundational DSH-native Skills', () => {
       expect(source.frontmatter).toContain(`name: ${name}`);
       expect(source.frontmatter).toMatch(/description: .+/);
       expect(source.body).not.toContain('TODO');
-      expect(migration).toContain(`'${name}'`);
-      expect(migration).toContain(source.body);
-      expect(migration).toContain(`'${checksum}'`);
-      for (const tool of requiredTools)
-        expect(migration).toContain(`"${tool}"`);
+      const seed = name === 'wechat-research' ? wechatMigration : migration;
+      expect(seed).toContain(`'${name}'`);
+      expect(seed).toContain(source.body);
+      expect(seed).toContain(`'${checksum}'`);
+      for (const tool of requiredTools) expect(seed).toContain(`"${tool}"`);
     },
   );
 
@@ -74,12 +85,19 @@ describe('foundational DSH-native Skills', () => {
       summary:
         '检查当前已授权的本地工作区，根据其中的文件和 Git 状态生成有依据的工作简报。',
     },
+    {
+      name: 'wechat-research',
+      summary:
+        '搜索并读取微信公众号公开文章，核验文章信息并提供可点击的原文来源。',
+    },
   ])('publishes a Chinese summary for $name', ({ name, summary }) => {
     const source = skillSource(name);
 
     expect(source.frontmatter).toContain('description: ');
     expect(source.frontmatter).toMatch(/description: .*[一-鿿]/);
-    expect(localizationMigration).toContain(`'${name}'`);
-    expect(localizationMigration).toContain(`'${summary}'`);
+    const localizedSeed =
+      name === 'wechat-research' ? wechatMigration : localizationMigration;
+    expect(localizedSeed).toContain(`'${name}'`);
+    expect(localizedSeed).toContain(`'${summary}'`);
   });
 });

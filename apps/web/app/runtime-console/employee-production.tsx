@@ -26,6 +26,10 @@ interface Workspace {
   organizationName: string;
   slug: string;
   name: string;
+  bridgeOnline: boolean;
+  bridgeName: string | null;
+  bridgeWorkspaceLabel: string | null;
+  bridgeLastSeenAt: string | null;
 }
 
 interface DirectoryResponse {
@@ -152,6 +156,11 @@ export function EmployeeProduction() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlatformEmployeeDefinition | null>(null);
   const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
+  const [previewWorkspaceId, setPreviewWorkspaceId] = useState('');
+  const [bridgeControlState, setBridgeControlState] = useState<
+    'running' | 'stopped' | null
+  >(null);
+  const [bridgeControlBusy, setBridgeControlBusy] = useState(false);
   const [tab, setTab] = useState<(typeof tabs)[number][0]>('basic');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -169,36 +178,79 @@ export function EmployeeProduction() {
   const [newEmployeeKey, setNewEmployeeKey] = useState('');
   const [newEmployeeName, setNewEmployeeName] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
+  const hasPendingTestRuns = testRuns.some(
+    (run) => run.status === 'queued' || run.status === 'running',
+  );
 
-  const load = useCallback(async (preferredId?: string) => {
-    setBusy(true);
+  const previewWorkspace = useMemo(
+    () =>
+      directory?.workspaces.find(
+        (workspace) => workspace.id === previewWorkspaceId,
+      ) ?? null,
+    [directory, previewWorkspaceId],
+  );
+  const previewBridgeOnline =
+    bridgeControlState === null
+      ? (previewWorkspace?.bridgeOnline ?? false)
+      : bridgeControlState === 'running';
+
+  const loadBridgeControlState = useCallback(async () => {
     try {
-      const result = await api<DirectoryResponse>(
-        '/api/v1/admin/platform-employees',
+      const result = await api<{ state: 'running' | 'stopped' }>(
+        '/api/v1/admin/bridge-control',
       );
-      setDirectory(result);
-      const nextId =
-        preferredId &&
-        result.employees.some((employee) => employee.id === preferredId)
-          ? preferredId
-          : selectedId &&
-        result.employees.some((employee) => employee.id === selectedId)
-          ? selectedId
-          : (result.employees[0]?.id ?? null);
-      setSelectedId(nextId);
-      const employee = result.employees.find((item) => item.id === nextId);
-      const definition =
-        employee?.currentDraft?.definition ??
-        employee?.currentPublished?.definition;
-      setDraft(definition ? clone(definition) : null);
-      setSelectedWorkspaces(employee?.assignedWorkspaceIds ?? []);
-      setError('');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '加载失败');
-    } finally {
-      setBusy(false);
+      setBridgeControlState(result.state);
+    } catch {
+      setBridgeControlState(null);
     }
-  }, [selectedId]);
+  }, []);
+
+  const load = useCallback(
+    async (preferredId?: string) => {
+      setBusy(true);
+      try {
+        const result = await api<DirectoryResponse>(
+          '/api/v1/admin/platform-employees',
+        );
+        setDirectory(result);
+        const nextId =
+          preferredId &&
+          result.employees.some((employee) => employee.id === preferredId)
+            ? preferredId
+            : selectedId &&
+                result.employees.some((employee) => employee.id === selectedId)
+              ? selectedId
+              : (result.employees[0]?.id ?? null);
+        setSelectedId(nextId);
+        const employee = result.employees.find((item) => item.id === nextId);
+        const definition =
+          employee?.currentDraft?.definition ??
+          employee?.currentPublished?.definition;
+        setDraft(definition ? clone(definition) : null);
+        setSelectedWorkspaces(employee?.assignedWorkspaceIds ?? []);
+        setPreviewWorkspaceId((current) => {
+          if (result.workspaces.some((workspace) => workspace.id === current)) {
+            return current;
+          }
+          return (
+            result.workspaces.find((workspace) =>
+              `${workspace.organizationName} ${workspace.name} ${workspace.slug}`
+                .toLowerCase()
+                .includes('snow'),
+            )?.id ??
+            result.workspaces[0]?.id ??
+            ''
+          );
+        });
+        setError('');
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '加载失败');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [selectedId],
+  );
 
   useEffect(() => {
     void load();
@@ -221,13 +273,17 @@ export function EmployeeProduction() {
         const runs = await loadTestRuns(selectedId);
         if (
           !cancelled &&
-          runs.some((run) => run.status === 'queued' || run.status === 'running')
+          runs.some(
+            (run) => run.status === 'queued' || run.status === 'running',
+          )
         ) {
           timer = setTimeout(() => void poll(), 1_500);
         }
       } catch (reason) {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : '读取测试结果失败');
+          setError(
+            reason instanceof Error ? reason.message : '读取测试结果失败',
+          );
         }
       }
     };
@@ -236,7 +292,7 @@ export function EmployeeProduction() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [loadTestRuns, selectedId, tab]);
+  }, [hasPendingTestRuns, loadTestRuns, selectedId, tab]);
 
   useEffect(() => {
     if (tab !== 'publish' || !selectedId) return;
@@ -248,6 +304,15 @@ export function EmployeeProduction() {
         setError(reason instanceof Error ? reason.message : '读取审计记录失败'),
       );
   }, [selectedId, tab]);
+
+  useEffect(() => {
+    if (!previewWorkspaceId) return;
+    void loadBridgeControlState();
+    const timer = setInterval(() => {
+      void loadBridgeControlState();
+    }, 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [loadBridgeControlState, previewWorkspaceId]);
 
   const selected = useMemo(
     () => directory?.employees.find((item) => item.id === selectedId) ?? null,
@@ -280,18 +345,69 @@ export function EmployeeProduction() {
     });
   }
 
+  async function refresh() {
+    await Promise.all([
+      load(selectedId ?? undefined),
+      loadBridgeControlState(),
+    ]);
+    if (tab === 'debug' && selectedId) {
+      try {
+        await loadTestRuns(selectedId);
+      } catch (reason) {
+        setError(
+          reason instanceof Error ? reason.message : '读取配置试用结果失败',
+        );
+      }
+    }
+  }
+
+  async function controlBridge(action: 'start' | 'stop') {
+    setBridgeControlBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const result = await api<{ state: 'running' | 'stopped' }>(
+        '/api/v1/admin/bridge-control',
+        {
+          method: 'POST',
+          body: JSON.stringify({ action }),
+        },
+      );
+      setBridgeControlState(result.state);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '控制 Bridge 失败');
+    } finally {
+      setBridgeControlBusy(false);
+    }
+  }
+
   async function save() {
     if (!selectedId || !draft) return;
     setBusy(true);
     setMessage('');
     setError('');
     try {
-      await api(`/api/v1/admin/platform-employees/${selectedId}`, {
+      const result = await api<{
+        employee: Employee;
+        validation: {
+          valid: boolean;
+          errors: string[];
+          warnings: string[];
+        };
+      }>(`/api/v1/admin/platform-employees/${selectedId}`, {
         method: 'PUT',
         body: JSON.stringify({ definition: draft }),
       });
-      setMessage('草稿已保存。发布前仍需编译并验证 Runtime Profile。');
       await load();
+      if (!result.validation.valid) {
+        setError(result.validation.errors.join('\n'));
+        setMessage('草稿已保存，但配置检查未通过。请按提示修改对应配置。');
+      } else {
+        setMessage(
+          result.validation.warnings.join('\n') ||
+            '草稿已保存，模型、Skill、工具与安全配置检查通过。',
+        );
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败');
     } finally {
@@ -329,32 +445,6 @@ export function EmployeeProduction() {
     }
   }
 
-  async function compile() {
-    if (!selectedId) return;
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      const result = await api<{
-        valid: boolean;
-        errors: string[];
-        warnings: string[];
-      }>(`/api/v1/admin/platform-employees/${selectedId}/compile`, {
-        method: 'POST',
-      });
-      if (!result.valid) throw new Error(result.errors.join('\n'));
-      setMessage(
-        result.warnings.join('\n') ||
-          '校验通过，已生成受限 DSH Runtime Profile。',
-      );
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '校验失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function publish() {
     if (!selectedId) return;
     setBusy(true);
@@ -381,12 +471,27 @@ export function EmployeeProduction() {
     }
   }
 
-  async function runIsolatedTest() {
-    if (!selectedId || !testPrompt.trim()) return;
+  async function runDraftPreview() {
+    if (!selectedId || !draft || !testPrompt.trim() || !previewWorkspaceId)
+      return;
     setBusy(true);
     setMessage('');
     setError('');
     try {
+      const saved = await api<{
+        employee: Employee;
+        validation: {
+          valid: boolean;
+          errors: string[];
+          warnings: string[];
+        };
+      }>(`/api/v1/admin/platform-employees/${selectedId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ definition: draft }),
+      });
+      if (!saved.validation.valid) {
+        throw new Error(saved.validation.errors.join('\n'));
+      }
       const result = await api<{
         queued: boolean;
         valid: boolean;
@@ -394,16 +499,24 @@ export function EmployeeProduction() {
         testRun: PlatformEmployeeTestRun | null;
       }>(`/api/v1/admin/platform-employees/${selectedId}/test-runs`, {
         method: 'POST',
-        body: JSON.stringify({ prompt: testPrompt }),
+        body: JSON.stringify({
+          prompt: testPrompt,
+          workspaceId: previewWorkspaceId,
+        }),
       });
       if (!result.queued || !result.testRun) {
         throw new Error(result.errors.join('\n') || '员工草稿未通过编译');
       }
       setTestRuns((current) => [result.testRun!, ...current]);
-      setMessage('隔离 DSH 测试已进入 Worker 队列，结果会自动刷新。');
-      window.setTimeout(() => void loadTestRuns(selectedId), 1_200);
+      const workspace = directory?.workspaces.find(
+        (candidate) => candidate.id === previewWorkspaceId,
+      );
+      setMessage(
+        `已使用${workspace ? `「${workspace.name}」` : '所选租户'}的真实模型、Skill、Tool Broker 和在线 Bridge 试用当前配置；不会改变已发布版本。`,
+      );
+      await loadTestRuns(selectedId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '隔离测试启动失败');
+      setError(reason instanceof Error ? reason.message : '当前配置试用失败');
     } finally {
       setBusy(false);
     }
@@ -446,7 +559,9 @@ export function EmployeeProduction() {
         },
       );
       setRollbackReason('');
-      setMessage(`已回滚到发布 revision ${result.revision}，仅影响租户新 Session。`);
+      setMessage(
+        `已回滚到发布 revision ${result.revision}，仅影响租户新 Session。`,
+      );
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '回滚失败');
@@ -696,11 +811,62 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p className={styles.notice}>
-          这里直接使用当前草稿创建 Platform Control Plane 隔离调试会话，无需先发布。
-          编译会校验 Provider、Skill、工具依赖、Bridge 权限和 DSH Runtime
-          Profile；调试不会创建租户发布记录，也不会连接租户数据、Tool Broker 或本地
-          Bridge。
+          试用会先保存并自动检查当前草稿，然后借用所选租户真实可用的模型、Skill、
+          Tool Broker 和在线 Rice Bridge
+          运行一次预览。预览不会改变该租户已经发布的 Rice
+          配置，也不会进入租户的正式会话。
         </p>
+        <label className={`${styles.field} ${styles.fieldWide}`}>
+          <span>预览环境</span>
+          <select
+            value={previewWorkspaceId}
+            onChange={(event) => setPreviewWorkspaceId(event.target.value)}
+          >
+            <option value="">请选择租户</option>
+            {directory.workspaces.map((workspace) => (
+              <option value={workspace.id} key={workspace.id}>
+                {workspace.name} · {workspace.organizationName} · Bridge
+                {workspace.id === previewWorkspaceId
+                  ? previewBridgeOnline
+                    ? '在线'
+                    : '离线'
+                  : workspace.bridgeOnline
+                    ? '在线'
+                    : '离线'}
+              </option>
+            ))}
+          </select>
+          {previewWorkspace ? (
+            <small
+              className={
+                previewBridgeOnline
+                  ? styles.previewBridgeOnline
+                  : styles.previewBridgeOffline
+              }
+            >
+              {previewBridgeOnline
+                ? `Rice Bridge 在线${previewWorkspace.bridgeWorkspaceLabel ? ` · 本地工作区：${previewWorkspace.bridgeWorkspaceLabel}` : ''}`
+                : `Rice Bridge 离线${previewWorkspace.bridgeLastSeenAt ? ` · 最后在线：${new Date(previewWorkspace.bridgeLastSeenAt).toLocaleString('zh-CN')}` : ''}。联网等云端能力仍可试用，本地文件能力暂不可用。`}
+            </small>
+          ) : null}
+        </label>
+        {previewWorkspace ? (
+          <div className={styles.actions}>
+            <button
+              className={styles.button}
+              disabled={bridgeControlBusy}
+              onClick={() =>
+                void controlBridge(previewBridgeOnline ? 'stop' : 'start')
+              }
+            >
+              {bridgeControlBusy
+                ? '处理中…'
+                : previewBridgeOnline
+                  ? '关闭 Bridge'
+                  : '启动 Bridge'}
+            </button>
+          </div>
+        ) : null}
         <label className={`${styles.field} ${styles.fieldWide}`}>
           <span>测试任务</span>
           <textarea
@@ -711,23 +877,16 @@ export function EmployeeProduction() {
         <div className={styles.actions}>
           <button
             className={styles.button}
-            disabled={busy}
-            onClick={() => void compile()}
-          >
-            编译 Runtime Profile
-          </button>
-          <button
-            className={styles.button}
             data-primary="true"
-            disabled={busy || !testPrompt.trim()}
-            onClick={() => void runIsolatedTest()}
+            disabled={busy || !testPrompt.trim() || !previewWorkspaceId}
+            onClick={() => void runDraftPreview()}
           >
-            {busy ? '提交中…' : '使用当前草稿运行 DSH 调试'}
+            {busy ? '启动中…' : '试用当前配置'}
           </button>
         </div>
         <div className={styles.testRuns}>
           {testRuns.length === 0 ? (
-            <p className={styles.muted}>还没有隔离测试记录。</p>
+            <p className={styles.muted}>还没有配置试用记录。</p>
           ) : (
             testRuns.map((run) => (
               <article className={styles.testRun} key={run.id}>
@@ -736,6 +895,14 @@ export function EmployeeProduction() {
                   <time>{new Date(run.createdAt).toLocaleString('zh-CN')}</time>
                 </header>
                 <p className={styles.testPrompt}>{run.input.prompt}</p>
+                {run.input.workspaceId ? (
+                  <small className={styles.muted}>
+                    预览环境：
+                    {directory.workspaces.find(
+                      (workspace) => workspace.id === run.input.workspaceId,
+                    )?.name ?? run.input.workspaceId}
+                  </small>
+                ) : null}
                 {run.output?.events.length ? (
                   <ol className={styles.testEvents}>
                     {run.output.events
@@ -782,8 +949,8 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p className={styles.muted}>
-          这里只显示真实租户工作区，不包含 Platform Control Plane。发布生成不可变修订；
-          新会话生效，已有会话保持原版本。
+          这里只显示真实租户工作区，不包含 Platform Control
+          Plane。发布生成不可变修订； 新会话生效，已有会话保持原版本。
         </p>
         <Checks
           items={directory.workspaces.map((workspace) => ({
@@ -805,7 +972,8 @@ export function EmployeeProduction() {
         <section className={styles.dangerZone}>
           <h3>回滚发布</h3>
           <p className={styles.muted}>
-            将当前分配的租户恢复到上一个不可变发布快照；已有 Session 保持原快照。
+            将当前分配的租户恢复到上一个不可变发布快照；已有 Session
+            保持原快照。
           </p>
           <Field
             label="回滚原因"
@@ -944,13 +1112,24 @@ export function EmployeeProduction() {
         <header className={styles.header}>
           <div>
             <h1>{selected.name}</h1>
-            <span className={styles.status}>{selected.status}</span>
+            <div className={styles.headerStatuses}>
+              <span className={styles.status}>{selected.status}</span>
+              <span
+                className={
+                  previewBridgeOnline
+                    ? styles.bridgeStatusOnline
+                    : styles.bridgeStatusOffline
+                }
+              >
+                Snow Bridge {previewBridgeOnline ? '在线' : '已关闭'}
+              </span>
+            </div>
           </div>
           <div className={styles.actions}>
             <button
               className={styles.button}
               disabled={busy}
-              onClick={() => void load()}
+              onClick={() => void refresh()}
             >
               刷新
             </button>
@@ -978,7 +1157,9 @@ export function EmployeeProduction() {
         </nav>
         <div className={styles.panel}>{panel}</div>
         {error ? <p className={styles.error}>{error}</p> : null}
-        {message ? <p className={styles.notice}>{message}</p> : null}
+        {message && !message.startsWith('Snow Rice Bridge') ? (
+          <p className={styles.notice}>{message}</p>
+        ) : null}
       </div>
     </section>
   );

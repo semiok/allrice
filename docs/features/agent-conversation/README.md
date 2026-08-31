@@ -23,7 +23,9 @@ conversation navigation.
    `workspace.file.list`, `workspace.file.read`,
    `workspace.memory.search`, or `workspace.session.search`. A bound reviewed
    network Skill can additionally activate `web.search` through the deployment
-   Codex subscription and the guarded `web.fetch` page reader.
+   Codex subscription and the guarded `web.fetch` page reader. The reviewed
+   `wechat-research` Skill uses cloud-only `wechat.article.search` and
+   `wechat.article.read` native Tools; it does not require Rice Bridge.
 7. Every tool request is re-authorized against the frozen execution policy and
    audited. A Skill definition never grants tenant data access by itself.
 8. DSH assistant deltas are normalized by the HarnessAdapter, batched by an
@@ -32,12 +34,13 @@ conversation navigation.
    the completed assistant message remains the final conversation authority.
 
 The Worker freezes approved native tool grants into the tenant-isolated DSH
-process. `web.search` and the five Rice Bridge capabilities (`local.fs.list`,
+process. `web.search`, the two cloud WeChat article Tools and the five Rice Bridge capabilities (`local.fs.list`,
 `local.fs.search`, `local.fs.read`, `local.git.status`, `local.git.diff`) use
-DSH's native tool protocol and complete within one DSH Turn. Local native calls
+DSH's native tool protocol and complete within one DSH Turn. Broker-backed native calls
 travel back over bidirectional JSON-RPC to the active AllRice Tool Broker,
-which re-authorizes the frozen Run policy, audits the call and dispatches only
-the corresponding structured read-only Bridge command. Their safe call/result
+which re-authorizes the frozen Run policy and audits the call. Local Tools then
+dispatch only the corresponding structured read-only Bridge command; WeChat
+Tools remain in the SaaS cloud service. Their safe call/result
 events are still persisted and audited by ChatFlow. Tools without a native
 adapter continue through the tenant-scoped Tool Broker compatibility bridge. Skills are
 immutable capability context bound to an employee; standalone Skill execution

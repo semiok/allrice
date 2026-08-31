@@ -74,5 +74,6 @@ export function assembleEmployeeKernel(input: {
       : '',
     grantedCapabilities: input.resolved.grantedCapabilities,
     skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
+    imageAttachments: input.resolved.promptSnapshot.imageAttachments,
   });
 }

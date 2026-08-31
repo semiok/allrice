@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { UuidSchema } from './common.ts';
 import { SkillCapabilitySchema } from './skills.ts';
+import { PromptImageAttachmentSchema } from './storage.ts';
 
 export const HarnessKindSchema = z.enum(['codex', 'dsh']);
 export type HarnessKind = z.infer<typeof HarnessKindSchema>;
@@ -152,6 +153,7 @@ export const EmployeeKernelRequestSchema = z
     authorizedMemoryContext: z.string(),
     grantedCapabilities: z.array(SkillCapabilitySchema),
     skillVersionIds: z.array(UuidSchema),
+    imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
   })
   .strict();
 export type EmployeeKernelRequest = z.infer<typeof EmployeeKernelRequestSchema>;

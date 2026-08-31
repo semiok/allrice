@@ -28,6 +28,22 @@
   line-height: 1.55;
 }
 
+.previewBridgeOnline,
+.previewBridgeOffline {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.previewBridgeOnline {
+  color: #65c98a;
+}
+
+.previewBridgeOffline {
+  color: #f08a8a;
+}
+
 .employeeList {
   display: grid;
   gap: 8px;
@@ -131,11 +147,37 @@
 .status {
   display: inline-flex;
   padding: 5px 10px;
-  margin-top: 8px;
   color: #b8efca;
   font-size: 12px;
   background: #21402c;
   border-radius: 999px;
+}
+
+.headerStatuses {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bridgeStatusOnline,
+.bridgeStatusOffline {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+
+.bridgeStatusOnline {
+  color: #b8efca;
+  background: #21402c;
+}
+
+.bridgeStatusOffline {
+  color: #ffc5c8;
+  background: #592429;
 }
 
 .actions {

@@ -31,7 +31,10 @@ export async function POST(request: Request, routeContext: RouteContext) {
   try {
     const context = await requirePlatformAdminContext(request);
     const { employeeId } = await routeContext.params;
-    const body = (await request.json()) as { action?: unknown; reason?: unknown };
+    const body = (await request.json()) as {
+      action?: unknown;
+      reason?: unknown;
+    };
     if (body.action === 'disable') {
       return Response.json(
         await disablePlatformEmployee(

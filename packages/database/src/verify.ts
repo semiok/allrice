@@ -340,6 +340,33 @@ try {
     throw new Error('Foundational DSH Skills are missing or invalid');
   }
 
+  const wechatResearchSkillRows = await sql<
+    {
+      version: string | undefined;
+      matching_skills: string;
+    }[]
+  >`
+    select metadata.value ->> 'version' as version,
+      (
+        select count(*)::text
+        from allrice_platform_dsh_skills skill
+        where skill.enabled
+          and skill.source = 'allrice'
+          and skill.name = 'wechat-research'
+          and skill.checksum =
+            'sha256:6cf6bfb84eb99ecf05375813959f62b33cf409a0c2e61fe09dedf5cb6ee689a7'
+      ) as matching_skills
+    from allrice_runtime_metadata metadata
+    where metadata.key = 'wechat-research-skill'
+  `;
+  if (
+    expectedMigrations.includes('0055_wechat_research_skill.sql') &&
+    (wechatResearchSkillRows[0]?.version !== '0055' ||
+      wechatResearchSkillRows[0]?.matching_skills !== '1')
+  ) {
+    throw new Error('WeChat research DSH Skill is missing or invalid');
+  }
+
   const platformEmployeeRows = await sql<
     {
       version: string | undefined;

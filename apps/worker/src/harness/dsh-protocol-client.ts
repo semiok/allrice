@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 
 import type { DshNativeSkillSnapshot } from '@allrice/contracts';
+import type { HarnessImageInput } from './adapter.js';
 
 import { HandlerError } from '../errors.js';
 
@@ -127,10 +128,15 @@ export class DshProtocolClient {
     return { name: serverInfo.name, version: serverInfo.version };
   }
 
-  async prompt(sessionId: string, text: string) {
+  async prompt(
+    sessionId: string,
+    text: string,
+    images: readonly HarnessImageInput[] = [],
+  ) {
     const result = await this.request('session/prompt', {
       sessionId,
       contentBlocks: [{ type: 'text', text }],
+      images,
     });
     if (typeof result.messageId !== 'string' || !result.messageId) {
       throw new HandlerError(

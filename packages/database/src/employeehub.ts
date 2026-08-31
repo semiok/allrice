@@ -86,6 +86,8 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
+  'wechat.article.search': 'network:outbound',
+  'wechat.article.read': 'network:outbound',
   'local.fs.list': 'storage:read',
   'local.fs.search': 'storage:read',
   'local.fs.read': 'storage:read',
@@ -145,6 +147,9 @@ export interface EmployeeRunBinding {
     conversation: { role: string; text: string }[];
     memories: { id: string; content: string }[];
     userRequest: string;
+    imageAttachments?: ReturnType<
+      typeof EmployeePromptSnapshotSchema.parse
+    >['imageAttachments'];
   };
 }
 
@@ -1256,9 +1261,6 @@ export async function resolveEmployeeExecution(input: {
   `;
   const row = rows[0];
   if (!row) throw new EmployeeHubError('not_found');
-  const skillBindings = FrozenEmployeeSkillBindingSchema.array().parse(
-    row.skill_bindings,
-  );
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
   );

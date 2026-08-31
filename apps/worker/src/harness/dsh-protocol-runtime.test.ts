@@ -62,6 +62,8 @@ describe('AllRice DSH protocol runtime', () => {
           'local.fs.read',
           'local.git.status',
           'local.git.diff',
+          'wechat.article.search',
+          'wechat.article.read',
         ],
         nativeSkills: [
           {

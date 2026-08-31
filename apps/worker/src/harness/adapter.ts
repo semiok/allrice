@@ -5,6 +5,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
   StorageObject,
+  ImageMediaType,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -25,10 +26,17 @@ export interface HarnessToolResult {
   itemCount?: number;
 }
 
+export interface HarnessImageInput {
+  mediaType: ImageMediaType;
+  data: string;
+  name: string;
+}
+
 export interface HarnessExecutionInput {
   kernel: EmployeeKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
+  images?: readonly HarnessImageInput[];
   nativeSkills?: DshNativeSkillSnapshot[];
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
