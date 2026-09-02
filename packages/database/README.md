@@ -13,7 +13,7 @@ Version 0.1 enables pgvector, migration/runtime metadata, the identity foundatio
 - applied filenames are recorded in `allrice_schema_migrations`;
 - Web and Worker use the same package;
 - AllRice has its own database user and migration history;
-- no OpenRice schema, ORM model, or table is imported.
+- no external product schema, ORM model, or table is imported;
 - migrations are forward-only; additive `0003`/`0004` remain readable by the previous supported 0.1 application image, which is the supported application rollback path.
 - historical Skill migrations remain immutable schema and audit history; current
   operational Skill metadata is declared in `skills/catalog.json` and synchronized

@@ -8,7 +8,10 @@
 
 ## Review scope
 
-This review covers the AllRice 0.1 baseline completion changes after the initial repository merge: Linux/Compose startup, contributor bootstrap, environment handling, database migration verification, OpenRice extraction boundaries and repository licensing.
+This review covers the AllRice 0.1 baseline completion changes after the
+initial repository merge: Linux/Compose startup, contributor bootstrap,
+environment handling, database migration verification, third-party provenance
+rules and repository licensing.
 
 ## Findings and resolutions
 
@@ -18,11 +21,11 @@ This review covers the AllRice 0.1 baseline completion changes after the initial
 | Native storage default pointed at the container path `/var/lib/allrice/storage`                                         | Local development could fail on permissions or write outside the repository | Native default is the ignored `.local/storage`; Compose keeps the container path explicitly                                     |
 | Migration success did not prove the expected ledger, baseline metadata or pgvector state                                | Drift or partial setup could pass unnoticed                                 | `pnpm db:verify` checks repository migrations, metadata and pgvector before service startup                                     |
 | CI did not exercise the contributor bootstrap or a full empty-database Linux stack                                      | Documentation and Docker definitions could regress independently            | CI now runs the developer bootstrap and a separate production Compose smoke with readiness checks                               |
-| The repository had no declared license                                                                                  | Contributions and any future OpenRice extraction had ambiguous terms        | AllRice adopted Apache-2.0 and recorded attribution/dependency policy                                                           |
-| OpenRice capabilities lacked a file-level extraction decision                                                           | Desktop, host-path, schema and license coupling could leak into AllRice     | MET-40 records D/R/O/X decisions, exact source commit, prohibited surfaces and per-file provenance requirements                 |
+| The repository had no declared license                                                                                  | Contributions and future third-party extraction had ambiguous terms         | AllRice adopted Apache-2.0 and recorded attribution/dependency policy                                                           |
+| External source reuse lacked a file-level provenance rule                                                               | Host-path, schema and license coupling could leak into AllRice              | MET-40 records prohibited surfaces and per-file provenance requirements                                                         |
 | Development signal forwarding sent duplicate SIGINT to watched Worker processes                                         | Interactive shutdown produced forced-kill noise                             | The launcher only forwards service-manager SIGTERM; terminal SIGINT follows the foreground process group                        |
 
-No OpenRice source was copied by these changes.
+No external product source was copied by these changes.
 
 ## Acceptance evidence
 
@@ -35,4 +38,6 @@ No OpenRice source was copied by these changes.
 
 ## Remaining gate
 
-lindong must review the MET-40 D/R/O/X matrix, Apache-2.0 attribution policy and dependency exclusions before bulk OpenRice extraction. MET-49 contract work may proceed, but no D/R source extraction is authorized until that sign-off is recorded.
+lindong must review the Apache-2.0 attribution policy and dependency
+exclusions before any bulk third-party extraction. No external source
+extraction is authorized until that sign-off is recorded.

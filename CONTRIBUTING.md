@@ -26,4 +26,7 @@ Changes to migrations, runtime environment, Docker images, ports, health checks,
 
 Use a focused issue branch, reference the owning Linear issue in the pull request, and list the commands actually run. Do not commit `.env`, local storage, database volumes, credentials, or generated build output.
 
-OpenRice and AllRice are independent products. Reused code must follow the provenance and boundary rules in [the OpenRice extraction audit](docs/audits/openrice-extraction-audit.md); do not copy OpenRice wholesale. The pull request must record the source repository, commit, path, license, dependencies, and modifications. Untraceable source copying is rejected.
+Reused third-party code must follow the repository's provenance and license
+rules. The pull request must record the source repository, commit, path,
+license, dependencies, and modifications. Untraceable source copying is
+rejected.

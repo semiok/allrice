@@ -87,9 +87,12 @@ Signed access binds object, subject, operation, expiry and nonce. Authorization 
 - A rollback means deploying the previous compatible image; down migrations are development/test aids, not the production recovery strategy.
 - Old Job/Event/Artifact data remains readable for the documented compatibility window or is migrated before contract removal.
 
-## OpenRice boundary
+## External integration boundary
 
-OpenRice can later implement IdentityProvider and OrganizationDirectory adapters through versioned APIs, signed short-lived tokens, events or explicit sync. AllRice stores verified projections and remains independently runnable. Shared database tables, migration history, ORM models and runtime directories are forbidden.
+AllRice remains authoritative and independently runnable. Reviewed external
+systems may integrate through versioned APIs, signed short-lived tokens, events
+or explicit connectors. Shared database tables, migration history, ORM models,
+credentials and runtime directories are forbidden.
 
 ## Implementation ownership
 
@@ -100,5 +103,4 @@ OpenRice can later implement IdentityProvider and OrganizationDirectory adapters
 | MET-43 | persistent Job/lease/retry state machine, Run/RunEvent, Worker recovery and SSE replay endpoint                   |
 | MET-44 | Skill catalog/version/artifact/installation persistence, capability enforcement and Worker materialization        |
 | MET-45 | Employee/EmployeeVersion lifecycle mapped to frozen Run versions and audit                                        |
-| MET-46 | versioned, read-only OpenRice migration adapters into authoritative AllRice contracts                             |
 | MET-47 | rolling-upgrade, recovery, end-to-end authorization and compatibility acceptance                                  |
