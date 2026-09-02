@@ -19,7 +19,6 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 - [V1 core contracts](architecture/v1-core-contracts.md)
 - [V1 contract test matrix](architecture/v1-contract-test-matrix.md)
 - [Development workflow](development/README.md)
-- [OpenRice extraction and license audit](audits/openrice-extraction-audit.md)
 - [AllRice Apache-2.0 license decision](audits/allrice-license-decision.md)
 - [MET-62 production acceptance](operations/met62-production-acceptance.md)
 - [Rice conversation harness and Tool Broker](features/agent-conversation/README.md)
@@ -41,8 +40,6 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 | DSH-native Skills       | Platform registry reset         | MET-92 / MET-93 | [README](architecture/platform-employee-production.md) |
 | WeChat article research | Cloud-native Skill implemented  | MET-96          | [README](features/wechat-research/README.md)           |
 | Employee production     | Phase A + compiler implemented  | MET-93          | [README](architecture/platform-employee-production.md) |
-| OpenRice integration    | Boundary frozen                 | MET-49          | [README](features/openrice-integration/README.md)      |
-| OpenRice migration      | Planned                         | MET-46          | [README](features/migration/README.md)                 |
 | Operations and recovery | Baseline definitions            | MET-47          | [README](features/operations/README.md)                |
 | ChatFlow Runtime        | Single-path 3.0 implemented     | MET-88          | [README](architecture/chatflow-runtime.md)             |
 | Platform model pool     | Governed routing implemented    | MET-80–84       | [README](architecture/platform-model-pool.md)          |

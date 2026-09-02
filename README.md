@@ -43,12 +43,14 @@ answer from PostgreSQL.
 
 ## Product boundary
 
-| Product  | Audience             | Responsibility                                                                     |
-| -------- | -------------------- | ---------------------------------------------------------------------------------- |
-| OpenRice | Enterprise managers  | Organization governance, policy, publishing, assignment, audit, operations         |
-| AllRice  | Enterprise employees | Personal AI employee, Chat/Session, files, Memory, Skills, task execution, results |
+AllRice is a standalone product and the sole authority for its identity,
+organization and workspace membership, employee publishing and assignment,
+policy, audit, Session, files, Memory, Skills, task execution and results. It
+has no product, code, data or roadmap dependency on another repository.
 
-AllRice 0.1 runs independently with its own database and local invitation model. A future OpenRice integration must use versioned APIs, signed tokens, events, or explicit synchronization. The products must not share business tables, ORM models, migration history, or runtime directories.
+External systems may integrate only through reviewed, versioned APIs or
+connectors. They never share AllRice business tables, ORM models, migration
+history, credentials or runtime directories.
 
 ## Architecture
 
@@ -195,7 +197,6 @@ Start at [docs/README.md](docs/README.md). Every feature document records:
 
 ## Development rules
 
-- Do not copy the OpenRice repository wholesale.
 - Any extracted code must record source repository, source commit, path, license, dependencies, and maintenance owner.
 - Business data must be server-authoritative; `localStorage` is limited to non-sensitive UI preferences.
 - Every resource query must apply organization, workspace, owner, visibility, and authorization rules.
@@ -204,4 +205,7 @@ Start at [docs/README.md](docs/README.md). Every feature document records:
 
 ## License
 
-AllRice is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies, Skills, assets and any future extracted files retain their own terms and attribution requirements. See the [license decision](docs/audits/allrice-license-decision.md) and [OpenRice extraction audit](docs/audits/openrice-extraction-audit.md). No OpenRice source has been copied into this baseline.
+AllRice is licensed under the [Apache License 2.0](LICENSE). Third-party
+dependencies, Skills, assets and any future extracted files retain their own
+terms and attribution requirements. See the
+[license decision](docs/audits/allrice-license-decision.md).

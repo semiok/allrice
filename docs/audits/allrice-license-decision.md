@@ -14,16 +14,18 @@ AllRice source authored in this repository is distributed under the Apache Licen
 
 ## Rationale
 
-- OpenRice is Apache-2.0, so the same license minimizes friction for any future file-level extraction that passes the MET-40 provenance gate.
 - Apache-2.0 permits internal, hosted, self-hosted and commercial use without forcing downstream applications to publish unrelated source.
 - Its explicit patent grant and contribution terms are preferable for an enterprise AI product with multiple contributors.
-- AllRice remains an independent work. Selecting the same license does not authorize wholesale OpenRice copying or remove file-level attribution and dependency review.
+- AllRice is an independent work. Its license does not remove file-level
+  attribution and dependency review requirements for third-party material.
 
 ## Attribution policy
 
 - Every copied or modified upstream file must record repository, commit, path, license, dependencies, modifications, tests and maintenance owner in its pull request.
 - Required copyright, patent, trademark and attribution notices must be retained. Modified Apache-licensed files must be marked as changed.
-- OpenRice has no root `NOTICE` file at the audited commit. If a future source or dependency includes one, AllRice must preserve the applicable notices and introduce an AllRice `NOTICE` file before distribution.
+- If a future source or dependency includes a `NOTICE` file, AllRice must
+  preserve the applicable notices and introduce an AllRice `NOTICE` file before
+  distribution.
 - Skills, generated assets, datasets and third-party packages keep their own licenses; the AllRice license does not replace them.
 
 ## Current dependency review

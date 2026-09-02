@@ -31,4 +31,5 @@ Applications may add private implementation types, but they must parse every bou
 - Worker executes only against an immutable PolicySnapshot and re-authorizes resources at claim time.
 - PostgreSQL schemas and API payloads must map to the canonical contracts.
 - Contract changes require a schema version, compatibility decision, tests and documentation.
-- OpenRice integration translates into these contracts; it never imports OpenRice ORM models or tables.
+- External integrations translate into these contracts and never import their
+  ORM models or tables into AllRice.

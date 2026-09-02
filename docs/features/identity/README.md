@@ -17,18 +17,22 @@ TNlabs can invite two human employees as two separate AllRice accounts. Each per
 - authenticated server Session lifecycle;
 - RequestContext and unified authorization;
 - account disable/revoke and audit;
-- IdentityProvider and OrganizationDirectory ports for future OpenRice integration.
+- explicit, reviewed integration ports for future identity providers or
+  organization directories.
 
 ## Non-goals in V1
 
 - public registration;
 - billing, SSO, SCIM or complex department hierarchy;
-- shared login sessions with OpenRice;
+- shared login sessions with external products;
 - administrator default access to private employee content.
 
 ## Authority and tenancy
 
-AllRice V1 is authoritative for its local users and memberships and cannot require OpenRice online. In a future managed mode, OpenRice becomes authority for enterprise directory and policy while AllRice stores a verified local projection and PolicySnapshot.
+AllRice V1 is authoritative for its users, organizations, memberships and
+policies. An optional external identity provider may authenticate a principal
+through a reviewed adapter, but it does not become the authority for AllRice
+business data or policy snapshots.
 
 Every private resource is authorized against `user_id`, `organization_id`, `workspace_id`, `owner_id` and `visibility`. The browser cannot select arbitrary tenant context.
 

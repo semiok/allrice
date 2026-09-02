@@ -166,7 +166,10 @@ verifies business data persistence plus delete propagation.
 
 ## Code extraction
 
-Do not copy OpenRice wholesale. Before extracting code, MET-40 must record source repository, commit, path, license, dependencies, coupling classification, compatibility markers, and future maintenance owner.
+Before extracting third-party code, record the source repository, commit, path,
+license, dependencies, coupling classification, compatibility markers and
+future maintenance owner. Bulk copying without a file-level provenance and
+dependency review is prohibited.
 
 ## Definition of documented
 

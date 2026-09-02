@@ -53,9 +53,13 @@ consists of PostgreSQL, mounted storage, and a reverse proxy.
 
 ## Authority
 
-AllRice V1 operates independently. Its local invitation, Organization, Workspace, Membership, Policy, Session, Memory, SkillInstallation, and Run records are authoritative for the employee runtime.
+AllRice V1 is the sole authority for its local invitation, Organization,
+Workspace, Membership, Policy, employee and Skill publishing and assignment,
+Session, Memory, SkillInstallation and Run records.
 
-OpenRice is the future enterprise-management authority for organization directory, roles, policy, Employee/Skill publishing and assignment. Integration is through versioned API, signed tokens, events, or explicit synchronization. Direct database sharing is prohibited.
+External integrations use reviewed, versioned APIs, signed tokens, events or
+explicit connectors. Direct database, migration, credential or runtime
+directory sharing is prohibited.
 
 ## Trust boundaries
 
