@@ -32,8 +32,7 @@ import { LocalExecutionError, executeLocalCommand } from './executor.js';
 
 const execFileAsync = promisify(execFile);
 const defaultBridgeServer =
-  process.env.ALLRICE_BRIDGE_DEFAULT_SERVER ??
-  'https://allrice-dsh.bplabs.xyz';
+  process.env.ALLRICE_BRIDGE_DEFAULT_SERVER ?? 'https://allrice-dsh.bplabs.xyz';
 
 function option(args: string[], name: string) {
   const index = args.indexOf(name);

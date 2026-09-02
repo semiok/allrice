@@ -35,15 +35,15 @@ describe('host-bound bootstrap portals', () => {
   it('keeps Snow and Drink credentials isolated', () => {
     const snow = resolvePortal('allrice-snow.bplabs.xyz')!;
     const drink = resolvePortal('allrice-drink.bplabs.xyz')!;
-    expect(
-      verifyPortalCredentials(drink, 'drink', 'drink-test-password'),
-    ).toBe(true);
-    expect(
-      verifyPortalCredentials(drink, 'snow', 'snow-test-password'),
-    ).toBe(false);
-    expect(
-      verifyPortalCredentials(snow, 'drink', 'drink-test-password'),
-    ).toBe(false);
+    expect(verifyPortalCredentials(drink, 'drink', 'drink-test-password')).toBe(
+      true,
+    );
+    expect(verifyPortalCredentials(drink, 'snow', 'snow-test-password')).toBe(
+      false,
+    );
+    expect(verifyPortalCredentials(snow, 'drink', 'drink-test-password')).toBe(
+      false,
+    );
   });
 
   it('accepts only the credential assigned to the resolved portal', () => {
