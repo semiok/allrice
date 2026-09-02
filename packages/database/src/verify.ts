@@ -1,7 +1,13 @@
 import { readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { closeDatabase, getDatabase } from './index.js';
+import { closeDatabase, getDatabase } from './core/client.js';
+import { loadPlatformContentCatalog } from './platform-content/catalog.js';
+import {
+  buildPlatformContentCatalogMetadata,
+  planPlatformSkillSync,
+  type ExistingPlatformSkill,
+} from './platform-content/sync.js';
 
 const migrationsDirectory = fileURLToPath(
   new URL('../migrations/', import.meta.url),
@@ -23,6 +29,51 @@ try {
     throw new Error(
       `migration mismatch: expected ${expectedMigrations.join(', ') || 'none'}, got ${appliedMigrations.join(', ') || 'none'}`,
     );
+  }
+
+  const platformContentCatalog = await loadPlatformContentCatalog();
+  const platformContentRows = await sql<ExistingPlatformSkill[]>`
+    select id, name, description, content, checksum,
+      model_invocable as "modelInvocable",
+      user_invocable as "userInvocable",
+      required_tool_refs as "requiredToolRefs", enabled, source,
+      source_ref as "sourceRef", version, license,
+      review_status as "reviewStatus",
+      reviewed_by_label as "reviewedByLabel"
+    from allrice_platform_dsh_skills
+    order by name, id
+  `;
+  const platformContentPlan = planPlatformSkillSync(
+    platformContentRows,
+    platformContentCatalog.skills,
+  );
+  if (
+    platformContentPlan.inserts.length > 0 ||
+    platformContentPlan.updates.length > 0
+  ) {
+    throw new Error(
+      `platform content catalog is not synchronized: missing=${
+        platformContentPlan.inserts.map((skill) => skill.name).join(',') ||
+        'none'
+      } drifted=${
+        platformContentPlan.updates.map((skill) => skill.name).join(',') ||
+        'none'
+      }`,
+    );
+  }
+  const expectedPlatformContentMetadata = buildPlatformContentCatalogMetadata(
+    platformContentCatalog,
+  );
+  const platformContentMetadataRows = await sql<{ matches: boolean }[]>`
+    select exists (
+      select 1
+      from allrice_runtime_metadata
+      where key = 'platform-content-catalog'
+        and value = ${sql.json(expectedPlatformContentMetadata)}
+    ) as matches
+  `;
+  if (platformContentMetadataRows[0]?.matches !== true) {
+    throw new Error('platform content catalog metadata is missing or invalid');
   }
 
   const compactionStatusRows = await sql<
@@ -307,64 +358,6 @@ try {
           resetSkillRows[0]?.platform_skills !== '0')))
   ) {
     throw new Error('Rice-only employee baseline is missing or invalid');
-  }
-
-  const foundationalSkillRows = await sql<
-    {
-      version: string | undefined;
-      matching_skills: string;
-    }[]
-  >`
-    select metadata.value ->> 'version' as version,
-      (
-        select count(*)::text
-        from allrice_platform_dsh_skills skill
-        where skill.enabled
-          and skill.source = 'allrice'
-          and (
-            (skill.name = 'web-research' and skill.checksum =
-              'sha256:55b4f4fbaa1fd7c033cf97db38ee19f620ab86bd528ab17a3d27647d5926465f')
-            or
-            (skill.name = 'workspace-briefing' and skill.checksum =
-              'sha256:6297b8a52dc0286a9cf9c747b4406d282eba1dae06b562f8a11657d6bad9d0ee')
-          )
-      ) as matching_skills
-    from allrice_runtime_metadata metadata
-    where metadata.key = 'foundational-dsh-skills'
-  `;
-  if (
-    foundationalSkillsApplied &&
-    (foundationalSkillRows[0]?.version !== '0052' ||
-      foundationalSkillRows[0]?.matching_skills !== '2')
-  ) {
-    throw new Error('Foundational DSH Skills are missing or invalid');
-  }
-
-  const wechatResearchSkillRows = await sql<
-    {
-      version: string | undefined;
-      matching_skills: string;
-    }[]
-  >`
-    select metadata.value ->> 'version' as version,
-      (
-        select count(*)::text
-        from allrice_platform_dsh_skills skill
-        where skill.enabled
-          and skill.source = 'allrice'
-          and skill.name = 'wechat-research'
-          and skill.checksum =
-            'sha256:6cf6bfb84eb99ecf05375813959f62b33cf409a0c2e61fe09dedf5cb6ee689a7'
-      ) as matching_skills
-    from allrice_runtime_metadata metadata
-    where metadata.key = 'wechat-research-skill'
-  `;
-  if (
-    expectedMigrations.includes('0055_wechat_research_skill.sql') &&
-    (wechatResearchSkillRows[0]?.version !== '0055' ||
-      wechatResearchSkillRows[0]?.matching_skills !== '1')
-  ) {
-    throw new Error('WeChat research DSH Skill is missing or invalid');
   }
 
   const platformEmployeeRows = await sql<

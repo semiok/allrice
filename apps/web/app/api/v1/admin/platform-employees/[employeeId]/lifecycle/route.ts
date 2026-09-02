@@ -4,6 +4,7 @@ import {
   listPlatformEmployeeAuditEvents,
   rollbackPlatformEmployee,
 } from '@allrice/database';
+import { PlatformEmployeeLifecycleInputSchema } from '@allrice/contracts';
 
 import { executionErrorResponse } from '../../../../../../../lib/execution/responses';
 import { requirePlatformAdminContext } from '../../../../../../../lib/identity/platform-admin';
@@ -31,10 +32,9 @@ export async function POST(request: Request, routeContext: RouteContext) {
   try {
     const context = await requirePlatformAdminContext(request);
     const { employeeId } = await routeContext.params;
-    const body = (await request.json()) as {
-      action?: unknown;
-      reason?: unknown;
-    };
+    const body = PlatformEmployeeLifecycleInputSchema.parse(
+      await request.json(),
+    );
     if (body.action === 'disable') {
       return Response.json(
         await disablePlatformEmployee(
@@ -48,7 +48,7 @@ export async function POST(request: Request, routeContext: RouteContext) {
       return Response.json(
         await rollbackPlatformEmployee(
           employeeId,
-          { reason: body.reason },
+          { reason: body.reason, revisionId: body.revisionId },
           context.actor.id,
         ),
       );
@@ -62,9 +62,8 @@ export async function POST(request: Request, routeContext: RouteContext) {
         ),
       );
     }
-    return Response.json(
-      { error: { message: '不支持的员工生命周期动作' } },
-      { status: 400 },
+    return executionErrorResponse(
+      new Error('Unsupported platform employee lifecycle action'),
     );
   } catch (error) {
     return executionErrorResponse(error);

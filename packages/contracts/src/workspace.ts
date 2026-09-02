@@ -2,6 +2,11 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { KnowledgeCitationSchema } from './knowledge.ts';
+import {
+  MemoryClassSchema,
+  MemoryLifecycleStateSchema,
+  MemorySourceTypeSchema,
+} from './operations.ts';
 
 export const EmployeeVersionSchema = z
   .object({
@@ -150,8 +155,13 @@ export const CreateWorkspaceMemoryInputSchema = z
     employeeId: UuidSchema.nullable().default(null),
     content: z.string().trim().min(1).max(100_000),
     visibility: VisibilitySchema.default('private'),
-    sourceType: z.enum(['user', 'message', 'file']),
+    sourceType: MemorySourceTypeSchema,
     sourceId: UuidSchema.nullable().default(null),
+    sourceLabel: z.string().trim().min(1).max(240).default('用户保存的记忆'),
+    lifecycleState: MemoryLifecycleStateSchema.default('durable'),
+    memoryClass: MemoryClassSchema.default('work_note'),
+    confidence: z.number().min(0).max(1).default(1),
+    expiresAt: TimestampSchema.nullable().default(null),
   })
   .strict();
 
@@ -164,8 +174,25 @@ export const WorkspaceMemorySchema = z
     ownerId: UuidSchema,
     content: z.string(),
     visibility: VisibilitySchema,
-    sourceType: z.enum(['user', 'message', 'file']),
+    sourceType: MemorySourceTypeSchema,
     sourceId: UuidSchema.nullable(),
+    lifecycleState: MemoryLifecycleStateSchema,
+    memoryClass: MemoryClassSchema,
+    revision: z.number().int().positive(),
+    trust: z.enum([
+      'user_confirmed',
+      'platform_verified',
+      'derived',
+      'untrusted_external',
+    ]),
+    confidence: z.number().min(0).max(1),
+    sourceLabel: z.string(),
+    capturedAt: TimestampSchema,
+    expiresAt: TimestampSchema.nullable(),
+    lastVerifiedAt: TimestampSchema.nullable(),
+    supersedesMemoryId: UuidSchema.nullable(),
+    lastRecalledAt: TimestampSchema.nullable(),
+    recallCount: z.number().int().nonnegative(),
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
   })

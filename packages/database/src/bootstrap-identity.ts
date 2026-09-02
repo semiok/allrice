@@ -1,4 +1,5 @@
-import { bootstrapOrganization, closeDatabase } from './index.ts';
+import { closeDatabase } from './core/client.ts';
+import { bootstrapOrganization } from './identity.ts';
 
 const required = (name: string) => {
   const value = process.env[name];

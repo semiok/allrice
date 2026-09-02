@@ -5,7 +5,10 @@ import type { DshExecutionSnapshot, HarnessEvent } from '@allrice/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { HarnessExecutionInput } from './adapter.js';
-import { DshHarnessAdapter } from './dsh-adapter.js';
+import {
+  DshHarnessAdapter,
+  normalizeAllRiceManagedFileLinks,
+} from './dsh-adapter.js';
 
 const adapters: DshHarnessAdapter[] = [];
 
@@ -13,6 +16,20 @@ afterEach(async () => {
   await Promise.allSettled(
     adapters.splice(0).map((adapter) => adapter.close()),
   );
+});
+
+describe('normalizeAllRiceManagedFileLinks', () => {
+  it('normalizes only authenticated AllRice managed export URLs', () => {
+    expect(
+      normalizeAllRiceManagedFileLinks(
+        '[报告](sandbox:/api/v1/files/file-id/download?token=test)\n' +
+          '[DSH 临时文件](sandbox:/tmp/result.md)',
+      ),
+    ).toBe(
+      '[报告](/api/v1/files/file-id/download?token=test)\n' +
+        '[DSH 临时文件](sandbox:/tmp/result.md)',
+    );
+  });
 });
 
 function snapshot(
@@ -53,6 +70,7 @@ function executionInput(input: {
   prompt: string;
   provider?: DshExecutionSnapshot;
   threadId?: string | null;
+  runtimePackageChecksum?: string;
   signal?: AbortSignal;
   events?: HarnessEvent[];
   onToolCall?: HarnessExecutionInput['onToolCall'];
@@ -77,6 +95,7 @@ function executionInput(input: {
       authorizedMemoryContext: '',
       grantedCapabilities: ['model:invoke', 'storage:read'],
       skillVersionIds: [],
+      runtimePackageChecksum: input.runtimePackageChecksum,
       imageAttachments: [],
     },
     providerSnapshot: input.provider ?? snapshot(),
@@ -148,6 +167,37 @@ describe('DshHarnessAdapter', () => {
     expect(second.threadId).toBe(threadId);
   });
 
+  it('rotates the DSH runtime when the immutable employee package changes', async () => {
+    const adapter = createAdapter();
+    let threadId: string | null = null;
+    const firstInput = executionInput({
+      prompt: 'first',
+      runtimePackageChecksum: `sha256:${'a'.repeat(64)}`,
+    });
+    firstInput.onThreadBound = async (binding) => {
+      threadId = binding.threadId;
+    };
+    const first = await adapter.execute(firstInput);
+    const samePackage = await adapter.execute(
+      executionInput({
+        prompt: 'same package',
+        threadId,
+        runtimePackageChecksum: `sha256:${'a'.repeat(64)}`,
+      }),
+    );
+    const changedPackage = await adapter.execute(
+      executionInput({
+        prompt: 'changed package',
+        threadId,
+        runtimePackageChecksum: `sha256:${'b'.repeat(64)}`,
+      }),
+    );
+
+    expect(first.answer).toBe('turn-1');
+    expect(samePackage.answer).toBe('turn-2');
+    expect(changedPackage.answer).toBe('turn-1');
+  });
+
   it('maps streaming, turn and usage events into stable HarnessEvents', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];
@@ -182,6 +232,142 @@ describe('DshHarnessAdapter', () => {
       contextWindow: 200000,
     });
     expect(started).toHaveLength(1);
+  });
+
+  it('records native Skill eligibility and missing-tool failure reasons', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'hello', events });
+    input.nativeSkills = [
+      {
+        id: randomUUID(),
+        name: 'web-research',
+        description: 'Research public information.',
+        content: '# Web Research',
+        checksum: `sha256:${'a'.repeat(64)}`,
+        invocation: { modelInvocable: true, userInvocable: true },
+        requiredToolRefs: ['web.search'],
+      },
+      {
+        id: randomUUID(),
+        name: 'workspace-briefing',
+        description: 'Inspect a local workspace.',
+        content: '# Workspace Briefing',
+        checksum: `sha256:${'b'.repeat(64)}`,
+        invocation: { modelInvocable: true, userInvocable: true },
+        requiredToolRefs: ['local.fs.list'],
+      },
+    ];
+    input.tools = [
+      ...input.tools,
+      { name: 'web.search', description: 'Search', inputSchema: {} },
+    ];
+
+    await adapter.execute(input);
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'native.event',
+          label: 'Skill 已加载',
+          summary: 'web-research',
+          sourcePayload: expect.objectContaining({ status: 'loaded' }),
+        }),
+        expect.objectContaining({
+          type: 'native.event',
+          label: 'Skill 不可用',
+          status: 'failed',
+          sourcePayload: expect.objectContaining({
+            skillName: 'workspace-briefing',
+            reason: 'required_tools_missing',
+            missingTools: ['local.fs.list'],
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('does not report an authorized but inactive Skill as unavailable', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'hello', events });
+    input.nativeSkills = [
+      {
+        id: randomUUID(),
+        name: 'workflow-automation',
+        description: 'Create an approved automation.',
+        content: '# Workflow Automation',
+        checksum: `sha256:${'c'.repeat(64)}`,
+        invocation: { modelInvocable: true, userInvocable: true },
+        requiredToolRefs: ['automation.create'],
+      },
+    ];
+    input.authorizedToolNames = [
+      ...input.tools.map((tool) => tool.name),
+      'automation.create',
+    ];
+
+    await adapter.execute(input);
+
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Skill 不可用',
+          sourcePayload: expect.objectContaining({
+            skillName: 'workflow-automation',
+          }),
+        }),
+      ]),
+    );
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Skill 已加载',
+          summary: 'workflow-automation',
+        }),
+      ]),
+    );
+  });
+
+  it('loads an authorized Skill once its required tool is active this turn', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'create automation', events });
+    input.nativeSkills = [
+      {
+        id: randomUUID(),
+        name: 'workflow-automation',
+        description: 'Create an approved automation.',
+        content: '# Workflow Automation',
+        checksum: `sha256:${'d'.repeat(64)}`,
+        invocation: { modelInvocable: true, userInvocable: true },
+        requiredToolRefs: ['automation.create'],
+      },
+    ];
+    input.authorizedToolNames = [
+      ...input.tools.map((tool) => tool.name),
+      'automation.create',
+    ];
+    input.tools = [
+      ...input.tools,
+      {
+        name: 'automation.create',
+        description: 'Create automation',
+        inputSchema: {},
+      },
+    ];
+
+    await adapter.execute(input);
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Skill 已加载',
+          summary: 'workflow-automation',
+          sourcePayload: expect.objectContaining({ status: 'loaded' }),
+        }),
+      ]),
+    );
   });
 
   it('keeps provider reasoning private while streaming the visible answer', async () => {

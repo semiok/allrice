@@ -107,10 +107,10 @@ export async function prepareDevelopmentDatabase() {
     console.info('[setup] Using DATABASE_URL from the environment or .env.');
   }
 
-  console.info('[setup] Applying database migrations...');
-  run(pnpmCommand, ['db:migrate']);
-  console.info('[setup] Verifying database schema and pgvector...');
-  run(pnpmCommand, ['db:verify']);
+  console.info(
+    '[setup] Preparing database schema and operational platform content...',
+  );
+  run(pnpmCommand, ['db:prepare']);
   console.info('[setup] Database is ready.');
 
   return process.env.DATABASE_URL;

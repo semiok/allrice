@@ -23,7 +23,7 @@ import {
 } from '@allrice/contracts';
 
 import { DataAccessError } from './data.ts';
-import { getDatabase } from './index.ts';
+import { getDatabase } from './core/client.ts';
 
 const onlineWindowSeconds = 90;
 const maximumResultBytes = 500_000;
@@ -152,6 +152,47 @@ function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
     createdAt: row.created_at.toISOString(),
     revokedAt: row.revoked_at?.toISOString() ?? null,
   });
+}
+
+function executionTargetCapabilities(capabilities: BridgeCapability[]) {
+  return [
+    ...(capabilities.some((item) => item.startsWith('local.fs.'))
+      ? (['files.read'] as const)
+      : []),
+    ...(capabilities.some((item) => item.startsWith('local.git.'))
+      ? (['git.read'] as const)
+      : []),
+  ];
+}
+
+async function syncBridgeExecutionTarget(
+  device: DeviceRow,
+  state: 'online' | 'offline' | 'revoked',
+) {
+  const sql = getDatabase();
+  await sql`
+    insert into allrice_execution_targets (
+      organization_id, workspace_id, target_key, kind, label, state,
+      capabilities, concurrency_limit, timeout_seconds, last_heartbeat_at,
+      unavailable_reason, metadata
+    ) values (
+      ${device.organization_id}, ${device.workspace_id},
+      ${`bridge.${device.id}`}, 'rice_bridge', ${device.name}, ${state},
+      ${sql.json(executionTargetCapabilities(device.capabilities))}, 1, 120,
+      ${state === 'online' ? device.last_seen_at : null},
+      ${state === 'online' ? null : `bridge_${state}`},
+      ${sql.json({
+        bridgeDeviceId: device.id,
+        platform: device.platform,
+        protocolVersion: device.protocol_version,
+      })}
+    ) on conflict (organization_id, workspace_id, target_key) do update set
+      label = excluded.label, state = excluded.state,
+      capabilities = excluded.capabilities,
+      last_heartbeat_at = excluded.last_heartbeat_at,
+      unavailable_reason = excluded.unavailable_reason,
+      metadata = excluded.metadata, updated_at = now()
+  `;
 }
 
 function mapGrant(row: GrantRow): BridgeFolderGrant {
@@ -324,6 +365,7 @@ export async function pairBridgeDevice(input: unknown) {
     reason: 'one_time_pairing_code',
     metadata: { platform: device.platform },
   });
+  await syncBridgeExecutionTarget(device, 'online');
   return { device: mapDevice(device), deviceToken: token };
 }
 
@@ -372,7 +414,9 @@ export async function heartbeatBridgeDevice(token: string) {
     returning id, organization_id, workspace_id, owner_id, name, platform,
       protocol_version, capabilities, last_seen_at, created_at, revoked_at
   `;
-  return mapDevice(rows[0]!);
+  const row = rows[0]!;
+  await syncBridgeExecutionTarget(row, 'online');
+  return mapDevice(row);
 }
 
 export async function bridgeDeviceStatus(token: string) {
@@ -415,6 +459,7 @@ export async function revokeCurrentBridgeDevice(token: string) {
     resourceId: device.id,
     reason: 'device_self_revoke',
   });
+  await syncBridgeExecutionTarget(device, 'revoked');
 }
 
 export async function createBridgeFolderGrant(token: string, input: unknown) {
@@ -462,13 +507,16 @@ export async function revokeBridgeDevice(
   const deviceId = UuidSchema.parse(deviceIdInput);
   const ownerId = requireWorkspaceMember(context, workspaceId);
   const sql = getDatabase();
-  const rows = await sql<{ id: string }[]>`
+  const rows = await sql<DeviceRow[]>`
     update allrice_bridge_devices set revoked_at = now(), updated_at = now()
     where id = ${deviceId} and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId} and owner_id = ${ownerId}
-      and revoked_at is null returning id
+      and revoked_at is null
+    returning id, organization_id, workspace_id, owner_id, name, platform,
+      protocol_version, capabilities, last_seen_at, created_at, revoked_at
   `;
-  if (!rows[0]) throw new DataAccessError('not_found');
+  const device = rows[0];
+  if (!device) throw new DataAccessError('not_found');
   await sql`
     update allrice_bridge_folder_grants set revoked_at = now()
     where device_id = ${deviceId} and revoked_at is null
@@ -489,6 +537,7 @@ export async function revokeBridgeDevice(
     reason: 'device_owner',
     requestId: context.requestId,
   });
+  await syncBridgeExecutionTarget(device, 'revoked');
 }
 
 export async function revokeBridgeFolderGrant(

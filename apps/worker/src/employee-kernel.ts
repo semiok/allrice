@@ -74,6 +74,11 @@ export function assembleEmployeeKernel(input: {
       : '',
     grantedCapabilities: input.resolved.grantedCapabilities,
     skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
+    runtimePackageChecksum:
+      input.resolved.executionSnapshot?.employee.definition.schemaVersion === 2
+        ? input.resolved.executionSnapshot.employee.definition.runtimePackage
+            ?.checksum
+        : undefined,
     imageAttachments: input.resolved.promptSnapshot.imageAttachments,
   });
 }

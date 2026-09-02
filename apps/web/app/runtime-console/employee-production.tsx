@@ -19,6 +19,10 @@ interface NativeSkill {
   description: string;
   enabled: boolean;
   source: 'allrice' | 'dsh-migrated';
+  sourceRef: string;
+  version: string;
+  license: string;
+  reviewStatus: 'draft' | 'reviewed' | 'rejected';
 }
 
 interface Workspace {
@@ -54,10 +58,17 @@ const tabs = [
 const toolLabels: Record<string, string> = {
   'workspace.file.list': '工作区文件列表',
   'workspace.file.read': '读取工作区文件',
+  'workspace.document.read': '解析工作区文档',
   'workspace.memory.search': '检索记忆',
   'workspace.session.search': '检索会话',
   'web.search': '联网搜索',
   'web.fetch': '读取网页',
+  'browser.run': '云端浏览器',
+  'wechat.article.search': '搜索公众号文章',
+  'wechat.article.read': '读取公众号文章',
+  'market.quote': '查询公开行情',
+  'market.history': '查询历史行情',
+  'workspace.export.create': '生成可下载交付物',
   'local.fs.list': '本地目录列表',
   'local.fs.search': '本地文件搜索',
   'local.fs.read': '读取本地文件',
@@ -689,8 +700,8 @@ export function EmployeeProduction() {
         items={directory.skills.map((skill) => ({
           id: skill.id,
           label: skill.name,
-          detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · ${skill.description}`,
-          disabled: !skill.enabled,
+          detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'} · ${skill.description}`,
+          disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
         }))}
         selected={draft.capabilities.nativeSkillIds}
         onChange={(value) => update(['capabilities', 'nativeSkillIds'], value)}

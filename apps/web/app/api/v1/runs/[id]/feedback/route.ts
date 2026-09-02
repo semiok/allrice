@@ -4,7 +4,9 @@ import {
   recordRunFeedback,
 } from '@allrice/database';
 
-import { getRequestContext } from '../../../../../../lib/identity/session';
+import { apiProblem } from '../../../../../../lib/api-error-response';
+import { executionErrorResponse } from '../../../../../../lib/execution/responses';
+import { requireRequestContext } from '../../../../../../lib/identity/session';
 
 export const runtime = 'nodejs';
 
@@ -13,25 +15,32 @@ export async function POST(
   route: { params: Promise<{ id: string }> },
 ) {
   try {
-    const context = await getRequestContext(request);
-    if (!context) throw new DataAccessError('authentication_required');
+    const context = await requireRequestContext(request);
     const { id } = await route.params;
     return Response.json({
       feedback: await recordRunFeedback(context, id, await request.json()),
     });
   } catch (error) {
     if (error instanceof DataAccessError) {
-      return Response.json(
-        { error: { code: error.code } },
-        { status: error.code === 'authentication_required' ? 401 : 403 },
-      );
+      return executionErrorResponse(error);
     }
     if (error instanceof EmployeeQualityError) {
-      return Response.json({ error: { code: error.code } }, { status: 404 });
+      if (error.code === 'not_found') {
+        return apiProblem({
+          status: 404,
+          code: 'RESOURCE_NOT_FOUND',
+          message: 'Run feedback target not found',
+        });
+      }
+      return apiProblem({
+        status: 409,
+        code:
+          error.code === 'default_protected'
+            ? 'DEFAULT_EMPLOYEE_PROTECTED'
+            : 'CONFLICT',
+        message: 'Run feedback conflicts with the current employee state',
+      });
     }
-    return Response.json(
-      { error: { code: 'invalid_feedback' } },
-      { status: 400 },
-    );
+    return executionErrorResponse(error);
   }
 }

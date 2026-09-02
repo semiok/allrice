@@ -1,3 +1,4 @@
+import { EmployeeQualityActionInputSchema } from '@allrice/contracts';
 import {
   DataAccessError,
   EmployeeQualityError,
@@ -7,7 +8,11 @@ import {
   updateEmployeeRelease,
 } from '@allrice/database';
 
-import { getRequestContext } from '../../../../../lib/identity/session';
+import {
+  apiProblem,
+  isRequestValidationError,
+} from '../../../../../lib/api-error-response';
+import { requireRequestContext } from '../../../../../lib/identity/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,28 +20,49 @@ export const dynamic = 'force-dynamic';
 function errorResponse(error: unknown) {
   if (error instanceof DataAccessError) {
     const status = error.code === 'authentication_required' ? 401 : 403;
-    return Response.json({ error: { code: error.code } }, { status });
+    return apiProblem({
+      status,
+      code: status === 401 ? 'AUTHENTICATION_REQUIRED' : 'AUTHORIZATION_DENIED',
+      message: status === 401 ? 'Authentication required' : 'Access denied',
+    });
   }
   if (error instanceof EmployeeQualityError) {
     const status = error.code === 'not_found' ? 404 : 409;
-    return Response.json({ error: { code: error.code } }, { status });
+    return apiProblem({
+      status,
+      code:
+        error.code === 'not_found'
+          ? 'RESOURCE_NOT_FOUND'
+          : error.code === 'default_protected'
+            ? 'DEFAULT_EMPLOYEE_PROTECTED'
+            : 'CONFLICT',
+      message:
+        error.code === 'not_found'
+          ? 'Employee quality resource not found'
+          : 'Employee quality state conflicts with this action',
+    });
   }
-  if (error instanceof Error && error.name === 'ZodError') {
-    return Response.json(
-      { error: { code: 'invalid_request' } },
-      { status: 400 },
-    );
+  if (isRequestValidationError(error)) {
+    return apiProblem({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: 'Employee quality request validation failed',
+    });
   }
   console.error('[employee-quality] request failed', {
     error: error instanceof Error ? error.message : 'unknown',
   });
-  return Response.json({ error: { code: 'internal_error' } }, { status: 500 });
+  return apiProblem({
+    status: 500,
+    code: 'INTERNAL_ERROR',
+    message: 'Employee quality request failed',
+    retryable: true,
+  });
 }
 
 export async function GET(request: Request) {
   try {
-    const context = await getRequestContext(request);
-    if (!context) throw new DataAccessError('authentication_required');
+    const context = await requireRequestContext(request);
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     return Response.json({
       quality: await getEmployeeQualityDashboard(
@@ -51,12 +77,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const context = await getRequestContext(request);
-    if (!context) throw new DataAccessError('authentication_required');
-    const body = (await request.json()) as {
-      action?: string;
-      payload?: unknown;
-    };
+    const context = await requireRequestContext(request);
+    const body = EmployeeQualityActionInputSchema.parse(await request.json());
     if (body.action === 'create_eval_suite') {
       return Response.json({
         suite: await createEmployeeEvalSuite(context, body.payload),
@@ -72,10 +94,11 @@ export async function POST(request: Request) {
         quality: await updateEmployeeRelease(context, body.payload),
       });
     }
-    return Response.json(
-      { error: { code: 'invalid_action' } },
-      { status: 400 },
-    );
+    return apiProblem({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: 'Unsupported employee quality action',
+    });
   } catch (error) {
     return errorResponse(error);
   }

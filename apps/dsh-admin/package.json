@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "typecheck": "node --check server.mjs"
+    "typecheck": "node --check server.mjs && node --check dsh-webui-compatibility.mjs"
   },
   "dependencies": {
     "@allrice/dsh-runtime-diff": "workspace:*",

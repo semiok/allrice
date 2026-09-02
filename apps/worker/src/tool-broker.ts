@@ -1,355 +1,58 @@
-import {
-  dispatchBridgeCommand,
-  getToolBrokerFile,
-  listToolBrokerFiles,
-  createAutomationFromExecutionContext,
-  recordToolBrokerAudit,
-  searchToolBrokerMemories,
-  searchToolBrokerSessions,
-} from '@allrice/database';
-import { LocalStorageAdapter } from '@allrice/storage';
-import {
-  BridgeCommandPayloadSchema,
-  type ExecutionContext,
-  type SkillCapability,
-} from '@allrice/contracts';
+import { recordToolBrokerAudit } from '@allrice/database';
 
 import { HandlerError } from './errors.js';
-import { searchCodexHostedWeb } from './codex-search-broker.js';
-import { fetchPublicWebPage } from './web-fetch.js';
-import { readWechatArticle, searchWechatArticles } from './wechat-articles.js';
+import { riceToolCapability, riceToolRisk } from './tool-broker/definitions.js';
+import { objectValue } from './tool-broker/input-values.js';
+import { requireRiceToolHandler } from './tool-broker/registry.js';
+import type {
+  RiceToolExecutionInput,
+  RiceToolResult,
+} from './tool-broker/types.js';
 
-const maximumReadableBytes = 200_000;
-const readableMediaTypes = new Set([
-  'text/plain',
-  'text/markdown',
-  'application/json',
-]);
+export {
+  riceReadOnlyToolDefinitionsForPreview,
+  riceToolCapability,
+  riceToolDefinitions,
+  riceToolDefinitionsForCapabilities,
+  riceToolDefinitionsForTurn,
+  riceToolRisk,
+  type RiceToolRisk,
+} from './tool-broker/definitions.js';
+export { createManagedBrowserCancellationMonitor } from './tool-broker/handlers/browser.js';
+export { managedBrowserUntrustedContent } from './tool-broker/managed-browser-input.js';
+export type {
+  RiceToolCall,
+  RiceToolExecutionInput,
+  RiceToolResult,
+} from './tool-broker/types.js';
 
-export type RiceToolRisk = 'read_only' | 'side_effect' | 'secret_bearing';
-
-export const riceToolDefinitions = [
-  {
-    name: 'workspace.file.list',
-    description: '列出当前用户在当前工作区有权读取的文件。',
-    inputSchema: {
-      type: 'object',
-      properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'workspace.file.read',
-    description: '按文件 ID 读取当前工作区内有权访问的文本文件。',
-    inputSchema: {
-      type: 'object',
-      properties: { objectId: { type: 'string', format: 'uuid' } },
-      required: ['objectId'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'workspace.memory.search',
-    description: '搜索当前用户有权读取的工作区记忆。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', minLength: 1 },
-        limit: { type: 'integer', minimum: 1, maximum: 20 },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'workspace.session.search',
-    description: '按标题搜索当前用户有权读取的历史对话。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', minLength: 1 },
-        limit: { type: 'integer', minimum: 1, maximum: 20 },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'web.search',
-    description:
-      '使用平台已授权的 Codex Hosted Search 检索互联网。返回最新搜索摘要和来源，不需要第三方搜索 API Key。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', minLength: 1, maxLength: 2000 },
-        maxResults: { type: 'integer', minimum: 1, maximum: 10 },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'web.fetch',
-    description:
-      '读取公开 HTTP/HTTPS 网页的正文。会阻止内网地址、重新校验重定向，并将结果标记为不可信外部内容。',
-    inputSchema: {
-      type: 'object',
-      properties: { url: { type: 'string', format: 'uri' } },
-      required: ['url'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'wechat.article.search',
-    description:
-      '在云端搜索微信公众号公开文章，返回标题、公众号、发布日期、摘要和可读取的原文链接。不需要 Rice Bridge。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', minLength: 1, maxLength: 200 },
-        limit: { type: 'integer', minimum: 1, maximum: 10 },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'wechat.article.read',
-    description:
-      '在云端读取微信公众号公开文章正文与元数据。只接受 mp.weixin.qq.com 公开文章链接，不访问登录或私有内容。',
-    inputSchema: {
-      type: 'object',
-      properties: { url: { type: 'string', format: 'uri' } },
-      required: ['url'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'local.fs.list',
-    description:
-      '列出当前用户已通过 Rice Bridge 明确授权的 Mac 文件夹内容。仅支持相对路径和只读访问。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', default: '.' },
-        limit: { type: 'integer', minimum: 1, maximum: 200 },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'local.fs.search',
-    description:
-      '在当前用户已授权的 Mac 文件夹内按文本搜索文件内容。不会访问授权目录之外的文件。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', default: '.' },
-        query: { type: 'string', minLength: 1, maxLength: 500 },
-        limit: { type: 'integer', minimum: 1, maximum: 100 },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'local.fs.read',
-    description:
-      '读取当前用户已授权的 Mac 文件夹内的单个文本文件。敏感文件与目录越界会被 Bridge 拒绝。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', minLength: 1 },
-        maxBytes: { type: 'integer', minimum: 1, maximum: 200000 },
-      },
-      required: ['path'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'local.git.status',
-    description:
-      '在当前用户已授权的 Mac 仓库中执行固定只读的 Git status 检查。不能执行任意命令。',
-    inputSchema: {
-      type: 'object',
-      properties: { path: { type: 'string', default: '.' } },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'local.git.diff',
-    description:
-      '在当前用户已授权的 Mac 仓库中读取 Git diff。仅使用固定只读 Git 参数。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', default: '.' },
-        staged: { type: 'boolean', default: false },
-        maxBytes: { type: 'integer', minimum: 1, maximum: 200000 },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'automation.create',
-    description:
-      '当用户明确要求提醒或未来执行某项任务时，创建当前工作区的一次性自动化，并绑定到当前对话。不要在用户没有明确提出未来执行要求时调用。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', minLength: 1, maxLength: 160 },
-        prompt: { type: 'string', minLength: 1, maxLength: 40000 },
-        delayMinutes: { type: 'integer', minimum: 1, maximum: 525600 },
-      },
-      required: ['name', 'prompt', 'delayMinutes'],
-      additionalProperties: false,
-    },
-  },
-] as const;
-
-const toolCapabilities: Readonly<Record<string, SkillCapability>> = {
-  'workspace.file.list': 'storage:read',
-  'workspace.file.read': 'storage:read',
-  'workspace.memory.search': 'storage:read',
-  'workspace.session.search': 'storage:read',
-  'web.search': 'network:outbound',
-  'web.fetch': 'network:outbound',
-  'wechat.article.search': 'network:outbound',
-  'wechat.article.read': 'network:outbound',
-  'local.fs.list': 'storage:read',
-  'local.fs.search': 'storage:read',
-  'local.fs.read': 'storage:read',
-  'local.git.status': 'storage:read',
-  'local.git.diff': 'storage:read',
-  'automation.create': 'automation:write',
-};
-
-const toolRisks: Readonly<Record<string, RiceToolRisk>> = {
-  'workspace.file.list': 'read_only',
-  'workspace.file.read': 'read_only',
-  'workspace.memory.search': 'read_only',
-  'workspace.session.search': 'read_only',
-  'web.search': 'read_only',
-  'web.fetch': 'read_only',
-  'wechat.article.search': 'read_only',
-  'wechat.article.read': 'read_only',
-  'local.fs.list': 'read_only',
-  'local.fs.search': 'read_only',
-  'local.fs.read': 'read_only',
-  'local.git.status': 'read_only',
-  'local.git.diff': 'read_only',
-  'automation.create': 'side_effect',
-};
-
-export function riceToolCapability(name: string) {
-  return toolCapabilities[name] ?? null;
-}
-
-export function riceToolRisk(name: string) {
-  return toolRisks[name] ?? null;
-}
-
-export function riceToolDefinitionsForCapabilities(
-  capabilities: SkillCapability[],
-  allowedToolNames?: readonly string[],
+function auditMetadata(
+  input: RiceToolExecutionInput,
+  requiredCapability: NonNullable<ReturnType<typeof riceToolCapability>>,
 ) {
-  const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
-  return riceToolDefinitions.filter(
-    (definition) =>
-      (!allowed || allowed.has(definition.name)) &&
-      capabilities.includes(toolCapabilities[definition.name]!),
-  );
+  return {
+    skillVersionIds: input.skillVersionIds ?? [],
+    requiredCapability,
+    ...(input.platformTestRunId
+      ? {
+          platformTestRunId: input.platformTestRunId,
+          platformActorLabel: input.platformActorLabel ?? null,
+          delegatedSubjectId: input.context.policySnapshot.subjectId,
+          executionMode: 'platform_employee_preview' as const,
+        }
+      : {}),
+  };
 }
 
 /**
- * Stable DSH turn capability set. Tenant-authorized read-only tools are always
- * visible to the native Agent Loop; side-effect and secret-bearing tools only
- * become visible after an explicit Skill/Workflow/Tool route selected them.
+ * The Tool Broker governance boundary. Capability, preview and audit policy
+ * remain centralized here; concrete tool behavior is selected by the exact
+ * name-to-handler registry under `tool-broker/registry.ts`.
  */
-export function riceToolDefinitionsForTurn(
-  capabilities: SkillCapability[],
-  allowedToolNames: readonly string[] | undefined,
-  selectedToolNames: readonly string[],
-) {
-  const selected = new Set(selectedToolNames);
-  return riceToolDefinitionsForCapabilities(
-    capabilities,
-    allowedToolNames,
-  ).filter(
-    (definition) =>
-      riceToolRisk(definition.name) === 'read_only' ||
-      selected.has(definition.name),
-  );
-}
-
-export interface RiceToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-export interface RiceToolResult {
-  modelContent: string;
-  summary: string;
-  itemCount?: number;
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new HandlerError('TOOL_INPUT_INVALID', '工具参数格式不正确', false);
-  }
-  return value as Record<string, unknown>;
-}
-
-function stringValue(value: unknown, name: string) {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new HandlerError('TOOL_INPUT_INVALID', `${name} 不能为空`, false);
-  }
-  return value.trim();
-}
-
-function limitValue(value: unknown, fallback: number, maximum: number) {
-  return typeof value === 'number' && Number.isInteger(value)
-    ? Math.min(Math.max(value, 1), maximum)
-    : fallback;
-}
-
-async function streamText(stream: ReadableStream<Uint8Array>) {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > maximumReadableBytes) {
-        throw new HandlerError(
-          'TOOL_FILE_TOO_LARGE',
-          '文件超过 200 KB 的对话读取上限',
-          false,
-        );
-      }
-      chunks.push(chunk.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-export async function executeRiceTool(input: {
-  context: ExecutionContext;
-  capabilities: SkillCapability[];
-  storageRoot: string;
-  skillVersionIds?: string[];
-  sessionId?: string;
-  call: RiceToolCall;
-  codexSearch?: typeof searchCodexHostedWeb;
-  wechatSearch?: typeof searchWechatArticles;
-  wechatRead?: typeof readWechatArticle;
-}): Promise<RiceToolResult> {
-  const requiredCapability = toolCapabilities[input.call.name];
+export async function executeRiceTool(
+  input: RiceToolExecutionInput,
+): Promise<RiceToolResult> {
+  const requiredCapability = riceToolCapability(input.call.name);
   if (!requiredCapability) {
     throw new HandlerError(
       'TOOL_NOT_ALLOWED',
@@ -366,182 +69,23 @@ export async function executeRiceTool(input: {
   }
   const args = objectValue(input.call.arguments);
   try {
-    let result: RiceToolResult;
-    if (input.call.name === 'workspace.file.list') {
-      const files = await listToolBrokerFiles(
-        input.context,
-        limitValue(args.limit, 20, 50),
-      );
-      result = {
-        modelContent: JSON.stringify(files),
-        summary: `找到 ${files.length} 个可访问文件`,
-        itemCount: files.length,
-      };
-    } else if (input.call.name === 'workspace.file.read') {
-      const file = await getToolBrokerFile(
-        input.context,
-        stringValue(args.objectId, 'objectId'),
-      );
-      if (!readableMediaTypes.has(file.object.mediaType)) {
-        throw new HandlerError(
-          'TOOL_FILE_TYPE_UNSUPPORTED',
-          '当前只支持读取 txt、md 和 json 文本文件',
-          false,
-        );
-      }
-      const content = await streamText(
-        await new LocalStorageAdapter(input.storageRoot).get(file.object),
-      );
-      result = {
-        modelContent: JSON.stringify({
-          id: file.object.id,
-          fileName: file.fileName,
-          mediaType: file.object.mediaType,
-          content,
-        }),
-        summary: `已读取 ${file.fileName}`,
-        itemCount: 1,
-      };
-    } else if (input.call.name === 'workspace.memory.search') {
-      const memories = await searchToolBrokerMemories(
-        input.context,
-        stringValue(args.query, 'query'),
-        limitValue(args.limit, 5, 20),
-      );
-      result = {
-        modelContent: JSON.stringify(memories),
-        summary: `找到 ${memories.length} 条相关记忆`,
-        itemCount: memories.length,
-      };
-    } else if (input.call.name === 'workspace.session.search') {
-      const sessions = await searchToolBrokerSessions(
-        input.context,
-        stringValue(args.query, 'query'),
-        limitValue(args.limit, 10, 20),
-      );
-      result = {
-        modelContent: JSON.stringify(sessions),
-        summary: `找到 ${sessions.length} 个相关对话`,
-        itemCount: sessions.length,
-      };
-    } else if (input.call.name === 'web.search') {
-      const query = stringValue(args.query, 'query');
-      if (query.length > 2_000) {
-        throw new HandlerError(
-          'TOOL_INPUT_INVALID',
-          'query 不能超过 2000 个字符',
-          false,
-        );
-      }
-      const search = await (input.codexSearch ?? searchCodexHostedWeb)(
-        query,
-        limitValue(args.maxResults, 5, 10),
-      );
-      result = {
-        modelContent: JSON.stringify({
-          provider: search.provider,
-          query: search.query,
-          retrievedAt: new Date().toISOString(),
-          output: search.output,
-          sources: search.results,
-        }),
-        summary: `已通过 Codex 检索“${query}”`,
-        itemCount: search.results.length,
-      };
-    } else if (input.call.name === 'web.fetch') {
-      const page = await fetchPublicWebPage(stringValue(args.url, 'url'));
-      result = {
-        modelContent: JSON.stringify(page),
-        summary: `已读取 ${new URL(page.url).hostname}`,
-        itemCount: 1,
-      };
-    } else if (input.call.name === 'wechat.article.search') {
-      const query = stringValue(args.query, 'query');
-      const articles = await (input.wechatSearch ?? searchWechatArticles)(
-        query,
-        limitValue(args.limit, 5, 10),
-      );
-      result = {
-        modelContent: JSON.stringify({
-          provider: 'sogou-weixin',
-          query,
-          retrievedAt: new Date().toISOString(),
-          results: articles,
-        }),
-        summary: `找到 ${articles.length} 篇公众号公开文章`,
-        itemCount: articles.length,
-      };
-    } else if (input.call.name === 'wechat.article.read') {
-      const article = await (input.wechatRead ?? readWechatArticle)(
-        stringValue(args.url, 'url'),
-      );
-      result = {
-        modelContent: JSON.stringify(article),
-        summary: `已读取公众号文章《${article.title}》`,
-        itemCount: 1,
-      };
-    } else if (input.call.name.startsWith('local.')) {
-      const bridge = await dispatchBridgeCommand({
-        context: input.context,
-        payload: BridgeCommandPayloadSchema.parse({
-          capability: input.call.name,
-          arguments: args,
-        }),
-        idempotencyKey: `tool:${input.context.runId}:${input.call.id}`,
-      });
-      result = {
-        modelContent: JSON.stringify({
-          source: 'rice-bridge',
-          localWorkspace: bridge.workspaceLabel,
-          output: bridge.output,
-        }),
-        summary: `${bridge.workspaceLabel} · ${bridge.summary}`,
-      };
-    } else if (input.call.name === 'automation.create') {
-      const delayMinutes = args.delayMinutes;
-      if (
-        typeof delayMinutes !== 'number' ||
-        !Number.isInteger(delayMinutes) ||
-        delayMinutes < 1 ||
-        delayMinutes > 525600
-      ) {
-        throw new HandlerError(
-          'TOOL_INPUT_INVALID',
-          'delayMinutes 必须是 1 到 525600 之间的整数',
-          false,
-        );
-      }
-      const automation = await createAutomationFromExecutionContext({
-        context: input.context,
-        sessionId: input.sessionId,
-        name: stringValue(args.name, 'name'),
-        prompt: stringValue(args.prompt, 'prompt'),
-        delayMinutes,
-      });
-      result = {
-        modelContent: JSON.stringify({
-          automationId: automation.id,
-          name: automation.name,
-          runAt: automation.nextRunAt,
-          sessionId: automation.lastSessionId,
-        }),
-        summary: `已创建一次性自动化，将于 ${automation.nextRunAt ?? '指定时间'} 执行`,
-        itemCount: 1,
-      };
-    } else {
+    if (
+      input.platformTestRunId &&
+      riceToolRisk(input.call.name) !== 'read_only'
+    ) {
       throw new HandlerError(
-        'TOOL_NOT_ALLOWED',
-        `不允许调用工具 ${input.call.name}`,
+        'PLATFORM_PREVIEW_READ_ONLY',
+        '平台配置试用仅允许只读工具',
         false,
       );
     }
+
+    const registration = requireRiceToolHandler(input.call.name);
+    const result = await registration.execute({ input, arguments: args });
     await recordToolBrokerAudit({
       context: input.context,
       toolName: input.call.name,
-      metadata: {
-        skillVersionIds: input.skillVersionIds ?? [],
-        requiredCapability,
-      },
+      metadata: auditMetadata(input, requiredCapability),
     });
     return result;
   } catch (error) {
@@ -553,10 +97,7 @@ export async function executeRiceTool(input: {
         error instanceof HandlerError
           ? error.code.toLowerCase()
           : 'tool_execution_failed',
-      metadata: {
-        skillVersionIds: input.skillVersionIds ?? [],
-        requiredCapability,
-      },
+      metadata: auditMetadata(input, requiredCapability),
     }).catch(() => undefined);
     throw error;
   }

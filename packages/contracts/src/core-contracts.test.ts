@@ -7,6 +7,7 @@ import {
   authorizeExecution,
   CancelRunInputSchema,
   CreateRunInputSchema,
+  CreateCheckpointMemoryCandidateInputSchema,
   CreateSessionAttachmentInputSchema,
   CreateWorkspaceMemoryInputSchema,
   formatSseCursor,
@@ -148,6 +149,32 @@ describe('authorization contracts', () => {
       new Date('2026-08-05T11:00:00.000Z'),
     );
     expect(decision.allowed).toBe(true);
+  });
+});
+
+describe('memory 2.0 contracts', () => {
+  it('defaults explicit memories to durable work notes', () => {
+    const memory = CreateWorkspaceMemoryInputSchema.parse({
+      workspaceId: ids.workspaceA,
+      employeeId: null,
+      content: '用户确认的项目事实',
+      sourceType: 'user',
+      sourceId: null,
+    });
+    expect(memory.lifecycleState).toBe('durable');
+    expect(memory.memoryClass).toBe('work_note');
+  });
+
+  it('accepts checkpoint-derived candidate input without promoting it', () => {
+    const candidate = CreateCheckpointMemoryCandidateInputSchema.parse({
+      workspaceId: ids.workspaceA,
+      employeeId: ids.resource,
+      sessionId: ids.session,
+      checkpointId: ids.eventA,
+      content: '待用户确认的工作进展',
+      sourceLabel: 'Conversation checkpoint',
+    });
+    expect(candidate.checkpointId).toBe(ids.eventA);
   });
 });
 

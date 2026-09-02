@@ -102,6 +102,27 @@ export const RunFeedbackInputSchema = z
   })
   .strict();
 
+export const EmployeeQualityActionInputSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('create_eval_suite'),
+      payload: z.unknown(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('record_eval_run'),
+      payload: z.unknown(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('update_release'),
+      payload: z.unknown(),
+    })
+    .strict(),
+]);
+
 export const EmployeeReleaseSchema = z
   .object({
     employeeId: UuidSchema,

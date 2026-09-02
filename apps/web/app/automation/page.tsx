@@ -1,11 +1,7 @@
-import { AppShell } from '../components/app-shell';
-import { readFrameworkRolloutPolicy } from '../../lib/framework/rollout';
+import { redirect } from 'next/navigation';
+
+export const dynamic = 'force-dynamic';
 
 export default function AutomationPage() {
-  return (
-    <AppShell
-      initialPanel="automation"
-      rolloutPolicy={readFrameworkRolloutPolicy()}
-    />
-  );
+  redirect('/chatflow');
 }

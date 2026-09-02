@@ -4,6 +4,7 @@ import {
   savePlatformEmployeeDraft,
 } from '@allrice/database';
 
+import { apiProblem } from '../../../../../../lib/api-error-response';
 import { executionErrorResponse } from '../../../../../../lib/execution/responses';
 import { requirePlatformAdminContext } from '../../../../../../lib/identity/platform-admin';
 
@@ -21,7 +22,11 @@ export async function GET(request: Request, routeContext: RouteContext) {
     const employee = await getPlatformEmployee(employeeId);
     return employee
       ? Response.json({ employee })
-      : Response.json({ error: { message: 'AI 员工不存在' } }, { status: 404 });
+      : apiProblem({
+          status: 404,
+          code: 'RESOURCE_NOT_FOUND',
+          message: 'AI 员工不存在',
+        });
   } catch (error) {
     return executionErrorResponse(error);
   }

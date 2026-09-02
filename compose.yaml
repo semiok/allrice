@@ -23,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.worker
-    command: ['pnpm', 'db:migrate']
+    command: ['pnpm', 'db:prepare']
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,6 +120,7 @@ services:
       ALLRICE_CODEX_MODEL: ${ALLRICE_CODEX_MODEL:-gpt-5.6-luna}
       ALLRICE_CODEX_REASONING_EFFORT: ${ALLRICE_CODEX_REASONING_EFFORT:-high}
       ALLRICE_DSH_PLATFORM_HOME: /var/lib/allrice/dsh-platform
+      ALLRICE_DSH_RUNTIME_ROOT: /var/lib/allrice/dsh-runtime
       DATABASE_URL: postgres://${POSTGRES_USER:-allrice}:${POSTGRES_PASSWORD:-allrice}@postgres:5432/${POSTGRES_DB:-allrice}
     healthcheck:
       test:
@@ -136,6 +137,7 @@ services:
       - storage-data:/var/lib/allrice/storage
       - codex-data:/var/lib/allrice/codex
       - dsh-platform-data:/var/lib/allrice/dsh-platform
+      - dsh-runtime-data:/var/lib/allrice/dsh-runtime
     restart: unless-stopped
 
   proxy:
@@ -157,3 +159,4 @@ volumes:
   codex-data:
   dsh-admin-data:
   dsh-platform-data:
+  dsh-runtime-data:

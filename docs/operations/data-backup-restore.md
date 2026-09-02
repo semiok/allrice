@@ -24,7 +24,7 @@ Never place credentials, signed URLs or invitation/session tokens in a manifest.
 
 1. Restore into a new PostgreSQL database and a new empty storage root/bucket prefix.
 2. Restore the database dump, then the object snapshot.
-3. Point a compatible AllRice image at the restored stores and run `pnpm db:migrate` followed by `pnpm db:verify`.
+3. Point a compatible AllRice image at the restored stores and run `pnpm db:prepare` to apply migrations, synchronize reviewed platform content and verify the database.
 4. Compare the manifest schema version and artifact checksums.
 5. Sample objects from `allrice_storage_objects`, verify stored SHA-256 and ownership, then exercise signed access as the owner and denial as another user.
 6. Switch traffic only after readiness and the sample checks pass. Retain the old stores until the recovery window ends.
