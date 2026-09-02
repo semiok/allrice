@@ -309,6 +309,39 @@ export const riceToolDefinitions = [
     },
   },
   {
+    name: 'local.fs.write',
+    description:
+      '在当前用户通过 Rice Bridge 授权的 Mac 文件夹内新建或原子更新文本文件。覆盖已有文件必须提供最近一次读取返回的 SHA-256；敏感路径、符号链接和授权目录之外的路径会被拒绝。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', minLength: 1 },
+        content: { type: 'string', maxLength: 200000 },
+        expectedSha256: {
+          type: ['string', 'null'],
+          pattern: '^sha256:[a-f0-9]{64}$',
+          description:
+            '覆盖已有文件时必填，使用 local.fs.read 最近返回的 sha256；新建文件时省略。',
+        },
+      },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local.fs.mkdir',
+    description:
+      '在当前用户通过 Rice Bridge 授权的 Mac 文件夹内新建一个目录。父目录必须已经存在；敏感路径、符号链接和授权目录之外的路径会被拒绝。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', minLength: 1 },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'local.git.status',
     description:
       '在当前用户已授权的 Mac 仓库中执行固定只读的 Git status 检查。不能执行任意命令。',

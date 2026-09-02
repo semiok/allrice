@@ -148,6 +148,20 @@ export const allRiceToolManifest = [
     dshWireName: 'local_fs_read',
   },
   {
+    canonicalName: 'local.fs.write',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_fs_write',
+  },
+  {
+    canonicalName: 'local.fs.mkdir',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_fs_mkdir',
+  },
+  {
     canonicalName: 'local.git.status',
     capability: 'storage:read',
     risk: 'read_only',

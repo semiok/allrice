@@ -139,9 +139,13 @@ export async function consumeConversationSteer(input: {
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const commands = await transaction<
-      { followup_run_id: string; assistant_message_id: string }[]
+      {
+        followup_run_id: string;
+        assistant_message_id: string;
+        message: string;
+      }[]
     >`
-      select c.followup_run_id, f.assistant_message_id
+      select c.followup_run_id, f.assistant_message_id, c.message
       from allrice_conversation_commands c
       join allrice_conversation_followups f on f.run_id = c.followup_run_id
       where c.id = ${values.commandId} and c.state = 'claimed'
@@ -198,7 +202,9 @@ export async function consumeConversationSteer(input: {
     await transaction`
       update allrice_messages
       set content = ${transaction.json({
-        text: '已补充给正在工作的 Rice。',
+        text: command.message.startsWith('allrice:user-question:v1:')
+          ? ''
+          : '已补充给正在工作的 Rice。',
         citations: [],
       })}, status = 'completed', completed_at = now(), error_code = null
       where id = ${command.assistant_message_id} and status = 'pending'

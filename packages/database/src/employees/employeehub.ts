@@ -100,6 +100,8 @@ const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'local.fs.list': 'storage:read',
   'local.fs.search': 'storage:read',
   'local.fs.read': 'storage:read',
+  'local.fs.write': 'storage:write',
+  'local.fs.mkdir': 'storage:write',
   'local.git.status': 'storage:read',
   'local.git.diff': 'storage:read',
 };

@@ -2,15 +2,22 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 
-export const BridgeProtocolVersion = 1 as const;
+export const BridgeProtocolVersion = 2 as const;
 
-export const BridgePlatformSchema = z.literal('macos-arm64');
+export const BridgeProtocolVersionSchema = z.union([
+  z.literal(1),
+  z.literal(2),
+]);
+
+export const BridgePlatformSchema = z.enum(['macos-arm64', 'macos-x64']);
 export type BridgePlatform = z.infer<typeof BridgePlatformSchema>;
 
 export const BridgeCapabilitySchema = z.enum([
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
+  'local.fs.write',
+  'local.fs.mkdir',
   'local.git.status',
   'local.git.diff',
 ]);
@@ -74,6 +81,28 @@ export const BridgeCommandPayloadSchema = z.discriminatedUnion('capability', [
     .strict(),
   z
     .object({
+      capability: z.literal('local.fs.write'),
+      arguments: z
+        .object({
+          path: RelativePathSchema,
+          content: z.string().max(200_000),
+          expectedSha256: z
+            .string()
+            .regex(/^sha256:[a-f0-9]{64}$/)
+            .nullable()
+            .optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      capability: z.literal('local.fs.mkdir'),
+      arguments: z.object({ path: RelativePathSchema }).strict(),
+    })
+    .strict(),
+  z
+    .object({
       capability: z.literal('local.git.status'),
       arguments: z.object({ path: RelativePathSchema.default('.') }).strict(),
     })
@@ -107,7 +136,7 @@ export const BridgeDeviceSchema = z
     ownerId: UuidSchema,
     name: z.string().trim().min(1).max(120),
     platform: BridgePlatformSchema,
-    protocolVersion: z.literal(BridgeProtocolVersion),
+    protocolVersion: BridgeProtocolVersionSchema,
     capabilities: z.array(BridgeCapabilitySchema).min(1).max(16),
     status: BridgeDeviceStatusSchema,
     lastSeenAt: TimestampSchema.nullable(),
@@ -150,6 +179,13 @@ export const PairBridgeDeviceResponseSchema = z
   .object({
     device: BridgeDeviceSchema,
     deviceToken: z.string().min(32).max(256),
+  })
+  .strict();
+
+export const HeartbeatBridgeDeviceInputSchema = z
+  .object({
+    protocolVersion: z.literal(BridgeProtocolVersion),
+    capabilities: z.array(BridgeCapabilitySchema).min(1).max(16),
   })
   .strict();
 

@@ -50,5 +50,6 @@ export * from './skills.ts';
 export * from './sse.ts';
 export * from './storage.ts';
 export * from './tool-manifest.ts';
+export * from './user-questions.ts';
 export * from './workspace.ts';
 export * from './workflows.ts';

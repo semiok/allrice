@@ -89,7 +89,7 @@ export const PlatformEmployeeDefinitionSchema = z
           'confirm_external',
           'autonomous',
         ]),
-        bridgeAccess: z.enum(['none', 'read_only']),
+        bridgeAccess: z.enum(['none', 'read_only', 'read_write']),
         connectorIdentityModes: z.array(z.enum(['user', 'service'])).max(2),
         deniedCapabilities: z
           .array(

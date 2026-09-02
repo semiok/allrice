@@ -277,6 +277,13 @@ main.shell {
   gap: 4px;
 }
 
+.bridgeRecovery .bridgeDownloads {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .bridgeRecovery p,
 .bridgeRecovery small {
   margin: 0;
@@ -286,10 +293,14 @@ main.shell {
 }
 
 .bridgeClientDownload {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--dsw-alias-link-default);
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
   cursor: pointer;
   font-size: 12px;
   line-height: 18px;
@@ -297,7 +308,77 @@ main.shell {
 }
 
 .bridgeClientDownload:hover {
-  text-decoration: underline;
+  border-color: var(--dsw-alias-border-selected);
+}
+
+.bridgeRecovery .bridgePairingButton {
+  margin-top: 6px;
+}
+
+.bridgeRecovery .bridgeFeedback {
+  margin-top: 4px;
+  color: var(--dsw-alias-link-default);
+}
+
+.bridgeRecovery .bridgeFeedback[data-kind='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.bridgeRecovery .bridgePairing {
+  width: 100%;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.bridgeRecovery .bridgePairingCode {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.bridgePairing code {
+  flex: 1;
+  overflow-x: auto;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.bridgePairingCode button {
+  width: 38px;
+  flex: 0 0 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.bridgePairingCode button:hover {
+  border-color: var(--dsw-alias-border-selected);
+  color: var(--dsw-alias-label-primary);
+}
+
+.bridgePairingCode svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .bridgeRecovery .bridgeRecoveryPrimary {
@@ -1141,6 +1222,128 @@ main.shell {
   line-height: 14px;
 }
 
+.confirmationRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.confirmationCard {
+  width: min(525px, 82%);
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  background: var(--dsw-specific-input-major);
+  box-shadow: 0 4px 16px rgb(32 69 140 / 7%);
+}
+
+.confirmationCard > header {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
+}
+
+.confirmationCard > header > i {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--dsw-alias-button-info-fill);
+  color: #fff;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.confirmationCard > header > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.confirmationCard > header strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.confirmationCard > header span,
+.confirmationCard > header time {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.confirmationCard > header time {
+  align-self: start;
+  white-space: nowrap;
+}
+
+.confirmationCard dl {
+  margin: 0;
+  padding: 5px 13px;
+}
+
+.confirmationCard dl > div {
+  display: grid;
+  grid-template-columns: minmax(86px, 0.42fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+}
+
+.confirmationCard dl > div + div {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.confirmationCard dt {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 22px;
+}
+
+.confirmationCard dd {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+}
+
+.confirmationValue,
+.confirmationSkipped {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 3px 8px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.confirmationValue em {
+  flex: none;
+  border-radius: 5px;
+  padding: 1px 4px;
+  color: var(--dsw-alias-button-info-fill);
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.confirmationSkipped {
+  color: var(--dsw-alias-label-caption);
+}
+
 .assistantIdentity {
   display: flex;
   align-items: center;
@@ -1649,6 +1852,217 @@ main.shell {
   grid-column: 1 / -1;
 }
 
+.userQuestionFrame {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: 6px 16px 10px;
+}
+
+.userQuestionCard {
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--dsh-chat-content-width);
+  max-height: min(60vh, 520px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 20px;
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-shadow-lv2);
+  color: var(--dsw-alias-label-primary);
+}
+
+.userQuestionHeader {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 8px;
+}
+
+.userQuestionHeader div {
+  min-width: 0;
+}
+
+.userQuestionHeader span {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.userQuestionHeader h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 550;
+  line-height: 23px;
+}
+
+.userQuestionHeader > strong {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.userQuestionBody {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 12px;
+  overscroll-behavior: contain;
+}
+
+.userQuestionDetail {
+  margin: 4px 8px 10px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.userQuestionOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.userQuestionOption {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  min-height: 42px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.userQuestionOption:hover:not(:disabled),
+.userQuestionOptionSelected {
+  border-color: var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.userQuestionOption > i {
+  display: grid;
+  flex: 0 0 22px;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-overlay);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.userQuestionOptionSelected > i {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.userQuestionOption > span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 7px;
+}
+
+.userQuestionOption strong {
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 22px;
+}
+
+.userQuestionOption em {
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
+  color: var(--dsw-alias-button-info-fill);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.userQuestionOption small {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.userQuestionCustom {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 62px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  resize: vertical;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 11px;
+  outline: none;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.userQuestionCustom:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.userQuestionFooter {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 14px;
+}
+
+.userQuestionNavigation,
+.userQuestionSubmit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.userQuestionNavigation button {
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.userQuestionSubmit small {
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+}
+
+.userQuestionSubmit button {
+  min-width: 94px;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.userQuestionCard button:disabled,
+.userQuestionCard textarea:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: 57px minmax(0, 1fr) !important;
@@ -1668,5 +2082,21 @@ main.shell {
 
   .providerChip {
     max-width: 116px;
+  }
+
+  .userQuestionFrame {
+    padding: 6px 8px 8px;
+  }
+
+  .userQuestionCard {
+    border-radius: 16px;
+  }
+
+  .userQuestionFooter {
+    align-items: flex-end;
+  }
+
+  .userQuestionNavigation {
+    flex-wrap: wrap;
   }
 }

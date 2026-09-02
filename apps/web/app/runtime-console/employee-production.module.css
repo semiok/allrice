@@ -252,10 +252,100 @@
   grid-column: 1 / -1;
 }
 
-.field span {
+.field > span {
   color: #c8ccd1;
   font-size: 13px;
   font-weight: 650;
+}
+
+.fieldLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fieldLabel code,
+.runtimeFileMap code,
+.runtimeSourceNotice code {
+  padding: 3px 7px;
+  color: #9fc0ff;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 650;
+  background: #202c42;
+  border: 1px solid #354c73;
+  border-radius: 6px;
+}
+
+.fieldLabel code[data-kind='policy'] {
+  color: #e5c1ff;
+  background: #32253d;
+  border-color: #5b3e70;
+}
+
+.runtimeFileMap {
+  display: grid;
+  gap: 13px;
+  padding: 15px;
+  background: #1c1f22;
+  border: 1px solid #3b4045;
+  border-radius: 12px;
+}
+
+.runtimeFileMap header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.runtimeFileMap header span,
+.runtimeFileMap p {
+  color: #9299a2;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.runtimeFileMap > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.runtimeFileMap article,
+.runtimeSourceNotice > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.runtimeFileMap article {
+  min-width: 0;
+  padding: 10px;
+  background: #181a1d;
+  border-radius: 9px;
+}
+
+.runtimeFileMap article span,
+.runtimeSourceNotice span {
+  color: #b5bbc3;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtimeFileMap p {
+  margin: 0;
+}
+
+.runtimeSourceNotice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 13px 15px;
+  background: #1c1f22;
+  border: 1px solid #3b4045;
+  border-radius: 11px;
 }
 
 .field input,
@@ -368,7 +458,8 @@
 }
 
 .dangerZone,
-.audit {
+.audit,
+.publishStatus {
   display: grid;
   gap: 12px;
   padding: 17px;
@@ -377,9 +468,22 @@
 }
 
 .dangerZone h3,
-.audit h3 {
+.audit h3,
+.publishStatus h3 {
   margin: 0;
   font-size: 16px;
+}
+
+.publishStatus {
+  border-color: #315a48;
+  background: #17231e;
+}
+
+.publishStatus span,
+.publishStatus p {
+  margin: 0;
+  color: #aab4ae;
+  font-size: 13px;
 }
 
 .dangerButton {
@@ -420,6 +524,18 @@
   text-align: right;
 }
 
+.audit .auditSummary {
+  display: grid;
+  gap: 4px;
+  color: #edf0f2;
+  text-align: left;
+}
+
+.auditSummary small {
+  color: #9299a2;
+  font-size: 12px;
+}
+
 .error {
   color: #ff9c9c;
   border-color: #713d42;
@@ -438,6 +554,16 @@
 
   .grid,
   .checks {
+    grid-template-columns: 1fr;
+  }
+
+  .runtimeFileMap header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .runtimeFileMap > div {
     grid-template-columns: 1fr;
   }
 }

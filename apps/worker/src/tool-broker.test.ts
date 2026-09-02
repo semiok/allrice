@@ -267,7 +267,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     ).rejects.toMatchObject({ code: 'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED' });
   });
 
-  it('keeps Bridge tools read-only and dispatches only structured commands', async () => {
+  it('dispatches only structured Bridge commands with governed risks', async () => {
     expect(
       riceToolDefinitionsForCapabilities(['storage:read']).map(
         (tool) => tool.name,
@@ -312,6 +312,44 @@ describe('Codex hosted search Tool Broker integration', () => {
       output: { path: 'README.md' },
     });
     expect(result.summary).toBe('AI-what · 已读取 README.md');
+    expect(riceToolRisk('local.fs.write')).toBe('managed_write');
+
+    dispatchBridgeCommand.mockResolvedValue({
+      output: {
+        path: 'src/rice.ts',
+        created: false,
+        sha256: `sha256:${'b'.repeat(64)}`,
+      },
+      summary: '已更新 src/rice.ts',
+      workspaceLabel: 'AI-what',
+    });
+    const writeCallId = randomUUID();
+    await executeRiceTool({
+      context,
+      capabilities: ['storage:write'],
+      storageRoot: '.local/storage',
+      call: {
+        id: writeCallId,
+        name: 'local.fs.write',
+        arguments: {
+          path: 'src/rice.ts',
+          content: 'export const rice = true;\n',
+          expectedSha256: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+    });
+    expect(dispatchBridgeCommand).toHaveBeenLastCalledWith({
+      context,
+      payload: {
+        capability: 'local.fs.write',
+        arguments: {
+          path: 'src/rice.ts',
+          content: 'export const rice = true;\n',
+          expectedSha256: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+      idempotencyKey: `tool:${context.runId}:${writeCallId}`,
+    });
   });
 
   it('lists and reads only workspace-scoped text objects through storage', async () => {

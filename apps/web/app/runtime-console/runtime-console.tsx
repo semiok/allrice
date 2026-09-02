@@ -3,8 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { GovernanceConsole } from './governance-console';
-import { runtimeCapabilityCatalog } from './runtime-capability-catalog';
+import {
+  dshRuntimeCoreComponents,
+  runtimeCapabilityCatalog,
+  type RuntimeCapabilityCatalogGroup,
+} from './runtime-capability-catalog';
 import { EmployeeProduction } from './employee-production';
+import {
+  aggregateRuntimeTimelineEvents,
+  type RuntimeTimelineEvent,
+  type RuntimeTimelineItem,
+  type RuntimeTimelineTurn,
+} from './runtime-timeline';
 import styles from './runtime-console.module.css';
 
 interface RuntimeInventoryItem {
@@ -48,6 +58,28 @@ interface RuntimeInventoryItem {
   } | null;
 }
 
+interface TenantRuntimeItem {
+  organization: { id: string; slug: string; name: string };
+  workspace: { id: string; slug: string; name: string };
+  sessions: {
+    total: number;
+    runtimeBound: number;
+    active: number;
+    error: number;
+    lastRuntimeAt: string | null;
+  };
+  bridge: {
+    deviceId: string;
+    name: string;
+    platform: string;
+    protocolVersion: number | null;
+    capabilities: string[];
+    status: 'online' | 'offline';
+    lastSeenAt: string | null;
+    workspaceLabel: string | null;
+  } | null;
+}
+
 interface RuntimeConsoleResponse {
   console: {
     name: string;
@@ -56,35 +88,27 @@ interface RuntimeConsoleResponse {
     mode: string;
     source: string;
   };
+  tenants: TenantRuntimeItem[];
   runtimes: RuntimeInventoryItem[];
-}
-
-interface RuntimeTimelineEvent {
-  id: string;
-  key: string;
-  runId: string;
-  sequence: number;
-  kind:
-    | 'context'
-    | 'think'
-    | 'search'
-    | 'tool'
-    | 'todo'
-    | 'compaction'
-    | 'lifecycle'
-    | 'answer';
-  status: string;
-  title: string;
-  detail: string | null;
-  occurredAt: string | null;
 }
 
 interface RuntimeTimelineResponse {
   timeline: {
     sessionId: string;
     run: { id: string; status: string } | null;
-    events: RuntimeTimelineEvent[];
+    turns: RuntimeTimelineTurn[];
   };
+}
+
+interface PlatformNativeSkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  checksum: string;
+  requiredToolRefs: string[];
+  enabled: boolean;
+  version: string;
+  reviewStatus: 'draft' | 'reviewed' | 'rejected';
 }
 
 function time(value: string | null) {
@@ -111,11 +135,30 @@ function runtimeStateLabel(item: RuntimeInventoryItem) {
   return '已结束';
 }
 
+type TenantBridgeState =
+  'ready' | 'workspace-missing' | 'offline' | 'not-configured';
+
+function tenantBridgeState(tenant: TenantRuntimeItem): TenantBridgeState {
+  if (!tenant.bridge) return 'not-configured';
+  if (tenant.bridge.status === 'offline') return 'offline';
+  if (!tenant.bridge.workspaceLabel) return 'workspace-missing';
+  return 'ready';
+}
+
+function tenantBridgeStatusLabel(tenant: TenantRuntimeItem) {
+  const state = tenantBridgeState(tenant);
+  if (state === 'ready') return 'Bridge 在线';
+  if (state === 'workspace-missing') return 'Bridge 在线';
+  if (state === 'offline') return 'Bridge 离线';
+  return '未配置 Bridge';
+}
+
 export function RuntimeConsole() {
   const [view, setView] = useState<
     'runtimes' | 'employees' | 'capabilities' | 'governance'
   >('runtimes');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [timeline, setTimeline] = useState<
@@ -164,10 +207,10 @@ export function RuntimeConsole() {
     }
     const next = body as RuntimeConsoleResponse;
     setData(next);
-    setSelectedId((current) =>
-      current && next.runtimes.some((item) => item.session.id === current)
+    setSelectedTenantId((current) =>
+      current && next.tenants.some((item) => item.workspace.id === current)
         ? current
-        : (next.runtimes[0]?.session.id ?? null),
+        : (next.tenants[0]?.workspace.id ?? null),
     );
     setUpdatedAt(new Date());
     setError('');
@@ -183,6 +226,21 @@ export function RuntimeConsole() {
     );
     return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!data || !selectedTenantId) {
+      setSelectedId(null);
+      return;
+    }
+    const tenantRuntimes = data.runtimes.filter(
+      (item) => item.workspace.id === selectedTenantId,
+    );
+    setSelectedId((current) =>
+      current && tenantRuntimes.some((item) => item.session.id === current)
+        ? current
+        : (tenantRuntimes[0]?.session.id ?? null),
+    );
+  }, [data, selectedTenantId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -226,27 +284,41 @@ export function RuntimeConsole() {
     () => data?.runtimes.find((item) => item.session.id === selectedId) ?? null,
     [data, selectedId],
   );
+  const selectedTenant = useMemo(
+    () =>
+      data?.tenants.find((item) => item.workspace.id === selectedTenantId) ??
+      null,
+    [data, selectedTenantId],
+  );
+  const tenantRuntimes = useMemo(
+    () =>
+      data?.runtimes.filter((item) => item.workspace.id === selectedTenantId) ??
+      [],
+    [data, selectedTenantId],
+  );
   const running = data?.runtimes.filter(
     (item) => item.process?.status === 'live',
   ).length;
-  const bound = data?.runtimes.filter((item) => item.runtime.threadId).length;
-  const projectedTimeline = useMemo(() => {
-    const items = new Map<string, RuntimeTimelineEvent>();
-    for (const event of timeline?.events ?? []) {
-      const previous = items.get(event.key);
-      items.set(event.key, {
-        ...event,
-        sequence: previous?.sequence ?? event.sequence,
-        title:
-          previous && event.title === '工具调用完成'
-            ? previous.title
-            : event.title,
-        detail: event.detail ?? previous?.detail ?? null,
-      });
-    }
-    return [...items.values()].sort(
-      (left, right) => left.sequence - right.sequence,
-    );
+  const onlineBridges = data?.tenants.filter(
+    (item) => item.bridge?.status === 'online',
+  ).length;
+  const totalSessions = data?.tenants.reduce(
+    (total, tenant) => total + tenant.sessions.total,
+    0,
+  );
+  const projectedTurns = useMemo(() => {
+    return (timeline?.turns ?? []).map((turn) => {
+      const answerEvent = [...turn.events]
+        .reverse()
+        .find((event) => event.kind === 'answer' && event.detail);
+      return {
+        ...turn,
+        items: aggregateRuntimeTimelineEvents(
+          turn.events.filter((event) => event.kind !== 'answer'),
+        ),
+        answerText: answerEvent?.detail ?? turn.assistantMessage.text,
+      };
+    });
   }, [timeline]);
 
   return (
@@ -258,11 +330,6 @@ export function RuntimeConsole() {
             <strong>AllRice Runtime Console</strong>
             <small>真实 Worker Runtime · DSH Native</small>
           </div>
-        </div>
-        <div className={styles.actions}>
-          <span className={styles.readonly}>只读</span>
-          <button onClick={() => void load()}>刷新</button>
-          <a href="https://dsh.bplabs.xyz/">打开 DSH Lab ↗</a>
         </div>
       </header>
 
@@ -296,27 +363,27 @@ export function RuntimeConsole() {
       {view === 'employees' ? (
         <EmployeeProduction />
       ) : view === 'capabilities' ? (
-        <CapabilitySourceView />
+        <CapabilitySourceView onOpenEmployees={() => selectView('employees')} />
       ) : view === 'governance' ? (
         <GovernanceConsole />
       ) : (
         <>
           <section className={styles.summary}>
             <div>
+              <span>租户</span>
+              <strong>{data?.tenants.length ?? 0}</strong>
+            </div>
+            <div>
+              <span>Session</span>
+              <strong>{totalSessions ?? 0}</strong>
+            </div>
+            <div>
               <span>活跃 Runtime</span>
               <strong>{running ?? 0}</strong>
             </div>
             <div>
-              <span>已绑定 Session</span>
-              <strong>{bound ?? 0}</strong>
-            </div>
-            <div>
-              <span>Harness</span>
-              <strong>DSH</strong>
-            </div>
-            <div>
-              <span>控制权</span>
-              <strong>ChatFlow 3.0</strong>
+              <span>在线 Bridge</span>
+              <strong>{onlineBridges ?? 0}</strong>
             </div>
             <p>
               {updatedAt
@@ -326,14 +393,104 @@ export function RuntimeConsole() {
           </section>
 
           {error ? <p className={styles.error}>{error}</p> : null}
+          <section className={styles.tenantOverview}>
+            <header className={styles.tenantOverviewHeader}>
+              <div>
+                <p>Tenant Runtime</p>
+                <h1>租户运行状态</h1>
+                <span>
+                  先选择租户，再查看该租户的 Session、Worker、模型与事件明细。
+                  每张卡片同时展示该租户的 Bridge、心跳和本地工作区状态。
+                </span>
+              </div>
+              <strong>{data?.tenants.length ?? 0} 个租户</strong>
+            </header>
+            <div className={styles.tenantGrid}>
+              {data?.tenants.map((tenant) => (
+                <button
+                  className={styles.tenantCard}
+                  data-selected={
+                    tenant.workspace.id === selectedTenantId
+                      ? 'true'
+                      : undefined
+                  }
+                  key={tenant.workspace.id}
+                  onClick={() => setSelectedTenantId(tenant.workspace.id)}
+                >
+                  <header>
+                    <span>
+                      <strong>{tenant.organization.name}</strong>
+                      <small>{tenant.workspace.name}</small>
+                    </span>
+                    <em data-state={tenantBridgeState(tenant)}>
+                      {tenantBridgeStatusLabel(tenant)}
+                    </em>
+                  </header>
+                  <dl>
+                    <div>
+                      <dt>Session</dt>
+                      <dd>{tenant.sessions.total}</dd>
+                    </div>
+                    <div>
+                      <dt>Runtime</dt>
+                      <dd>{tenant.sessions.runtimeBound}</dd>
+                    </div>
+                    <div>
+                      <dt>活跃</dt>
+                      <dd>{tenant.sessions.active}</dd>
+                    </div>
+                    <div>
+                      <dt>异常</dt>
+                      <dd>{tenant.sessions.error}</dd>
+                    </div>
+                  </dl>
+                  <div className={styles.tenantBridge}>
+                    {tenant.bridge ? (
+                      <>
+                        <div className={styles.tenantBridgeDevice}>
+                          <strong>{tenant.bridge.name}</strong>
+                          <small>
+                            {tenant.bridge.platform} · 最后心跳{' '}
+                            {time(tenant.bridge.lastSeenAt)}
+                          </small>
+                        </div>
+                        {tenant.bridge.status === 'online' ? (
+                          <div className={styles.tenantBridgeWorkspace}>
+                            <span>本地工作区</span>
+                            <strong
+                              data-state={
+                                tenant.bridge.workspaceLabel
+                                  ? 'selected'
+                                  : 'missing'
+                              }
+                            >
+                              {tenant.bridge.workspaceLabel ?? '未选择工作区'}
+                            </strong>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <p className={styles.tenantBridgeEmpty}>
+                        租户尚未配对本地 Bridge；云端 Runtime 不受影响。
+                      </p>
+                    )}
+                  </div>
+                </button>
+              ))}
+              {data && data.tenants.length === 0 ? (
+                <p className={styles.tenantEmpty}>当前没有有效租户。</p>
+              ) : null}
+            </div>
+          </section>
+
           <div className={styles.content}>
             <aside className={styles.sidebar}>
               <header>
-                <strong>Runtime Inventory</strong>
-                <small>{data?.runtimes.length ?? 0}</small>
+                <strong>Session Runtime</strong>
+                <small>{tenantRuntimes.length}</small>
               </header>
               <div className={styles.runtimeList}>
-                {data?.runtimes.map((item) => (
+                {tenantRuntimes.map((item) => (
                   <button
                     className={
                       item.session.id === selectedId ? styles.selected : ''
@@ -351,14 +508,17 @@ export function RuntimeConsole() {
                     <span>
                       <strong>{item.session.title}</strong>
                       <small>
-                        {item.organization.slug} / {item.workspace.slug}
+                        {item.session.employeeName ?? 'AI 员工'} ·{' '}
+                        {item.owner.email}
                       </small>
                     </span>
                     <em>{runtimeStateLabel(item)}</em>
                   </button>
                 ))}
-                {data && data.runtimes.length === 0 ? (
-                  <p className={styles.empty}>还没有创建过 DSH Session。</p>
+                {data && selectedTenant && tenantRuntimes.length === 0 ? (
+                  <p className={styles.empty}>
+                    这个租户还没有绑定 DSH Runtime 的 Session。
+                  </p>
                 ) : null}
               </div>
             </aside>
@@ -500,8 +660,11 @@ export function RuntimeConsole() {
                   <article className={styles.timeline}>
                     <header>
                       <div>
-                        <strong>DSH Native Event Stream</strong>
-                        <span>按 Harness 原始顺序 · 1.5 秒刷新</span>
+                        <strong>Session 完整对话与事件</strong>
+                        <span>
+                          全部 {projectedTurns.length} 轮 · 按 Harness 原始顺序
+                          · 1.5 秒刷新
+                        </span>
                       </div>
                       <em data-state={timeline?.run?.status ?? 'idle'}>
                         {timeline?.run?.status ?? 'no run'}
@@ -509,25 +672,19 @@ export function RuntimeConsole() {
                     </header>
                     {timelineError ? (
                       <p className={styles.timelineError}>{timelineError}</p>
-                    ) : projectedTimeline.length ? (
-                      <ol className={styles.eventList}>
-                        {projectedTimeline.map((event) => (
-                          <li key={event.key} data-kind={event.kind}>
-                            <i>{event.kind.slice(0, 1).toUpperCase()}</i>
-                            <div>
-                              <span>
-                                <strong>{event.title}</strong>
-                                <em>{event.status}</em>
-                              </span>
-                              {event.detail ? <p>{event.detail}</p> : null}
-                            </div>
-                            <time>{time(event.occurredAt)}</time>
-                          </li>
+                    ) : projectedTurns.length ? (
+                      <div className={styles.turnList}>
+                        {projectedTurns.map((turn, index) => (
+                          <RuntimeTurn
+                            key={turn.run.id}
+                            turn={turn}
+                            number={index + 1}
+                          />
                         ))}
-                      </ol>
+                      </div>
                     ) : (
                       <p className={styles.timelineEmpty}>
-                        这个 Session 还没有 DSH 原生事件。
+                        这个 Session 还没有租户对话。
                       </p>
                     )}
                   </article>
@@ -551,9 +708,132 @@ export function RuntimeConsole() {
   );
 }
 
-function CapabilitySourceView() {
-  const migrated = runtimeCapabilityCatalog.find(
-    (group) => group.source === 'migrated',
+function RuntimeTurn(props: {
+  number: number;
+  turn: RuntimeTimelineTurn & {
+    items: RuntimeTimelineItem[];
+    answerText: string | null;
+  };
+}) {
+  return (
+    <section className={styles.turn}>
+      <header className={styles.turnHeader}>
+        <div>
+          <strong>第 {props.number} 轮</strong>
+          <span>Run {props.turn.run.id.slice(0, 8)}</span>
+        </div>
+        <div>
+          <em data-state={props.turn.run.status}>{props.turn.run.status}</em>
+          <time>{time(props.turn.run.createdAt)}</time>
+        </div>
+      </header>
+
+      <div className={styles.dialogueMessage} data-role="user">
+        <span>租户</span>
+        <p>{props.turn.userMessage.text ?? '（没有可展示的文本）'}</p>
+        <time>{time(props.turn.userMessage.occurredAt)}</time>
+      </div>
+
+      {props.turn.items.length ? (
+        <ol className={styles.eventList}>
+          {props.turn.items.map((item) => (
+            <RuntimeEventItem item={item} key={item.key} />
+          ))}
+        </ol>
+      ) : null}
+
+      <div className={styles.dialogueMessage} data-role="assistant">
+        <span>Rice</span>
+        <p>{props.turn.answerText ?? '（本轮还没有回复文本）'}</p>
+        <time>{time(props.turn.assistantMessage.occurredAt)}</time>
+      </div>
+    </section>
+  );
+}
+
+function RuntimeEventItem(props: { item: RuntimeTimelineItem }) {
+  if (props.item.type === 'event') {
+    return <RuntimeEvent event={props.item.event} />;
+  }
+  return (
+    <li className={styles.eventGroup} data-kind={props.item.kind}>
+      <i>G</i>
+      <div>
+        <details>
+          <summary>
+            <span>
+              <strong>{props.item.title}</strong>
+              <em>{props.item.status}</em>
+            </span>
+            <small>展开明细</small>
+          </summary>
+          <ol>
+            {props.item.events.map((event) => (
+              <li key={event.key}>
+                <span>{event.detail ?? event.title}</span>
+                <em>{event.title}</em>
+              </li>
+            ))}
+          </ol>
+        </details>
+      </div>
+      <time>{time(props.item.occurredAt)}</time>
+    </li>
+  );
+}
+
+function RuntimeEvent(props: { event: RuntimeTimelineEvent }) {
+  return (
+    <li data-kind={props.event.kind}>
+      <i>{props.event.kind.slice(0, 1).toUpperCase()}</i>
+      <div>
+        <span>
+          <strong>{props.event.title}</strong>
+          <em>{props.event.status}</em>
+        </span>
+        {props.event.detail ? <p>{props.event.detail}</p> : null}
+      </div>
+      <time>{time(props.event.occurredAt)}</time>
+    </li>
+  );
+}
+
+function CapabilityGroupCard(props: { group: RuntimeCapabilityCatalogGroup }) {
+  return (
+    <article
+      className={styles.capabilityGroup}
+      data-source={props.group.source}
+    >
+      <header>
+        <div>
+          <h2>{props.group.title}</h2>
+          <p>{props.group.description}</p>
+        </div>
+        <span>{props.group.badge}</span>
+      </header>
+      <ul>
+        {props.group.items.map((item) => (
+          <li key={item.id}>
+            <div>
+              <strong>{item.name}</strong>
+              {item.packageName ? <code>{item.packageName}</code> : null}
+              <p>{item.detail}</p>
+            </div>
+            <span>{item.policy}</span>
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+
+function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
+  const [coreOpen, setCoreOpen] = useState(false);
+  const [skills, setSkills] = useState<PlatformNativeSkillSummary[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(true);
+  const [skillsError, setSkillsError] = useState('');
+  const dshPlugins = runtimeCapabilityCatalog.find(
+    (group) => group.source === 'dsh-plugin',
   );
   const allrice = runtimeCapabilityCatalog.find(
     (group) => group.source === 'allrice',
@@ -561,62 +841,223 @@ function CapabilitySourceView() {
   const blocked = runtimeCapabilityCatalog.find(
     (group) => group.source === 'blocked',
   );
+  const availableSkills = skills.filter(
+    (skill) => skill.enabled && skill.reviewStatus === 'reviewed',
+  );
+
+  useEffect(() => {
+    let active = true;
+    const loadSkills = async () => {
+      const response = await fetch('/api/v1/admin/platform-employees', {
+        cache: 'no-store',
+      });
+      if (response.status === 401) {
+        window.location.assign(
+          `/login?next=${encodeURIComponent('/runtime-console?view=capabilities')}`,
+        );
+        return;
+      }
+      const body = (await response.json().catch(() => null)) as {
+        skills?: PlatformNativeSkillSummary[];
+        error?: { message?: string };
+      } | null;
+      if (!response.ok) {
+        throw new Error(
+          body?.error?.message ?? `业务 Skill 加载失败（${response.status}）`,
+        );
+      }
+      if (!active) return;
+      setSkills(body?.skills ?? []);
+      setSkillsError('');
+      setSkillsLoading(false);
+    };
+    void loadSkills().catch((reason: unknown) => {
+      if (!active) return;
+      setSkillsError(
+        reason instanceof Error ? reason.message : '业务 Skill 加载失败',
+      );
+      setSkillsLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!coreOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCoreOpen(false);
+    };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [coreOpen]);
 
   return (
     <section className={styles.capabilityPage}>
       <header className={styles.capabilityHeader}>
         <div>
-          <p>MET-91 · Runtime 准入快照</p>
+          <p>Runtime 组件、Tool 与 Skill 边界</p>
           <h1>能力来源</h1>
           <span>
-            这里展示 AllRice Runtime 的真实来源边界，不会从 DSH Lab
-            自动同步或直接启用插件。
+            DSH 提供 Agent 执行引擎，AllRice 负责租户权限、Tool 与业务 Skill
+            发布。DSH Lab 中手动安装的内容不会自动进入租户 Runtime。
           </span>
         </div>
         <aside>
-          <strong>{migrated?.items.length ?? 0}</strong>
-          <span>第一批已迁移</span>
-          <strong>{allrice?.items.length ?? 0}</strong>
-          <span>AllRice 自有</span>
+          <strong>{dshRuntimeCoreComponents.length}</strong>
+          <span>DSH 基础组件</span>
+          <strong>{dshPlugins?.items.length ?? 0}</strong>
+          <span>准入增强插件</span>
+          <strong>{skillsLoading ? '—' : availableSkills.length}</strong>
+          <span>可绑定业务 Skill</span>
           <strong>{blocked?.items.length ?? 0}</strong>
-          <span>禁止直接迁移</span>
+          <span>默认禁止能力</span>
         </aside>
       </header>
 
+      <div className={styles.capabilityTaxonomy}>
+        <article>
+          <strong>Runtime 组件</strong>
+          <span>
+            驱动 Agent、Session、模型调用和上下文管理，随 Runtime 运行。
+          </span>
+        </article>
+        <article>
+          <strong>Tool</strong>
+          <span>提供可执行动作，每次调用都由 AllRice 按租户权限重新授权。</span>
+        </article>
+        <article>
+          <strong>业务 Skill</strong>
+          <span>
+            告诉 Rice 何时、按什么方法工作，但不会自行扩大 Tool 权限。
+          </span>
+        </article>
+      </div>
+
+      <section className={styles.coreOverview}>
+        <div>
+          <span>DSH Restricted Runtime</span>
+          <h2>{dshRuntimeCoreComponents.length} 个基础组件正在装载使用</h2>
+          <p>
+            包括 Agent Loop、Provider 路由、Session 持久化、Token
+            计量、基础压缩和受控 Skill
+            加载机制。部分组件每轮必经，部分按条件触发。
+          </p>
+        </div>
+        <button type="button" onClick={() => setCoreOpen(true)}>
+          查看基础组件
+        </button>
+      </section>
+
       <div className={styles.capabilityGroups}>
-        {runtimeCapabilityCatalog.map((group) => (
-          <article
-            className={styles.capabilityGroup}
-            data-source={group.source}
-            key={group.source}
-          >
-            <header>
-              <div>
-                <h2>{group.title}</h2>
-                <p>{group.description}</p>
-              </div>
-              <span>{group.badge}</span>
-            </header>
+        {dshPlugins ? <CapabilityGroupCard group={dshPlugins} /> : null}
+        {allrice ? <CapabilityGroupCard group={allrice} /> : null}
+
+        <article className={styles.capabilityGroup} data-source="skills">
+          <header>
+            <div>
+              <h2>AllRice 审核发布的业务 Skill</h2>
+              <p>
+                Skill 是给 Employee 的工作方法，不是 DSH
+                插件。这里显示平台已审核且可用的目录；只有绑定并发布给 Employee
+                后，才会进入对应租户 Runtime。
+              </p>
+            </div>
+            <button
+              className={styles.groupAction}
+              type="button"
+              onClick={props.onOpenEmployees}
+            >
+              前往 AI 员工装配
+            </button>
+          </header>
+          {skillsLoading ? (
+            <p className={styles.capabilityStatus}>正在读取平台 Skill 目录…</p>
+          ) : skillsError ? (
+            <p className={styles.capabilityStatus} data-error="true">
+              {skillsError}
+            </p>
+          ) : availableSkills.length ? (
             <ul>
-              {group.items.map((item) => (
-                <li key={item.id}>
+              {availableSkills.map((skill) => (
+                <li key={skill.id}>
                   <div>
-                    <strong>{item.name}</strong>
-                    {item.packageName ? <code>{item.packageName}</code> : null}
-                    <p>{item.detail}</p>
+                    <strong>{skill.name}</strong>
+                    <code>
+                      {skill.version} · {skill.checksum.slice(0, 20)}…
+                    </code>
+                    <p>
+                      {skill.description}
+                      {skill.requiredToolRefs.length
+                        ? ` 所需 Tool：${skill.requiredToolRefs.join('、')}。`
+                        : ' 不依赖额外 Tool。'}
+                    </p>
                   </div>
-                  <span>{item.policy}</span>
+                  <span>平台已准入 · 按员工绑定</span>
                 </li>
               ))}
             </ul>
-          </article>
-        ))}
+          ) : (
+            <p className={styles.capabilityStatus}>
+              当前没有可绑定的业务 Skill。
+            </p>
+          )}
+        </article>
+
+        {blocked ? <CapabilityGroupCard group={blocked} /> : null}
       </div>
 
       <footer className={styles.capabilityFooter}>
-        DSH Lab 只负责发现和调试候选能力。正式路径固定为：管理端验证 → 安全审核
-        → 固定版本 → Runtime 配置 → 新 Runtime 生效。
+        正式路径：DSH Lab 发现候选 → 管理端验证 → 安全与许可证审核 → 固定版本 →
+        AllRice 发布 → 绑定 Employee → 下一次 Run 冻结生效。DSH Lab
+        的手动安装不会直接进入生产租户。
       </footer>
+
+      {coreOpen ? (
+        <div
+          className={styles.modalBackdrop}
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCoreOpen(false);
+          }}
+        >
+          <section
+            aria-labelledby="dsh-core-title"
+            aria-modal="true"
+            className={styles.coreModal}
+            role="dialog"
+          >
+            <header>
+              <div>
+                <span>DSH Restricted Runtime</span>
+                <h2 id="dsh-core-title">正在使用的基础组件</h2>
+                <p>
+                  以下组件固定编入当前 Runtime。它们是执行机制，不是业务 Skill。
+                </p>
+              </div>
+              <button
+                aria-label="关闭基础组件弹窗"
+                type="button"
+                onClick={() => setCoreOpen(false)}
+              >
+                ×
+              </button>
+            </header>
+            <ul>
+              {dshRuntimeCoreComponents.map((component) => (
+                <li key={component.id}>
+                  <div>
+                    <strong>{component.name}</strong>
+                    <code>{component.packageName}</code>
+                    <p>{component.detail}</p>
+                  </div>
+                  <span>{component.policy}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -3,17 +3,23 @@ import { chmod, copyFile, mkdtemp, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const required = [
+const staticEnvironment = [
   'ALLRICE_BRIDGE_DEVICE_TOKEN',
   'ALLRICE_BRIDGE_STATIC_DEVICE_ID',
   'ALLRICE_BRIDGE_STATIC_SERVER',
 ];
-for (const name of required) {
-  if (!process.env[name]) throw new Error(`${name} is required`);
+const staticValues = staticEnvironment.map((name) => process.env[name]);
+const staticBuild = staticValues.every(Boolean);
+if (!staticBuild && staticValues.some(Boolean)) {
+  throw new Error(
+    `${staticEnvironment.join(', ')} must either all be set or all be omitted`,
+  );
 }
 
 const output = resolve(process.argv[2] ?? 'RiceBridge');
 const nodeBinary = process.env.ALLRICE_BRIDGE_NODE_BINARY ?? process.execPath;
+const blobNodeBinary =
+  process.env.ALLRICE_BRIDGE_BLOB_NODE_BINARY ?? process.execPath;
 const temporary = await mkdtemp(join(tmpdir(), 'allrice-bridge-sea-'));
 const bundle = join(temporary, 'rice-bridge.cjs');
 const blob = join(temporary, 'rice-bridge.blob');
@@ -29,24 +35,23 @@ function run(command, args, options = {}) {
   }
 }
 
-run(
-  'pnpm',
-  [
-    'exec',
-    'esbuild',
-    'apps/rice-bridge/src/index.ts',
-    '--bundle',
-    '--platform=node',
-    '--format=cjs',
-    `--outfile=${bundle}`,
-    define('ALLRICE_BRIDGE_DEVICE_TOKEN'),
-    define('ALLRICE_BRIDGE_STATIC_DEVICE_ID'),
-    define('ALLRICE_BRIDGE_STATIC_SERVER'),
-    '--define:process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME="Snow Mac M5 · Static v0.2"',
+const esbuildArguments = [
+  'exec',
+  'esbuild',
+  'apps/rice-bridge/src/index.ts',
+  '--bundle',
+  '--platform=node',
+  '--format=cjs',
+  `--outfile=${bundle}`,
+];
+if (staticBuild) {
+  esbuildArguments.push(
+    ...staticEnvironment.map(define),
+    '--define:process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME="Rice Bridge Static"',
     '--define:process.env.ALLRICE_BRIDGE_AUTOSTART="1"',
-  ],
-  { cwd: resolve('.') },
-);
+  );
+}
+run('pnpm', esbuildArguments, { cwd: resolve('.') });
 await writeFile(
   seaConfig,
   JSON.stringify({
@@ -56,7 +61,7 @@ await writeFile(
     useCodeCache: false,
   }),
 );
-run(process.execPath, ['--experimental-sea-config', seaConfig]);
+run(blobNodeBinary, ['--experimental-sea-config', seaConfig]);
 await unlink(output).catch(() => undefined);
 await copyFile(nodeBinary, output);
 await chmod(output, 0o755);

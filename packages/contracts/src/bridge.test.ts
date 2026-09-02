@@ -6,8 +6,8 @@ import {
   CompleteBridgeWorkspaceSelectionInputSchema,
 } from './bridge.js';
 
-describe('Rice Bridge v0.1 contracts', () => {
-  it('accepts only the five structured read-only capabilities', () => {
+describe('Rice Bridge contracts', () => {
+  it('accepts structured local capabilities and rejects arbitrary shell', () => {
     expect(
       BridgeCommandPayloadSchema.parse({
         capability: 'local.fs.read',
@@ -23,6 +23,26 @@ describe('Rice Bridge v0.1 contracts', () => {
         arguments: { command: 'whoami' },
       }),
     ).toThrow();
+  });
+
+  it('validates guarded text writes and directory creation', () => {
+    expect(
+      BridgeCommandPayloadSchema.parse({
+        capability: 'local.fs.write',
+        arguments: {
+          path: 'src/index.ts',
+          content: 'export const rice = true;\n',
+          expectedSha256:
+            'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+      }),
+    ).toMatchObject({ capability: 'local.fs.write' });
+    expect(
+      BridgeCommandPayloadSchema.parse({
+        capability: 'local.fs.mkdir',
+        arguments: { path: 'src/new-module' },
+      }),
+    ).toMatchObject({ capability: 'local.fs.mkdir' });
   });
 
   it('rejects absolute and parent-traversing paths', () => {

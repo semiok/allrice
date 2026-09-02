@@ -79,6 +79,8 @@ export const riceToolHandlerRegistry = Object.freeze({
   'local.fs.list': registration('local_bridge', executeLocalBridgeTool),
   'local.fs.search': registration('local_bridge', executeLocalBridgeTool),
   'local.fs.read': registration('local_bridge', executeLocalBridgeTool),
+  'local.fs.write': registration('local_bridge', executeLocalBridgeTool),
+  'local.fs.mkdir': registration('local_bridge', executeLocalBridgeTool),
   'local.git.status': registration('local_bridge', executeLocalBridgeTool),
   'local.git.diff': registration('local_bridge', executeLocalBridgeTool),
   'automation.create': registration('automation', createAutomation),

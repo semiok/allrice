@@ -1,6 +1,7 @@
 import type {
   ChatFlowEventEnvelope,
   SaasCapabilityManifest,
+  UserQuestionAnswerSubmission,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -63,7 +64,13 @@ export interface Workspace {
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: { text: string };
+  content: {
+    text: string;
+    interaction?: {
+      type: 'user_question_answer';
+      answer: UserQuestionAnswerSubmission;
+    };
+  };
   status: 'pending' | 'completed' | 'failed';
   runId: string | null;
   createdAt: string;
@@ -115,7 +122,7 @@ export interface WorkspaceFile extends Attachment {
 export interface BridgeDevice {
   id: string;
   name: string;
-  platform: 'macos-arm64';
+  platform: 'macos-arm64' | 'macos-x64';
   status: 'online' | 'offline' | 'revoked';
   lastSeenAt: string | null;
   folderGrants: Array<{

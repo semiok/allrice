@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 
 import {
   BridgeCapabilities,
+  BridgeProtocolVersion,
   BridgeCommandSchema,
   BridgeWorkspaceSelectionRequestSchema,
   PairBridgeDeviceResponseSchema,
@@ -19,6 +20,7 @@ import {
 
 import { bridgeRequest } from './client.js';
 import {
+  deleteConfig,
   deleteDeviceToken,
   readConfig,
   readDeviceToken,
@@ -29,6 +31,9 @@ import {
 import { LocalExecutionError, executeLocalCommand } from './executor.js';
 
 const execFileAsync = promisify(execFile);
+const defaultBridgeServer =
+  process.env.ALLRICE_BRIDGE_DEFAULT_SERVER ??
+  'https://allrice-dsh.bplabs.xyz';
 
 function option(args: string[], name: string) {
   const index = args.indexOf(name);
@@ -43,6 +48,14 @@ function normalizedServer(value: string) {
   return `${url.origin}/`;
 }
 
+function normalizedPairingCode(value: string) {
+  const compact = value.trim().replaceAll('-', '').toUpperCase();
+  if (!/^[A-F0-9]{8}$/.test(compact)) {
+    throw new Error('配对码格式不正确，请输入网页显示的 8 位配对码');
+  }
+  return `${compact.slice(0, 4)}-${compact.slice(4)}`;
+}
+
 async function credentials(config: BridgeConfig) {
   return {
     config,
@@ -51,15 +64,22 @@ async function credentials(config: BridgeConfig) {
 }
 
 async function pair(args: string[]) {
-  if (platform() !== 'darwin' || arch() !== 'arm64') {
-    throw new Error('Rice Bridge v0.1 supports Apple Silicon macOS only');
+  const currentArch = arch();
+  if (
+    platform() !== 'darwin' ||
+    (currentArch !== 'arm64' && currentArch !== 'x64')
+  ) {
+    throw new Error(
+      'Rice Bridge supports Apple Silicon and Intel 64-bit macOS only',
+    );
   }
-  const server = normalizedServer(
-    option(args, '--server') ?? 'https://allrice-snow.bplabs.xyz',
-  );
-  const code = option(args, '--code');
+  const serverInput = option(args, '--server');
+  if (!serverInput) throw new Error('pair requires --server https://...');
+  const server = normalizedServer(serverInput);
+  const codeInput = option(args, '--code');
+  const code = codeInput ? normalizedPairingCode(codeInput) : undefined;
   if (!code) throw new Error('pair requires --code XXXX-XXXX');
-  const name = option(args, '--name') ?? `${hostname()} · Snow Mac`;
+  const name = option(args, '--name') ?? `${hostname()} · Rice Bridge`;
   const response = PairBridgeDeviceResponseSchema.parse(
     await bridgeRequest({
       server,
@@ -68,8 +88,8 @@ async function pair(args: string[]) {
       body: {
         code,
         name,
-        platform: 'macos-arm64',
-        protocolVersion: 1,
+        platform: currentArch === 'arm64' ? 'macos-arm64' : 'macos-x64',
+        protocolVersion: BridgeProtocolVersion,
         capabilities: BridgeCapabilities,
       },
     }),
@@ -244,6 +264,10 @@ async function start() {
           path: '/api/v1/bridge/device/heartbeat',
           method: 'POST',
           token,
+          body: {
+            protocolVersion: BridgeProtocolVersion,
+            capabilities: BridgeCapabilities,
+          },
         });
         lastHeartbeatAt = Date.now();
       }
@@ -297,6 +321,62 @@ async function start() {
   console.info('Rice Bridge 已停止');
 }
 
+async function hasStoredPairing() {
+  try {
+    const config = await readConfig();
+    await readDeviceToken(config.deviceId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function promptPairingCode(message: string) {
+  if (platform() !== 'darwin') {
+    throw new Error('Rice Bridge 首次配对仅支持 macOS');
+  }
+  try {
+    const result = await execFileAsync('/usr/bin/osascript', [
+      '-e',
+      'on run argv',
+      '-e',
+      'set dialogResult to display dialog (item 1 of argv) default answer "" with title "Rice Bridge 首次配对" buttons {"取消", "配对并启动"} default button "配对并启动" cancel button "取消"',
+      '-e',
+      'return text returned of dialogResult',
+      '-e',
+      'end run',
+      message,
+    ]);
+    return result.stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+async function launch() {
+  if (!(await hasStoredPairing())) {
+    let message =
+      '这是第一次打开 Rice Bridge。\n\n请在 AllRice 页面生成配对码，并在下方输入。配对成功后，本机会安全保存授权，以后直接打开即可自动连接。';
+    while (true) {
+      const input = await promptPairingCode(message);
+      if (input === null) {
+        console.info('已取消 Rice Bridge 配对');
+        return;
+      }
+      try {
+        const code = normalizedPairingCode(input);
+        await pair(['--server', defaultBridgeServer, '--code', code]);
+        break;
+      } catch (error) {
+        message = `配对失败：${
+          error instanceof Error ? error.message : '未知错误'
+        }\n\n请确认配对码仍在 10 分钟有效期内，然后重新输入。`;
+      }
+    }
+  }
+  await start();
+}
+
 async function revoke() {
   const { config, token } = await credentials(await readConfig());
   await bridgeRequest({
@@ -306,21 +386,21 @@ async function revoke() {
     token,
   });
   await deleteDeviceToken(config.deviceId);
+  await deleteConfig();
   console.info('Rice Bridge 设备授权已撤销');
 }
 
 function help() {
   console.info(
-    `Rice Bridge v0.1\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  revoke`,
+    `Rice Bridge v0.2\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  revoke`,
   );
 }
 
 async function main() {
   const [requestedCommand, ...args] = process.argv.slice(2);
-  const command =
-    requestedCommand ??
-    (process.env.ALLRICE_BRIDGE_AUTOSTART === '1' ? 'start' : undefined);
-  if (command === 'pair') await pair(args);
+  const command = requestedCommand ?? 'launch';
+  if (command === 'launch') await launch();
+  else if (command === 'pair') await pair(args);
   else if (command === 'grant') await grant(args);
   else if (command === 'start') await start();
   else if (command === 'status') await status();

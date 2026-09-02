@@ -47,7 +47,7 @@ describe('AllRice worker tool manifest contract', () => {
     expect(dshNativeWireNames).toEqual(expectedWireMap);
   });
 
-  it('keeps the unchanged DSH runtime broker-native registrations aligned', async () => {
+  it('keeps the DSH runtime broker-native registrations aligned', async () => {
     const runtimeSource = await readFile(
       resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
       'utf8',
@@ -71,7 +71,7 @@ describe('AllRice worker tool manifest contract', () => {
         wireName: tool.dshWireName,
       }));
 
-    expect(runtimePairs).toHaveLength(16);
+    expect(runtimePairs).toHaveLength(18);
     expect(
       runtimePairs.toSorted((left, right) =>
         left.canonicalName.localeCompare(right.canonicalName),
