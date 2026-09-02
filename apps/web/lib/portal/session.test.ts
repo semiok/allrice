@@ -14,6 +14,7 @@ describe('host-bound bootstrap portals', () => {
     process.env.ALLRICE_PORTAL_SESSION_SECRET =
       'test-secret-with-at-least-thirty-two-characters';
     process.env.ALLRICE_SNOW_PASSWORD = 'snow-test-password';
+    process.env.ALLRICE_DRINK_PASSWORD = 'drink-test-password';
   });
 
   afterEach(() => {
@@ -26,9 +27,23 @@ describe('host-bound bootstrap portals', () => {
     );
     expect(resolvePortal('allrice-snow.bplabs.xyz')?.key).toBe('snow');
     expect(resolvePortal('allrice-admin.bplabs.xyz')).toBeNull();
-    expect(resolvePortal('allrice-drink.bplabs.xyz')).toBeNull();
+    expect(resolvePortal('allrice-drink.bplabs.xyz')?.key).toBe('drink');
     expect(resolvePortal('dsh.bplabs.xyz')).toBeNull();
     expect(resolvePortal('attacker.invalid')).toBeNull();
+  });
+
+  it('keeps Snow and Drink credentials isolated', () => {
+    const snow = resolvePortal('allrice-snow.bplabs.xyz')!;
+    const drink = resolvePortal('allrice-drink.bplabs.xyz')!;
+    expect(verifyPortalCredentials(drink, 'drink', 'drink-test-password')).toBe(
+      true,
+    );
+    expect(verifyPortalCredentials(drink, 'snow', 'snow-test-password')).toBe(
+      false,
+    );
+    expect(verifyPortalCredentials(snow, 'drink', 'drink-test-password')).toBe(
+      false,
+    );
   });
 
   it('accepts only the credential assigned to the resolved portal', () => {

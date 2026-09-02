@@ -21,6 +21,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import {
   admitDshPromptImageBlocks,
   steerDshAgent,
+  structuredUserQuestionAnswer,
 } from './allrice-dsh-runtime-compatibility.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
@@ -190,6 +191,42 @@ const brokerNativeTools = [
       maxBytes: {
         type: 'integer',
         description: 'Maximum bytes from 1 to 200000.',
+      },
+    },
+  },
+  {
+    canonicalName: 'local.fs.write',
+    wireName: 'local_fs_write',
+    description:
+      'Create or atomically update one text file inside the Rice Bridge authorized folder. Existing files require the SHA-256 returned by the latest read. Sensitive, symlinked and out-of-grant paths are rejected.',
+    parameters: {
+      path: {
+        type: 'string',
+        required: true,
+        description: 'Relative file path.',
+      },
+      content: {
+        type: 'string',
+        required: true,
+        description: 'Complete UTF-8 text content, up to 200000 characters.',
+      },
+      expectedSha256: {
+        type: 'string',
+        description:
+          'Required when overwriting: the sha256 value returned by the latest local_fs_read. Omit for a new file.',
+      },
+    },
+  },
+  {
+    canonicalName: 'local.fs.mkdir',
+    wireName: 'local_fs_mkdir',
+    description:
+      'Create one directory inside the Rice Bridge authorized folder. Its parent must already exist. Sensitive, symlinked and out-of-grant paths are rejected.',
+    parameters: {
+      path: {
+        type: 'string',
+        required: true,
+        description: 'Relative directory path.',
       },
     },
   },
@@ -565,12 +602,23 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             questions: request.questions.map((question) => ({
               id: question.id,
               question: question.question,
+              ...(typeof question.detail === 'string'
+                ? { detail: question.detail }
+                : {}),
               header: question.header ?? null,
               options: (question.options ?? []).map((option) => ({
                 label: option.label,
                 description: option.description ?? null,
               })),
               multiSelect: question.multiSelect === true,
+              ...(question.intent?.kind === 'plan-review'
+                ? {
+                    intent: {
+                      kind: 'plan-review',
+                      approve: question.intent.approve,
+                    },
+                  }
+                : {}),
             })),
           });
         });
@@ -771,7 +819,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       this.ctx.systemPrompt.section({
         name: 'tool:allrice_local_bridge',
         order: 111,
-        text: 'Use the local_fs_* and local_git_* tools for files and repositories in the user-authorized Rice Bridge workspace. These tools are read-only, tenant-scoped, and may only access relative paths under the explicit folder grant. Never claim local access without a successful tool result.',
+        text: 'Use the local_fs_* and local_git_* tools only for files and repositories in the user-authorized Rice Bridge workspace. Every path must remain relative to the explicit folder grant. Read tools are always non-mutating. local_fs_write and local_fs_mkdir are available only when the published employee has managed-write access: use them only when the user has explicitly requested a local project change, read an existing file before overwriting it, and pass the returned SHA-256 to prevent lost updates. Never access sensitive paths, delete files, run arbitrary shell commands, perform Git writes, or claim local access without a successful tool result.',
       });
     }
     if (
@@ -945,18 +993,28 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     }
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
     if (pendingQuestion) {
+      const structured = structuredUserQuestionAnswer(
+        pendingQuestion,
+        params.text,
+      );
+      const answer =
+        structured ??
+        (() => {
+          const answerText = params.text.trim();
+          return {
+            answers: pendingQuestion.questions.map((question, index) => {
+              if (index > 0) return { id: question.id, selected: [] };
+              const selected = (question.options ?? []).find(
+                (option) => option.label === answerText,
+              );
+              return selected
+                ? { id: question.id, selected: [selected.label] }
+                : { id: question.id, selected: [], custom: answerText };
+            }),
+          };
+        })();
       this.pendingUserQuestions.delete(sessionId);
-      const answerText = params.text.trim();
-      const answers = pendingQuestion.questions.map((question, index) => {
-        if (index > 0) return { id: question.id, selected: [] };
-        const selected = (question.options ?? []).find(
-          (option) => option.label === answerText,
-        );
-        return selected
-          ? { id: question.id, selected: [selected.label] }
-          : { id: question.id, selected: [], custom: answerText };
-      });
-      pendingQuestion.resolve({ answers });
+      pendingQuestion.resolve(answer);
       this.userQuestionNotify({
         sessionId,
         questionId: pendingQuestion.questionId,

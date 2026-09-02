@@ -21,6 +21,9 @@ describe('Tool Broker handler registry', () => {
     expect(resolveRiceToolHandler('local.fs.read')?.category).toBe(
       'local_bridge',
     );
+    expect(resolveRiceToolHandler('local.fs.write')?.category).toBe(
+      'local_bridge',
+    );
     expect(resolveRiceToolHandler('local.unregistered')).toBeNull();
   });
 });

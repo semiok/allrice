@@ -5,6 +5,7 @@ import {
   BridgeCommandSchema,
   BridgeDeviceSchema,
   BridgeFolderGrantSchema,
+  HeartbeatBridgeDeviceInputSchema,
   BridgeWorkspaceSelectionRequestSchema,
   CompleteBridgeCommandInputSchema,
   CompleteBridgeWorkspaceSelectionInputSchema,
@@ -42,7 +43,7 @@ interface DeviceRow {
   workspace_id: string;
   owner_id: string;
   name: string;
-  platform: 'macos-arm64';
+  platform: 'macos-arm64' | 'macos-x64';
   protocol_version: number;
   capabilities: BridgeCapability[];
   last_seen_at: Date | null;
@@ -158,6 +159,11 @@ function executionTargetCapabilities(capabilities: BridgeCapability[]) {
   return [
     ...(capabilities.some((item) => item.startsWith('local.fs.'))
       ? (['files.read'] as const)
+      : []),
+    ...(capabilities.some((item) =>
+      ['local.fs.write', 'local.fs.mkdir'].includes(item),
+    )
+      ? (['files.write'] as const)
       : []),
     ...(capabilities.some((item) => item.startsWith('local.git.'))
       ? (['git.read'] as const)
@@ -318,7 +324,7 @@ export async function pairBridgeDevice(input: unknown) {
   const code = normalizePairingCode(parsed.code);
   const token = `rb_${randomBytes(32).toString('base64url')}`;
   const sql = getDatabase();
-  const device = await sql.begin(async (transaction) => {
+  const result = await sql.begin(async (transaction) => {
     const pairings = await transaction<
       {
         id: string;
@@ -335,6 +341,40 @@ export async function pairBridgeDevice(input: unknown) {
     `;
     const pairing = pairings[0];
     if (!pairing) throw new BridgeDataError('pairing_invalid');
+    await transaction`
+      select pg_advisory_xact_lock(
+        hashtextextended(${pairing.workspace_id}::text, 0)
+      )
+    `;
+    const replacedDevices = await transaction<DeviceRow[]>`
+      update allrice_bridge_devices set revoked_at = now(), updated_at = now()
+      where organization_id = ${pairing.organization_id}
+        and workspace_id = ${pairing.workspace_id}
+        and revoked_at is null
+      returning id, organization_id, workspace_id, owner_id, name, platform,
+        protocol_version, capabilities, last_seen_at, created_at, revoked_at
+    `;
+    if (replacedDevices.length) {
+      const replacedIds = replacedDevices.map((device) => device.id);
+      await transaction`
+        update allrice_bridge_folder_grants set revoked_at = now()
+        where device_id in ${transaction(replacedIds)} and revoked_at is null
+      `;
+      await transaction`
+        update allrice_bridge_commands
+        set status = 'canceled', completed_at = now(), updated_at = now(),
+          error_code = 'device_replaced'
+        where device_id in ${transaction(replacedIds)}
+          and status in ('queued', 'claimed', 'running')
+      `;
+      await transaction`
+        update allrice_bridge_workspace_selection_requests
+        set status = 'canceled', completed_at = now(), updated_at = now(),
+          error_code = 'device_replaced'
+        where device_id in ${transaction(replacedIds)}
+          and status in ('queued', 'claimed')
+      `;
+    }
     const rows = await transaction<DeviceRow[]>`
       insert into allrice_bridge_devices (
         organization_id, workspace_id, owner_id, name, platform,
@@ -353,8 +393,22 @@ export async function pairBridgeDevice(input: unknown) {
       set used_at = now(), device_id = ${row.id}
       where id = ${pairing.id}
     `;
-    return row;
+    return { device: row, replacedDevices };
   });
+  const { device, replacedDevices } = result;
+  for (const replaced of replacedDevices) {
+    await audit({
+      organizationId: replaced.organization_id,
+      workspaceId: replaced.workspace_id,
+      actorId: device.owner_id,
+      action: 'bridge.device.revoke',
+      resourceType: 'bridge_device',
+      resourceId: replaced.id,
+      reason: 'replaced_by_new_pairing',
+      metadata: { replacementDeviceId: device.id },
+    });
+    await syncBridgeExecutionTarget(replaced, 'revoked');
+  }
   await audit({
     organizationId: device.organization_id,
     workspaceId: device.workspace_id,
@@ -405,11 +459,17 @@ export async function listBridgeDevices(
   }));
 }
 
-export async function heartbeatBridgeDevice(token: string) {
+export async function heartbeatBridgeDevice(token: string, input?: unknown) {
   const device = await authenticatedDevice(token);
+  const advertised = input
+    ? HeartbeatBridgeDeviceInputSchema.parse(input)
+    : null;
   const sql = getDatabase();
   const rows = await sql<DeviceRow[]>`
-    update allrice_bridge_devices set last_seen_at = now(), updated_at = now()
+    update allrice_bridge_devices set
+      protocol_version = ${advertised?.protocolVersion ?? device.protocol_version},
+      capabilities = ${advertised?.capabilities ?? device.capabilities},
+      last_seen_at = now(), updated_at = now()
     where id = ${device.id} and revoked_at is null
     returning id, organization_id, workspace_id, owner_id, name, platform,
       protocol_version, capabilities, last_seen_at, created_at, revoked_at
@@ -790,7 +850,11 @@ export async function completeBridgeCommand(
     resourceType: 'bridge_command',
     resourceId: commandId,
     decision: parsed.status === 'succeeded' ? 'allowed' : 'denied',
-    reason: parsed.errorCode ?? 'local_read_only_execution',
+    reason:
+      parsed.errorCode ??
+      (['local.fs.write', 'local.fs.mkdir'].includes(row.capability)
+        ? 'local_managed_write_execution'
+        : 'local_read_only_execution'),
     metadata: { deviceId: device.id, capability: row.capability },
   });
   return { status: row.status };

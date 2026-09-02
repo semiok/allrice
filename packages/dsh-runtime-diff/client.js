@@ -53,7 +53,10 @@ window.__ModuleLoader__.load({
     const runtimeOnly = [
       ['ChatFlow 3.0', '多租户 Session、Run、事件流与 Harness 路由'],
       ['AllRice Tool Broker', '冻结能力快照、权限校验、审批与执行审计'],
-      ['Rice Bridge', 'local.fs.* 与 local.git.* 本地只读 Native Tools'],
+      [
+        'Rice Bridge',
+        'local.fs.* 授权目录受控读写与 local.git.* 本地只读 Native Tools',
+      ],
       ['员工能力装配', '按员工分配 Skill、Workflow、Knowledge 与模型策略'],
     ];
 

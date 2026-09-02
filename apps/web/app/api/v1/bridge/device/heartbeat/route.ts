@@ -7,8 +7,9 @@ export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
   try {
+    const input = await request.json().catch(() => undefined);
     return Response.json({
-      device: await heartbeatBridgeDevice(getBridgeDeviceToken(request)),
+      device: await heartbeatBridgeDevice(getBridgeDeviceToken(request), input),
     });
   } catch (error) {
     return bridgeErrorResponse(error);

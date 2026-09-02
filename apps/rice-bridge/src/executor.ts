@@ -1,6 +1,17 @@
 import { execFile } from 'node:child_process';
-import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
-import { basename, relative, resolve, sep } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import {
@@ -22,11 +33,27 @@ export class LocalExecutionError extends Error {
       | 'FILE_TOO_LARGE'
       | 'FILE_TYPE_UNSUPPORTED'
       | 'GRANT_NOT_FOUND'
-      | 'GIT_COMMAND_FAILED',
+      | 'GIT_COMMAND_FAILED'
+      | 'WRITE_PRECONDITION_REQUIRED'
+      | 'WRITE_CONFLICT'
+      | 'PATH_ALREADY_EXISTS'
+      | 'DIRECTORY_NOT_FOUND',
     message: string,
   ) {
     super(message);
   }
+}
+
+function sha256(content: Uint8Array) {
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+function isWriteProtectedPath(path: string) {
+  return path
+    .split('/')
+    .some(
+      (part) => ignoredDirectories.has(part) || sensitiveDirectories.has(part),
+    );
 }
 
 function isSensitivePath(path: string) {
@@ -66,6 +93,136 @@ export async function resolveAuthorizedPath(root: string, requested: string) {
     );
   }
   return { rootReal, candidateReal };
+}
+
+async function resolveAuthorizedWriteTarget(root: string, requested: string) {
+  const rootReal = await realpath(root);
+  const candidate = resolve(rootReal, requested);
+  if (
+    (candidate !== rootReal && !candidate.startsWith(`${rootReal}${sep}`)) ||
+    isSensitivePath(candidate) ||
+    isWriteProtectedPath(requested)
+  ) {
+    throw new LocalExecutionError(
+      candidate.startsWith(`${rootReal}${sep}`)
+        ? 'SENSITIVE_PATH'
+        : 'PATH_OUTSIDE_GRANT',
+      'Requested write path is not available to Rice Bridge',
+    );
+  }
+  let parentReal: string;
+  try {
+    parentReal = await realpath(dirname(candidate));
+  } catch {
+    throw new LocalExecutionError(
+      'DIRECTORY_NOT_FOUND',
+      'Parent directory does not exist; create it explicitly first',
+    );
+  }
+  if (parentReal !== rootReal && !parentReal.startsWith(`${rootReal}${sep}`)) {
+    throw new LocalExecutionError(
+      'PATH_OUTSIDE_GRANT',
+      'Requested write path escapes through a symbolic link',
+    );
+  }
+  const metadata = await lstat(candidate).catch((error: unknown) => {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    ) {
+      return null;
+    }
+    throw error;
+  });
+  if (metadata?.isSymbolicLink()) {
+    throw new LocalExecutionError(
+      'PATH_OUTSIDE_GRANT',
+      'Rice Bridge does not write through symbolic links',
+    );
+  }
+  return { rootReal, candidate, metadata };
+}
+
+async function writeTextFile(
+  root: string,
+  requested: string,
+  content: string,
+  expectedSha256?: string | null,
+) {
+  const bytes = Buffer.from(content, 'utf8');
+  if (bytes.byteLength > defaultMaximumBytes) {
+    throw new LocalExecutionError(
+      'FILE_TOO_LARGE',
+      `File exceeds the ${defaultMaximumBytes} byte write limit`,
+    );
+  }
+  const { rootReal, candidate, metadata } = await resolveAuthorizedWriteTarget(
+    root,
+    requested,
+  );
+  if (metadata && !metadata.isFile()) {
+    throw new LocalExecutionError(
+      'FILE_TYPE_UNSUPPORTED',
+      'Requested write path is not a regular file',
+    );
+  }
+  if (metadata) {
+    if (!expectedSha256) {
+      throw new LocalExecutionError(
+        'WRITE_PRECONDITION_REQUIRED',
+        'Read the existing file and provide its SHA-256 before overwriting it',
+      );
+    }
+    const existing = await readFile(candidate);
+    if (sha256(existing) !== expectedSha256) {
+      throw new LocalExecutionError(
+        'WRITE_CONFLICT',
+        'The file changed after it was read; read it again before writing',
+      );
+    }
+  } else if (expectedSha256) {
+    throw new LocalExecutionError(
+      'WRITE_CONFLICT',
+      'The expected file no longer exists',
+    );
+  }
+  const temporary = resolve(
+    dirname(candidate),
+    `.allrice-write-${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporary, bytes, {
+      flag: 'wx',
+      mode: metadata ? metadata.mode : 0o644,
+    });
+    await rename(temporary, candidate);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+  return {
+    path: relative(rootReal, candidate),
+    bytes: bytes.byteLength,
+    sha256: sha256(bytes),
+    created: !metadata,
+  };
+}
+
+async function createDirectory(root: string, requested: string) {
+  const { rootReal, candidate, metadata } = await resolveAuthorizedWriteTarget(
+    root,
+    requested,
+  );
+  if (metadata) {
+    throw new LocalExecutionError(
+      'PATH_ALREADY_EXISTS',
+      'Requested directory already exists',
+    );
+  }
+  await mkdir(candidate, { mode: 0o755 });
+  return { path: relative(rootReal, candidate), created: true };
 }
 
 async function readTextFile(path: string, maximumBytes: number) {
@@ -202,7 +359,7 @@ export async function executeLocalCommand(
     );
     return {
       output,
-      summary: `在 Snow 的 Mac 上找到 ${output.matches.length} 个匹配`,
+      summary: `在当前 Mac 上找到 ${output.matches.length} 个匹配`,
     };
   }
   if (payload.capability === 'local.fs.read') {
@@ -215,8 +372,31 @@ export async function executeLocalCommand(
       payload.arguments.maxBytes,
     );
     return {
-      output: { path: relative(rootReal, candidateReal), content },
-      summary: `已从 Snow 的 Mac 读取 ${payload.arguments.path}`,
+      output: {
+        path: relative(rootReal, candidateReal),
+        content,
+        sha256: sha256(Buffer.from(content, 'utf8')),
+      },
+      summary: `已从当前 Mac 读取 ${payload.arguments.path}`,
+    };
+  }
+  if (payload.capability === 'local.fs.write') {
+    const output = await writeTextFile(
+      root,
+      payload.arguments.path,
+      payload.arguments.content,
+      payload.arguments.expectedSha256,
+    );
+    return {
+      output,
+      summary: `${output.created ? '已新建' : '已更新'}当前 Mac 文件 ${output.path}`,
+    };
+  }
+  if (payload.capability === 'local.fs.mkdir') {
+    const output = await createDirectory(root, payload.arguments.path);
+    return {
+      output,
+      summary: `已在当前 Mac 新建目录 ${output.path}`,
     };
   }
   if (payload.capability === 'local.git.status') {
@@ -228,7 +408,7 @@ export async function executeLocalCommand(
         false,
         defaultMaximumBytes,
       ),
-      summary: '已读取 Snow 的 Mac 仓库状态',
+      summary: '已读取当前 Mac 仓库状态',
     };
   }
   return {
@@ -239,6 +419,6 @@ export async function executeLocalCommand(
       payload.arguments.staged,
       payload.arguments.maxBytes,
     ),
-    summary: '已读取 Snow 的 Mac 仓库差异',
+    summary: '已读取当前 Mac 仓库差异',
   };
 }

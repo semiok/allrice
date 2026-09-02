@@ -109,6 +109,7 @@ interface MessageRow {
   created_at: Date;
   completed_at: Date | null;
   run_id?: string | null;
+  question_answer_payload?: string | null;
 }
 
 interface AttachmentRow {
@@ -618,12 +619,32 @@ function mapMessage(
   attachments: AttachmentRow[],
 ): ChatMessage {
   const userId = requireUser(context);
+  const storedContent = ChatMessageContentSchema.parse(row.content);
+  let content = storedContent;
+  const prefix = 'allrice:user-question:v1:';
+  if (
+    !storedContent.interaction &&
+    row.question_answer_payload?.startsWith(prefix)
+  ) {
+    try {
+      const candidate = ChatMessageContentSchema.safeParse({
+        ...storedContent,
+        interaction: {
+          type: 'user_question_answer',
+          answer: JSON.parse(row.question_answer_payload.slice(prefix.length)),
+        },
+      });
+      if (candidate.success) content = candidate.data;
+    } catch {
+      // Historical command evidence can be malformed without breaking history.
+    }
+  }
   return {
     id: row.id,
     sessionId: row.session_id,
     ownerId: row.owner_id,
     role: row.role,
-    content: ChatMessageContentSchema.parse(row.content),
+    content,
     status: row.status,
     clientMessageId: row.client_message_id,
     replyToId: row.reply_to_id,
@@ -655,9 +676,19 @@ export async function getChatSessionHistory(
   const row = await sessionRow(context, workspaceId, sessionId);
   const sql = getDatabase();
   const messages = await sql<MessageRow[]>`
-    select m.*, er.run_id
+    select m.*, er.run_id,
+      question_command.message as question_answer_payload
     from allrice_messages m
     left join allrice_employee_runs er on er.assistant_message_id = m.id
+    left join allrice_conversation_followups question_followup
+      on question_followup.user_message_id = m.id
+      and question_followup.organization_id = m.organization_id
+      and question_followup.workspace_id = m.workspace_id
+    left join allrice_conversation_commands question_command
+      on question_command.followup_run_id = question_followup.run_id
+      and question_command.organization_id = m.organization_id
+      and question_command.workspace_id = m.workspace_id
+      and question_command.message like 'allrice:user-question:v1:%'
     where m.organization_id = ${context.organizationId}
       and m.workspace_id = ${workspaceId}
       and m.session_id = ${row.id}
@@ -902,6 +933,9 @@ export async function sendChatMessage(
   input: unknown,
 ) {
   const message = SendChatMessageInputSchema.parse(input);
+  const conversationMessage = message.userQuestionAnswer
+    ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`
+    : message.text;
   const session = await sessionRow(context, workspaceId, sessionId);
   if (session.owner_id !== requireUser(context) || session.archived_at) {
     throw new DataAccessError('authorization_denied');
@@ -986,7 +1020,18 @@ export async function sendChatMessage(
         ) values (
           ${context.organizationId}, ${workspaceId}, ${session.id},
           ${requireUser(context)}, 'user',
-          ${transaction.json({ text: message.text, citations: [] })},
+          ${transaction.json({
+            text: message.text,
+            citations: [],
+            ...(message.userQuestionAnswer
+              ? {
+                  interaction: {
+                    type: 'user_question_answer',
+                    answer: message.userQuestionAnswer,
+                  },
+                }
+              : {}),
+          })},
           ${session.visibility}, ${message.clientMessageId}, 'completed', now()
         )
         returning *
@@ -1171,7 +1216,7 @@ export async function sendChatMessage(
           userMessageId: result.userMessage.id,
           assistantMessageId: result.assistantMessage.id,
           clientUserMessageId: message.clientMessageId,
-          message: message.text,
+          message: conversationMessage,
           requestedMode: message.deliveryMode,
           ...(message.expectedTurnId
             ? { expectedTurnId: message.expectedTurnId }

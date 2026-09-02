@@ -8,7 +8,10 @@ import {
   useState,
 } from 'react';
 
+import type { UserQuestionAnswerSubmission } from '@allrice/contracts';
+
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
+import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
 
 import { ChatComposer } from './chat-composer';
 import { ChatSidebar } from './chat-sidebar';
@@ -32,10 +35,15 @@ import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
+import {
+  UserQuestionComposer,
+  userQuestionAnswerText,
+} from './user-question-composer';
 
 export function ChatFlowClient() {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
@@ -220,11 +228,16 @@ export function ChatFlowClient() {
   const {
     bridgeBusy,
     bridgeDevices,
+    bridgeFeedback,
     bridgeOpen,
+    bridgePairing,
+    bridgePairingBusy,
     bridgeRecoveryActive,
+    copyBridgePairingCode,
+    createBridgePairing,
     disconnectBridgeWorkspace,
-    downloadBridgeClient,
     loadBridgeDevices,
+    noteBridgeDownload,
     requestBridgeWorkspaceSelection,
     setBridgeOpen,
   } = useBridge({ setError, tenantHeaders, workspace });
@@ -374,6 +387,47 @@ export function ChatFlowClient() {
     );
   }
 
+  async function answerUserQuestion(answer: UserQuestionAnswerSubmission) {
+    if (!workspace || !activeId || !pendingUserQuestion || questionBusy) return;
+    setQuestionBusy(true);
+    setError('');
+    try {
+      const result = await readJson<{
+        run: { id: string };
+        delivery: 'immediate' | 'steer_pending' | 'follow_up';
+      }>(
+        await fetch(
+          `/api/v1/sessions/${activeId}/messages?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({
+              clientMessageId: crypto.randomUUID(),
+              text: userQuestionAnswerText(
+                pendingUserQuestion.questions,
+                answer,
+              ),
+              attachmentIds: [],
+              deliveryMode: 'steer',
+              expectedTurnId: pendingUserQuestion.turnId,
+              expectedGeneration: pendingUserQuestion.generation,
+              userQuestionAnswer: answer,
+            }),
+          },
+        ),
+      );
+      if (result.delivery !== 'steer_pending') {
+        throw new Error('这个确认请求已经失效，请在聊天框中重新告诉 Rice。');
+      }
+      await loadHistory(activeId);
+      void streamRun(result.run.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '回答提交失败');
+    } finally {
+      setQuestionBusy(false);
+    }
+  }
+
   if (!workspace || !manifest) {
     return <main className={styles.loading}>正在进入 AllRice ChatFlow…</main>;
   }
@@ -390,6 +444,16 @@ export function ChatFlowClient() {
   const isRunning = Object.values(runViews).some(
     (view) => view.status === 'running' || view.status === 'connecting',
   );
+  const pendingUserQuestion = Object.values(runViews)
+    .filter((view) => view.status === 'running' || view.status === 'connecting')
+    .map((view) => projectPendingUserQuestion(view.events))
+    .filter((value) => value !== null)
+    .sort((left, right) =>
+      left.occurredAt === right.occurredAt
+        ? left.sequence - right.sequence
+        : left.occurredAt.localeCompare(right.occurredAt),
+    )
+    .at(-1);
   const isEmptyConversation =
     !history?.messages.length && Object.keys(runViews).length === 0;
   const recoverableRunView = [...(history?.messages ?? [])]
@@ -594,7 +658,18 @@ export function ChatFlowClient() {
                 className={`${conversationUi.composerSeat} ${styles.composerDock}`}
                 data-composer-seat
               >
-                {renderComposer(false)}
+                {pendingUserQuestion ? (
+                  <UserQuestionComposer
+                    busy={questionBusy}
+                    error={error}
+                    key={pendingUserQuestion.questionId}
+                    onCancelRun={cancelRun}
+                    onSubmit={answerUserQuestion}
+                    pending={pendingUserQuestion}
+                  />
+                ) : (
+                  renderComposer(false)
+                )}
               </div>
             </div>
           )}
@@ -638,8 +713,8 @@ export function ChatFlowClient() {
         >
           <div className={styles.bridgeIntro}>
             <p>
-              Bridge 只读取你明确授权的文件夹，不开放
-              Shell，也不会把模型密钥下发到电脑。
+              Bridge 只访问你明确授权的文件夹；读写能力由员工配置和 Tool Broker
+              控制，不开放 Shell，也不会把模型密钥下发到电脑。
             </p>
             <button
               disabled={bridgeBusy}
@@ -662,8 +737,10 @@ export function ChatFlowClient() {
                 <div>
                   <strong>{device.name}</strong>
                   <small>
-                    {device.status === 'online' ? '在线' : '离线'} · Apple
-                    Silicon
+                    {device.status === 'online' ? '在线' : '离线'} ·{' '}
+                    {device.platform === 'macos-arm64'
+                      ? 'Apple Silicon（M 芯片）'
+                      : 'Intel 芯片'}
                   </small>
                   {device.folderGrants.length ? (
                     <small>
@@ -697,24 +774,86 @@ export function ChatFlowClient() {
                   </strong>
                   {onlineBridgeDevice ? (
                     <p>
-                      点击“选择工作区”后，Snow Mac 会立即弹出 macOS
+                      点击“选择工作区”后，当前 Mac 会立即弹出 macOS
                       文件夹选择器。选择完成后，这里会自动显示文件夹名称。
                     </p>
                   ) : (
                     <p>
-                      请先双击 Snow Mac 桌面的
-                      RiceBridge，并保持终端窗口开启；Bridge
-                      上线后即可从这里选择工作区。
+                      下载并解压后直接打开 RiceBridge。首次打开会在 Bridge
+                      中要求输入配对码；配对成功后会保存在本机，以后打开即可自动连接。
                     </p>
                   )}
+                  <div className={styles.bridgeDownloads}>
+                    <a
+                      className={styles.bridgeClientDownload}
+                      download="RiceBridge-M.zip"
+                      href="/api/v1/bridge/client/macos-arm64"
+                      onClick={() => noteBridgeDownload('M 芯片版')}
+                    >
+                      下载 M 芯片版
+                    </a>
+                    <a
+                      className={styles.bridgeClientDownload}
+                      download="RiceBridge-Intel.zip"
+                      href="/api/v1/bridge/client/macos-x64"
+                      onClick={() => noteBridgeDownload('Intel 芯片版')}
+                    >
+                      下载 Intel 芯片版
+                    </a>
+                  </div>
                   <button
-                    className={styles.bridgeClientDownload}
-                    disabled={bridgeBusy}
-                    onClick={() => void downloadBridgeClient()}
+                    className={styles.bridgePairingButton}
+                    disabled={bridgePairingBusy}
+                    onClick={() => void createBridgePairing()}
                     type="button"
                   >
-                    下载支持网页唤起的 RiceBridge v0.2
+                    {bridgePairingBusy
+                      ? '正在生成…'
+                      : bridgePairing
+                        ? '重新生成配对码'
+                        : '生成配对码'}
                   </button>
+                  {bridgeFeedback ? (
+                    <p
+                      className={styles.bridgeFeedback}
+                      data-kind={bridgeFeedback.kind}
+                      role="status"
+                    >
+                      {bridgeFeedback.message}
+                    </p>
+                  ) : null}
+                  {bridgePairing ? (
+                    <div className={styles.bridgePairing}>
+                      <strong>配对码</strong>
+                      <small>
+                        10 分钟内打开解压后的 RiceBridge，在首次配对窗口中输入：
+                      </small>
+                      <div className={styles.bridgePairingCode}>
+                        <code>{bridgePairing.code.replaceAll('-', '')}</code>
+                        <button
+                          aria-label="复制配对码"
+                          onClick={() =>
+                            void copyBridgePairingCode(bridgePairing.code)
+                          }
+                          title="复制配对码"
+                          type="button"
+                        >
+                          <svg
+                            aria-hidden="true"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <rect height="12" rx="2" width="12" x="8" y="8" />
+                            <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                          </svg>
+                        </button>
+                      </div>
+                      <small>
+                        配对成功后授权会安全保存在这台
+                        Mac；以后再次打开会自动连接， 不需要重复输入配对码。
+                      </small>
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   className={styles.bridgeRecoveryPrimary}
@@ -734,7 +873,7 @@ export function ChatFlowClient() {
                 </button>
                 {bridgeRecoveryActive ? (
                   <small>
-                    正在等待你在 Snow Mac
+                    正在等待你在当前 Mac
                     完成文件夹选择；选择成功后这里会自动显示文件夹名称。
                   </small>
                 ) : null}

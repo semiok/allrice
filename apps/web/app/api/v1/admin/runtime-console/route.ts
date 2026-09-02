@@ -1,4 +1,7 @@
-import { listDshRuntimeInventory } from '@allrice/database';
+import {
+  listDshRuntimeInventory,
+  listTenantRuntimeInventory,
+} from '@allrice/database';
 
 import { executionErrorResponse } from '../../../../../lib/execution/responses';
 import { requirePlatformAdminContext } from '../../../../../lib/identity/platform-admin';
@@ -12,6 +15,10 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const requestedLimit = Number(url.searchParams.get('limit') ?? 100);
     const limit = Number.isFinite(requestedLimit) ? requestedLimit : 100;
+    const [tenants, runtimes] = await Promise.all([
+      listTenantRuntimeInventory(),
+      listDshRuntimeInventory(limit),
+    ]);
     return Response.json({
       console: {
         name: 'AllRice Runtime Console',
@@ -20,7 +27,8 @@ export async function GET(request: Request) {
         mode: 'read-only',
         source: 'allrice_conversation_runtimes',
       },
-      runtimes: await listDshRuntimeInventory(limit),
+      tenants,
+      runtimes,
     });
   } catch (error) {
     return executionErrorResponse(error);

@@ -38,6 +38,12 @@ function fallbackTokenPath() {
   return `${configPath()}.token`;
 }
 
+async function writeFallbackToken(token: string) {
+  const path = fallbackTokenPath();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, token, { mode: 0o600 });
+}
+
 export async function readConfig() {
   const staticDeviceId = process.env.ALLRICE_BRIDGE_STATIC_DEVICE_ID;
   if (staticDeviceId) {
@@ -45,12 +51,10 @@ export async function readConfig() {
       .then((value) => JSON.parse(value) as BridgeConfig)
       .catch(() => null);
     return {
-      server:
-        process.env.ALLRICE_BRIDGE_STATIC_SERVER ??
-        'https://allrice-snow.bplabs.xyz',
+      server: process.env.ALLRICE_BRIDGE_STATIC_SERVER ?? '',
       deviceId: staticDeviceId,
       deviceName:
-        process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME ?? 'Snow Mac M5',
+        process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME ?? 'Rice Bridge Static',
       grants: existing?.deviceId === staticDeviceId ? existing.grants : [],
     };
   }
@@ -65,36 +69,50 @@ export async function writeConfig(config: BridgeConfig) {
   });
 }
 
+export async function deleteConfig() {
+  await unlink(configPath()).catch(() => undefined);
+}
+
 export async function storeDeviceToken(deviceId: string, token: string) {
   if (platform() === 'darwin') {
-    await execFileAsync('/usr/bin/security', [
-      'add-generic-password',
-      '-U',
-      '-s',
-      keychainService,
-      '-a',
-      deviceId,
-      '-w',
-      token,
-    ]);
-    return;
+    try {
+      await execFileAsync('/usr/bin/security', [
+        'add-generic-password',
+        '-U',
+        '-s',
+        keychainService,
+        '-a',
+        deviceId,
+        '-w',
+        token,
+      ]);
+      return;
+    } catch {
+      // A locked Keychain or a non-interactive launch context must not leave
+      // a consumed pairing code without durable local credentials.
+    }
   }
-  await writeFile(fallbackTokenPath(), token, { mode: 0o600 });
+  await writeFallbackToken(token);
 }
 
 export async function readDeviceToken(deviceId: string) {
   const environmentToken = process.env.ALLRICE_BRIDGE_DEVICE_TOKEN;
   if (environmentToken) return environmentToken;
   if (platform() === 'darwin') {
-    const result = await execFileAsync('/usr/bin/security', [
-      'find-generic-password',
-      '-s',
-      keychainService,
-      '-a',
-      deviceId,
-      '-w',
-    ]);
-    return result.stdout.trim();
+    try {
+      const result = await execFileAsync('/usr/bin/security', [
+        'find-generic-password',
+        '-s',
+        keychainService,
+        '-a',
+        deviceId,
+        '-w',
+      ]);
+      return result.stdout.trim();
+    } catch {
+      // Fall through to the private local token written when Keychain access
+      // was unavailable during first launch.
+    }
   }
   return (await readFile(fallbackTokenPath(), 'utf8')).trim();
 }
@@ -108,7 +126,6 @@ export async function deleteDeviceToken(deviceId: string) {
       '-a',
       deviceId,
     ]).catch(() => undefined);
-    return;
   }
   await unlink(fallbackTokenPath()).catch(() => undefined);
 }

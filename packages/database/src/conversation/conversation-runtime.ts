@@ -65,13 +65,42 @@ interface DshRuntimeInventoryRow extends ConversationRuntimeRow {
   process_last_seen_at: Date | string | null;
 }
 
+interface TenantRuntimeInventoryRow {
+  organization_id: string;
+  organization_slug: string;
+  organization_name: string;
+  workspace_id: string;
+  workspace_slug: string;
+  workspace_name: string;
+  session_count: number;
+  runtime_count: number;
+  active_runtime_count: number;
+  error_runtime_count: number;
+  last_runtime_at: Date | string | null;
+  bridge_device_id: string | null;
+  bridge_name: string | null;
+  bridge_platform: string | null;
+  bridge_protocol_version: number | null;
+  bridge_capabilities: string[] | null;
+  bridge_last_seen_at: Date | string | null;
+  bridge_workspace_label: string | null;
+}
+
 interface DshRuntimeEventRow {
   run_id: string;
   run_state: string;
-  sequence: number;
-  event_type: string;
+  run_created_at: Date | string;
+  run_completed_at: Date | string | null;
+  user_content: unknown;
+  user_created_at: Date | string;
+  assistant_content: unknown;
+  assistant_status: string;
+  assistant_created_at: Date | string;
+  assistant_completed_at: Date | string | null;
+  sequence: number | null;
+  event_type: string | null;
   payload: unknown;
-  occurred_at: Date | string;
+  occurred_at: Date | string | null;
 }
 
 const runtimeEventKinds = new Set([
@@ -97,6 +126,7 @@ function safeRecord(value: unknown) {
 }
 
 function mapDshRuntimeEvent(row: DshRuntimeEventRow) {
+  if (row.sequence === null || row.event_type === null) return null;
   const payload = safeRecord(row.payload);
   if (payload.source !== 'dsh' && payload.source !== 'tool_broker') return null;
   if (row.event_type === 'harness.native') {
@@ -281,6 +311,7 @@ export async function listDshRuntimeInventory(limit = 100) {
       order by process.last_seen_at desc
       limit 1
     ) runtime_process on true
+    where session.archived_at is null
     order by
       case
         when runtime_process.process_status = 'live' then 0
@@ -364,6 +395,132 @@ export async function listDshRuntimeInventory(limit = 100) {
 }
 
 /**
+ * Platform-only tenant overview for the Runtime Console. A tenant entry is an
+ * active workspace, including workspaces that have not created a Session yet.
+ * Bridge presence is resolved by tenant scope and never by AI employee.
+ */
+export async function listTenantRuntimeInventory() {
+  const sql = getDatabase();
+  const rows = await sql<TenantRuntimeInventoryRow[]>`
+    select organization.id as organization_id,
+      organization.slug as organization_slug,
+      organization.name as organization_name,
+      workspace.id as workspace_id,
+      workspace.slug as workspace_slug,
+      workspace.name as workspace_name,
+      coalesce(session_stats.session_count, 0)::integer as session_count,
+      coalesce(runtime_stats.runtime_count, 0)::integer as runtime_count,
+      coalesce(runtime_stats.active_runtime_count, 0)::integer
+        as active_runtime_count,
+      coalesce(runtime_stats.error_runtime_count, 0)::integer
+        as error_runtime_count,
+      runtime_stats.last_runtime_at,
+      bridge.id as bridge_device_id,
+      bridge.name as bridge_name,
+      bridge.platform as bridge_platform,
+      bridge.protocol_version as bridge_protocol_version,
+      bridge.capabilities as bridge_capabilities,
+      bridge.last_seen_at as bridge_last_seen_at,
+      bridge.workspace_label as bridge_workspace_label
+    from allrice_workspaces workspace
+    join allrice_organizations organization
+      on organization.id = workspace.organization_id
+    left join lateral (
+      select count(*)::integer as session_count
+      from allrice_chat_sessions session
+      where session.organization_id = workspace.organization_id
+        and session.workspace_id = workspace.id
+        and session.archived_at is null
+    ) session_stats on true
+    left join lateral (
+      select count(*)::integer as runtime_count,
+        count(*) filter (
+          where latest_process.status = 'live'
+            and latest_process.last_seen_at >= now() - interval '15 seconds'
+        )::integer as active_runtime_count,
+        count(*) filter (where runtime.state = 'error')::integer
+          as error_runtime_count,
+        max(runtime.updated_at) as last_runtime_at
+      from allrice_conversation_runtimes runtime
+      join allrice_chat_sessions runtime_session
+        on runtime_session.id = runtime.session_id
+        and runtime_session.organization_id = runtime.organization_id
+        and runtime_session.workspace_id = runtime.workspace_id
+        and runtime_session.archived_at is null
+      left join lateral (
+        select process.status, process.last_seen_at
+        from allrice_dsh_runtime_instances process
+        where process.organization_id = runtime.organization_id
+          and process.workspace_id = runtime.workspace_id
+          and process.session_id = runtime.session_id
+        order by process.last_seen_at desc
+        limit 1
+      ) latest_process on true
+      where runtime.organization_id = workspace.organization_id
+        and runtime.workspace_id = workspace.id
+    ) runtime_stats on true
+    left join lateral (
+      select device.id, device.name, device.platform,
+        device.protocol_version, device.capabilities, device.last_seen_at,
+        folder.label as workspace_label
+      from allrice_bridge_devices device
+      left join lateral (
+        select folder_grant.label
+        from allrice_bridge_folder_grants folder_grant
+        where folder_grant.device_id = device.id
+          and folder_grant.revoked_at is null
+        order by folder_grant.created_at desc, folder_grant.id desc
+        limit 1
+      ) folder on true
+      where device.organization_id = workspace.organization_id
+        and device.workspace_id = workspace.id
+        and device.revoked_at is null
+      order by device.last_seen_at desc nulls last, device.created_at desc
+      limit 1
+    ) bridge on true
+    where workspace.archived_at is null
+      and organization.archived_at is null
+      and organization.slug <> 'allrice-platform'
+    order by organization.name, workspace.name, workspace.id
+  `;
+  return rows.map((row) => ({
+    organization: {
+      id: row.organization_id,
+      slug: row.organization_slug,
+      name: row.organization_name,
+    },
+    workspace: {
+      id: row.workspace_id,
+      slug: row.workspace_slug,
+      name: row.workspace_name,
+    },
+    sessions: {
+      total: row.session_count,
+      runtimeBound: row.runtime_count,
+      active: row.active_runtime_count,
+      error: row.error_runtime_count,
+      lastRuntimeAt: timestamp(row.last_runtime_at),
+    },
+    bridge: row.bridge_device_id
+      ? {
+          deviceId: row.bridge_device_id,
+          name: row.bridge_name ?? 'Rice Bridge',
+          platform: row.bridge_platform ?? 'unknown',
+          protocolVersion: row.bridge_protocol_version,
+          capabilities: row.bridge_capabilities ?? [],
+          status:
+            row.bridge_last_seen_at &&
+            new Date(row.bridge_last_seen_at).getTime() >= Date.now() - 45_000
+              ? ('online' as const)
+              : ('offline' as const),
+          lastSeenAt: timestamp(row.bridge_last_seen_at),
+          workspaceLabel: row.bridge_workspace_label,
+        }
+      : null,
+  }));
+}
+
+/**
  * Platform-only DSH event mirror for one Session. Only presentation-safe fields
  * survive this projection; prompts, tool arguments, credentials, host paths and
  * hidden chain-of-thought are never returned.
@@ -372,27 +529,88 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
   const sessionId = UuidSchema.parse(sessionIdInput);
   const sql = getDatabase();
   const rows = await sql<DshRuntimeEventRow[]>`
-    with latest_run as (
-      select employee_run.run_id
-      from allrice_employee_runs employee_run
-      where employee_run.session_id = ${sessionId}
-      order by employee_run.created_at desc
-      limit 1
-    )
-    select event.run_id, run.state as run_state, event.sequence,
-      event.event_type, event.payload, event.occurred_at
-    from latest_run
-    join allrice_runs run on run.id = latest_run.run_id
-    join allrice_run_events event on event.run_id = latest_run.run_id
-    order by event.sequence
+    select employee_run.run_id, run.state as run_state,
+      employee_run.created_at as run_created_at,
+      employee_run.completed_at as run_completed_at,
+      user_message.content as user_content,
+      user_message.created_at as user_created_at,
+      assistant_message.content as assistant_content,
+      assistant_message.status as assistant_status,
+      assistant_message.created_at as assistant_created_at,
+      assistant_message.completed_at as assistant_completed_at,
+      event.sequence, event.event_type, event.payload, event.occurred_at
+    from allrice_employee_runs employee_run
+    join allrice_runs run
+      on run.id = employee_run.run_id
+      and run.organization_id = employee_run.organization_id
+      and run.workspace_id = employee_run.workspace_id
+    join allrice_messages user_message
+      on user_message.id = employee_run.user_message_id
+      and user_message.organization_id = employee_run.organization_id
+      and user_message.workspace_id = employee_run.workspace_id
+    join allrice_messages assistant_message
+      on assistant_message.id = employee_run.assistant_message_id
+      and assistant_message.organization_id = employee_run.organization_id
+      and assistant_message.workspace_id = employee_run.workspace_id
+    left join allrice_run_events event
+      on event.run_id = employee_run.run_id
+      and event.organization_id = employee_run.organization_id
+      and event.workspace_id = employee_run.workspace_id
+    where employee_run.session_id = ${sessionId}
+    order by employee_run.created_at, event.sequence nulls first
   `;
-  const first = rows[0];
+  const turns = new Map<
+    string,
+    {
+      run: {
+        id: string;
+        status: string;
+        createdAt: string | null;
+        completedAt: string | null;
+      };
+      userMessage: { text: string | null; occurredAt: string | null };
+      assistantMessage: {
+        text: string | null;
+        status: string;
+        occurredAt: string | null;
+      };
+      events: NonNullable<ReturnType<typeof mapDshRuntimeEvent>>[];
+    }
+  >();
+  for (const row of rows) {
+    let turn = turns.get(row.run_id);
+    if (!turn) {
+      turn = {
+        run: {
+          id: row.run_id,
+          status: row.run_state,
+          createdAt: timestamp(row.run_created_at),
+          completedAt: timestamp(row.run_completed_at),
+        },
+        userMessage: {
+          text: safeText(safeRecord(row.user_content).text, 40_000),
+          occurredAt: timestamp(row.user_created_at),
+        },
+        assistantMessage: {
+          text: safeText(safeRecord(row.assistant_content).text, 40_000),
+          status: row.assistant_status,
+          occurredAt: timestamp(
+            row.assistant_completed_at ?? row.assistant_created_at,
+          ),
+        },
+        events: [],
+      };
+      turns.set(row.run_id, turn);
+    }
+    const event = mapDshRuntimeEvent(row);
+    if (event) turn.events.push(event);
+  }
+  const orderedTurns = [...turns.values()];
+  const latest = orderedTurns.at(-1)?.run ?? null;
   return {
     sessionId,
-    run: first ? { id: first.run_id, status: first.run_state } : null,
-    events: rows
-      .map(mapDshRuntimeEvent)
-      .filter((event): event is NonNullable<typeof event> => event !== null),
+    run: latest ? { id: latest.id, status: latest.status } : null,
+    turns: orderedTurns,
   };
 }
 

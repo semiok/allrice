@@ -72,4 +72,15 @@ describe('portal authentication response boundary', () => {
       },
     });
   });
+
+  it('recognizes Drink as an isolated tenant portal', () => {
+    const origin = 'https://allrice-drink.bplabs.xyz';
+    const navigation = proxy(
+      new NextRequest(`${origin}/chatflow`, {
+        headers: { host: 'allrice-drink.bplabs.xyz' },
+      }),
+    );
+    expect(navigation.status).toBe(307);
+    expect(navigation.headers.get('location')).toBe(`${origin}/login`);
+  });
 });

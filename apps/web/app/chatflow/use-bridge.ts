@@ -11,6 +11,18 @@ type UseBridgeOptions = {
   workspace: Workspace | null;
 };
 
+type BridgePairing = {
+  id: string;
+  code: string;
+  deviceName: string;
+  expiresAt: string;
+};
+
+type BridgeFeedback = {
+  kind: 'info' | 'error';
+  message: string;
+};
+
 export function useBridge({
   setError,
   tenantHeaders,
@@ -18,6 +30,13 @@ export function useBridge({
 }: UseBridgeOptions) {
   const [bridgeOpen, setBridgeOpen] = useState(false);
   const [bridgeDevices, setBridgeDevices] = useState<BridgeDevice[]>([]);
+  const [bridgePairing, setBridgePairing] = useState<BridgePairing | null>(
+    null,
+  );
+  const [bridgePairingBusy, setBridgePairingBusy] = useState(false);
+  const [bridgeFeedback, setBridgeFeedback] = useState<BridgeFeedback | null>(
+    null,
+  );
   const [bridgeBusy, setBridgeBusy] = useState(false);
   const [bridgeRecoveryActive, setBridgeRecoveryActive] = useState(false);
 
@@ -108,29 +127,74 @@ export function useBridge({
     [setError, tenantHeaders, workspace],
   );
 
-  const downloadBridgeClient = useCallback(async () => {
-    setBridgeBusy(true);
+  const createBridgePairing = useCallback(async () => {
+    if (!workspace) return;
+    setBridgePairingBusy(true);
+    setBridgeFeedback({ kind: 'info', message: '正在生成租户专属配对码…' });
     try {
-      const response = await fetch('/api/v1/bridge/client/macos-arm64', {
-        headers: tenantHeaders,
+      const result = await readJson<{ pairing: BridgePairing }>(
+        await fetch('/api/v1/bridge/pairings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...tenantHeaders },
+          body: JSON.stringify({
+            workspaceId: workspace.workspaceId,
+            deviceName: 'Rice Bridge',
+          }),
+        }),
+      );
+      setBridgePairing(result.pairing);
+      setBridgeFeedback({
+        kind: 'info',
+        message: '配对码已生成，10 分钟内有效。',
       });
-      if (!response.ok) await readJson(response);
-      const url = URL.createObjectURL(await response.blob());
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = 'RiceBridge-v0.2.zip';
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'RiceBridge 下载失败');
+      const message = cause instanceof Error ? cause.message : '配对码生成失败';
+      setBridgeFeedback({ kind: 'error', message });
+      setError(message);
     } finally {
-      setBridgeBusy(false);
+      setBridgePairingBusy(false);
     }
-  }, [setError, tenantHeaders]);
+  }, [setError, tenantHeaders, workspace]);
+
+  const noteBridgeDownload = useCallback((label: string) => {
+    setBridgeFeedback({
+      kind: 'info',
+      message: `${label}下载已开始，请查看浏览器下载列表。`,
+    });
+  }, []);
+
+  const copyBridgePairingCode = useCallback(
+    async (code: string) => {
+      const compactCode = code.replaceAll('-', '');
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(compactCode);
+        } else {
+          const input = document.createElement('textarea');
+          input.value = compactCode;
+          input.style.position = 'fixed';
+          input.style.opacity = '0';
+          document.body.append(input);
+          input.select();
+          const copied = document.execCommand('copy');
+          input.remove();
+          if (!copied) throw new Error('copy_failed');
+        }
+        setBridgeFeedback({ kind: 'info', message: '配对码已复制。' });
+      } catch {
+        const message = '复制失败，请手动选择配对码';
+        setBridgeFeedback({ kind: 'error', message });
+        setError(message);
+      }
+    },
+    [setError],
+  );
 
   useEffect(() => {
     if (!workspace) {
       setBridgeDevices([]);
+      setBridgePairing(null);
+      setBridgeFeedback(null);
       return;
     }
     void loadBridgeDevices(false, true);
@@ -139,6 +203,11 @@ export function useBridge({
     }, 15_000);
     return () => window.clearInterval(timer);
   }, [loadBridgeDevices, workspace]);
+
+  useEffect(() => {
+    setBridgePairing(null);
+    setBridgeFeedback(null);
+  }, [workspace?.workspaceId]);
 
   useEffect(() => {
     if (!bridgeRecoveryActive || !workspace) return;
@@ -151,11 +220,16 @@ export function useBridge({
   return {
     bridgeBusy,
     bridgeDevices,
+    bridgeFeedback,
     bridgeOpen,
+    bridgePairing,
+    bridgePairingBusy,
     bridgeRecoveryActive,
+    copyBridgePairingCode,
+    createBridgePairing,
     disconnectBridgeWorkspace,
-    downloadBridgeClient,
     loadBridgeDevices,
+    noteBridgeDownload,
     requestBridgeWorkspaceSelection,
     setBridgeOpen,
   };

@@ -46,6 +46,9 @@ describe('Rice capability intersection', () => {
       ]),
     ).toEqual(['storage:write']);
     expect(
+      nativeSkillCapabilityGrants(['local.fs.write', 'local.fs.mkdir']),
+    ).toEqual(['storage:write']);
+    expect(
       resolveEmployeeCapabilities(
         ['model:invoke', 'storage:read', 'network:outbound'],
         [webResearch],

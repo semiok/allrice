@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import { HarnessEventSchema, type HarnessEvent } from '@allrice/contracts';
+import {
+  HarnessEventSchema,
+  UserQuestionRequestSchema,
+  type HarnessEvent,
+} from '@allrice/contracts';
 
 import { HandlerError } from '../errors.js';
 import type {
@@ -424,18 +428,62 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const questions = Array.isArray(notification.params.questions)
           ? notification.params.questions
           : [];
-        const first = record(questions[0]);
-        const summary = shortText(first?.question, 500);
+        const questionId = shortText(notification.params.questionId, 240);
+        const normalized = UserQuestionRequestSchema.safeParse({
+          questionId,
+          questions: questions.map((value) => {
+            const question = record(value);
+            const intent = record(question?.intent);
+            return {
+              id: shortText(question?.id, 240),
+              question: shortText(question?.question, 4_000),
+              ...(shortText(question?.detail, 20_000)
+                ? { detail: shortText(question?.detail, 20_000) }
+                : {}),
+              ...(shortText(question?.header, 160)
+                ? { header: shortText(question?.header, 160) }
+                : {}),
+              options: Array.isArray(question?.options)
+                ? question.options.map((optionValue) => {
+                    const option = record(optionValue);
+                    return {
+                      label: shortText(option?.label, 240),
+                      ...(shortText(option?.description, 1_000)
+                        ? {
+                            description: shortText(option?.description, 1_000),
+                          }
+                        : {}),
+                    };
+                  })
+                : [],
+              multiSelect: question?.multiSelect === true,
+              ...(intent?.kind === 'plan-review' &&
+              shortText(intent.approve, 240)
+                ? {
+                    intent: {
+                      kind: 'plan-review' as const,
+                      approve: shortText(intent.approve, 240),
+                    },
+                  }
+                : {}),
+            };
+          }),
+        });
+        const summary = normalized.success
+          ? normalized.data.questions[0]?.question
+          : shortText(record(questions[0])?.question, 500);
         await input.onNative({
           type: 'native.event',
           presentation: 'context',
           status: 'started',
           label: 'Rice 需要你确认',
           ...(summary ? { summary } : {}),
-          sourceEventId: `dsh:${shortText(notification.params.questionId, 180) ?? randomUUID()}`,
+          sourceEventId: `dsh:${questionId ?? randomUUID()}`,
           sourceEventType: 'session/user-question',
           sourceOccurredAt: new Date().toISOString(),
-          sourcePayload: { questionCount: questions.length },
+          sourcePayload: normalized.success
+            ? normalized.data
+            : { questionId, questionCount: questions.length },
         });
         return;
       }
@@ -448,7 +496,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           sourceEventId: `dsh:${shortText(notification.params.questionId, 180) ?? randomUUID()}:answered`,
           sourceEventType: 'session/user-question-answered',
           sourceOccurredAt: new Date().toISOString(),
-          sourcePayload: {},
+          sourcePayload: {
+            questionId: shortText(notification.params.questionId, 240),
+          },
         });
         return;
       }

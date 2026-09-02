@@ -7,6 +7,7 @@ import {
   MemoryLifecycleStateSchema,
   MemorySourceTypeSchema,
 } from './operations.ts';
+import { UserQuestionAnswerSubmissionSchema } from './user-questions.ts';
 
 export const EmployeeVersionSchema = z
   .object({
@@ -49,6 +50,13 @@ export const ChatMessageContentSchema = z
   .object({
     text: z.string().max(100_000),
     citations: z.array(ChatCitationSchema).default([]),
+    interaction: z
+      .object({
+        type: z.literal('user_question_answer'),
+        answer: UserQuestionAnswerSubmissionSchema,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -124,8 +132,24 @@ export const SendChatMessageInputSchema = z
     deliveryMode: z.enum(['auto', 'steer', 'follow_up']).default('auto'),
     expectedTurnId: z.string().trim().min(1).max(255).optional(),
     expectedGeneration: z.number().int().nonnegative().optional(),
+    userQuestionAnswer: UserQuestionAnswerSubmissionSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.userQuestionAnswer) return;
+    if (
+      value.deliveryMode !== 'steer' ||
+      !value.expectedTurnId ||
+      value.expectedGeneration === undefined ||
+      value.attachmentIds.length > 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'user question answers require an exact active turn and no attachments',
+      });
+    }
+  });
 
 export const CreateSessionAttachmentInputSchema = z
   .object({

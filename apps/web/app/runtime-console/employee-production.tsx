@@ -72,10 +72,22 @@ const toolLabels: Record<string, string> = {
   'local.fs.list': '本地目录列表',
   'local.fs.search': '本地文件搜索',
   'local.fs.read': '读取本地文件',
+  'local.fs.write': '新建或更新本地文本文件',
+  'local.fs.mkdir': '新建本地目录',
   'local.git.status': '本地 Git 状态',
   'local.git.diff': '本地 Git 差异',
   'automation.create': '创建自动化',
 };
+
+const lifecycleActionLabels: Record<string, string> = {
+  'employee.published': '发布成功',
+  'employee.publish_rejected': '发布未通过',
+  'employee.tenant_assigned': '新增租户分配',
+  'employee.rolled_back': '发布回滚',
+  'employee.disabled': '员工停用',
+};
+
+const publicationActions = new Set(Object.keys(lifecycleActionLabels));
 
 async function api<T>(path: string, init?: RequestInit) {
   const response = await fetch(path, {
@@ -109,11 +121,17 @@ function Field(props: {
   multiline?: boolean;
   wide?: boolean;
   type?: string;
+  runtimeSource?: string;
+  runtimeSourceKind?: 'file' | 'policy';
 }) {
   const className = `${styles.field} ${props.wide ? styles.fieldWide : ''}`;
   return (
     <label className={className}>
-      <span>{props.label}</span>
+      <RuntimeFieldLabel
+        label={props.label}
+        runtimeSource={props.runtimeSource}
+        runtimeSourceKind={props.runtimeSourceKind}
+      />
       {props.multiline ? (
         <textarea
           value={props.value}
@@ -127,6 +145,23 @@ function Field(props: {
         />
       )}
     </label>
+  );
+}
+
+function RuntimeFieldLabel(props: {
+  label: string;
+  runtimeSource?: string;
+  runtimeSourceKind?: 'file' | 'policy';
+}) {
+  return (
+    <span className={styles.fieldLabel}>
+      <span>{props.label}</span>
+      {props.runtimeSource ? (
+        <code data-kind={props.runtimeSourceKind ?? 'file'}>
+          {props.runtimeSource}
+        </code>
+      ) : null}
+    </span>
   );
 }
 
@@ -168,10 +203,6 @@ export function EmployeeProduction() {
   const [draft, setDraft] = useState<PlatformEmployeeDefinition | null>(null);
   const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
   const [previewWorkspaceId, setPreviewWorkspaceId] = useState('');
-  const [bridgeControlState, setBridgeControlState] = useState<
-    'running' | 'stopped' | null
-  >(null);
-  const [bridgeControlBusy, setBridgeControlBusy] = useState(false);
   const [tab, setTab] = useState<(typeof tabs)[number][0]>('basic');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -200,21 +231,6 @@ export function EmployeeProduction() {
       ) ?? null,
     [directory, previewWorkspaceId],
   );
-  const previewBridgeOnline =
-    bridgeControlState === null
-      ? (previewWorkspace?.bridgeOnline ?? false)
-      : bridgeControlState === 'running';
-
-  const loadBridgeControlState = useCallback(async () => {
-    try {
-      const result = await api<{ state: 'running' | 'stopped' }>(
-        '/api/v1/admin/bridge-control',
-      );
-      setBridgeControlState(result.state);
-    } catch {
-      setBridgeControlState(null);
-    }
-  }, []);
 
   const load = useCallback(
     async (preferredId?: string) => {
@@ -275,6 +291,14 @@ export function EmployeeProduction() {
     return result.testRuns;
   }, []);
 
+  const loadAuditEvents = useCallback(async (employeeId: string) => {
+    const result = await api<{
+      auditEvents: PlatformEmployeeAuditEvent[];
+    }>(`/api/v1/admin/platform-employees/${employeeId}/lifecycle`);
+    setAuditEvents(result.auditEvents);
+    return result.auditEvents;
+  }, []);
+
   useEffect(() => {
     if (tab !== 'debug' || !selectedId) return;
     let cancelled = false;
@@ -307,27 +331,18 @@ export function EmployeeProduction() {
 
   useEffect(() => {
     if (tab !== 'publish' || !selectedId) return;
-    void api<{ auditEvents: PlatformEmployeeAuditEvent[] }>(
-      `/api/v1/admin/platform-employees/${selectedId}/lifecycle`,
-    )
-      .then((result) => setAuditEvents(result.auditEvents))
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : '读取审计记录失败'),
-      );
-  }, [selectedId, tab]);
-
-  useEffect(() => {
-    if (!previewWorkspaceId) return;
-    void loadBridgeControlState();
-    const timer = setInterval(() => {
-      void loadBridgeControlState();
-    }, 5 * 60_000);
-    return () => clearInterval(timer);
-  }, [loadBridgeControlState, previewWorkspaceId]);
+    void loadAuditEvents(selectedId).catch((reason: unknown) =>
+      setError(reason instanceof Error ? reason.message : '读取审计记录失败'),
+    );
+  }, [loadAuditEvents, selectedId, tab]);
 
   const selected = useMemo(
     () => directory?.employees.find((item) => item.id === selectedId) ?? null,
     [directory, selectedId],
+  );
+  const publicationEvents = useMemo(
+    () => auditEvents.filter((event) => publicationActions.has(event.action)),
+    [auditEvents],
   );
 
   function choose(employee: Employee) {
@@ -357,10 +372,7 @@ export function EmployeeProduction() {
   }
 
   async function refresh() {
-    await Promise.all([
-      load(selectedId ?? undefined),
-      loadBridgeControlState(),
-    ]);
+    await load(selectedId ?? undefined);
     if (tab === 'debug' && selectedId) {
       try {
         await loadTestRuns(selectedId);
@@ -369,26 +381,6 @@ export function EmployeeProduction() {
           reason instanceof Error ? reason.message : '读取配置试用结果失败',
         );
       }
-    }
-  }
-
-  async function controlBridge(action: 'start' | 'stop') {
-    setBridgeControlBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      const result = await api<{ state: 'running' | 'stopped' }>(
-        '/api/v1/admin/bridge-control',
-        {
-          method: 'POST',
-          body: JSON.stringify({ action }),
-        },
-      );
-      setBridgeControlState(result.state);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '控制 Bridge 失败');
-    } finally {
-      setBridgeControlBusy(false);
     }
   }
 
@@ -465,6 +457,7 @@ export function EmployeeProduction() {
       const result = await api<{
         valid: boolean;
         errors: string[];
+        revisionId: string;
         workspaceIds: string[];
       }>(`/api/v1/admin/platform-employees/${selectedId}/publish`, {
         method: 'POST',
@@ -472,11 +465,12 @@ export function EmployeeProduction() {
       });
       if (!result.valid) throw new Error(result.errors.join('\n'));
       setMessage(
-        `已发布到 ${result.workspaceIds.length} 个工作区。新会话生效，现有会话保持原版本。`,
+        `发布成功：revision ${result.revisionId.slice(0, 8)} 已发布到 ${result.workspaceIds.length} 个工作区。新会话生效，现有会话保持原版本。`,
       );
-      await load();
+      await Promise.all([load(), loadAuditEvents(selectedId)]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '发布失败');
+      void loadAuditEvents(selectedId).catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -639,77 +633,127 @@ export function EmployeeProduction() {
     );
   } else if (tab === 'persona') {
     panel = (
-      <div className={styles.grid}>
-        <Field
-          label="角色"
-          value={draft.identity.role}
-          onChange={(value) => update(['identity', 'role'], value)}
-        />
-        <Field
-          label="使命"
-          value={draft.identity.mission}
-          onChange={(value) => update(['identity', 'mission'], value)}
-        />
-        <Field
-          label="工作方式"
-          value={draft.identity.workStyle}
-          multiline
-          wide
-          onChange={(value) => update(['identity', 'workStyle'], value)}
-        />
-        <Field
-          label="系统提示词"
-          value={draft.systemPrompt}
-          multiline
-          wide
-          onChange={(value) => update(['systemPrompt'], value)}
-        />
-        <Field
-          label="行为准则（每行一条）"
-          value={draft.identity.behaviorRules.join('\n')}
-          multiline
-          onChange={(value) =>
-            update(
-              ['identity', 'behaviorRules'],
-              value
-                .split('\n')
-                .map((item) => item.trim())
-                .filter(Boolean),
-            )
-          }
-        />
-        <Field
-          label="安全边界（每行一条）"
-          value={draft.identity.safetyBoundaries.join('\n')}
-          multiline
-          onChange={(value) =>
-            update(
-              ['identity', 'safetyBoundaries'],
-              value
-                .split('\n')
-                .map((item) => item.trim())
-                .filter(Boolean),
-            )
-          }
-        />
-      </div>
+      <>
+        <section className={styles.runtimeFileMap}>
+          <header>
+            <strong>运行时文件映射</strong>
+            <span>发布时动态生成，不是仓库里的实体 Markdown 文件</span>
+          </header>
+          <div>
+            <article>
+              <code>IDENTITY.md</code>
+              <span>员工身份、使命和工作方式</span>
+            </article>
+            <article>
+              <code>SOUL.md</code>
+              <span>行为准则、安全边界和操作确认策略</span>
+            </article>
+            <article>
+              <code>AGENTS.md</code>
+              <span>由工作规则、已选 Skill 目录和路由规则自动生成</span>
+            </article>
+            <article>
+              <code>USER.md</code>
+              <span>按当前租户和用户授权动态注入，无独立输入框</span>
+            </article>
+          </div>
+          <p>“系统提示词”属于更高优先级的平台硬策略，不写入上述虚拟文件。</p>
+        </section>
+        <div className={styles.grid}>
+          <Field
+            label="角色"
+            runtimeSource="IDENTITY.md"
+            value={draft.identity.role}
+            onChange={(value) => update(['identity', 'role'], value)}
+          />
+          <Field
+            label="使命"
+            runtimeSource="IDENTITY.md"
+            value={draft.identity.mission}
+            onChange={(value) => update(['identity', 'mission'], value)}
+          />
+          <Field
+            label="工作方式"
+            runtimeSource="IDENTITY.md"
+            value={draft.identity.workStyle}
+            multiline
+            wide
+            onChange={(value) => update(['identity', 'workStyle'], value)}
+          />
+          <Field
+            label="系统提示词"
+            runtimeSource="平台硬策略"
+            runtimeSourceKind="policy"
+            value={draft.systemPrompt}
+            multiline
+            wide
+            onChange={(value) => update(['systemPrompt'], value)}
+          />
+          <Field
+            label="行为准则（每行一条）"
+            runtimeSource="SOUL.md"
+            value={draft.identity.behaviorRules.join('\n')}
+            multiline
+            onChange={(value) =>
+              update(
+                ['identity', 'behaviorRules'],
+                value
+                  .split('\n')
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              )
+            }
+          />
+          <Field
+            label="安全边界（每行一条）"
+            runtimeSource="SOUL.md"
+            value={draft.identity.safetyBoundaries.join('\n')}
+            multiline
+            onChange={(value) =>
+              update(
+                ['identity', 'safetyBoundaries'],
+                value
+                  .split('\n')
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              )
+            }
+          />
+        </div>
+      </>
     );
   } else if (tab === 'skills') {
-    panel = directory.skills.length ? (
-      <Checks
-        items={directory.skills.map((skill) => ({
-          id: skill.id,
-          label: skill.name,
-          detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'} · ${skill.description}`,
-          disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
-        }))}
-        selected={draft.capabilities.nativeSkillIds}
-        onChange={(value) => update(['capabilities', 'nativeSkillIds'], value)}
-      />
-    ) : (
-      <p className={styles.notice}>
-        平台原生 Skill 库当前为空。先审核并迁移 Skill，再装配给 Rice。
-      </p>
+    panel = (
+      <>
+        <div className={styles.runtimeSourceNotice}>
+          <div>
+            <code>AGENTS.md</code>
+            <span>根据已选 Skill 自动生成目录和自主路由说明</span>
+          </div>
+          <div>
+            <code>SKILL.md</code>
+            <span>每个已选 Skill 作为独立、不可变的发布快照传入运行时</span>
+          </div>
+        </div>
+        {directory.skills.length ? (
+          <Checks
+            items={directory.skills.map((skill) => ({
+              id: skill.id,
+              label: skill.name,
+              detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'} · ${skill.description}`,
+              disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
+            }))}
+            selected={draft.capabilities.nativeSkillIds}
+            onChange={(value) =>
+              update(['capabilities', 'nativeSkillIds'], value)
+            }
+          />
+        ) : (
+          <p className={styles.notice}>
+            平台原生 Skill 库当前为空。先审核并迁移 Skill，再装配给 Rice。
+          </p>
+        )}
+      </>
     );
   } else if (tab === 'workflows') {
     panel = (
@@ -787,7 +831,7 @@ export function EmployeeProduction() {
     panel = (
       <div className={styles.grid}>
         <label className={styles.field}>
-          <span>操作确认策略</span>
+          <RuntimeFieldLabel label="操作确认策略" runtimeSource="SOUL.md" />
           <select
             value={draft.securityPolicy.approvalPolicy}
             onChange={(event) =>
@@ -809,12 +853,14 @@ export function EmployeeProduction() {
           >
             <option value="none">禁用</option>
             <option value="read_only">只读</option>
+            <option value="read_write">受控读写</option>
           </select>
         </label>
         <p className={`${styles.notice} ${styles.fieldWide}`}>
-          AllRice 始终执行租户隔离、Tool Broker
-          权限交集、审批和审计。这里不会开放 Shell，也不会把模型密钥下发给租户或
-          Bridge。
+          “受控读写”只允许已授权目录内的新建目录和文本文件原子写入；覆盖前必须校验
+          SHA-256。AllRice 始终执行租户隔离、Tool Broker
+          权限交集和审计。这里不会开放 Shell、删除或 Git
+          写操作，也不会把模型密钥下发给租户或 Bridge。
         </p>
       </div>
     );
@@ -823,8 +869,7 @@ export function EmployeeProduction() {
       <>
         <p className={styles.notice}>
           试用会先保存并自动检查当前草稿，然后借用所选租户真实可用的模型、Skill、
-          Tool Broker 和在线 Rice Bridge
-          运行一次预览。预览不会改变该租户已经发布的 Rice
+          Tool Broker 运行一次预览。预览不会改变该租户已经发布的 Rice
           配置，也不会进入租户的正式会话。
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
@@ -836,48 +881,16 @@ export function EmployeeProduction() {
             <option value="">请选择租户</option>
             {directory.workspaces.map((workspace) => (
               <option value={workspace.id} key={workspace.id}>
-                {workspace.name} · {workspace.organizationName} · Bridge
-                {workspace.id === previewWorkspaceId
-                  ? previewBridgeOnline
-                    ? '在线'
-                    : '离线'
-                  : workspace.bridgeOnline
-                    ? '在线'
-                    : '离线'}
+                {workspace.name} · {workspace.organizationName}
               </option>
             ))}
           </select>
           {previewWorkspace ? (
-            <small
-              className={
-                previewBridgeOnline
-                  ? styles.previewBridgeOnline
-                  : styles.previewBridgeOffline
-              }
-            >
-              {previewBridgeOnline
-                ? `Rice Bridge 在线${previewWorkspace.bridgeWorkspaceLabel ? ` · 本地工作区：${previewWorkspace.bridgeWorkspaceLabel}` : ''}`
-                : `Rice Bridge 离线${previewWorkspace.bridgeLastSeenAt ? ` · 最后在线：${new Date(previewWorkspace.bridgeLastSeenAt).toLocaleString('zh-CN')}` : ''}。联网等云端能力仍可试用，本地文件能力暂不可用。`}
+            <small>
+              Bridge 与本地工作区状态请在“Runtime 状态”中按租户查看。
             </small>
           ) : null}
         </label>
-        {previewWorkspace ? (
-          <div className={styles.actions}>
-            <button
-              className={styles.button}
-              disabled={bridgeControlBusy}
-              onClick={() =>
-                void controlBridge(previewBridgeOnline ? 'stop' : 'start')
-              }
-            >
-              {bridgeControlBusy
-                ? '处理中…'
-                : previewBridgeOnline
-                  ? '关闭 Bridge'
-                  : '启动 Bridge'}
-            </button>
-          </div>
-        ) : null}
         <label className={`${styles.field} ${styles.fieldWide}`}>
           <span>测试任务</span>
           <textarea
@@ -959,6 +972,34 @@ export function EmployeeProduction() {
   } else {
     panel = (
       <>
+        <section className={styles.publishStatus}>
+          <h3>当前发布状态</h3>
+          {selected.currentPublished ? (
+            <>
+              <strong>
+                正式版本：revision {selected.currentPublished.revision}
+              </strong>
+              <span>
+                {selected.currentPublished.publishedAt
+                  ? new Date(
+                      selected.currentPublished.publishedAt,
+                    ).toLocaleString('zh-CN')
+                  : '发布时间未知'}{' '}
+                · 已分配 {selected.assignedWorkspaceIds.length} 个租户工作区
+              </span>
+            </>
+          ) : (
+            <strong>尚未发布正式版本</strong>
+          )}
+          {selected.currentDraft &&
+          selected.currentDraft.id !== selected.currentPublished?.id ? (
+            <p>
+              待发布：revision {selected.currentDraft.revision} ·{' '}
+              {selected.currentDraft.status}
+              。只有发布成功后才会替换上面的正式版本。
+            </p>
+          ) : null}
+        </section>
         <p className={styles.muted}>
           这里只显示真实租户工作区，不包含 Platform Control
           Plane。发布生成不可变修订； 新会话生效，已有会话保持原版本。
@@ -980,6 +1021,8 @@ export function EmployeeProduction() {
         >
           {busy ? '发布中…' : '发布到所选租户'}
         </button>
+        {error ? <p className={styles.error}>{error}</p> : null}
+        {message ? <p className={styles.notice}>{message}</p> : null}
         <section className={styles.dangerZone}>
           <h3>回滚发布</h3>
           <p className={styles.muted}>
@@ -1020,19 +1063,63 @@ export function EmployeeProduction() {
           </button>
         </section>
         <section className={styles.audit}>
-          <h3>审计记录</h3>
-          {auditEvents.length ? (
-            auditEvents.map((event) => (
-              <div key={event.id}>
-                <strong>{event.action}</strong>
-                <span>
-                  {new Date(event.createdAt).toLocaleString('zh-CN')} ·{' '}
-                  {event.actorLabel}
-                </span>
-              </div>
-            ))
+          <h3>发布记录</h3>
+          {publicationEvents.length ? (
+            publicationEvents.map((event) => {
+              const revisionId =
+                typeof event.details.revisionId === 'string'
+                  ? event.details.revisionId
+                  : null;
+              const revision = [
+                selected.currentDraft,
+                selected.currentPublished,
+              ].find((candidate) => candidate?.id === revisionId);
+              const workspaceIds = Array.isArray(event.details.workspaceIds)
+                ? event.details.workspaceIds.filter(
+                    (value): value is string => typeof value === 'string',
+                  )
+                : typeof event.details.workspaceId === 'string'
+                  ? [event.details.workspaceId]
+                  : [];
+              const workspaceNames = workspaceIds.map(
+                (workspaceId) =>
+                  directory.workspaces.find(
+                    (workspace) => workspace.id === workspaceId,
+                  )?.name ?? workspaceId,
+              );
+              const errors = Array.isArray(event.details.errors)
+                ? event.details.errors.filter(
+                    (value): value is string => typeof value === 'string',
+                  )
+                : [];
+              return (
+                <div key={event.id}>
+                  <span className={styles.auditSummary}>
+                    <strong>
+                      {lifecycleActionLabels[event.action] ?? event.action}
+                    </strong>
+                    {revisionId ? (
+                      <small>
+                        版本：
+                        {revision
+                          ? `revision ${revision.revision}`
+                          : revisionId.slice(0, 8)}
+                      </small>
+                    ) : null}
+                    {workspaceNames.length ? (
+                      <small>租户：{workspaceNames.join('、')}</small>
+                    ) : null}
+                    {errors.length ? <small>{errors.join('；')}</small> : null}
+                  </span>
+                  <span>
+                    {new Date(event.createdAt).toLocaleString('zh-CN')} ·{' '}
+                    {event.actorLabel}
+                  </span>
+                </div>
+              );
+            })
           ) : (
-            <p className={styles.muted}>还没有生命周期审计记录。</p>
+            <p className={styles.muted}>还没有发布记录。</p>
           )}
         </section>
         {selected.employeeKey !== 'rice' ? (
@@ -1125,15 +1212,6 @@ export function EmployeeProduction() {
             <h1>{selected.name}</h1>
             <div className={styles.headerStatuses}>
               <span className={styles.status}>{selected.status}</span>
-              <span
-                className={
-                  previewBridgeOnline
-                    ? styles.bridgeStatusOnline
-                    : styles.bridgeStatusOffline
-                }
-              >
-                Snow Bridge {previewBridgeOnline ? '在线' : '已关闭'}
-              </span>
             </div>
           </div>
           <div className={styles.actions}>
@@ -1167,8 +1245,12 @@ export function EmployeeProduction() {
           ))}
         </nav>
         <div className={styles.panel}>{panel}</div>
-        {error ? <p className={styles.error}>{error}</p> : null}
-        {message && !message.startsWith('Snow Rice Bridge') ? (
+        {error && tab !== 'publish' ? (
+          <p className={styles.error}>{error}</p>
+        ) : null}
+        {message &&
+        tab !== 'publish' &&
+        !message.startsWith('Snow Rice Bridge') ? (
           <p className={styles.notice}>{message}</p>
         ) : null}
       </div>

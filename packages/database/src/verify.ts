@@ -601,15 +601,18 @@ try {
       to_regclass('allrice_bridge_folder_grants')::text as grants,
       to_regclass('allrice_bridge_commands')::text as commands
   `;
+  const expectsBridgeManagedWrite = expectedMigrations.includes(
+    '0069_rice_bridge_managed_write.sql',
+  );
   if (
     expectedMigrations.includes('0041_rice_bridge_v01.sql') &&
-    (bridgeRows[0]?.version !== '0041' ||
-      bridgeRows[0]?.protocol !== '1' ||
+    (bridgeRows[0]?.version !== (expectsBridgeManagedWrite ? '0069' : '0041') ||
+      bridgeRows[0]?.protocol !== (expectsBridgeManagedWrite ? '2' : '1') ||
       !bridgeTables[0]?.devices ||
       !bridgeTables[0]?.grants ||
       !bridgeTables[0]?.commands)
   ) {
-    throw new Error('Rice Bridge v0.1 schema metadata or tables are missing');
+    throw new Error('Rice Bridge schema metadata or tables are missing');
   }
 
   console.info(

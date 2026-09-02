@@ -64,6 +64,8 @@ const allowedToolNames = new Set([
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
+  'local.fs.write',
+  'local.fs.mkdir',
   'local.git.status',
   'local.git.diff',
   'automation.create',
@@ -1263,6 +1265,14 @@ export async function compilePlatformEmployee(
     ) {
       errors.push('Bridge 已禁用，但员工仍配置了 local.* 工具');
     }
+    if (
+      definition.securityPolicy.bridgeAccess === 'read_only' &&
+      definition.capabilities.toolNames.some((name) =>
+        ['local.fs.write', 'local.fs.mkdir'].includes(name),
+      )
+    ) {
+      errors.push('Bridge 为只读，但员工仍配置了本地写入工具');
+    }
     if (definition.securityPolicy.approvalPolicy === 'autonomous') {
       errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
     }
@@ -1579,6 +1589,72 @@ async function materializePlatformEmployeeRevision(
   }
 }
 
+export async function assignPublishedPlatformEmployeeToWorkspace(
+  employeeKeyInput: string,
+  workspaceIdInput: string,
+  actorLabel = 'platform-admin',
+) {
+  const employeeKey = employeeKeyInput.trim();
+  if (!employeeKey) throw new Error('platform_employee_key_required');
+  const workspaceId = UuidSchema.parse(workspaceIdInput);
+  const sql = getDatabase();
+  const result = await sql.begin(async (transaction) => {
+    const rows = await transaction<
+      (RevisionRow & { platform_employee_id: string })[]
+    >`
+      select revision.*, employee.id as platform_employee_id
+      from allrice_platform_employees employee
+      join allrice_platform_employee_revisions revision
+        on revision.id = employee.current_published_revision_id
+      where employee.employee_key = ${employeeKey}
+        and employee.status <> 'archived'
+        and revision.status = 'published'
+      for update of employee, revision
+    `;
+    const revision = rows[0];
+    if (!revision?.runtime_profile) {
+      throw new Error('platform_employee_published_revision_not_found');
+    }
+    const existing = await transaction<
+      { revision_id: string; active: boolean }[]
+    >`
+      select revision_id, active
+      from allrice_platform_employee_tenant_assignments
+      where employee_id = ${revision.platform_employee_id}
+        and workspace_id = ${workspaceId}
+      for update
+    `;
+    if (existing[0]?.active && existing[0].revision_id === revision.id) {
+      return {
+        assigned: false as const,
+        employeeId: revision.platform_employee_id,
+        revisionId: revision.id,
+        workspaceId,
+      };
+    }
+    await materializePlatformEmployeeRevision(transaction, {
+      employeeId: revision.platform_employee_id,
+      revision,
+      definition: PlatformEmployeeDefinitionSchema.parse(revision.definition),
+      workspaceIds: [workspaceId],
+      actorLabel,
+    });
+    await recordPlatformEmployeeAuditInTransaction(transaction, {
+      employeeId: revision.platform_employee_id,
+      action: 'employee.tenant_assigned',
+      actorLabel,
+      details: { revisionId: revision.id, workspaceId },
+    });
+    return {
+      assigned: true as const,
+      employeeId: revision.platform_employee_id,
+      revisionId: revision.id,
+      workspaceId,
+    };
+  });
+  return result;
+}
+
 export async function publishPlatformEmployee(
   employeeIdInput: string,
   input: unknown,
@@ -1587,7 +1663,19 @@ export async function publishPlatformEmployee(
   const employeeId = UuidSchema.parse(employeeIdInput);
   const { workspaceIds } = PublishPlatformEmployeeInputSchema.parse(input);
   const compilation = await compilePlatformEmployee(employeeId, actorLabel);
-  if (!compilation.valid) return compilation;
+  if (!compilation.valid) {
+    await recordPlatformEmployeeAudit({
+      employeeId,
+      action: 'employee.publish_rejected',
+      actorLabel,
+      details: {
+        revisionId: compilation.revisionId,
+        workspaceIds,
+        errors: compilation.errors,
+      },
+    });
+    return compilation;
+  }
   const sql = getDatabase();
   const successfulTests = await sql<{ id: string }[]>`
     select id from allrice_platform_employee_test_runs
@@ -1598,11 +1686,22 @@ export async function publishPlatformEmployee(
     order by completed_at desc limit 1
   `;
   if (!successfulTests[0]) {
-    return {
+    const rejected = {
       ...compilation,
       valid: false,
       errors: ['发布前必须在 24 小时内成功试用一次当前配置。'],
     };
+    await recordPlatformEmployeeAudit({
+      employeeId,
+      action: 'employee.publish_rejected',
+      actorLabel,
+      details: {
+        revisionId: compilation.revisionId,
+        workspaceIds,
+        errors: rejected.errors,
+      },
+    });
+    return rejected;
   }
   const uniqueWorkspaceIds = [...new Set(workspaceIds)];
   const activeWorkspaces = await sql<{ id: string }[]>`
@@ -1616,11 +1715,22 @@ export async function publishPlatformEmployee(
       and organization.slug <> 'allrice-platform'
   `;
   if (activeWorkspaces.length !== uniqueWorkspaceIds.length) {
-    return {
+    const rejected = {
       ...compilation,
       valid: false,
       errors: ['发布目标包含不存在、已归档或越权的工作区。'],
     };
+    await recordPlatformEmployeeAudit({
+      employeeId,
+      action: 'employee.publish_rejected',
+      actorLabel,
+      details: {
+        revisionId: compilation.revisionId,
+        workspaceIds: uniqueWorkspaceIds,
+        errors: rejected.errors,
+      },
+    });
+    return rejected;
   }
   if (compilation.runtimeProfile?.provider === 'openai-codex') {
     const statuses = await sql<{ status: string; checked_at: Date | null }[]>`
@@ -1633,20 +1743,42 @@ export async function publishPlatformEmployee(
       !provider.checked_at ||
       provider.checked_at.getTime() < Date.now() - 120_000
     ) {
-      return {
+      const rejected = {
         ...compilation,
         valid: false,
         errors: ['Codex 订阅 Provider 当前不可用或健康状态已过期。'],
       };
+      await recordPlatformEmployeeAudit({
+        employeeId,
+        action: 'employee.publish_rejected',
+        actorLabel,
+        details: {
+          revisionId: compilation.revisionId,
+          workspaceIds: uniqueWorkspaceIds,
+          errors: rejected.errors,
+        },
+      });
+      return rejected;
     }
   } else {
-    return {
+    const rejected = {
       ...compilation,
       valid: false,
       errors: [
         `Provider ${compilation.runtimeProfile?.provider ?? 'unknown'} 尚未通过平台生产健康门禁。`,
       ],
     };
+    await recordPlatformEmployeeAudit({
+      employeeId,
+      action: 'employee.publish_rejected',
+      actorLabel,
+      details: {
+        revisionId: compilation.revisionId,
+        workspaceIds: uniqueWorkspaceIds,
+        errors: rejected.errors,
+      },
+    });
+    return rejected;
   }
   const published = await sql.begin(async (transaction) => {
     const revisions = await transaction<RevisionRow[]>`
@@ -1682,6 +1814,16 @@ export async function publishPlatformEmployee(
         updated_by_label = ${actorLabel}, updated_at = now()
       where id = ${employeeId}
     `;
+    await recordPlatformEmployeeAuditInTransaction(transaction, {
+      employeeId,
+      action: 'employee.published',
+      actorLabel,
+      details: {
+        revisionId: revision.id,
+        workspaceIds: uniqueWorkspaceIds,
+        testRunId: successfulTests[0]!.id,
+      },
+    });
     return {
       valid: true,
       employeeId,
@@ -1693,16 +1835,6 @@ export async function publishPlatformEmployee(
       errors: [],
       warnings: [],
     };
-  });
-  await recordPlatformEmployeeAudit({
-    employeeId,
-    action: 'employee.published',
-    actorLabel,
-    details: {
-      revisionId: published.revisionId,
-      workspaceIds: published.workspaceIds,
-      testRunId: successfulTests[0].id,
-    },
   });
   return published;
 }

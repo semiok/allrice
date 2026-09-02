@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -56,6 +57,58 @@ describe('Rice Bridge local executor', () => {
       executeLocalCommand(root, {
         capability: 'local.fs.read',
         arguments: { path: '.env', maxBytes: 200_000 },
+      }),
+    ).rejects.toMatchObject({ code: 'SENSITIVE_PATH' });
+  });
+
+  it('creates files and guards overwrites with the last-read checksum', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rice-bridge-write-'));
+    await mkdir(join(root, 'src'));
+    const created = await executeLocalCommand(root, {
+      capability: 'local.fs.write',
+      arguments: {
+        path: 'src/rice.ts',
+        content: 'export const rice = true;\n',
+      },
+    });
+    expect(created.output).toMatchObject({
+      path: 'src/rice.ts',
+      created: true,
+    });
+    await expect(
+      executeLocalCommand(root, {
+        capability: 'local.fs.write',
+        arguments: {
+          path: 'src/rice.ts',
+          content: 'export const rice = false;\n',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'WRITE_PRECONDITION_REQUIRED' });
+    const checksum = `sha256:${createHash('sha256')
+      .update('export const rice = true;\n')
+      .digest('hex')}`;
+    const updated = await executeLocalCommand(root, {
+      capability: 'local.fs.write',
+      arguments: {
+        path: 'src/rice.ts',
+        content: 'export const rice = false;\n',
+        expectedSha256: checksum,
+      },
+    });
+    expect(updated.output).toMatchObject({ created: false });
+  });
+
+  it('creates one directory at a time and blocks protected paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rice-bridge-mkdir-'));
+    const created = await executeLocalCommand(root, {
+      capability: 'local.fs.mkdir',
+      arguments: { path: 'src' },
+    });
+    expect(created.output).toEqual({ path: 'src', created: true });
+    await expect(
+      executeLocalCommand(root, {
+        capability: 'local.fs.write',
+        arguments: { path: '.git/config', content: 'unsafe' },
       }),
     ).rejects.toMatchObject({ code: 'SENSITIVE_PATH' });
   });
