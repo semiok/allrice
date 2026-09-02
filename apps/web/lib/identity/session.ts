@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 
-import { authenticateSession } from '@allrice/database';
+import { authenticateSession, DataAccessError } from '@allrice/database';
 
 import { portalAuthEnabled, resolvePortal } from '../portal/config';
 import {
@@ -41,4 +41,14 @@ export async function getRequestContext(request: Request) {
       request.headers.get('x-allrice-organization-id') ?? undefined,
     workspaceId: request.headers.get('x-allrice-workspace-id') ?? undefined,
   });
+}
+
+/**
+ * Require an authenticated tenant context while preserving the exact context
+ * resolution rules used by getRequestContext.
+ */
+export async function requireRequestContext(request: Request) {
+  const context = await getRequestContext(request);
+  if (!context) throw new DataAccessError('authentication_required');
+  return context;
 }

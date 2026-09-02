@@ -153,6 +153,10 @@ export const EmployeeKernelRequestSchema = z
     authorizedMemoryContext: z.string(),
     grantedCapabilities: z.array(SkillCapabilitySchema),
     skillVersionIds: z.array(UuidSchema),
+    runtimePackageChecksum: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .optional(),
     imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
   })
   .strict();

@@ -17,7 +17,7 @@ import {
 } from '@allrice/contracts';
 import { z } from 'zod';
 
-import { getDatabase } from './index.ts';
+import { getDatabase } from './core/client.ts';
 
 const defaultWorkspaceQuotaBytes = 1024 * 1024 * 1024;
 

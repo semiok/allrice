@@ -40,6 +40,12 @@ describe('Rice capability intersection', () => {
       ]),
     ).toEqual(['storage:read']);
     expect(
+      nativeSkillCapabilityGrants([
+        'workspace.memory.search',
+        'workspace.memory.remember',
+      ]),
+    ).toEqual(['storage:write']);
+    expect(
       resolveEmployeeCapabilities(
         ['model:invoke', 'storage:read', 'network:outbound'],
         [webResearch],
@@ -65,6 +71,13 @@ describe('Rice capability intersection', () => {
         ['model:invoke', 'network:outbound'],
         [webResearch],
         ['network:outbound'],
+      ),
+    ).toEqual(['model:invoke']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:write'],
+        [{ requiredToolRefs: ['workspace.memory.remember'] }],
+        ['storage:write'],
       ),
     ).toEqual(['model:invoke']);
   });

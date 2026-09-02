@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { closeDatabase, getDatabase } from './index.js';
+import { closeDatabase, getDatabase } from './core/client.js';
 
 const sql = getDatabase();
 const migrationsDirectory = fileURLToPath(

@@ -8,6 +8,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "Expose native session lifecycle and report the approved distribution version without modifying upstream packages."
+    },
+    {
+      "id": "dsh-admin-webui-private-entrypoint-v1",
+      "issue": "MET-100",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "private-entrypoint-adapter",
+      "path": "apps/dsh-admin/dsh-webui-compatibility.mjs",
+      "reason": "Keep the DSH WebUI private executable path and required Node launch flags behind one explicit, tested compatibility boundary."
     }
   ]
 }

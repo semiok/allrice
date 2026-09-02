@@ -18,6 +18,13 @@ export type BridgeCapability = z.infer<typeof BridgeCapabilitySchema>;
 
 export const BridgeCapabilities = BridgeCapabilitySchema.options;
 
+export const BridgeControlInputSchema = z
+  .object({
+    action: z.enum(['start', 'stop']),
+  })
+  .strict();
+export type BridgeControlInput = z.infer<typeof BridgeControlInputSchema>;
+
 const RelativePathSchema = z
   .string()
   .trim()

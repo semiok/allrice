@@ -15,6 +15,10 @@ Version 0.1 enables pgvector, migration/runtime metadata, the identity foundatio
 - AllRice has its own database user and migration history;
 - no OpenRice schema, ORM model, or table is imported.
 - migrations are forward-only; additive `0003`/`0004` remain readable by the previous supported 0.1 application image, which is the supported application rollback path.
+- historical Skill migrations remain immutable schema and audit history; current
+  operational Skill metadata is declared in `skills/catalog.json` and synchronized
+  without deleting operator-managed rows or changing employee revisions and tenant
+  assignments.
 
 `0004_employee_workspace.sql` adds the base Employee/Assignment and workspace records. `0007_employeehub_rice.sql` adds immutable manifest/provider/SkillVersion snapshots plus durable EmployeeRun and ordered step evidence. Rice provisioning and explicit default Assignment selection are server-side and checksum-protected.
 
@@ -24,7 +28,10 @@ capability families. `0021` freezes published Knowledge ACLs and `0022` keeps
 legacy manifest Skill selections compatible during a rolling deployment. New
 runs freeze the actor-effective directory in EmployeeExecutionSnapshot V2.
 
-Run with `pnpm db:migrate` after setting `DATABASE_URL`.
+Run `pnpm db:prepare` after setting `DATABASE_URL`. It applies migrations,
+synchronizes the reviewed platform Skill catalog, and verifies the resulting
+database. Use `pnpm db:migrate` only when intentionally applying schema history
+without operational content synchronization.
 
 ## Identity security
 

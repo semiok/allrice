@@ -1,12 +1,15 @@
-import { randomUUID } from 'node:crypto';
-
 import { DataAccessError } from '@allrice/database';
 import { SignedAccessError } from '@allrice/storage';
 
+import {
+  apiProblem,
+  type ApiProblemCode,
+  isRequestValidationError,
+} from '../api-error-response';
+
 export function storageErrorResponse(error: unknown) {
-  const requestId = randomUUID();
   let status = 400;
-  let code = 'VALIDATION_FAILED';
+  let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Storage request validation failed';
   if (error instanceof DataAccessError) {
     if (error.code === 'authentication_required') {
@@ -34,14 +37,14 @@ export function storageErrorResponse(error: unknown) {
     status = 403;
     code = 'SIGNED_ACCESS_DENIED';
     message = 'Signed access denied';
-  } else {
+  } else if (!isRequestValidationError(error)) {
     console.error('Unhandled storage request error', {
       name: error instanceof Error ? error.name : 'UnknownError',
       message: error instanceof Error ? error.message : 'Unknown failure',
     });
+    status = 500;
+    code = 'INTERNAL_ERROR';
+    message = 'Storage request failed';
   }
-  return Response.json(
-    { error: { code, message, requestId, retryable: false } },
-    { status },
-  );
+  return apiProblem({ status, code, message });
 }

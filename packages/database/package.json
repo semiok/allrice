@@ -16,6 +16,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "content:sync": "tsx src/platform-content/sync-cli.ts",
     "identity:bootstrap": "tsx src/bootstrap-identity.ts",
     "migrate": "tsx src/migrate.ts",
     "verify": "tsx src/verify.ts",

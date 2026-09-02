@@ -10,6 +10,10 @@ import {
   sessionCookieName,
   sessionCookieOptions,
 } from '../../../../../lib/identity/session';
+import {
+  apiProblem,
+  authenticationRequiredProblem,
+} from '../../../../../lib/api-error-response';
 import { identityErrorResponse } from '../../../../../lib/identity/responses';
 import {
   portalAuthEnabled,
@@ -29,16 +33,18 @@ export async function POST(request: Request) {
     if (portalAuthEnabled()) {
       const portal = resolvePortal(request.headers.get('host'));
       if (!portal)
-        return Response.json({ error: 'unknown_portal' }, { status: 421 });
+        return apiProblem({
+          status: 421,
+          code: 'AUTHORIZATION_DENIED',
+          message: 'Unknown AllRice portal host',
+          retryable: false,
+        });
       const input = (await request.json()) as {
         username?: unknown;
         password?: unknown;
       };
       if (!verifyPortalCredentials(portal, input.username, input.password)) {
-        return Response.json(
-          { error: 'authentication_failed' },
-          { status: 401 },
-        );
+        return authenticationRequiredProblem('Authentication failed');
       }
       const principal = await ensureBootstrapPortalPrincipal(portal.principal);
       const databaseSession = await createSession(principal.user.id);

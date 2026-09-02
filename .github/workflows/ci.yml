@@ -44,6 +44,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm doctor:ci
       - run: pnpm db:setup
+      - name: Verify platform content synchronization against PostgreSQL
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run packages/database/src/platform-content/sync.integration.test.ts
       - name: Stop development database
         if: always()
         run: pnpm db:dev:down

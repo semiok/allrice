@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "harness": "dsh",
+  "wireProtocol": "allrice-dsh-jsonrpc-v1",
+  "sessionFormat": "dsh-session-jsonl@0.1.1-rc.2",
+  "runtimeProfile": "apps/worker/dsh/allrice-restricted.cordis.yml",
+  "runtimeAdapter": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
+  "privateInterfaces": [
+    {
+      "id": "dsh-admin-webui-entrypoint",
+      "upstreamInterface": "@deepseek-ai/dsh/lib/bin.js",
+      "adapter": "apps/dsh-admin/dsh-webui-compatibility.mjs",
+      "overrideEnvironmentVariable": "ALLRICE_DSH_COMMAND"
+    }
+  ],
+  "configurationTree": [
+    "credentials",
+    "authorization",
+    "attachments",
+    "llm-provider-router",
+    "llm-deepseek",
+    "agent-spine",
+    "skill-registry",
+    "tool-skill",
+    "sessions",
+    "session-checkpoints",
+    "llm-retry",
+    "tool-call-timeout-policy",
+    "repeat-tool-reminder",
+    "user-questions",
+    "tool-ask-user",
+    "tool-todo",
+    "session-projection",
+    "token-meter",
+    "tool-result-pruner",
+    "compaction-basic"
+  ],
+  "securityBoundaries": {
+    "shell": false,
+    "unrestrictedFilesystem": false,
+    "unrestrictedNetwork": false,
+    "dynamicPlugins": false,
+    "workerEnvironmentInheritance": false,
+    "toolBrokerRequired": true
+  },
+  "productionSkillSources": ["allrice-published-runtime"],
+  "excludedSkillSources": ["dsh-repository-development-skills"],
+  "goldenReplay": [
+    {
+      "id": "ordinary-chat",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "maps streaming, turn and usage events into stable HarnessEvents"
+    },
+    {
+      "id": "search",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "keeps native DSH search inside one turn and projects its tool events"
+    },
+    {
+      "id": "skill",
+      "testFile": "apps/worker/src/harness/dsh-protocol-runtime.test.ts",
+      "testName": "reports the approved version and exposes native lifecycle methods"
+    },
+    {
+      "id": "tool",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "routes tool envelopes only through the AllRice Tool Broker callback"
+    },
+    {
+      "id": "attachment",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "forwards ordered image attachments to the native DSH prompt"
+    },
+    {
+      "id": "cancel",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "interrupts one hung session and can recover with a clean runtime"
+    },
+    {
+      "id": "recovery",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "interrupts one hung session and can recover with a clean runtime"
+    },
+    {
+      "id": "compaction",
+      "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
+      "testName": "uses DSH native compaction without replacing the live session"
+    }
+  ]
+}

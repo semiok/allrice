@@ -47,6 +47,12 @@ export const ConnectorRiskSchema = z.enum([
   'high_risk_data',
 ]);
 export const ConnectorIdentityModeSchema = z.enum(['user', 'service']);
+export const ConnectorHealthStateSchema = z.enum([
+  'ready',
+  'degraded',
+  'offline',
+  'unknown',
+]);
 
 export const ConnectorDefinitionSchema = z
   .object({
@@ -78,6 +84,9 @@ export const ConnectorBindingSchema = z
     credentialReference: z.string().trim().min(1).max(255),
     resourceScope: z.record(z.string(), z.unknown()),
     enabled: z.boolean(),
+    healthState: ConnectorHealthStateSchema.default('unknown'),
+    lastHealthCheckAt: TimestampSchema.nullable().default(null),
+    healthDetail: z.string().max(1_000).nullable().default(null),
   })
   .strict()
   .superRefine((binding, context) => {
@@ -98,6 +107,15 @@ export const ConnectorBindingSchema = z
     }
   });
 export type ConnectorBinding = z.infer<typeof ConnectorBindingSchema>;
+
+export const UpdateConnectorBindingHealthInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    bindingId: UuidSchema,
+    state: ConnectorHealthStateSchema,
+    detail: z.string().trim().min(1).max(1_000).nullable().default(null),
+  })
+  .strict();
 
 export const CreateConnectorBindingInputSchema = z
   .object({

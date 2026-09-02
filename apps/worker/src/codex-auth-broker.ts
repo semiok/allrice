@@ -14,6 +14,7 @@ import {
 } from '@allrice/database';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from './harness/dsh-distribution.js';
+import { dshEgressEnvironment } from './harness/dsh-egress-environment.js';
 import {
   DshProtocolClient,
   type DshNotification,
@@ -30,6 +31,7 @@ function runtimeEnvironment(root: string) {
   return {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
+    ...dshEgressEnvironment(),
     DSH_CORDIS_CONFIG: resolve(
       process.env.ALLRICE_DSH_CORDIS_CONFIG ??
         resolve(import.meta.dirname, '../dsh/allrice-restricted.cordis.yml'),

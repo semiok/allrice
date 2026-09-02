@@ -17,8 +17,8 @@ import { HandlerError } from './errors.js';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import {
   executeRiceTool,
+  riceReadOnlyToolDefinitionsForPreview,
   riceToolCapability,
-  riceToolDefinitionsForTurn,
 } from './tool-broker.js';
 
 function errorCode(error: unknown) {
@@ -55,41 +55,16 @@ export async function executeNextPlatformEmployeeTest(input: {
   };
   const events: HarnessEvent[] = [];
   try {
-    const now = new Date();
     const executionContext = ExecutionContextSchema.parse({
       executionId: randomUUID(),
-      runId: randomUUID(),
-      jobId: randomUUID(),
+      runId: test.previewExecution.runId,
+      jobId: test.previewExecution.jobId,
       worker: { type: 'worker', id: input.workerId },
       delegatedBy: { type: 'user', id: test.previewContext.ownerId },
       organizationId: test.previewContext.organizationId,
       workspaceId: test.previewContext.workspaceId,
-      policySnapshot: {
-        id: randomUUID(),
-        organizationId: test.previewContext.organizationId,
-        subjectId: test.previewContext.ownerId,
-        version: 1,
-        issuedAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + 60 * 60 * 1_000).toISOString(),
-        memberships: [
-          {
-            id: test.previewContext.membershipId,
-            userId: test.previewContext.ownerId,
-            organizationId: test.previewContext.organizationId,
-            workspaceId: test.previewContext.workspaceId,
-            role: test.previewContext.role,
-            active: true,
-          },
-        ],
-        grants: ['storage_object', 'memory', 'chat_session'].map(
-          (resourceType) => ({
-            resourceType,
-            action: 'resource:read' as const,
-            workspaceId: test.previewContext.workspaceId,
-          }),
-        ),
-      },
-      startedAt: now.toISOString(),
+      policySnapshot: test.previewExecution.policySnapshot,
+      startedAt: test.previewExecution.startedAt,
     });
     const grantedCapabilities: SkillCapability[] = ['model:invoke'];
     for (const toolName of test.runtimeProfile.toolNames) {
@@ -104,10 +79,9 @@ export async function executeNextPlatformEmployeeTest(input: {
         grantedCapabilities.push(capability);
       }
     }
-    const tools = riceToolDefinitionsForTurn(
+    const tools = riceReadOnlyToolDefinitionsForPreview(
       grantedCapabilities,
       test.runtimeProfile.toolNames,
-      [],
     );
     const snapshot = DshExecutionSnapshotSchema.parse({
       provider: 'dsh',
@@ -157,10 +131,15 @@ export async function executeNextPlatformEmployeeTest(input: {
           ? (call) =>
               executeRiceTool({
                 context: executionContext,
+                managedBrowserJobAttempt: test.previewExecution.jobAttempt,
+                managedBrowserJobLeaseToken: test.previewExecution.leaseToken,
                 capabilities: grantedCapabilities,
                 storageRoot:
                   process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
                 skillVersionIds: test.nativeSkills.map((skill) => skill.id),
+                platformTestRunId: test.id,
+                platformActorLabel: test.requestedByLabel,
+                signal: input.signal,
                 call,
               })
           : undefined,

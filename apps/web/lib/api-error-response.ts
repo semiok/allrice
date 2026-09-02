@@ -1,11 +1,24 @@
-import { randomUUID } from 'node:crypto';
-
 import { DataAccessError } from '@allrice/database';
 
+import { apiProblem, type ApiProblemCode } from './api-problem';
+
+export {
+  apiProblem,
+  authenticationRequiredProblem,
+  authorizationDeniedProblem,
+} from './api-problem';
+export type { ApiProblemCode, ApiProblemOptions } from './api-problem';
+
+export function isRequestValidationError(error: unknown) {
+  return (
+    error instanceof SyntaxError ||
+    (error instanceof Error && error.name === 'ZodError')
+  );
+}
+
 export function apiErrorResponse(error: unknown) {
-  const requestId = randomUUID();
   let status = 400;
-  let code = 'VALIDATION_FAILED';
+  let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Request validation failed';
   if (error instanceof DataAccessError) {
     if (error.code === 'authentication_required') {
@@ -21,7 +34,7 @@ export function apiErrorResponse(error: unknown) {
       code = 'RESOURCE_NOT_FOUND';
       message = 'Resource not found';
     }
-  } else if (error instanceof Error && error.name !== 'ZodError') {
+  } else if (error instanceof Error && !isRequestValidationError(error)) {
     console.error('Unhandled API request error', {
       name: error.name,
       message: error.message,
@@ -30,8 +43,5 @@ export function apiErrorResponse(error: unknown) {
     code = 'INTERNAL_ERROR';
     message = 'Request failed';
   }
-  return Response.json(
-    { error: { code, message, requestId, retryable: status >= 500 } },
-    { status },
-  );
+  return apiProblem({ status, code, message });
 }

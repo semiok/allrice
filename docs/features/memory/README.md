@@ -1,47 +1,53 @@
-# Memory
+# Memory 2.0
 
-> Status: **MET-42 foundation and MET-50 explicit workflows implemented**
+> Status: **MET-98 P1-1 implemented on the development branch**
 >
-> Linear: **MET-42, MET-50**
+> Linear: **MET-42, MET-50, MET-98**
 
 ## User outcome
 
-AllRice can remember approved facts and source material for an employee while keeping private and team Memory isolated and explainable.
+Rice can recover relevant preferences, project facts and decisions across Sessions without treating every sentence as permanent truth. Users remain in control: they can confirm a candidate, correct a long-term memory or delete it.
 
-## Scope
+## Architecture
 
-- Memory documents and chunks from allowed Chat/file/user actions;
-- pgvector embeddings and tenant-filtered retrieval;
-- source attribution in answers;
-- employee-visible source inspection and private Memory deletion;
-- delete propagation to chunks and future retrieval.
+AllRice borrows the useful separation from OpenClaw between working context and durable memory, but PostgreSQL remains the only source of truth for the multi-tenant SaaS platform. Markdown files are not a parallel memory database.
 
-## Non-goals in V1
+The lifecycle has three layers:
 
-- unrestricted automatic extraction from every conversation;
-- global organization knowledge graph;
-- administrator default access to private employee Memory;
-- cross-product shared vector tables with OpenRice.
+1. **Session context** is the current conversation and its compacted checkpoint.
+2. **Candidate memory** is a reviewable, user-authored preference, decision, project fact or work note. It is never automatically injected.
+3. **Durable memory** is explicitly confirmed by the user and may be recalled in later Sessions when relevant.
 
-## Implemented data foundation
+Knowledge and Workflow remain separate governed capabilities. They are not relabelled as Memory.
 
-`allrice_memories` and `allrice_rag_chunks` store explicit organization, workspace, owner and visibility. Chunks use `vector(1536)` with an HNSW cosine index. Chat Session, Message and Run authority tables now carry the same tenant columns for their owning feature work.
+## Capture rules
 
-Migration `0004_employee_workspace.sql` adds user/message/file source type and source ID plus an embedding-model marker. Explicit browser actions create Memory through server-derived deterministic embeddings; the browser cannot supply an embedding vector.
+- `workspace.memory.remember` writes a candidate only from a stable statement in the current user message.
+- A durable write requires an explicit current-message instruction such as “请记住” or “以后按此”.
+- Before context compaction, Rice may create a candidate from matching user-authored statements and link it to the checkpoint.
+- Assistant output, hidden reasoning, web pages, connector content and tool results cannot promote themselves into durable memory.
+- Promotion and correction create revisions and audit events; deletion archives the source and removes it from future recall.
 
-## Retrieval boundary
+## Recall policy
 
-Authorization and tenant filters are applied inside the SQL recall query, never after receiving an unrestricted result set. `POST /api/v1/memories/recall` accepts text, derives its vector on the server, always binds organization and workspace, and allows private chunks only when `owner_id` matches the authenticated actor. The workspace lists sources and supports owner deletion through `/api/v1/memories/:id`.
+Automatic recall considers only durable, non-expired, tenant-authorized records. It combines vector similarity, lexical similarity, trust, confidence and freshness, then applies a relevance threshold, content deduplication, a maximum of three records and a 1,500-token budget. Unrelated memories are not injected merely because a fixed Top-K slot is available.
 
-## Failure and recovery
+Explicit memory search may also return candidates so the user can inspect and confirm them. Recall updates `last_recalled_at` and `recall_count` for observability.
 
-Deleting a Memory removes its chunks in the same transaction. Deleting a file archives file-sourced Memory, removes the corresponding chunks and revokes signed grants. A future production embedding model must use a new version marker and migration instead of silently changing vector meaning.
+## Tenant and trust boundary
+
+`allrice_memories`, revisions and RAG chunks carry organization, workspace, employee, owner and visibility scope. Authorization is applied in SQL before rows are returned. Explicit user-confirmed memory has the highest trust; derived candidates remain supporting context; external evidence is untrusted and never becomes a user preference by implication.
+
+## User controls
+
+The workspace Memory panel separates “待你确认” from “长期记忆” and exposes the memory class, source and revision. Owners can confirm, correct or delete their records. A candidate becomes eligible for future automatic recall only after confirmation.
 
 ## Acceptance
 
-- private Memory is retrieved only for its owner (covered by two-user Compose smoke);
-- explicitly shared Memory follows Workspace role;
-- User B cannot retrieve User A's vector matches;
-- source attribution resolves to an authorized source;
-- deletion prevents future retrieval;
-- backup/restore preserves document/chunk ownership and version metadata.
+- an explicit “remember” survives into a different Session;
+- a paraphrased but relevant request can recall the durable memory;
+- an unrelated request does not receive it;
+- pre-compaction capture creates an inactive candidate rather than an automatic fact;
+- the owner can inspect, promote, correct and delete a memory;
+- private memory never crosses user, workspace or organization boundaries;
+- recall and lifecycle changes remain attributable and auditable.

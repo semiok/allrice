@@ -1,11 +1,14 @@
-import { randomUUID } from 'node:crypto';
-
 import { CapabilityRegistryError, DataAccessError } from '@allrice/database';
 
+import {
+  apiProblem,
+  type ApiProblemCode,
+  isRequestValidationError,
+} from '../api-error-response';
+
 export function capabilityErrorResponse(error: unknown) {
-  const requestId = randomUUID();
   let status = 400;
-  let code = 'VALIDATION_FAILED';
+  let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Capability request validation failed';
   if (error instanceof DataAccessError) {
     if (error.code === 'authentication_required') {
@@ -39,7 +42,7 @@ export function capabilityErrorResponse(error: unknown) {
       code = 'CAPABILITY_BINDING_INVALID';
       message = 'Capability binding is invalid or crosses a tenant boundary';
     }
-  } else if (error instanceof Error && error.name !== 'ZodError') {
+  } else if (error instanceof Error && !isRequestValidationError(error)) {
     console.error('Unhandled capability request error', {
       name: error.name,
       message: error.message,
@@ -48,8 +51,5 @@ export function capabilityErrorResponse(error: unknown) {
     code = 'INTERNAL_ERROR';
     message = 'Capability request failed';
   }
-  return Response.json(
-    { error: { code, message, requestId, retryable: status >= 500 } },
-    { status },
-  );
+  return apiProblem({ status, code, message });
 }

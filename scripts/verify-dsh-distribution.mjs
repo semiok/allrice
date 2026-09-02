@@ -19,6 +19,8 @@ const [
   profile,
   runtimePin,
   platformEmployeeContract,
+  compatibility,
+  adminCompatibilityAdapter,
 ] = await Promise.all([
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
@@ -36,6 +38,8 @@ const [
     resolve(root, 'packages/contracts/src/platform-employees.ts'),
     'utf8',
   ),
+  json('apps/worker/dsh/compatibility.json'),
+  readFile(resolve(root, 'apps/dsh-admin/dsh-webui-compatibility.mjs'), 'utf8'),
 ]);
 
 assert(distribution.schemaVersion === 1, 'distribution schema must be v1');
@@ -80,6 +84,85 @@ assert(
   'restricted profile must leave JSON-RPC ownership to the AllRice protocol adapter',
 );
 
+assert(
+  compatibility.schemaVersion === 1 && compatibility.harness === 'dsh',
+  'invalid DSH compatibility manifest',
+);
+assert(
+  compatibility.runtimeProfile ===
+    'apps/worker/dsh/allrice-restricted.cordis.yml',
+  'compatibility manifest must point at the governed runtime profile',
+);
+assert(
+  compatibility.sessionFormat.endsWith(`@${distribution.current.version}`),
+  'session format must be recorded against the approved DSH version',
+);
+assert(
+  compatibility.productionSkillSources?.length === 1 &&
+    compatibility.productionSkillSources[0] === 'allrice-published-runtime' &&
+    compatibility.excludedSkillSources?.includes(
+      'dsh-repository-development-skills',
+    ),
+  'production Skill sources must exclude DSH repository development Skills',
+);
+
+const adminPrivateInterface = compatibility.privateInterfaces?.find(
+  (entry) => entry.id === 'dsh-admin-webui-entrypoint',
+);
+assert(
+  adminPrivateInterface?.upstreamInterface === '@deepseek-ai/dsh/lib/bin.js' &&
+    adminPrivateInterface.adapter ===
+      'apps/dsh-admin/dsh-webui-compatibility.mjs' &&
+    adminPrivateInterface.overrideEnvironmentVariable === 'ALLRICE_DSH_COMMAND',
+  'DSH Admin private WebUI entrypoint must be recorded in the compatibility manifest',
+);
+assert(
+  ledger.patches.some(
+    (patch) =>
+      patch.id === 'dsh-admin-webui-private-entrypoint-v1' &&
+      patch.upstreamVersion === distribution.current.version &&
+      patch.path === adminPrivateInterface.adapter,
+  ),
+  'DSH Admin private WebUI entrypoint must be recorded against the approved upstream',
+);
+assert(
+  adminCompatibilityAdapter.includes('DSH_WEBUI_PRIVATE_ENTRYPOINT') &&
+    adminCompatibilityAdapter.includes(
+      `'${adminPrivateInterface.upstreamInterface}'`,
+    ),
+  'DSH Admin compatibility adapter must own the recorded private entrypoint',
+);
+
+const requiredReplayScenarios = [
+  'ordinary-chat',
+  'search',
+  'skill',
+  'tool',
+  'attachment',
+  'cancel',
+  'recovery',
+  'compaction',
+];
+const replayById = new Map(
+  (compatibility.goldenReplay ?? []).map((scenario) => [scenario.id, scenario]),
+);
+for (const scenarioId of requiredReplayScenarios) {
+  const scenario = replayById.get(scenarioId);
+  assert(scenario, `Golden Replay is missing ${scenarioId}`);
+  const source = await readFile(resolve(root, scenario.testFile), 'utf8');
+  assert(
+    source.includes(scenario.testName),
+    `Golden Replay ${scenarioId} points at a missing test`,
+  );
+}
+
+for (const pluginId of compatibility.configurationTree ?? []) {
+  assert(
+    profile.includes(`- id: ${pluginId}`),
+    `recorded DSH configuration is missing ${pluginId}`,
+  );
+}
+
 for (const [name, version] of Object.entries(
   workerPackage.dependencies ?? {},
 )) {
@@ -110,5 +193,8 @@ console.log(
     patches: ledger.patches.length,
     candidate: distribution.candidate?.generation ?? null,
     rollback: distribution.rollback?.generation ?? null,
+    wireProtocol: compatibility.wireProtocol,
+    sessionFormat: compatibility.sessionFormat,
+    goldenReplayScenarios: requiredReplayScenarios,
   }),
 );

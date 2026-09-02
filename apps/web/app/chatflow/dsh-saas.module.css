@@ -1,8 +1,18 @@
-.shell {
+/* Keep the ChatFlow application pinned to the visual viewport. AppFrame also
+   contributes a single-class `height: 100%` rule and CSS chunk ordering can
+   place that rule after this module in production. The element-qualified
+   selector deliberately wins that tie so a long transcript cannot grow the
+   document and move the header, sidebar footer, or composer off screen. */
+main.shell {
+  position: fixed;
+  inset: 0;
   width: 100%;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
   height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   padding: 0;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-base);
@@ -1301,6 +1311,230 @@
   cursor: pointer;
 }
 
+.browserTaskLoading {
+  margin: 8px 0 12px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+}
+
+.browserTasks {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.browserTasksHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.browserTasksHeader > strong {
+  font-weight: 600;
+}
+
+.browserTasksHeader button,
+.browserArtifactActions button,
+.browserTaskCancel {
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.browserTasksHeader button:disabled,
+.browserArtifactActions button:disabled,
+.browserTaskCancel:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.browserTask {
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-fill-translucent-subtle);
+}
+
+.browserTask > summary {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.browserTask > summary::-webkit-details-marker {
+  display: none;
+}
+
+.browserTask > summary > span:nth-child(2) {
+  min-width: 0;
+}
+
+.browserTask > summary strong,
+.browserTask > summary small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browserTask > summary strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.browserTask > summary small,
+.browserTaskSummaryMeta {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.browserTaskStatus {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-caption);
+}
+
+.browserTask[data-status='queued'] .browserTaskStatus,
+.browserTask[data-status='running'] .browserTaskStatus {
+  background: var(--dsw-alias-state-business-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+  animation: nativeEventPulse 1.4s ease-in-out infinite;
+}
+
+.browserTask[data-status='succeeded'] .browserTaskStatus {
+  background: var(--dsw-alias-state-success-primary, #26a269);
+}
+
+.browserTask[data-status='failed'] .browserTaskStatus,
+.browserTask[data-status='canceled'] .browserTaskStatus {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.browserTaskBody {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px 30px;
+}
+
+.browserEvidenceTimeline {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.browserEvidenceTimeline li {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.browserEvidenceTimeline li > span {
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary, #26a269);
+}
+
+.browserEvidenceTimeline li[data-status='failed'] > span,
+.browserEvidenceTimeline li[data-status='canceled'] > span {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.browserEvidenceTimeline strong,
+.browserEvidenceTimeline small,
+.browserEvidenceTimeline time {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.browserEvidenceTimeline strong {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.browserEvidenceTimeline small,
+.browserEvidenceTimeline time,
+.browserTaskEmpty {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.browserEvidenceTimeline time {
+  margin-top: 1px;
+}
+
+.browserTaskEmpty,
+.browserTaskFailure,
+.browserTaskError {
+  margin: 0;
+}
+
+.browserTaskFailure,
+.browserTaskError {
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+}
+
+.browserArtifacts {
+  display: grid;
+  gap: 6px;
+}
+
+.browserArtifacts > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.browserArtifacts strong,
+.browserArtifacts small {
+  display: block;
+}
+
+.browserArtifacts strong {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.browserArtifacts small {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.browserArtifactActions {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+
+.browserTaskCancel {
+  justify-self: start;
+  color: var(--dsw-alias-state-error-primary);
+}
+
 @keyframes nativeEventPulse {
   50% {
     opacity: 0.45;
@@ -1326,7 +1560,7 @@
   overflow-y: auto;
 }
 
-.fileList > button {
+.fileRow {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1336,25 +1570,83 @@
   border-radius: 10px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
-  text-align: left;
-  cursor: pointer;
 }
 
-.fileList > button:hover {
+.fileRow:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.fileList > button div {
+.fileRow > div:nth-child(2) {
   display: flex;
   min-width: 0;
   flex-direction: column;
 }
 
 .fileList small,
-.fileList em {
+.versionHistory small {
   color: var(--dsw-alias-label-caption);
   font-size: 11px;
-  font-style: normal;
+}
+
+.fileActions {
+  display: flex;
+  gap: 6px;
+}
+
+.fileActions button,
+.versionHistory a {
+  padding: 5px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.fileActions button:last-child {
+  color: var(--dsw-alias-label-primary);
+}
+
+.versionHistory {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+
+.versionHistory > header {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 2px 8px;
+}
+
+.versionHistory article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+}
+
+.versionHistory article > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 8px;
+}
+
+.versionHistory article span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.versionHistory article small {
+  grid-column: 1 / -1;
 }
 
 @media (max-width: 760px) {

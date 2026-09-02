@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   DataAccessError,
   IdentityError,
@@ -7,10 +5,15 @@ import {
   WorkflowRuntimeError,
 } from '@allrice/database';
 
+import {
+  apiProblem,
+  type ApiProblemCode,
+  isRequestValidationError,
+} from '../api-error-response';
+
 export function executionErrorResponse(error: unknown) {
-  const requestId = randomUUID();
   let status = 400;
-  let code = 'VALIDATION_FAILED';
+  let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Execution request validation failed';
   let retryable = false;
   if (error instanceof IdentityError) {
@@ -76,20 +79,15 @@ export function executionErrorResponse(error: unknown) {
       code = 'WORKFLOW_NEEDS_ATTENTION';
       message = 'Workflow requires manual intervention';
     }
-  } else {
+  } else if (!isRequestValidationError(error)) {
     console.error('Unhandled execution request error', {
       name: error instanceof Error ? error.name : 'UnknownError',
       message: error instanceof Error ? error.message : 'Unknown failure',
     });
-    if (error instanceof Error && error.name !== 'ZodError') {
-      status = 500;
-      code = 'INTERNAL_ERROR';
-      message = 'Execution request failed';
-      retryable = true;
-    }
+    status = 500;
+    code = 'INTERNAL_ERROR';
+    message = 'Execution request failed';
+    retryable = true;
   }
-  return Response.json(
-    { error: { code, message, requestId, retryable } },
-    { status },
-  );
+  return apiProblem({ status, code, message, retryable });
 }

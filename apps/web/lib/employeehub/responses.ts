@@ -1,11 +1,14 @@
-import { randomUUID } from 'node:crypto';
-
 import { DataAccessError, EmployeeHubError } from '@allrice/database';
 
+import {
+  apiProblem,
+  type ApiProblemCode,
+  isRequestValidationError,
+} from '../api-error-response';
+
 export function employeeHubErrorResponse(error: unknown) {
-  const requestId = randomUUID();
   let status = 400;
-  let code = 'VALIDATION_FAILED';
+  let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'EmployeeHub request validation failed';
   if (error instanceof DataAccessError) {
     if (error.code === 'authentication_required') {
@@ -47,7 +50,7 @@ export function employeeHubErrorResponse(error: unknown) {
       code = 'PROVIDER_INVALID';
       message = 'This employee version cannot execute with Codex';
     }
-  } else if (error instanceof Error && error.name !== 'ZodError') {
+  } else if (error instanceof Error && !isRequestValidationError(error)) {
     console.error('Unhandled EmployeeHub request error', {
       name: error.name,
       message: error.message,
@@ -56,8 +59,5 @@ export function employeeHubErrorResponse(error: unknown) {
     code = 'INTERNAL_ERROR';
     message = 'EmployeeHub request failed';
   }
-  return Response.json(
-    { error: { code, message, requestId, retryable: status >= 500 } },
-    { status },
-  );
+  return apiProblem({ status, code, message });
 }

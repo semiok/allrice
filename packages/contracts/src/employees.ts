@@ -7,9 +7,15 @@ import {
 } from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { SessionModelSnapshotSchema } from './models.ts';
+import {
+  MemoryClassSchema,
+  MemoryLifecycleStateSchema,
+  MemoryTrustSchema,
+} from './operations.ts';
 import { PromptImageAttachmentSchema } from './storage.ts';
 import {
   CodexExecutionSnapshotSchema,
+  DshNativeSkillSnapshotSchema,
   DshExecutionSnapshotSchema,
   HarnessExecutionSnapshotSchema,
   SkillCapabilitySchema,
@@ -163,13 +169,73 @@ export type EmployeeUserProfilePolicy = z.infer<
   typeof EmployeeUserProfilePolicySchema
 >;
 
+export const EmployeeRuntimePackageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    packageVersion: z.string().trim().min(1).max(240),
+    checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    capabilityFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    files: z
+      .object({
+        agentsMd: z.string().min(1).max(100_000),
+        identityMd: z.string().min(1).max(30_000),
+        soulMd: z.string().min(1).max(50_000),
+        userMd: z.string().min(1).max(30_000),
+      })
+      .strict(),
+    skills: z.array(DshNativeSkillSnapshotSchema).max(64),
+    runtimeManifest: z
+      .object({
+        source: z.literal('allrice-published-runtime'),
+        harness: z.literal('dsh'),
+        distributionGeneration: z.string().trim().min(1).max(240),
+        provider: z.string().trim().min(1).max(120),
+        model: z.string().trim().min(1).max(200),
+        toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
+        deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
+        skillGovernance: z
+          .array(
+            z
+              .object({
+                id: UuidSchema,
+                name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+                source: z.enum(['allrice', 'dsh-migrated']),
+                sourceRef: z.string().trim().min(1).max(1_000),
+                version: z.string().trim().min(1).max(120),
+                license: z.string().trim().min(1).max(120),
+                reviewStatus: z.literal('reviewed'),
+                reviewedByLabel: z.string().trim().min(1).max(240),
+                reviewedAt: z.string().datetime(),
+                checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+              })
+              .strict(),
+          )
+          .max(64),
+        instructionPrecedence: z.tuple([
+          z.literal('platform-hard-policy'),
+          z.literal('identity'),
+          z.literal('behavior'),
+          z.literal('work-rules'),
+          z.literal('tenant-user-context'),
+          z.literal('runtime-authorization'),
+          z.literal('user-request'),
+          z.literal('skill-details'),
+        ]),
+      })
+      .strict(),
+  })
+  .strict();
+export type EmployeeRuntimePackage = z.infer<
+  typeof EmployeeRuntimePackageSchema
+>;
+
 const EmployeeManifestV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     key: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     name: z.string().min(1).max(120),
     description: z.string().min(1).max(1_000),
-    systemPrompt: z.string().min(1).max(10_000),
+    systemPrompt: z.string().min(1).max(100_000),
     provider: EmployeeProviderSnapshotSchema,
     capabilities: z.array(SkillCapabilitySchema).max(16),
     skillVersionIds: z.array(UuidSchema).max(32),
@@ -187,7 +253,7 @@ export const EmployeeDefinitionSchema = z
     applicableScenarios: z.array(z.string().trim().min(1).max(300)).max(24),
     isDefaultRice: z.boolean(),
     identity: EmployeeIdentitySchema,
-    systemPrompt: z.string().min(1).max(10_000),
+    systemPrompt: z.string().min(1).max(100_000),
     provider: EmployeeProviderSnapshotSchema,
     runtimePolicy: EmployeeRuntimePolicySchema,
     capabilities: z.array(SkillCapabilitySchema).max(16),
@@ -199,6 +265,7 @@ export const EmployeeDefinitionSchema = z
       fields: ['displayName', 'preferences'],
       scope: 'employee_user',
     }),
+    runtimePackage: EmployeeRuntimePackageSchema.nullable().default(null),
     partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
   })
   .strict()
@@ -458,7 +525,18 @@ export const EmployeePromptSnapshotSchema = z
       .max(1_000),
     memories: z
       .array(
-        z.object({ id: UuidSchema, content: z.string().max(100_000) }).strict(),
+        z
+          .object({
+            id: UuidSchema,
+            content: z.string().max(100_000),
+            lifecycleState: MemoryLifecycleStateSchema.optional(),
+            memoryClass: MemoryClassSchema.optional(),
+            sourceLabel: z.string().max(240).optional(),
+            trust: MemoryTrustSchema.optional(),
+            confidence: z.number().min(0).max(1).optional(),
+            capturedAt: TimestampSchema.optional(),
+          })
+          .strict(),
       )
       .max(20),
     userRequest: z.string().min(1).max(100_000),

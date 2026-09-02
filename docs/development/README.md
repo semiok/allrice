@@ -87,6 +87,9 @@ Copy `.env.example` to `.env` only when changing defaults. The bootstrap script 
 | `ALLRICE_DSH_CODEX_MODEL`            | `gpt-5.6-luna`        | DSH Codex Provider model pinned into new employee runs          |
 | `ALLRICE_DSH_CODEX_REASONING_EFFORT` | `xhigh`               | DSH Codex Provider reasoning effort                             |
 | `ALLRICE_DSH_PLATFORM_HOME`          | `.local/dsh-platform` | Private DSH Provider credential/configuration directory         |
+| `ALLRICE_DSH_HTTP_PROXY`             | unset                 | Explicit HTTP egress proxy for DSH child processes              |
+| `ALLRICE_DSH_HTTPS_PROXY`            | unset                 | Explicit HTTPS egress proxy for DSH child processes             |
+| `ALLRICE_DSH_NO_PROXY`               | unset                 | Optional proxy bypass list for DSH child processes              |
 | `ALLRICE_STORAGE_SIGNING_SECRET`     | dev-only fallback     | HMAC secret; required in production, minimum 32 bytes           |
 | `ALLRICE_PROXY_PORT`                 | `8080`                | Host port for the full Compose deployment                       |
 
@@ -126,6 +129,8 @@ This prevents the misleading state where liveness passes but a teammate is devel
 | `pnpm db:dev:up`          | Start only the isolated development database        |
 | `pnpm db:dev:down`        | Stop it while retaining its named data volume       |
 | `pnpm db:migrate`         | Apply ordered SQL migrations under an advisory lock |
+| `pnpm content:sync`       | Idempotently sync reviewed platform Skill content   |
+| `pnpm db:prepare`         | Migrate, sync platform content, then verify         |
 | `pnpm identity:bootstrap` | Create the first one-time admin invitation          |
 | `pnpm format:check`       | Verify formatting                                   |
 | `pnpm lint`               | Run static rules                                    |

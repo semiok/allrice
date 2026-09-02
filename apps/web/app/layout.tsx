@@ -4,7 +4,8 @@ import type { ReactNode } from 'react';
 import './dsh-upstream/design-platform.css';
 import './dsh-upstream/base.css';
 import './dsh-upstream/scrollbar.css';
-import './styles.css';
+import './styles/base.css';
+import './styles/auth.css';
 import '@allrice/ui/styles.css';
 
 import { readFrameworkRolloutPolicy } from '../lib/framework/rollout';

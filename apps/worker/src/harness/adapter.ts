@@ -45,6 +45,14 @@ export interface HarnessExecutionInput {
   generation: number;
   maxOutputTokens?: number;
   threadId?: string | null;
+  /**
+   * Employee-authorized Tool Broker names before per-turn activation.
+   *
+   * `tools` remains the only callable set for this turn. Adapters use this
+   * directory only to distinguish an intentionally inactive Skill from a
+   * broken Skill whose required tool is not authorized at all.
+   */
+  authorizedToolNames?: readonly string[];
   tools: readonly HarnessToolDefinition[];
   onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>;
   onEvent: (event: HarnessEvent) => Promise<void>;

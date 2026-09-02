@@ -17,7 +17,7 @@ import {
   type Role,
 } from '@allrice/contracts';
 
-import { getDatabase } from './index.ts';
+import { getDatabase } from './core/client.ts';
 
 const passwordParameters = { N: 16_384, r: 8, p: 1 } as const;
 const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
+import { MemorySourceTypeSchema } from './operations.ts';
 import { ChecksumSchema } from './runs.ts';
 
 export const StorageCategorySchema = z.enum([
@@ -84,7 +85,7 @@ export const CreateMemoryInputSchema = z
     content: z.string().min(1).max(100_000),
     metadata: z.record(z.string(), z.json()).default({}),
     visibility: VisibilitySchema.default('private'),
-    sourceType: z.enum(['user', 'message', 'file']).default('user'),
+    sourceType: MemorySourceTypeSchema.default('user'),
     sourceId: UuidSchema.nullable().default(null),
   })
   .strict();

@@ -1,6 +1,10 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
+import {
+  authenticationRequiredProblem,
+  authorizationDeniedProblem,
+} from './lib/api-problem';
 import { portalAuthEnabled, resolvePortal } from './lib/portal/config';
 import {
   portalSessionCookieName,
@@ -61,10 +65,7 @@ export function proxy(request: NextRequest) {
         request.nextUrl.pathname.startsWith('/employees'));
     if (tenantForbidden) {
       if (request.nextUrl.pathname.startsWith('/api/')) {
-        return Response.json(
-          { error: 'authorization_denied' },
-          { status: 403 },
-        );
+        return authorizationDeniedProblem();
       }
       return NextResponse.redirect(new URL(portal.homePath, request.url));
     }
@@ -72,7 +73,7 @@ export function proxy(request: NextRequest) {
   }
 
   if (request.nextUrl.pathname.startsWith('/api/')) {
-    return Response.json({ error: 'authentication_required' }, { status: 401 });
+    return authenticationRequiredProblem();
   }
   const login = new URL('/login', request.url);
   return NextResponse.redirect(login);

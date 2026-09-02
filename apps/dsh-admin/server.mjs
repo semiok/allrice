@@ -1,13 +1,14 @@
 /* global Buffer, URL, URLSearchParams, console, fetch, process */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import httpProxy from 'http-proxy';
+
+import { spawnDshWebUi } from './dsh-webui-compatibility.mjs';
 
 const listenHost = process.env.ALLRICE_DSH_ADMIN_HOST ?? '0.0.0.0';
 const listenPort = Number(process.env.ALLRICE_DSH_ADMIN_PORT ?? 3081);
@@ -302,11 +303,6 @@ server.on('upgrade', (request, socket, head) => {
   proxy.ws(request, socket, head);
 });
 
-const dshEntry =
-  process.env.ALLRICE_DSH_COMMAND ??
-  fileURLToPath(
-    new URL('node_modules/@deepseek-ai/dsh/lib/bin.js', import.meta.url),
-  );
 const platformPatch = fileURLToPath(
   new URL('allrice-platform.patch.yml', import.meta.url),
 );
@@ -354,37 +350,17 @@ writeFileSync(
   ].join('\n'),
   { mode: 0o600 },
 );
-const dsh = spawn(
-  process.execPath,
-  [
-    // The native DSH WebUI HMR service explicitly requires this Node flag.
-    // Launch the JavaScript entry directly so the flag reaches DSH instead of
-    // being swallowed by pnpm's generated shell wrapper.
-    '--expose-internals',
-    dshEntry,
-    '--profile',
-    'web',
-    '--patch',
-    platformPatch,
-    '--patch',
-    runtimePatch,
-    '--no-open',
-    '--port',
-    String(upstreamPort),
-    '--trusted-host',
-    ...allowedHosts,
-  ],
-  {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      DSH_HOME: adminHome,
-      DSH_CREDENTIALS_PATH:
-        process.env.ALLRICE_DSH_ADMIN_CREDENTIALS_PATH ??
-        process.env.DSH_CREDENTIALS_PATH,
-    },
-  },
-);
+const dsh = spawnDshWebUi({
+  commandOverride: process.env.ALLRICE_DSH_COMMAND,
+  platformPatch,
+  runtimePatch,
+  upstreamPort,
+  trustedHosts: [...allowedHosts],
+  adminHome,
+  credentialsPath:
+    process.env.ALLRICE_DSH_ADMIN_CREDENTIALS_PATH ??
+    process.env.DSH_CREDENTIALS_PATH,
+});
 dsh.on('exit', (code, signal) => {
   console.error(
     `DSH WebUI exited (code=${String(code)}, signal=${String(signal)})`,

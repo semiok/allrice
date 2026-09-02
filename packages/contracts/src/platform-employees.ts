@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { EmployeeRuntimePackageSchema } from './employees.ts';
 import { HarnessEventSchema } from './harness.ts';
 
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
@@ -128,12 +129,13 @@ export const PlatformEmployeeRuntimeProfileSchema = z
     timeoutMs: z.number().int().min(1_000).max(3_600_000),
     credentialReference: z.string().trim().min(1).max(255),
     baseUrl: z.string().url().max(2_000).nullable().default(null),
-    systemPrompt: z.string().trim().min(1).max(30_000),
+    systemPrompt: z.string().trim().min(1).max(100_000),
     nativeSkillIds: z.array(UuidSchema).max(64),
     nativeSkillChecksums: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)),
     toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
     connectorRefs: z.array(z.string().trim().min(1).max(200)).max(32),
     securityPolicy: PlatformEmployeeDefinitionSchema.shape.securityPolicy,
+    runtimePackage: EmployeeRuntimePackageSchema.nullable().default(null),
   })
   .strict();
 
@@ -286,3 +288,31 @@ export const ArchivePlatformEmployeeInputSchema = z
     reason: z.string().trim().min(1).max(1_000),
   })
   .strict();
+
+export const PlatformEmployeeLifecycleInputSchema = z.discriminatedUnion(
+  'action',
+  [
+    z
+      .object({
+        action: z.literal('disable'),
+        reason: z.string().trim().min(1).max(1_000),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal('rollback'),
+        revisionId: UuidSchema.optional(),
+        reason: z.string().trim().min(1).max(1_000),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal('archive'),
+        reason: z.string().trim().min(1).max(1_000),
+      })
+      .strict(),
+  ],
+);
+export type PlatformEmployeeLifecycleInput = z.infer<
+  typeof PlatformEmployeeLifecycleInputSchema
+>;
