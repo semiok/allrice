@@ -14,6 +14,7 @@ export async function bridgeRequest<T>(input: {
   token?: string;
   body?: unknown;
   maximumResponseBytes?: number;
+  timeoutMs?: number;
 }): Promise<T> {
   const response = await fetch(new URL(input.path, input.server), {
     // Opt-in operation requests are bounded and cannot silently redirect their
@@ -27,7 +28,7 @@ export async function bridgeRequest<T>(input: {
         : { 'content-type': 'application/json' }),
     },
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    signal: AbortSignal.timeout(35_000),
+    signal: AbortSignal.timeout(input.timeoutMs ?? 35_000),
   });
   let parsed: unknown;
   if (input.maximumResponseBytes !== undefined) {

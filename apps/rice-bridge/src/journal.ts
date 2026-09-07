@@ -15,6 +15,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   RuntimeBridgeDispatchSchema,
   RuntimeBridgeReceiptSchema,
+  RuntimeLocalCommandResultSchema,
+  type RuntimeLocalCommandResult,
   canonicalRuntimeBridgeJson,
   type RuntimeBridgeDispatch,
   type RuntimeBridgeReceipt,
@@ -76,6 +78,7 @@ interface EntryRow {
 export class BridgeJournal {
   private closed = false;
   private poisoned = false;
+  private recoveryCursor = 0;
 
   private constructor(
     private readonly database: DatabaseSync,
@@ -451,6 +454,33 @@ export class BridgeJournal {
     });
   }
 
+  async stopped(operationId: string, output: unknown, summary: string) {
+    await this.guard();
+    return this.transaction(() => {
+      const row = this.entry(operationId);
+      if (!['received', 'executing'].includes(row.state))
+        throw new BridgeJournalError('JOURNAL_RESULT_ALREADY_FINAL');
+      const evidence = { summary: summary.slice(0, 500), output };
+      const receipt = this.append(
+        row,
+        {
+          type: 'operation.stopped',
+          effects: 'none',
+          evidence: {
+            id: randomUUID(),
+            recordedAt: new Date().toISOString(),
+            digest: bridgeDigest(evidence),
+          },
+        },
+        evidence,
+      );
+      this.database
+        .prepare("UPDATE entries SET state='completed' WHERE operation_id=?")
+        .run(operationId);
+      return receipt;
+    });
+  }
+
   async uncertain(
     operationId: string,
     reason: 'receipt_missing' | 'lease_lost' | 'connection_lost',
@@ -463,6 +493,68 @@ export class BridgeJournal {
       const receipt = this.append(row, { type: 'operation.uncertain', reason });
       this.database
         .prepare("UPDATE entries SET state='unknown' WHERE operation_id=?")
+        .run(operationId);
+      return receipt;
+    });
+  }
+
+  async unknownLocalCommands() {
+    await this.guard();
+    const select = this.database.prepare(
+      "SELECT rowid,dispatch FROM entries WHERE state='unknown' AND json_extract(dispatch,'$.payload.capability')='local.process.execute' AND rowid>? ORDER BY rowid LIMIT 16",
+    );
+    let rows = select.all(this.recoveryCursor);
+    if (!rows.length) rows = select.all(0);
+    this.recoveryCursor = Number(rows.at(-1)?.rowid ?? 0);
+    return rows.map((row) =>
+      RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
+    );
+  }
+
+  /** Caller must obtain exact-container terminal evidence from LocalCommandRunner.recover. */
+  async reconcileLocalCommand(
+    operationId: string,
+    input: RuntimeLocalCommandResult,
+  ) {
+    await this.guard();
+    const result = RuntimeLocalCommandResultSchema.parse(input);
+    return this.transaction(() => {
+      const row = this.entry(operationId),
+        dispatch = RuntimeBridgeDispatchSchema.parse(JSON.parse(row.dispatch));
+      if (
+        row.state !== 'unknown' ||
+        dispatch.payload.capability !== 'local.process.execute' ||
+        dispatch.payload.arguments.imageDigest !== result.imageDigest
+      )
+        throw new BridgeJournalError('JOURNAL_RECOVERY_MISMATCH');
+      const evidence = {
+        summary: `已核实重启前的本地命令：退出 ${result.exitCode}（${result.reason}）；未重跑`,
+        output: result,
+      };
+      const ref = {
+        id: randomUUID(),
+        recordedAt: new Date().toISOString(),
+        digest: bridgeDigest(evidence),
+      };
+      const receipt = this.append(
+        row,
+        ['canceled', 'lease_lost'].includes(result.reason)
+          ? { type: 'operation.stopped', effects: 'none', evidence: ref }
+          : {
+              type: 'operation.outcome',
+              result: {
+                status:
+                  result.reason === 'exited' && result.exitCode === 0
+                    ? 'succeeded'
+                    : 'failed',
+                effects: 'none',
+                evidence: ref,
+              },
+            },
+        evidence,
+      );
+      this.database
+        .prepare("UPDATE entries SET state='completed' WHERE operation_id=?")
         .run(operationId);
       return receipt;
     });

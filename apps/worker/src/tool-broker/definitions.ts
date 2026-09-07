@@ -1,8 +1,10 @@
 import {
   allRiceToolManifest,
+  RuntimeLocalCommandToolInputSchema,
   type AllRiceToolRisk,
   type SkillCapability,
 } from '@allrice/contracts';
+import { z } from 'zod';
 
 export type RiceToolRisk = AllRiceToolRisk;
 
@@ -329,6 +331,14 @@ export const riceToolDefinitions = [
     },
   },
   {
+    name: 'local.process.execute',
+    description:
+      '在当前已授权 Bridge 的本地 Linux 隔离副本中运行一次 Node/npm 命令；不是 macOS 原生 Shell。先读取需要的文件获得 SHA-256，只复制明确的 files 清单，总计不超过 256 KiB。无网络、不安装依赖、不写回原目录。必须等待网页上的准确操作审批，返回真实 stdout/stderr、退出码和停止原因；不可把排队、批准或取消请求当作执行完成。',
+    inputSchema: z.toJSONSchema(RuntimeLocalCommandToolInputSchema, {
+      io: 'input',
+    }),
+  },
+  {
     name: 'local.fs.mkdir',
     description:
       '在当前用户通过 Rice Bridge 授权的 Mac 文件夹内新建一个目录。父目录必须已经存在；敏感路径、符号链接和授权目录之外的路径会被拒绝。',
@@ -411,6 +421,11 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (definition.name !== 'local.process.execute' ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
+          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
+          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1')) &&
       capabilities.includes(toolCapabilities[definition.name]!),
   );
 }

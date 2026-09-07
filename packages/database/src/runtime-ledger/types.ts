@@ -1,5 +1,5 @@
 import type {
-  BridgeCommandPayload,
+  RuntimeBridgePayload,
   RuntimeActionBinding,
   RuntimeAttemptRef,
   RuntimeOperationSignal,
@@ -41,8 +41,8 @@ export interface RuntimeBudgetReservation {
 export interface CreateRuntimeOperationInput {
   snapshot: RuntimeOperationSnapshot;
   reservations: RuntimeBudgetReservation[];
-  /** Existing, already governed Bridge capability only; no Shell reservation. */
-  bridgePayload?: BridgeCommandPayload;
+  /** Governed ledger payload, separate from the legacy Bridge capability set. */
+  bridgePayload?: RuntimeBridgePayload;
 }
 
 export interface RuntimeLedgerReceipt {
@@ -62,7 +62,7 @@ export interface RuntimeLedgerLease {
   leaseToken: string;
   leaseExpiresAt: string;
   createdAt: string;
-  bridgePayload: BridgeCommandPayload | null;
+  bridgePayload: RuntimeBridgePayload | null;
 }
 
 export interface RegisterRuntimeRootInput {

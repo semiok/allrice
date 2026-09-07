@@ -1,7 +1,32 @@
-import { dispatchBridgeCommand } from '@allrice/database';
+import {
+  dispatchBridgeCommand,
+  createLocalCommandOperation,
+  waitLocalCommandOperation,
+} from '@allrice/database';
 import { BridgeCommandPayloadSchema } from '@allrice/contracts';
 
 import type { RiceToolHandler } from '../types.js';
+
+export const executeControlledLocalCommand: RiceToolHandler = async ({
+  input,
+  arguments: args,
+}) => {
+  const operation = await createLocalCommandOperation({
+    context: input.context,
+    arguments: args,
+    callId: input.call.id,
+  });
+  const result = await waitLocalCommandOperation(operation, input.signal);
+  return {
+    modelContent: JSON.stringify({
+      ...result,
+      source: 'rice-bridge',
+      workCopy: 'local_isolated_copy',
+      sourceDirectoryModified: false,
+    }),
+    summary: `${operation.workspaceLabel} · 本地命令 ${result.status}`,
+  };
+};
 
 export const executeLocalBridgeTool: RiceToolHandler = async ({
   input,

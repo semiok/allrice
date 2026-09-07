@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
-  BridgeCommandPayloadSchema,
+  BridgeCapabilities,
+  RuntimeBridgePayloadSchema,
   RuntimeAttemptRefSchema,
   RuntimeOperationEventSchema,
   RuntimeOperationSignalSchema,
@@ -14,6 +15,7 @@ import {
   isTerminalRuntimeOperationStatus,
   matchesRuntimeScope,
   runtimeContractEqual,
+  type RuntimeAttemptRef,
   type RuntimeOperationEvent,
   type RuntimeOperationSignal,
   type RuntimeOperationSnapshot,
@@ -256,7 +258,7 @@ async function cancelLocked(
   const rows = await tx<
     OperationRow[]
   >`select * from allrice_runtime_operations where root_run_id=${root.root_run_id} order by id for update`;
-  for (const row of rows)
+  for (const row of rows) {
     if (
       !isTerminalRuntimeOperationStatus(row.snapshot.status) &&
       row.snapshot.cancelRequestId === null
@@ -265,6 +267,40 @@ async function cancelLocked(
         type: 'operation.cancel_requested',
         requestId: acceptedId,
       });
+    // P05 can prove non-execution while holding the scheduling lock when no
+    // lease has ever been issued. Dispatched/running operations still require
+    // device stop evidence; do not infer their completion from this request.
+    if (
+      row.snapshot.status === 'cancel_requested' &&
+      row.lease_token_hash === null &&
+      row.bridge_payload !== null &&
+      RuntimeBridgePayloadSchema.parse(row.bridge_payload).capability ===
+        'local.process.execute'
+    ) {
+      const evidence = {
+        summary: '取消发生在派发前，命令未执行',
+        output: { notExecuted: true },
+      };
+      const signal: RuntimeOperationSignal = {
+        type: 'operation.stopped',
+        effects: 'none',
+        evidence: {
+          id: randomUUID(),
+          recordedAt: (await now(tx)).toISOString(),
+          digest: runtimeLedgerInputDigest(evidence),
+        },
+      };
+      await append(tx, row, signal);
+      const payload = {
+        attempt: row.snapshot.binding.attempt,
+        signal,
+        deviceSequence: null,
+        evidence,
+      };
+      await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
+        values(${randomUUID()},${row.id},${json(tx, payload)},'applied')`;
+    }
+  }
   return { requestId: acceptedId, operations: rows.map((row) => row.snapshot) };
 }
 
@@ -301,7 +337,7 @@ export function createRuntimeOperationLedger(options: {
     at: Date,
   ) {
     if (row.bridge_payload !== null) {
-      const payload = BridgeCommandPayloadSchema.parse(row.bridge_payload);
+      const payload = RuntimeBridgePayloadSchema.parse(row.bridge_payload);
       if (
         payload.capability !== row.snapshot.binding.action ||
         runtimeLedgerInputDigest(payload) !== row.snapshot.binding.inputDigest
@@ -378,7 +414,7 @@ export function createRuntimeOperationLedger(options: {
       bridgePayload:
         row.bridge_payload === null
           ? null
-          : BridgeCommandPayloadSchema.parse(row.bridge_payload),
+          : RuntimeBridgePayloadSchema.parse(row.bridge_payload),
     } satisfies RuntimeLedgerLease;
   }
 
@@ -476,7 +512,7 @@ export function createRuntimeOperationLedger(options: {
       const payload =
         input.bridgePayload === undefined
           ? null
-          : BridgeCommandPayloadSchema.parse(input.bridgePayload);
+          : RuntimeBridgePayloadSchema.parse(input.bridgePayload);
       if (
         (snapshot.binding.execution.targetKind === 'rice_bridge') !==
           (payload !== null) ||
@@ -616,6 +652,7 @@ export function createRuntimeOperationLedger(options: {
       scope: RuntimeScope;
       deviceId: string;
       leaseMs: number;
+      supportsLocalCommand?: boolean;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
         deviceId = UuidSchema.parse(input.deviceId),
@@ -626,6 +663,7 @@ export function createRuntimeOperationLedger(options: {
       >`select id from allrice_runtime_operations
         where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and device_id=${deviceId}
           and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
+          and snapshot->'binding'->>'action'=any(${input.supportsLocalCommand ? [...BridgeCapabilities, 'local.process.execute'] : [...BridgeCapabilities]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {
@@ -664,6 +702,46 @@ export function createRuntimeOperationLedger(options: {
       });
     },
 
+    async recordOutput(input: {
+      scope: RuntimeScope;
+      operationId: string;
+      leaseToken: string;
+      attempt: RuntimeAttemptRef;
+      sequence: number;
+      stream: 'stdout' | 'stderr';
+      content: string;
+    }) {
+      const sequence = z.number().int().min(0).max(255).parse(input.sequence);
+      const stream = z.enum(['stdout', 'stderr']).parse(input.stream);
+      const content = z.string().max(65_536).parse(input.content);
+      await db.begin(async (tx) => {
+        const { row } = await lockOperation(tx, input.scope, input.operationId);
+        verifyLease(row, input.leaseToken);
+        if (
+          !runtimeContractEqual(row.snapshot.binding.attempt, input.attempt) ||
+          row.snapshot.binding.action !== 'local.process.execute'
+        )
+          throw new RuntimeLedgerError('scope_mismatch');
+        const [prior] = await tx<
+          { stream: string; content: string }[]
+        >`select stream,content from allrice_runtime_operation_output where operation_id=${row.id} and sequence=${sequence}`;
+        if (prior) {
+          if (prior.stream !== stream || prior.content !== content)
+            throw new RuntimeLedgerError('receipt_conflict');
+          return;
+        }
+        const [size] = await tx<
+          { next: number; bytes: string }[]
+        >`select coalesce(max(sequence)+1,0)::int as next,coalesce(sum(octet_length(content)),0)::text as bytes from allrice_runtime_operation_output where operation_id=${row.id}`;
+        if (
+          sequence !== size?.next ||
+          Number(size.bytes) + Buffer.byteLength(content) > 65_536
+        )
+          throw new RuntimeLedgerError('receipt_conflict');
+        await tx`insert into allrice_runtime_operation_output(operation_id,sequence,stream,content) values(${row.id},${sequence},${stream},${content})`;
+      });
+    },
+
     /** Authenticated server adapter's immutable input lookup; never expose unredacted to models. */
     async readOperationInput(scope: RuntimeScope, operationId: string) {
       return db.begin(async (tx) => {
@@ -673,7 +751,7 @@ export function createRuntimeOperationLedger(options: {
           bridgePayload:
             row.bridge_payload === null
               ? null
-              : BridgeCommandPayloadSchema.parse(row.bridge_payload),
+              : RuntimeBridgePayloadSchema.parse(row.bridge_payload),
         };
       });
     },

@@ -28,7 +28,7 @@ const context = {
 const request = (body: unknown) =>
   new Request('http://localhost/api/v1/runtime/approvals/test', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost' },
     body: JSON.stringify(body),
   });
 describe('runtime approval HTTP boundary', () => {
@@ -67,7 +67,10 @@ describe('runtime approval HTTP boundary', () => {
     const response = await POST(
       new Request('http://localhost', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://localhost',
+        },
         body: 'SECRET_SYNTHETIC_NOT_JSON',
       }),
       params,
@@ -109,7 +112,10 @@ describe('runtime approval HTTP boundary', () => {
   it('revocation does not claim actual device stop', async () => {
     ports.revoke.mockResolvedValue({ revoked: true, executionStopped: false });
     const response = await DELETE(
-      new Request('http://localhost', { method: 'DELETE' }),
+      new Request('http://localhost', {
+        method: 'DELETE',
+        headers: { origin: 'http://localhost' },
+      }),
       params,
     );
     expect(await response.json()).toEqual({

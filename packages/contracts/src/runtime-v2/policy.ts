@@ -27,13 +27,14 @@ export type RuntimePolicyDecision = {
   reason: string;
 };
 
-// B1 registers only existing tools. Adding a rule cannot register a new Runner.
+// Exact governed actions. Adding a rule cannot register a Runner or bypass its release gate.
 export const runtimeGovernedActions = [
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
   'local.fs.write',
   'local.fs.mkdir',
+  'local.process.execute',
 ] as const;
 
 const readActions = new Set<string>([
@@ -66,6 +67,13 @@ export function evaluateRuntimePolicy(
   if (matches.some((rule) => rule.effect === 'deny'))
     return { effect: 'deny', reason: 'tenant_deny' };
   if (matches.some((rule) => rule.effect === 'ask'))
+    return { effect: 'ask', reason: 'exact_approval_required' };
+  // B2 command execution always needs an exact, single-use approval, even if
+  // a tenant's broad tool rule is Allow. Unknown tools still fail registration.
+  if (
+    action === 'local.process.execute' &&
+    matches.some((rule) => rule.effect === 'allow')
+  )
     return { effect: 'ask', reason: 'exact_approval_required' };
   if (matches.some((rule) => rule.effect === 'allow'))
     return { effect: 'allow', reason: 'explicit_policy_allow' };

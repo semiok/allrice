@@ -4,11 +4,14 @@ import {
   RuntimeBridgeDispatchSchema,
   RuntimeBridgeReceiptSchema,
   RuntimeBridgeStartSchema,
+  RuntimeBridgeHeartbeatSchema,
+  RuntimeBridgeOutputSchema,
   UuidSchema,
   canonicalRuntimeBridgeJson,
+  runtimeContractEqual,
   type BridgeDevice,
   type BridgeFolderGrant,
-  type BridgeCommandPayload,
+  type RuntimeBridgePayload,
   type RuntimeBridgeReceipt,
   type RuntimeOperationSnapshot,
   type RuntimeScope,
@@ -18,6 +21,11 @@ import { getBridgeDeviceToken } from './request.ts';
 
 type Snapshot = RuntimeOperationSnapshot;
 type Scope = RuntimeScope;
+const json = (body: unknown, init?: ResponseInit) =>
+  Response.json(body, {
+    ...init,
+    headers: { ...init?.headers, 'Cache-Control': 'private, no-store' },
+  });
 
 /** Structural port implemented by the PostgreSQL ledger; not another authority. */
 export interface RuntimeBridgeLedgerPort {
@@ -25,13 +33,29 @@ export interface RuntimeBridgeLedgerPort {
     scope: Scope;
     deviceId: string;
     leaseMs: number;
+    supportsLocalCommand?: boolean;
   }): Promise<{
     snapshot: Snapshot;
     leaseToken: string;
     leaseExpiresAt: string;
-    bridgePayload: BridgeCommandPayload | null;
+    bridgePayload: RuntimeBridgePayload | null;
   } | null>;
   readOperation(scope: Scope, id: string): Promise<Snapshot>;
+  heartbeat?(input: {
+    scope: Scope;
+    operationId: string;
+    leaseToken: string;
+    leaseMs: number;
+  }): Promise<{ snapshot: Snapshot; leaseExpiresAt: string }>;
+  recordOutput?(input: {
+    scope: Scope;
+    operationId: string;
+    leaseToken: string;
+    attempt: RuntimeBridgeReceipt['attempt'];
+    sequence: number;
+    stream: 'stdout' | 'stderr';
+    content: string;
+  }): Promise<void>;
   startOperation(input: {
     scope: Scope;
     operationId: string;
@@ -90,7 +114,7 @@ export function createRuntimeBridgeHttpHandler(input: {
 }) {
   return async (
     request: Request,
-    action: 'next' | 'start' | 'receipts',
+    action: 'next' | 'start' | 'receipts' | 'heartbeat' | 'output',
     operationId?: string,
   ) => {
     try {
@@ -109,12 +133,27 @@ export function createRuntimeBridgeHttpHandler(input: {
       };
       const ledger = await input.ledgerForDevice(device);
       if (action === 'next') {
+        const selection = request.body
+          ? ((await boundedJson(request, 1024)) as Record<string, unknown>)
+          : {};
+        if (
+          !selection ||
+          typeof selection !== 'object' ||
+          Array.isArray(selection) ||
+          Object.keys(selection).some(
+            (key) => key !== 'supportsLocalCommand',
+          ) ||
+          ('supportsLocalCommand' in selection &&
+            typeof selection.supportsLocalCommand !== 'boolean')
+        )
+          throw new HttpProblem(400, 'INVALID_REQUEST');
         const lease = await ledger.claimNextBridgeOperation({
           scope,
           deviceId: device.id,
           leaseMs: 120_000,
+          supportsLocalCommand: selection.supportsLocalCommand === true,
         });
-        if (!lease) return Response.json({ dispatch: null });
+        if (!lease) return json({ dispatch: null });
         const grant = grants.find(
           (item) =>
             item.id === lease.snapshot.binding.execution.grantId &&
@@ -127,7 +166,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           !lease.bridgePayload
         )
           throw new HttpProblem(409, 'DISPATCH_SCOPE_MISMATCH');
-        return Response.json({
+        return json({
           dispatch: RuntimeBridgeDispatchSchema.parse({
             contractVersion: 1,
             snapshot: lease.snapshot,
@@ -158,7 +197,7 @@ export function createRuntimeBridgeHttpHandler(input: {
         );
         if (body.attempt.operationId !== id)
           throw new HttpProblem(409, 'OPERATION_MISMATCH');
-        return Response.json(
+        return json(
           await ledger.startOperation({
             scope,
             operationId: id,
@@ -167,6 +206,37 @@ export function createRuntimeBridgeHttpHandler(input: {
             receiptId: body.receiptId,
           }),
         );
+      }
+      if (action === 'heartbeat' || action === 'output') {
+        const body = (
+          action === 'heartbeat'
+            ? RuntimeBridgeHeartbeatSchema
+            : RuntimeBridgeOutputSchema
+        ).parse(await boundedJson(request, 100_000));
+        if (
+          body.attempt.operationId !== id ||
+          !runtimeContractEqual(body.attempt, snapshot.binding.attempt)
+        )
+          throw new HttpProblem(409, 'OPERATION_MISMATCH');
+        if (action === 'heartbeat') {
+          if (!ledger.heartbeat) throw new HttpProblem(404, 'FEATURE_DISABLED');
+          return json(
+            await ledger.heartbeat({
+              scope,
+              operationId: id,
+              leaseToken: body.leaseToken,
+              leaseMs: 120_000,
+            }),
+          );
+        }
+        if (!ledger.recordOutput)
+          throw new HttpProblem(404, 'FEATURE_DISABLED');
+        await ledger.recordOutput({
+          ...RuntimeBridgeOutputSchema.parse(body),
+          scope,
+          operationId: id,
+        });
+        return json({ accepted: true });
       }
       const receipt = RuntimeBridgeReceiptSchema.parse(
         await boundedJson(request),
@@ -195,7 +265,7 @@ export function createRuntimeBridgeHttpHandler(input: {
       // do not ACK it as current acceptance or discard its device outbox copy.
       if (!['applied', 'duplicate'].includes(result.disposition))
         throw new HttpProblem(409, 'RECEIPT_RECONCILIATION_REQUIRED');
-      return Response.json({ receiptId: receipt.receiptId, accepted: true });
+      return json({ receiptId: receipt.receiptId, accepted: true });
     } catch (error) {
       let status = 500;
       let code = 'OPERATION_REQUEST_FAILED';
@@ -230,7 +300,7 @@ export function createRuntimeBridgeHttpHandler(input: {
         }
       }
       // Never expose database errors, credential strings or absolute local paths.
-      return Response.json({ error: { code, message: code } }, { status });
+      return json({ error: { code, message: code } }, { status });
     }
   };
 }

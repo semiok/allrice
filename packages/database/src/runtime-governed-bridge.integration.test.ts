@@ -1,5 +1,20 @@
-import { randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  readFile,
+  readdir,
+  mkdtemp,
+  mkdir,
+  realpath,
+  writeFile,
+  rm,
+} from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import type * as Playwright from '../../../apps/worker/node_modules/playwright-core/index.js';
 
 import {
   BridgeCommandPayloadSchema,
@@ -8,9 +23,31 @@ import {
   type BridgeCommandPayload,
   type RequestContext,
   type RuntimeActionBinding,
+  EmployeeExecutionSnapshotSchema,
+  ExecutionContextSchema,
+  RuntimeLocalCommandResultSchema,
+  localCommandToolchainImageV1,
 } from '@allrice/contracts';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import {
+  createLocalCommandOperation,
+  listLocalCommandOperations,
+  cancelLocalCommandRun,
+} from './local-command-service.ts';
+import { reportLocalCommandProfile } from './local-command-profile.ts';
+import { LocalCommandRunner } from '../../../apps/rice-bridge/src/local-command-runner.js';
+import { BridgeJournal } from '../../../apps/rice-bridge/src/journal.js';
+import { RuntimeBridgeOperationClient } from '../../../apps/rice-bridge/src/operation-client.js';
+import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/operation-http.js';
 
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import {
@@ -29,7 +66,20 @@ let admin: ReturnType<typeof postgres>;
 let database: ReturnType<typeof postgres>;
 const schema = `runtime_bridge_test_${randomUUID().replaceAll('-', '')}`;
 
-async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask', chat = false) {
+async function fixture(
+  effect: 'allow' | 'ask' | 'deny' = 'ask',
+  chat = false,
+  root = true,
+  makeSnapshot?: (ids: {
+    employeeId: string;
+    versionId: string;
+    assignmentId: string;
+    org: string;
+    workspace: string;
+    user: string;
+    policy: string;
+  }) => unknown,
+) {
   const org = randomUUID(),
     workspace = randomUUID(),
     user = randomUUID(),
@@ -100,7 +150,8 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask', chat = false) {
           (${assistantMessage},${org},${workspace},${sessionId},${user},'assistant','{}')`;
       await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,
         employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot)
-        values(${run},${org},${workspace},${user},${assignmentId},${versionId},${sessionId},${userMessage},${assistantMessage},'{}','{}','{}')`;
+        values(${run},${org},${workspace},${user},${assignmentId},${versionId},${sessionId},${userMessage},${assistantMessage},'{}','{}',
+          ${tx.json(JSON.parse(JSON.stringify(makeSnapshot?.({ employeeId, versionId, assignmentId, org, workspace, user, policy }) ?? {})))})`;
       await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id)
         values(${org},${workspace},${sessionId},${user},3,${digest('runtime')},'running',${run},${randomUUID()})`;
     }
@@ -147,19 +198,20 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask', chat = false) {
   };
   const ledger = () =>
     createGovernedBridgeOperationLedger(device, { database });
-  await ledger().createRoot({
-    task,
-    deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
-    budgets: [
-      {
-        metric: 'tool_calls',
-        unit: 'calls',
-        currency: null,
-        capacity: 100,
-        source: { kind: 'bridge', sourceId: deviceId },
-      },
-    ],
-  });
+  if (root)
+    await ledger().createRoot({
+      task,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+      budgets: [
+        {
+          metric: 'tool_calls',
+          unit: 'calls',
+          currency: null,
+          capacity: 100,
+          source: { kind: 'bridge', sourceId: deviceId },
+        },
+      ],
+    });
   function operation(
     raw: BridgeCommandPayload = {
       capability: 'local.fs.write',
@@ -277,10 +329,185 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask', chat = false) {
     sessionId,
     versionId,
     employeeId,
+    assignmentId,
+    policyPayload,
   };
 }
 
+async function commandFixture(toolNames = ['local.process.execute']) {
+  vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '1');
+  vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+  vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
+  const now = new Date().toISOString();
+  const capabilities = ['model:invoke', 'storage:read', 'storage:write'];
+  const f = await fixture('allow', true, false, (ids) => {
+    const frozen = EmployeeExecutionSnapshotSchema.parse({
+      schemaVersion: 1,
+      employee: {
+        id: ids.employeeId,
+        versionId: ids.versionId,
+        key: 'fixture',
+        revision: 1,
+        definitionChecksum: digest('fixture'),
+        definition: {
+          schemaVersion: 1,
+          key: 'fixture',
+          name: 'P05 Fixture',
+          description: 'Synthetic tests only',
+          systemPrompt: 'Synthetic tests only',
+          provider: {
+            provider: 'basic',
+            authMode: 'none',
+            model: 'allrice/basic-assistant-v1',
+            reasoningEffort: 'none',
+            sandbox: 'none',
+          },
+          capabilities,
+          skillVersionIds: [],
+        },
+      },
+      assignment: {
+        id: ids.assignmentId,
+        userId: ids.user,
+        assignedBy: ids.user,
+        assignedAt: now,
+      },
+      runtimePolicy: {
+        harness: 'dsh',
+        provider: 'openai-codex',
+        model: 'fixture',
+        reasoningEffort: 'high',
+        timeoutMs: 300000,
+        fallbackModels: [],
+        credentialReference: 'test:never-resolved',
+      },
+      capabilitySnapshot: {
+        declaredCapabilities: capabilities,
+        grantedCapabilities: capabilities,
+        bindings: {
+          skillVersionIds: [],
+          toolNames,
+          knowledgeScopes: ['workspace'],
+          workflowIds: [],
+        },
+        skillBindings: [],
+      },
+      tenantContext: {
+        organizationId: ids.org,
+        workspaceId: ids.workspace,
+        actorId: ids.user,
+        policySnapshotId: ids.policy,
+      },
+      userProfile: {
+        schemaVersion: 1,
+        displayName: 'P05 synthetic',
+        preferences: {},
+      },
+      createdAt: now,
+    });
+    return frozen;
+  });
+  const jobId = randomUUID(),
+    workerId = randomUUID();
+  await database`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+    values(${jobId},${f.context.organizationId},${f.context.workspaceId},${f.context.actor.id},${f.run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{}',
+      ${workerId},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
+  await setRuntimePolicyControls(
+    f.context,
+    {
+      version: 2,
+      enabled: true,
+      mode: 'execute',
+      rules: [{ action: 'local.process.execute', effect: 'allow' }],
+    },
+    1,
+    database,
+  );
+  const imageDigest =
+    process.env.ALLRICE_LOCAL_DOCKER_TEST_IMAGE ?? localCommandToolchainImageV1;
+  await reportLocalCommandProfile(
+    f.device,
+    {
+      contractVersion: 1,
+      backend: 'local-vm-container-v1',
+      imageDigest,
+      architecture: 'amd64',
+      available: true,
+    },
+    database,
+  );
+  const execution = ExecutionContextSchema.parse({
+    executionId: randomUUID(),
+    runId: f.run,
+    jobId,
+    worker: { type: 'worker', id: workerId },
+    delegatedBy: f.context.actor,
+    organizationId: f.context.organizationId,
+    workspaceId: f.context.workspaceId,
+    policySnapshot: {
+      id: f.policy,
+      organizationId: f.context.organizationId,
+      subjectId: f.context.actor.id,
+      version: 1,
+      issuedAt: now,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      ...f.policyPayload,
+    },
+    startedAt: now,
+  });
+  const args = {
+    executable: '/usr/local/bin/node',
+    args: ['test.mjs'],
+    path: '.',
+    files: [{ path: 'test.mjs', sha256: digest('synthetic') }],
+    limits: {
+      timeoutMs: 10000,
+      outputBytes: 8192,
+      memoryMiB: 128,
+      cpuMillis: 500,
+      pids: 32,
+    },
+  };
+  const create = (callId = 'p05-call', argumentsInput: unknown = args) =>
+    createLocalCommandOperation(
+      { context: execution, arguments: argumentsInput, callId },
+      database,
+    );
+  const claim = (supportsLocalCommand = true) =>
+    f.ledger().claimNextBridgeOperation({
+      scope: f.task.scope,
+      deviceId: f.device.id,
+      leaseMs: 30000,
+      supportsLocalCommand,
+    });
+  async function approve(decision: 'approved' | 'rejected' = 'approved') {
+    const [op] = await listLocalCommandOperations(f.context, f.run, database);
+    const req = op!.approval!.request;
+    return decideRuntimeActionApproval(
+      f.context,
+      req.approvalId,
+      {
+        contractVersion: 1,
+        direction: 'response',
+        kind: 'action_approval',
+        requestId: req.requestId,
+        version: req.version,
+        requestDigest: req.requestDigest,
+        task: req.task,
+        responseId: randomUUID(),
+        respondedBy: f.context.actor.id,
+        respondedAt: new Date().toISOString(),
+        approvalId: req.approvalId,
+        decision,
+      },
+      database,
+    );
+  }
+  return { ...f, execution, args, create, claim, approve, imageDigest };
+}
+
 suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeAll(async () => {
     if (!process.env.ALLRICE_TEST_DATABASE_URL)
       throw Error('ALLRICE_TEST_DATABASE_URL required');
@@ -331,6 +558,561 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       await admin.end();
     }
   });
+  it('P05 requires exact approval even for tenant Allow; old clients cannot claim commands', async () => {
+    const f = await commandFixture();
+    const created = await f.create();
+    expect(created.snapshot.status).toBe('waiting_user');
+    expect(await f.claim()).toBeNull();
+    await f.approve();
+    expect(await f.claim(false)).toBeNull();
+    const claim = await f.claim();
+    expect(claim?.bridgePayload?.capability).toBe('local.process.execute');
+    const retry = await f.create();
+    expect(retry.snapshot.binding).toEqual(created.snapshot.binding);
+    expect(await f.claim()).toBeNull();
+  });
+  it('P05 rejects same-call mutations, expired profiles, unverified platforms and frozen tool removal', async () => {
+    const f = await commandFixture();
+    await f.create();
+    await expect(
+      f.create('p05-call', { ...f.args, args: ['other.mjs'] }),
+    ).rejects.toThrow('idempotency_conflict');
+    await f.approve();
+    await database`update allrice_bridge_runtime_profiles set reported_at=clock_timestamp()-interval '91 seconds' where device_id=${f.device.id}`;
+    expect(await f.claim()).toBeNull();
+    await database`update allrice_bridge_runtime_profiles set reported_at=clock_timestamp() where device_id=${f.device.id}`;
+    await expect(
+      reportLocalCommandProfile(
+        { ...f.device, platform: 'macos-arm64' },
+        {
+          contractVersion: 1,
+          backend: 'local-vm-container-v1',
+          imageDigest: f.imageDigest,
+          architecture: 'arm64',
+          available: true,
+        },
+        database,
+      ),
+    ).rejects.toThrow('target_unavailable');
+    const without = await commandFixture([]);
+    await expect(without.create('new-call')).rejects.toThrow();
+  });
+  it('P05 isolates browser reads and cancel intent by owner, tenant and membership', async () => {
+    const f = await commandFixture();
+    await f.create();
+    expect(
+      await listLocalCommandOperations(f.context, f.run, database),
+    ).toHaveLength(1);
+    for (const context of [
+      { ...f.context, actor: { type: 'user' as const, id: randomUUID() } },
+      { ...f.context, organizationId: randomUUID() },
+      { ...f.context, workspaceId: randomUUID() },
+    ]) {
+      await expect(
+        listLocalCommandOperations(context, f.run, database),
+      ).rejects.toThrow('operation_not_found');
+      await expect(
+        cancelLocalCommandRun(context, f.run, database),
+      ).rejects.toThrow('operation_not_found');
+    }
+    await database`update allrice_memberships set active=false where id=${f.membership}`;
+    await expect(
+      listLocalCommandOperations(f.context, f.run, database),
+    ).rejects.toThrow('operation_not_found');
+  });
+  it.each(['cancel', 'lease_expired'])(
+    'P05 rechecks the live Worker job on %s, including during device heartbeat',
+    async (change) => {
+      const f = await commandFixture();
+      await expect(
+        createLocalCommandOperation(
+          {
+            context: {
+              ...f.execution,
+              worker: { type: 'worker', id: randomUUID() },
+            },
+            arguments: f.args,
+            callId: 'foreign-worker',
+          },
+          database,
+        ),
+      ).rejects.toThrow('run_or_frozen_configuration_changed');
+      await f.create();
+      await f.approve();
+      const claim = (await f.claim())!,
+        attempt = claim.snapshot.binding.attempt,
+        ledger = f.ledger();
+      const lease = {
+        scope: f.task.scope,
+        operationId: attempt.operationId,
+        leaseToken: claim.leaseToken,
+      };
+      await ledger.startOperation({
+        ...lease,
+        attempt,
+        receiptId: randomUUID(),
+      });
+      if (change === 'cancel')
+        await database`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.execution.jobId}`;
+      else
+        await database`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.execution.jobId}`;
+      await expect(
+        ledger.heartbeat({ ...lease, leaseMs: 30000 }),
+      ).rejects.toThrow();
+      await expect(f.create('later-call')).rejects.toThrow(
+        'run_or_frozen_configuration_changed',
+      );
+    },
+  );
+  it('P05 bounds ordered output, deduplicates exactly, and stops permission renewal on cancellation', async () => {
+    const f = await commandFixture();
+    await f.create();
+    await f.approve();
+    const claim = (await f.claim())!,
+      attempt = claim.snapshot.binding.attempt;
+    const ledger = f.ledger(),
+      lease = {
+        scope: f.task.scope,
+        operationId: attempt.operationId,
+        leaseToken: claim.leaseToken,
+      };
+    await ledger.startOperation({ ...lease, attempt, receiptId: randomUUID() });
+    await ledger.heartbeat({ ...lease, leaseMs: 30000 });
+    const chunk = {
+      ...lease,
+      attempt,
+      sequence: 0,
+      stream: 'stdout' as const,
+      content: 'one',
+    };
+    await ledger.recordOutput(chunk);
+    await ledger.recordOutput(chunk);
+    await expect(
+      ledger.recordOutput({ ...chunk, content: 'different' }),
+    ).rejects.toThrow('receipt_conflict');
+    await expect(
+      ledger.recordOutput({ ...chunk, sequence: 2 }),
+    ).rejects.toThrow();
+    const [view] = await listLocalCommandOperations(f.context, f.run, database);
+    expect(view?.output).toEqual([
+      { sequence: 0, stream: 'stdout', content: 'one' },
+    ]);
+    const cancel = await cancelLocalCommandRun(f.context, f.run, database);
+    expect(cancel.operations[0]?.status).toBe('cancel_requested');
+    await expect(
+      ledger.heartbeat({ ...lease, leaseMs: 30000 }),
+    ).rejects.toThrow();
+  });
+  it('P05 rejects feature-off execution without touching the operation ledger', async () => {
+    const f = await commandFixture();
+    vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
+    await expect(f.create()).rejects.toThrow('runtime_policy_disabled');
+    expect(
+      await listLocalCommandOperations(f.context, f.run, database),
+    ).toEqual([]);
+  });
+  it('P05 rejection before dispatch is confirmed not-executed, not a forever-stopping process', async () => {
+    const f = await commandFixture();
+    await f.create();
+    await f.approve('rejected');
+    expect(await f.claim()).toBeNull();
+    const canceled = await cancelLocalCommandRun(f.context, f.run, database);
+    expect(canceled.operations[0]?.status).toBe('canceled');
+    const [view] = await listLocalCommandOperations(f.context, f.run, database);
+    expect(view?.evidence).toMatchObject({ output: { notExecuted: true } });
+  });
+  it.skipIf(!process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET)(
+    'P05 real Chrome → approval DB → HTTP Bridge → local VM → durable receipt; lost ACK never repeats execution',
+    async () => {
+      const f = await commandFixture();
+      const temporary = await realpath(
+          await mkdtemp(join(tmpdir(), 'allrice-p05-e2e-')),
+        ),
+        root = join(temporary, 'workspace');
+      await mkdir(root);
+      const source =
+        'console.log("P05 browser fixture");console.error("separate stderr");setTimeout(()=>process.exit(0),1500);';
+      await writeFile(join(root, 'test.mjs'), source);
+      const fingerprint = createHash('sha256').update(root).digest('hex');
+      await database`update allrice_bridge_folder_grants set root_fingerprint=${fingerprint} where id=${f.grant}`;
+      const created = await f.create('p05-browser', {
+        ...f.args,
+        files: [
+          {
+            path: 'test.mjs',
+            sha256: `sha256:${createHash('sha256').update(source).digest('hex')}`,
+          },
+        ],
+      });
+      const require = createRequire(resolve('apps/worker/package.json'));
+      const { chromium } = require('playwright-core') as typeof Playwright;
+      const build = createRequire(require.resolve('tsx/package.json'))(
+        'esbuild',
+      ).build;
+      const assets = await build({
+        entryPoints: [resolve('apps/web/test/local-command-page.tsx')],
+        bundle: true,
+        write: false,
+        outdir: temporary,
+        platform: 'browser',
+        format: 'iife',
+        jsx: 'automatic',
+        define: { 'process.env.NODE_ENV': '"production"' },
+      });
+      const js = assets.outputFiles.find((file: { path: string }) =>
+        file.path.endsWith('.js'),
+      ).text;
+      const css = assets.outputFiles.find((file: { path: string }) =>
+        file.path.endsWith('.css'),
+      ).text;
+      const deviceHandler = createRuntimeBridgeHttpHandler({
+        enabled: () => true,
+        authenticate: async (token) => {
+          if (token !== 'synthetic-p05-device-token')
+            throw Object.assign(Error('unauthorized'), {
+              code: 'device_unauthorized',
+            });
+          return {
+            device: f.device,
+            grants: [
+              {
+                id: f.grant,
+                deviceId: f.device.id,
+                label: 'P05 fixture',
+                rootFingerprint: fingerprint,
+                createdAt: new Date().toISOString(),
+                revokedAt: null,
+              },
+            ],
+          };
+        },
+        ledgerForDevice: async () => f.ledger(),
+      });
+      let lostAck = false;
+      const server = createServer((req, res) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(Buffer.from(chunk));
+          const body = Buffer.concat(chunks),
+            path = new URL(req.url ?? '/', 'http://localhost').pathname;
+          if (path === '/') {
+            res.setHeader('content-type', 'text/html');
+            res.end(
+              `<!doctype html><meta name="viewport" content="width=device-width"><style>body{font:14px system-ui;margin:12px}*{box-sizing:border-box}${css}</style><div id="root"></div><script id="p05-input" type="application/json">${JSON.stringify({ runId: f.run, workspaceId: f.context.workspaceId, tenantHeaders: { 'x-p05-browser': 'synthetic' }, runActive: false })}</script><script src="/fixture.js"></script>`,
+            );
+            return;
+          }
+          if (path === '/fixture.js') {
+            res.setHeader('content-type', 'application/javascript');
+            res.end(js);
+            return;
+          }
+          if (path.startsWith('/api/v1/bridge/device/operations/')) {
+            const action = path.split('/').at(-1)! as
+              'next' | 'start' | 'receipts' | 'heartbeat' | 'output';
+            const result = await deviceHandler(
+              new Request(`http://localhost${path}`, {
+                method: 'POST',
+                headers: {
+                  authorization: String(req.headers.authorization ?? ''),
+                  'content-type': 'application/json',
+                },
+                ...(body.length ? { body } : {}),
+              }),
+              action,
+              path.split('/').at(-2),
+            );
+            if (action === 'receipts' && !lostAck && result.ok) {
+              lostAck = true;
+              res.destroy();
+              return;
+            }
+            res.statusCode = result.status;
+            res.setHeader('content-type', 'application/json');
+            res.end(await result.text());
+            return;
+          }
+          // Synthetic browser identity only. Production cookie auth has separate route tests.
+          if (req.headers['x-p05-browser'] !== 'synthetic') {
+            res.statusCode = 401;
+            res.end();
+            return;
+          }
+          res.setHeader('content-type', 'application/json');
+          if (path === '/api/v1/runtime/local-commands') {
+            res.end(
+              JSON.stringify({
+                operations: await listLocalCommandOperations(
+                  f.context,
+                  f.run,
+                  database,
+                ),
+              }),
+            );
+            return;
+          }
+          if (path.startsWith('/api/v1/runtime/approvals/')) {
+            res.end(
+              JSON.stringify({
+                approval: await decideRuntimeActionApproval(
+                  f.context,
+                  path.split('/').at(-1)!,
+                  JSON.parse(body.toString()),
+                  database,
+                ),
+              }),
+            );
+            return;
+          }
+          res.statusCode = 404;
+          res.end();
+        })().catch(() => {
+          res.statusCode = 500;
+          res.end('fixture request failed');
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw Error('fixture listener');
+      const origin = `http://127.0.0.1:${address.port}`;
+      const journal = await BridgeJournal.open({
+        directory: join(temporary, 'journal'),
+        server: origin,
+        deviceId: f.device.id,
+      });
+      const runner = new LocalCommandRunner({
+        socketPath: process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET!,
+        imageDigest: f.imageDigest,
+      });
+      const client = new RuntimeBridgeOperationClient({
+        config: {
+          server: origin,
+          deviceId: f.device.id,
+          deviceName: 'fixture',
+          grants: [
+            {
+              id: f.grant,
+              label: 'fixture',
+              rootPath: root,
+              rootFingerprint: fingerprint,
+            },
+          ],
+        },
+        token: 'synthetic-p05-device-token',
+        journal,
+        runner,
+      });
+      const browser = await chromium.launch({
+        headless: true,
+        executablePath:
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      });
+      let child: ReturnType<typeof spawn> | undefined,
+        recoveredJournal: BridgeJournal | undefined;
+      try {
+        expect(await client.pollOnce()).toBe(false);
+        const page = await browser.newPage({
+            viewport: { width: 1200, height: 900 },
+          }),
+          pageErrors: string[] = [];
+        page.on('pageerror', (error) => pageErrors.push(error.message));
+        await page.goto(origin);
+        await page
+          .getByRole('button', { name: '批准这一次执行', exact: true })
+          .click();
+        await page
+          .getByText('已批准这一次执行（不等于已完成）', { exact: false })
+          .waitFor();
+        await expect(client.pollOnce()).rejects.toThrow();
+        expect(lostAck).toBe(true);
+        expect(await journal.pending()).toHaveLength(1);
+        const snapshot = await f
+          .ledger()
+          .readOperation(
+            f.task.scope,
+            created.snapshot.binding.attempt.operationId,
+          );
+        expect(snapshot.status).toBe('succeeded');
+        await client.flush();
+        expect(await client.pollOnce()).toBe(false);
+        expect(await journal.pending()).toHaveLength(0);
+        await page.getByText('命令执行成功', { exact: true }).waitFor();
+        await page.reload();
+        await page.getByText('命令执行成功', { exact: true }).waitFor();
+        await page.getByText(/stdout \/ stderr/).click();
+        expect(
+          await page.getByLabel('stdout', { exact: true }).textContent(),
+        ).toContain('P05 browser fixture');
+        expect(
+          await page.getByLabel('stderr', { exact: true }).textContent(),
+        ).toContain('separate stderr');
+        await page.setViewportSize({ width: 390, height: 844 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        expect(pageErrors).toEqual([]);
+        const [view] = await listLocalCommandOperations(
+          f.context,
+          f.run,
+          database,
+        );
+        const parsed = RuntimeLocalCommandResultSchema.parse(
+          (view!.evidence as { output: unknown }).output,
+        );
+        expect(parsed).toMatchObject({
+          exitCode: 0,
+          reason: 'exited',
+          sourceDirectoryModified: false,
+        });
+        const [count] = await database<
+          { n: number }[]
+        >`select count(*)::int as n from allrice_runtime_operation_events where operation_id=${created.snapshot.binding.attempt.operationId} and payload->'signal'->>'type'='operation.started'`;
+        expect(count?.n).toBe(1);
+
+        const crashSource =
+          'console.log("crash fixture started");setInterval(()=>{},100);';
+        await writeFile(join(root, 'test.mjs'), crashSource);
+        const crashed = await f.create('p05-crash', {
+          ...f.args,
+          limits: { ...f.args.limits, timeoutMs: 1800 },
+          files: [
+            {
+              path: 'test.mjs',
+              sha256: `sha256:${createHash('sha256').update(crashSource).digest('hex')}`,
+            },
+          ],
+        });
+        await page.reload();
+        await page
+          .getByRole('button', { name: '批准这一次执行', exact: true })
+          .click();
+        await vi.waitFor(async () => {
+          const views = await listLocalCommandOperations(
+            f.context,
+            f.run,
+            database,
+          );
+          expect(
+            views.find(
+              (v) =>
+                v.snapshot.binding.attempt.operationId ===
+                crashed.snapshot.binding.attempt.operationId,
+            )?.approval?.response,
+          ).toMatchObject({ decision: 'approved' });
+        });
+        const crashJournalPath = join(temporary, 'crash-journal');
+        const childConfig = {
+          server: origin,
+          deviceId: f.device.id,
+          deviceName: 'crash fixture',
+          grants: [
+            {
+              id: f.grant,
+              label: 'fixture',
+              rootPath: root,
+              rootFingerprint: fingerprint,
+            },
+          ],
+        };
+        const childScript = `
+          import {BridgeJournal} from ${JSON.stringify(new URL('../../../apps/rice-bridge/src/journal.ts', import.meta.url).href)};
+          import {RuntimeBridgeOperationClient} from ${JSON.stringify(new URL('../../../apps/rice-bridge/src/operation-client.ts', import.meta.url).href)};
+          import {LocalCommandRunner} from ${JSON.stringify(new URL('../../../apps/rice-bridge/src/local-command-runner.ts', import.meta.url).href)};
+          const config=${JSON.stringify(childConfig)};
+          const journal=await BridgeJournal.open({directory:${JSON.stringify(crashJournalPath)},server:config.server,deviceId:config.deviceId});
+          await new RuntimeBridgeOperationClient({config,token:'synthetic-p05-device-token',journal,runner:new LocalCommandRunner(${JSON.stringify(runner.config)})}).pollOnce();
+          await journal.close();`;
+        child = spawn(
+          process.execPath,
+          ['--import', 'tsx', '--input-type=module', '--eval', childScript],
+          {
+            cwd: resolve('.'),
+            env: { PATH: process.env.PATH },
+            stdio: ['ignore', 'ignore', 'pipe'],
+          },
+        );
+        let childError = '';
+        child.stderr?.on('data', (bytes) => {
+          if (childError.length < 2000) childError += String(bytes);
+        });
+        await vi.waitFor(
+          async () => {
+            if (child?.exitCode !== null)
+              throw Error(`Synthetic Bridge child exited: ${childError}`);
+            const [output] = await database<
+              { n: number }[]
+            >`select count(*)::int as n from allrice_runtime_operation_output where operation_id=${crashed.snapshot.binding.attempt.operationId}`;
+            expect(output?.n).toBeGreaterThan(0);
+          },
+          { timeout: 10000 },
+        );
+        const exited = once(child, 'exit');
+        child.kill('SIGKILL');
+        await exited;
+        // The Bridge process is gone; observe the independent container deadline
+        // BEFORE invoking recovery (which would itself stop a running orphan).
+        await vi.waitFor(
+          async () => {
+            const state = await runner.api.json<{ State: { Status: string } }>(
+              'GET',
+              `/containers/allrice-${crashed.snapshot.binding.attempt.attemptId}/json`,
+            );
+            expect(state.State.Status).toBe('exited');
+          },
+          { timeout: 7000 },
+        );
+        recoveredJournal = await BridgeJournal.open({
+          directory: crashJournalPath,
+          server: origin,
+          deviceId: f.device.id,
+        });
+        expect(await recoveredJournal.unknownLocalCommands()).toHaveLength(1);
+        const recovering = new RuntimeBridgeOperationClient({
+          config: childConfig,
+          token: 'synthetic-p05-device-token',
+          journal: recoveredJournal,
+          runner,
+        });
+        expect(await recovering.pollOnce()).toBe(false);
+        const views = await listLocalCommandOperations(
+            f.context,
+            f.run,
+            database,
+          ),
+          recovered = views.find(
+            (v) =>
+              v.snapshot.binding.attempt.operationId ===
+              crashed.snapshot.binding.attempt.operationId,
+          )!;
+        expect(recovered.snapshot.status).toBe('failed');
+        expect(recovered.evidence).toMatchObject({
+          output: {
+            stopped: true,
+            reason: 'timeout',
+            sourceDirectoryModified: false,
+          },
+        });
+        expect(await recoveredJournal.unknownLocalCommands()).toHaveLength(0);
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, 'exit');
+          child.kill('SIGKILL');
+          await exited;
+        }
+        await recoveredJournal?.close();
+        await browser.close();
+        await journal.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(temporary, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
   it('persists Ask; re-created production factory consumes exact approval atomically and starts once', async () => {
     const f = await fixture(),
       op = f.operation();

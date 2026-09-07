@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { BridgeCommandPayloadSchema } from '../bridge.ts';
+import { RuntimeBridgePayloadSchema } from './local-command.ts';
 import { TimestampSchema, UuidSchema } from '../common.ts';
 import { RuntimeAttemptRefSchema } from './identity.ts';
 import {
@@ -13,7 +13,7 @@ export const RuntimeBridgeDispatchSchema = z
   .object({
     contractVersion: z.literal(1),
     snapshot: RuntimeOperationSnapshotSchema,
-    payload: BridgeCommandPayloadSchema,
+    payload: RuntimeBridgePayloadSchema,
     leaseToken: UuidSchema,
     leaseExpiresAt: TimestampSchema,
     grantRootFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
@@ -85,6 +85,15 @@ export const RuntimeBridgeStartSchema = z
 export const RuntimeBridgeStartResponseSchema = z
   .object({ snapshot: RuntimeOperationSnapshotSchema, mayExecute: z.boolean() })
   .strict();
+
+export const RuntimeBridgeHeartbeatSchema = RuntimeBridgeStartSchema.omit({
+  receiptId: true,
+});
+export const RuntimeBridgeOutputSchema = RuntimeBridgeHeartbeatSchema.extend({
+  sequence: z.number().int().min(0).max(255),
+  stream: z.enum(['stdout', 'stderr']),
+  content: z.string().max(65_536),
+}).strict();
 
 export const RuntimeBridgeReceiptAckSchema = z
   .object({
