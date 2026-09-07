@@ -37,6 +37,7 @@ export * from './harness.ts';
 export * from './identity.ts';
 export * from './queue.ts';
 export * from './runs.ts';
+export * from './runtime-v2/index.ts';
 export * from './routing.ts';
 export * from './saas.ts';
 export * from './knowledge.ts';
