@@ -12,6 +12,11 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 
 ## Architecture and development
 
+- [AllRice 2.0 product and delivery charter — P00 design, not released](allrice-2.0.md)
+- [AllRice 2.0 baseline inventory](architecture/allrice-2.0/baseline.md)
+- [AllRice 2.0 eight shared contracts](architecture/allrice-2.0/contracts.md)
+- [AllRice 2.0 architecture decisions](architecture/allrice-2.0/decisions.md)
+- [AllRice 2.0 acceptance examples — not executed runtime tests](architecture/allrice-2.0/acceptance.md)
 - [System architecture](architecture/README.md)
 - [AllRice ChatFlow Runtime](architecture/chatflow-runtime.md)
 - [Platform-managed model pool](architecture/platform-model-pool.md)

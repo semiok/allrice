@@ -1,5 +1,12 @@
 # AllRice V1 architecture
 
+> Version scope: this page describes the V1 architecture. The
+> [AllRice 2.0 charter](../allrice-2.0.md),
+> [shared contracts](allrice-2.0/contracts.md) and
+> [decisions](allrice-2.0/decisions.md) define the next-version design; they do
+> not declare planned execution capabilities implemented. Current local file
+> behavior is documented in [Rice Bridge v0.2](../../apps/rice-bridge/README.md).
+
 ## Objective
 
 AllRice V1 provides an employee-facing AI workspace for a small, fixed enterprise user base. It favors a modular monolith and operational clarity over microservice scale.
