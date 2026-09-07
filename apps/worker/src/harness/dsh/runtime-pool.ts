@@ -152,6 +152,16 @@ export class DshRuntimePool {
     systemInstructions: string;
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
   }) {
+    if (
+      input.snapshot.route === 'gemini' &&
+      process.env.ALLRICE_GEMINI_API_ENABLED !== '1'
+    ) {
+      throw new HandlerError(
+        'GEMINI_API_DISABLED',
+        'Gemini API execution is disabled; historical sessions remain readable',
+        false,
+      );
+    }
     if (!this.runtimeCommand) {
       throw new HandlerError(
         'DSH_RUNTIME_UNAVAILABLE',
@@ -248,11 +258,20 @@ export class DshRuntimePool {
       DSH_CREDENTIALS_PATH: resolve(dshPlatformHome, '.credentials.yaml'),
       DSH_CWD: tenantRoot,
       DSH_SESSION_ROOT: resolve(tenantRoot, 'sessions'),
-      DSH_MODEL: input.snapshot.model,
+      DSH_MODEL:
+        input.snapshot.route === 'gemini' && input.snapshot.model === '3.8flash'
+          ? 'gemini-3.8-flash'
+          : input.snapshot.model,
       DSH_CODEX_MODEL:
         input.snapshot.route === 'openai-codex'
           ? input.snapshot.model
           : 'gpt-5.6-luna',
+      DSH_GEMINI_MODEL:
+        input.snapshot.route === 'gemini'
+          ? input.snapshot.model === '3.8flash'
+            ? 'gemini-3.8-flash'
+            : input.snapshot.model
+          : 'gemini-3.8-flash',
       DSH_OPENAI_COMPATIBLE_MODEL:
         input.snapshot.route === 'openai-compatible'
           ? input.snapshot.model
@@ -268,6 +287,10 @@ export class DshRuntimePool {
     if (input.snapshot.route === 'openai-codex') {
       // The DSH credential service resolves and refreshes the platform OAuth
       // grant. No token is copied into the child environment.
+    } else if (input.snapshot.route === 'gemini') {
+      // Never inherit an ambient key or another provider's credentials. Only
+      // the selected, authorized reference enters this Gemini child process.
+      environment.GEMINI_API_KEY = credential!.apiKey;
     } else if (input.snapshot.route === 'deepseek-official') {
       environment.DEEPSEEK_API_KEY = credential!.apiKey;
       if (input.snapshot.baseUrl) {

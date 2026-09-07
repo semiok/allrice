@@ -643,6 +643,17 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   }
 
   async initialize(params) {
+    const isGemini =
+      params?.provider === 'gemini' || params?.provider === 'google';
+    const model =
+      isGemini && params?.model === '3.8flash'
+        ? 'gemini-3.8-flash'
+        : params?.model;
+    const forwardedParams = {
+      ...params,
+      provider: isGemini ? 'google' : params?.provider,
+      ...(model ? { model } : {}),
+    };
     const requestedTools = Array.isArray(params?.nativeTools)
       ? params.nativeTools.filter((name) => typeof name === 'string')
       : [];
@@ -652,7 +663,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       : [];
     this.registerNativeSkills(requestedSkills);
     this.registerNativeTools();
-    await super.initialize(params);
+    await super.initialize(forwardedParams);
     return {
       serverInfo: {
         name: 'deepseek-harness-sdk-runtime',
@@ -954,11 +965,14 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   async createSession(sessionId) {
     try {
+      const isGemini = this.provider === 'gemini' || this.provider === 'google';
+      const model =
+        isGemini && this.model === '3.8flash' ? 'gemini-3.8-flash' : this.model;
       const handle = await this.ctx.agents.resume({
         resumeSessionId: sessionId,
         agentOptions: {
-          provider: this.provider,
-          model: this.model,
+          provider: isGemini ? 'google' : this.provider,
+          model,
           ...(this.maxTokens === undefined
             ? {}
             : { maxTokens: this.maxTokens }),

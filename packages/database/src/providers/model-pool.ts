@@ -5,6 +5,7 @@ import {
   ModelCatalogEntrySchema,
   ModelConnectionSchema,
   ModelProviderSchema,
+  modelProviderRuntimeSupported,
   SaasCapabilityManifestSchema,
   SessionModelSnapshotSchema,
   UpdateModelConnectionInputSchema,
@@ -206,6 +207,10 @@ function mapProvider(row: ProviderRow) {
     harness: row.harness,
     authMode: row.auth_mode,
     enabled: row.enabled,
+    runtimeSupported: modelProviderRuntimeSupported({
+      key: row.provider_key,
+      authMode: row.auth_mode,
+    }),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   });
@@ -643,7 +648,7 @@ async function resolveFrozenTarget(input: {
     {
       harness: 'codex' | 'dsh';
       provider_key: string;
-      auth_mode: 'chatgpt_subscription' | 'api_key' | 'none';
+      auth_mode: ModelProvider['authMode'];
       model: string;
       credential_reference: string | null;
       base_url: string | null;
@@ -662,6 +667,18 @@ async function resolveFrozenTarget(input: {
   const selection = rows[0];
   if (!selection) throw new DataAccessError('grant_invalid');
   if (
+    !modelProviderRuntimeSupported({
+      key: selection.provider_key,
+      authMode: selection.auth_mode,
+    })
+  )
+    throw new DataAccessError('grant_invalid');
+  if (
+    selection.provider_key === 'gemini' &&
+    process.env.ALLRICE_GEMINI_API_ENABLED !== '1'
+  )
+    throw new DataAccessError('grant_invalid');
+  if (
     selection.harness === 'dsh' &&
     selection.auth_mode === 'api_key' &&
     !selection.credential_reference
@@ -678,9 +695,11 @@ async function resolveFrozenTarget(input: {
     provider:
       selection.provider_key === 'codex'
         ? 'openai-codex'
-        : selection.provider_key === 'deepseek'
-          ? 'deepseek-official'
-          : 'openai-compatible',
+        : selection.provider_key === 'gemini'
+          ? 'gemini'
+          : selection.provider_key === 'deepseek'
+            ? 'deepseek-official'
+            : 'openai-compatible',
     authMode: selection.auth_mode,
     model: selection.model,
     reasoningEffort: input.reasoningEffort,

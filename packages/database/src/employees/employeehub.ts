@@ -17,6 +17,7 @@ import {
   FrozenEmployeeSkillBindingSchema,
   HarnessExecutionSnapshotSchema,
   ManageEmployeeAssignmentsInputSchema,
+  modelProviderRuntimeSupported,
   PublishEmployeeVersionInputSchema,
   SetDefaultEmployeeInputSchema,
   UpdateEmployeeStatusInputSchema,
@@ -1148,15 +1149,27 @@ export async function prepareEmployeeRunBinding(input: {
     workspaceId: input.workspaceId,
     sessionId: input.sessionId,
   });
+  // Read compatibility does not authorize a new Run under an unimplemented
+  // historical OAuth mode. Do not silently convert it into an API credential.
+  if (
+    !modelProviderRuntimeSupported({
+      key: modelSnapshot.provider,
+      authMode: modelSnapshot.authMode,
+    })
+  )
+    throw new EmployeeHubError('provider_invalid');
   const providerRoute =
     modelSnapshot.harness === 'codex' ||
     modelSnapshot.provider === 'codex' ||
     modelSnapshot.provider === 'openai-codex'
       ? 'openai-codex'
-      : modelSnapshot.provider === 'deepseek' ||
-          modelSnapshot.provider === 'deepseek-official'
-        ? 'deepseek-official'
-        : 'openai-compatible';
+      : modelSnapshot.provider === 'gemini' ||
+          modelSnapshot.provider === 'google'
+        ? 'gemini'
+        : modelSnapshot.provider === 'deepseek' ||
+            modelSnapshot.provider === 'deepseek-official'
+          ? 'deepseek-official'
+          : 'openai-compatible';
   const providerSnapshot = HarnessExecutionSnapshotSchema.parse({
     provider: 'dsh',
     authMode:
@@ -1170,8 +1183,14 @@ export async function prepareEmployeeRunBinding(input: {
         ? 'low'
         : modelSnapshot.reasoningEffort,
     credentialReference:
-      modelSnapshot.credentialReference ?? 'deployment:codex-default',
-    baseUrl: providerRoute === 'openai-codex' ? null : modelSnapshot.baseUrl,
+      modelSnapshot.credentialReference ??
+      (providerRoute === 'gemini'
+        ? 'deployment:gemini-default'
+        : 'deployment:codex-default'),
+    baseUrl:
+      providerRoute === 'openai-codex' || providerRoute === 'gemini'
+        ? null
+        : modelSnapshot.baseUrl,
   });
   const selectedRuntimePolicy = EmployeeRuntimePolicySchema.parse({
     ...runtimePolicy(manifest.data),
@@ -1183,8 +1202,14 @@ export async function prepareEmployeeRunBinding(input: {
         ? 'low'
         : modelSnapshot.reasoningEffort,
     credentialReference:
-      modelSnapshot.credentialReference ?? 'deployment:codex-default',
-    baseUrl: providerRoute === 'openai-codex' ? null : modelSnapshot.baseUrl,
+      modelSnapshot.credentialReference ??
+      (providerRoute === 'gemini'
+        ? 'deployment:gemini-default'
+        : 'deployment:codex-default'),
+    baseUrl:
+      providerRoute === 'openai-codex' || providerRoute === 'gemini'
+        ? null
+        : modelSnapshot.baseUrl,
     fallbackModels: [],
     timeoutMs: modelSnapshot.runLimits.timeoutMs,
   });

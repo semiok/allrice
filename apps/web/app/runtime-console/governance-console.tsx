@@ -19,6 +19,7 @@ interface Provider {
   id: string;
   key: string;
   name: string;
+  runtimeSupported?: boolean;
 }
 
 interface Authorization {
@@ -263,7 +264,11 @@ export function GovernanceConsole() {
                 (item) => item.connectionId === connection.id,
               );
               const status =
-                provider?.key === 'codex' ? codexStatus : connection.status;
+                provider?.runtimeSupported === false
+                  ? '授权方式未支持'
+                  : provider?.key === 'codex'
+                    ? codexStatus
+                    : connection.status;
               const operation = providerOperations.find(
                 (item) => item.connectionId === connection.id,
               );

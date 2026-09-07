@@ -57,6 +57,9 @@ export function providerForEmployee(employee?: Employee) {
   if (provider === 'openai-codex' || provider === 'codex') {
     return 'Codex 订阅 · DSH';
   }
+  if (provider === 'gemini' || provider === 'google') {
+    return 'Gemini API · DSH';
+  }
   if (provider === 'deepseek-official') return 'DeepSeek · DSH';
   if (provider === 'openai-compatible') return 'API 模型 · DSH';
   return 'DSH';
@@ -72,6 +75,7 @@ export function providerForSession(workspace: Workspace, session?: Session) {
     );
   }
   if (frozen.provider === 'openai-codex') return 'Codex 订阅 · DSH';
+  if (frozen.provider === 'gemini') return 'Gemini API · DSH';
   if (frozen.provider === 'deepseek-official') return 'DeepSeek · DSH';
   if (/minimax/i.test(frozen.model)) return 'MiniMax · DSH';
   return `${frozen.model} · DSH`;

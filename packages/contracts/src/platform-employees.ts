@@ -59,6 +59,7 @@ export const PlatformEmployeeDefinitionSchema = z
       .object({
         provider: z.enum([
           'openai-codex',
+          'gemini',
           'deepseek-official',
           'openai-compatible',
         ]),

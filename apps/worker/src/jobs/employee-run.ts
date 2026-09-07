@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
+  modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
   RouteDecisionSchema,
   type HarnessEvent,
@@ -129,6 +130,24 @@ export async function executeEmployeeRun({
     ownerId: execution.job.ownerId,
     runId: execution.context.runId,
   });
+  // A queued historical Run may predate the prepareEmployeeRunBinding guard.
+  // Keep its record readable, but never reinterpret unsupported OAuth as an API key.
+  const primaryModelSnapshot =
+    resolved.executionSnapshot?.schemaVersion === 2
+      ? resolved.executionSnapshot.modelSnapshot
+      : undefined;
+  if (
+    primaryModelSnapshot &&
+    !modelProviderRuntimeSupported({
+      key: primaryModelSnapshot.provider,
+      authMode: primaryModelSnapshot.authMode,
+    })
+  )
+    throw new HandlerError(
+      'PROVIDER_AUTH_UNSUPPORTED',
+      'The frozen provider authorization mode has no reviewed execution adapter',
+      false,
+    );
   const configChecksum = `sha256:${createHash('sha256')
     .update(
       JSON.stringify({
