@@ -22,6 +22,7 @@ import { bridgeRequest } from './client.js';
 import {
   deleteConfig,
   deleteDeviceToken,
+  configPath,
   readConfig,
   readDeviceToken,
   storeDeviceToken,
@@ -245,6 +246,20 @@ async function completeWorkspaceSelection(
 
 async function start() {
   let { config, token } = await credentials(await readConfig());
+  const operationLedgerEnabled =
+    process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1';
+  const operationModule = operationLedgerEnabled
+    ? await import('./operation-client.js')
+    : null;
+  const journal = operationLedgerEnabled
+    ? await (
+        await import('./journal.js')
+      ).BridgeJournal.open({
+        directory: `${configPath()}.operation-journal`,
+        server: config.server,
+        deviceId: config.deviceId,
+      })
+    : null;
   let stopping = false;
   process.once('SIGINT', () => {
     stopping = true;
@@ -255,67 +270,80 @@ async function start() {
   console.info(`Rice Bridge 正在运行：${config.deviceName}`);
   let lastHeartbeatAt = 0;
   let reconnectDelayMs = 1_000;
-  while (!stopping) {
-    try {
-      if (Date.now() - lastHeartbeatAt >= 30_000) {
-        await bridgeRequest({
+  try {
+    while (!stopping) {
+      try {
+        if (Date.now() - lastHeartbeatAt >= 30_000) {
+          await bridgeRequest({
+            server: config.server,
+            path: '/api/v1/bridge/device/heartbeat',
+            method: 'POST',
+            token,
+            body: {
+              protocolVersion: BridgeProtocolVersion,
+              capabilities: BridgeCapabilities,
+            },
+          });
+          lastHeartbeatAt = Date.now();
+        }
+        const selection = await bridgeRequest<{ request: unknown }>({
           server: config.server,
-          path: '/api/v1/bridge/device/heartbeat',
+          path: '/api/v1/bridge/device/workspace-selections/next',
           method: 'POST',
           token,
-          body: {
-            protocolVersion: BridgeProtocolVersion,
-            capabilities: BridgeCapabilities,
-          },
         });
-        lastHeartbeatAt = Date.now();
-      }
-      const selection = await bridgeRequest<{ request: unknown }>({
-        server: config.server,
-        path: '/api/v1/bridge/device/workspace-selections/next',
-        method: 'POST',
-        token,
-      });
-      if (selection.request) {
-        await completeWorkspaceSelection(
-          config,
+        if (selection.request) {
+          await completeWorkspaceSelection(
+            config,
+            token,
+            BridgeWorkspaceSelectionRequestSchema.parse(selection.request),
+          );
+          ({ config, token } = await credentials(await readConfig()));
+          reconnectDelayMs = 1_000;
+          continue;
+        }
+        if (operationModule && journal) {
+          ({ config, token } = await credentials(await readConfig()));
+          const worked = await new operationModule.RuntimeBridgeOperationClient(
+            { config, token, journal },
+          ).pollOnce();
+          if (!worked) await new Promise((resolve) => setTimeout(resolve, 750));
+          reconnectDelayMs = 1_000;
+          continue;
+        }
+        const response = await bridgeRequest<{ command: unknown }>({
+          server: config.server,
+          path: '/api/v1/bridge/device/commands/next',
+          method: 'POST',
           token,
-          BridgeWorkspaceSelectionRequestSchema.parse(selection.request),
-        );
-        ({ config, token } = await credentials(await readConfig()));
+        });
+        if (response.command) {
+          // A folder granted from another terminal should become available
+          // without requiring the long-running Bridge process to restart.
+          ({ config, token } = await credentials(await readConfig()));
+          await complete(
+            config,
+            token,
+            BridgeCommandSchema.parse(response.command),
+          );
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
         reconnectDelayMs = 1_000;
-        continue;
-      }
-      const response = await bridgeRequest<{ command: unknown }>({
-        server: config.server,
-        path: '/api/v1/bridge/device/commands/next',
-        method: 'POST',
-        token,
-      });
-      if (response.command) {
-        // A folder granted from another terminal should become available
-        // without requiring the long-running Bridge process to restart.
-        ({ config, token } = await credentials(await readConfig()));
-        await complete(
-          config,
-          token,
-          BridgeCommandSchema.parse(response.command),
+      } catch (error) {
+        if (stopping) break;
+        console.error(
+          `Bridge 暂时断开，${Math.ceil(reconnectDelayMs / 1_000)} 秒后重试：${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
         );
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 750));
+        await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs));
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
+        lastHeartbeatAt = 0;
       }
-      reconnectDelayMs = 1_000;
-    } catch (error) {
-      if (stopping) break;
-      console.error(
-        `Bridge 暂时断开，${Math.ceil(reconnectDelayMs / 1_000)} 秒后重试：${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs));
-      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
-      lastHeartbeatAt = 0;
     }
+  } finally {
+    await journal?.close();
   }
   console.info('Rice Bridge 已停止');
 }
