@@ -1,0 +1,313 @@
+{
+  "candidate": "P02",
+  "schemaVersion": 1,
+  "fixtureVersion": 1,
+  "recordedAt": "2026-09-07T13:03:17.926Z",
+  "sourceBase": "f696c0ea4b79f1f5c8eb2074b4664c4ec4495eaf",
+  "sourceDigests": {
+    "probe.c": "d5d8e0a3523b654b0fc60d8f4237a6e21fe634da2d80db0d996a00e91bcb8fc7",
+    "p02.mjs": "640a2b010f54db1b80839676c392faf2988e58adf6d12cce75841326a74dab63"
+  },
+  "platform": {
+    "os": "darwin",
+    "arch": "x64",
+    "version": "15.7.7",
+    "build": "24G720",
+    "model": "MacBookPro15,2",
+    "node": "v22.23.2"
+  },
+  "featureEnabled": false,
+  "productionChanges": false,
+  "cases": [
+    {
+      "id": "startup",
+      "evidence": "Actual sandbox-exec and compiled synthetic executable",
+      "status": "passed",
+      "observation": "sandboxed probe started"
+    },
+    {
+      "id": "workspace-read-write",
+      "evidence": "OS allowed root plus parent verification",
+      "status": "passed",
+      "observation": "authorized file created and reread"
+    },
+    {
+      "id": "outside-read",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "outside-overwrite",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "outside-create",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "outside-create-side-effects",
+      "evidence": "Parent verifies no new outside file",
+      "status": "passed",
+      "observation": "outside destination absent"
+    },
+    {
+      "id": "relative-traversal",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "symlink-read",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "symlink-write",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "synthetic-credential-read",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "synthetic-credential-link",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "synthetic-credential-rename",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "credential-directory-rename",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "synthetic-credential-hardlink",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "credential-side-effects",
+      "evidence": "Parent verifies synthetic credentials, no renamed copies",
+      "status": "passed",
+      "observation": "original credentials unchanged; no renamed destinations"
+    },
+    {
+      "id": "environment-filter",
+      "evidence": "Trusted supervisor env allowlist, NOT OS credential proof",
+      "status": "passed",
+      "observation": "synthetic parent canary not inherited"
+    },
+    {
+      "id": "network-positive-controls",
+      "evidence": "Only synthetic loopback listeners, unsandboxed control",
+      "status": "passed",
+      "observation": "one TCP connection, UDP message and Unix socket connection reached controlled listeners"
+    },
+    {
+      "id": "tcp-denied",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "udp-denied",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "unix-socket-denied",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "listener-bind-denied",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "no-network-side-effects",
+      "evidence": "Parent listener counters after sandbox attempts",
+      "status": "passed",
+      "observation": "zero additional TCP/Unix connections or UDP packets"
+    },
+    {
+      "id": "fork-denied",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "fork-exec-inherits-filesystem-policy",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "nonallowlisted-fixture-exec-denied",
+      "evidence": "OS sandbox denial plus parent-side sentinel checks",
+      "status": "passed",
+      "observation": {
+        "result": "denied errno=1",
+        "outsideSentinelUnchanged": true
+      }
+    },
+    {
+      "id": "fd-limit",
+      "evidence": "Trusted pre-exec hard RLIMIT_NOFILE=32, per process",
+      "status": "passed",
+      "observation": "fds=29 errno=24"
+    },
+    {
+      "id": "file-size-limit",
+      "evidence": "Trusted pre-exec hard RLIMIT_FSIZE=64KiB, not pipe output",
+      "status": "passed",
+      "observation": "file-bytes=65536 errno=27"
+    },
+    {
+      "id": "cpu-limit",
+      "evidence": "Trusted pre-exec RLIMIT_CPU soft1/hard2 seconds, per process",
+      "status": "passed",
+      "observation": {
+        "signal": "SIGXCPU",
+        "supervisorTimeout": false
+      }
+    },
+    {
+      "id": "cpu-hard-boundary-observation",
+      "evidence": "Probe ignores SIGXCPU; observe enforcement beyond hard2 using <=2.5CPU seconds",
+      "status": "limitation_observed",
+      "observation": {
+        "signal": null,
+        "result": "survived-hard-limit cpu-us=2501063",
+        "supervisorTimeout": false
+      }
+    },
+    {
+      "id": "wall-timeout",
+      "evidence": "Supervisor timeout of known process group, not all descendants",
+      "status": "passed",
+      "observation": {
+        "stoppedBy": "wall_timeout",
+        "signal": "SIGTERM"
+      }
+    },
+    {
+      "id": "output-cap",
+      "evidence": "Supervisor captures at most16KiB; fixture emits at most64KiB",
+      "status": "passed",
+      "observation": {
+        "stoppedBy": "output_limit",
+        "capturedBytes": 16384,
+        "receivedBytes": 17408
+      }
+    },
+    {
+      "id": "memory-boundary-observation",
+      "evidence": "Bounded16MiB mmap probe; RLIMIT_DATA is not total memory limit",
+      "status": "limitation_observed",
+      "observation": "8MiB-DATA-limit-rejected errno=22\nmapped-16MiB-without-requested-DATA-limit"
+    },
+    {
+      "id": "process-group-boundary-observation",
+      "evidence": "Exactly one setsid descendant, self-terminates after1.2s",
+      "status": "limitation_observed",
+      "observation": {
+        "parentStopped": true,
+        "descendantWroteAfterGroupStop": true,
+        "boundedDescendantCompleted": true
+      }
+    },
+    {
+      "id": "invalid-profile-fails-closed",
+      "evidence": "Malformed profile cannot fall back to bare execution",
+      "status": "passed",
+      "observation": "no probe startup after profile compilation error"
+    }
+  ],
+  "limitations": [
+    "CPU hard-limit observation is platform-specific; ignored SIGXCPU may outlive the configured hard limit. Never replace trusted wall/job supervision with rlimit alone.",
+    "No aggregate memory guarantee: DATA/mmap observation is not a VM or job memory boundary.",
+    "Observed setsid descendant surviving process-group cancellation. P05 must not claim full-tree stop.",
+    "sandbox-exec is deprecated; profile is a narrow PoC, not a supported general-purpose CLI policy.",
+    "NPROC is per UID, CPU and FD limits are per process, not aggregate tenant/job budgets."
+  ],
+  "profileSha256": "53aca474bcad60d05a784317a44813fa2f9dce5845e0997783c9a2e6d5397be4",
+  "summary": {
+    "passed": 31,
+    "limitationsObserved": 3,
+    "failed": 0,
+    "productionRunnerReady": false
+  }
+}
