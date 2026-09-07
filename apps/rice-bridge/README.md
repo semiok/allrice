@@ -59,3 +59,9 @@ rice-bridge revoke
 ## v0.2 传输说明
 
 CLI 验证阶段使用带设备 Bearer 凭证的 HTTPS 心跳与短轮询。命令已经采用持久化、租约和幂等契约；DMG/菜单栏版本会在不改变命令协议的前提下切换为 outbound WSS，降低空闲轮询开销。
+
+## 2.0 设备执行日志（默认关闭）
+
+P03-b 新增本地 SQLite journal 与结果 Outbox，防止连接中断后重复执行；这不是 WSS、Shell 或新能力发布。需在受控环境显式启用 `ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED=1`，并装配 P03-a/P04 服务端账本和真实授权检查。Node 22.13+ / 支持 SEA 的正式运行时是新路径前置。
+
+日志位于配置路径旁的 `config.json.operation-journal/`。不要通过删除日志解决 unknown、冲突或满额；应先核实已有操作，否则会失去防重证据。旧路径默认不变。完整状态语义、实际测试与未验证项见 [P03-b 说明](../../docs/architecture/allrice-2.0/p03b-device-journal.md)。
