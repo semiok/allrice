@@ -34,16 +34,12 @@ export const runtimeGovernedActions = [
   'local.fs.read',
   'local.fs.write',
   'local.fs.mkdir',
-  'local.git.status',
-  'local.git.diff',
 ] as const;
 
 const readActions = new Set<string>([
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
-  'local.git.status',
-  'local.git.diff',
 ]);
 
 /** Pure policy calculation only. DB identity, revocation and approval checks follow. */

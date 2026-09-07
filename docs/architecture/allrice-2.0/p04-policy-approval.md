@@ -10,7 +10,7 @@
 
 新增内部 `allrice_runtime_policy_controls` 按组织/工作区存当前版本，默认无记录且拒绝。只有重新核对数据库管理员身份的服务 API 可设置它。没有工作区自动安装策略、Skill/Hook 规则执行、通配权限或 Prompt 安全决策。
 
-B1 注册现有七个 Bridge 文件/只读 Git 工具；任意规则不能注册新 Runner/插件/Boost。云端执行、service actor、资料传输与 Artifact baseline 的治理适配器尚未注册，明确拒绝，按各后续切片真实接入。现有文件写入的 expected SHA 等属于 command payload 的准确摘要，不用不存在的 Artifact 伪造基线。路径函数只是语法前置，不能证明真实路径、软链接、TOCTOU 或进程沙箱安全。
+B1 新治理通道仅注册现有五个 Bridge 文件工具（list/search/read/write/mkdir）；任意规则不能注册新 Runner/插件/Boost。既有 Git status/diff 执行器尚未隔离仓库 fsmonitor/textconv 等可执行配置，status 还可能刷新 index，因此不能把“只读 Git”标签当成无副作用保证；新治理通道暂不注册两项 Git 动作，P05 加固和实测后单独准入，旧通道行为不变。云端执行、service actor、资料传输与 Artifact baseline 的治理适配器尚未注册，明确拒绝，按各后续切片真实接入。现有文件写入的 expected SHA 等属于 command payload 的准确摘要，不用不存在的 Artifact 伪造基线。路径函数只是语法前置，不能证明真实路径、软链接、TOCTOU 或进程沙箱安全。
 
 ## 判定与事务
 

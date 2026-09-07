@@ -87,6 +87,8 @@ describe('B1 deterministic policy', () => {
     ).toBe('deny'));
   it.each([
     'local.command.run',
+    'local.git.status',
+    'local.git.diff',
     'hooks.execute',
     'plugins.install',
     'boost',

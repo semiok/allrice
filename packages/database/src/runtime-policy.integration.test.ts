@@ -181,7 +181,11 @@ suite('P04 real PostgreSQL policy / exact approval', () => {
       max: 2,
       onnotice: () => {},
     });
-    await admin`create extension if not exists vector with schema public`;
+    await admin.begin(async (transaction) => {
+      await transaction`select pg_advisory_xact_lock(20260907, 1)`;
+      await transaction`create extension if not exists vector with schema public`;
+      await transaction`create extension if not exists pg_trgm with schema public`;
+    });
     await admin.unsafe(`create schema ${schema}`);
     const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL);
     url.searchParams.set('options', `-csearch_path=${schema},public`);
