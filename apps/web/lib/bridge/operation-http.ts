@@ -14,7 +14,7 @@ import {
   type RuntimeScope,
 } from '@allrice/contracts';
 
-import { getBridgeDeviceToken } from './request';
+import { getBridgeDeviceToken } from './request.ts';
 
 type Snapshot = RuntimeOperationSnapshot;
 type Scope = RuntimeScope;
