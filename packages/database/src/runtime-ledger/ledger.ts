@@ -615,7 +615,7 @@ export function createRuntimeOperationLedger(options: {
       >`select id from allrice_runtime_operations
         where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and device_id=${deviceId}
           and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
-        order by created_at,id limit 20`;
+        order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {
           return await db.begin(async (tx) => {
@@ -634,6 +634,13 @@ export function createRuntimeOperationLedger(options: {
             ].includes(error.code)
           )
             throw error;
+          // Bounded fair scanning: updated_at includes the last unsuccessful
+          // admission check. Rotate waiting/denied rows, never their binding or
+          // approval, so >20 pending rows cannot starve later eligible work.
+          await db`update allrice_runtime_operations set updated_at=clock_timestamp()
+            where id=${candidate.id} and organization_id=${scope.organizationId}
+              and workspace_id=${scope.workspaceId} and device_id=${deviceId}
+              and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')`;
         }
       }
       return null;
