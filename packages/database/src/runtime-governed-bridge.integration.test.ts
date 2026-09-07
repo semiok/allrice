@@ -302,6 +302,25 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       .filter((f) => f.endsWith('.sql'))
       .sort())
       await database.unsafe(await readFile(new URL(file, migrations), 'utf8'));
+    // Delays only explicitly named synthetic operations, after normal admission.
+    await database`create table b1_test_write_delay(operation_id uuid primary key,event_kind text not null)`;
+    await database.unsafe(`create function b1_test_event_delay() returns trigger language plpgsql as $$
+      begin
+        if exists(select 1 from b1_test_write_delay where operation_id=new.operation_id
+          and event_kind=new.payload->'signal'->>'type') then perform pg_sleep(0.8); end if;
+        return new;
+      end; $$;
+      create trigger b1_test_event_delay before insert on allrice_runtime_operation_events
+        for each row execute function b1_test_event_delay();
+      create function b1_test_lease_delay() returns trigger language plpgsql as $$
+      begin
+        if new.lease_expires_at is distinct from old.lease_expires_at
+          and exists(select 1 from b1_test_write_delay where operation_id=new.id and event_kind='lease_update')
+          then perform pg_sleep(0.8); end if;
+        return new;
+      end; $$;
+      create trigger b1_test_lease_delay before update on allrice_runtime_operations
+        for each row execute function b1_test_lease_delay();`);
   }, 60_000);
   afterAll(async () => {
     await database?.end();
@@ -601,5 +620,121 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     );
     expect(resolved.inputDigest).toBe(op.input.snapshot.binding.inputDigest);
     expect(resolved.inputDigest).not.toBe(altered.inputDigest);
+  });
+  it.each(['create', 'dispatch', 'start', 'heartbeat'] as const)(
+    'rolls back %s when its final database write crosses the authority expiry',
+    async (mode) => {
+      const f = await fixture(),
+        op = f.operation(),
+        id = op.input.snapshot.binding.attempt.operationId;
+      let approvalId: string | null = null;
+      let lease: Awaited<ReturnType<typeof f.claim>> = null;
+      if (mode !== 'create') {
+        await op.factory().createOperation(op.input);
+        approvalId = (await op.approve()).approvalId;
+      }
+      if (mode === 'start' || mode === 'heartbeat') lease = await f.claim();
+      const [before] = await database<
+        { count: number }[]
+      >`select count(*)::int as count from allrice_runtime_operation_events where operation_id=${id}`;
+      const eventKind = {
+        create: 'operation.waiting',
+        dispatch: 'operation.dispatched',
+        start: 'operation.started',
+        heartbeat: 'lease_update',
+      }[mode];
+      await database`insert into b1_test_write_delay(operation_id,event_kind)values(${id},${eventKind})`;
+      if (mode === 'create')
+        await database`update allrice_policy_snapshots set expires_at=clock_timestamp()+interval '0.5 second' where id=${f.policy}`;
+      else
+        await database`update allrice_approval_requests set runtime_expires_at=clock_timestamp()+interval '0.5 second' where id=${approvalId}`;
+      const call =
+        mode === 'create'
+          ? op.factory().createOperation(op.input)
+          : mode === 'dispatch'
+            ? f.ledger().dispatch({
+                scope: f.task.scope,
+                operationId: id,
+                leaseOwner: f.device.id,
+                leaseMs: 30_000,
+              })
+            : mode === 'start'
+              ? f.ledger().startOperation({
+                  scope: f.task.scope,
+                  operationId: id,
+                  leaseToken: lease!.leaseToken,
+                  attempt: lease!.snapshot.binding.attempt,
+                  receiptId: randomUUID(),
+                })
+              : f.ledger().heartbeat({
+                  scope: f.task.scope,
+                  operationId: id,
+                  leaseToken: lease!.leaseToken,
+                  leaseMs: 60_000,
+                });
+      await expect(call).rejects.toThrow('unavailable');
+      const [after] = await database<
+        { count: number }[]
+      >`select count(*)::int as count from allrice_runtime_operation_events where operation_id=${id}`;
+      expect(after?.count).toBe(before?.count);
+      const [row] = await database<
+        {
+          snapshot: { status: string };
+          lease_expires_at: Date | null;
+          lease_token_hash: string | null;
+        }[]
+      >`
+        select snapshot,lease_expires_at,lease_token_hash from allrice_runtime_operations where id=${id}`;
+      if (mode === 'create') {
+        expect(row).toBeUndefined();
+        expect(
+          (await f.ledger().readBudget(f.task.scope, f.run)).budgets[0]
+            ?.reserved,
+        ).toBe(0);
+      } else {
+        expect(row?.snapshot.status).toBe(
+          mode === 'dispatch' ? 'waiting_user' : 'dispatched',
+        );
+        if (mode === 'dispatch') {
+          expect(row?.lease_token_hash).toBeNull();
+          const [approval] = await database<
+            { runtime_consumed_at: Date | null }[]
+          >`select runtime_consumed_at from allrice_approval_requests where id=${approvalId}`;
+          expect(approval?.runtime_consumed_at).toBeNull();
+        } else
+          expect(row?.lease_expires_at?.toISOString()).toBe(
+            lease?.leaseExpiresAt,
+          );
+        const [receipts] = await database<
+          { count: number }[]
+        >`select count(*)::int as count from allrice_runtime_operation_receipts where operation_id=${id}`;
+        expect(receipts?.count).toBe(0);
+      }
+    },
+  );
+  it('does not renew an old lease that expires while the final UPDATE is blocked', async () => {
+    const f = await fixture('allow'),
+      op = f.operation();
+    await op.factory().createOperation(op.input);
+    const lease = (await f.claim())!,
+      id = lease.snapshot.binding.attempt.operationId;
+    const [old] = await database<{ lease_expires_at: Date }[]>`
+      update allrice_runtime_operations set lease_expires_at=clock_timestamp()+interval '0.5 second'
+      where id=${id} returning lease_expires_at`;
+    await database`insert into b1_test_write_delay(operation_id,event_kind)values(${id},'lease_update')`;
+    await expect(
+      f.ledger().heartbeat({
+        scope: f.task.scope,
+        operationId: id,
+        leaseToken: lease.leaseToken,
+        leaseMs: 30_000,
+      }),
+    ).rejects.toThrow('lease_lost');
+    const [current] = await database<
+      { lease_expires_at: Date }[]
+    >`select lease_expires_at from allrice_runtime_operations where id=${id}`;
+    expect(current?.lease_expires_at.toISOString()).toBe(
+      old?.lease_expires_at.toISOString(),
+    );
   });
 });
