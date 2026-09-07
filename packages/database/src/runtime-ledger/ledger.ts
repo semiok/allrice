@@ -364,6 +364,9 @@ export function createRuntimeOperationLedger(options: {
         lease_token_hash = ${hash(leaseToken)}, lease_expires_at = ${expiresAt}
       where id = ${row.id}
     `;
+    // Event/lease writes can themselves wait on database locks. Recheck current
+    // authority after the last write without consuming the approval a second time.
+    await admit(tx, row, 'heartbeat', await now(tx));
     const committedAt = await now(tx);
     ensureRootAdmits(root, committedAt);
     if (expiresAt <= committedAt) throw new RuntimeLedgerError('lease_lost');
@@ -578,6 +581,14 @@ export function createRuntimeOperationLedger(options: {
             ? { type: 'operation.waiting', reason: 'user' }
             : { type: 'operation.ready' },
         );
+        const finalDecision = await options.admission({
+          transaction: tx,
+          binding: snapshot.binding,
+          phase: 'create',
+          now: await now(tx),
+        });
+        if (finalDecision?.status !== decision?.status)
+          throw new RuntimeLedgerError('unavailable');
         ensureRootAdmits(root, await now(tx));
         return created;
       });
@@ -615,7 +626,7 @@ export function createRuntimeOperationLedger(options: {
       >`select id from allrice_runtime_operations
         where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and device_id=${deviceId}
           and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
-        order by created_at,id limit 20`;
+        order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {
           return await db.begin(async (tx) => {
@@ -634,6 +645,13 @@ export function createRuntimeOperationLedger(options: {
             ].includes(error.code)
           )
             throw error;
+          // Bounded fair scanning: updated_at includes the last unsuccessful
+          // admission check. Rotate waiting/denied rows, never their binding or
+          // approval, so >20 pending rows cannot starve later eligible work.
+          await db`update allrice_runtime_operations set updated_at=clock_timestamp()
+            where id=${candidate.id} and organization_id=${scope.organizationId}
+              and workspace_id=${scope.workspaceId} and device_id=${deviceId}
+              and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')`;
         }
       }
       return null;
@@ -749,6 +767,7 @@ export function createRuntimeOperationLedger(options: {
           throw new RuntimeLedgerError('lease_lost');
         await append(tx, row, { type: 'operation.started', processId: null });
         await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition) values(${input.receiptId},${row.id},${json(tx, content)},'applied')`;
+        await admit(tx, row, 'heartbeat', await now(tx));
         const committedAt = await now(tx);
         ensureRootAdmits(root, committedAt);
         if (row.lease_expires_at <= committedAt)
@@ -789,9 +808,10 @@ export function createRuntimeOperationLedger(options: {
           Math.min(admittedAt.getTime() + duration, root.deadline_at.getTime()),
         );
         await tx`update allrice_runtime_operations set lease_expires_at=${expiresAt},updated_at=clock_timestamp() where id=${row.id}`;
+        await admit(tx, row, 'heartbeat', await now(tx));
         const committedAt = await now(tx);
         ensureRootAdmits(root, committedAt);
-        if (expiresAt <= committedAt)
+        if (expiresAt <= committedAt || row.lease_expires_at <= committedAt)
           throw new RuntimeLedgerError('lease_lost');
         return {
           snapshot: row.snapshot,

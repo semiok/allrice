@@ -455,6 +455,7 @@ export async function decideConnectorApproval(
       select actor_id, resource_id from allrice_approval_requests
       where id = ${approvalId} and organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId} and status = 'pending'
+        and resource_type <> 'runtime_operation'
       for update
     `;
     const row = rows[0];
@@ -488,8 +489,8 @@ export async function decideConnectorApproval(
       ) values (
         ${context.organizationId}, ${workspaceId}, ${actor},
         'approval.decide', 'approval', ${approvalId},
-        ${decision.decision}, ${decision.reason},
-        ${transaction.json({ connectorCallId: row.resource_id })}
+        'recorded', ${decision.reason},
+        ${transaction.json({ connectorCallId: row.resource_id, approvalDecision: decision.decision })}
       )
     `;
     return { id: approvalId, status: decision.decision };

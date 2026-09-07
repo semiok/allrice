@@ -3,6 +3,8 @@ export * from './identity.ts';
 export * from './data.ts';
 export * from './workspace.ts';
 export * from './bridge.ts';
+export * from './runtime-policy.ts';
+export * from './runtime-governed-bridge.ts';
 export * from './capabilities/index.ts';
 export * from './conversation/index.ts';
 export * from './employees/index.ts';

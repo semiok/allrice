@@ -197,6 +197,12 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     const parsed = new URL(base);
     parsed.search = '';
     admin = postgres(parsed.toString(), { max: 1, onnotice: () => {} });
+    // Extensions are database-global, never owned by a disposable parallel suite.
+    await admin.begin(async (transaction) => {
+      await transaction`select pg_advisory_xact_lock(20260907, 1)`;
+      await transaction`create extension if not exists vector with schema public`;
+      await transaction`create extension if not exists pg_trgm with schema public`;
+    });
     schema = `p03a_${randomUUID().replaceAll('-', '')}`;
     await admin.unsafe(`create schema "${schema}"`);
     parsed.searchParams.set('options', `-csearch_path=${schema},public`);
