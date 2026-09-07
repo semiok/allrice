@@ -382,20 +382,28 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     );
     if (decision.effect === 'deny')
       throw new RuntimePolicyError(decision.reason);
-    if (decision.effect === 'allow') return;
     const digest = runtimePolicyDigest(binding);
-    const [row] = await transaction<ApprovalRow[]>`
+    const rows = await transaction<ApprovalRow[]>`
       select * from allrice_approval_requests where organization_id = ${options.context.organizationId}
         and workspace_id = ${options.context.workspaceId} and resource_type = 'runtime_operation'
-        and resource_id = ${binding.attempt.operationId} and runtime_binding_digest = ${digest} for update
+        and resource_id = ${binding.attempt.operationId} for update
     `;
-    if (!row) {
-      if (input.phase === 'create') return { status: 'waiting_user' };
-      throw new RuntimePolicyError('approval_required');
-    }
+    if (
+      rows.length > 1 ||
+      (rows[0] && rows[0].runtime_binding_digest !== digest)
+    )
+      throw new RuntimePolicyError('approval_binding_mismatch');
+    const row = rows[0];
     const now = await clock(transaction);
     if (policyExpiresAt <= now)
       throw new RuntimePolicyError('frozen_policy_invalid');
+    if (!row) {
+      if (decision.effect === 'allow') return;
+      if (input.phase === 'create') return { status: 'waiting_user' };
+      throw new RuntimePolicyError('approval_required');
+    }
+    // An administrator's later Allow does not erase this operation's old
+    // rejection/revocation/expiry. Replanning requires a new operation identity.
     const request = RuntimeActionApprovalRequestSchema.parse(
       row.runtime_request,
     );
@@ -408,7 +416,10 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     ) {
       if (
         input.phase === 'create' &&
+        decision.effect === 'ask' &&
         row.status === 'pending' &&
+        row.runtime_control_version === controls.version &&
+        runtimeContractEqual(request.binding, binding) &&
         !row.runtime_revoked_at &&
         row.runtime_expires_at > now
       )
@@ -450,6 +461,11 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
       'exact_binding',
       { approvalId: row.id, digest },
     );
+    const completedAt = await clock(transaction);
+    if (policyExpiresAt <= completedAt)
+      throw new RuntimePolicyError('frozen_policy_invalid');
+    if (row.runtime_expires_at <= completedAt)
+      throw new RuntimePolicyError('approval_invalid_or_stale');
   };
 }
 
@@ -482,11 +498,17 @@ export async function requestRuntimeActionApproval(
     if (decision.effect !== 'ask')
       throw new RuntimePolicyError('approval_not_applicable');
     const digest = runtimePolicyDigest(binding);
-    const [existing] = await transaction<ApprovalRow[]>`
+    const existingRows = await transaction<ApprovalRow[]>`
       select * from allrice_approval_requests where organization_id = ${options.context.organizationId}
         and workspace_id = ${options.context.workspaceId} and resource_type = 'runtime_operation'
-        and resource_id = ${binding.attempt.operationId} and runtime_binding_digest = ${digest} for update
+        and resource_id = ${binding.attempt.operationId} for update
     `;
+    if (
+      existingRows.length > 1 ||
+      (existingRows[0] && existingRows[0].runtime_binding_digest !== digest)
+    )
+      throw new RuntimePolicyError('approval_binding_mismatch');
+    const existing = existingRows[0];
     if (existing)
       return RuntimeActionApprovalRequestSchema.parse(existing.runtime_request);
     const now = await clock(transaction);
@@ -523,6 +545,11 @@ export async function requestRuntimeActionApproval(
       'exact_binding',
       { approvalId: request.approvalId, digest },
     );
+    const completedAt = await clock(transaction);
+    if (policyExpiresAt <= completedAt)
+      throw new RuntimePolicyError('frozen_policy_invalid');
+    if (Date.parse(request.expiresAt) <= completedAt.getTime())
+      throw new RuntimePolicyError('approval_invalid_or_stale');
     return request;
   }) as Promise<RuntimeActionApprovalRequest>;
 }
@@ -587,6 +614,7 @@ export async function decideRuntimeActionApproval(
     }
     if (row.status !== 'pending')
       throw new RuntimePolicyError('approval_not_pending');
+    let policyExpiresAt: Date | null = null;
     if (response.decision === 'approved') {
       if (evaluateRuntimePolicy(controls, request.binding).effect === 'deny')
         throw new RuntimePolicyError('policy_denied');
@@ -595,6 +623,7 @@ export async function decideRuntimeActionApproval(
         context,
         request.binding,
       );
+      policyExpiresAt = authority.policyExpiresAt;
       const decidedAt = await clock(transaction);
       if (
         authority.policyExpiresAt <= decidedAt ||
@@ -613,6 +642,12 @@ export async function decideRuntimeActionApproval(
       response.decision,
       { approvalId: row.id },
     );
+    const completedAt = await clock(transaction);
+    if (
+      (policyExpiresAt && policyExpiresAt <= completedAt) ||
+      row.runtime_expires_at <= completedAt
+    )
+      throw new RuntimePolicyError('approval_invalid_or_stale');
     return response;
   }) as Promise<RuntimeActionApprovalResponse>;
 }
