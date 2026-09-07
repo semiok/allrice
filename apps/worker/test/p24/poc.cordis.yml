@@ -1,0 +1,45 @@
+# Isolated P24 experiment only. Never use as an AllRice deployment profile.
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+  config:
+    path: !!js process.env.DSH_CREDENTIALS_PATH
+    watch: false
+- id: llm
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      openai-compatible:
+        apiKeyEnv: OPENAI_COMPATIBLE_API_KEY
+        api: openai-completions
+        baseURL: !!js process.env.OPENAI_COMPATIBLE_BASE_URL
+        models:
+          - id: p24-synthetic
+- id: spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    persona: Synthetic P24 test. No real credentials, filesystem or shell tools.
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT
+    compression: none
+    writeBatchMaxDelayMs: !!js Number(process.env.P24_WRITE_BATCH_MS ?? 200)
+- id: checkpoints
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+- id: projections
+  name: '@deepseek-ai/dsh-session-projection'
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: ask
+- id: subagents
+  name: '@deepseek-ai/dsh-subagent'
+- id: spawn
+  name: '@deepseek-ai/dsh-subagent-spawn-in-process'
