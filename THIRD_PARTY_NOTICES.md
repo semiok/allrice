@@ -1,5 +1,29 @@
 # Third-party notices
 
+## Cline Web Diff adapter
+
+Copyright 2026 Cline Bot Inc. Licensed under Apache-2.0; a full copy is included
+in the repository [LICENSE](LICENSE).
+
+`apps/web/app/chatflow/cline-adapter/tool-file-diff.tsx` is adapted from
+`sdk/packages/ui/components/agent-chat/tool-diff.tsx` at
+[cline/cline commit dac3b35ba485dbab3b5a73aca239b0d07ce071cf](https://github.com/cline/cline/blob/dac3b35ba485dbab3b5a73aca239b0d07ce071cf/sdk/packages/ui/components/agent-chat/tool-diff.tsx).
+The pinned source tree has no applicable separate NOTICE or subdirectory license.
+The adapter retains parsing/memoization, theme integration and bounded render
+recovery, but changes exact EOF preservation, deletion support, resource bounds,
+fallbacks, layout and version-aware line selection. AllRice authorization,
+versioned feedback, filesystem operations and rollback are independent code.
+No Cline Agent Loop, VS Code host, theme assets, editor or approval engine is copied.
+
+The runtime dependency `@pierre/diffs` is pinned to 1.4.1 (Apache-2.0),
+Copyright 2025 Pierre Computer Company. Its full license is distributed with the
+package as `LICENSE.md`; transitive dependencies retain their own package licenses.
+The chosen version is within Cline's `^1.3.0` peer range. Candidate 1.3.0 failed
+strict peer validation (`@pierre/theming@1.0.0` vs `@pierre/theme@2.0.0`);
+1.4.1 uses theming 1.0.1 with the corrected range. Global peer checks remain on.
+
+Adaptation evidence and limitations: `docs/architecture/allrice-2.0/p07-workbench.md`.
+
 ## DeepSeek Harness
 
 AllRice optionally integrates packages from

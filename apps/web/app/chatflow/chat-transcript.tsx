@@ -1,6 +1,7 @@
 'use client';
 
 import type { RefObject } from 'react';
+import type { WorkbenchArtifact } from '@allrice/contracts';
 
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
@@ -22,6 +23,7 @@ import {
 } from './managed-browser-task-panel';
 import { UserQuestionReceipt } from './user-question-receipt';
 import { LocalCommandPanel } from './local-command-panel';
+import { ArtifactSummaryCards } from './artifact-workbench';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
@@ -35,6 +37,8 @@ interface ChatTranscriptProps {
   onLoadRunTrace: (runId: string) => void | Promise<void>;
   onRecoverRun: (runId: string) => void | Promise<void>;
   onScrollToBottom: () => void;
+  artifacts?: WorkbenchArtifact[];
+  onOpenArtifact?: (id: string) => void;
 }
 
 export function ChatTranscript({
@@ -49,6 +53,8 @@ export function ChatTranscript({
   onLoadRunTrace,
   onRecoverRun,
   onScrollToBottom,
+  artifacts = [],
+  onOpenArtifact,
 }: ChatTranscriptProps) {
   return (
     <div className={chatUi.root}>
@@ -208,6 +214,14 @@ export function ChatTranscript({
                         <small className={styles.failedMessage}>
                           这次没有完成。
                         </small>
+                      ) : null}
+                      {onOpenArtifact && message.runId ? (
+                        <ArtifactSummaryCards
+                          artifacts={artifacts.filter(
+                            (a) => a.provenance.runId === message.runId,
+                          )}
+                          onOpen={onOpenArtifact}
+                        />
                       ) : null}
                     </div>
                   )}

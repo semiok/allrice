@@ -16,6 +16,9 @@ import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-sta
 import { ChatComposer } from './chat-composer';
 import { ChatSidebar } from './chat-sidebar';
 import { ChatTranscript } from './chat-transcript';
+import { ArtifactWorkbench } from './artifact-workbench';
+import { useArtifactWorkbench } from './use-artifact-workbench';
+import workbenchUi from './workbench.module.css';
 import { AttachmentPreviewDialog } from './attachment-preview-dialog';
 import type { Attachment, Message } from './chatflow-types';
 import {
@@ -40,7 +43,11 @@ import {
   userQuestionAnswerText,
 } from './user-question-composer';
 
-export function ChatFlowClient() {
+export function ChatFlowClient({
+  workbenchEnabled = false,
+}: {
+  workbenchEnabled?: boolean;
+}) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [questionBusy, setQuestionBusy] = useState(false);
@@ -49,6 +56,7 @@ export function ChatFlowClient() {
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [workbenchNarrow, setWorkbenchNarrow] = useState(true);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
   const conversationScroll = useRef<HTMLDivElement | null>(null);
   const transcriptColumn = useRef<HTMLDivElement | null>(null);
@@ -77,6 +85,29 @@ export function ChatFlowClient() {
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+
+  const workbench = useArtifactWorkbench({
+    enabled: workbenchEnabled,
+    sessionId: activeId,
+    workspaceId: workspace?.workspaceId,
+    tenantHeaders,
+  });
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 1100px)');
+    const sync = () => setWorkbenchNarrow(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  // New completed turns can add artifacts; opening the panel does not execute tools.
+  useEffect(() => {
+    if (workbenchEnabled) void workbench.reload();
+  }, [
+    workbenchEnabled,
+    history?.messages.length,
+    history?.messages.at(-1)?.status,
+    workbench.reload,
+  ]);
 
   const {
     loadRunTrace,
@@ -512,7 +543,9 @@ export function ChatFlowClient() {
   return (
     <main
       className={`${frameUi.frame} ${styles.shell}`}
-      data-details-collapsed="true"
+      data-details-collapsed={
+        !workbench.open || workbenchNarrow ? true : undefined
+      }
       onDragEnter={(event) => {
         if (event.dataTransfer.types.includes('Files')) {
           event.preventDefault();
@@ -537,9 +570,7 @@ export function ChatFlowClient() {
         if (!busy) uploadAttachments(event.dataTransfer.files);
       }}
       style={{
-        gridTemplateColumns: sidebarCollapsed
-          ? '57px minmax(0, 1fr)'
-          : '280px minmax(0, 1fr)',
+        gridTemplateColumns: `${sidebarCollapsed ? '57px' : '280px'} minmax(0, 1fr)${workbench.open && !workbenchNarrow ? ' minmax(420px, 44%)' : ''}`,
       }}
     >
       {imageDragActive ? (
@@ -562,6 +593,7 @@ export function ChatFlowClient() {
         manifest={manifest}
         onCollapsedChange={setSidebarCollapsed}
         onNewSession={() => {
+          if (!workbench.confirmNavigation()) return;
           resetRunState();
           setActiveId(null);
           setHistory(null);
@@ -570,6 +602,7 @@ export function ChatFlowClient() {
         }}
         onOpenEmployeeDetails={() => setEmployeeDetailsOpen(true)}
         onSelectSession={(sessionId) => {
+          if (sessionId !== activeId && !workbench.confirmNavigation()) return;
           if (sessionId !== activeId) clearPendingAttachments();
           setActiveId(sessionId);
         }}
@@ -597,6 +630,7 @@ export function ChatFlowClient() {
                       <button
                         className={conversationUi.crumb}
                         onClick={() => {
+                          if (!workbench.confirmNavigation()) return;
                           resetRunState();
                           setActiveId(null);
                           setHistory(null);
@@ -611,6 +645,22 @@ export function ChatFlowClient() {
                   </div>
                 </div>
                 <div className={conversationUi.headerActions}>
+                  {workbenchEnabled ? (
+                    <button
+                      type="button"
+                      className={workbenchUi.entry}
+                      aria-expanded={workbench.open}
+                      onClick={() => {
+                        if (!workbench.open) workbench.show();
+                        void workbench.reload();
+                      }}
+                    >
+                      ▤ 工件与审查
+                      {workbench.artifacts.length
+                        ? ` · ${workbench.artifacts.length}`
+                        : ''}
+                    </button>
+                  ) : null}
                   <span className={styles.runtimePill}>
                     <i />
                     {providerForSession(workspace, activeSession)}
@@ -652,6 +702,10 @@ export function ChatFlowClient() {
                   tenantHeaders={tenantHeaders}
                   transcriptColumn={transcriptColumn}
                   workspaceId={workspace.workspaceId}
+                  artifacts={workbench.artifacts}
+                  onOpenArtifact={(id) => {
+                    if (workbench.confirmNavigation()) workbench.show(id);
+                  }}
                 />
               </div>
               <div
@@ -675,6 +729,25 @@ export function ChatFlowClient() {
           )}
         </div>
       </section>
+
+      {workbenchEnabled && workbench.open && activeId ? (
+        <ArtifactWorkbench
+          key={`${workspace.workspaceId}/${activeId}`}
+          sessionId={activeId}
+          workspaceId={workspace.workspaceId}
+          tenantHeaders={tenantHeaders}
+          artifacts={workbench.artifacts}
+          selectedId={workbench.selectedId}
+          nextCursor={workbench.nextCursor}
+          listError={workbench.error}
+          listLoading={workbench.loading}
+          narrow={workbenchNarrow}
+          onSelect={(id) => workbench.show(id)}
+          onClose={workbench.close}
+          onReload={workbench.reload}
+          onDirtyChange={workbench.noteDirty}
+        />
+      ) : null}
 
       <AttachmentPreviewDialog
         attachment={attachmentPreview}

