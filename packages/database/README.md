@@ -33,6 +33,17 @@ synchronizes the reviewed platform Skill catalog, and verifies the resulting
 database. Use `pnpm db:migrate` only when intentionally applying schema history
 without operational content synchronization.
 
+## AllRice 2.0 operation ledger (P03-a)
+
+Additive migration `0073_runtime_operation_ledger.sql` and `src/runtime-ledger/`
+provide shared operation/receipt persistence, atomic admission callbacks, root
+budget reservations/settlements and cancellation intent. They reuse existing Run
+and ExecutionTarget references; they do not enable a new Runner or change legacy
+Bridge/RunEvent protocols. Production adapters must supply current authorization
+inside the same transaction. Unknown effects and unmeasured usage stay unresolved,
+never automatically retried or counted as zero. See the
+[P03-a contract and test evidence](../../docs/architecture/allrice-2.0/p03a-operation-ledger.md).
+
 ## Identity security
 
 - Passwords use versioned Node `scrypt` hashes with random salts.

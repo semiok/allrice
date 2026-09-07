@@ -1,0 +1,88 @@
+import type {
+  BridgeCommandPayload,
+  RuntimeActionBinding,
+  RuntimeAttemptRef,
+  RuntimeOperationSignal,
+  RuntimeOperationSnapshot,
+  RuntimeScope,
+  RuntimeTaskRef,
+  RuntimeUsageObservation,
+} from '@allrice/contracts';
+import type postgres from 'postgres';
+
+export type RuntimeLedgerTransaction = postgres.TransactionSql;
+
+/** Trusted server adapter, never a browser-supplied authorization boolean. */
+export type RuntimeLedgerAdmission = (input: {
+  transaction: RuntimeLedgerTransaction;
+  binding: RuntimeActionBinding;
+  phase: 'create' | 'dispatch' | 'heartbeat';
+  now: Date;
+}) => Promise<void | { status: 'waiting_user' }>;
+
+export interface RuntimeBudgetLimit {
+  metric: RuntimeUsageObservation['metric'];
+  unit: RuntimeUsageObservation['unit'];
+  currency: string | null;
+  capacity: number;
+  /** A single authenticated, non-overlapping authoritative meter per metric. */
+  source: RuntimeUsageObservation['source'];
+}
+
+export interface RuntimeBudgetReservation {
+  metric: RuntimeUsageObservation['metric'];
+  accountingId: string;
+  amount: number;
+}
+
+export interface CreateRuntimeOperationInput {
+  snapshot: RuntimeOperationSnapshot;
+  reservations: RuntimeBudgetReservation[];
+  /** Existing, already governed Bridge capability only; no Shell reservation. */
+  bridgePayload?: BridgeCommandPayload;
+}
+
+export interface RuntimeLedgerReceipt {
+  scope: RuntimeScope;
+  operationId: string;
+  leaseToken: string;
+  receiptId: string;
+  attempt: RuntimeAttemptRef;
+  signal: RuntimeOperationSignal;
+  deviceSequence?: number;
+  /** Caller authenticates/redacts evidence first; bounded opaque result, not instructions. */
+  evidence?: unknown;
+}
+
+export interface RuntimeLedgerLease {
+  snapshot: RuntimeOperationSnapshot;
+  leaseToken: string;
+  leaseExpiresAt: string;
+  createdAt: string;
+  bridgePayload: BridgeCommandPayload | null;
+}
+
+export interface RegisterRuntimeRootInput {
+  /** Caller has authenticated the owner and selected immutable root limits. */
+  task: RuntimeTaskRef;
+  deadlineAt: string;
+  budgets: RuntimeBudgetLimit[];
+}
+
+export class RuntimeLedgerError extends Error {
+  constructor(
+    public readonly code:
+      | 'scope_mismatch'
+      | 'unavailable'
+      | 'idempotency_conflict'
+      | 'budget_exhausted'
+      | 'root_canceled'
+      | 'deadline_exceeded'
+      | 'lease_lost'
+      | 'receipt_conflict'
+      | 'invalid_state'
+      | 'invalid_usage',
+  ) {
+    super(code);
+  }
+}
