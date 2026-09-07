@@ -54,11 +54,11 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run packages/database/src/runtime-ledger/ledger.integration.test.ts
-      - name: Verify exact runtime policy approvals against PostgreSQL
+      - name: Verify governed Bridge policy and real HTTP journal integration
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run packages/database/src/runtime-policy.integration.test.ts
+        run: pnpm exec vitest run packages/database/src/runtime-policy.integration.test.ts packages/database/src/runtime-governed-bridge.integration.test.ts packages/database/src/runtime-ledger/bridge-http.integration.test.ts
       - name: Stop development database
         if: always()
         run: pnpm db:dev:down
