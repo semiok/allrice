@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { EmployeeRuntimePackageSchema } from './employees.ts';
 import { HarnessEventSchema } from './harness.ts';
+import { employeeModelPolicyProblem } from './employee-model-settings.ts';
 
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
   'dsh-0.1.1-rc.2-b150a55' as const;
@@ -177,7 +178,16 @@ export const UpdatePlatformEmployeeInputSchema = z
   .object({
     definition: PlatformEmployeeDefinitionSchema,
   })
-  .strict();
+  .strict()
+  .superRefine(({ definition }, context) => {
+    const message = employeeModelPolicyProblem(definition.modelPolicy);
+    if (message)
+      context.addIssue({
+        code: 'custom',
+        path: ['definition', 'modelPolicy'],
+        message,
+      });
+  });
 
 export const CreatePlatformEmployeeInputSchema = z
   .object({

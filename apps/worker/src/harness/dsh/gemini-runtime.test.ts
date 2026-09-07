@@ -99,6 +99,44 @@ afterEach(async () => {
 });
 
 describe('Gemini opt-in and credential isolation', () => {
+  it.each(['none', 'xhigh'] as const)(
+    'rejects Gemini %s before resolving credentials',
+    async (effort) => {
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
+      const input = request();
+      input.snapshot.reasoningEffort = effort;
+      await expect(pool.acquire(input)).rejects.toMatchObject({
+        code: 'GEMINI_REASONING_UNSUPPORTED',
+      });
+      expect(resolveCredential).not.toHaveBeenCalled();
+      expect(captured).toHaveLength(0);
+    },
+  );
+  it.each(['low', 'medium', 'high'] as const)(
+    'passes Gemini %s without DeepSeek remapping',
+    async (effort) => {
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
+      const input = request();
+      input.snapshot.reasoningEffort = effort;
+      await pool.acquire(input);
+      expect(captured[0]?.environment.DSH_GEMINI_REASONING_EFFORT).toBe(effort);
+      expect(
+        JSON.parse(
+          captured[0]?.environment.DSH_GEMINI_REASONING_LEVELS ?? '{}',
+        ),
+      ).toEqual({ low: 'LOW', medium: 'MEDIUM', high: 'HIGH' });
+    },
+  );
+  it.each(['low', 'medium', 'high', 'xhigh'] as const)(
+    'passes Codex %s unchanged',
+    async (effort) => {
+      await writeFile(join(root, '.credentials.yaml'), '{}', { mode: 0o600 });
+      const input = request('openai-codex');
+      input.snapshot.reasoningEffort = effort;
+      await pool.acquire(input);
+      expect(captured[0]?.environment.DSH_CODEX_REASONING_EFFORT).toBe(effort);
+    },
+  );
   it('denies before resolving credentials or starting a child by default', async () => {
     await expect(pool.acquire(request())).rejects.toMatchObject({
       code: 'GEMINI_API_DISABLED',
