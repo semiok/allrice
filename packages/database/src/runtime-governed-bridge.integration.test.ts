@@ -1487,13 +1487,11 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             );
             if (lostContinuation) {
               lostContinuation = false;
-              res
-                .writeHead(503)
-                .end(
-                  JSON.stringify({
-                    error: { message: '合成 ACK 丢失，可重试' },
-                  }),
-                );
+              res.writeHead(503).end(
+                JSON.stringify({
+                  error: { message: '合成 ACK 丢失，可重试' },
+                }),
+              );
               return;
             }
             res.end(JSON.stringify(result));
