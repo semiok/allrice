@@ -2,6 +2,7 @@ import {
   bindConversationThread,
   claimConversationSteer,
   consumeConversationSteer,
+  deferConversationSteer,
   recordConversationTurn,
   rejectConversationSteer,
 } from '@allrice/database';
@@ -82,8 +83,13 @@ export async function pollEmployeeConversationSteers(input: {
   signal: AbortSignal;
   adapter: HarnessAdapter;
   polling: () => boolean;
+  drain?: boolean;
 }) {
-  while (input.polling() && !input.signal.aborted) {
+  const deadline = Date.now() + 3_000;
+  while (
+    (input.drain ? Date.now() < deadline : input.polling()) &&
+    !input.signal.aborted
+  ) {
     const command = await claimConversationSteer({
       organizationId: input.ownership.organizationId,
       workspaceId: input.ownership.workspaceId,
@@ -91,8 +97,10 @@ export async function pollEmployeeConversationSteers(input: {
       workerId: input.ownership.workerId,
       generation: input.generation,
       turnId: input.turnId,
+      drain: input.drain,
     });
     if (!command) {
+      if (input.drain) return;
       await new Promise((resolve) => setTimeout(resolve, 150));
       continue;
     }
@@ -105,17 +113,47 @@ export async function pollEmployeeConversationSteers(input: {
       continue;
     }
     try {
-      await input.adapter.steer({
+      const proof = await input.adapter.steer({
         threadId: input.threadId,
         turnId: input.turnId,
         message: command.message,
         clientUserMessageId: command.clientUserMessageId,
+        ...(command.inputKind ? { inputKind: command.inputKind } : {}),
       });
+      if (command.inputKind && (!proof || proof.status !== 'adopted')) {
+        if (proof?.status === 'unknown' || input.drain)
+          await rejectConversationSteer({
+            commandId: command.id,
+            workerId: input.ownership.workerId,
+            errorCode: 'INPUT_OUTCOME_UNKNOWN',
+          });
+        else
+          await deferConversationSteer({
+            commandId: command.id,
+            workerId: input.ownership.workerId,
+            ...(proof ? { proof } : {}),
+          });
+        continue;
+      }
       await consumeConversationSteer({
         commandId: command.id,
         workerId: input.ownership.workerId,
+        ...(proof ? { proof } : {}),
       });
     } catch (error) {
+      if (
+        command.inputKind &&
+        !/INPUT_TURN_CHANGED|QUESTION_|INPUT_ID_CONFLICT|INVALID_TYPED_INPUT/.test(
+          error instanceof Error ? error.message : '',
+        )
+      ) {
+        await deferConversationSteer({
+          commandId: command.id,
+          workerId: input.ownership.workerId,
+        });
+        if (input.drain) return;
+        continue;
+      }
       await rejectConversationSteer({
         commandId: command.id,
         workerId: input.ownership.workerId,

@@ -14,6 +14,11 @@ import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
 
 import { ChatComposer } from './chat-composer';
+import {
+  useInteractionStatus,
+  InteractionStatusPanel,
+} from './interaction-status';
+import { inputRetry } from '../../lib/chatflow/input-retry';
 import { ChatSidebar } from './chat-sidebar';
 import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
@@ -49,6 +54,9 @@ export function ChatFlowClient({
   workbenchEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
+    'follow_up',
+  );
   const [busy, setBusy] = useState(false);
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
@@ -273,11 +281,39 @@ export function ChatFlowClient({
     setBridgeOpen,
   } = useBridge({ setError, tenantHeaders, workspace });
 
+  const interactions = useInteractionStatus(
+    workbenchEnabled,
+    activeId,
+    workspace?.workspaceId,
+    tenantHeaders,
+  );
+  useEffect(() => setInputMode('follow_up'), [activeId]);
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (!/^(message|operation)-[a-f0-9-]{36}$/.test(hash)) return;
+    const scroll = () => {
+      const target = document.getElementById(hash);
+      if (!target) return false;
+      target.scrollIntoView({ block: 'center' });
+      return true;
+    };
+    if (scroll()) return;
+    const observer = new MutationObserver(() => {
+      if (scroll()) observer.disconnect();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    const timeout = setTimeout(() => observer.disconnect(), 10_000);
+    return () => {
+      observer.disconnect();
+      clearTimeout(timeout);
+    };
+  }, [history?.session.id, history?.messages.length]);
+
   async function sendMessage() {
     const text = draft.trim();
     if (!workspace || !text || busy) return;
     const draftAttachments = [...pendingAttachments];
-    const clientMessageId = crypto.randomUUID();
+    let clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
     const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
     followTranscript.current = true;
@@ -287,6 +323,10 @@ export function ChatFlowClient({
     try {
       const sessionId = activeId ?? (await createSession(draft));
       if (!sessionId) return;
+      const mode = workbenchEnabled ? inputMode : 'auto';
+      const current = interactions.data?.runtime;
+      if (mode === 'steer' && (!current?.turnId || current.state !== 'running'))
+        throw new Error('当前回合已变化，请刷新后重新选择发送方式。');
       const uploadResults = await Promise.allSettled(
         draftAttachments.map((attachment) =>
           persistPendingAttachment(attachment, sessionId),
@@ -304,6 +344,22 @@ export function ChatFlowClient({
       const messageAttachments = uploadResults.map(
         (result) => (result as PromiseFulfilledResult<Attachment>).value,
       );
+      const inputBody = {
+        text,
+        attachmentIds: messageAttachments.map((item) => item.id),
+        deliveryMode: mode,
+        ...(mode === 'steer'
+          ? {
+              expectedTurnId: current!.turnId,
+              expectedGeneration: current!.generation,
+            }
+          : {}),
+      };
+      const retry = await inputRetry(
+        `${workspace.organizationId}/${sessionId}`,
+        inputBody,
+      );
+      clientMessageId = retry.id;
       setDraft('');
       const createdAt = new Date().toISOString();
       setHistory((current) =>
@@ -347,13 +403,12 @@ export function ChatFlowClient({
             headers: { 'content-type': 'application/json', ...tenantHeaders },
             body: JSON.stringify({
               clientMessageId,
-              text,
-              attachmentIds: messageAttachments.map((item) => item.id),
-              deliveryMode: 'auto',
+              ...inputBody,
             }),
           },
         ),
       );
+      retry.confirmed();
       clearPendingAttachments();
       const assistantRunId =
         result.delivery === 'immediate' ? result.run.id : result.fallbackRunId;
@@ -376,6 +431,7 @@ export function ChatFlowClient({
       );
       void streamRun(result.run.id);
       void loadHistory(sessionId);
+      void interactions.reload();
     } catch (cause) {
       setHistory((current) =>
         current
@@ -423,6 +479,18 @@ export function ChatFlowClient({
     setQuestionBusy(true);
     setError('');
     try {
+      const answerBody = {
+        text: userQuestionAnswerText(pendingUserQuestion.questions, answer),
+        attachmentIds: [],
+        deliveryMode: 'steer',
+        expectedTurnId: pendingUserQuestion.turnId,
+        expectedGeneration: pendingUserQuestion.generation,
+        userQuestionAnswer: answer,
+      };
+      const retry = await inputRetry(
+        `${workspace.organizationId}/${activeId}`,
+        answerBody,
+      );
       const result = await readJson<{
         run: { id: string };
         delivery: 'immediate' | 'steer_pending' | 'follow_up';
@@ -433,16 +501,8 @@ export function ChatFlowClient({
             method: 'POST',
             headers: { 'content-type': 'application/json', ...tenantHeaders },
             body: JSON.stringify({
-              clientMessageId: crypto.randomUUID(),
-              text: userQuestionAnswerText(
-                pendingUserQuestion.questions,
-                answer,
-              ),
-              attachmentIds: [],
-              deliveryMode: 'steer',
-              expectedTurnId: pendingUserQuestion.turnId,
-              expectedGeneration: pendingUserQuestion.generation,
-              userQuestionAnswer: answer,
+              clientMessageId: retry.id,
+              ...answerBody,
             }),
           },
         ),
@@ -451,6 +511,7 @@ export function ChatFlowClient({
         throw new Error('这个确认请求已经失效，请在聊天框中重新告诉 Rice。');
       }
       await loadHistory(activeId);
+      void interactions.reload();
       void streamRun(result.run.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '回答提交失败');
@@ -511,6 +572,11 @@ export function ChatFlowClient({
       fileInput={fileInput}
       hero={hero}
       isRunning={isRunning}
+      inputMode={inputMode}
+      canSteer={
+        interactions.data?.runtime?.state === 'running' && !pendingUserQuestion
+      }
+      onInputModeChange={workbenchEnabled ? setInputMode : undefined}
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
       nativeContextStatus={history?.nativeContextStatus ?? null}
@@ -690,6 +756,16 @@ export function ChatFlowClient({
               ref={conversationScroll}
             >
               <div className={conversationUi.viewArea}>
+                {workbenchEnabled && activeId ? (
+                  <InteractionStatusPanel
+                    data={interactions.data}
+                    error={interactions.error}
+                    sessionId={activeId}
+                    onArtifact={(id) => {
+                      if (workbench.confirmNavigation()) workbench.show(id);
+                    }}
+                  />
+                ) : null}
                 <ChatTranscript
                   atBottom={atTranscriptBottom}
                   messages={history?.messages ?? []}
@@ -746,6 +822,11 @@ export function ChatFlowClient({
           onClose={workbench.close}
           onReload={workbench.reload}
           onDirtyChange={workbench.noteDirty}
+          onContinued={(runId) => {
+            void loadHistory(activeId);
+            void streamRun(runId);
+            void interactions.reload();
+          }}
         />
       ) : null}
 

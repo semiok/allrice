@@ -7,3 +7,4 @@ export * from './policy.ts';
 export * from './bridge-journal.ts';
 export * from './local-command.ts';
 export * from './artifact-review.ts';
+export * from './input-status.ts';

@@ -23,6 +23,10 @@ import {
   steerDshAgent,
   structuredUserQuestionAnswer,
 } from './allrice-dsh-runtime-compatibility.mjs';
+import {
+  deliverDshInput,
+  discardPendingDshInputs,
+} from './allrice-dsh-inputs.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
@@ -1022,7 +1026,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     }
   }
 
-  async createSession(sessionId) {
+  async createSession(sessionId, resumeOnly = false) {
     try {
       const isGemini = this.provider === 'gemini' || this.provider === 'google';
       const model =
@@ -1040,7 +1044,14 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       const record = { handle };
       this.sessions.set(sessionId, record);
       return record;
-    } catch {
+    } catch (error) {
+      if (
+        resumeOnly ||
+        !/not found|no such file|ENOENT|does not exist/i.test(
+          error instanceof Error ? error.message : '',
+        )
+      )
+        throw error;
       return super.createSession(sessionId);
     }
   }
@@ -1049,6 +1060,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     const record = this.sessions.get(sessionId);
     if (!record) return { interrupted: false };
+    discardPendingDshInputs(record.handle.agent);
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
     if (pendingQuestion) {
       this.pendingUserQuestions.delete(sessionId);
@@ -1065,6 +1077,32 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       throw new TypeError('steer text is required');
     }
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
+    if (params.inputId !== undefined) {
+      const record = this.sessions.get(sessionId);
+      if (!record) throw new TypeError('INPUT_SESSION_NOT_LIVE');
+      return deliverDshInput(
+        {
+          agent: record.handle.agent,
+          sessionId,
+          pendingQuestion,
+          flush: () => this.ctx.sessions.flush(record.handle.agent.session),
+          isCurrent: () =>
+            this.sessions.get(sessionId) === record &&
+            this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
+            params.turnId ===
+              `${sessionId}:turn:${record.handle.agent.session.events.findLast((e) => e.type === 'turn/start')?.data.turn}`,
+          notify: () => {
+            this.pendingUserQuestions.delete(sessionId);
+            this.userQuestionNotify({
+              sessionId,
+              questionId: pendingQuestion.questionId,
+              answered: true,
+            });
+          },
+        },
+        params,
+      );
+    }
     if (pendingQuestion) {
       const structured = structuredUserQuestionAnswer(
         pendingQuestion,
@@ -1158,7 +1196,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       this.sessions.delete(sessionId);
       await current.handle.dispose();
     }
-    const record = await this.createSession(sessionId);
+    const record = await this.createSession(sessionId, true);
     return {
       recovered: true,
       sequence: record.handle.agent.session.seq,

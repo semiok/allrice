@@ -200,7 +200,7 @@ export async function listWorkbenchArtifacts(
     };
   });
 }
-async function readArtifact(
+export async function readArtifact(
   db: Reader,
   context: WorkbenchPrincipal,
   sessionId: string,

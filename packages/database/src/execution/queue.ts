@@ -18,6 +18,7 @@ import {
   type JobStatus,
   type RequestContext,
   type RunEventType,
+  type ReviewContinuationInput,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 
@@ -41,6 +42,8 @@ import {
   type RunRow,
 } from '../queue/row-mappers.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
+import { ArtifactReviewError } from '../artifact-review.ts';
+import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 
 export { queueMaintenanceAction } from '../queue/policy.ts';
 export type { MaintenanceAction } from '../queue/policy.ts';
@@ -280,6 +283,7 @@ export async function enqueueRun(
       expectedGeneration?: number;
       hasAttachments: boolean;
     };
+    reviewContinuation?: ReviewContinuationInput;
     workflowBinding?: {
       employeeId: string;
       workflowRevisionId: string;
@@ -338,6 +342,24 @@ export async function enqueueRun(
     let activeRunId: string | null = null;
     let expectedTurnId: string | null = null;
     let expectedGeneration: number | null = null;
+    if (options.reviewContinuation && options.conversationDelivery) {
+      await prepareReviewContinuation(
+        transaction,
+        { ...context, workspaceId },
+        options.conversationDelivery.sessionId,
+        options.reviewContinuation,
+      );
+      const feedbackId =
+        options.reviewContinuation.kind === 'version_feedback'
+          ? options.reviewContinuation.feedbackId
+          : null;
+      const prior =
+        await transaction`select response_id from allrice_review_continuations
+        where organization_id=${context.organizationId} and workspace_id=${workspaceId} and actor_id=${ownerId}
+        and artifact_id=${options.reviewContinuation.artifactId} and kind=${options.reviewContinuation.kind}
+        and feedback_id is not distinct from ${feedbackId}::uuid`;
+      if (prior.length) throw new ArtifactReviewError('review_already_sent');
+    }
     if (options.conversationDelivery) {
       const runtimeRows = await transaction<
         {
@@ -356,6 +378,17 @@ export async function enqueueRun(
         for update
       `;
       const runtime = runtimeRows[0];
+      if (
+        options.conversationDelivery.requestedMode === 'steer' &&
+        (runtime?.state !== 'running' ||
+          !runtime.active_run_id ||
+          !runtime.active_turn_id ||
+          runtime.active_turn_id !==
+            options.conversationDelivery.expectedTurnId ||
+          runtime.thread_generation !==
+            options.conversationDelivery.expectedGeneration)
+      )
+        throw new ArtifactReviewError('input_turn_changed');
       if (runtime?.state === 'running' && runtime.active_run_id) {
         activeRunId = runtime.active_run_id;
         const exactTurn =
@@ -486,6 +519,14 @@ export async function enqueueRun(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.reviewContinuation && options.conversationDelivery) {
+      const review = options.reviewContinuation;
+      await transaction`insert into allrice_review_continuations
+        (response_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,kind,feedback_id,run_id)
+        values (${options.conversationDelivery.clientUserMessageId},${context.organizationId},${workspaceId},
+          ${options.conversationDelivery.sessionId},${ownerId},${review.artifactId},${review.checksum},${review.kind},
+          ${review.kind === 'version_feedback' ? review.feedbackId : null},${run.id})`;
+    }
     if (options.conversationDelivery && delivery !== 'immediate') {
       await transaction`
         insert into allrice_conversation_followups (
@@ -498,7 +539,7 @@ export async function enqueueRun(
           ${options.conversationDelivery.userMessageId},
           ${options.conversationDelivery.assistantMessageId},
           ${options.conversationDelivery.clientUserMessageId},
-          ${delivery === 'steer_pending' ? 'steer_fallback' : 'follow_up'},
+          ${delivery === 'steer_pending' ? 'steer_only' : 'follow_up'},
           'queued'
         )
       `;
@@ -511,13 +552,14 @@ export async function enqueueRun(
           insert into allrice_conversation_commands (
             organization_id, workspace_id, session_id, owner_id,
             followup_run_id, command_type, client_user_message_id,
-            expected_generation, expected_turn_id, message
+            expected_generation, expected_turn_id, message, input_kind
           ) values (
             ${context.organizationId}, ${workspaceId},
             ${options.conversationDelivery.sessionId}, ${ownerId}, ${run.id},
             'steer', ${options.conversationDelivery.clientUserMessageId},
             ${expectedGeneration}, ${expectedTurnId},
-            ${options.conversationDelivery.message}
+            ${options.conversationDelivery.message},
+            ${options.conversationDelivery.message.startsWith('allrice:user-question:v1:') ? 'ask_user' : 'steer_current'}
           )
         `;
       }
@@ -696,6 +738,7 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
         and candidate.available_at <= ${now}
         and candidate.timeout_at > ${now}
         and candidate.cancel_requested_at is null
+        and not exists (select 1 from allrice_conversation_followups f where f.run_id=candidate.run_id and f.mode='steer_only')
       order by (
         select count(*) from allrice_jobs active
         where active.organization_id = candidate.organization_id

@@ -152,8 +152,16 @@ export class DshProtocolClient {
     return this.request('session/interrupt', { sessionId }, 10_000);
   }
 
-  async steer(sessionId: string, text: string) {
-    return this.request('session/steer', { sessionId, text }, 10_000);
+  async steer(
+    sessionId: string,
+    text: string,
+    typed?: {
+      inputId: string;
+      turnId: string;
+      kind: 'steer_current' | 'ask_user';
+    },
+  ) {
+    return this.request('session/steer', { sessionId, text, ...typed }, 10_000);
   }
 
   async compact(sessionId: string) {

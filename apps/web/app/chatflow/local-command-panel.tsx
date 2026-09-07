@@ -166,7 +166,11 @@ export function LocalCommandPanel({
           op.evidence?.output,
         );
         return (
-          <article key={id} data-status={op.snapshot.status}>
+          <article
+            key={id}
+            id={`operation-${id}`}
+            data-status={op.snapshot.status}
+          >
             <header>
               <strong>本地命令 · 操作授权</strong>
               <span>

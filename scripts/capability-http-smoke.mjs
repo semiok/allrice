@@ -26,6 +26,7 @@ async function jsonRequest(path, init = {}, expectedStatus = 200) {
 function tenantHeaders(cookie, selectedWorkspaceId = workspaceId) {
   return {
     cookie,
+    origin: new URL(baseUrl).origin,
     'x-allrice-organization-id': organizationId,
     'x-allrice-workspace-id': selectedWorkspaceId,
   };

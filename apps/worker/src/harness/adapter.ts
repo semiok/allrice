@@ -6,6 +6,7 @@ import type {
   HarnessEvent,
   StorageObject,
   ImageMediaType,
+  RuntimeNativeInputProof,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -123,7 +124,8 @@ export interface HarnessAdapter {
     turnId: string;
     message: string;
     clientUserMessageId: string;
-  }): Promise<void>;
+    inputKind?: 'steer_current' | 'ask_user';
+  }): Promise<void | RuntimeNativeInputProof>;
   compact?(input: { threadId: string }): Promise<void>;
   recover?(input: { threadId: string }): Promise<void>;
   runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];

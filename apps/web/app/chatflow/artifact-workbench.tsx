@@ -15,6 +15,7 @@ import {
   type ReviewDraftInput,
   type ReviewFeedback,
   type WorkbenchArtifact,
+  type ReviewContinuationInput,
 } from '@allrice/contracts';
 import {
   artifactKindLabel,
@@ -26,6 +27,8 @@ import {
   type ArtifactCursor,
 } from '../../lib/chatflow/workbench-model';
 import styles from './workbench.module.css';
+import { inputRetry } from '../../lib/chatflow/input-retry';
+import { readJson } from './chatflow-utils';
 
 const RichDiff = lazy(() =>
   import('./cline-adapter/tool-file-diff').then((m) => ({
@@ -63,6 +66,7 @@ type Props = {
   onClose: () => void;
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
   onDirtyChange?: (value: boolean) => void;
+  onContinued?: (runId: string) => void;
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
@@ -207,6 +211,7 @@ export function ArtifactWorkbench(props: Props) {
                 tenantHeaders={props.tenantHeaders}
                 onDirty={onDirty}
                 onSelect={select}
+                onContinued={props.onContinued}
               />
             </>
           ) : (
@@ -326,6 +331,7 @@ function ArtifactReview({
   tenantHeaders,
   onDirty,
   onSelect,
+  onContinued,
 }: {
   artifactId: string;
   sessionId: string;
@@ -333,10 +339,50 @@ function ArtifactReview({
   tenantHeaders: Record<string, string>;
   onDirty: (value: boolean) => void;
   onSelect: (id: string) => void;
+  onContinued?: (runId: string) => void;
 }) {
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
     [feedback, setFeedback] = useState<ReviewFeedback[]>([]),
     [preview, setPreview] = useState<ArtifactPreview | null>(null);
+  const [sent, setSent] = useState<Set<string>>(new Set());
+  async function continueReview(review: ReviewContinuationInput) {
+    const key = review.kind === 'plan_review' ? 'plan' : review.feedbackId;
+    setBusy(true);
+    setError('');
+    try {
+      const body = {
+        text:
+          review.kind === 'plan_review'
+            ? '认可本版计划并继续'
+            : '请 Rice 根据本批意见修订',
+        deliveryMode: 'follow_up',
+        attachmentIds: [],
+        reviewContinuation: review,
+      };
+      const retry = await inputRetry(`${workspaceId}/${sessionId}`, body);
+      const result = await readJson<{ run: { id: string } }>(
+        await fetch(
+          `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({ ...body, clientMessageId: retry.id }),
+          },
+        ),
+      );
+      setSent((old) => new Set([...old, key]));
+      setNotice(
+        '已创建后续任务，可在交互与任务记录中查看；并未授予新的执行权限。',
+      );
+      onContinued?.(result.run.id);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : '后续任务提交失败，可安全重试。',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
   const [draft, setDraft] = useState<ReviewDraftInput | null>(null),
     [dirty, setDirty] = useState(false),
     [error, setError] = useState(''),
@@ -848,6 +894,26 @@ function ArtifactReview({
             )
           ) : null}
           <section className={styles.feedback} aria-label="版本反馈">
+            {artifact.kind === 'plan' ? (
+              <div className={styles.actions}>
+                <button
+                  type="button"
+                  disabled={!canEdit || dirty || sent.has('plan')}
+                  onClick={() =>
+                    void continueReview({
+                      kind: 'plan_review',
+                      artifactId,
+                      checksum: artifact.object.checksum,
+                    })
+                  }
+                >
+                  {sent.has('plan') ? '计划确认已发送' : '认可本版计划，继续'}
+                </button>
+                <small>
+                  认可计划不等于批准执行。需要修改时，在下方提交意见。
+                </small>
+              </div>
+            ) : null}
             <h3>对此版本的意见</h3>
             <p className={styles.muted}>
               意见会绑定 v{artifact.version.version}
@@ -1023,6 +1089,24 @@ function ArtifactReview({
                       <p>{c.text}</p>
                     </div>
                   ))}
+                  {f.state === 'submitted' && !f.stale ? (
+                    <button
+                      type="button"
+                      disabled={!canEdit || dirty || sent.has(f.id)}
+                      onClick={() =>
+                        void continueReview({
+                          kind: 'version_feedback',
+                          artifactId,
+                          checksum: f.checksum,
+                          feedbackId: f.id,
+                        })
+                      }
+                    >
+                      {sent.has(f.id)
+                        ? '修订请求已发送'
+                        : '请 Rice 根据本批意见修订'}
+                    </button>
+                  ) : null}
                   {f.state === 'draft' ? (
                     <button
                       type="button"
