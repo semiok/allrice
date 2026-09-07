@@ -21,21 +21,25 @@ MET-121 / MET-108-A / B2 / S6。日期：2026-09-08。
 
 ## 实测结论
 
-| 场景             | 固定版本的实际行为                                                                                               | AllRice 必须承担的职责                                                                          |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 新建委派         | `startContinuable` 返回稳定 childId 和 inbox messageId；新子会话无父聊天正文，记录父身份/深度；重复 childId 拒绝 | 建立平台 parent/root/child Run 与原生 ID 的持久映射，先登记再投递                               |
-| followup         | 精确直接父身份校验；在同一子会话排队；不能由另一个父对象投递                                                     | 除原生对象校验，还要检查用户、租户、权限交集、generation、Worker 租约、根取消与预算             |
-| report           | 只投递选定内容；`quiet` 不自行唤醒父模型；来源为 `subagent-report`                                               | 保存报告/结果收件箱，决定是否唤醒；不将报告当授权或完整父上下文                                 |
-| native approval  | 父配置为 ask，子仍持久化 `policy=never, source=delegation`；子请求返回 rejected，交互 answerer 未被调用          | 用独立的 proposal→平台精确审批→Broker 执行→结果协议，不能改成对子开放原生批准                   |
-| 单个 interrupt   | 仅中断指定子助手当前回合，孙助手仍可运行                                                                         | 界面区分“中断一个助手”与“取消整项任务”                                                          |
-| 整树 drain       | 子先于父释放；关闭该活根的新增委派/后续投递；无关树继续；迟到模型响应不唤醒已释放树                              | 先提交根取消意图，再排空 DSH/操作/进程；等待确认不能直接标已停止                                |
-| 冷恢复           | 可从 JSONL 列出 continuable 子会话，不因列表查询启动；同 ID 显式 followup 恢复上下文和 never 策略                | 持久化平台所有权、版本和租约；不能仅凭原生 ID 或“可恢复”授权                                    |
-| 已落盘的排队输入 | 原生 `agent/inbox/spliced` 保存待办；`sessions.flush` 后 SIGKILL，后续唤醒按 FIFO 采用，每条 user/message 一次   | 区分 inbox admission、durable checkpoint、step adoption，不重复重投已恢复待办                   |
-| 未落盘的排队输入 | 将原生 batching window 调为 60 秒以稳定制造窗口；接收 ACK 后、flush 前 SIGKILL，该输入丢失                       | ACK 不是耐久保证；需要平台 outbox + 原生 messageId/checkpoint/adoption 证据，unknown 不盲目重放 |
+| 场景              | 固定版本的实际行为                                                                                               | AllRice 必须承担的职责                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 新建委派          | `startContinuable` 返回稳定 childId 和 inbox messageId；新子会话无父聊天正文，记录父身份/深度；重复 childId 拒绝 | 建立平台 parent/root/child Run 与原生 ID 的持久映射，先登记再投递                               |
+| followup          | 精确直接父身份校验；在同一子会话排队；不能由另一个父对象投递                                                     | 除原生对象校验，还要检查用户、租户、权限交集、generation、Worker 租约、根取消与预算             |
+| report            | 只投递选定内容；`quiet` 不自行唤醒父模型；来源为 `subagent-report`                                               | 保存报告/结果收件箱，决定是否唤醒；不将报告当授权或完整父上下文                                 |
+| settlement notice | 子任务正常结束会另外发送 `subagent-settled`，自动 followup/steer 唤醒父；quiet report 不关闭这条通知             | P25 必须治理结果入账与父唤醒；不能把 quiet report 当作整棵树的静默策略；已排空树只注入、不唤醒  |
+| native approval   | 父配置为 ask，子仍持久化 `policy=never, source=delegation`；子请求返回 rejected，交互 answerer 未被调用          | 用独立的 proposal→平台精确审批→Broker 执行→结果协议，不能改成对子开放原生批准                   |
+| 单个 interrupt    | 仅中断指定子助手当前回合，孙助手仍可运行                                                                         | 界面区分“中断一个助手”与“取消整项任务”                                                          |
+| 整树 drain        | 子先于父释放；关闭该活根的新增委派/后续投递；无关树继续；迟到模型响应不唤醒已释放树                              | 先提交根取消意图，再排空 DSH/操作/进程；等待确认不能直接标已停止                                |
+| 冷恢复            | 可从 JSONL 列出 continuable 子会话，不因列表查询启动；同 ID 显式 followup 恢复上下文和 never 策略                | 持久化平台所有权、版本和租约；不能仅凭原生 ID 或“可恢复”授权                                    |
+| 已落盘的排队输入  | 原生 `agent/inbox/spliced` 保存待办；`sessions.flush` 后 SIGKILL，后续唤醒按 FIFO 采用，每条 user/message 一次   | 区分 inbox admission、durable checkpoint、step adoption，不重复重投已恢复待办                   |
+| 未落盘的排队输入  | 将原生 batching window 调为 60 秒以稳定制造窗口；接收 ACK 后、flush 前 SIGKILL，该输入丢失                       | ACK 不是耐久保证；需要平台 outbox + 原生 messageId/checkpoint/adoption 证据，unknown 不盲目重放 |
 
 默认 JSONL batching window 源码为 200 ms；60 秒仅是本 PoC 的故障实验配置，生产未改变。
 这里的“落盘”证明进程 SIGKILL 后可恢复，不承诺磁盘掉电/文件系统灾难零损失。
 一次成功委派、一次 root drain 或 `whenIdle()` 均不是业务完成凭证。
+首次 CI 暴露了实验夹具把任意末尾 user 消息都当作子 proposal，以及将整树模型调用数固定为两次的错误假设。
+修正为精确合成任务标识、单次 proposal 与实际 tool-result 采用证据；另外验证正常 settlement 唤醒父任务，
+整树取消后不唤醒、无关树仍正常完成。未屏蔽原生通知，也未放松取消门禁。
 
 ## 真实平台审批联测
 

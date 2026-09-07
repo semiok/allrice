@@ -588,12 +588,17 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       op.input.snapshot.agentInstanceId = nativeChild;
       const submitted = gate(),
         completion = gate();
+      let proposalCalls = 0;
       const native = await p24Fixture(
         async (request) =>
-          request.messages.at(-1)?.role === 'user'
+          request.messages.at(-1)?.role === 'user' &&
+          JSON.stringify(request.messages.at(-1)).includes(
+            'Request the synthetic reviewed operation.',
+          )
             ? { tool: { marker: 'exact-reviewed-proposal' } }
             : { text: 'Result received.' },
         async (proposal) => {
+          proposalCalls++;
           // Server-selected binding; no tenant/run/tool/path authority comes from
           // model arguments. P25 must persist this native→platform identity map.
           expect(proposal).toMatchObject({
@@ -779,15 +784,22 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           await c.call('drain', { id: nativeRoot });
         }
         completion.release();
+        const adoptedResult = () =>
+          native.requests.find((request) =>
+            request.messages.some(
+              (message) =>
+                message.role === 'tool' &&
+                JSON.stringify(message.content).includes('approvalRequired'),
+            ),
+          );
         if (scenario !== 'cancel_late_result')
-          await expect
-            .poll(() => native.requests.length, { timeout: 15_000 })
-            .toBe(2);
+          await expect.poll(adoptedResult, { timeout: 15_000 }).toBeDefined();
         await c.close();
+        expect(proposalCalls).toBe(1);
         if (scenario === 'cancel_late_result')
           expect(native.requests).toHaveLength(1);
         if (scenario === 'approve')
-          expect(JSON.stringify(native.requests[1])).toContain('succeeded');
+          expect(JSON.stringify(adoptedResult())).toContain('succeeded');
         expect(await bridge.pollOnce()).toBe(false);
         const second = f.operation();
         if (scenario.startsWith('cancel')) {

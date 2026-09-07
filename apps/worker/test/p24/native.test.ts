@@ -34,16 +34,33 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
       });
       expect(accepted.childId).toBe(child);
       await expect.poll(() => proposals.length, { timeout: 15_000 }).toBe(1);
-      await expect.poll(() => f.requests.length, { timeout: 15_000 }).toBe(3);
+      const childRequests = () =>
+        f.requests.filter((r) => JSON.stringify(r).includes('CHECK_APPROVAL'));
+      await expect
+        .poll(() => childRequests().length, { timeout: 15_000 })
+        .toBe(2);
       expect(proposals[0]).toMatchObject({
         childId: child,
         parentId: root,
         nativeOutcome: 'rejected',
       });
-      expect(JSON.stringify(f.requests[1])).not.toContain(
+      expect(JSON.stringify(childRequests())).not.toContain(
         'ROOT_PRIVATE_CONTEXT',
       );
-      expect(JSON.stringify(f.requests[2])).toContain('proposal_only');
+      expect(JSON.stringify(childRequests()[1])).toContain('proposal_only');
+      // A child's normal settlement separately wakes its parent. It is not a
+      // second proposal or a child tool-result adoption; quiet reports differ.
+      await expect
+        .poll(async () => JSON.stringify((await c.snapshot(root)).events))
+        .toContain('subagent-settled');
+      await expect
+        .poll(
+          () =>
+            f.requests.filter((r) =>
+              JSON.stringify(r).includes('ROOT_PRIVATE_CONTEXT'),
+            ).length,
+        )
+        .toBe(2);
       expect((await c.snapshot(root)).interactiveRequests).toBe(0);
       await expect(
         c.call('start', { parentId: root, id: child, text: 'duplicate' }),
@@ -108,10 +125,10 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
         id: child,
         text: 'COLD_FOLLOWUP',
       });
-      await expect
-        .poll(() => JSON.stringify(f.requests.at(-1)), { timeout: 15_000 })
-        .toContain('COLD_FOLLOWUP');
-      expect(JSON.stringify(f.requests.at(-1))).toContain('HOLD_CHILD');
+      const resumedRequest = () =>
+        f.requests.find((r) => JSON.stringify(r).includes('COLD_FOLLOWUP'));
+      await expect.poll(resumedRequest, { timeout: 15_000 }).toBeDefined();
+      expect(JSON.stringify(resumedRequest())).toContain('HOLD_CHILD');
       await c.close();
       expect(await f.logs()).toContain('"kind":"subagent-report"');
     } finally {
@@ -188,11 +205,21 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
         }),
       ).rejects.toThrow();
       hold.release();
-      await c.call('idle', { id: unrelated }).catch(async () => {
-        // A naturally settled child may already have released its live handle.
-        expect((await c.snapshot(unrelated)).live).toBe(false);
-      });
-      expect(f.requests).toHaveLength(4);
+      // The unrelated tree must still settle and wake its own parent normally.
+      // No model request may come from the drained root or its descendants.
+      await expect
+        .poll(
+          () =>
+            f.requests
+              .slice(4)
+              .filter((r) => JSON.stringify(r).includes(unrelated)).length,
+        )
+        .toBe(1);
+      await c.call('idle', { id: other });
+      expect(f.requests.slice(4)).toHaveLength(1);
+      expect(JSON.stringify(f.requests.slice(4))).toContain(unrelated);
+      for (const id of [child, grandchild, sibling])
+        expect(JSON.stringify(f.requests.slice(4))).not.toContain(id);
       expect((await c.snapshot(root)).status).toBe('idle');
       await c.close();
       expect(await f.logs()).not.toContain('late followup');
@@ -252,15 +279,20 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
         id: child,
         text: 'EXPLICIT_RECOVERY_PROMPT',
       });
-      await expect.poll(() => f.requests.length, { timeout: 15_000 }).toBe(4);
-      expect(JSON.stringify(f.requests[2])).toContain('DURABLE_FIRST_PROMPT');
-      expect(JSON.stringify(f.requests[2])).toContain(
+      const childRequests = () =>
+        f.requests.filter((r) =>
+          JSON.stringify(r).includes('DURABLE_FIRST_PROMPT'),
+        );
+      await expect
+        .poll(() => childRequests().length, { timeout: 15_000 })
+        .toBe(3);
+      expect(JSON.stringify(childRequests()[1])).toContain(
         'CHECKPOINTED_QUEUED_INPUT',
       );
-      expect(JSON.stringify(f.requests[2])).not.toContain(
+      expect(JSON.stringify(childRequests()[1])).not.toContain(
         'EXPLICIT_RECOVERY_PROMPT',
       );
-      expect(JSON.stringify(f.requests[3])).toContain(
+      expect(JSON.stringify(childRequests()[2])).toContain(
         'EXPLICIT_RECOVERY_PROMPT',
       );
       await c.close();
@@ -323,8 +355,13 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
         id: child,
         text: 'Explicit recovery.',
       });
-      await expect.poll(() => f.requests.length, { timeout: 15_000 }).toBe(3);
-      expect(JSON.stringify(f.requests[2])).not.toContain(
+      const recovered = () =>
+        f.requests.find((r) =>
+          JSON.stringify(r).includes('Explicit recovery.'),
+        );
+      await expect.poll(recovered, { timeout: 15_000 }).toBeDefined();
+      expect(JSON.stringify(recovered())).toContain('Persisted first prompt.');
+      expect(JSON.stringify(recovered())).not.toContain(
         'UNFLUSHED_QUEUED_INPUT',
       );
       await c.close();
