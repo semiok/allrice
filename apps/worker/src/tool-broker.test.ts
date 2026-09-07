@@ -18,6 +18,8 @@ const {
   listToolBrokerFiles,
   recordToolBrokerAudit,
   registerToolBrokerExport,
+  publishWorkbenchArtifact,
+  workbenchEnabled,
   registerManagedBrowserEvidenceArtifact,
   startManagedBrowserTask,
 } = vi.hoisted(() => ({
@@ -31,6 +33,8 @@ const {
   listToolBrokerFiles: vi.fn(),
   recordToolBrokerAudit: vi.fn(async () => undefined),
   registerToolBrokerExport: vi.fn(),
+  publishWorkbenchArtifact: vi.fn(),
+  workbenchEnabled: vi.fn(),
   registerManagedBrowserEvidenceArtifact: vi.fn(),
   startManagedBrowserTask: vi.fn(),
 }));
@@ -47,6 +51,8 @@ vi.mock('@allrice/database', () => ({
   listToolBrokerFiles,
   recordToolBrokerAudit,
   registerToolBrokerExport,
+  publishWorkbenchArtifact,
+  workbenchEnabled,
   registerManagedBrowserEvidenceArtifact,
   searchToolBrokerMemories: vi.fn(),
   searchToolBrokerSessions: vi.fn(),
@@ -100,6 +106,8 @@ describe('Codex hosted search Tool Broker integration', () => {
     createTraceableMemory.mockReset();
     createDefaultManagedBrowserTask.mockReset();
     registerToolBrokerExport.mockReset();
+    publishWorkbenchArtifact.mockReset();
+    workbenchEnabled.mockReturnValue(false);
     registerManagedBrowserEvidenceArtifact.mockReset();
     startManagedBrowserTask.mockReset();
   });
@@ -657,6 +665,77 @@ describe('Codex hosted search Tool Broker integration', () => {
     }
   });
 
+  it('routes opt-in plans through the atomic workbench publisher without a second object write', async () => {
+    workbenchEnabled.mockReturnValue(true);
+    const context = executionContext(),
+      sessionId = randomUUID(),
+      callId = randomUUID(),
+      id = randomUUID(),
+      objectId = randomUUID();
+    publishWorkbenchArtifact.mockResolvedValue({
+      id,
+      object: { id: objectId, mediaType: 'text/plain', sizeBytes: 4 },
+      version: {
+        seriesId: randomUUID(),
+        version: 1,
+        parentObjectId: null,
+        changeSummary: null,
+      },
+    });
+    const result = await executeRiceTool({
+      context,
+      capabilities: ['storage:write'],
+      sessionId,
+      storageRoot: 'unused-p06-mocked-port',
+      call: {
+        id: callId,
+        name: 'workspace.export.create',
+        arguments: {
+          fileName: 'plan',
+          format: 'text',
+          content: 'plan',
+          artifactKind: 'plan',
+        },
+      },
+    });
+    expect(JSON.parse(result.modelContent).artifactId).toBe(id);
+    expect(result.summary).toBe('已生成待审查计划 plan.txt · v1');
+    expect(publishWorkbenchArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context,
+        sessionId,
+        callId,
+        kind: 'plan',
+        fileName: 'plan.txt',
+        bytes: Buffer.from('plan'),
+      }),
+      expect.any(LocalStorageAdapter),
+    );
+    expect(createToolBrokerExportObject).not.toHaveBeenCalled();
+    expect(registerToolBrokerExport).not.toHaveBeenCalled();
+  });
+  it('does not allow an export tool to impersonate a Changeset action', async () => {
+    workbenchEnabled.mockReturnValue(true);
+    await expect(
+      executeRiceTool({
+        context: executionContext(),
+        capabilities: ['storage:write'],
+        sessionId: randomUUID(),
+        storageRoot: 'unused-p06-mocked-port',
+        call: {
+          id: randomUUID(),
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: 'changes',
+            format: 'json',
+            content: '{}',
+            artifactKind: 'changeset',
+          },
+        },
+      }),
+    ).rejects.toThrow('Changeset');
+    expect(publishWorkbenchArtifact).not.toHaveBeenCalled();
+  });
   it('removes staged deliverable bytes when database registration fails', async () => {
     const context = executionContext();
     const sessionId = randomUUID();

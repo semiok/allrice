@@ -386,6 +386,12 @@ const brokerNativeTools = [
       'Create a tenant-private downloadable Markdown, text, HTML, JSON, Word, Excel, PowerPoint, or PDF deliverable in AllRice managed storage when the user explicitly requests a file.',
     presentation: 'tool',
     parameters: {
+      artifactKind: {
+        type: 'string',
+        enum: ['document', 'plan'],
+        description:
+          'Optional document or plan artifact. Plan acceptance never authorizes file or external actions.',
+      },
       fileName: {
         type: 'string',
         required: true,

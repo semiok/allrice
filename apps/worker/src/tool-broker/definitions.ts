@@ -239,6 +239,12 @@ export const riceToolDefinitions = [
       type: 'object',
       properties: {
         fileName: { type: 'string', minLength: 1, maxLength: 120 },
+        artifactKind: {
+          type: 'string',
+          enum: ['document', 'plan'],
+          description:
+            '可选：document 为交付文档，plan 为需单独审查的计划；认可计划不是文件执行授权。',
+        },
         format: {
           type: 'string',
           enum: [
