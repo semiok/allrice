@@ -56,7 +56,9 @@ Dev 已应用初稿 `0073_gemini_model_provider.sql`，且其固定 Provider ID 
 
 2026-09-07 本分支门禁：上述新测试加既有 DSH/Codex、credential resolver 与旧 wire compatibility 回归，共 **10 个文件 / 64 项测试通过**；全仓 `pnpm typecheck`、`pnpm build`（含 Next production build）及改动 TypeScript 文件 ESLint 通过。Gemini primary handler 的测试 fixture 使用真实 `executionSnapshot.schemaVersion === 2` 的嵌套 `modelSnapshot`，不是模拟不存在的顶层字段。
 
-数据库集成测试必须设置 `ALLRICE_RUN_DB_INTEGRATION=1` 与专用临时 `ALLRICE_TEST_DATABASE_URL`，测试另外校验数据库名为 `allrice_b1`，不能指向 `allrice_dev`。
+合入 P04 `cedf44c` 后再次联合验证：全仓 `pnpm test` 为 **116 个文件 / 857 项通过**，另 7 个数据库集成文件 / 126 项默认跳过；显式启用 B1 ledger / policy / governed Bridge / HTTP journal / Gemini 的真实 PostgreSQL 测试，共 **5 个文件 / 119 项通过**。全仓 format、lint、typecheck、production build 均通过；这些结果不包含真实模型推理或 Prod 部署。
+
+数据库集成测试必须设置 `ALLRICE_RUN_DB_INTEGRATION=1` 与专用临时 `ALLRICE_TEST_DATABASE_URL`，测试仅允许临时 `allrice_b1` 或 CI 的 `allrice@127.0.0.1:54329/allrice`，不能指向 `allrice_dev`。CI `developer-bootstrap` 显式执行该测试，不依赖普通 `pnpm test` 中的默认跳过行为。
 
 ## Dev 切换约束（发布由主代理执行）
 
