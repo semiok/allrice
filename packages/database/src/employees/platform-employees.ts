@@ -20,6 +20,7 @@ import {
   RollbackPlatformEmployeeInputSchema,
   UpdatePlatformEmployeeInputSchema,
   UuidSchema,
+  employeeModelPolicyProblem,
   type PlatformEmployeeDefinition,
   type PlatformEmployeeTestRunOutput,
 } from '@allrice/contracts';
@@ -1178,6 +1179,8 @@ export async function compilePlatformEmployee(
     );
     const errors: string[] = [];
     const warnings: string[] = [];
+    const modelProblem = employeeModelPolicyProblem(definition.modelPolicy);
+    if (modelProblem) errors.push(modelProblem);
     const unknownTools = definition.capabilities.toolNames.filter(
       (name) => !allowedToolNames.has(name),
     );

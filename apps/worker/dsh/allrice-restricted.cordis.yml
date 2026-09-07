@@ -29,6 +29,7 @@
   config:
     providers:
       openai-codex:
+        reasoning: !!js process.env.DSH_CODEX_REASONING_EFFORT ?? 'high'
         retryPolicy:
           mode: normal
           maxRetries: 2
@@ -40,6 +41,7 @@
           - id: !!js process.env.DSH_CODEX_MODEL ?? 'gpt-5.6-luna'
       google:
         apiKeyEnv: GEMINI_API_KEY
+        reasoning: !!js process.env.DSH_GEMINI_REASONING_EFFORT ?? 'medium'
         retryPolicy:
           mode: normal
           maxRetries: 2
@@ -49,6 +51,7 @@
             jitterRatio: 0.1
         models:
           - id: !!js process.env.DSH_GEMINI_MODEL ?? 'gemini-3.8-flash'
+            reasoningEfforts: !!js JSON.parse(process.env.DSH_GEMINI_REASONING_LEVELS ?? '{"low":"LOW","medium":"MEDIUM","high":"HIGH"}')
       openai-compatible:
         apiKeyEnv: OPENAI_COMPATIBLE_API_KEY
         api: openai-completions

@@ -2,7 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
-import type { DshExecutionSnapshot } from '@allrice/contracts';
+import {
+  employeeReasoningSettings,
+  type DshExecutionSnapshot,
+} from '@allrice/contracts';
 
 import { HandlerError } from '../../errors.js';
 import type {
@@ -78,7 +81,7 @@ function requestTimeout(value: number | undefined) {
     : 300_000;
 }
 
-function mappedReasoning(
+function deepseekReasoning(
   effort: DshExecutionSnapshot['reasoningEffort'],
 ): string {
   if (effort === 'none') return 'off';
@@ -166,6 +169,19 @@ export class DshRuntimePool {
       throw new HandlerError(
         'DSH_RUNTIME_UNAVAILABLE',
         'DSH is not configured in this deployment',
+        false,
+      );
+    }
+    if (
+      input.snapshot.route === 'gemini' &&
+      !employeeReasoningSettings(
+        'gemini',
+        input.snapshot.model,
+      ).efforts.includes(input.snapshot.reasoningEffort)
+    ) {
+      throw new HandlerError(
+        'GEMINI_REASONING_UNSUPPORTED',
+        'Gemini model or thinking level is not supported by this runtime',
         false,
       );
     }
@@ -276,7 +292,28 @@ export class DshRuntimePool {
         input.snapshot.route === 'openai-compatible'
           ? input.snapshot.model
           : 'allrice-unused',
-      DSH_REASONING_EFFORT: mappedReasoning(input.snapshot.reasoningEffort),
+      // DeepSeek's off/high/max vocabulary is not the pi-ai vocabulary.
+      DSH_REASONING_EFFORT: deepseekReasoning(input.snapshot.reasoningEffort),
+      DSH_CODEX_REASONING_EFFORT:
+        input.snapshot.route === 'openai-codex'
+          ? input.snapshot.reasoningEffort === 'none'
+            ? 'off'
+            : input.snapshot.reasoningEffort
+          : 'high',
+      DSH_GEMINI_REASONING_EFFORT:
+        input.snapshot.route === 'gemini'
+          ? input.snapshot.reasoningEffort
+          : 'medium',
+      DSH_GEMINI_REASONING_LEVELS: JSON.stringify(
+        Object.fromEntries(
+          employeeReasoningSettings(
+            'gemini',
+            input.snapshot.route === 'gemini'
+              ? input.snapshot.model
+              : 'gemini-3.8-flash',
+          ).efforts.map((effort) => [effort, effort.toUpperCase()]),
+        ),
+      ),
       DSH_SYSTEM_PROMPT: [
         input.systemInstructions,
         'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',

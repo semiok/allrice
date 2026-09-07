@@ -8,6 +8,12 @@ import type {
   PlatformEmployeeSummary,
   PlatformEmployeeTestRun,
 } from '@allrice/contracts';
+import {
+  EMPLOYEE_PROVIDER_OPTIONS,
+  employeeModelPolicyProblem,
+  employeeReasoningSettings,
+  switchEmployeeModelProvider,
+} from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
 
@@ -770,75 +776,102 @@ export function EmployeeProduction() {
       </p>
     );
   } else if (tab === 'model') {
+    const reasoning = employeeReasoningSettings(
+      draft.modelPolicy.provider,
+      draft.modelPolicy.model,
+    );
+    const modelProblem = employeeModelPolicyProblem(draft.modelPolicy);
     panel = (
       <div className={styles.grid}>
         <label className={styles.field}>
           <span>Provider</span>
           <select
             value={draft.modelPolicy.provider}
+            aria-label="Provider"
             onChange={(event) => {
-              if (
-                event.target.value === 'openai-codex' &&
-                draft.modelPolicy.provider === 'gemini'
-              ) {
-                setDraft((current) =>
-                  current
-                    ? {
-                        ...current,
-                        modelPolicy: {
-                          ...current.modelPolicy,
-                          provider: 'openai-codex',
-                          model: 'gpt-5.6-luna',
-                          credentialReference: 'deployment:codex-default',
-                          baseUrl: null,
-                        },
-                      }
-                    : current,
-                );
-                return;
-              }
-              if (event.target.value !== 'gemini') {
-                update(['modelPolicy', 'provider'], event.target.value);
-                return;
-              }
+              const provider = event.target.value;
+              if (provider !== 'gemini' && provider !== 'openai-codex') return;
               setDraft((current) =>
                 current
                   ? {
                       ...current,
-                      modelPolicy: {
-                        ...current.modelPolicy,
-                        provider: 'gemini',
-                        model: 'gemini-3.8-flash',
-                        credentialReference: 'deployment:gemini-default',
-                        baseUrl: null,
-                      },
+                      modelPolicy: switchEmployeeModelProvider(
+                        current.modelPolicy,
+                        provider,
+                      ),
                     }
                   : current,
               );
             }}
           >
-            <option value="openai-codex">Codex 订阅</option>
-            <option value="gemini">Gemini API（需单独启用）</option>
-            <option value="deepseek-official">DeepSeek API</option>
-            <option value="openai-compatible">OpenAI Compatible</option>
+            {!EMPLOYEE_PROVIDER_OPTIONS.some(
+              (item) => item.value === draft.modelPolicy.provider,
+            ) ? (
+              <option value={draft.modelPolicy.provider} disabled>
+                历史配置（已停止新配置）
+              </option>
+            ) : null}
+            {EMPLOYEE_PROVIDER_OPTIONS.map((item) => (
+              <option value={item.value} key={item.value}>
+                {item.label}
+              </option>
+            ))}
           </select>
         </label>
         <Field
           label="模型"
           value={draft.modelPolicy.model}
-          onChange={(value) => update(['modelPolicy', 'model'], value)}
+          onChange={(model) =>
+            setDraft((current) => {
+              if (!current) return current;
+              const settings = employeeReasoningSettings(
+                current.modelPolicy.provider,
+                model,
+              );
+              return {
+                ...current,
+                modelPolicy: {
+                  ...current.modelPolicy,
+                  model,
+                  reasoningEffort:
+                    settings.efforts.length &&
+                    !settings.efforts.includes(
+                      current.modelPolicy.reasoningEffort,
+                    )
+                      ? settings.defaultEffort
+                      : current.modelPolicy.reasoningEffort,
+                },
+              };
+            })
+          }
         />
         <label className={styles.field}>
-          <span>推理强度</span>
+          <span>{reasoning.label}</span>
           <select
             value={draft.modelPolicy.reasoningEffort}
+            aria-label={reasoning.label}
+            disabled={!reasoning.efforts.length}
             onChange={(event) =>
               update(['modelPolicy', 'reasoningEffort'], event.target.value)
             }
           >
-            {['none', 'low', 'medium', 'high', 'xhigh'].map((value) => (
+            {!reasoning.efforts.includes(draft.modelPolicy.reasoningEffort) ? (
+              <option value={draft.modelPolicy.reasoningEffort} disabled>
+                {draft.modelPolicy.reasoningEffort}（原配置，请重新选择）
+              </option>
+            ) : null}
+            {reasoning.efforts.map((value) => (
               <option value={value} key={value}>
-                {value}
+                {
+                  {
+                    none: '关闭',
+                    low: '低',
+                    medium: '中',
+                    high: '高',
+                    xhigh: '超高',
+                  }[value]
+                }{' '}
+                · {value}
               </option>
             ))}
           </select>
@@ -851,6 +884,22 @@ export function EmployeeProduction() {
             update(['modelPolicy', 'timeoutMs'], Number(value))
           }
         />
+        {modelProblem ? (
+          <p className={`${styles.notice} ${styles.fieldWide}`} role="alert">
+            {modelProblem}
+          </p>
+        ) : null}
+        <p className={`${styles.notice} ${styles.fieldWide}`}>
+          仅显示当前 AllRice 版本已接通的模型档位；不同 Provider
+          的同名档位并不代表相同的计算量。修改只保存为草稿，不改变已发布员工或正在运行的会话。
+        </p>
+        {draft.modelPolicy.provider === 'gemini' ? (
+          <p className={`${styles.notice} ${styles.fieldWide}`}>
+            Gemini 使用 Google API 密钥，独立于 Codex 订阅和 Gemini
+            网页订阅计费。 平台需先配置 API 密钥、开启 Gemini API
+            执行开关并完成预览与发布检查；这里只编辑草稿，不会自动启用或证明连接成功。
+          </p>
+        ) : null}
       </div>
     );
   } else if (tab === 'tools') {
