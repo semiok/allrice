@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { BridgeCommandPayloadSchema } from '../bridge.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
+import { RuntimeChangesetSchema } from './changeset-execution.ts';
 
 const path = z.string().max(1024).refine(isRuntimeRelativePath);
 
@@ -70,6 +71,7 @@ export const RuntimeLocalCommandToolInputSchema =
 export const RuntimeBridgePayloadSchema = z.union([
   BridgeCommandPayloadSchema,
   RuntimeLocalCommandSchema,
+  RuntimeChangesetSchema,
 ]);
 export type RuntimeBridgePayload = z.infer<typeof RuntimeBridgePayloadSchema>;
 

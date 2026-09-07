@@ -16,11 +16,14 @@ import {
   RuntimeBridgeDispatchSchema,
   RuntimeBridgeReceiptSchema,
   RuntimeLocalCommandResultSchema,
+  ChangesetFileResultSchema,
+  type ChangesetFileResult,
   type RuntimeLocalCommandResult,
   canonicalRuntimeBridgeJson,
   type RuntimeBridgeDispatch,
   type RuntimeBridgeReceipt,
 } from '@allrice/contracts';
+import { initialChangesetResults } from './changeset-executor.js';
 
 export const maximumReceiptBytes = 500_000;
 const reservePerEntry = maximumReceiptBytes + 32_768;
@@ -181,6 +184,12 @@ export class BridgeJournal {
           body TEXT NOT NULL,
           delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))
         );
+        CREATE TABLE IF NOT EXISTS changeset_files (
+          operation_id TEXT NOT NULL REFERENCES entries(operation_id),
+          file_index INTEGER NOT NULL CHECK(file_index>=0 AND file_index<32),
+          result TEXT NOT NULL,
+          PRIMARY KEY(operation_id,file_index)
+        );
         PRAGMA user_version=1;
         COMMIT;
       `);
@@ -215,7 +224,54 @@ export class BridgeJournal {
           )
           .all() as unknown as EntryRow[]) {
           if (row.state === 'executing') {
-            await journal.uncertain(row.operation_id, 'receipt_missing');
+            const dispatch = RuntimeBridgeDispatchSchema.parse(
+              JSON.parse(row.dispatch),
+            );
+            if (dispatch.payload.capability === 'local.fs.changeset') {
+              const files = initialChangesetResults(dispatch.payload);
+              for (const saved of database
+                .prepare(
+                  'SELECT file_index,result FROM changeset_files WHERE operation_id=?',
+                )
+                .all(row.operation_id)) {
+                const result = ChangesetFileResultSchema.parse(
+                  JSON.parse(String(saved.result)),
+                );
+                files[Number(saved.file_index)] = {
+                  ...result,
+                  status:
+                    result.status === 'prepared' ? 'unknown' : result.status,
+                };
+              }
+              const output = { contractVersion: 1 as const, files };
+              const applied = files.filter(
+                (f) => f.status === 'applied',
+              ).length;
+              if (files.some((f) => f.status === 'unknown'))
+                await journal.uncertain(row.operation_id, 'receipt_missing', {
+                  summary:
+                    'Bridge 已重启；逐文件日志保留，结果未知的文件不重做',
+                  output,
+                });
+              else
+                await journal.outcome(row.operation_id, {
+                  status:
+                    applied === files.length
+                      ? 'succeeded'
+                      : applied
+                        ? 'partial'
+                        : 'failed',
+                  effects:
+                    applied === files.length
+                      ? 'applied'
+                      : applied
+                        ? 'partial'
+                        : 'none',
+                  summary:
+                    'Bridge 已重启，按已持久化的逐文件记录收口；未继续写入',
+                  output,
+                });
+            } else await journal.uncertain(row.operation_id, 'receipt_missing');
           } else {
             await journal.outcome(row.operation_id, {
               status: 'failed',
@@ -408,8 +464,8 @@ export class BridgeJournal {
   async outcome(
     operationId: string,
     result: {
-      status: 'succeeded' | 'failed';
-      effects: 'none' | 'applied';
+      status: 'succeeded' | 'failed' | 'partial';
+      effects: 'none' | 'applied' | 'partial';
       summary: string;
       output?: unknown;
       errorCode?: string;
@@ -484,17 +540,66 @@ export class BridgeJournal {
   async uncertain(
     operationId: string,
     reason: 'receipt_missing' | 'lease_lost' | 'connection_lost',
+    evidence?: RuntimeBridgeReceipt['evidence'],
   ) {
     await this.guard();
     return this.transaction(() => {
       const row = this.entry(operationId);
       if (!['received', 'executing'].includes(row.state))
         throw new BridgeJournalError('JOURNAL_RESULT_ALREADY_FINAL');
-      const receipt = this.append(row, { type: 'operation.uncertain', reason });
+      const receipt = this.append(
+        row,
+        { type: 'operation.uncertain', reason },
+        evidence,
+      );
       this.database
         .prepare("UPDATE entries SET state='unknown' WHERE operation_id=?")
         .run(operationId);
       return receipt;
+    });
+  }
+
+  async changesetCheckpoint(
+    operationId: string,
+    index: number,
+    input: ChangesetFileResult,
+  ) {
+    await this.guard();
+    const result = ChangesetFileResultSchema.parse(input);
+    this.transaction(() => {
+      const row = this.entry(operationId),
+        dispatch = RuntimeBridgeDispatchSchema.parse(JSON.parse(row.dispatch));
+      if (
+        row.state !== 'executing' ||
+        dispatch.payload.capability !== 'local.fs.changeset' ||
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= dispatch.payload.arguments.files.length
+      )
+        throw new BridgeJournalError('JOURNAL_CHANGESET_INVALID');
+      const f = dispatch.payload.arguments.files[index]!;
+      if (
+        result.path !== f.path ||
+        result.beforeChecksum !== (f.before?.checksum ?? null) ||
+        result.afterChecksum !== (f.after?.checksum ?? null)
+      )
+        throw new BridgeJournalError('JOURNAL_CHANGESET_INVALID');
+      const previous = this.database
+        .prepare(
+          'SELECT result FROM changeset_files WHERE operation_id=? AND file_index=?',
+        )
+        .get(operationId, index);
+      if (
+        previous &&
+        ChangesetFileResultSchema.parse(JSON.parse(String(previous.result)))
+          .status !== 'prepared'
+      )
+        throw new BridgeJournalError('JOURNAL_CHANGESET_ALREADY_FINAL');
+      this.database
+        .prepare(
+          'INSERT INTO changeset_files VALUES(?,?,?) ON CONFLICT(operation_id,file_index) DO UPDATE SET result=excluded.result',
+        )
+        .run(operationId, index, canonicalRuntimeBridgeJson(result));
     });
   }
 

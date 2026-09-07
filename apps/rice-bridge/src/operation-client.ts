@@ -13,6 +13,7 @@ import {
 import { bridgeRequest } from './client.js';
 import type { BridgeConfig } from './config.js';
 import { executeLocalCommand } from './executor.js';
+import { executeChangeset } from './changeset-executor.js';
 import { BridgeJournalError, type BridgeJournal } from './journal.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
@@ -81,7 +82,10 @@ export class RuntimeBridgeOperationClient {
       path: `${runtimeBridgeOperationPath}/next`,
       method: 'POST',
       token: this.input.token,
-      ...(this.input.runner ? { body: { supportsLocalCommand: true } } : {}),
+      body: {
+        supportsChangeset: true,
+        ...(this.input.runner ? { supportsLocalCommand: true } : {}),
+      },
       maximumResponseBytes: 750_000,
     });
     if (response.dispatch === null) return false;
@@ -181,6 +185,78 @@ export class RuntimeBridgeOperationClient {
     }
     if (dispatch.payload.capability === 'local.process.execute') {
       await this.executeProcess(dispatch, root);
+      return;
+    }
+    if (dispatch.payload.capability === 'local.fs.changeset') {
+      const result = await executeChangeset(root, dispatch.payload, {
+        checkpoint: (index, file) =>
+          journal.changesetCheckpoint(operationId, index, file),
+        authorize: async () => {
+          if (this.input.signal?.aborted) return false;
+          try {
+            const current = await bridgeRequest<{
+              snapshot: unknown;
+              leaseExpiresAt: string;
+            }>({
+              server: config.server,
+              path: `${runtimeBridgeOperationPath}/${operationId}/heartbeat`,
+              method: 'POST',
+              token,
+              body: {
+                contractVersion: 1,
+                attempt: dispatch.snapshot.binding.attempt,
+                leaseToken: dispatch.leaseToken,
+              },
+              timeoutMs: 2500,
+              maximumResponseBytes: 200_000,
+            });
+            const snapshot = RuntimeOperationSnapshotSchema.parse(
+              current.snapshot,
+            );
+            return (
+              !this.input.signal?.aborted &&
+              snapshot.status === 'running' &&
+              snapshot.cancelRequestId === null &&
+              runtimeContractEqual(
+                snapshot.binding,
+                dispatch.snapshot.binding,
+              ) &&
+              Date.parse(current.leaseExpiresAt) > Date.now()
+            );
+          } catch {
+            return false;
+          }
+        },
+      });
+      const applied = result.files.filter((f) => f.status === 'applied').length;
+      if (result.files.some((f) => f.status === 'unknown'))
+        await journal.uncertain(operationId, 'receipt_missing', {
+          summary: '部分文件写入结果待核实，不自动重做',
+          output: result,
+        });
+      else if (!applied && result.files.some((f) => f.status === 'canceled'))
+        await journal.stopped(
+          operationId,
+          result,
+          '执行授权失效，尚未写入任何文件',
+        );
+      else
+        await journal.outcome(operationId, {
+          status:
+            applied === result.files.length
+              ? 'succeeded'
+              : applied
+                ? 'partial'
+                : 'failed',
+          effects:
+            applied === result.files.length
+              ? 'applied'
+              : applied
+                ? 'partial'
+                : 'none',
+          summary: `已确认处理 ${applied}/${result.files.length} 个文件；详见逐文件记录`,
+          output: result,
+        });
       return;
     }
     let result: Awaited<ReturnType<typeof executeLocalCommand>>;

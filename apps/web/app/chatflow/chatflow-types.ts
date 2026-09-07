@@ -3,6 +3,7 @@ import type {
   SaasCapabilityManifest,
   UserQuestionAnswerSubmission,
   ReviewContinuationInput,
+  ChangesetActionInput,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -72,7 +73,8 @@ export interface Message {
           type: 'user_question_answer';
           answer: UserQuestionAnswerSubmission;
         }
-      | { type: 'review_response'; review: ReviewContinuationInput };
+      | { type: 'review_response'; review: ReviewContinuationInput }
+      | { type: 'changeset_request'; action: ChangesetActionInput };
   };
   status: 'pending' | 'completed' | 'failed';
   runId: string | null;

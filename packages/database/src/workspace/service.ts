@@ -4,6 +4,7 @@ import {
   assertWorkbenchSession,
 } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
+import { prepareChangesetAction } from '../changeset-service.ts';
 import {
   ChatMessageContentSchema,
   CorrectMemoryInputSchema,
@@ -1015,12 +1016,22 @@ export async function sendChatMessage(
         (!receipt &&
           (ChatMessageContentSchema.parse(userMessage.content).text !==
             message.text ||
-            message.reviewContinuation))
+            message.reviewContinuation ||
+            message.changesetAction))
       )
         throw new ArtifactReviewError('input_id_conflict');
       message.text = ChatMessageContentSchema.parse(userMessage.content).text;
     }
     if (!userMessage) {
+      if (message.changesetAction)
+        message.text = (
+          await prepareChangesetAction(
+            transaction,
+            { ...context, workspaceId },
+            session.id,
+            message.changesetAction,
+          )
+        ).text;
       if (message.reviewContinuation) {
         message.text = (
           await prepareReviewContinuation(
@@ -1059,6 +1070,14 @@ export async function sendChatMessage(
           ${transaction.json({
             text: message.text,
             citations: [],
+            ...(message.changesetAction
+              ? {
+                  interaction: {
+                    type: 'changeset_request',
+                    action: message.changesetAction,
+                  },
+                }
+              : {}),
             ...(message.userQuestionAnswer
               ? {
                   interaction: {
@@ -1086,7 +1105,9 @@ export async function sendChatMessage(
         (user_message_id,organization_id,workspace_id,session_id,owner_id,client_message_id,request_digest,kind)
         values (${userMessage.id},${context.organizationId},${workspaceId},${session.id},${context.actor.id},
         ${message.clientMessageId},${requestDigest},${
-          message.reviewContinuation?.kind ??
+          (message.changesetAction
+            ? 'changeset_request'
+            : message.reviewContinuation?.kind) ??
           (message.userQuestionAnswer
             ? 'ask_user'
             : message.deliveryMode === 'steer'
@@ -1289,6 +1310,9 @@ export async function sendChatMessage(
         employeeBinding: binding,
         ...(message.reviewContinuation
           ? { reviewContinuation: message.reviewContinuation }
+          : {}),
+        ...(message.changesetAction
+          ? { changesetAction: message.changesetAction }
           : {}),
         conversationDelivery: {
           sessionId: session.id,

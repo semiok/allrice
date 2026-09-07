@@ -51,6 +51,10 @@ import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/ope
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
 import { riceManifest } from './employees/employee-config.ts';
 import { sendChatMessage } from './workspace/service.ts';
+import { claimNextJob, cancelRun } from './execution/queue.ts';
+import { runClaimedJob } from '../../../apps/worker/src/job-runner.js';
+import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
+import { listChangesetRuns } from './changeset-service.ts';
 import {
   claimConversationSteer,
   consumeConversationSteer,
@@ -658,6 +662,552 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     });
     return { ...f, root, storage, publish, draft };
   }
+  it.each([
+    'restore',
+    'partial',
+    'partial_cancel',
+    'restore_conflict',
+    'reject',
+    'expire',
+    'cancel',
+  ] as const)(
+    'P08 real message → Worker → approval → HTTP Bridge / files / recovery: %s',
+    async (scenario) => {
+      vi.stubEnv('ALLRICE_CHANGESET_ENABLED', '1');
+      const manifest = riceManifest();
+      if (manifest.schemaVersion !== 2) throw Error('v2 fixture required');
+      manifest.capabilityBindings.toolNames.push('local.fs.write');
+      const f = await artifactFixture(manifest);
+      f.context.memberships = f.policyPayload.memberships;
+      const skillId = randomUUID();
+      await database`insert into allrice_dsh_skills(id,organization_id,workspace_id,name,description,content,checksum,required_tool_refs,created_by) values(${skillId},${f.context.organizationId},${f.context.workspaceId},'p08-write-fixture','Synthetic only','Synthetic file editing',${digest('Synthetic file editing')},'["local.fs.write"]',${f.context.actor.id})`;
+      await database`insert into allrice_employee_dsh_skill_bindings(organization_id,workspace_id,employee_id,skill_id,bound_by) values(${f.context.organizationId},${f.context.workspaceId},${f.employeeId},${skillId},${f.context.actor.id})`;
+      vi.stubEnv('ALLRICE_STORAGE_ROOT', f.root);
+      const root = join(await realpath(f.root), 'project');
+      await mkdir(root);
+      const fingerprint = createHash('sha256').update(root).digest('hex');
+      await database`update allrice_bridge_folder_grants set root_fingerprint=${fingerprint} where id=${f.grant}`;
+      const side = (text: string) => ({
+        text,
+        checksum: `sha256:${createHash('sha256').update(text).digest('hex')}`,
+      });
+      const [grant] =
+        await database`select runtime_generation from allrice_bridge_folder_grants where id=${f.grant}`;
+      const proposal = {
+        contractVersion: 1,
+        comparisonScope: 'changeset',
+        execution: {
+          ...f.operation().input.snapshot.binding.execution,
+          grantVersion: grant!.runtime_generation,
+          scopeDigest: `sha256:${fingerprint}`,
+        },
+        files: [
+          {
+            path: 'test.mjs',
+            before: null,
+            after: side('console.log("P08 project passed");'),
+          },
+          { path: 'README.md', before: side('old'), after: side('reviewed') },
+        ],
+      };
+      await writeFile(join(root, 'README.md'), 'old');
+      const a = await f.publish(
+        'p08-proposal',
+        JSON.stringify(proposal),
+        undefined,
+        'changeset',
+      );
+      await database`update allrice_runs set state='succeeded' where id=${f.run}`;
+      await database`update allrice_jobs set status='succeeded' where run_id=${f.run}`;
+      await database`update allrice_conversation_runtimes set state='idle',active_run_id=null,worker_id=null where session_id=${f.sessionId}`;
+      await setRuntimePolicyControls(
+        f.context,
+        {
+          version: 3,
+          enabled: true,
+          mode: 'execute',
+          rules: [{ action: 'local.fs.changeset', effect: 'allow' }],
+        },
+        2,
+        database,
+      );
+      const handler = createRuntimeBridgeHttpHandler({
+        enabled: () => true,
+        authenticate: async (token) => {
+          if (token !== 'p08-synthetic-device') throw Error('unauthorized');
+          return {
+            device: f.device,
+            grants: [
+              {
+                id: f.grant,
+                deviceId: f.device.id,
+                label: 'P08 synthetic',
+                rootFingerprint: fingerprint,
+                createdAt: new Date().toISOString(),
+                revokedAt: null,
+              },
+            ],
+          };
+        },
+        ledgerForDevice: async () => f.ledger(),
+      });
+      let loseAck = true,
+        heartbeats = 0,
+        activeRunId = '';
+      let js = '',
+        css = '';
+      const browserEnabled =
+        scenario === 'restore' &&
+        process.env.ALLRICE_WORKBENCH_BROWSER_TEST === '1';
+      if (browserEnabled) {
+        const require = createRequire(resolve('apps/worker/package.json'));
+        const build = createRequire(require.resolve('tsx/package.json'))(
+          'esbuild',
+        ).build;
+        const assets = await build({
+          entryPoints: [resolve('apps/web/test/changeset-page.tsx')],
+          bundle: true,
+          write: false,
+          outdir: f.root,
+          platform: 'browser',
+          format: 'iife',
+          jsx: 'automatic',
+          define: { 'process.env.NODE_ENV': '"production"' },
+        });
+        js = assets.outputFiles.find((x: { path: string }) =>
+          x.path.endsWith('.js'),
+        ).text;
+        css = assets.outputFiles.find((x: { path: string }) =>
+          x.path.endsWith('.css'),
+        ).text;
+      }
+      const server = createServer((req, res) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(Buffer.from(c));
+          const path = new URL(req.url!, 'http://localhost').pathname;
+          if (path === '/') {
+            res.setHeader('content-type', 'text/html');
+            res.end(
+              `<!doctype html><meta name="viewport" content="width=device-width"><style>body{font:14px system-ui;margin:12px}*{box-sizing:border-box}${css}</style><div id="root"></div><script id="p08-input" type="application/json">${JSON.stringify({ artifact: a, sessionId: f.sessionId, workspaceId: f.context.workspaceId, headers: { 'x-p08-browser': 'synthetic' }, disabled: false }).replaceAll('<', '\\u003c')}</script><script src="/fixture.js"></script>`,
+            );
+            return;
+          }
+          if (path === '/fixture.js') {
+            res.setHeader('content-type', 'application/javascript');
+            res.end(js);
+            return;
+          }
+          if (!path.startsWith('/api/v1/bridge/device/operations/')) {
+            if (req.headers['x-p08-browser'] !== 'synthetic') {
+              res.statusCode = 401;
+              res.end();
+              return;
+            }
+            res.setHeader('content-type', 'application/json');
+            if (path.endsWith('/executions')) {
+              res.end(
+                JSON.stringify({
+                  executions: await listChangesetRuns(
+                    f.context,
+                    f.sessionId,
+                    a.id,
+                    database,
+                  ),
+                }),
+              );
+              return;
+            }
+            if (path.startsWith('/api/v1/runtime/approvals/')) {
+              res.end(
+                JSON.stringify({
+                  approval: await decideRuntimeActionApproval(
+                    f.context,
+                    path.split('/').at(-1)!,
+                    JSON.parse(Buffer.concat(chunks).toString()),
+                    database,
+                  ),
+                }),
+              );
+              return;
+            }
+            res.statusCode = 404;
+            res.end();
+            return;
+          }
+          if (path.endsWith('/heartbeat') && ++heartbeats === 3) {
+            if (scenario === 'partial')
+              await writeFile(join(root, 'README.md'), 'user changed');
+            if (scenario === 'partial_cancel')
+              await cancelRun(f.context, f.context.workspaceId!, activeRunId, {
+                reason: 'synthetic between-file cancellation',
+              });
+          }
+          const response = await handler(
+            new Request(`http://localhost${path}`, {
+              method: 'POST',
+              headers: {
+                authorization: String(req.headers.authorization ?? ''),
+                'content-type': 'application/json',
+              },
+              body: Buffer.concat(chunks),
+            }),
+            path.split('/').at(-1)! as
+              'next' | 'start' | 'receipts' | 'heartbeat' | 'output',
+            path.split('/').at(-2),
+          );
+          if (path.endsWith('/receipts') && loseAck && response.ok) {
+            loseAck = false;
+            res.destroy();
+            return;
+          }
+          res.statusCode = response.status;
+          res.end(await response.text());
+        })().catch((e) => {
+          res.statusCode = 500;
+          res.end(e instanceof Error ? e.message : 'fixture failed');
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') throw Error('listener');
+      const origin = `http://127.0.0.1:${addr.port}`;
+      const journal = await BridgeJournal.open({
+        directory: join(f.root, 'journal'),
+        server: origin,
+        deviceId: f.device.id,
+      });
+      const client = new RuntimeBridgeOperationClient({
+        config: {
+          server: origin,
+          deviceId: f.device.id,
+          deviceName: 'P08',
+          grants: [
+            {
+              id: f.grant,
+              label: 'P08',
+              rootPath: root,
+              rootFingerprint: fingerprint,
+            },
+          ],
+        },
+        token: 'p08-synthetic-device',
+        journal,
+      });
+      let browser: Playwright.Browser | undefined,
+        page: Playwright.Page | undefined;
+      const pageErrors: string[] = [];
+      if (browserEnabled) {
+        const { chromium } = createRequire(resolve('apps/worker/package.json'))(
+          'playwright-core',
+        ) as typeof Playwright;
+        browser = await chromium.launch({
+          headless: true,
+          executablePath:
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        });
+        page = await browser.newPage({
+          viewport: { width: 1200, height: 900 },
+        });
+        page.on('pageerror', (e) => pageErrors.push(e.message));
+      }
+      let abort: () => void = () => {};
+      let finished: Promise<void> | undefined;
+      const start = async (restoreOf: string | null) => {
+        const body = {
+          clientMessageId: randomUUID(),
+          text: 'request',
+          deliveryMode: 'follow_up',
+          changesetAction: {
+            artifactId: a.id,
+            checksum: a.object.checksum,
+            restoreOf,
+          },
+        };
+        const sent = await sendChatMessage(
+          f.context,
+          f.context.workspaceId!,
+          f.sessionId,
+          body,
+        );
+        activeRunId = sent.run.id;
+        const [frozen] =
+          await database`select e.execution_snapshot,p.payload from allrice_employee_runs e join allrice_runs r on r.id=e.run_id join allrice_policy_snapshots p on p.id=r.policy_snapshot_id where r.id=${sent.run.id}`;
+        expect(
+          frozen!.execution_snapshot.capabilitySnapshot.bindings.toolNames,
+        ).toContain('local.fs.write');
+        expect(
+          frozen!.execution_snapshot.capabilitySnapshot.grantedCapabilities,
+        ).toContain('storage:write');
+        expect(frozen!.payload.grants).toContainEqual(
+          expect.objectContaining({
+            resourceType: 'job',
+            action: 'job:execute',
+          }),
+        );
+        expect(
+          (
+            await sendChatMessage(
+              f.context,
+              f.context.workspaceId!,
+              f.sessionId,
+              body,
+            )
+          ).run.id,
+        ).toBe(sent.run.id);
+        await expect(
+          sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
+            ...body,
+            changesetAction: {
+              ...body.changesetAction,
+              checksum: digest('wrong'),
+            },
+          }),
+        ).rejects.toThrow();
+        const workerId = randomUUID(),
+          job = await claimNextJob(workerId, 30000);
+        const [claimedRun] =
+          await database`select run_id from allrice_jobs where id=${job!.id}`;
+        expect(claimedRun?.run_id).toBe(sent.run.id);
+        finished = runClaimedJob(
+          {
+            workerId,
+            jobId: job!.id,
+            leaseToken: job!.lease!.token,
+            leaseMs: 30000,
+            heartbeatMs: 500,
+            executionRoot: join(f.root, 'worker'),
+            stopping: () => false,
+            onAbortReady: (value) => {
+              abort = value;
+            },
+          },
+          executeEmployeeRun,
+        );
+        await vi.waitFor(
+          async () => {
+            const [j] =
+              await database`select status,last_error_code,last_error_message from allrice_jobs where id=${job!.id}`;
+            if (j?.status === 'failed' || j?.status === 'dead_letter')
+              throw Error(JSON.stringify(j));
+            const waiting = (
+              await listChangesetRuns(f.context, f.sessionId, a.id, database)
+            ).find((x) => x.runId === sent.run.id);
+            expect(waiting?.snapshot?.status).toBe('waiting_user');
+            expect(waiting?.approval?.request).toBeDefined();
+          },
+          { timeout: 10000, interval: 100 },
+        );
+        const item = (
+          await listChangesetRuns(f.context, f.sessionId, a.id, database)
+        ).find((x) => x.runId === sent.run.id)!;
+        expect(item.approval?.response).toBeNull();
+        const projected = await getInteractionStatus(
+          f.context,
+          f.sessionId,
+          database,
+        );
+        expect(
+          projected.inputs.find((x) => x.runId === sent.run.id),
+        ).toMatchObject({ kind: 'changeset_request', artifactId: a.id });
+        expect(
+          projected.pendingActions.find((x) => x.runId === sent.run.id)
+            ?.artifactId,
+        ).toBe(a.id);
+        return item;
+      };
+      const approve = async (
+        item: Awaited<ReturnType<typeof start>>,
+        decision: 'approved' | 'rejected' = 'approved',
+      ) => {
+        const req = item.approval!.request;
+        await decideRuntimeActionApproval(
+          f.context,
+          req.approvalId,
+          {
+            contractVersion: 1,
+            direction: 'response',
+            kind: 'action_approval',
+            requestId: req.requestId,
+            version: req.version,
+            requestDigest: req.requestDigest,
+            task: req.task,
+            responseId: randomUUID(),
+            respondedBy: f.context.actor.id,
+            respondedAt: new Date().toISOString(),
+            approvalId: req.approvalId,
+            decision,
+          },
+          database,
+        );
+      };
+      try {
+        const apply = await start(null);
+        expect(await client.pollOnce()).toBe(false);
+        if (scenario === 'reject') await approve(apply, 'rejected');
+        // Age only this synthetic database deadline; do not change production TTL.
+        else if (scenario === 'expire')
+          await database`update allrice_approval_requests set requested_at=clock_timestamp()-interval '2 seconds',runtime_expires_at=clock_timestamp()-interval '1 second' where id=${apply.approval!.request.approvalId}`;
+        else if (scenario === 'cancel')
+          await cancelRun(f.context, f.context.workspaceId!, apply.runId, {
+            reason: 'synthetic cancellation',
+          });
+        if (['reject', 'expire', 'cancel'].includes(scenario)) {
+          await finished;
+          expect(await client.pollOnce()).toBe(false);
+          await expect(readFile(join(root, 'test.mjs'))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+          expect(await readFile(join(root, 'README.md'), 'utf8')).toBe('old');
+          expect(
+            (await listChangesetRuns(f.context, f.sessionId, a.id, database))[0]
+              ?.snapshot?.result?.effects,
+          ).toBe('none');
+          return;
+        }
+        if (page) {
+          await page.goto(origin);
+          await page
+            .getByRole('button', { name: '批准这一次文件操作', exact: true })
+            .click();
+        } else await approve(apply);
+        expect(
+          await f.ledger().claimNextBridgeOperation({
+            scope: f.task.scope,
+            deviceId: f.device.id,
+            leaseMs: 30000,
+          }),
+        ).toBeNull();
+        await expect(client.pollOnce()).rejects.toThrow();
+        await client.flush();
+        expect(await client.pollOnce()).toBe(false);
+        await finished;
+        expect(await readFile(join(root, 'README.md'), 'utf8')).toBe(
+          scenario === 'partial'
+            ? 'user changed'
+            : scenario === 'partial_cancel'
+              ? 'old'
+              : 'reviewed',
+        );
+        expect(await readFile(join(root, 'test.mjs'), 'utf8')).toContain(
+          'P08 project passed',
+        );
+        const [done] = await listChangesetRuns(
+          f.context,
+          f.sessionId,
+          a.id,
+          database,
+        );
+        expect(done?.runState).toBe(
+          scenario === 'partial_cancel'
+            ? 'canceled'
+            : scenario === 'partial'
+              ? 'failed'
+              : 'succeeded',
+        );
+        expect(done?.evidence.result?.files.map((x) => x.status)).toEqual(
+          scenario === 'partial_cancel'
+            ? ['applied', 'canceled']
+            : scenario === 'partial'
+              ? ['applied', 'conflict']
+              : ['applied', 'applied'],
+        );
+        if (page) {
+          await page.getByText('应用任务 · 已完成', { exact: true }).waitFor();
+          await page.reload();
+          await page
+            .getByRole('button', { name: '请求恢复已确认落盘的文件' })
+            .waitFor();
+        }
+        await expect(
+          listChangesetRuns(
+            { ...f.context, actor: { type: 'user', id: randomUUID() } },
+            f.sessionId,
+            a.id,
+            database,
+          ),
+        ).rejects.toThrow();
+        const restore = await start(apply.runId);
+        expect(restore.payload?.arguments.files).toEqual(
+          [...proposal.files]
+            .reverse()
+            .filter(
+              (x) =>
+                !['partial', 'partial_cancel'].includes(scenario) ||
+                x.path === 'test.mjs',
+            )
+            .map((x) => ({ path: x.path, before: x.after, after: x.before })),
+        );
+        if (scenario === 'restore_conflict')
+          await writeFile(join(root, 'test.mjs'), 'user follow-up edit');
+        if (page) {
+          await page.reload();
+          await page
+            .getByText('本次将处理 2 个文件 · 精确授权范围', { exact: true })
+            .last()
+            .click();
+          await page
+            .getByText('审查 test.mjs 的本次前后内容', { exact: true })
+            .last()
+            .click();
+          await page.getByText('删除这个文件', { exact: true }).waitFor();
+          await page
+            .getByRole('button', { name: '批准这一次文件操作', exact: true })
+            .click();
+        } else await approve(restore);
+        expect(await client.pollOnce()).toBe(true);
+        await finished;
+        expect(await readFile(join(root, 'README.md'), 'utf8')).toBe(
+          scenario === 'partial'
+            ? 'user changed'
+            : scenario === 'restore_conflict'
+              ? 'reviewed'
+              : 'old',
+        );
+        if (scenario === 'restore_conflict')
+          expect(await readFile(join(root, 'test.mjs'), 'utf8')).toBe(
+            'user follow-up edit',
+          );
+        else
+          await expect(readFile(join(root, 'test.mjs'))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+        expect(
+          (await listChangesetRuns(f.context, f.sessionId, a.id, database))[1]
+            ?.runState,
+        ).toBe(scenario === 'restore_conflict' ? 'failed' : 'succeeded');
+        if (page) {
+          await page.getByText('恢复任务 · 已完成', { exact: true }).waitFor();
+          await page.setViewportSize({ width: 390, height: 844 });
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          expect(pageErrors).toEqual([]);
+          const evidenceDirectory = await mkdtemp(
+            resolve('.local/p08-browser-'),
+          );
+          await page.screenshot({
+            path: join(evidenceDirectory, 'p08-recovery.png'),
+            fullPage: true,
+          });
+          console.log('P08 browser evidence:', evidenceDirectory);
+        }
+        const [count] =
+          await database`select count(*)::int n from allrice_runtime_operation_events e join allrice_runtime_operations o on o.id=e.operation_id where o.organization_id=${f.context.organizationId} and e.payload->'signal'->>'type'='operation.started'`;
+        expect(count?.n).toBe(2);
+      } finally {
+        abort();
+        await finished;
+        await browser?.close();
+        await journal.close();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    },
+    45000,
+  );
   it('P10 persists strict input identity, native adoption and cancels expired steer without creating a later task', async () => {
     const f = await artifactFixture(riceManifest());
     f.context.memberships = f.policyPayload.memberships;
@@ -1461,6 +2011,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             return;
           }
           const base = `/api/v1/sessions/${f.sessionId}/artifacts`;
+          if (path.startsWith(base) && path.endsWith('/executions')) {
+            // P07 exercises the feature-off P08 server contract.
+            res.statusCode = 404;
+            res.end();
+            return;
+          }
           if (path === `/api/v1/sessions/${f.sessionId}/interactions`) {
             res.end(
               JSON.stringify(
@@ -2365,7 +2921,10 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           ['--import', 'tsx', '--input-type=module', '--eval', childScript],
           {
             cwd: resolve('.'),
-            env: { PATH: process.env.PATH },
+            env: {
+              PATH: process.env.PATH,
+              TSX_TSCONFIG_PATH: resolve('tsconfig.base.json'),
+            },
             stdio: ['ignore', 'ignore', 'pipe'],
           },
         );

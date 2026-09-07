@@ -98,6 +98,22 @@ export function ChatTranscript({
                       text={message.content.text}
                     />
                   ) : message.role === 'user' &&
+                    message.content.interaction?.type ===
+                      'changeset_request' ? (
+                    <div className={styles.messageMeta}>
+                      <strong>
+                        文件
+                        {message.content.interaction.action.restoreOf
+                          ? '恢复'
+                          : '应用'}
+                        请求 · 尚未授权执行
+                      </strong>
+                      <details>
+                        <summary>查看请求</summary>
+                        <p>{message.content.text}</p>
+                      </details>
+                    </div>
+                  ) : message.role === 'user' &&
                     message.content.interaction?.type === 'review_response' ? (
                     <div className={styles.messageMeta}>
                       <strong>

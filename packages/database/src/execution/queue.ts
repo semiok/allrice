@@ -19,6 +19,7 @@ import {
   type RequestContext,
   type RunEventType,
   type ReviewContinuationInput,
+  type ChangesetActionInput,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 
@@ -44,6 +45,7 @@ import {
 import { resolveWorkspaceId } from '../workspace/service.ts';
 import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
+import { prepareChangesetAction } from '../changeset-service.ts';
 
 export { queueMaintenanceAction } from '../queue/policy.ts';
 export type { MaintenanceAction } from '../queue/policy.ts';
@@ -284,6 +286,7 @@ export async function enqueueRun(
       hasAttachments: boolean;
     };
     reviewContinuation?: ReviewContinuationInput;
+    changesetAction?: ChangesetActionInput;
     workflowBinding?: {
       employeeId: string;
       workflowRevisionId: string;
@@ -342,6 +345,19 @@ export async function enqueueRun(
     let activeRunId: string | null = null;
     let expectedTurnId: string | null = null;
     let expectedGeneration: number | null = null;
+    if (options.changesetAction && options.conversationDelivery) {
+      const action = options.changesetAction;
+      await prepareChangesetAction(
+        transaction,
+        { ...context, workspaceId },
+        options.conversationDelivery.sessionId,
+        action,
+      );
+      const duplicate =
+        await transaction`select run_id from allrice_changeset_runs where organization_id=${context.organizationId} and workspace_id=${workspaceId} and actor_id=${ownerId} and artifact_id=${action.artifactId} and restore_of is not distinct from ${action.restoreOf}::uuid`;
+      if (duplicate.length)
+        throw new ArtifactReviewError('changeset_already_requested');
+    }
     if (options.reviewContinuation && options.conversationDelivery) {
       await prepareReviewContinuation(
         transaction,
@@ -519,6 +535,11 @@ export async function enqueueRun(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.changesetAction && options.conversationDelivery) {
+      const action = options.changesetAction;
+      await transaction`insert into allrice_changeset_runs(run_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,restore_of)
+        values(${run.id},${context.organizationId},${workspaceId},${options.conversationDelivery.sessionId},${ownerId},${action.artifactId},${action.checksum},${action.restoreOf})`;
+    }
     if (options.reviewContinuation && options.conversationDelivery) {
       const review = options.reviewContinuation;
       await transaction`insert into allrice_review_continuations

@@ -51,13 +51,14 @@ export async function getInteractionStatus(
     >`
       select i.client_message_id as id,i.kind,i.user_message_id,i.created_at,c.state as command_state,c.native_proof,c.error_code,
       er.run_id,r.state as run_state,f.state as followup_state,m.status as assistant_status,c.expected_turn_id,c.expected_generation,
-      rc.artifact_id from allrice_chat_input_requests i
+      coalesce(rc.artifact_id,cs.artifact_id) as artifact_id from allrice_chat_input_requests i
       join allrice_messages m on m.reply_to_id=i.user_message_id and m.role='assistant'
       left join allrice_employee_runs er on er.assistant_message_id=m.id
       left join allrice_runs r on r.id=er.run_id
       left join allrice_conversation_followups f on f.run_id=er.run_id
       left join allrice_conversation_commands c on c.followup_run_id=f.run_id
       left join allrice_review_continuations rc on rc.run_id=er.run_id
+      left join allrice_changeset_runs cs on cs.run_id=er.run_id
       where i.organization_id=${context.organizationId} and i.workspace_id=${context.workspaceId!}
         and i.session_id=${sessionId} and i.owner_id=${context.actor.id}
       order by i.created_at desc,i.client_message_id desc limit 30`;
@@ -67,10 +68,12 @@ export async function getInteractionStatus(
         resource_id: string;
         run_id: string;
         runtime_expires_at: Date;
+        artifact_id: string | null;
       }[]
     >`
-      select a.id,a.resource_id,a.run_id,a.runtime_expires_at from allrice_approval_requests a
+      select a.id,a.resource_id,a.run_id,a.runtime_expires_at,cs.artifact_id from allrice_approval_requests a
       join allrice_employee_runs er on er.run_id=a.run_id
+      left join allrice_changeset_runs cs on cs.run_id=a.run_id
       join allrice_runtime_operations op on op.id=a.resource_id and op.organization_id=a.organization_id and op.workspace_id=a.workspace_id
       where a.organization_id=${context.organizationId} and a.workspace_id=${context.workspaceId!}
       and er.session_id=${sessionId} and er.owner_id=${context.actor.id}
@@ -83,6 +86,7 @@ export async function getInteractionStatus(
         operationId: a.resource_id,
         runId: a.run_id,
         expiresAt: a.runtime_expires_at.toISOString(),
+        artifactId: a.artifact_id,
       })),
       runtime: runtime
         ? {

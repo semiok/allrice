@@ -1,4 +1,5 @@
 'use client';
+import { ChangesetPanel } from './changeset-panel';
 import {
   lazy,
   Component,
@@ -667,6 +668,17 @@ function ArtifactReview({
       ) : (
         <>
           <h3>{artifact.version.fileName}</h3>
+          {artifact.kind === 'changeset' ? (
+            <ChangesetPanel
+              key={artifact.id}
+              artifact={artifact}
+              sessionId={sessionId}
+              workspaceId={workspaceId}
+              headers={tenantHeaders}
+              disabled={busy || dirty}
+              onContinued={onContinued}
+            />
+          ) : null}
           <div className={styles.meta}>
             <span className={styles.badge}>
               {artifactKindLabel(artifact)} · v{artifact.version.version}
