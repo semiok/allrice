@@ -29,7 +29,7 @@ let admin: ReturnType<typeof postgres>;
 let database: ReturnType<typeof postgres>;
 const schema = `runtime_bridge_test_${randomUUID().replaceAll('-', '')}`;
 
-async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
+async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask', chat = false) {
   const org = randomUUID(),
     workspace = randomUUID(),
     user = randomUUID(),
@@ -63,7 +63,11 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
       { resourceType: 'job', action: 'job:execute', workspaceId: workspace },
     ],
   };
-  const executionSpec = { employeeVersionId: null };
+  const employeeId = randomUUID(),
+    versionId = randomUUID(),
+    assignmentId = randomUUID(),
+    sessionId = randomUUID();
+  const executionSpec = { employeeVersionId: chat ? versionId : null };
   await database.begin(async (tx) => {
     await tx`insert into allrice_users(id,email,display_name,password_hash) values(${user},${`${user}@example.test`},'B1 assembly','not-login')`;
     await tx`insert into allrice_organizations(id,slug,name) values(${org},${`assembly-${org}`},'B1 assembly')`;
@@ -80,6 +84,26 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
     await tx`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
       values(${target},${org},${workspace},${`bridge.${deviceId}`},'rice_bridge','B1 device','online',
         ${tx.json(['files.read', 'files.write'])},${tx.json({ bridgeDeviceId: deviceId })})`;
+    if (chat) {
+      await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
+        values(${employeeId},${org},${workspace},'assembly','B1 employee')`;
+      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum)
+        values(${versionId},${org},${workspace},${employeeId},1,'B1 frozen employee','synthetic','synthetic','[]',${digest('employee')})`;
+      await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id)
+        values(${assignmentId},${org},${workspace},${employeeId},${versionId},${user})`;
+      await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+        values(${sessionId},${org},${workspace},${user},'B1 chat',${assignmentId},${versionId})`;
+      const userMessage = randomUUID(),
+        assistantMessage = randomUUID();
+      await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${userMessage},${org},${workspace},${sessionId},${user},'user','{}'),
+          (${assistantMessage},${org},${workspace},${sessionId},${user},'assistant','{}')`;
+      await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,
+        employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot)
+        values(${run},${org},${workspace},${user},${assignmentId},${versionId},${sessionId},${userMessage},${assistantMessage},'{}','{}','{}')`;
+      await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id)
+        values(${org},${workspace},${sessionId},${user},3,${digest('runtime')},'running',${run},${randomUUID()})`;
+    }
   });
   await setRuntimePolicyControls(
     context,
@@ -115,9 +139,9 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
     runId: run,
     rootRunId: run,
     parentRunId: null,
-    chatSessionId: null,
+    chatSessionId: chat ? sessionId : null,
     frozenConfiguration: {
-      employeeVersionId: null,
+      employeeVersionId: executionSpec.employeeVersionId,
       digest: digest(executionSpec),
     },
   };
@@ -153,7 +177,7 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
         operationId: randomUUID(),
         attemptId: randomUUID(),
         attemptNumber: 1,
-        generation: 0,
+        generation: chat ? 3 : 0,
         fence: 1,
       },
       requestedBy: { type: 'user', id: user },
@@ -250,6 +274,9 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
     run,
     policy,
     membership,
+    sessionId,
+    versionId,
+    employeeId,
   };
 }
 
@@ -262,7 +289,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       onnotice: () => {},
     });
     await admin.begin(async (tx) => {
-      await tx`select pg_advisory_xact_lock(hashtextextended('allrice-test-public-extensions',0))`;
+      await tx`select pg_advisory_xact_lock(20260907, 1)`;
       await tx`create extension if not exists vector with schema public`;
       await tx`create extension if not exists pg_trgm with schema public`;
     });
@@ -454,5 +481,125 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       'ready',
     );
     expect((await f.claim())?.bridgePayload).toEqual(list.input.bridgePayload);
+  });
+  it('resolves an actual employee Run, chat Session and current generation through all real foreign keys', async () => {
+    const f = await fixture('ask', true),
+      op = f.operation();
+    expect((await op.factory().createOperation(op.input)).status).toBe(
+      'waiting_user',
+    );
+    await op.approve();
+    const claim = await f.claim();
+    expect(claim?.snapshot.binding.task.chatSessionId).toBe(f.sessionId);
+    expect(
+      claim?.snapshot.binding.task.frozenConfiguration.employeeVersionId,
+    ).toBe(f.versionId);
+    expect(claim?.snapshot.binding.attempt.generation).toBe(3);
+    expect(
+      (
+        await f.ledger().startOperation({
+          scope: f.task.scope,
+          operationId: op.input.snapshot.binding.attempt.operationId,
+          leaseToken: claim!.leaseToken,
+          attempt: claim!.snapshot.binding.attempt,
+          receiptId: randomUUID(),
+        })
+      ).mayExecute,
+    ).toBe(true);
+  });
+  it.each([
+    'generation',
+    'archive',
+    'owner',
+    'session_version',
+    'runtime_run',
+    'runtime_stopped',
+    'run_employee',
+  ])(
+    'rejects actual chat %s changes between approval and dispatch',
+    async (change) => {
+      const f = await fixture('ask', true),
+        op = f.operation();
+      await op.factory().createOperation(op.input);
+      await op.approve();
+      if (change === 'generation')
+        await database`update allrice_conversation_runtimes set thread_generation=4 where session_id=${f.sessionId}`;
+      if (change === 'archive')
+        await database`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.sessionId}`;
+      if (change === 'owner') {
+        const other = randomUUID();
+        await database`insert into allrice_users(id,email,display_name,password_hash)values(${other},${`${other}@example.test`},'Other','not-login')`;
+        await database`update allrice_chat_sessions set owner_id=${other} where id=${f.sessionId}`;
+      }
+      if (change === 'session_version') {
+        const version = randomUUID();
+        await database`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum)
+          values(${version},${f.device.organizationId},${f.device.workspaceId},${f.employeeId},2,'Another version','synthetic','synthetic','[]',${digest('employee 2')})`;
+        await database`update allrice_chat_sessions set employee_version_id=${version} where id=${f.sessionId}`;
+      }
+      if (change === 'runtime_run') {
+        const anotherRun = randomUUID();
+        await database`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+          values(${anotherRun},${f.device.organizationId},${f.device.workspaceId},${f.device.ownerId},'running','{}','{}')`;
+        await database`update allrice_conversation_runtimes set active_run_id=${anotherRun} where session_id=${f.sessionId}`;
+      }
+      if (change === 'runtime_stopped')
+        await database`update allrice_conversation_runtimes set state='idle',active_run_id=null,active_turn_id=null,worker_id=null where session_id=${f.sessionId}`;
+      if (change === 'run_employee')
+        await database`update allrice_runs set execution_spec='{}' where id=${f.run}`;
+      expect(await f.claim()).toBeNull();
+    },
+  );
+  it('checks device heartbeat after a real blocking resource lock, not the initiating timestamp', async () => {
+    const f = await fixture('allow'),
+      op = f.operation();
+    await op.factory().createOperation(op.input);
+    await database`update allrice_bridge_devices set last_seen_at=clock_timestamp()-interval '89.8 seconds' where id=${f.device.id}`;
+    let locked!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blocker = database.begin(async (tx) => {
+      await tx`select id from allrice_bridge_devices where id=${f.device.id} for update`;
+      locked();
+      await hold;
+      await tx`select pg_sleep(0.3)`;
+    });
+    await ready;
+    const claim = f.claim();
+    release();
+    await blocker;
+    expect(await claim).toBeNull();
+  });
+  it('ignores a replacement initial closure when immutable input already exists', async () => {
+    const f = await fixture('allow'),
+      op = f.operation();
+    await op.factory().createOperation(op.input);
+    const altered = structuredClone(op.input.snapshot.binding);
+    const payload = BridgeCommandPayloadSchema.parse({
+      capability: 'local.fs.write',
+      arguments: {
+        path: 'different.txt',
+        content: 'replacement',
+        expectedSha256: null,
+      },
+    });
+    altered.inputDigest = digest(payload);
+    const factory = createGovernedBridgeOperationLedger(f.device, {
+      database,
+      initialOperation: { binding: altered, payload },
+    });
+    const resolved = await database.begin((transaction) =>
+      factory.policyOptions.resolveCurrentBinding({
+        transaction,
+        binding: altered,
+      }),
+    );
+    expect(resolved.inputDigest).toBe(op.input.snapshot.binding.inputDigest);
+    expect(resolved.inputDigest).not.toBe(altered.inputDigest);
   });
 });

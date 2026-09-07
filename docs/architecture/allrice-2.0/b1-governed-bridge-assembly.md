@@ -36,6 +36,6 @@ P04 决定哪些既有工具可准入，工厂不另建一套能力白名单。�
 ALLRICE_RUN_DB_INTEGRATION=1 ALLRICE_TEST_DATABASE_URL=<专用测试数据库> pnpm exec vitest run packages/database/src/runtime-governed-bridge.integration.test.ts
 ```
 
-覆盖真实 Ask 持久化、六路并发仅一次派发/审批消费、一次开始、重新构造工厂恢复、待审批队头及 20+ 轮转、设备/目录/心跳/能力/目标/成员/Run/政策撤销、伪造工作副本/Session/employee/generation/payload、缺失政策不能静默忽略、调用方可变输入和写入基线。
+覆盖真实 Ask 持久化、六路并发仅一次派发/审批消费、一次开始、重新构造工厂恢复、待审批队头及 20+ 轮转、设备/目录/心跳/能力/目标/成员/Run/政策撤销、伪造工作副本/Session/employee/generation/payload、缺失政策不能静默忽略、调用方可变输入和写入基线。另以完整真实外键建立 employee/version/assignment/messages/employee_run/Session/runtime，验证正常 generation=3 可审批、派发和开始；会话 owner/版本/归档、runtime generation/active Run/停止状态变化都会拒绝派发。资源锁真实阻塞后过期的设备心跳也不获准执行。
 
 回滚只关闭新协议入口并保留账本证据；不删除未知结果，不释放未核实预算，不把未收到停止证据描述成已终止。
