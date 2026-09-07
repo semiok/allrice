@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import {
   createToolBrokerExportObject,
   registerToolBrokerExport,
+  publishWorkbenchArtifact,
+  workbenchEnabled,
 } from '@allrice/database';
 import { DeliveryFormatSchema } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
@@ -45,13 +47,58 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     fileName = `${fileName}${generated.extension}`;
   }
   const bytes = generated.bytes;
+  const storage = new LocalStorageAdapter(input.storageRoot);
+  if (workbenchEnabled() && input.sessionId) {
+    const kind = args.artifactKind ?? 'document';
+    if (kind !== 'document' && kind !== 'plan')
+      throw new HandlerError(
+        'TOOL_INPUT_INVALID',
+        '此工具只创建文档或计划；文件修改提案使用专用 Changeset 入口。',
+        false,
+      );
+    const artifact = await publishWorkbenchArtifact(
+      {
+        context: input.context,
+        sessionId: input.sessionId,
+        callId: input.call.id,
+        kind,
+        fileName,
+        format,
+        bytes,
+        mediaType: generated.mediaType,
+        ...(typeof args.parentObjectId === 'string'
+          ? { parentObjectId: args.parentObjectId }
+          : {}),
+        ...(typeof args.changeSummary === 'string'
+          ? { changeSummary: args.changeSummary }
+          : {}),
+      },
+      storage,
+    );
+    return {
+      modelContent: JSON.stringify({
+        artifactId: artifact.id,
+        objectId: artifact.object.id,
+        fileName,
+        mediaType: artifact.object.mediaType,
+        sizeBytes: artifact.object.sizeBytes,
+        seriesId: artifact.version.seriesId,
+        version: artifact.version.version,
+        parentObjectId: artifact.version.parentObjectId,
+        changeSummary: artifact.version.changeSummary,
+        downloadUrl: `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(fileName)}`,
+        versionsUrl: `/api/v1/files/${artifact.object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
+      }),
+      summary: `已生成${kind === 'plan' ? '待审查计划' : '交付文件'} ${fileName} · v${artifact.version.version}`,
+      itemCount: 1,
+    };
+  }
   const object = createToolBrokerExportObject({
     context: input.context,
     mediaType: generated.mediaType,
     sizeBytes: bytes.byteLength,
     checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
   });
-  const storage = new LocalStorageAdapter(input.storageRoot);
   await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());
   try {
     const registered = await registerToolBrokerExport({

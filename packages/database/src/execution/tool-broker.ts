@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 
 import {
   DeliverableVersionSchema,
@@ -210,16 +211,19 @@ export function createToolBrokerExportObject(input: {
   } satisfies StorageObject;
 }
 
-export async function registerToolBrokerExport(input: {
-  context: ExecutionContext;
-  sessionId?: string;
-  platformTestRunId?: string;
-  parentObjectId?: string;
-  fileName: string;
-  format: DeliveryFormat;
-  changeSummary?: string;
-  object: StorageObject;
-}) {
+export async function registerToolBrokerExport(
+  input: {
+    context: ExecutionContext;
+    sessionId?: string;
+    platformTestRunId?: string;
+    parentObjectId?: string;
+    fileName: string;
+    format: DeliveryFormat;
+    changeSummary?: string;
+    object: StorageObject;
+  },
+  database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+) {
   if (!input.context.workspaceId) {
     throw new DataAccessError('authorization_denied');
   }
@@ -232,8 +236,7 @@ export async function registerToolBrokerExport(input: {
   ) {
     throw new DataAccessError('authorization_denied');
   }
-  const sql = getDatabase();
-  const version = await sql.begin(async (transaction) => {
+  const register = async (transaction: TransactionSql) => {
     if (input.sessionId) {
       const sessions = await transaction<{ id: string }[]>`
         select id from allrice_chat_sessions
@@ -366,7 +369,11 @@ export async function registerToolBrokerExport(input: {
       parentObjectId,
       createdAt: versions[0]!.created_at.toISOString(),
     };
-  });
+  };
+  const version =
+    'begin' in database
+      ? await database.begin(register)
+      : await register(database);
   return {
     objectId: input.object.id,
     fileName: input.fileName,

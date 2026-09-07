@@ -48,6 +48,20 @@ import { LocalCommandRunner } from '../../../apps/rice-bridge/src/local-command-
 import { BridgeJournal } from '../../../apps/rice-bridge/src/journal.js';
 import { RuntimeBridgeOperationClient } from '../../../apps/rice-bridge/src/operation-client.js';
 import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/operation-http.js';
+import { LocalStorageAdapter } from '../../storage/src/local.ts';
+import {
+  publishWorkbenchArtifact,
+  listWorkbenchArtifacts,
+  getWorkbenchArtifact,
+  readArtifactBytes,
+  saveArtifactFeedback,
+  listArtifactFeedback,
+  addressArtifactFeedback,
+} from './artifact-review.ts';
+import {
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import {
@@ -62,6 +76,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+const artifactRoots: string[] = [];
 let admin: ReturnType<typeof postgres>;
 let database: ReturnType<typeof postgres>;
 const schema = `runtime_bridge_test_${randomUUID().replaceAll('-', '')}`;
@@ -550,6 +565,8 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         for each row execute function b1_test_lease_delay();`);
   }, 60_000);
   afterAll(async () => {
+    for (const root of artifactRoots)
+      await rm(root, { recursive: true, force: true });
     await database?.end();
     if (admin) {
       if (!/^runtime_bridge_test_[a-f0-9]{32}$/.test(schema))
@@ -557,6 +574,482 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       await admin.unsafe(`drop schema ${schema} cascade`);
       await admin.end();
     }
+  });
+  async function artifactFixture() {
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    const f = await commandFixture([
+      'workspace.export.create',
+      'local.process.execute',
+    ]);
+    const root = await mkdtemp(join(tmpdir(), 'allrice-p06-artifacts-'));
+    artifactRoots.push(root);
+    const storage = new LocalStorageAdapter(root);
+    const publish = (
+      callId = 'publish',
+      text = 'first line\nsecond line',
+      parentObjectId?: string,
+      kind: 'document' | 'plan' | 'changeset' = 'document',
+    ) =>
+      publishWorkbenchArtifact(
+        {
+          context: f.execution,
+          sessionId: f.sessionId,
+          callId,
+          kind,
+          fileName: kind === 'changeset' ? 'changeset.json' : 'fixture.txt',
+          format: kind === 'changeset' ? 'json' : 'text',
+          bytes: Buffer.from(text),
+          mediaType: kind === 'changeset' ? 'application/json' : 'text/plain',
+          ...(parentObjectId ? { parentObjectId } : {}),
+          changeSummary: 'Synthetic revision',
+        },
+        storage,
+        database,
+      );
+    const draft = (
+      artifact: Awaited<ReturnType<typeof publish>>,
+      text = 'Revise this line',
+    ) => ({
+      feedbackId: randomUUID(),
+      artifactId: artifact.id,
+      checksum: artifact.object.checksum,
+      expectedRevision: 0,
+      comments: [
+        {
+          id: randomUUID(),
+          anchor: {
+            kind: 'lines',
+            path: null,
+            side: 'after',
+            startLine: 2,
+            endLine: 2,
+            checksum: artifact.object.checksum,
+          },
+          text,
+        },
+      ],
+    });
+    return { ...f, root, storage, publish, draft };
+  }
+  it('P06 publishes immutable existing storage/version identities; idempotent concurrent delivery writes once', async () => {
+    const f = await artifactFixture();
+    const [a, b] = await Promise.all([f.publish(), f.publish()]);
+    expect(a.id).toBe(b.id);
+    expect(a.id).toBe(a.version.id);
+    expect(a.object.immutable).toBe(true);
+    expect(a.provenance).toEqual({
+      kind: 'model_proposal',
+      runId: f.run,
+      operationId: null,
+      stepId: null,
+    });
+    expect((await readArtifactBytes(f.storage, a.object)).toString()).toBe(
+      'first line\nsecond line',
+    );
+    expect(
+      await database`select id from allrice_storage_objects where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(1);
+    await expect(f.publish('publish', 'different bytes')).rejects.toThrow(
+      'idempotency_conflict',
+    );
+    await expect(
+      database`update allrice_workbench_artifacts set kind='plan' where version_id=${a.id}`,
+    ).rejects.toThrow('immutable');
+    await expect(
+      database`update allrice_storage_objects set checksum=${digest('changed')} where id=${a.object.id}`,
+    ).rejects.toThrow('immutable');
+  });
+  it('P06 keeps draft, submitted batch, stale version and explicit response distinct', async () => {
+    const f = await artifactFixture(),
+      a = await f.publish(),
+      draft = f.draft(a);
+    const saved = await saveArtifactFeedback(
+      f.context,
+      f.sessionId,
+      draft,
+      false,
+      f.storage,
+      database,
+    );
+    expect(saved.state).toBe('draft');
+    expect(saved.revision).toBe(1);
+    expect(
+      await saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        draft,
+        false,
+        f.storage,
+        database,
+      ),
+    ).toEqual(saved);
+    const submission = { ...draft, expectedRevision: 1 };
+    const [first, duplicate] = await Promise.all([
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        submission,
+        true,
+        f.storage,
+        database,
+      ),
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        submission,
+        true,
+        f.storage,
+        database,
+      ),
+    ]);
+    expect(first).toEqual(duplicate);
+    expect(first.state).toBe('submitted');
+    await expect(
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        {
+          ...submission,
+          comments: [{ ...draft.comments[0], text: 'changed' }],
+        },
+        true,
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('already_submitted');
+    const b = await f.publish(
+      'revision',
+      'first line\nrevised line',
+      a.object.id,
+    );
+    const [pending] = await listArtifactFeedback(
+      f.context,
+      f.sessionId,
+      a.id,
+      database,
+    );
+    expect(pending?.stale).toBe(true);
+    expect(pending?.state).toBe('submitted');
+    await expect(
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        f.draft(a),
+        true,
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('version_changed');
+    expect(
+      (await getWorkbenchArtifact(f.context, f.sessionId, b.id, database))
+        .stale,
+    ).toBe(false);
+    const addressed = await addressArtifactFeedback(
+      f.context,
+      f.sessionId,
+      {
+        feedbackId: draft.feedbackId,
+        resultArtifactId: b.id,
+        resolution: '回应见第二行；等待用户复核。',
+      },
+      database,
+    );
+    expect(addressed.state).toBe('addressed');
+    expect(addressed.resultArtifactId).toBe(b.id);
+    expect(
+      await database`select id from allrice_approval_requests where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+  });
+  it('P06 rejects stale parent, stale draft revision, invalid anchors and non-descendant resolution', async () => {
+    const f = await artifactFixture(),
+      a = await f.publish(),
+      draft = f.draft(a);
+    await expect(
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        { ...draft, checksum: digest('wrong') },
+        true,
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('version_changed');
+    await expect(
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        {
+          ...draft,
+          comments: [
+            {
+              ...draft.comments[0],
+              anchor: { ...draft.comments[0]!.anchor, endLine: 99 },
+            },
+          ],
+        },
+        false,
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('anchor_changed');
+    await saveArtifactFeedback(
+      f.context,
+      f.sessionId,
+      draft,
+      false,
+      f.storage,
+      database,
+    );
+    await expect(
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        {
+          ...draft,
+          comments: [{ ...draft.comments[0], text: 'different browser draft' }],
+        },
+        false,
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('revision_conflict');
+    await saveArtifactFeedback(
+      f.context,
+      f.sessionId,
+      { ...draft, expectedRevision: 1 },
+      true,
+      f.storage,
+      database,
+    );
+    const foreign = await f.publish('unrelated', 'separate series');
+    await expect(
+      addressArtifactFeedback(
+        f.context,
+        f.sessionId,
+        {
+          feedbackId: draft.feedbackId,
+          resultArtifactId: foreign.id,
+          resolution: 'Not a revision',
+        },
+        database,
+      ),
+    ).rejects.toThrow('invalid_resolution');
+    await f.publish('revision', 'second version', a.object.id);
+    await expect(
+      f.publish('stale parent', 'third version', a.object.id),
+    ).rejects.toThrow('version_changed');
+  });
+  it('P06 rechecks tenant, owner, workspace and revoked membership for both content and feedback', async () => {
+    const f = await artifactFixture(),
+      a = await f.publish(),
+      draft = f.draft(a);
+    for (const context of [
+      { ...f.context, organizationId: randomUUID() },
+      { ...f.context, workspaceId: randomUUID() },
+      { ...f.context, actor: { type: 'user' as const, id: randomUUID() } },
+    ]) {
+      await expect(
+        getWorkbenchArtifact(context, f.sessionId, a.id, database),
+      ).rejects.toThrow();
+      await expect(
+        saveArtifactFeedback(
+          context,
+          f.sessionId,
+          draft,
+          true,
+          f.storage,
+          database,
+        ),
+      ).rejects.toThrow();
+    }
+    await database`update allrice_memberships set active=false where id=${f.membership}`;
+    await expect(
+      getWorkbenchArtifact(f.context, f.sessionId, a.id, database),
+    ).rejects.toThrow('identity_denied');
+    await expect(f.publish('new')).rejects.toThrow('identity_denied');
+  });
+  it('P06 binds Changeset content hashes and target; proposal and comments do not execute', async () => {
+    const f = await artifactFixture();
+    const text = 'console.log(1);',
+      checksum = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+    const execution = f.operation().input.snapshot.binding.execution;
+    const document = {
+      contractVersion: 1,
+      comparisonScope: 'changeset',
+      execution,
+      files: [{ path: 'code.mjs', before: null, after: { text, checksum } }],
+    };
+    const a = await f.publish(
+      'changeset',
+      JSON.stringify(document),
+      undefined,
+      'changeset',
+    );
+    expect(a.execution).toEqual(execution);
+    const draft = {
+      ...f.draft(a),
+      comments: [
+        {
+          id: randomUUID(),
+          anchor: {
+            kind: 'lines',
+            path: 'code.mjs',
+            side: 'after',
+            startLine: 1,
+            endLine: 1,
+            checksum,
+          },
+          text: 'rename function',
+        },
+      ],
+    };
+    expect(
+      (
+        await saveArtifactFeedback(
+          f.context,
+          f.sessionId,
+          draft,
+          true,
+          f.storage,
+          database,
+        )
+      ).state,
+    ).toBe('submitted');
+    await expect(
+      f.publish(
+        'wronghash',
+        JSON.stringify({
+          ...document,
+          files: [
+            {
+              ...document.files[0],
+              after: { text, checksum: digest('other') },
+            },
+          ],
+        }),
+        undefined,
+        'changeset',
+      ),
+    ).rejects.toThrow('content_mismatch');
+    await expect(
+      f.publish(
+        'target',
+        JSON.stringify({
+          ...document,
+          execution: { ...document.execution, deviceId: randomUUID() },
+        }),
+        undefined,
+        'changeset',
+      ),
+    ).rejects.toThrow('target_unavailable');
+    expect(
+      await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+  });
+  it('P06 reads pre-upgrade deliverables without guessing a historical Run or target', async () => {
+    const f = await artifactFixture(),
+      bytes = Buffer.from('legacy file');
+    const object = createToolBrokerExportObject({
+      context: f.execution,
+      mediaType: 'text/plain',
+      sizeBytes: bytes.length,
+      checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    });
+    await f.storage.put(object, new Blob([bytes]).stream());
+    const old = await registerToolBrokerExport(
+      {
+        context: f.execution,
+        sessionId: f.sessionId,
+        object,
+        fileName: 'old.txt',
+        format: 'text',
+      },
+      database,
+    );
+    const page = await listWorkbenchArtifacts(
+      f.context,
+      f.sessionId,
+      undefined,
+      database,
+    );
+    expect(page.artifacts[0]?.id).toBe(old.id);
+    expect(page.artifacts[0]?.provenance).toEqual({
+      kind: 'legacy_deliverable',
+      runId: null,
+      stepId: null,
+      operationId: null,
+    });
+    expect(page.artifacts[0]?.execution).toBeNull();
+    expect(
+      await database`select version_id from allrice_workbench_artifacts where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+  });
+  it('P06 does not publish with disabled flag or lost Worker lease', async () => {
+    const f = await artifactFixture();
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '0');
+    await expect(f.publish()).rejects.toThrow('feature_disabled');
+    vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+    await database`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.execution.jobId}`;
+    await expect(f.publish()).rejects.toThrow('run_unavailable');
+    expect(
+      await database`select id from allrice_storage_objects where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+  });
+  it('P06 rolls back registrations and cleans only its unregistered object on storage failure', async () => {
+    const f = await artifactFixture(),
+      original = f.storage.put.bind(f.storage);
+    const written: string[] = [];
+    vi.spyOn(f.storage, 'put').mockImplementation(async (object, content) => {
+      written.push(object.key);
+      await original(object, content);
+      throw Error('simulated storage acknowledgement failure');
+    });
+    await expect(f.publish()).rejects.toThrow('acknowledgement failure');
+    expect(
+      await database`select id from allrice_storage_objects where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+    expect(
+      await database`select version_id from allrice_workbench_artifacts where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+    expect(written).toHaveLength(1);
+    await expect(readFile(join(f.root, written[0]!))).rejects.toThrow('ENOENT');
+  });
+  it('P06 permits only identical committed retries after a Worker lease ends', async () => {
+    const f = await artifactFixture(),
+      a = await f.publish();
+    await database`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.execution.jobId}`;
+    expect((await f.publish()).id).toBe(a.id);
+    await expect(f.publish('new')).rejects.toThrow('run_unavailable');
+    await expect(f.publish('publish', 'different')).rejects.toThrow(
+      'idempotency_conflict',
+    );
+  });
+  it('P06 never silently hides a submitted feedback batch beyond the page bound', async () => {
+    const f = await artifactFixture(),
+      a = await f.publish();
+    const template = f.draft(a);
+    const comments = [
+      {
+        id: randomUUID(),
+        anchor: { kind: 'whole' },
+        text: 'Synthetic bounded feedback',
+      },
+    ];
+    await database`insert into allrice_artifact_feedback(id,organization_id,workspace_id,actor_id,artifact_id,checksum,revision,comments,state)
+      select gen_random_uuid(),${f.context.organizationId},${f.context.workspaceId},${f.context.actor.id},${a.id},${a.object.checksum},1,${database.json(comments)},'draft' from generate_series(1,100)`;
+    expect(
+      await listArtifactFeedback(f.context, f.sessionId, a.id, database),
+    ).toHaveLength(100);
+    await expect(
+      saveArtifactFeedback(
+        f.context,
+        f.sessionId,
+        template,
+        true,
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('feedback_limit');
   });
   it('P05 requires exact approval even for tenant Allow; old clients cannot claim commands', async () => {
     const f = await commandFixture();
