@@ -17,6 +17,7 @@ import {
 import { getRequestContext } from '../identity/session';
 import { sameOriginBrowserWrite } from '../identity/request-origin';
 import { getStorageAdapter } from '../storage/runtime';
+import { boundedRaster } from './raster-preview';
 
 type RouteAction =
   'list' | 'detail' | 'content' | 'draft' | 'submit' | 'address';
@@ -121,11 +122,17 @@ export async function artifactHttp(
         );
       if (policy.mode === 'authenticated_raster')
         return Response.json(
-          {
-            kind: 'image',
-            mediaType: artifact.object.mediaType,
-            base64: bytes.toString('base64'),
-          },
+          boundedRaster(bytes, artifact.object.mediaType)
+            ? {
+                kind: 'image',
+                mediaType: artifact.object.mediaType,
+                base64: bytes.toString('base64'),
+              }
+            : {
+                kind: 'download_only',
+                reason:
+                  '图片格式、动画或像素尺寸不符合静态预览限制，请下载查看。',
+              },
           { headers },
         );
       try {

@@ -1,0 +1,1069 @@
+'use client';
+import {
+  lazy,
+  Component,
+  Suspense,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import {
+  ReviewDraftInputSchema,
+  ReviewFeedbackSchema,
+  type ReviewDraftInput,
+  type ReviewFeedback,
+  type WorkbenchArtifact,
+} from '@allrice/contracts';
+import {
+  artifactKindLabel,
+  parseArtifactDetail,
+  parseArtifactPreview,
+  reviewAnchorLabel,
+  workbenchJson,
+  type ArtifactPreview,
+  type ArtifactCursor,
+} from '../../lib/chatflow/workbench-model';
+import styles from './workbench.module.css';
+
+const RichDiff = lazy(() =>
+  import('./cline-adapter/tool-file-diff').then((m) => ({
+    default: m.ToolFileDiff,
+  })),
+);
+class DiffBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  override state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  override render() {
+    return this.state.failed ? (
+      <p role="status">Diff 组件加载失败，可使用前后文本视图或下载此版本。</p>
+    ) : (
+      this.props.children
+    );
+  }
+}
+type Anchor = ReviewDraftInput['comments'][number]['anchor'];
+type Props = {
+  sessionId: string;
+  workspaceId: string;
+  tenantHeaders: Record<string, string>;
+  artifacts: WorkbenchArtifact[];
+  selectedId: string | null;
+  nextCursor: ArtifactCursor | null;
+  listError: string;
+  listLoading: boolean;
+  narrow: boolean;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+  onReload: (cursor?: ArtifactCursor) => Promise<void>;
+  onDirtyChange?: (value: boolean) => void;
+};
+
+/** Focus-contained narrow panel; keeps the same component mounted when resized. */
+export function ArtifactWorkbench(props: Props) {
+  const panel = useRef<HTMLElement>(null),
+    dirty = useRef(false),
+    previousFocus = useRef<HTMLElement | null>(null);
+  const onDirty = useCallback(
+    (value: boolean) => {
+      dirty.current = value;
+      props.onDirtyChange?.(value);
+    },
+    [props.onDirtyChange],
+  );
+  const close = useCallback(() => {
+    if (
+      !dirty.current ||
+      window.confirm('有尚未保存的意见，关闭会丢失这些本地编辑。仍要关闭吗？')
+    )
+      props.onClose();
+  }, [props.onClose]);
+  useEffect(() => {
+    previousFocus.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    panel.current?.focus();
+    return () => previousFocus.current?.focus();
+  }, []);
+  useEffect(() => {
+    const unload = (e: BeforeUnloadEvent) => {
+      if (dirty.current) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', unload);
+    return () => window.removeEventListener('beforeunload', unload);
+  }, []);
+  const artifactId = props.selectedId ?? props.artifacts[0]?.id ?? null;
+  function select(id: string) {
+    if (
+      !dirty.current ||
+      window.confirm('有尚未保存的意见。切换版本前是否放弃这些本地编辑？')
+    )
+      props.onSelect(id);
+  }
+  return (
+    <>
+      {props.narrow ? (
+        <div className={styles.backdrop} onClick={close} aria-hidden="true" />
+      ) : null}
+      <aside
+        ref={panel}
+        tabIndex={-1}
+        className={`${styles.panel} ${props.narrow ? styles.drawer : ''}`}
+        role={props.narrow ? 'dialog' : 'complementary'}
+        aria-label="工件与审查工作台"
+        aria-modal={props.narrow ? true : undefined}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            close();
+          }
+          if (props.narrow && event.key === 'Tab') {
+            const nodes = [
+              ...panel.current!.querySelectorAll<HTMLElement>(
+                'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary',
+              ),
+            ].filter((n) => n.getClientRects().length);
+            const first = nodes[0],
+              last = nodes.at(-1);
+            if (
+              event.shiftKey &&
+              (document.activeElement === first ||
+                document.activeElement === panel.current)
+            ) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }
+        }}
+      >
+        <header className={styles.header}>
+          <h2>工件与审查</h2>
+          <button type="button" aria-label="关闭工作台" onClick={close}>
+            ×
+          </button>
+        </header>
+        <div className={styles.body}>
+          <div className={styles.row}>
+            <label htmlFor="workbench-artifacts">工件版本</label>
+            <button
+              type="button"
+              disabled={props.listLoading}
+              onClick={() => void props.onReload()}
+            >
+              刷新列表
+            </button>
+          </div>
+          {props.listError ? (
+            <p className={styles.error} role="alert">
+              {props.listError}
+            </p>
+          ) : null}
+          {artifactId ? (
+            <>
+              <select
+                id="workbench-artifacts"
+                className={styles.selector}
+                value={artifactId}
+                onChange={(e) => select(e.target.value)}
+              >
+                {!props.artifacts.some((a) => a.id === artifactId) ? (
+                  <option value={artifactId}>所选版本</option>
+                ) : null}
+                {props.artifacts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {artifactKindLabel(a)} · {a.version.fileName} · v
+                    {a.version.version}
+                    {a.stale ? '（旧版）' : ''}
+                  </option>
+                ))}
+              </select>
+              {props.nextCursor ? (
+                <button
+                  type="button"
+                  disabled={props.listLoading}
+                  onClick={() => void props.onReload(props.nextCursor!)}
+                >
+                  加载更早工件
+                </button>
+              ) : null}
+              <ArtifactReview
+                key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
+                artifactId={artifactId}
+                sessionId={props.sessionId}
+                workspaceId={props.workspaceId}
+                tenantHeaders={props.tenantHeaders}
+                onDirty={onDirty}
+                onSelect={select}
+              />
+            </>
+          ) : (
+            <p className={styles.muted}>
+              {props.listLoading
+                ? '正在加载工件…'
+                : '这个会话还没有工件。Rice 交付的文件与计划会显示在这里。'}
+            </p>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+export function ArtifactSummaryCards({
+  artifacts,
+  onOpen,
+}: {
+  artifacts: WorkbenchArtifact[];
+  onOpen: (id: string) => void;
+}) {
+  const series = new Map<string, WorkbenchArtifact>();
+  for (const a of artifacts)
+    if (
+      !series.has(a.version.seriesId) ||
+      series.get(a.version.seriesId)!.version.version < a.version.version
+    )
+      series.set(a.version.seriesId, a);
+  const newest = [...series.values()];
+  return (
+    <div className={styles.summaries}>
+      {newest.map((a) => (
+        <button
+          type="button"
+          className={styles.summary}
+          key={a.id}
+          onClick={() => onOpen(a.id)}
+        >
+          <span>▤ {a.version.fileName}</span>
+          <small>
+            {artifactKindLabel(a)} · v{a.version.version} · 查看
+          </small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TextPage({
+  text,
+  onLine,
+  label,
+}: {
+  text: string;
+  onLine?: (line: number) => void;
+  label: string;
+}) {
+  const [page, setPage] = useState(0),
+    lines = text.split('\n'),
+    pages = Math.max(1, Math.ceil(lines.length / 100));
+  const current = Math.min(page, pages - 1);
+  return (
+    <>
+      <div className={styles.preview} aria-label={label}>
+        <pre>
+          {lines.slice(current * 100, (current + 1) * 100).map((line, i) => (
+            <span className={styles.line} key={i}>
+              {onLine ? (
+                <button
+                  type="button"
+                  aria-label={`评论第 ${current * 100 + i + 1} 行`}
+                  onClick={() => onLine(current * 100 + i + 1)}
+                >
+                  {current * 100 + i + 1}
+                </button>
+              ) : (
+                <span aria-hidden="true">{current * 100 + i + 1} </span>
+              )}
+              <code>
+                {line || '\u00a0'}
+                {'\n'}
+              </code>
+            </span>
+          ))}
+        </pre>
+      </div>
+      {pages > 1 ? (
+        <div className={styles.row}>
+          <button
+            type="button"
+            disabled={current === 0}
+            onClick={() => setPage((v) => v - 1)}
+          >
+            上一页正文
+          </button>
+          <span>
+            {current + 1}/{pages} 页 · {lines.length} 行
+          </span>
+          <button
+            type="button"
+            disabled={current + 1 === pages}
+            onClick={() => setPage((v) => v + 1)}
+          >
+            下一页正文
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ArtifactReview({
+  artifactId,
+  sessionId,
+  workspaceId,
+  tenantHeaders,
+  onDirty,
+  onSelect,
+}: {
+  artifactId: string;
+  sessionId: string;
+  workspaceId: string;
+  tenantHeaders: Record<string, string>;
+  onDirty: (value: boolean) => void;
+  onSelect: (id: string) => void;
+}) {
+  const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
+    [feedback, setFeedback] = useState<ReviewFeedback[]>([]),
+    [preview, setPreview] = useState<ArtifactPreview | null>(null);
+  const [draft, setDraft] = useState<ReviewDraftInput | null>(null),
+    [dirty, setDirty] = useState(false),
+    [error, setError] = useState(''),
+    [notice, setNotice] = useState(''),
+    [busy, setBusy] = useState(false),
+    [previewError, setPreviewError] = useState(''),
+    [previewRetry, setPreviewRetry] = useState(0);
+  const [text, setText] = useState(''),
+    [anchor, setAnchor] = useState<Anchor>({ kind: 'whole' }),
+    [path, setPath] = useState(''),
+    [side, setSide] = useState<'before' | 'after'>('after');
+  const [start, setStart] = useState(1),
+    [end, setEnd] = useState(1),
+    [view, setView] = useState<'preview' | 'diff'>('preview'),
+    [mode, setMode] = useState<'split' | 'unified'>('split'),
+    [rawSide, setRawSide] = useState<'before' | 'after'>('after');
+  const [previous, setPrevious] = useState<{
+      artifact: WorkbenchArtifact;
+      preview: ArtifactPreview;
+    } | null>(null),
+    [ready, setReady] = useState(false);
+  const generation = useRef(0),
+    composer = useRef<HTMLTextAreaElement>(null),
+    dirtyRef = useRef(false),
+    pending = useRef<AbortController | null>(null);
+  const endpoint = `/api/v1/sessions/${sessionId}/artifacts/${artifactId}`,
+    query = `?workspaceId=${workspaceId}`;
+  dirtyRef.current = dirty || !!text;
+  useEffect(() => {
+    onDirty(dirty || !!text);
+    return () => onDirty(false);
+  }, [dirty, text, onDirty]);
+  const resetDraft = (a: WorkbenchArtifact, rows: ReviewFeedback[]) => {
+    const saved = [...rows].reverse().find((f) => f.state === 'draft');
+    setDraft(
+      saved
+        ? {
+            feedbackId: saved.id,
+            artifactId: a.id,
+            checksum: saved.checksum,
+            expectedRevision: saved.revision,
+            comments: saved.comments,
+          }
+        : {
+            feedbackId: crypto.randomUUID(),
+            artifactId: a.id,
+            checksum: a.object.checksum,
+            expectedRevision: 0,
+            comments: [],
+          },
+    );
+    setDirty(false);
+    setText('');
+    setAnchor({ kind: 'whole' });
+  };
+  const refresh = useCallback(
+    async (reset = false) => {
+      const token = ++generation.current;
+      pending.current?.abort();
+      const control = new AbortController();
+      pending.current = control;
+      if (reset) setError('');
+      try {
+        const result = parseArtifactDetail(
+          await workbenchJson(endpoint + query, tenantHeaders, {
+            signal: control.signal,
+          }),
+        );
+        if (
+          result.artifact.id !== artifactId ||
+          result.artifact.version.sessionId !== sessionId
+        )
+          throw Error('工件所属会话不匹配');
+        if (token !== generation.current) return;
+        setArtifact(result.artifact);
+        setFeedback(result.feedback);
+        if (reset) resetDraft(result.artifact, result.feedback);
+        setReady(true);
+      } catch (cause) {
+        if (token === generation.current && !control.signal.aborted) {
+          setError(cause instanceof Error ? cause.message : '工件不可用');
+          setReady(false);
+          setArtifact(null);
+          setPreview(null);
+        }
+      }
+    },
+    [endpoint, query, tenantHeaders, artifactId, sessionId],
+  );
+  useEffect(() => {
+    void refresh(true);
+    return () => {
+      generation.current++;
+      pending.current?.abort();
+    };
+  }, [refresh]);
+  useEffect(() => {
+    if (!artifact || preview) return;
+    const controller = new AbortController();
+    setPreviewError('');
+    workbenchJson(`${endpoint}/content${query}`, tenantHeaders, {
+      signal: controller.signal,
+    })
+      .then(parseArtifactPreview)
+      .then((value) => {
+        if (!controller.signal.aborted) {
+          setPreview(value);
+          if (value.kind === 'changeset') {
+            setPath(value.changeset.files[0]!.path);
+            setView('diff');
+          }
+        }
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted)
+          setPreviewError(
+            cause instanceof Error ? cause.message : '预览不可用',
+          );
+      });
+    return () => controller.abort();
+  }, [artifact?.id, !!preview, endpoint, query, tenantHeaders, previewRetry]);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!busy) void refresh(false);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [refresh, busy]);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 760px)');
+    const sync = () => setMode(mq.matches ? 'unified' : 'split');
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+  useEffect(() => {
+    if (
+      view !== 'diff' ||
+      !artifact?.version.parentVersionId ||
+      artifact.kind === 'changeset' ||
+      previous
+    )
+      return;
+    const controller = new AbortController(),
+      id = artifact.version.parentVersionId,
+      url = `/api/v1/sessions/${sessionId}/artifacts/${id}`;
+    Promise.all([
+      workbenchJson(url + query, tenantHeaders, { signal: controller.signal }),
+      workbenchJson(`${url}/content${query}`, tenantHeaders, {
+        signal: controller.signal,
+      }),
+    ])
+      .then(([detail, content]) => {
+        const d = parseArtifactDetail(detail);
+        if (
+          d.artifact.id !== id ||
+          d.artifact.version.seriesId !== artifact.version.seriesId
+        )
+          throw Error('比较基线不匹配');
+        if (!controller.signal.aborted)
+          setPrevious({
+            artifact: d.artifact,
+            preview: parseArtifactPreview(content),
+          });
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted)
+          setError(cause instanceof Error ? cause.message : '基线不可用');
+      });
+    return () => controller.abort();
+  }, [view, artifact?.id, !!previous, sessionId, query, tenantHeaders]);
+
+  const file =
+    preview?.kind === 'changeset'
+      ? preview.changeset.files.find((f) => f.path === path)
+      : null;
+  const bodyText = preview?.kind === 'text' ? preview.text : null;
+  const supportsLines =
+    !!file ||
+    (!!artifact &&
+      bodyText !== null &&
+      ['text/plain', 'text/markdown', 'application/json'].includes(
+        artifact.object.mediaType,
+      ));
+  const useLines = useCallback(
+    (selectedSide: 'before' | 'after', a: number, b: number) => {
+      const target = file?.[selectedSide];
+      if (file && target)
+        setAnchor({
+          kind: 'lines',
+          path: file.path,
+          side: selectedSide,
+          startLine: a,
+          endLine: b,
+          checksum: target.checksum,
+        });
+      else if (artifact && supportsLines && selectedSide === 'after')
+        setAnchor({
+          kind: 'lines',
+          path: null,
+          side: 'after',
+          startLine: a,
+          endLine: b,
+          checksum: artifact.object.checksum,
+        });
+      else {
+        setNotice('此侧不支持当前版本的行评论，请使用整件意见。');
+        return;
+      }
+      setSide(selectedSide);
+      setStart(a);
+      setEnd(b);
+      composer.current?.focus();
+    },
+    [file, artifact?.id, supportsLines],
+  );
+  function addComment() {
+    if (!draft || !artifact || artifact.stale || !text.trim()) return;
+    const updated = {
+      ...draft,
+      comments: [...draft.comments, { id: crypto.randomUUID(), anchor, text }],
+    };
+    const parsed = ReviewDraftInputSchema.safeParse(updated);
+    if (!parsed.success) {
+      setError('每批最多 20 条意见，每条最多 4000 字；请检查评论范围。');
+      return;
+    }
+    setDraft(parsed.data);
+    setText('');
+    setDirty(true);
+    setNotice('已加入本地草稿，保存或提交后才会持久化。');
+  }
+  async function save(submit: boolean) {
+    if (!draft || busy || artifact?.stale) return;
+    setBusy(true);
+    setError('');
+    try {
+      const raw = (await workbenchJson(
+        `${endpoint}/feedback${query}`,
+        tenantHeaders,
+        {
+          method: submit ? 'POST' : 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(draft),
+        },
+      )) as { feedback: unknown };
+      const saved = ReviewFeedbackSchema.parse(raw.feedback);
+      if (saved.artifactId !== artifactId || saved.id !== draft.feedbackId)
+        throw Error('反馈回执不匹配');
+      setFeedback((rows) => [...rows.filter((f) => f.id !== saved.id), saved]);
+      setDirty(false);
+      setDraft(
+        submit
+          ? {
+              ...draft,
+              feedbackId: crypto.randomUUID(),
+              expectedRevision: 0,
+              comments: [],
+            }
+          : { ...draft, expectedRevision: saved.revision },
+      );
+      setNotice(
+        submit
+          ? '意见已提交，等待后续处理。它不是文件执行授权。'
+          : '草稿已保存，重新打开可继续编辑。',
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '反馈保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const canEdit = ready && !artifact?.stale && !busy;
+  return (
+    <div>
+      {error ? (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      ) : null}
+      {!artifact ? (
+        <p role="status">{error ? '工件暂不可用。' : '正在读取版本…'}</p>
+      ) : (
+        <>
+          <h3>{artifact.version.fileName}</h3>
+          <div className={styles.meta}>
+            <span className={styles.badge}>
+              {artifactKindLabel(artifact)} · v{artifact.version.version}
+            </span>
+            <span
+              className={`${styles.badge} ${artifact.stale ? styles.stale : ''}`}
+            >
+              {artifact.stale ? '旧版本 · 仅查看' : '当前版本'}
+            </span>
+          </div>
+          {artifact.stale ? (
+            <p className={styles.muted}>
+              文件已有新版本，旧意见和旧批准不会自动作用于新内容。
+              <button
+                type="button"
+                onClick={() => onSelect(artifact.latestVersionId)}
+              >
+                查看最新版本
+              </button>
+            </p>
+          ) : null}
+          <div className={styles.scope}>
+            <p>
+              {artifact.kind === 'changeset'
+                ? '比较范围：本次 Changeset 提案（不是工作区总 Diff，也不是落盘成功回执）'
+                : view === 'diff'
+                  ? `比较范围：交付物 v${previous?.artifact.version.version ?? '…'} → v${artifact.version.version}`
+                  : '查看范围：这个交付物的精确版本'}
+            </p>
+            <p>
+              {artifact.provenance.kind === 'legacy_deliverable'
+                ? '来源：升级前交付物，历史 Run / 执行目标未记录'
+                : `来源：${artifact.provenance.kind === 'model_proposal' ? 'Rice 提案' : '工具结果'} · Run ${artifact.provenance.runId?.slice(0, 8)}`}
+            </p>
+            {artifact.execution ? (
+              <p>
+                目标：本地 Bridge · {artifact.execution.deviceId?.slice(0, 8)}
+                <br />
+                工作副本：
+                {artifact.execution.workCopy.kind === 'in_place'
+                  ? '授权原目录'
+                  : '隔离副本'}{' '}
+                · 授权 v{artifact.execution.grantVersion}
+                （此处不证明设备当前在线）
+              </p>
+            ) : (
+              <p>
+                存放位置：SaaS 文件库
+                {artifact.provenance.kind === 'legacy_deliverable'
+                  ? '；历史执行位置未知'
+                  : ''}
+              </p>
+            )}
+            <details>
+              <summary>版本与基线标识</summary>
+              <code>
+                工件 {artifact.id}
+                <br />
+                SHA {artifact.object.checksum}
+                <br />
+                系列 {artifact.version.seriesId}
+                {artifact.execution ? (
+                  <>
+                    <br />
+                    目标 {artifact.execution.targetId}
+                    <br />
+                    工作副本 {artifact.execution.workCopy.id}
+                  </>
+                ) : null}
+              </code>
+            </details>
+          </div>
+          <div className={styles.row}>
+            <a
+              href={`/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(artifact.version.fileName)}`}
+              download
+            >
+              下载此版本
+            </a>
+            {artifact.kind !== 'changeset' &&
+            artifact.version.parentVersionId ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setView((v) => (v === 'diff' ? 'preview' : 'diff'))
+                }
+              >
+                {view === 'diff' ? '查看正文' : '与上一版对比'}
+              </button>
+            ) : null}
+          </div>
+          {preview?.kind === 'changeset' ? (
+            <label>
+              提案文件
+              <select
+                aria-label="提案文件"
+                className={styles.selector}
+                value={path}
+                onChange={(e) => {
+                  setPath(e.target.value);
+                  setAnchor({ kind: 'whole' });
+                  setStart(1);
+                  setEnd(1);
+                }}
+              >
+                {preview.changeset.files.map((f) => (
+                  <option key={f.path}>{f.path}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {view === 'diff' &&
+          (file || (bodyText !== null && previous?.preview.kind === 'text')) ? (
+            <>
+              <div className={styles.row}>
+                <label>
+                  Diff 布局
+                  <select
+                    aria-label="Diff 布局"
+                    value={mode}
+                    onChange={(e) =>
+                      setMode(e.target.value as 'split' | 'unified')
+                    }
+                  >
+                    <option value="split">并排</option>
+                    <option value="unified">统一</option>
+                  </select>
+                </label>
+                <span className={styles.muted}>选中同侧行号可定位评论</span>
+              </div>
+              <div className={styles.preview}>
+                <DiffBoundary key={`${artifact.id}/${path}`}>
+                  <Suspense fallback={<p>正在加载 Diff…</p>}>
+                    <RichDiff
+                      key={`${artifact.id}/${path}/${previous?.artifact.id ?? ''}`}
+                      path={file?.path ?? artifact.version.fileName}
+                      before={
+                        file
+                          ? (file.before?.text ?? null)
+                          : previous?.preview.kind === 'text'
+                            ? previous.preview.text
+                            : null
+                      }
+                      after={file ? (file.after?.text ?? null) : bodyText}
+                      mode={mode}
+                      onSelect={useLines}
+                    />
+                  </Suspense>
+                </DiffBoundary>
+              </div>
+              {file ? (
+                <p className={styles.muted}>
+                  修改前 {file.before?.checksum.slice(0, 19) ?? '新文件'} →
+                  修改后 {file.after?.checksum.slice(0, 19) ?? '删除提案'}
+                </p>
+              ) : null}
+            </>
+          ) : view === 'diff' && bodyText !== null ? (
+            <p className={styles.muted}>
+              {previous
+                ? '上一版不支持文本对比，可分别下载核对。'
+                : '正在读取上一版基线…'}
+            </p>
+          ) : null}
+          {file ? (
+            <details>
+              <summary>查看完整前后文本（分页）</summary>
+              <label>
+                文本侧
+                <select
+                  aria-label="文本侧"
+                  value={rawSide}
+                  onChange={(e) =>
+                    setRawSide(e.target.value as 'before' | 'after')
+                  }
+                >
+                  <option value="before">修改前</option>
+                  <option value="after">修改后</option>
+                </select>
+              </label>
+              <TextPage
+                key={`${path}/${rawSide}`}
+                text={file[rawSide]?.text ?? ''}
+                label={`${rawSide === 'before' ? '修改前' : '修改后'}文本`}
+                onLine={
+                  file[rawSide]
+                    ? (line) => useLines(rawSide, line, line)
+                    : undefined
+                }
+              />
+            </details>
+          ) : bodyText !== null ? (
+            <TextPage
+              text={bodyText}
+              label="工件正文（只读文本）"
+              onLine={
+                supportsLines
+                  ? (line) => useLines('after', line, line)
+                  : undefined
+              }
+            />
+          ) : preview?.kind === 'image' ? (
+            <div className={styles.preview}>
+              {/* Static raster only; no remote URL, SVG or HTML insertion. */}
+              <img
+                src={`data:${preview.mediaType};base64,${preview.base64}`}
+                alt={`${artifact.version.fileName} 静态预览`}
+              />
+            </div>
+          ) : preview?.kind === 'download_only' ? (
+            <p className={styles.muted}>{preview.reason}</p>
+          ) : !preview ? (
+            previewError ? (
+              <div role="alert" className={styles.error}>
+                <p>{previewError}</p>
+                <button
+                  type="button"
+                  onClick={() => setPreviewRetry((n) => n + 1)}
+                >
+                  重试预览
+                </button>
+              </div>
+            ) : (
+              <p role="status">正在读取安全预览…</p>
+            )
+          ) : null}
+          <section className={styles.feedback} aria-label="版本反馈">
+            <h3>对此版本的意见</h3>
+            <p className={styles.muted}>
+              意见会绑定 v{artifact.version.version}
+              ，不会批准文件修改或命令执行。图片与非文本格式支持整件反馈。
+            </p>
+            {supportsLines ? (
+              <div className={styles.row}>
+                {file ? (
+                  <label>
+                    评论侧
+                    <select
+                      aria-label="评论侧"
+                      disabled={!canEdit}
+                      value={side}
+                      onChange={(e) =>
+                        setSide(e.target.value as 'before' | 'after')
+                      }
+                    >
+                      <option value="before">修改前</option>
+                      <option value="after">修改后</option>
+                    </select>
+                  </label>
+                ) : null}
+                <label>
+                  起始行
+                  <input
+                    aria-label="起始行"
+                    type="number"
+                    min={1}
+                    max={200001}
+                    value={start}
+                    disabled={!canEdit}
+                    onChange={(e) => setStart(Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  结束行
+                  <input
+                    aria-label="结束行"
+                    type="number"
+                    min={1}
+                    max={200001}
+                    value={end}
+                    disabled={!canEdit}
+                    onChange={(e) => setEnd(Number(e.target.value))}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!canEdit}
+                  onClick={() => useLines(side, start, end)}
+                >
+                  定位行范围
+                </button>
+              </div>
+            ) : null}
+            <p className={styles.muted}>
+              位置：{reviewAnchorLabel(anchor)}{' '}
+              {anchor.kind !== 'whole' ? (
+                <button
+                  type="button"
+                  onClick={() => setAnchor({ kind: 'whole' })}
+                >
+                  改为整件意见
+                </button>
+              ) : null}
+            </p>
+            <label
+              htmlFor="artifact-feedback-text"
+              className={styles.hiddenLabel}
+            >
+              评论内容
+            </label>
+            <textarea
+              id="artifact-feedback-text"
+              ref={composer}
+              value={text}
+              maxLength={4000}
+              disabled={!canEdit}
+              placeholder="提出修改意见，或说明需要澄清的地方…"
+              onChange={(e) => setText(e.target.value)}
+            />
+            <div className={styles.row}>
+              <button
+                type="button"
+                disabled={
+                  !canEdit ||
+                  !text.trim() ||
+                  (draft?.comments.length ?? 0) >= 20
+                }
+                onClick={addComment}
+              >
+                加入本批意见
+              </button>
+              <span className={styles.muted}>
+                {draft?.comments.length ?? 0}/20 条 ·{' '}
+                {dirty || text ? '尚未保存' : '无未保存编辑'}
+              </span>
+            </div>
+            {draft?.comments.map((c) => (
+              <div className={styles.comment} key={c.id}>
+                <small>{reviewAnchorLabel(c.anchor)}</small>
+                <p>{c.text}</p>
+                <button
+                  type="button"
+                  disabled={!canEdit}
+                  onClick={() => {
+                    setDraft({
+                      ...draft,
+                      comments: draft.comments.filter((x) => x.id !== c.id),
+                    });
+                    setDirty(true);
+                  }}
+                >
+                  移除此条
+                </button>
+              </div>
+            ))}
+            <div className={styles.row}>
+              <button
+                type="button"
+                disabled={!canEdit || !draft?.comments.length || !!text}
+                onClick={() => void save(false)}
+              >
+                保存草稿
+              </button>
+              <button
+                type="button"
+                className={styles.primary}
+                disabled={!canEdit || !draft?.comments.length || !!text}
+                onClick={() => void save(true)}
+              >
+                提交本批意见
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  if (
+                    !dirtyRef.current ||
+                    window.confirm('刷新会丢弃未保存编辑，继续吗？')
+                  )
+                    void refresh(true);
+                }}
+              >
+                刷新版本反馈
+              </button>
+            </div>
+            {notice ? (
+              <p role="status" className={styles.muted}>
+                {notice}
+              </p>
+            ) : null}
+          </section>
+          <section className={styles.history} aria-label="已保存反馈">
+            <h3>已保存反馈 · {feedback.length}</h3>
+            {feedback.length === 0 ? (
+              <p className={styles.muted}>暂无已保存的意见。</p>
+            ) : (
+              feedback.map((f) => (
+                <details key={f.id}>
+                  <summary>
+                    {f.state === 'draft'
+                      ? '草稿'
+                      : f.state === 'submitted'
+                        ? '已提交 · 待处理'
+                        : '已关联回应 · 待复核'}{' '}
+                    · {f.comments.length} 条{f.stale ? ' · 旧版本' : ''}
+                  </summary>
+                  {f.comments.map((c) => (
+                    <div className={styles.comment} key={c.id}>
+                      <small>{reviewAnchorLabel(c.anchor)}</small>
+                      <p>{c.text}</p>
+                    </div>
+                  ))}
+                  {f.state === 'draft' ? (
+                    <button
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={() => {
+                        if (
+                          !dirtyRef.current ||
+                          window.confirm('切换到已保存草稿，放弃未保存编辑？')
+                        ) {
+                          setDraft({
+                            feedbackId: f.id,
+                            artifactId,
+                            checksum: f.checksum,
+                            expectedRevision: f.revision,
+                            comments: f.comments,
+                          });
+                          setText('');
+                          setDirty(false);
+                        }
+                      }}
+                    >
+                      继续此草稿
+                    </button>
+                  ) : null}
+                  {f.resultArtifactId ? (
+                    <>
+                      <p>{f.resolution}</p>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(f.resultArtifactId!)}
+                      >
+                        查看回应版本
+                      </button>
+                    </>
+                  ) : null}
+                </details>
+              ))
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
