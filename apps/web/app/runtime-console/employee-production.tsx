@@ -776,11 +776,49 @@ export function EmployeeProduction() {
           <span>Provider</span>
           <select
             value={draft.modelPolicy.provider}
-            onChange={(event) =>
-              update(['modelPolicy', 'provider'], event.target.value)
-            }
+            onChange={(event) => {
+              if (
+                event.target.value === 'openai-codex' &&
+                draft.modelPolicy.provider === 'gemini'
+              ) {
+                setDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        modelPolicy: {
+                          ...current.modelPolicy,
+                          provider: 'openai-codex',
+                          model: 'gpt-5.6-luna',
+                          credentialReference: 'deployment:codex-default',
+                          baseUrl: null,
+                        },
+                      }
+                    : current,
+                );
+                return;
+              }
+              if (event.target.value !== 'gemini') {
+                update(['modelPolicy', 'provider'], event.target.value);
+                return;
+              }
+              setDraft((current) =>
+                current
+                  ? {
+                      ...current,
+                      modelPolicy: {
+                        ...current.modelPolicy,
+                        provider: 'gemini',
+                        model: 'gemini-3.8-flash',
+                        credentialReference: 'deployment:gemini-default',
+                        baseUrl: null,
+                      },
+                    }
+                  : current,
+              );
+            }}
           >
             <option value="openai-codex">Codex 订阅</option>
+            <option value="gemini">Gemini API（需单独启用）</option>
             <option value="deepseek-official">DeepSeek API</option>
             <option value="openai-compatible">OpenAI Compatible</option>
           </select>

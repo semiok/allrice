@@ -29,6 +29,7 @@ interface EmployeeProfileDetailsProps {
 
 function providerDisplayName(provider: string) {
   if (provider === 'openai-codex' || provider === 'codex') return 'Codex 订阅';
+  if (provider === 'gemini' || provider === 'google') return 'Gemini API';
   if (provider === 'deepseek-official' || provider === 'deepseek') {
     return 'DeepSeek API';
   }

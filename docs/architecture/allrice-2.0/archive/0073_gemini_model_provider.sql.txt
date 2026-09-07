@@ -1,0 +1,99 @@
+-- 0073_gemini_model_provider.sql
+-- Add Gemini model provider, connection, and 3.8flash catalog entry.
+-- Disable deprecated MiniMax and DeepSeek model providers.
+
+alter table allrice_model_providers drop constraint if exists allrice_model_providers_auth_mode_check;
+alter table allrice_model_providers add constraint allrice_model_providers_auth_mode_check
+  check (auth_mode in ('chatgpt_subscription', 'gemini_oauth', 'oauth', 'api_key', 'none'));
+
+-- 1. Disable deprecated providers
+update allrice_model_providers
+set enabled = false, updated_at = now()
+where provider_key in ('minimax', 'deepseek');
+
+update allrice_model_connections
+set status = 'disabled', updated_at = now()
+where id in (
+  '52000000-0000-4000-8000-000000000002',
+  '52000000-0000-4000-8000-000000000003'
+);
+
+update allrice_model_catalog_entries
+set enabled = false, updated_at = now()
+where id in (
+  '53000000-0000-4000-8000-000000000002',
+  '53000000-0000-4000-8000-000000000003'
+);
+
+-- 2. Insert Gemini provider
+insert into allrice_model_providers (
+  id, provider_key, name, harness, auth_mode, enabled
+) values (
+  '51000000-0000-4000-8000-000000000004',
+  'gemini',
+  'Gemini 授权登录',
+  'dsh',
+  'gemini_oauth',
+  true
+)
+on conflict (id) do update set
+  name = excluded.name,
+  harness = excluded.harness,
+  auth_mode = excluded.auth_mode,
+  enabled = true,
+  updated_at = now();
+
+-- 3. Insert Gemini platform connection
+insert into allrice_model_connections (
+  id, provider_id, scope, name, credential_reference, base_url,
+  status, stability, priority
+) values (
+  '52000000-0000-4000-8000-000000000004',
+  '51000000-0000-4000-8000-000000000004',
+  'platform',
+  'AllRice Gemini 授权登录',
+  'deployment:gemini-default',
+  null,
+  'ready',
+  'production',
+  15
+)
+on conflict (id) do update set
+  provider_id = excluded.provider_id,
+  name = excluded.name,
+  credential_reference = excluded.credential_reference,
+  status = excluded.status,
+  stability = excluded.stability,
+  priority = excluded.priority,
+  updated_at = now();
+
+-- 4. Insert 3.8flash catalog entry
+insert into allrice_model_catalog_entries (
+  id, provider_id, model, display_name, context_window_tokens,
+  reasoning_efforts, default_reasoning_effort,
+  input_modalities, output_modalities, stability, enabled
+) values (
+  '53000000-0000-4000-8000-000000000004',
+  '51000000-0000-4000-8000-000000000004',
+  '3.8flash',
+  'Gemini 3.8 Flash',
+  1048576,
+  '["low","medium","high"]'::jsonb,
+  'medium',
+  '["text","image","file"]'::jsonb,
+  '["text"]'::jsonb,
+  'production',
+  true
+)
+on conflict (id) do update set
+  provider_id = excluded.provider_id,
+  model = excluded.model,
+  display_name = excluded.display_name,
+  context_window_tokens = excluded.context_window_tokens,
+  reasoning_efforts = excluded.reasoning_efforts,
+  default_reasoning_effort = excluded.default_reasoning_effort,
+  input_modalities = excluded.input_modalities,
+  output_modalities = excluded.output_modalities,
+  stability = excluded.stability,
+  enabled = true,
+  updated_at = now();

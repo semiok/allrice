@@ -103,6 +103,7 @@ export const EmployeeRuntimePolicySchema = z
     }
     if (
       policy.provider !== 'openai-codex' &&
+      policy.provider !== 'gemini' &&
       policy.provider !== 'deepseek-official' &&
       policy.provider !== 'openai-compatible'
     ) {

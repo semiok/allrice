@@ -14,6 +14,8 @@ export type ModelReasoningEffort = z.infer<typeof ModelReasoningEffortSchema>;
 
 export const ModelProviderAuthModeSchema = z.enum([
   'chatgpt_subscription',
+  'gemini_oauth',
+  'oauth',
   'api_key',
   'none',
 ]);
@@ -30,11 +32,22 @@ export const ModelProviderSchema = z
     harness: HarnessKindSchema,
     authMode: ModelProviderAuthModeSchema,
     enabled: z.boolean(),
+    runtimeSupported: z.boolean().optional(),
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
   })
   .strict();
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
+
+/** Catalog compatibility is not proof of OAuth support or provider health. */
+export function modelProviderRuntimeSupported(input: {
+  key: string;
+  authMode: ModelProviderAuthMode;
+}) {
+  if (input.key === 'codex' || input.key === 'openai-codex')
+    return input.authMode === 'chatgpt_subscription';
+  return input.authMode === 'api_key';
+}
 
 export const ModelConnectionSchema = z
   .object({

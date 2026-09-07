@@ -76,6 +76,28 @@ export class HarnessRouter {
         });
         return result;
       }
+      const geminiPrefix = fallback.startsWith('gemini:')
+        ? 'gemini:'
+        : fallback.startsWith('gemini/')
+          ? 'gemini/'
+          : null;
+      if (geminiPrefix) {
+        const model = fallback.slice(geminiPrefix.length).trim();
+        if (!model) return result;
+        result.push({
+          provider: 'dsh',
+          authMode: 'allrice_credential',
+          route: 'gemini',
+          model,
+          reasoningEffort:
+            input.runtimePolicy.reasoningEffort === 'none'
+              ? 'medium'
+              : input.runtimePolicy.reasoningEffort,
+          credentialReference: 'deployment:gemini-default',
+          baseUrl: null,
+        });
+        return result;
+      }
       if (input.providerSnapshot.provider !== 'dsh') return result;
       const model = (
         dshPrefix ? fallback.slice(dshPrefix.length) : fallback

@@ -98,7 +98,12 @@ export const DshExecutionSnapshotSchema = z
   .object({
     provider: z.literal('dsh'),
     authMode: z.enum(['allrice_credential', 'platform_subscription']),
-    route: z.enum(['openai-codex', 'deepseek-official', 'openai-compatible']),
+    route: z.enum([
+      'openai-codex',
+      'gemini',
+      'deepseek-official',
+      'openai-compatible',
+    ]),
     model: z.string().min(1).max(200),
     reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
     credentialReference: z.string().min(1).max(255),
@@ -116,8 +121,12 @@ export const DshExecutionSnapshotSchema = z
         message: 'OpenAI Codex is a platform subscription Provider in DSH',
       });
     }
+    // Historical Gemini snapshots incorrectly said platform_subscription.
+    // Accept them for immutable history; execution still requires a separately
+    // enabled API adapter and a deployment/tenant-scoped credential resolver.
     if (
       snapshot.route !== 'openai-codex' &&
+      snapshot.route !== 'gemini' &&
       snapshot.authMode !== 'allrice_credential'
     ) {
       context.addIssue({

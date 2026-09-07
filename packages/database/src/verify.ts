@@ -2,6 +2,7 @@ import { readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { closeDatabase, getDatabase } from './core/client.js';
+import { migrationsMatch } from './migration-compatibility.js';
 import { loadPlatformContentCatalog } from './platform-content/catalog.js';
 import {
   buildPlatformContentCatalogMetadata,
@@ -23,9 +24,7 @@ try {
   `;
   const appliedMigrations = appliedRows.map((row) => row.name);
 
-  if (
-    JSON.stringify(appliedMigrations) !== JSON.stringify(expectedMigrations)
-  ) {
+  if (!migrationsMatch(expectedMigrations, appliedMigrations)) {
     throw new Error(
       `migration mismatch: expected ${expectedMigrations.join(', ') || 'none'}, got ${appliedMigrations.join(', ') || 'none'}`,
     );
