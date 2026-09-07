@@ -27,6 +27,7 @@ import {
   resolveEmployeeExecution,
   assertQuotaAvailable,
   ModelGovernanceError,
+  assertReviewRunCurrent,
 } from '@allrice/database';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
@@ -148,6 +149,23 @@ export async function executeEmployeeRun({
       'The frozen provider authorization mode has no reviewed execution adapter',
       false,
     );
+  try {
+    await assertReviewRunCurrent(
+      {
+        actor: execution.context.delegatedBy,
+        organizationId: execution.context.organizationId,
+        workspaceId: execution.context.workspaceId,
+      },
+      input.sessionId,
+      execution.context.runId,
+    );
+  } catch {
+    throw new HandlerError(
+      'REVIEW_VERSION_CHANGED',
+      '修订任务的工件版本或访问权限已变化，请审查当前版本后重新提交。',
+      false,
+    );
+  }
   const configChecksum = `sha256:${createHash('sha256')
     .update(
       JSON.stringify({
@@ -957,6 +975,18 @@ export async function executeEmployeeRun({
                     error instanceof Error ? error.message : 'unknown error',
                 });
               });
+              if (runtime.threadId && runtime.activeTurnId) {
+                await pollEmployeeConversationSteers({
+                  ownership,
+                  generation: runtime.generation,
+                  threadId: runtime.threadId,
+                  turnId: runtime.activeTurnId,
+                  signal,
+                  adapter,
+                  polling: () => false,
+                  drain: true,
+                });
+              }
             });
     if (routeDecision.selectedKind !== 'workflow') {
       await appendChatFlowEvent('turn.completed', {

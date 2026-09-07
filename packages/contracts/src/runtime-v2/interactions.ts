@@ -523,3 +523,34 @@ export const RuntimeInputReceiptSchema = z
       });
   });
 export type RuntimeInputReceipt = z.infer<typeof RuntimeInputReceiptSchema>;
+
+/** Internal native checkpoint proof. A pending inbox receipt is not adoption. */
+export const RuntimeNativeInputProofSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('pending'),
+      inputId: UuidSchema,
+      messageId: z.string().min(1).max(255),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('unknown'),
+      inputId: UuidSchema,
+      messageId: z.string().min(1).max(255),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('adopted'),
+      inputId: UuidSchema,
+      messageId: z.string().min(1).max(255),
+      sequence: RuntimeCounterSchema,
+      turnId: z.string().min(1).max(255),
+      checkpoint: z.enum(['question_resolved', 'step_user_message']),
+    })
+    .strict(),
+]);
+export type RuntimeNativeInputProof = z.infer<
+  typeof RuntimeNativeInputProofSchema
+>;

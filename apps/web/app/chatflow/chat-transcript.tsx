@@ -84,7 +84,11 @@ export function ChatTranscript({
                 : '';
 
               return (
-                <div className={chatUi.flowItem} key={message.id}>
+                <div
+                  className={chatUi.flowItem}
+                  key={message.id}
+                  id={`message-${message.id}`}
+                >
                   {message.role === 'user' &&
                   message.content.interaction?.type ===
                     'user_question_answer' ? (
@@ -93,6 +97,27 @@ export function ChatTranscript({
                       createdAt={message.createdAt}
                       text={message.content.text}
                     />
+                  ) : message.role === 'user' &&
+                    message.content.interaction?.type === 'review_response' ? (
+                    <div className={styles.messageMeta}>
+                      <strong>
+                        {message.content.interaction.review.kind ===
+                        'plan_review'
+                          ? '计划已认可 · 不代表动作批准'
+                          : '版本修订请求'}
+                      </strong>
+                      <span>
+                        版本{' '}
+                        {message.content.interaction.review.artifactId.slice(
+                          0,
+                          8,
+                        )}
+                      </span>
+                      <details>
+                        <summary>查看提交内容</summary>
+                        <p>{message.content.text}</p>
+                      </details>
+                    </div>
                   ) : message.role === 'user' ? (
                     <div className={messageUi.userRow}>
                       <div className={messageUi.userStack}>

@@ -1,6 +1,7 @@
 import { UuidSchema } from '@allrice/contracts';
 import type postgres from 'postgres';
 import { z } from 'zod';
+import { cancelUnadoptedSteers } from './conversation-input.ts';
 
 import { getDatabase } from '../core/client.ts';
 import {
@@ -982,12 +983,14 @@ export async function releaseConversationRuntime(input: {
         and session_id = ${values.sessionId}
         and state in ('pending', 'claimed')
     `;
+    await cancelUnadoptedSteers(transaction, values.sessionId);
     const next = await transaction<{ run_id: string }[]>`
       select run_id from allrice_conversation_followups
       where organization_id = ${values.organizationId}
         and workspace_id = ${values.workspaceId}
         and session_id = ${values.sessionId}
         and state = 'queued'
+        and mode <> 'steer_only'
       order by created_at, run_id
       for update skip locked
       limit 1

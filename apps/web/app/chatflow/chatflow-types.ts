@@ -2,6 +2,7 @@ import type {
   ChatFlowEventEnvelope,
   SaasCapabilityManifest,
   UserQuestionAnswerSubmission,
+  ReviewContinuationInput,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -66,10 +67,12 @@ export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
     text: string;
-    interaction?: {
-      type: 'user_question_answer';
-      answer: UserQuestionAnswerSubmission;
-    };
+    interaction?:
+      | {
+          type: 'user_question_answer';
+          answer: UserQuestionAnswerSubmission;
+        }
+      | { type: 'review_response'; review: ReviewContinuationInput };
   };
   status: 'pending' | 'completed' | 'failed';
   runId: string | null;

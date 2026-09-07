@@ -399,7 +399,15 @@ export class DshRuntimePool {
     await runtime.client.recover(runtime.sessionId);
   }
 
-  async steer(threadId: string, message: string) {
+  async steer(
+    threadId: string,
+    message: string,
+    typed?: {
+      inputId: string;
+      turnId: string;
+      kind: 'steer_current' | 'ask_user';
+    },
+  ) {
     const runtime = this.runtimes.get(threadId);
     if (!runtime) {
       throw new HandlerError(
@@ -408,7 +416,7 @@ export class DshRuntimePool {
         true,
       );
     }
-    await runtime.client.steer(runtime.sessionId, message);
+    return runtime.client.steer(runtime.sessionId, message, typed);
   }
 
   inventory(): readonly HarnessRuntimeProcessSnapshot[] {

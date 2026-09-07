@@ -1,3 +1,9 @@
+import { createHash } from 'node:crypto';
+import {
+  ArtifactReviewError,
+  assertWorkbenchSession,
+} from '../artifact-review.ts';
+import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 import {
   ChatMessageContentSchema,
   CorrectMemoryInputSchema,
@@ -933,6 +939,7 @@ export async function sendChatMessage(
   input: unknown,
 ) {
   const message = SendChatMessageInputSchema.parse(input);
+  const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
   const conversationMessage = message.userQuestionAnswer
     ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`
     : message.text;
@@ -987,6 +994,12 @@ export async function sendChatMessage(
         hashtextextended(${`${session.id}:${message.clientMessageId}`}, 50)
       )
     `;
+    await assertWorkbenchSession(
+      transaction,
+      { ...context, workspaceId },
+      session.id,
+      true,
+    );
     const existing = await transaction<MessageRow[]>`
       select * from allrice_messages
       where session_id = ${session.id}
@@ -994,7 +1007,30 @@ export async function sendChatMessage(
         and client_message_id = ${message.clientMessageId}
     `;
     let userMessage = existing[0];
+    if (userMessage) {
+      const [receipt] = await transaction<{ request_digest: string }[]>`
+        select request_digest from allrice_chat_input_requests where user_message_id=${userMessage.id}`;
+      if (
+        (receipt && receipt.request_digest !== requestDigest) ||
+        (!receipt &&
+          (ChatMessageContentSchema.parse(userMessage.content).text !==
+            message.text ||
+            message.reviewContinuation))
+      )
+        throw new ArtifactReviewError('input_id_conflict');
+      message.text = ChatMessageContentSchema.parse(userMessage.content).text;
+    }
     if (!userMessage) {
+      if (message.reviewContinuation) {
+        message.text = (
+          await prepareReviewContinuation(
+            transaction,
+            { ...context, workspaceId },
+            session.id,
+            message.reviewContinuation,
+          )
+        ).text;
+      }
       if (message.attachmentIds.length > 0) {
         const files = await transaction<
           { id: string; owner_id: string; file_name: string }[]
@@ -1031,6 +1067,14 @@ export async function sendChatMessage(
                   },
                 }
               : {}),
+            ...(message.reviewContinuation
+              ? {
+                  interaction: {
+                    type: 'review_response',
+                    review: message.reviewContinuation,
+                  },
+                }
+              : {}),
           })},
           ${session.visibility}, ${message.clientMessageId}, 'completed', now()
         )
@@ -1038,6 +1082,19 @@ export async function sendChatMessage(
       `;
       userMessage = users[0];
       if (!userMessage) throw new Error('user message creation failed');
+      await transaction`insert into allrice_chat_input_requests
+        (user_message_id,organization_id,workspace_id,session_id,owner_id,client_message_id,request_digest,kind)
+        values (${userMessage.id},${context.organizationId},${workspaceId},${session.id},${context.actor.id},
+        ${message.clientMessageId},${requestDigest},${
+          message.reviewContinuation?.kind ??
+          (message.userQuestionAnswer
+            ? 'ask_user'
+            : message.deliveryMode === 'steer'
+              ? 'steer_current'
+              : message.deliveryMode === 'follow_up'
+                ? 'queue_next'
+                : 'message')
+        })`;
       if (message.attachmentIds.length > 0) {
         for (const objectId of new Set(message.attachmentIds)) {
           await transaction`
@@ -1104,10 +1161,29 @@ export async function sendChatMessage(
   `;
   if (existingEmployeeRuns[0]) {
     const { getRun } = await import('../execution/queue.ts');
+    const [delivery] = await sql<
+      { mode: string; active_run_id: string | null; state: string }[]
+    >`
+      select f.mode,c.state,cr.active_run_id from allrice_conversation_followups f
+      left join allrice_conversation_commands c on c.followup_run_id=f.run_id
+      left join allrice_conversation_runtimes cr on cr.session_id=f.session_id
+      and cr.thread_generation=c.expected_generation and cr.active_turn_id=c.expected_turn_id
+      where f.run_id=${existingEmployeeRuns[0].run_id}`;
+    const steered = delivery?.mode !== 'follow_up' && delivery?.active_run_id;
     return {
       userMessage: mapMessage(context, result.userMessage, []),
       assistantMessage: mapMessage(context, result.assistantMessage, []),
-      run: await getRun(context, workspaceId, existingEmployeeRuns[0].run_id),
+      run: await getRun(
+        context,
+        workspaceId,
+        steered ? delivery.active_run_id! : existingEmployeeRuns[0].run_id,
+      ),
+      delivery: delivery
+        ? steered
+          ? 'steer_pending'
+          : 'follow_up'
+        : 'immediate',
+      fallbackRunId: delivery ? existingEmployeeRuns[0].run_id : null,
       created: false,
     };
   }
@@ -1211,6 +1287,9 @@ export async function sendChatMessage(
       },
       {
         employeeBinding: binding,
+        ...(message.reviewContinuation
+          ? { reviewContinuation: message.reviewContinuation }
+          : {}),
         conversationDelivery: {
           sessionId: session.id,
           userMessageId: result.userMessage.id,

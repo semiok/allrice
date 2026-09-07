@@ -49,6 +49,21 @@ import { BridgeJournal } from '../../../apps/rice-bridge/src/journal.js';
 import { RuntimeBridgeOperationClient } from '../../../apps/rice-bridge/src/operation-client.js';
 import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/operation-http.js';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
+import { riceManifest } from './employees/employee-config.ts';
+import { sendChatMessage } from './workspace/service.ts';
+import {
+  claimConversationSteer,
+  consumeConversationSteer,
+  deferConversationSteer,
+} from './conversation/conversation-input.ts';
+import { releaseConversationRuntime } from './conversation/conversation-runtime.ts';
+import { getInteractionStatus } from './conversation/interaction-status.ts';
+import { assertReviewRunCurrent } from './conversation/review-continuation.ts';
+import type * as DatabaseClient from './core/client.ts';
+vi.mock('./core/client.ts', async (original) => ({
+  ...(await original<typeof DatabaseClient>()),
+  getDatabase: () => database,
+}));
 import {
   publishWorkbenchArtifact,
   listWorkbenchArtifacts,
@@ -96,6 +111,7 @@ async function fixture(
     user: string;
     policy: string;
   }) => unknown,
+  manifest?: unknown,
 ) {
   const org = randomUUID(),
     workspace = randomUUID(),
@@ -122,7 +138,7 @@ async function fixture(
         userId: user,
         organizationId: org,
         workspaceId: workspace,
-        role: 'admin',
+        role: 'admin' as const,
         active: true,
       },
     ],
@@ -154,8 +170,8 @@ async function fixture(
     if (chat) {
       await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
         values(${employeeId},${org},${workspace},'assembly','B1 employee')`;
-      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum)
-        values(${versionId},${org},${workspace},${employeeId},1,'B1 frozen employee','synthetic','synthetic','[]',${digest('employee')})`;
+      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest)
+        values(${versionId},${org},${workspace},${employeeId},1,'B1 frozen employee','synthetic','synthetic','[]',${digest('employee')},${tx.json(JSON.parse(JSON.stringify(manifest ?? {})))})`;
       await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id)
         values(${assignmentId},${org},${workspace},${employeeId},${versionId},${user})`;
       await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
@@ -163,8 +179,8 @@ async function fixture(
       const userMessage = randomUUID(),
         assistantMessage = randomUUID();
       await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
-        values(${userMessage},${org},${workspace},${sessionId},${user},'user','{}'),
-          (${assistantMessage},${org},${workspace},${sessionId},${user},'assistant','{}')`;
+        values(${userMessage},${org},${workspace},${sessionId},${user},'user','{"text":"synthetic request","citations":[]}'),
+          (${assistantMessage},${org},${workspace},${sessionId},${user},'assistant','{"text":"synthetic answer","citations":[]}')`;
       await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,
         employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot)
         values(${run},${org},${workspace},${user},${assignmentId},${versionId},${sessionId},${userMessage},${assistantMessage},'{}','{}',
@@ -351,83 +367,92 @@ async function fixture(
   };
 }
 
-async function commandFixture(toolNames = ['local.process.execute']) {
+async function commandFixture(
+  toolNames = ['local.process.execute'],
+  manifest?: unknown,
+) {
   vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '1');
   vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
   vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
   const now = new Date().toISOString();
   const capabilities = ['model:invoke', 'storage:read', 'storage:write'];
-  const f = await fixture('allow', true, false, (ids) => {
-    const frozen = EmployeeExecutionSnapshotSchema.parse({
-      schemaVersion: 1,
-      employee: {
-        id: ids.employeeId,
-        versionId: ids.versionId,
-        key: 'fixture',
-        revision: 1,
-        definitionChecksum: digest('fixture'),
-        definition: {
-          schemaVersion: 1,
-          key: 'fixture',
-          name: 'P05 Fixture',
-          description: 'Synthetic tests only',
-          systemPrompt: 'Synthetic tests only',
-          provider: {
-            provider: 'basic',
-            authMode: 'none',
-            model: 'allrice/basic-assistant-v1',
-            reasoningEffort: 'none',
-            sandbox: 'none',
-          },
-          capabilities,
-          skillVersionIds: [],
-        },
-      },
-      assignment: {
-        id: ids.assignmentId,
-        userId: ids.user,
-        assignedBy: ids.user,
-        assignedAt: now,
-      },
-      runtimePolicy: {
-        harness: 'dsh',
-        provider: 'openai-codex',
-        model: 'fixture',
-        reasoningEffort: 'high',
-        timeoutMs: 300000,
-        fallbackModels: [],
-        credentialReference: 'test:never-resolved',
-      },
-      capabilitySnapshot: {
-        declaredCapabilities: capabilities,
-        grantedCapabilities: capabilities,
-        bindings: {
-          skillVersionIds: [],
-          toolNames,
-          knowledgeScopes: ['workspace'],
-          workflowIds: [],
-        },
-        skillBindings: [],
-      },
-      tenantContext: {
-        organizationId: ids.org,
-        workspaceId: ids.workspace,
-        actorId: ids.user,
-        policySnapshotId: ids.policy,
-      },
-      userProfile: {
+  const f = await fixture(
+    'allow',
+    true,
+    false,
+    (ids) => {
+      const frozen = EmployeeExecutionSnapshotSchema.parse({
         schemaVersion: 1,
-        displayName: 'P05 synthetic',
-        preferences: {},
-      },
-      createdAt: now,
-    });
-    return frozen;
-  });
+        employee: {
+          id: ids.employeeId,
+          versionId: ids.versionId,
+          key: 'fixture',
+          revision: 1,
+          definitionChecksum: digest('fixture'),
+          definition: {
+            schemaVersion: 1,
+            key: 'fixture',
+            name: 'P05 Fixture',
+            description: 'Synthetic tests only',
+            systemPrompt: 'Synthetic tests only',
+            provider: {
+              provider: 'basic',
+              authMode: 'none',
+              model: 'allrice/basic-assistant-v1',
+              reasoningEffort: 'none',
+              sandbox: 'none',
+            },
+            capabilities,
+            skillVersionIds: [],
+          },
+        },
+        assignment: {
+          id: ids.assignmentId,
+          userId: ids.user,
+          assignedBy: ids.user,
+          assignedAt: now,
+        },
+        runtimePolicy: {
+          harness: 'dsh',
+          provider: 'openai-codex',
+          model: 'fixture',
+          reasoningEffort: 'high',
+          timeoutMs: 300000,
+          fallbackModels: [],
+          credentialReference: 'test:never-resolved',
+        },
+        capabilitySnapshot: {
+          declaredCapabilities: capabilities,
+          grantedCapabilities: capabilities,
+          bindings: {
+            skillVersionIds: [],
+            toolNames,
+            knowledgeScopes: ['workspace'],
+            workflowIds: [],
+          },
+          skillBindings: [],
+        },
+        tenantContext: {
+          organizationId: ids.org,
+          workspaceId: ids.workspace,
+          actorId: ids.user,
+          policySnapshotId: ids.policy,
+        },
+        userProfile: {
+          schemaVersion: 1,
+          displayName: 'P05 synthetic',
+          preferences: {},
+        },
+        createdAt: now,
+      });
+      return frozen;
+    },
+    manifest,
+  );
   const jobId = randomUUID(),
     workerId = randomUUID();
   await database`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
-    values(${jobId},${f.context.organizationId},${f.context.workspaceId},${f.context.actor.id},${f.run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{}',
+    values(${jobId},${f.context.organizationId},${f.context.workspaceId},${f.context.actor.id},${f.run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',
       ${workerId},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
   await setRuntimePolicyControls(
     f.context,
@@ -577,12 +602,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       await admin.end();
     }
   });
-  async function artifactFixture() {
+  async function artifactFixture(manifest?: unknown) {
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-    const f = await commandFixture([
-      'workspace.export.create',
-      'local.process.execute',
-    ]);
+    const f = await commandFixture(
+      ['workspace.export.create', 'local.process.execute'],
+      manifest,
+    );
     const root = await mkdtemp(join(tmpdir(), 'allrice-p06-artifacts-'));
     artifactRoots.push(root);
     const storage = new LocalStorageAdapter(root);
@@ -633,6 +658,249 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     });
     return { ...f, root, storage, publish, draft };
   }
+  it('P10 persists strict input identity, native adoption and cancels expired steer without creating a later task', async () => {
+    const f = await artifactFixture(riceManifest());
+    f.context.memberships = f.policyPayload.memberships;
+    const workerId = f.execution.worker.id;
+    const turnId = `native-${f.sessionId}:turn:1`;
+    await database`update allrice_conversation_runtimes set worker_id=${workerId},active_turn_id=${turnId} where session_id=${f.sessionId}`;
+    const input = {
+      clientMessageId: randomUUID(),
+      text: 'Use corrected numbers.',
+      deliveryMode: 'steer',
+      expectedTurnId: turnId,
+      expectedGeneration: 3,
+    };
+    const sent = await sendChatMessage(
+      f.context,
+      f.context.workspaceId!,
+      f.sessionId,
+      input,
+    );
+    expect(sent.delivery).toBe('steer_pending');
+    expect(
+      (
+        await sendChatMessage(
+          f.context,
+          f.context.workspaceId!,
+          f.sessionId,
+          input,
+        )
+      ).run.id,
+    ).toBe(f.run);
+    await expect(
+      sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
+        ...input,
+        text: 'different',
+      }),
+    ).rejects.toThrow('input_id_conflict');
+    const claimInput = {
+      organizationId: f.context.organizationId,
+      workspaceId: f.context.workspaceId!,
+      sessionId: f.sessionId,
+      workerId,
+      generation: 3,
+      turnId,
+    };
+    expect(
+      await claimConversationSteer({ ...claimInput, workerId: randomUUID() }),
+    ).toBeNull();
+    const command = await claimConversationSteer(claimInput);
+    expect(command?.inputKind).toBe('steer_current');
+    const pending = {
+      status: 'pending' as const,
+      inputId: input.clientMessageId,
+      messageId: randomUUID(),
+    };
+    await expect(
+      consumeConversationSteer({
+        commandId: command!.id,
+        workerId,
+        proof: pending,
+      }),
+    ).rejects.toThrow('INPUT_ADOPTION_PROOF_REQUIRED');
+    await deferConversationSteer({
+      commandId: command!.id,
+      workerId,
+      proof: pending,
+    });
+    expect(
+      (await getInteractionStatus(f.context, f.sessionId)).inputs[0]?.status,
+    ).toBe('pending');
+    await claimConversationSteer({ ...claimInput, drain: true });
+    const proof = {
+      ...pending,
+      status: 'adopted' as const,
+      turnId,
+      sequence: 17,
+      checkpoint: 'step_user_message' as const,
+    };
+    await consumeConversationSteer({ commandId: command!.id, workerId, proof });
+    const status = await getInteractionStatus(f.context, f.sessionId);
+    expect(status.inputs[0]).toMatchObject({
+      status: 'adopted',
+      evidence: { sequence: 17, checkpoint: 'step_user_message' },
+    });
+    const unanswered = {
+      ...input,
+      clientMessageId: randomUUID(),
+      text: 'later correction',
+    };
+    const late = await sendChatMessage(
+      f.context,
+      f.context.workspaceId!,
+      f.sessionId,
+      unanswered,
+    );
+    await releaseConversationRuntime({
+      organizationId: f.context.organizationId,
+      workspaceId: f.context.workspaceId!,
+      sessionId: f.sessionId,
+      runId: f.run,
+      workerId,
+      outcome: 'idle',
+    });
+    const [job] =
+      await database`select status from allrice_jobs where run_id=${late.fallbackRunId!}`;
+    expect(job!.status).toBe('canceled');
+    await expect(
+      sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
+        ...input,
+        clientMessageId: randomUUID(),
+      }),
+    ).rejects.toThrow('input_turn_changed');
+    expect(
+      (await getInteractionStatus(f.context, f.sessionId)).inputs.some(
+        (i) => i.status === 'rejected',
+      ),
+    ).toBe(true);
+    await expect(
+      getInteractionStatus(
+        { ...f.context, actor: { type: 'user', id: randomUUID() } },
+        f.sessionId,
+      ),
+    ).rejects.toThrow('artifact_not_found');
+  });
+  it('P10 binds plan acceptance and feedback to immutable versions, distinct Runs and exact-once queue insertion', async () => {
+    const f = await artifactFixture(riceManifest());
+    f.context.memberships = f.policyPayload.memberships;
+    const plan = await f.publish(
+      'plan',
+      'Plan one\nPlan two',
+      undefined,
+      'plan',
+    );
+    const input = {
+      clientMessageId: randomUUID(),
+      text: '认可',
+      deliveryMode: 'follow_up',
+      reviewContinuation: {
+        kind: 'plan_review',
+        artifactId: plan.id,
+        checksum: plan.object.checksum,
+      },
+    };
+    const first = await sendChatMessage(
+      f.context,
+      f.context.workspaceId!,
+      f.sessionId,
+      input,
+    );
+    expect(first.delivery).toBe('follow_up');
+    expect(first.userMessage.content.interaction?.type).toBe('review_response');
+    expect(first.userMessage.content.text).toContain('不是文件写入');
+    expect(
+      (
+        await sendChatMessage(
+          f.context,
+          f.context.workspaceId!,
+          f.sessionId,
+          input,
+        )
+      ).run.id,
+    ).toBe(first.run.id);
+    await expect(
+      sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
+        ...input,
+        clientMessageId: randomUUID(),
+      }),
+    ).rejects.toThrow('review_already_sent');
+    const draft = f.draft(plan);
+    await saveArtifactFeedback(
+      f.context,
+      f.sessionId,
+      draft,
+      false,
+      f.storage,
+      database,
+    );
+    const feedbackInput = {
+      clientMessageId: randomUUID(),
+      text: '修订',
+      deliveryMode: 'follow_up',
+      reviewContinuation: {
+        kind: 'version_feedback',
+        artifactId: plan.id,
+        checksum: plan.object.checksum,
+        feedbackId: draft.feedbackId,
+      },
+    };
+    await expect(
+      sendChatMessage(
+        f.context,
+        f.context.workspaceId!,
+        f.sessionId,
+        feedbackInput,
+      ),
+    ).rejects.toThrow('submitted_feedback_required');
+    await saveArtifactFeedback(
+      f.context,
+      f.sessionId,
+      { ...draft, expectedRevision: 1 },
+      true,
+      f.storage,
+      database,
+    );
+    const second = await sendChatMessage(
+      f.context,
+      f.context.workspaceId!,
+      f.sessionId,
+      feedbackInput,
+    );
+    expect(second.run.id).not.toBe(first.run.id);
+    expect(second.userMessage.content.text).toContain(draft.comments[0]!.text);
+    await assertReviewRunCurrent(f.context, f.sessionId, first.run.id);
+    await f.publish('new-plan', 'Updated plan', plan.object.id, 'plan');
+    await expect(
+      assertReviewRunCurrent(f.context, f.sessionId, first.run.id),
+    ).rejects.toThrow('review_version_changed');
+    // ACK-loss retry returns the existing immutable response, even after a newer version arrives.
+    expect(
+      (
+        await sendChatMessage(
+          f.context,
+          f.context.workspaceId!,
+          f.sessionId,
+          input,
+        )
+      ).run.id,
+    ).toBe(first.run.id);
+    await expect(
+      sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
+        ...input,
+        clientMessageId: randomUUID(),
+      }),
+    ).rejects.toThrow('version_conflict');
+    expect(
+      await database`select response_id from allrice_review_continuations where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(2);
+    expect(
+      await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+    expect(
+      await database`select id from allrice_approval_requests where organization_id=${f.context.organizationId}`,
+    ).toHaveLength(0);
+  });
   it('P06 publishes immutable existing storage/version identities; idempotent concurrent delivery writes once', async () => {
     const f = await artifactFixture();
     const [a, b] = await Promise.all([f.publish(), f.publish()]);
@@ -1056,7 +1324,8 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   it.skipIf(process.env.ALLRICE_WORKBENCH_BROWSER_TEST !== '1')(
     'P07 real Chromium and PostgreSQL: Cline diff, persisted review, stale versions and inert previews',
     async () => {
-      const f = await artifactFixture();
+      const f = await artifactFixture(riceManifest());
+      f.context.memberships = f.policyPayload.memberships;
       const original = 'export const answer = 41;\nconsole.log(answer);\n',
         revised = 'export const answer = 42;\nconsole.log(answer);\n';
       const sha = (text: string) =>
@@ -1159,6 +1428,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       );
       let origin = '',
         lostSave = false,
+        lostContinuation = false,
         writeCount = 0;
       const server = createServer((req, res) => {
         void (async () => {
@@ -1191,6 +1461,44 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             return;
           }
           const base = `/api/v1/sessions/${f.sessionId}/artifacts`;
+          if (path === `/api/v1/sessions/${f.sessionId}/interactions`) {
+            res.end(
+              JSON.stringify(
+                await getInteractionStatus(f.context, f.sessionId),
+              ),
+            );
+            return;
+          }
+          if (
+            path === `/api/v1/sessions/${f.sessionId}/messages` &&
+            req.method === 'POST'
+          ) {
+            if (req.headers.origin !== origin) {
+              res.writeHead(403).end('{}');
+              return;
+            }
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(Buffer.from(chunk));
+            const result = await sendChatMessage(
+              f.context,
+              f.context.workspaceId!,
+              f.sessionId,
+              JSON.parse(Buffer.concat(chunks).toString()),
+            );
+            if (lostContinuation) {
+              lostContinuation = false;
+              res
+                .writeHead(503)
+                .end(
+                  JSON.stringify({
+                    error: { message: '合成 ACK 丢失，可重试' },
+                  }),
+                );
+              return;
+            }
+            res.end(JSON.stringify(result));
+            return;
+          }
           if (!path.startsWith(base)) {
             res.writeHead(404).end('{}');
             return;
@@ -1398,6 +1706,29 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             )
           )[0]!.state,
         ).toBe('submitted');
+        await page.getByText('已提交 · 待处理', { exact: false }).click();
+        lostContinuation = true;
+        await page
+          .getByRole('button', {
+            name: '请 Rice 根据本批意见修订',
+            exact: true,
+          })
+          .click();
+        await page
+          .getByText('合成 ACK 丢失，可重试', { exact: true })
+          .waitFor();
+        await page
+          .getByRole('button', {
+            name: '请 Rice 根据本批意见修订',
+            exact: true,
+          })
+          .click();
+        await page
+          .getByRole('button', { name: '修订请求已发送', exact: true })
+          .waitFor();
+        expect(
+          await database`select response_id from allrice_review_continuations where organization_id=${f.context.organizationId}`,
+        ).toHaveLength(1);
         expect(
           await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
         ).toHaveLength(0);

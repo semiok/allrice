@@ -6,6 +6,10 @@ import {
   ArtifactSummaryCards,
 } from '../app/chatflow/artifact-workbench';
 import { useArtifactWorkbench } from '../app/chatflow/use-artifact-workbench';
+import {
+  useInteractionStatus,
+  InteractionStatusPanel,
+} from '../app/chatflow/interaction-status';
 const input = JSON.parse(
   document.getElementById('p07-input')!.textContent!,
 ) as {
@@ -14,6 +18,12 @@ const input = JSON.parse(
   tenantHeaders: Record<string, string>;
 };
 function Fixture() {
+  const status = useInteractionStatus(
+    true,
+    input.sessionId,
+    input.workspaceId,
+    input.tenantHeaders,
+  );
   const w = useArtifactWorkbench({ ...input, enabled: true }),
     [narrow, setNarrow] = useState(false);
   useEffect(() => {
@@ -34,6 +44,12 @@ function Fixture() {
     >
       <section style={{ padding: 20, minWidth: 0 }}>
         <h1>合成 Session · 工件验收</h1>
+        <InteractionStatusPanel
+          data={status.data}
+          error={status.error}
+          sessionId={input.sessionId}
+          onArtifact={w.show}
+        />
         <button
           type="button"
           onClick={() => {
@@ -62,6 +78,7 @@ function Fixture() {
           onClose={w.close}
           onReload={w.reload}
           onDirtyChange={w.noteDirty}
+          onContinued={() => void status.reload()}
         />
       ) : null}
     </main>

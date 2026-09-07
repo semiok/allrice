@@ -381,8 +381,35 @@ export class DshHarnessAdapter implements HarnessAdapter {
     await this.runtimePool.recover(input.threadId);
   }
 
-  async steer(input: { threadId: string; message: string }) {
-    await this.runtimePool.steer(input.threadId, input.message);
+  async steer(input: {
+    threadId: string;
+    message: string;
+    turnId: string;
+    clientUserMessageId: string;
+    inputKind?: 'steer_current' | 'ask_user';
+  }) {
+    const result = await this.runtimePool.steer(
+      input.threadId,
+      input.message,
+      input.inputKind
+        ? {
+            inputId: input.clientUserMessageId,
+            turnId: input.turnId,
+            kind: input.inputKind,
+          }
+        : undefined,
+    );
+    if (input.inputKind) {
+      const { RuntimeNativeInputProofSchema } =
+        await import('@allrice/contracts');
+      const proof = RuntimeNativeInputProofSchema.parse(result);
+      if (
+        proof.inputId !== input.clientUserMessageId ||
+        (proof.status === 'adopted' && proof.turnId !== input.turnId)
+      )
+        throw new Error('DSH_INPUT_PROOF_MISMATCH');
+      return proof;
+    }
   }
 
   async close() {

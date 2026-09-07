@@ -43,6 +43,15 @@ export function useSession({ setError }: UseSessionOptions) {
     setWorkspace(workspaceResult.workspace);
     setManifest(capabilityResult.capabilities);
     setActiveId((current) => {
+      const linked = new URLSearchParams(window.location.search).get('session');
+      if (
+        !current &&
+        linked &&
+        workspaceResult.workspace.sessions.some(
+          (s) => s.id === linked && !s.archivedAt,
+        )
+      )
+        return linked;
       if (
         current &&
         workspaceResult.workspace.sessions.some(

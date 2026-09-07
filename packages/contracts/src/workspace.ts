@@ -46,16 +46,46 @@ export const ChatCitationSchema = z.union([
   KnowledgeCitationSchema,
 ]);
 
+export const ReviewContinuationInputSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('plan_review'),
+      artifactId: UuidSchema,
+      checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('version_feedback'),
+      artifactId: UuidSchema,
+      checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      feedbackId: UuidSchema,
+    })
+    .strict(),
+]);
+export type ReviewContinuationInput = z.infer<
+  typeof ReviewContinuationInputSchema
+>;
+
 export const ChatMessageContentSchema = z
   .object({
     text: z.string().max(100_000),
     citations: z.array(ChatCitationSchema).default([]),
     interaction: z
-      .object({
-        type: z.literal('user_question_answer'),
-        answer: UserQuestionAnswerSubmissionSchema,
-      })
-      .strict()
+      .union([
+        z
+          .object({
+            type: z.literal('user_question_answer'),
+            answer: UserQuestionAnswerSubmissionSchema,
+          })
+          .strict(),
+        z
+          .object({
+            type: z.literal('review_response'),
+            review: ReviewContinuationInputSchema,
+          })
+          .strict(),
+      ])
       .optional(),
   })
   .strict();
@@ -133,9 +163,33 @@ export const SendChatMessageInputSchema = z
     expectedTurnId: z.string().trim().min(1).max(255).optional(),
     expectedGeneration: z.number().int().nonnegative().optional(),
     userQuestionAnswer: UserQuestionAnswerSubmissionSchema.optional(),
+    reviewContinuation: ReviewContinuationInputSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.reviewContinuation &&
+      (value.userQuestionAnswer ||
+        value.deliveryMode !== 'follow_up' ||
+        value.attachmentIds.length)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'review continuation is a distinct queued Run, never an answer or action approval',
+      });
+    }
+    if (
+      value.deliveryMode === 'steer' &&
+      (!value.expectedTurnId ||
+        value.expectedGeneration === undefined ||
+        value.attachmentIds.length)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'steer requires the exact active turn and no attachments',
+      });
+    }
     if (!value.userQuestionAnswer) return;
     if (
       value.deliveryMode !== 'steer' ||
