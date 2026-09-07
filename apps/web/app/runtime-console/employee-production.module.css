@@ -252,6 +252,40 @@
   grid-column: 1 / -1;
 }
 
+.credentialPanel {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid #3b424b;
+  border-radius: 12px;
+  background: #1c2025;
+}
+
+.credentialHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.credentialHeader h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.credentialConfigured {
+  color: #65c98a;
+  font-size: 13px;
+}
+.credentialError {
+  margin: 0;
+  color: #f08a8a;
+  font-size: 13px;
+}
+.credentialPanel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .field > span {
   color: #c8ccd1;
   font-size: 13px;

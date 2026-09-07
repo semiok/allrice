@@ -9,6 +9,19 @@
 - 切换 Provider 是用户显式编辑草稿：重置模型、凭证引用、Base URL、旧 Provider 的 fallback；仅当旧档位不兼容时改为新模型默认档位。不会直接改变已发布员工。
 - “需单独启用”不代表需要租户安装 Bridge，也不是 Gemini 网页订阅登录。`ALLRICE_GEMINI_API_ENABLED=1` 是平台 Worker 执行门禁，仍需独立 Google API key、对应模型治理和预览／发布验收。此次保持开关关闭。
 
+## Gemini 密钥配置入口
+
+选择 Gemini 后，员工模型页显示独立的 API Key 密码输入框；「保存 API Key」与「保存草稿」互不替代。刷新只返回已配置状态和保存时间，不回传密钥或掩码片段，不保存到浏览器存储、员工 Definition、Snapshot 或模型上下文。
+
+- 仅平台管理员（管理员 membership + 平台邮箱 allowlist）可访问 `/api/v1/admin/providers/gemini/credential`；租户门户不可用。PUT 要求同源 Origin、JSON 且仅允许 `apiKey` 字段，流式请求体限制 4 KiB；错误不打印请求或原始异常。
+- 复用现有部署凭证目录：Web 和 Worker **必须指向同一个** `ALLRICE_DSH_CREDENTIALS_FILE`。只更新固定 `deployment:gemini-default`，保持其他凭证不变；明确为平台共用密钥，而不是租户私有 BYOK。
+- 使用私有权限 0600、独占写锁、临时文件同步与原子替换，拒绝不安全权限、软链接、非法 JSON、不同作用域和并发覆盖。凭证文件须位于私有受控目录，不纳入 Git、普通数据备份或模型工件。本版是文件权限保护，不宣称应用层加密；分布式部署需接入共享 Secret Manager，不能各副本保存各自文件。
+- 配置 `ALLRICE_DSH_CREDENTIALS_JSON` 时禁止页面写文件，避免写入后被更高优先级配置遮蔽。未配置路径时明确报错，不自动回退读取旧 `.env` 中的 `GEMINI_API_KEY`。
+- 变更前必须先落库审计请求，再写凭证，随后记录成功/失败；审计不接收密钥。若落盘成功但结果审计失败，返回「已保存、审计结果待检查」，不能谎称未保存；持久请求和凭证保存者/时间仍可核对。
+- 保存仅代表本地持久化，**不调用 Google、不启用执行开关或模型治理、不发布员工**。新建 Gemini Runtime 会通过现有 Worker resolver 读取密钥，已启动 Runtime 不自动换钥。用户后续执行测试仍需单独启用并验收。
+
+验证：新增 45 项凭证存储与接口测试（全仓 921 通过、126 默认跳过），包含真实 Worker resolver 读取所保存的测试凭证。`scripts/acceptance/ui/gemini-credentials.mjs` 使用独立临时 PostgreSQL 数据库、临时凭证文件和合成登录信息验证真实 Chrome 的保存／替换、Web 重启恢复、无密钥回显和日志泄露、四条持久审计、租户／跨站请求拒绝、手机布局以及员工草稿与 Gemini 禁用状态不变。没有将测试密钥写入 Dev 的实际凭证目录，也没有真实 Google 调用。
+
 ## 当前版本实际接通的档位
 
 | 路线 / 模型                                      | 员工编辑器档位              | 出站参数                             |

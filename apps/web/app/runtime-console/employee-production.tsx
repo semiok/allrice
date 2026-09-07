@@ -16,6 +16,7 @@ import {
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
+import { GeminiCredentialSettings } from './gemini-credential-settings';
 
 type Employee = PlatformEmployeeSummary;
 
@@ -894,10 +895,15 @@ export function EmployeeProduction() {
           的同名档位并不代表相同的计算量。修改只保存为草稿，不改变已发布员工或正在运行的会话。
         </p>
         {draft.modelPolicy.provider === 'gemini' ? (
+          <GeminiCredentialSettings
+            credentialReference={draft.modelPolicy.credentialReference}
+          />
+        ) : null}
+        {draft.modelPolicy.provider === 'gemini' ? (
           <p className={`${styles.notice} ${styles.fieldWide}`}>
             Gemini 使用 Google API 密钥，独立于 Codex 订阅和 Gemini
-            网页订阅计费。 平台需先配置 API 密钥、开启 Gemini API
-            执行开关并完成预览与发布检查；这里只编辑草稿，不会自动启用或证明连接成功。
+            网页订阅计费。API Key
+            使用上方独立按钮保存，员工模型配置仍需点击“保存草稿”。
           </p>
         ) : null}
       </div>
