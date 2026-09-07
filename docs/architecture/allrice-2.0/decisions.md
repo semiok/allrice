@@ -74,11 +74,13 @@ P07进入适配前须记录：固定源码和依赖版本、LICENSE/NOTICE及文
 
 ## AR2-ADR-007：基础助手通过DSH适配，先验证再开放
 
-**状态：受控协作方向采纳；DSH实际能力待P24 PoC。责任：108/106/107。**
+**状态：受控协作方向采纳；P24 固定版本真实 PoC 通过，产品开放仍待 P25/P26/P27。责任：108/106/107。**
 
 决定：在单一DSH Harness边界内提供基础Subagents，子任务只获得父权限与自身政策的交集，拥有parent/root关联、有限并发/深度/数量和共享根预算；持久化消息与结果、根取消、冷恢复、迟到结果和产物冲突必须可核实。
 
 当前固定版本见[upstream.json](../../../apps/worker/dsh/upstream.json)。包存在、插件可配置或写完S0契约不等于受控委派/审批转交/全树取消已经实现。P24真运行PoC确定可复用接口和缺口，P25/P26交付基础助手，P27联合验收。
+
+2026-09-08 P24 实测补充：原生 continuable、直接父身份、never 审批策略、quiet report、child-first drain 和 JSONL 冷恢复可复用；单个 interrupt 不取消孙任务。原生 inbox 事件**可以持久化**，但 admission ACK 不保证已经到达 flush 检查点；SIGKILL 分别验证了已 flush 的 FIFO 恢复和未 flush 窗口丢失。平台仍必须补 durable outbox/result inbox、native ID 映射、根取消/预算及恢复前租约校验。原生策略拒绝不授予高权限；独立平台 proposal 经 P04 精确批准后由 Broker 执行的真实 PG/HTTP/Bridge 联测通过。详见[P24 实测与后续硬门禁](p24-dsh-collaboration-poc.md)；生产 profile 保持受限，未开放助手。
 
 不复制另一套OpenAI/Cline Agent Loop；不直接让助手共享无限权限或把同目录并行写入当协作。完整Boost、Teamwork、正式Handoff与开发协作增强在S8；产品内独立核验能力不受开发期Gemini退出影响。来源：[DSH Harness适配](../dsh-harness-adapter.md)、[C1/C5/C6](contracts.md)。
 

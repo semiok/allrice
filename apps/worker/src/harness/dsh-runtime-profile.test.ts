@@ -47,4 +47,31 @@ describe('AllRice restricted DSH profile', () => {
     expect(profile).toContain('allowParallelInProgress: false');
     expect(profile).toContain('thresholdChars: 8192');
   });
+
+  it('keeps P24 native delegation probes out of the production profile and runtime entrypoint', async () => {
+    const pkg = JSON.parse(
+      await readFile(
+        resolve(import.meta.dirname, '../../package.json'),
+        'utf8',
+      ),
+    ) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    for (const name of [
+      '@deepseek-ai/dsh-subagent',
+      '@deepseek-ai/dsh-subagent-spawn-in-process',
+      '@deepseek-ai/dsh-user-approval',
+    ]) {
+      expect(pkg.dependencies[name]).toBeUndefined();
+      expect(pkg.devDependencies[name]).toBe('0.1.1-rc.2');
+    }
+    const production = await readFile(
+      resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      'utf8',
+    );
+    expect(production).not.toContain('p24_proposal');
+    expect(production).not.toContain('poc.cordis.yml');
+    expect(production).not.toContain('startContinuable');
+  });
 });
