@@ -43,6 +43,8 @@
 
 锁等待和回调耗时不能延长既定许可。账本在回调后、提交前重新读取数据库时钟检查根截止时间和租约；P04还须在自己的政策/审批锁取得后检查实际时钟，不能只用回调开始时的 `now` 判断审批有效期。
 
+事件、预留、回执和租约写入也可能被锁阻塞，因此账本在最后一次写入后再次调用准入：create 重复 create 并要求等待状态一致；dispatch/start/heartbeat 使用 heartbeat 只复核已消费授权，不再次消费。随后再检查数据库当前时间及根截止时间/租约。续租同时要求旧租约此时尚未到期，不能靠新过期时间复活已经失效的租约。这些阶段的回调必须可重复；不允许在 create/heartbeat 中消费批准或触发外部副作用。
+
 回调内部读取操作输入必须使用传入的 `transaction`。不要调用另开事务的 `readOperationInput()`，否则会等待自己持有的根锁。`create` 尚未插入 operation 行，输入必须来自当前受信 Broker 的规范化请求；`dispatch` / `heartbeat` 可以读该事务已经锁定的 operation 行。Bridge payload 使用解析后包含默认值的精确 JSON，再按递归 codepoint 键排序计算 SHA-256，须与 `binding.inputDigest` 相等。
 
 `createRoot` 只供已经认证并决定预算的服务端编排器使用，不是用户自报更大额度的 API。它校验实际 Run/租户引用和不可变配置，但不负责判断某个用户是否有设预算权。`read*`、`cancelRoot` 同样要求上游已有受信身份与访问权。P03-b 的设备路由必须用设备凭证解析 scope，并核对 device，不能直接转发浏览器给的组织、用户或目标。

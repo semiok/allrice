@@ -12,7 +12,10 @@ import type postgres from 'postgres';
 
 export type RuntimeLedgerTransaction = postgres.TransactionSql;
 
-/** Trusted server adapter, never a browser-supplied authorization boolean. */
+/** Trusted server adapter, never a browser-supplied authorization boolean.
+ * The ledger rechecks create/heartbeat after its last write: those phases must
+ * be repeatable and never consume approvals. Only dispatch consumes once.
+ */
 export type RuntimeLedgerAdmission = (input: {
   transaction: RuntimeLedgerTransaction;
   binding: RuntimeActionBinding;

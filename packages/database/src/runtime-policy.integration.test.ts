@@ -594,6 +594,122 @@ suite('P04 real PostgreSQL policy / exact approval', () => {
       );
     }
   });
+  it.each(['pending', 'rejected', 'revoked', 'expired', 'consumed_revoked'])(
+    'a later Allow cannot resurrect an operation with an old %s approval',
+    async (state) => {
+      const f = await fixture();
+      const req = await f.request();
+      if (state === 'rejected')
+        await decideRuntimeActionApproval(
+          f.context,
+          req.approvalId,
+          {
+            contractVersion: 1,
+            direction: 'response',
+            kind: 'action_approval',
+            requestId: req.requestId,
+            version: req.version,
+            requestDigest: req.requestDigest,
+            task: req.task,
+            responseId: randomUUID(),
+            respondedBy: f.context.actor.id,
+            respondedAt: new Date().toISOString(),
+            approvalId: req.approvalId,
+            decision: 'rejected',
+          },
+          database,
+        );
+      if (state === 'expired')
+        await database`update allrice_approval_requests set requested_at=clock_timestamp()-interval '2 hours',runtime_expires_at=clock_timestamp()-interval '1 hour' where id=${req.approvalId}`;
+      if (state === 'consumed_revoked') {
+        await f.approve(req);
+        await f.admit();
+      }
+      if (state === 'revoked' || state === 'consumed_revoked')
+        await revokeRuntimeActionApproval(f.context, req.approvalId, database);
+      await setRuntimePolicyControls(
+        f.context,
+        {
+          ...f.controls,
+          version: 2,
+          rules: [{ action: f.binding.action, effect: 'allow' }],
+        },
+        1,
+        database,
+      );
+      await expect(
+        f.admit(state === 'consumed_revoked' ? 'heartbeat' : 'dispatch'),
+      ).rejects.toThrow('approval_invalid_or_stale');
+      await expect(f.admit('create')).rejects.toThrow(
+        'approval_invalid_or_stale',
+      );
+    },
+  );
+  it('changing the binding cannot discard an existing operation approval', async () => {
+    const f = await fixture();
+    await f.request();
+    const changed = { ...f.binding, inputDigest: d('different exact action') };
+    f.changeBinding(changed);
+    await expect(
+      requestRuntimeActionApproval(f.options, changed, 600_000, database),
+    ).rejects.toThrow('approval_binding_mismatch');
+    await setRuntimePolicyControls(
+      f.context,
+      {
+        ...f.controls,
+        version: 2,
+        rules: [{ action: f.binding.action, effect: 'allow' }],
+      },
+      1,
+      database,
+    );
+    await expect(f.admit('dispatch', changed)).rejects.toThrow(
+      'approval_binding_mismatch',
+    );
+  });
+  it.each(['request', 'decide', 'consume'] as const)(
+    'expiry during the final %s audit write rolls the entire transaction back',
+    async (phase) => {
+      const f = await fixture();
+      const req = phase === 'request' ? null : await f.request();
+      if (phase === 'consume') await f.approve(req!);
+      const [before] =
+        await database`select count(*)::integer as count from allrice_audit_events where organization_id=${f.context.organizationId}`;
+      await database`update allrice_policy_snapshots set expires_at=clock_timestamp()+interval '800 milliseconds' where id=${f.binding.policy.snapshotId}`;
+      let locked!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const holder = database.begin(async (transaction) => {
+        await transaction`lock table allrice_audit_events in access exclusive mode`;
+        locked();
+        await transaction`select pg_sleep(1.2)`;
+      });
+      await ready;
+      await expect(
+        phase === 'request'
+          ? f.request()
+          : phase === 'decide'
+            ? f.approve(req!)
+            : f.admit(),
+      ).rejects.toThrow(
+        phase === 'decide'
+          ? 'approval_invalid_or_stale'
+          : 'frozen_policy_invalid',
+      );
+      await holder;
+      const [after] =
+        await database`select count(*)::integer as count from allrice_audit_events where organization_id=${f.context.organizationId}`;
+      expect(after?.count).toBe(before?.count);
+      const rows =
+        await database`select runtime_consumed_at,runtime_response from allrice_approval_requests where organization_id=${f.context.organizationId}`;
+      if (phase === 'request') expect(rows).toHaveLength(0);
+      else {
+        expect(rows[0]?.runtime_consumed_at).toBeNull();
+        if (phase === 'decide') expect(rows[0]?.runtime_response).toBeNull();
+      }
+    },
+  );
   it('audit records references/digests, never raw arguments or secret values', async () => {
     const f = await fixture();
     await f.approve();
