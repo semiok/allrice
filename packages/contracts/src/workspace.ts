@@ -8,6 +8,7 @@ import {
   MemorySourceTypeSchema,
 } from './operations.ts';
 import { UserQuestionAnswerSubmissionSchema } from './user-questions.ts';
+import { ChangesetActionInputSchema } from './runtime-v2/changeset-execution.ts';
 
 export const EmployeeVersionSchema = z
   .object({
@@ -73,6 +74,12 @@ export const ChatMessageContentSchema = z
     citations: z.array(ChatCitationSchema).default([]),
     interaction: z
       .union([
+        z
+          .object({
+            type: z.literal('changeset_request'),
+            action: ChangesetActionInputSchema,
+          })
+          .strict(),
         z
           .object({
             type: z.literal('user_question_answer'),
@@ -164,9 +171,21 @@ export const SendChatMessageInputSchema = z
     expectedGeneration: z.number().int().nonnegative().optional(),
     userQuestionAnswer: UserQuestionAnswerSubmissionSchema.optional(),
     reviewContinuation: ReviewContinuationInputSchema.optional(),
+    changesetAction: ChangesetActionInputSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.changesetAction &&
+      (value.reviewContinuation ||
+        value.userQuestionAnswer ||
+        value.deliveryMode !== 'follow_up' ||
+        value.attachmentIds.length)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'changeset requests are distinct queued Runs',
+      });
     if (
       value.reviewContinuation &&
       (value.userQuestionAnswer ||

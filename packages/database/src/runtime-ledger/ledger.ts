@@ -274,11 +274,12 @@ async function cancelLocked(
       row.snapshot.status === 'cancel_requested' &&
       row.lease_token_hash === null &&
       row.bridge_payload !== null &&
-      RuntimeBridgePayloadSchema.parse(row.bridge_payload).capability ===
-        'local.process.execute'
+      ['local.process.execute', 'local.fs.changeset'].includes(
+        RuntimeBridgePayloadSchema.parse(row.bridge_payload).capability,
+      )
     ) {
       const evidence = {
-        summary: '取消发生在派发前，命令未执行',
+        summary: '取消发生在派发前，动作未执行',
         output: { notExecuted: true },
       };
       const signal: RuntimeOperationSignal = {
@@ -653,6 +654,7 @@ export function createRuntimeOperationLedger(options: {
       deviceId: string;
       leaseMs: number;
       supportsLocalCommand?: boolean;
+      supportsChangeset?: boolean;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
         deviceId = UuidSchema.parse(input.deviceId),
@@ -663,7 +665,7 @@ export function createRuntimeOperationLedger(options: {
       >`select id from allrice_runtime_operations
         where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and device_id=${deviceId}
           and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
-          and snapshot->'binding'->>'action'=any(${input.supportsLocalCommand ? [...BridgeCapabilities, 'local.process.execute'] : [...BridgeCapabilities]})
+          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {

@@ -9,12 +9,14 @@ import {
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   isRuntimeRelativePath,
+  runtimeContractEqual,
   type RuntimeBridgePayload,
   type BridgeDevice,
   type RuntimeActionBinding,
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import { readArtifact } from './artifact-review.ts';
 import {
   localCommandBinding,
   localCommandEnabled,
@@ -113,6 +115,8 @@ export function createGovernedBridgeOperationLedger(
       const { binding, payload } = stored;
       const command =
         payload.capability === 'local.process.execute' ? payload : null;
+      const changeset =
+        payload.capability === 'local.fs.changeset' ? payload : null;
       if (
         binding.task.scope.organizationId !== device.organizationId ||
         binding.task.scope.workspaceId !== device.workspaceId ||
@@ -134,6 +138,7 @@ export function createGovernedBridgeOperationLedger(
           'local.git.status',
           'local.git.diff',
           'local.process.execute',
+          'local.fs.changeset',
         ].includes(payload.capability);
       if (
         (!directoryRoot && !isRuntimeRelativePath(payload.arguments.path)) ||
@@ -164,7 +169,9 @@ export function createGovernedBridgeOperationLedger(
           and owner_id=${device.ownerId} for share`;
       const targetCapability = payload.capability.startsWith('local.git.')
         ? 'git.read'
-        : ['local.fs.write', 'local.fs.mkdir'].includes(payload.capability)
+        : ['local.fs.write', 'local.fs.mkdir', 'local.fs.changeset'].includes(
+              payload.capability,
+            )
           ? 'files.write'
           : 'files.read';
       const [target] = await tx<
@@ -178,7 +185,9 @@ export function createGovernedBridgeOperationLedger(
         !currentDevice ||
         currentDevice.revoked_at ||
         (!command &&
+          !changeset &&
           !currentDevice.capabilities.includes(payload.capability)) ||
+        (changeset && !currentDevice.capabilities.includes('local.fs.write')) ||
         !grant ||
         grant.revoked_at ||
         !target ||
@@ -278,6 +287,55 @@ export function createGovernedBridgeOperationLedger(
         )
           throw new RuntimePolicyError('bridge_authority_changed');
       }
+      if (changeset) {
+        const frozen = EmployeeExecutionSnapshotSchema.safeParse(
+          employee?.execution_snapshot,
+        );
+        const [application] = await tx<
+          {
+            artifact_id: string;
+            checksum: string;
+            restore_of: string | null;
+            session_id: string;
+          }[]
+        >`
+          select artifact_id,checksum,restore_of,session_id from allrice_changeset_runs where run_id=${run.id}
+          and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and actor_id=${device.ownerId}`;
+        if (
+          process.env.ALLRICE_CHANGESET_ENABLED !== '1' ||
+          process.env.ALLRICE_WORKBENCH_ENABLED !== '1' ||
+          !application ||
+          !frozen.success ||
+          frozen.data.schemaVersion !== 2 ||
+          !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
+            'storage:write',
+          ) ||
+          !frozen.data.capabilitySnapshot.bindings.toolNames.includes(
+            'local.fs.write',
+          ) ||
+          application.artifact_id !== changeset.arguments.artifactId ||
+          application.checksum !== changeset.arguments.checksum ||
+          (application.restore_of !== null) !==
+            (changeset.arguments.direction === 'restore')
+        )
+          throw new RuntimePolicyError('bridge_authority_changed');
+        const artifact = await readArtifact(
+          tx,
+          context,
+          application.session_id,
+          application.artifact_id,
+        ).catch(() => {
+          throw new RuntimePolicyError('bridge_authority_changed');
+        });
+        if (
+          artifact.kind !== 'changeset' ||
+          artifact.object.checksum !== application.checksum ||
+          (!application.restore_of && artifact.stale) ||
+          !artifact.execution ||
+          !runtimeContractEqual(artifact.execution, binding.execution)
+        )
+          throw new RuntimePolicyError('bridge_authority_changed');
+      }
       let generation = 0;
       if (employee) {
         const [session] = await tx<
@@ -299,20 +357,21 @@ export function createGovernedBridgeOperationLedger(
         generation = runtime.thread_generation;
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
-      const job = command
-        ? (
-            await tx<
-              {
-                status: string;
-                cancel_requested_at: Date | null;
-                timeout_at: Date;
-                lease_expires_at: Date | null;
-              }[]
-            >`
+      const job =
+        command || changeset
+          ? (
+              await tx<
+                {
+                  status: string;
+                  cancel_requested_at: Date | null;
+                  timeout_at: Date;
+                  lease_expires_at: Date | null;
+                }[]
+              >`
         select status,cancel_requested_at,timeout_at,lease_expires_at from allrice_jobs
         where run_id=${run.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and owner_id=${device.ownerId}`
-          )[0]
-        : null;
+            )[0]
+          : null;
       const [clock] = await tx<
         { now: Date }[]
       >`select clock_timestamp() as now`;
@@ -321,16 +380,17 @@ export function createGovernedBridgeOperationLedger(
         !currentDevice.last_seen_at ||
         currentDevice.last_seen_at.getTime() <= clock.now.getTime() - 90_000 ||
         currentDevice.last_seen_at > clock.now ||
-        (command &&
+        ((command || changeset) &&
           (!job ||
             job.status !== 'running' ||
             job.cancel_requested_at ||
             !job.lease_expires_at ||
             job.lease_expires_at <= clock.now ||
             job.timeout_at <= clock.now ||
-            !profileReportedAt ||
-            profileReportedAt.getTime() <= clock.now.getTime() - 90_000 ||
-            profileReportedAt > clock.now))
+            (command &&
+              (!profileReportedAt ||
+                profileReportedAt.getTime() <= clock.now.getTime() - 90_000 ||
+                profileReportedAt > clock.now))))
       )
         throw new RuntimePolicyError('bridge_authority_changed');
 

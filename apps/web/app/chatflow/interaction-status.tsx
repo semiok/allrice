@@ -62,6 +62,7 @@ const labels: Record<string, string> = {
   ask_user: '问题回答',
   plan_review: '计划认可',
   version_feedback: '版本修订',
+  changeset_request: '文件操作请求',
 };
 const states: Record<string, string> = {
   adopted: '已进入原回合步骤',
@@ -116,9 +117,18 @@ export function InteractionStatusPanel({
           <ul>
             {data.pendingActions.map((a) => (
               <li key={a.approvalId}>
-                <a href={`?session=${sessionId}#operation-${a.operationId}`}>
-                  查看精确动作与批准／拒绝
-                </a>
+                {a.artifactId ? (
+                  <button
+                    type="button"
+                    onClick={() => onArtifact(a.artifactId!)}
+                  >
+                    审查文件操作与批准／拒绝
+                  </button>
+                ) : (
+                  <a href={`?session=${sessionId}#operation-${a.operationId}`}>
+                    查看精确动作与批准／拒绝
+                  </a>
+                )}
                 <small>
                   {' '}
                   · {new Date(a.expiresAt).toLocaleTimeString()} 前有效

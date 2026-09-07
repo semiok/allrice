@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
 import {
   lstat,
+  open,
+  link,
   mkdir,
   readdir,
   readFile,
@@ -145,11 +148,12 @@ async function resolveAuthorizedWriteTarget(root: string, requested: string) {
   return { rootReal, candidate, metadata };
 }
 
-async function writeTextFile(
+export async function writeTextFile(
   root: string,
   requested: string,
   content: string,
   expectedSha256?: string | null,
+  beforeCommit?: () => Promise<void>,
 ) {
   const bytes = Buffer.from(content, 'utf8');
   if (bytes.byteLength > defaultMaximumBytes) {
@@ -197,7 +201,42 @@ async function writeTextFile(
       flag: 'wx',
       mode: metadata ? metadata.mode : 0o644,
     });
-    await rename(temporary, candidate);
+    const staged = await open(
+      temporary,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      await staged.sync();
+    } finally {
+      await staged.close();
+    }
+    if (beforeCommit) await beforeCommit();
+    const current = await checkChangesetFile(
+      root,
+      requested,
+      expectedSha256 ?? null,
+    );
+    if (current?.ino !== metadata?.ino || current?.dev !== metadata?.dev)
+      throw new LocalExecutionError(
+        'WRITE_CONFLICT',
+        'File identity changed during staging',
+      );
+    // Hard-link insertion refuses a concurrently created destination; rename is
+    // the existing single-file replacement, not a cross-file atomic transaction.
+    if (metadata) await rename(temporary, candidate);
+    else {
+      await link(temporary, candidate);
+      await unlink(temporary);
+    }
+    const directory = await open(
+      dirname(candidate),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
     throw error;
@@ -208,6 +247,110 @@ async function writeTextFile(
     sha256: sha256(bytes),
     created: !metadata,
   };
+}
+
+/** Bounded CAS precondition. Does not claim an OS compare-and-swap against an
+ * uncooperative same-user editor racing the final rename/unlink syscall. */
+export async function checkChangesetFile(
+  root: string,
+  requested: string,
+  expected: string | null,
+) {
+  const { rootReal, candidate, metadata } = await resolveAuthorizedWriteTarget(
+    root,
+    requested,
+  );
+  let parent = rootReal;
+  for (const part of requested.split('/').slice(0, -1)) {
+    parent = resolve(parent, part);
+    const entry = await lstat(parent);
+    if (entry.isSymbolicLink() || !entry.isDirectory())
+      throw new LocalExecutionError(
+        'PATH_OUTSIDE_GRANT',
+        'Changesets do not follow directory links',
+      );
+  }
+  if (!metadata) {
+    if (expected !== null)
+      throw new LocalExecutionError(
+        'WRITE_CONFLICT',
+        'Expected file is absent',
+      );
+    return null;
+  }
+  if (!metadata.isFile() || metadata.nlink !== 1)
+    throw new LocalExecutionError(
+      'FILE_TYPE_UNSUPPORTED',
+      'Changesets require a regular unlinked file',
+    );
+  if (expected === null)
+    throw new LocalExecutionError('WRITE_CONFLICT', 'A file already exists');
+  if (metadata.size > defaultMaximumBytes)
+    throw new LocalExecutionError(
+      'FILE_TOO_LARGE',
+      'Changeset file exceeds limit',
+    );
+  const handle = await open(
+    candidate,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const opened = await handle.stat();
+    const buffer = Buffer.alloc(defaultMaximumBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        length,
+        buffer.length - length,
+        length,
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    const bytes = buffer.subarray(0, length);
+    const current = await lstat(candidate);
+    if (
+      opened.ino !== metadata.ino ||
+      opened.dev !== metadata.dev ||
+      current.ino !== opened.ino ||
+      current.dev !== opened.dev ||
+      bytes.length > defaultMaximumBytes ||
+      sha256(bytes) !== expected
+    )
+      throw new LocalExecutionError(
+        'WRITE_CONFLICT',
+        'File changed since the reviewed baseline',
+      );
+  } finally {
+    await handle.close();
+  }
+  return metadata;
+}
+
+/** Exact single-file removal only; the immutable Changeset retains prior bytes. */
+export async function removeChangesetFile(
+  root: string,
+  requested: string,
+  expected: string,
+  beforeCommit: () => Promise<void>,
+) {
+  const before = await checkChangesetFile(root, requested, expected);
+  await beforeCommit();
+  const after = await checkChangesetFile(root, requested, expected);
+  if (!before || !after || before.ino !== after.ino || before.dev !== after.dev)
+    throw new LocalExecutionError('WRITE_CONFLICT', 'File identity changed');
+  const { candidate } = await resolveAuthorizedWriteTarget(root, requested);
+  await unlink(candidate);
+  const directory = await open(
+    dirname(candidate),
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
 }
 
 async function createDirectory(root: string, requested: string) {

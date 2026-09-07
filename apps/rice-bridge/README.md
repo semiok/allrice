@@ -65,3 +65,8 @@ CLI 验证阶段使用带设备 Bearer 凭证的 HTTPS 心跳与短轮询。命�
 P03-b 新增本地 SQLite journal 与结果 Outbox，防止连接中断后重复执行；这不是 WSS、Shell 或新能力发布。需在受控环境显式启用 `ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED=1`，并装配 P03-a/P04 服务端账本和真实授权检查。Node 22.13+ / 支持 SEA 的正式运行时是新路径前置。
 
 日志位于配置路径旁的 `config.json.operation-journal/`。不要通过删除日志解决 unknown、冲突或满额；应先核实已有操作，否则会失去防重证据。旧路径默认不变。完整状态语义、实际测试与未验证项见 [P03-b 说明](../../docs/architecture/allrice-2.0/p03b-device-journal.md)。
+
+## 2.0 受控任务与文件恢复（默认关闭）
+
+P05 增加经验证的专用 VM 中的结构化命令，P08 增加准确 Changeset 审批、逐文件应用及反向恢复。以上 v0.2 capability 列表和默认路径不变；新能力只能由新设备日志协议、服务端开关、员工冻结权限和精确审批共同启用，不是打开任意 Shell 或通用删除接口。
+参见 [P05 边界与平台前置](../../docs/architecture/allrice-2.0/p05-local-command.md) 和 [P08 文件操作、未知结果与恢复](../../docs/architecture/allrice-2.0/p08-changesets.md)。新版源码存在不代表正式签名下载包或双芯片新能力已完成发布。

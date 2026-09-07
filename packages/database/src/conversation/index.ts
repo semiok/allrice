@@ -6,3 +6,4 @@ export * from './conversation-runtime.ts';
 export * from './usage.ts';
 export * from './interaction-status.ts';
 export { assertReviewRunCurrent } from './review-continuation.ts';
+export * from '../changeset-service.ts';

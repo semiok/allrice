@@ -38,6 +38,8 @@ import {
   pollEmployeeConversationSteers,
 } from '../conversation/turn-lifecycle.js';
 import { assembleEmployeeKernel } from '../employee-kernel.js';
+import { getChangesetRun } from '@allrice/database';
+import { executeChangesetRun } from './changeset-run.js';
 import { HandlerError } from '../errors.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import {
@@ -272,6 +274,27 @@ export async function executeEmployeeRun({
         'Capability routing requires a frozen employee execution snapshot',
         false,
       );
+    }
+    if (
+      await getChangesetRun(
+        {
+          actor: execution.context.delegatedBy,
+          organizationId: execution.context.organizationId,
+          workspaceId: execution.context.workspaceId,
+        },
+        input.sessionId,
+        execution.context.runId,
+      )
+    ) {
+      const result = await executeChangesetRun({
+        execution,
+        isolation,
+        signal,
+        onHarnessEvent,
+        workflowLease,
+      });
+      outcome = 'idle';
+      return result;
     }
     const capabilitySnapshot =
       executionSnapshot.schemaVersion === 2

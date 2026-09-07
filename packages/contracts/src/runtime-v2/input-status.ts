@@ -8,6 +8,7 @@ export const InteractionStatusSchema = z
           .object({
             approvalId: UuidSchema,
             operationId: UuidSchema,
+            artifactId: UuidSchema.nullable().optional(),
             runId: UuidSchema,
             expiresAt: TimestampSchema,
           })
@@ -39,6 +40,7 @@ export const InteractionStatusSchema = z
               'ask_user',
               'plan_review',
               'version_feedback',
+              'changeset_request',
             ]),
             status: z.enum([
               'adopted',

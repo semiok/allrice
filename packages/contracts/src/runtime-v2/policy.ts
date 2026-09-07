@@ -35,6 +35,7 @@ export const runtimeGovernedActions = [
   'local.fs.write',
   'local.fs.mkdir',
   'local.process.execute',
+  'local.fs.changeset',
 ] as const;
 
 const readActions = new Set<string>([
@@ -71,7 +72,7 @@ export function evaluateRuntimePolicy(
   // B2 command execution always needs an exact, single-use approval, even if
   // a tenant's broad tool rule is Allow. Unknown tools still fail registration.
   if (
-    action === 'local.process.execute' &&
+    ['local.process.execute', 'local.fs.changeset'].includes(action) &&
     matches.some((rule) => rule.effect === 'allow')
   )
     return { effect: 'ask', reason: 'exact_approval_required' };
