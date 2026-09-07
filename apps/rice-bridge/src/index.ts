@@ -261,30 +261,82 @@ async function start() {
       })
     : null;
   let stopping = false;
+  const commandAbort = new AbortController();
+  const runner =
+    operationLedgerEnabled &&
+    process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
+    process.platform === 'darwin' &&
+    process.arch === 'x64' &&
+    process.env.ALLRICE_LOCAL_DOCKER_SOCKET &&
+    process.env.ALLRICE_LOCAL_COMMAND_IMAGE
+      ? new (await import('./local-command-runner.js')).LocalCommandRunner({
+          socketPath: process.env.ALLRICE_LOCAL_DOCKER_SOCKET,
+          imageDigest: process.env.ALLRICE_LOCAL_COMMAND_IMAGE,
+        })
+      : undefined;
+  let runnerAvailable = false;
   process.once('SIGINT', () => {
     stopping = true;
+    commandAbort.abort();
   });
   process.once('SIGTERM', () => {
     stopping = true;
+    commandAbort.abort();
   });
   console.info(`Rice Bridge 正在运行：${config.deviceName}`);
   let lastHeartbeatAt = 0;
+  let heartbeatInFlight: Promise<void> | null = null;
+  const heartbeat = () => {
+    heartbeatInFlight ??= (async () => {
+      await bridgeRequest({
+        server: config.server,
+        path: '/api/v1/bridge/device/heartbeat',
+        method: 'POST',
+        token,
+        body: {
+          protocolVersion: BridgeProtocolVersion,
+          capabilities: BridgeCapabilities,
+        },
+        timeoutMs: 5000,
+      });
+      lastHeartbeatAt = Date.now();
+      if (runner) {
+        runnerAvailable = false;
+        try {
+          const profile = await runner.preflight();
+          await bridgeRequest({
+            server: config.server,
+            path: '/api/v1/bridge/device/runtime-profile',
+            method: 'POST',
+            token,
+            body: { contractVersion: 1, ...profile, available: true },
+            maximumResponseBytes: 4096,
+            timeoutMs: 5000,
+          });
+          runnerAvailable = true;
+        } catch {
+          /* Existing filesystem capabilities stay available; no implicit execution fallback. */
+        }
+      }
+    })().finally(() => {
+      heartbeatInFlight = null;
+    });
+    return heartbeatInFlight;
+  };
+  // Long commands must not make the device look offline. Operation permission
+  // renewal is a separate, shorter loop inside the supervised runner.
+  const heartbeatTimer = setInterval(() => {
+    if (!stopping)
+      void heartbeat().catch(() => {
+        runnerAvailable = false;
+      });
+  }, 20_000);
   let reconnectDelayMs = 1_000;
   try {
     while (!stopping) {
       try {
         if (Date.now() - lastHeartbeatAt >= 30_000) {
-          await bridgeRequest({
-            server: config.server,
-            path: '/api/v1/bridge/device/heartbeat',
-            method: 'POST',
-            token,
-            body: {
-              protocolVersion: BridgeProtocolVersion,
-              capabilities: BridgeCapabilities,
-            },
-          });
-          lastHeartbeatAt = Date.now();
+          await heartbeat();
         }
         const selection = await bridgeRequest<{ request: unknown }>({
           server: config.server,
@@ -305,11 +357,19 @@ async function start() {
         if (operationModule && journal) {
           ({ config, token } = await credentials(await readConfig()));
           const worked = await new operationModule.RuntimeBridgeOperationClient(
-            { config, token, journal },
+            {
+              config,
+              token,
+              journal,
+              runner: runnerAvailable ? runner : undefined,
+              signal: commandAbort.signal,
+            },
           ).pollOnce();
-          if (!worked) await new Promise((resolve) => setTimeout(resolve, 750));
           reconnectDelayMs = 1_000;
-          continue;
+          if (worked) continue;
+          // Existing file/git tools still use the legacy queue in P05. Keep
+          // draining it when the opt-in operation queue is idle; the legacy
+          // schema can never authorize the new process capability.
         }
         const response = await bridgeRequest<{ command: unknown }>({
           server: config.server,
@@ -343,6 +403,8 @@ async function start() {
       }
     }
   } finally {
+    clearInterval(heartbeatTimer);
+    await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
     await journal?.close();
   }
   console.info('Rice Bridge 已停止');

@@ -3,7 +3,10 @@ import type { riceToolDefinitions } from './definitions.js';
 import { createAutomation } from './handlers/automation.js';
 import { runManagedBrowser } from './handlers/browser.js';
 import { createWorkspaceExport } from './handlers/delivery.js';
-import { executeLocalBridgeTool } from './handlers/local.js';
+import {
+  executeLocalBridgeTool,
+  executeControlledLocalCommand,
+} from './handlers/local.js';
 import {
   executeResearchTool,
   type ResearchToolName,
@@ -77,6 +80,10 @@ export const riceToolHandlerRegistry = Object.freeze({
   'market.history': registration('research', researchHandler('market.history')),
   'workspace.export.create': registration('delivery', createWorkspaceExport),
   'local.fs.list': registration('local_bridge', executeLocalBridgeTool),
+  'local.process.execute': registration(
+    'local_bridge',
+    executeControlledLocalCommand,
+  ),
   'local.fs.search': registration('local_bridge', executeLocalBridgeTool),
   'local.fs.read': registration('local_bridge', executeLocalBridgeTool),
   'local.fs.write': registration('local_bridge', executeLocalBridgeTool),

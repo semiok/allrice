@@ -66,6 +66,7 @@ const allowedToolNames = new Set([
   'local.fs.search',
   'local.fs.read',
   'local.fs.write',
+  'local.process.execute',
   'local.fs.mkdir',
   'local.git.status',
   'local.git.diff',
@@ -1271,7 +1272,9 @@ export async function compilePlatformEmployee(
     if (
       definition.securityPolicy.bridgeAccess === 'read_only' &&
       definition.capabilities.toolNames.some((name) =>
-        ['local.fs.write', 'local.fs.mkdir'].includes(name),
+        ['local.fs.write', 'local.fs.mkdir', 'local.process.execute'].includes(
+          name,
+        ),
       )
     ) {
       errors.push('Bridge 为只读，但员工仍配置了本地写入工具');

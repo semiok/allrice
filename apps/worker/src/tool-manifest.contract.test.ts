@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { allRiceToolManifest } from '@allrice/contracts';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   dshBrokerNativeToolNames,
@@ -13,9 +13,43 @@ import {
   riceToolCapability,
   riceToolDefinitions,
   riceToolRisk,
+  riceToolDefinitionsForCapabilities,
 } from './tool-broker.js';
 
 describe('AllRice worker tool manifest contract', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it('never exposes the new command through broad storage access or default flags', () => {
+    vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
+    expect(
+      riceToolDefinitionsForCapabilities(
+        ['storage:write'],
+        ['local.process.execute'],
+      ),
+    ).toEqual([]);
+    for (const flag of [
+      'ALLRICE_LOCAL_COMMAND_ENABLED',
+      'ALLRICE_RUNTIME_POLICY_ENABLED',
+      'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
+    ])
+      vi.stubEnv(flag, '1');
+    expect(
+      riceToolDefinitionsForCapabilities(['storage:write']).some(
+        (tool) => tool.name === 'local.process.execute',
+      ),
+    ).toBe(false);
+    expect(
+      riceToolDefinitionsForCapabilities(
+        ['storage:write'],
+        ['local.process.execute'],
+      ).map((tool) => tool.name),
+    ).toEqual(['local.process.execute']);
+    expect(
+      riceToolDefinitionsForCapabilities(
+        ['storage:read'],
+        ['local.process.execute'],
+      ),
+    ).toEqual([]);
+  });
   it('keeps Tool Broker definitions and policy metadata aligned', () => {
     expect(riceToolDefinitions.map((tool) => tool.name)).toEqual(
       allRiceToolManifest.map((tool) => tool.canonicalName),
@@ -71,7 +105,7 @@ describe('AllRice worker tool manifest contract', () => {
         wireName: tool.dshWireName,
       }));
 
-    expect(runtimePairs).toHaveLength(18);
+    expect(runtimePairs).toHaveLength(expectedPairs.length);
     expect(
       runtimePairs.toSorted((left, right) =>
         left.canonicalName.localeCompare(right.canonicalName),

@@ -155,6 +155,13 @@ export const allRiceToolManifest = [
     dshWireName: 'local_fs_write',
   },
   {
+    canonicalName: 'local.process.execute',
+    capability: 'storage:write',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_process_execute',
+  },
+  {
     canonicalName: 'local.fs.mkdir',
     capability: 'storage:write',
     risk: 'managed_write',

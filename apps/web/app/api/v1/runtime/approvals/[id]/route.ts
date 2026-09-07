@@ -9,6 +9,7 @@ import {
 import { capabilityErrorResponse } from '../../../../../../lib/capabilities/responses';
 import { isRequestValidationError } from '../../../../../../lib/api-error-response';
 import { getRequestContext } from '../../../../../../lib/identity/session';
+import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 
 export const runtime = 'nodejs';
 type Params = { params: Promise<{ id: string }> };
@@ -47,6 +48,8 @@ async function handle(
   if (process.env.ALLRICE_RUNTIME_POLICY_ENABLED !== '1')
     return new Response(null, { status: 404, headers });
   try {
+    if (action !== 'read' && !sameOriginBrowserWrite(request))
+      return Response.json({ code: 'ORIGIN_DENIED' }, { status: 403, headers });
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
     const { id } = await params.params;

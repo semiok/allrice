@@ -56,7 +56,7 @@ describe('AllRice DSH protocol runtime', () => {
         cwd: root,
         provider: 'gemini',
         model: '3.8flash',
-        nativeTools: [],
+        nativeTools: ['local.process.execute', 'web.search'],
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       }),
     ).resolves.toEqual({

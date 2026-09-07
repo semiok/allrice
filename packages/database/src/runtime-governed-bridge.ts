@@ -1,17 +1,24 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  BridgeCommandPayloadSchema,
+  RuntimeBridgePayloadSchema,
+  RuntimeLocalCommandProfileSchema,
   BridgeDeviceSchema,
+  EmployeeExecutionSnapshotSchema,
+  localCommandToolchainImageV1,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   isRuntimeRelativePath,
-  type BridgeCommandPayload,
+  type RuntimeBridgePayload,
   type BridgeDevice,
   type RuntimeActionBinding,
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import {
+  localCommandBinding,
+  localCommandEnabled,
+} from './local-command-profile.ts';
 import {
   createRuntimeOperationLedger,
   RuntimeLedgerError,
@@ -60,7 +67,7 @@ export function createGovernedBridgeOperationLedger(
     requestId?: string;
     initialOperation?: {
       binding: RuntimeActionBinding;
-      payload: BridgeCommandPayload;
+      payload: RuntimeBridgePayload;
     };
   } = {},
 ) {
@@ -71,7 +78,7 @@ export function createGovernedBridgeOperationLedger(
         binding: RuntimeActionBindingSchema.parse(
           options.initialOperation.binding,
         ),
-        payload: BridgeCommandPayloadSchema.parse(
+        payload: RuntimeBridgePayloadSchema.parse(
           options.initialOperation.payload,
         ),
       }
@@ -97,20 +104,22 @@ export function createGovernedBridgeOperationLedger(
         ? {
             binding: RuntimeOperationSnapshotSchema.parse(row.initial_snapshot)
               .binding,
-            payload: BridgeCommandPayloadSchema.parse(row.bridge_payload),
+            payload: RuntimeBridgePayloadSchema.parse(row.bridge_payload),
           }
         : initial?.binding.attempt.operationId === requested.attempt.operationId
           ? initial
           : null;
       if (!stored) throw new RuntimePolicyError('bridge_authority_changed');
       const { binding, payload } = stored;
+      const command =
+        payload.capability === 'local.process.execute' ? payload : null;
       if (
         binding.task.scope.organizationId !== device.organizationId ||
         binding.task.scope.workspaceId !== device.workspaceId ||
         binding.task.scope.projectId !== null ||
         binding.execution.deviceId !== device.id ||
         binding.execution.targetKind !== 'rice_bridge' ||
-        binding.command !== null ||
+        (!command && binding.command !== null) ||
         binding.dataScope.length ||
         binding.baseline.length
       )
@@ -124,6 +133,7 @@ export function createGovernedBridgeOperationLedger(
           'local.fs.search',
           'local.git.status',
           'local.git.diff',
+          'local.process.execute',
         ].includes(payload.capability);
       if (
         (!directoryRoot && !isRuntimeRelativePath(payload.arguments.path)) ||
@@ -167,13 +177,14 @@ export function createGovernedBridgeOperationLedger(
       if (
         !currentDevice ||
         currentDevice.revoked_at ||
-        !currentDevice.capabilities.includes(payload.capability) ||
+        (!command &&
+          !currentDevice.capabilities.includes(payload.capability)) ||
         !grant ||
         grant.revoked_at ||
         !target ||
         target.kind !== 'rice_bridge' ||
         target.state !== 'online' ||
-        !target.capabilities.includes(targetCapability)
+        (!command && !target.capabilities.includes(targetCapability))
       )
         throw new RuntimePolicyError('bridge_authority_changed');
 
@@ -192,6 +203,34 @@ export function createGovernedBridgeOperationLedger(
         !['queued', 'running', 'waiting_approval'].includes(run.state)
       )
         throw new RuntimePolicyError('bridge_authority_changed');
+
+      let profileReportedAt: Date | null = null;
+      if (command) {
+        if (!localCommandEnabled() || device.platform !== 'macos-x64')
+          throw new RuntimePolicyError('bridge_authority_changed');
+        const [reported] = await tx<{ profile: unknown; reported_at: Date }[]>`
+          select profile,reported_at from allrice_bridge_runtime_profiles
+          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} for share`;
+        const profile = RuntimeLocalCommandProfileSchema.safeParse(
+          reported?.profile,
+        );
+        const [current] = await tx<
+          { now: Date }[]
+        >`select clock_timestamp() as now`;
+        if (
+          !reported ||
+          !profile.success ||
+          !profile.data.available ||
+          profile.data.architecture !== 'amd64' ||
+          profile.data.imageDigest !== command.arguments.imageDigest ||
+          profile.data.imageDigest !== localCommandToolchainImageV1 ||
+          !current ||
+          reported.reported_at.getTime() <= current.now.getTime() - 90_000 ||
+          reported.reported_at > current.now
+        )
+          throw new RuntimePolicyError('bridge_authority_changed');
+        profileReportedAt = reported.reported_at;
+      }
       const [policy] = await tx<
         { payload: unknown }[]
       >`select payload from allrice_policy_snapshots
@@ -199,9 +238,14 @@ export function createGovernedBridgeOperationLedger(
           and subject_id=${device.ownerId} for share`;
       if (!policy) throw new RuntimePolicyError('bridge_authority_changed');
       const [employee] = await tx<
-        { employee_version_id: string; session_id: string; owner_id: string }[]
+        {
+          employee_version_id: string;
+          session_id: string;
+          owner_id: string;
+          execution_snapshot: unknown;
+        }[]
       >`
-        select employee_version_id,session_id,owner_id from allrice_employee_runs
+        select employee_version_id,session_id,owner_id,execution_snapshot from allrice_employee_runs
         where run_id=${run.id} and organization_id=${device.organizationId}
           and workspace_id=${device.workspaceId} for share`;
       if (
@@ -210,6 +254,30 @@ export function createGovernedBridgeOperationLedger(
           (employee?.employee_version_id ?? null)
       )
         throw new RuntimePolicyError('bridge_authority_changed');
+      if (command) {
+        // Permissions come from the Run's frozen employee snapshot, not a
+        // client-supplied action or the employee's mutable current definition.
+        const frozen = EmployeeExecutionSnapshotSchema.safeParse(
+          employee?.execution_snapshot,
+        );
+        if (
+          !frozen.success ||
+          frozen.data.employee.versionId !== employee?.employee_version_id ||
+          frozen.data.tenantContext.organizationId !== device.organizationId ||
+          frozen.data.tenantContext.workspaceId !== device.workspaceId ||
+          frozen.data.tenantContext.actorId !== device.ownerId ||
+          frozen.data.tenantContext.policySnapshotId !==
+            run.policy_snapshot_id ||
+          frozen.data.assignment.userId !== device.ownerId ||
+          !frozen.data.capabilitySnapshot.bindings.toolNames.includes(
+            'local.process.execute',
+          ) ||
+          !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
+            'storage:write',
+          )
+        )
+          throw new RuntimePolicyError('bridge_authority_changed');
+      }
       let generation = 0;
       if (employee) {
         const [session] = await tx<
@@ -231,6 +299,20 @@ export function createGovernedBridgeOperationLedger(
         generation = runtime.thread_generation;
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
+      const job = command
+        ? (
+            await tx<
+              {
+                status: string;
+                cancel_requested_at: Date | null;
+                timeout_at: Date;
+                lease_expires_at: Date | null;
+              }[]
+            >`
+        select status,cancel_requested_at,timeout_at,lease_expires_at from allrice_jobs
+        where run_id=${run.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and owner_id=${device.ownerId}`
+          )[0]
+        : null;
       const [clock] = await tx<
         { now: Date }[]
       >`select clock_timestamp() as now`;
@@ -238,7 +320,17 @@ export function createGovernedBridgeOperationLedger(
         !clock ||
         !currentDevice.last_seen_at ||
         currentDevice.last_seen_at.getTime() <= clock.now.getTime() - 90_000 ||
-        currentDevice.last_seen_at > clock.now
+        currentDevice.last_seen_at > clock.now ||
+        (command &&
+          (!job ||
+            job.status !== 'running' ||
+            job.cancel_requested_at ||
+            !job.lease_expires_at ||
+            job.lease_expires_at <= clock.now ||
+            job.timeout_at <= clock.now ||
+            !profileReportedAt ||
+            profileReportedAt.getTime() <= clock.now.getTime() - 90_000 ||
+            profileReportedAt > clock.now))
       )
         throw new RuntimePolicyError('bridge_authority_changed');
 
@@ -270,11 +362,13 @@ export function createGovernedBridgeOperationLedger(
           grantId: grant.id,
           grantVersion: grant.runtime_generation,
           scopeDigest: `sha256:${grant.root_fingerprint}`,
-          workCopy: { id: grant.id, kind: 'in_place' },
+          workCopy: command
+            ? { id: binding.attempt.operationId, kind: 'local_copy' }
+            : { id: grant.id, kind: 'in_place' },
         },
         action: payload.capability,
         inputDigest: runtimePolicyDigest(payload),
-        command: null,
+        command: command ? localCommandBinding(command) : null,
         baseline: [],
         dataScope: [],
       });

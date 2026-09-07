@@ -21,6 +21,7 @@ import {
   ManagedBrowserTaskPanel,
 } from './managed-browser-task-panel';
 import { UserQuestionReceipt } from './user-question-receipt';
+import { LocalCommandPanel } from './local-command-panel';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
@@ -182,6 +183,14 @@ export function ChatTranscript({
                           workspaceId={workspaceId}
                         />
                       ) : null}
+                      {message.runId && (
+                        <LocalCommandPanel
+                          runId={message.runId}
+                          workspaceId={workspaceId}
+                          tenantHeaders={tenantHeaders}
+                          runActive={messageIsRunning}
+                        />
+                      )}
                       {messageIsRunning && !streamedText ? (
                         <div className={chatUi.turnStatus}>
                           Rice 正在理解你的需求…

@@ -1,0 +1,88 @@
+.root {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  min-width: 0;
+}
+.root article {
+  border: 1px solid #b6c8ee;
+  border-left: 4px solid #5271c4;
+  border-radius: 12px;
+  padding: 16px;
+  background: #f5f8ff;
+  color: #23314a;
+  min-width: 0;
+}
+.root header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.root p,
+.root small {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.root small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #535d70;
+}
+.root pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow: auto;
+  font-size: 12px;
+  padding: 10px;
+  background: #eaf0fb;
+  border-radius: 6px;
+}
+.root summary {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 8px 0;
+}
+.root button {
+  cursor: pointer;
+  border: 1px solid #8a9dc6;
+  border-radius: 8px;
+  background: white;
+  color: #22395f;
+  padding: 8px 12px;
+}
+.root button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.root button:focus-visible,
+.root summary:focus-visible {
+  outline: 2px solid #315fd3;
+  outline-offset: 3px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.actions small {
+  flex-basis: 100%;
+}
+.stderr {
+  color: #a62938;
+}
+.root article[data-status='failed'],
+.root article[data-status='unknown'] {
+  border-color: #bf7e6f;
+}
+@media (max-width: 640px) {
+  .root article {
+    padding: 12px;
+  }
+  .actions button {
+    flex: 1 1 auto;
+  }
+}

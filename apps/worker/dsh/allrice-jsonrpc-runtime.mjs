@@ -218,6 +218,58 @@ const brokerNativeTools = [
     },
   },
   {
+    canonicalName: 'local.process.execute',
+    wireName: 'local_process_execute',
+    timeoutMs: 670_000,
+    description:
+      'Run one explicitly approved Node/npm command in a local Linux VM copy of an exact file manifest. No network, dependency installation or writes to the original folder. Supply current SHA-256 for every input file. Wait for the web approval and real exit evidence; approval is not execution success.',
+    parameters: {
+      executable: {
+        type: 'string',
+        required: true,
+        description: '/usr/local/bin/node or /usr/local/bin/npm',
+      },
+      args: {
+        type: 'array',
+        items: { type: 'string' },
+        required: true,
+        description: 'Structured arguments, at most 32. No shell string.',
+      },
+      path: {
+        type: 'string',
+        required: true,
+        description: 'Relative working directory, or .',
+      },
+      files: {
+        type: 'array',
+        required: true,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string', required: true },
+            sha256: { type: 'string', required: true },
+          },
+        },
+        description: 'Exact approved source files, at most 64, 256 KiB total.',
+      },
+      limits: {
+        type: 'object',
+        additionalProperties: false,
+        required: true,
+        properties: {
+          timeoutMs: { type: 'integer', required: true },
+          outputBytes: { type: 'integer', required: true },
+          memoryMiB: { type: 'integer', required: true },
+          cpuMillis: { type: 'integer', required: true },
+          pids: { type: 'integer', required: true },
+        },
+        description:
+          'timeoutMs 500..60000; outputBytes 1024..65536; memoryMiB 128..512; cpuMillis 100..1000; pids 16..64.',
+      },
+    },
+  },
+  {
     canonicalName: 'local.fs.mkdir',
     wireName: 'local_fs_mkdir',
     description:
@@ -928,7 +980,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             render: (_args, value) => [{ type: 'text', text: value.content }],
           },
           timeoutMs: tool.timeoutMs ?? 65_000,
-          isConcurrencySafe: () => true,
+          isConcurrencySafe: () =>
+            tool.canonicalName !== 'local.process.execute',
           execute: async (args, exec) => {
             const response = await this.toolBrokerRequest(
               {
