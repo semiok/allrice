@@ -1,0 +1,623 @@
+{
+  "fixtureFormat": "allrice-p00-design-cases-v1",
+  "validationStatus": "design_only_not_executed",
+  "warning": "Static synthetic design examples, not current API schemas, runtime test results, authorization grants or production data.",
+  "fixedNow": "2026-09-07T10:00:00.000Z",
+  "scopes": {
+    "tenantA": {
+      "organizationId": "10000000-0000-4000-8000-000000000001",
+      "workspaceId": "20000000-0000-4000-8000-000000000001",
+      "projectId": "30000000-0000-4000-8000-000000000001",
+      "actorId": "40000000-0000-4000-8000-000000000001",
+      "sessionId": "50000000-0000-4000-8000-000000000001",
+      "runId": "60000000-0000-4000-8000-000000000001",
+      "policyVersion": 1,
+      "sourceRef": "synthetic-request-a"
+    },
+    "tenantB": {
+      "organizationId": "10000000-0000-4000-8000-000000000002",
+      "workspaceId": "20000000-0000-4000-8000-000000000002",
+      "projectId": "30000000-0000-4000-8000-000000000002",
+      "actorId": "40000000-0000-4000-8000-000000000002",
+      "sessionId": "50000000-0000-4000-8000-000000000002",
+      "runId": "60000000-0000-4000-8000-000000000002",
+      "policyVersion": 1,
+      "sourceRef": "synthetic-request-b"
+    }
+  },
+  "sources": {
+    "synthetic-request-a": {
+      "kind": "synthetic_user_request",
+      "scopeRef": "tenantA"
+    },
+    "synthetic-request-b": {
+      "kind": "synthetic_user_request",
+      "scopeRef": "tenantB"
+    },
+    "synthetic-files": { "kind": "utf8_lf_fixture", "scopeRef": "tenantA" },
+    "synthetic-ledgers": {
+      "kind": "inline_business_data",
+      "scopeRef": "tenantA"
+    },
+    "synthetic-browser": {
+      "kind": "controlled_test_site",
+      "scopeRef": "tenantA",
+      "url": "https://preview-fixture.invalid/"
+    },
+    "synthetic-assistant-left": {
+      "kind": "child_run_fixture",
+      "scopeRef": "tenantA",
+      "runId": "60000000-0000-4000-8000-000000000011"
+    },
+    "synthetic-assistant-right": {
+      "kind": "child_run_fixture",
+      "scopeRef": "tenantA",
+      "runId": "60000000-0000-4000-8000-000000000012"
+    }
+  },
+  "artifacts": {
+    "file-v1": {
+      "scopeRef": "tenantA",
+      "artifactId": "70000000-0000-4000-8000-000000000001",
+      "seriesId": "80000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "sourceRef": "synthetic-files",
+      "relativePath": "output/result.txt",
+      "content": "result=v1\n",
+      "checksum": "sha256:07277c817a7cbbeacbb9b103293817728097c3608c770e53855f6df084078fc7"
+    },
+    "file-v2": {
+      "scopeRef": "tenantA",
+      "artifactId": "70000000-0000-4000-8000-000000000002",
+      "seriesId": "80000000-0000-4000-8000-000000000001",
+      "version": 2,
+      "sourceRef": "synthetic-files",
+      "relativePath": "output/result.txt",
+      "content": "result=v2\n",
+      "checksum": "sha256:a37900d20eebaa7b2b519583d335a0997db26308dd2d9d67b119faad3cd38fdb"
+    },
+    "left-result": {
+      "scopeRef": "tenantA",
+      "artifactId": "70000000-0000-4000-8000-000000000011",
+      "seriesId": "80000000-0000-4000-8000-000000000011",
+      "version": 1,
+      "sourceRef": "synthetic-assistant-left",
+      "runId": "60000000-0000-4000-8000-000000000011",
+      "relativePath": "output/result.txt",
+      "content": "left result\n",
+      "checksum": "sha256:8bdbed09d577c1c0c7d6f97a6ca815ba168ce2386ad56d94ee735dd92fb6776f"
+    },
+    "right-result": {
+      "scopeRef": "tenantA",
+      "artifactId": "70000000-0000-4000-8000-000000000012",
+      "seriesId": "80000000-0000-4000-8000-000000000012",
+      "version": 1,
+      "sourceRef": "synthetic-assistant-right",
+      "runId": "60000000-0000-4000-8000-000000000012",
+      "relativePath": "output/result.txt",
+      "content": "right result\n",
+      "checksum": "sha256:9a89d362227842026e9e55037c08aeb0e60f380488449b4ee809db2d9634f16d"
+    }
+  },
+  "cases": [
+    {
+      "id": "A01",
+      "title": "Trusted tenant authorization precedes target execution",
+      "contracts": ["C1", "C4"],
+      "gaLines": ["cloud_business", "local_project"],
+      "candidatePrs": ["P01", "P04", "P15"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-request-a", "synthetic-request-b"],
+      "artifactRefs": ["file-v1"],
+      "input": {
+        "authenticatedScopeRef": "tenantB",
+        "browserClaimedScopeRef": "tenantA",
+        "target": "cloud",
+        "resourceArtifactRef": "file-v1"
+      },
+      "steps": [
+        "Authorize using trusted tenantB context, ignoring browser tenant claims",
+        "Attempt dispatch and artifact read"
+      ],
+      "expected": {
+        "decision": "deny_without_disclosing_resource",
+        "dispatchedOperations": 0,
+        "disclosedArtifactBytes": 0,
+        "auditTenant": "tenantB",
+        "providerOrWorkerIdentityOverridesDenial": false
+      }
+    },
+    {
+      "id": "A02",
+      "title": "Plan acceptance and collaboration choice do not approve execution",
+      "contracts": ["C2"],
+      "gaLines": ["local_project"],
+      "candidatePrs": ["P04", "P10"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-request-a"],
+      "artifactRefs": ["file-v1"],
+      "input": {
+        "collaborationMode": "single",
+        "reviewDisposition": "plan_accepted",
+        "askUserAnswer": "Proceed with this plan",
+        "requestedAction": {
+          "target": "bridge",
+          "operationId": "90000000-0000-4000-8000-000000000002",
+          "executable": "fixture-command",
+          "args": ["test"],
+          "rootAlias": "granted-project-root"
+        },
+        "actionApproval": null
+      },
+      "steps": [
+        "Accept the plan and answer the question",
+        "Request a policy-required command"
+      ],
+      "expected": {
+        "planAccepted": true,
+        "executionDecision": "waiting_exact_action_approval",
+        "spawnedProcesses": 0,
+        "feedbackConsumedAsApproval": false
+      }
+    },
+    {
+      "id": "A03",
+      "title": "Versioned feedback and approval cannot authorize newer content",
+      "contracts": ["C3"],
+      "gaLines": ["local_project"],
+      "candidatePrs": ["P06", "P07", "P08"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-files"],
+      "artifactRefs": ["file-v1", "file-v2"],
+      "input": {
+        "feedback": {
+          "artifactRef": "file-v1",
+          "version": 1,
+          "lineStart": 1,
+          "lineEnd": 1,
+          "text": "Use v2 wording"
+        },
+        "approval": {
+          "artifactRef": "file-v1",
+          "version": 1,
+          "operationId": "90000000-0000-4000-8000-000000000003",
+          "target": "bridge",
+          "rootAlias": "granted-project-root",
+          "policyVersion": 1,
+          "expiresAt": "2026-09-07T10:05:00.000Z"
+        },
+        "attemptedArtifactRef": "file-v2"
+      },
+      "steps": [
+        "Save feedback against file-v1",
+        "Produce file-v2 with a different checksum",
+        "Attempt file-v2 apply with file-v1 approval"
+      ],
+      "expected": {
+        "decision": "reject_stale_binding",
+        "writtenFiles": 0,
+        "feedbackOriginalVersion": 1,
+        "approvalTransferredToVersion2": false,
+        "requiresNewReviewAndApproval": true
+      }
+    },
+    {
+      "id": "A04",
+      "title": "Project identity does not imply a usable local workspace or preview",
+      "contracts": ["C4", "C5"],
+      "gaLines": ["local_project"],
+      "candidatePrs": ["P04", "P05", "P09-c", "P23"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-files"],
+      "artifactRefs": [],
+      "input": {
+        "projectRegistered": true,
+        "bridgeOnline": true,
+        "folderGrant": null,
+        "rootAliasAfterGrant": "granted-project-root",
+        "pathVariants": [
+          "src/index.txt",
+          "../sibling-private/value.txt",
+          "linked-outside/value.txt"
+        ],
+        "symlinkTargetAlias": "same-test-sibling-root"
+      },
+      "steps": [
+        "Request local operation before granting a folder",
+        "Grant isolated root and evaluate each path against final resolved location",
+        "Observe process-created event without readiness evidence",
+        "Observe readiness but no verified browser-to-target reachability"
+      ],
+      "expected": {
+        "beforeGrant": "waiting_workspace",
+        "pathDecisionsAfterGrant": [
+          "eligible_for_policy_check",
+          "deny_outside_root",
+          "deny_outside_root"
+        ],
+        "outsideRootReadsOrWrites": 0,
+        "processCreatedMeansReady": false,
+        "readyMeansBrowserReachable": false
+      }
+    },
+    {
+      "id": "A05",
+      "title": "Unknown local effect and cancellation acknowledgement stay distinct",
+      "contracts": ["C1", "C5", "C6"],
+      "gaLines": ["local_project"],
+      "candidatePrs": ["P03-a", "P03-b", "P05", "P12"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-files"],
+      "artifactRefs": ["file-v1"],
+      "input": {
+        "operationId": "90000000-0000-4000-8000-000000000005",
+        "attemptId": "a0000000-0000-4000-8000-000000000001",
+        "sideEffectCountBeforeLostReceipt": 1,
+        "deviceJournal": "completed_result_durable",
+        "serverResult": null,
+        "newCloudPermission": false
+      },
+      "steps": [
+        "Lose connectivity after local effect but before result acknowledgement",
+        "Request cancellation while disconnected",
+        "Reconnect and replay the same journal result twice"
+      ],
+      "expected": {
+        "afterDisconnect": "unknown",
+        "afterCancelRequest": "cancel_requested_not_stop_confirmed",
+        "automaticLocalReexecutions": 0,
+        "automaticCloudFallbacks": 0,
+        "acceptedResultRecords": 1,
+        "totalSideEffects": 1,
+        "finalOutcome": "completed_before_cancellation",
+        "cancelSuccessFalselyReported": false,
+        "lateResultAppendedAfterRunTerminal": false
+      }
+    },
+    {
+      "id": "A06",
+      "title": "New input is typed and tied to a current turn",
+      "contracts": ["C5"],
+      "gaLines": ["local_project", "base_subagents"],
+      "candidatePrs": ["P10", "P26"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-request-a"],
+      "artifactRefs": [],
+      "input": {
+        "activeTurn": "fixture-turn-2",
+        "messages": [
+          {
+            "id": "steer-1",
+            "kind": "steer",
+            "turn": "fixture-turn-2",
+            "text": "Keep the report short"
+          },
+          {
+            "id": "queue-1",
+            "kind": "queue",
+            "text": "Prepare a separate summary next"
+          },
+          {
+            "id": "steer-old",
+            "kind": "steer",
+            "turn": "fixture-turn-1",
+            "text": "Use this old correction"
+          },
+          {
+            "id": "steer-1",
+            "kind": "steer",
+            "turn": "fixture-turn-2",
+            "text": "Keep the report short"
+          }
+        ]
+      },
+      "steps": [
+        "Deliver messages in listed order",
+        "Refresh the UI while the current turn remains active"
+      ],
+      "expected": {
+        "currentTurnCorrections": ["steer-1"],
+        "nextTurnQueue": ["queue-1"],
+        "rejectedStaleInputs": ["steer-old"],
+        "duplicateEffects": 0,
+        "actionApprovalsCreated": 0,
+        "refreshPreservesPendingInput": true
+      }
+    },
+    {
+      "id": "A07",
+      "title": "Durable ordered event replay and unknown usage do not invent facts",
+      "contracts": ["C6"],
+      "gaLines": ["cloud_business", "base_subagents"],
+      "candidatePrs": ["P01", "P03-a", "P10", "P12"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-request-a"],
+      "artifactRefs": [],
+      "input": {
+        "durableSequences": [0, 1, 2],
+        "transportHintArrival": [2, 1, 2],
+        "lastDeliveredSequence": 0,
+        "usage": {
+          "modelCallsMeasured": 2,
+          "tokensReported": null,
+          "costMeasured": null,
+          "estimatedTokens": 120,
+          "estimatedTokensSource": "fixture_estimator"
+        },
+        "hiddenReasoning": "synthetic-do-not-project",
+        "credentialPlaceholder": "synthetic-secret-do-not-project"
+      },
+      "steps": [
+        "Resolve hints by reading the authorized durable event sequence",
+        "Render supplied usage and sanitize source projections"
+      ],
+      "expected": {
+        "deliveredSequences": [1, 2],
+        "duplicateEvents": 0,
+        "missingTokensRenderedAs": "unknown",
+        "missingCostRenderedAs": "unknown",
+        "estimateRenderedSeparately": true,
+        "estimatedTokensCountedAsMeasured": false,
+        "hiddenReasoningProjected": false,
+        "credentialPlaceholderProjected": false
+      }
+    },
+    {
+      "id": "A08",
+      "title": "GA resume and file restore, with future-only fork semantics",
+      "contracts": ["C7"],
+      "gaLines": ["local_project"],
+      "candidatePrs": ["P03-a", "P03-b", "P08", "P10"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-files"],
+      "artifactRefs": ["file-v1", "file-v2"],
+      "input": {
+        "checkpointArtifactRef": "file-v1",
+        "lastAppliedArtifactRef": "file-v2",
+        "actualFileContent": "user edit\n",
+        "actualFileChecksum": "sha256:2e626800eedcc40b2a522f492a6ddf5485aa2d342e1ad96e019dd3462435cdd3",
+        "restoreExpectedCurrentArtifactRef": "file-v2"
+      },
+      "steps": [
+        "Resume the original session without automatically replaying effects",
+        "Attempt file restore using last-applied checksum"
+      ],
+      "expected": {
+        "resumeWrites": 0,
+        "restoreDecision": "reject_changed_baseline",
+        "finalFileContent": "user edit\n",
+        "externalSideEffectsAutomaticallyUndone": false
+      },
+      "futureSemanticNotes": {
+        "fork": {
+          "scope": "future_only_not_GA",
+          "implementationCandidate": null,
+          "enableEntryForGA": false,
+          "note": "Pure semantic placeholder: if context fork is later scheduled, it must not write files or inherit consumable execution approvals. This is not a step or acceptance prerequisite for the listed GA candidate PRs."
+        }
+      }
+    },
+    {
+      "id": "A09",
+      "title": "No-Bridge reconciliation has a deterministic cloud result",
+      "contracts": ["C1", "C4"],
+      "gaLines": ["cloud_business"],
+      "candidatePrs": ["P15", "P19"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-ledgers"],
+      "artifactRefs": [],
+      "input": {
+        "bridgeInstalled": false,
+        "executionTarget": "cloud",
+        "cloudDataPermission": "explicit_for_inline_inputs_only",
+        "joinRule": "full_outer_by_orderId",
+        "amountUnit": "CNY_fen_integer",
+        "orders": [
+          { "orderId": "S-01", "amount": 1000 },
+          { "orderId": "S-02", "amount": 2000 }
+        ],
+        "settlements": [
+          { "orderId": "S-01", "amount": 1000 },
+          { "orderId": "S-02", "amount": 1500 },
+          { "orderId": "S-03", "amount": 100 }
+        ]
+      },
+      "steps": [
+        "Confirm the join rule and currency unit",
+        "Compute using only the authorized inline datasets",
+        "Persist versioned output through storage before destroying the test container",
+        "Download and reopen the output"
+      ],
+      "expected": {
+        "rows": [
+          {
+            "orderId": "S-01",
+            "orderAmount": 1000,
+            "settlementAmount": 1000,
+            "delta": 0,
+            "status": "matched"
+          },
+          {
+            "orderId": "S-02",
+            "orderAmount": 2000,
+            "settlementAmount": 1500,
+            "delta": 500,
+            "status": "amount_mismatch"
+          },
+          {
+            "orderId": "S-03",
+            "orderAmount": null,
+            "settlementAmount": 100,
+            "delta": null,
+            "status": "unexpected_settlement"
+          }
+        ],
+        "rowCount": 3,
+        "ordersTotal": 3000,
+        "settlementsTotal": 2600,
+        "netDifference": 400,
+        "localFilesUploaded": 0,
+        "outputVersion": 1,
+        "outputSourceRefs": ["synthetic-ledgers"],
+        "outputReadableAfterContainerDestroyed": true
+      }
+    },
+    {
+      "id": "A10",
+      "title": "Browser control and preview isolation are independently enforced",
+      "contracts": ["C8"],
+      "gaLines": ["browser"],
+      "candidatePrs": ["P04", "P07", "P21", "P22", "P23"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-browser"],
+      "artifactRefs": [],
+      "input": {
+        "targetsToVerifySeparately": [
+          "managed_browser",
+          "bridge_independent_profile"
+        ],
+        "captureVersion": 1,
+        "activeDocumentVersion": 2,
+        "staticHtml": "<script>window.__fixtureExecuted=true</script><img src='https://external-fixture.invalid/pixel'>",
+        "personalCookieImportPermitted": false
+      },
+      "steps": [
+        "Open artifact as untrusted static preview",
+        "Attempt action tied to stale captureVersion",
+        "Transfer browser control to human and attempt automatic click",
+        "Revoke the preview capability and attempt channel reuse"
+      ],
+      "expected": {
+        "staticScriptExecuted": false,
+        "unapprovedExternalRequests": 0,
+        "staleCaptureAction": "reject_refresh_required",
+        "agentActionsAfterHumanTakeover": 0,
+        "channelReusableAfterRevocation": false,
+        "mainSiteCredentialsExposed": false,
+        "personalCookiesImported": false,
+        "oneTargetResultProvesOtherTarget": false
+      }
+    },
+    {
+      "id": "A11",
+      "title": "Root budget, full-tree cancellation and disabled modes",
+      "contracts": ["C1", "C2", "C5"],
+      "gaLines": ["base_subagents"],
+      "candidatePrs": ["P24", "P25", "P26"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-assistant-left", "synthetic-assistant-right"],
+      "artifactRefs": ["left-result", "right-result"],
+      "input": {
+        "bridgeInstalled": false,
+        "rootBudget": { "maxModelCalls": 3, "used": 1, "reserved": 0 },
+        "childRunIds": [
+          "60000000-0000-4000-8000-000000000011",
+          "60000000-0000-4000-8000-000000000012"
+        ],
+        "reservationRequests": [1, 1, 1],
+        "childRequestedPermission": "outside_parent_grant",
+        "disabledModes": ["boost", "teamwork"],
+        "cancelAcknowledgementOrder": ["left", "right"]
+      },
+      "steps": [
+        "Atomically reserve root budget in request order",
+        "Reject permission outside parent grant",
+        "Request root cancellation; receive left acknowledgement while right remains unknown",
+        "Receive right stop acknowledgement; ignore late attempts to start new work",
+        "Attempt disabled modes using UI, natural language and API"
+      ],
+      "expected": {
+        "reservationDecisions": ["reserved", "reserved", "deny_budget"],
+        "usedPlusReserved": 3,
+        "childPermissionEscalation": false,
+        "rootAfterLeftAck": "cancel_requested_with_unconfirmed_descendant",
+        "rootAfterAllStopsConfirmed": "canceled",
+        "newOperationsAfterCancel": 0,
+        "disabledModeStarts": 0,
+        "rootBudgetResetPerChild": false,
+        "separateLocalAgentLoopCreated": false
+      }
+    },
+    {
+      "id": "A12",
+      "title": "Sibling artifacts with one path cannot overwrite each other or the parent",
+      "contracts": ["C3", "C4", "C7"],
+      "gaLines": ["base_subagents", "local_project"],
+      "candidatePrs": ["P08", "P25", "P26"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": [
+        "synthetic-files",
+        "synthetic-assistant-left",
+        "synthetic-assistant-right"
+      ],
+      "artifactRefs": ["file-v1", "left-result", "right-result"],
+      "input": {
+        "parentArtifactRef": "file-v1",
+        "childArtifactRefs": ["left-result", "right-result"],
+        "sameRelativePath": "output/result.txt",
+        "parentApplyApproval": null
+      },
+      "steps": [
+        "Collect left and right immutable outputs in either arrival order",
+        "Attempt merge by relative path alone",
+        "Attempt parent workspace write without explicit approved changeset"
+      ],
+      "expected": {
+        "retainedChildArtifacts": 2,
+        "sourceRunIdsRemainDistinct": true,
+        "arrivalOrderSelectsWinner": false,
+        "mergeDecision": "requires_conflict_resolution",
+        "parentWrittenFiles": 0,
+        "parentContent": "result=v1\n",
+        "baseSubagentsMayDeferConflictSafetyToTeamwork": false
+      }
+    },
+    {
+      "id": "A13",
+      "title": "Human experience review affects later frozen versions, not automatic hooks",
+      "contracts": ["C3", "C8"],
+      "gaLines": ["cloud_business"],
+      "candidatePrs": ["P18", "P20"],
+      "validationStatus": "design_only_not_executed",
+      "scopeRef": "tenantA",
+      "sourceRefs": ["synthetic-ledgers"],
+      "artifactRefs": [],
+      "input": {
+        "candidateRule": "Report unmatched settlements separately",
+        "candidateScope": "workspace",
+        "sourceCaseId": "A09",
+        "activeRunSkillVersion": 1,
+        "proposedSkillVersion": 2,
+        "hookRequestedByPackage": "on_file_changed",
+        "hookRuntimeEnabled": false
+      },
+      "steps": [
+        "Create an unpublished candidate tied to the source task",
+        "Human explicitly approves the workspace-scoped new Skill version",
+        "Freeze a subsequent Run after publication",
+        "Attempt automatic registration of the package hook"
+      ],
+      "expected": {
+        "beforeReviewPublished": false,
+        "activeRunSkillVersion": 1,
+        "nextRunSkillVersion": 2,
+        "nextRunIdMustDiffer": true,
+        "crossTenantRuleVisibility": false,
+        "automaticHookRegistration": false,
+        "candidateSourcePreserved": true
+      }
+    }
+  ]
+}

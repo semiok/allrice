@@ -1,6 +1,14 @@
 # AllRice
 
-AllRice is a browser-first, self-hosted AI workspace for enterprise employees. It is an independent product and repository: no desktop client, Tauri, Rust, Cargo, DMG, or host-local user skill directories are part of the runtime.
+AllRice is a browser-first, self-hosted AI workspace for enterprise employees.
+It is an independent product and repository. The optional
+[Rice Bridge v0.2](apps/rice-bridge/README.md) provides governed local file
+operations; tenant conversations and the DSH Harness remain SaaS-side.
+Bridge v0.2 does not provide general Shell execution.
+
+> AllRice 2.0 planning: [product and delivery charter](docs/allrice-2.0.md).
+> P00 documents the next version's contracts and acceptance examples; it does
+> not enable the planned command runner, cloud runner or assistant capabilities.
 
 > Current version: **0.1.0 baseline**
 >
