@@ -208,6 +208,90 @@ suite('P09-c actual dedicated VM service lifecycle', () => {
     );
     expect(result.reason).toBe('timeout');
   }, 30000);
+  it.each(['stop', 'error'] as const)(
+    'keeps timeout when an in-flight lease check returns %s after the hard deadline',
+    async (mode) => {
+      let ready = false,
+        deadline = 0,
+        crossed = false;
+      const { result } = await execute(
+        `import http from 'node:http';http.createServer((q,s)=>s.end('fixture')).listen(3100,'127.0.0.1');`,
+        {
+          durationMs: 2500,
+          onEvent: (event) => {
+            if (event.type === 'starting')
+              deadline = Date.parse(event.hardDeadlineAt);
+            if (event.type === 'ready') ready = true;
+          },
+          maintainLease: async () => {
+            if (ready) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.max(0, deadline - Date.now()) + 50),
+              );
+              crossed = true;
+              if (mode === 'error')
+                throw Error('synthetic ACK loss at the hard deadline');
+            }
+            return {
+              leaseExpiresAt: new Date(Date.now() + 10000).toISOString(),
+              stopRequested: ready,
+              inputs: [],
+            };
+          },
+        },
+      );
+      expect(crossed).toBe(true);
+      expect(result.reason).toBe('timeout');
+    },
+    30000,
+  );
+  it('reports hard timeout rather than a readiness timer clamped to the same deadline', async () => {
+    const { result, events } = await execute('setInterval(()=>{},1000);', {
+      durationMs: 2000,
+      readinessMs: 6000,
+    });
+    expect(result.reason).toBe('timeout');
+    expect(events.some((event) => event.type === 'ready')).toBe(false);
+  }, 30000);
+  it('reports hard timeout rather than an input expiry clamped to the same deadline', async () => {
+    const { result, events } = await execute(
+      `import http from 'node:http';import fs from 'node:fs';
+      http.createServer((q,s)=>s.end('fixture')).listen(3100,'127.0.0.1');
+      fs.writeSync(3,JSON.stringify({type:'input.request',prompt:'等待至硬截止'})+'\\n');`,
+      { durationMs: 2000, requestTimeoutMs: 6000 },
+    );
+    expect(events.some((event) => event.type === 'input_request')).toBe(true);
+    expect(result.reason).toBe('timeout');
+  }, 30000);
+  it('preserves an earlier real lease loss when output draining finishes after the hard deadline', async () => {
+    let ready = false,
+      deadline = 0;
+    const { result } = await execute(
+      `import http from 'node:http';console.log('bounded fixture output');
+      http.createServer((q,s)=>s.end('fixture')).listen(3100,'127.0.0.1');`,
+      {
+        durationMs: 2500,
+        onEvent: (event) => {
+          if (event.type === 'starting')
+            deadline = Date.parse(event.hardDeadlineAt);
+          if (event.type === 'ready') ready = true;
+        },
+        maintainLease: async () => {
+          if (ready) throw Error('synthetic early transport loss');
+          return {
+            leaseExpiresAt: new Date(Date.now() + 10000).toISOString(),
+            stopRequested: false,
+            inputs: [],
+          };
+        },
+        onOutput: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        },
+      },
+    );
+    expect(Date.now()).toBeGreaterThanOrEqual(deadline);
+    expect(result.reason).toBe('lease_lost');
+  }, 30000);
   it('stops after transport loss rather than letting a ready service continue without a lease', async () => {
     let disconnected = false;
     const { result } = await execute(

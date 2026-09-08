@@ -5,7 +5,10 @@ import {
   localCommandToolchainImageV1,
 } from '@allrice/contracts';
 import { LocalCommandRunner } from './local-command-runner.js';
-import { LocalServiceRunner } from './local-service-runner.js';
+import {
+  LocalServiceRunner,
+  localServiceStopReason,
+} from './local-service-runner.js';
 import { fixtureId } from './journal-fixtures.js';
 
 function command() {
@@ -40,6 +43,18 @@ function command() {
   });
 }
 describe('P09-c explicit service contract boundaries', () => {
+  it.each(['lease_lost', 'canceled'] as const)(
+    'classifies %s at the exact hard deadline as timeout, but preserves a genuinely earlier stop',
+    (reason) => {
+      expect(localServiceStopReason(reason, 1000, 999)).toBe(reason);
+      expect(localServiceStopReason(reason, 1000, 1000)).toBe('timeout');
+      expect(localServiceStopReason(reason, 1000, 1001)).toBe('timeout');
+      let first: ReturnType<typeof localServiceStopReason> | null = null;
+      first ??= localServiceStopReason(reason, 1000, 999);
+      first ??= localServiceStopReason('lease_lost', 1000, 1001);
+      expect(first).toBe(reason);
+    },
+  );
   it('rejects a changed approved image before any daemon or file access', async () => {
     const runner = new LocalCommandRunner({
       socketPath: '/synthetic/docker.sock',

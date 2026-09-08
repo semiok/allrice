@@ -20,6 +20,9 @@ const emit=e=>process.stdout.write(JSON.stringify(e)+'\n');
 const event=e=>emit({type:'service',event:{processId:bundle.processId,attemptId:bundle.attemptId,sequence:eventSequence++,...e}});
 const end=(reason,code)=>{
   if(finished) return; finished=true;
+  // Timers, a closed control channel and a late renew can become runnable in
+  // the same event-loop turn. None may relabel an already reached hard limit.
+  if(Date.now()>=bundle.hardDeadlineMs&&['lease_lost','canceled','readiness_timeout','input_expired','input_protocol_error'].includes(reason)) {reason='timeout';code=124;}
   clearTimeout(requestTimer); clearTimeout(readinessTimer);clearTimeout(probeTimer);
   emit({type:'exit',reason,code});
   process.stdout.write('',()=>process.exit(code));
@@ -34,6 +37,8 @@ process.stdin.on('error',()=>end('lease_lost',125));
 let controlText='', controlQueue=Promise.resolve();
 const applyControl=async frame=>{
   if(finished) return;
+  // Do not validate or apply another renew/input at or beyond the hard limit.
+  if(Date.now()>=bundle.hardDeadlineMs) {end('timeout',124);return;}
   if(frame.attemptId!==bundle.attemptId||frame.sequence!==controlSequence||!Number.isInteger(frame.sequence)) throw Error('control sequence');
   controlSequence++;
   if(frame.type==='renew') {
