@@ -15,6 +15,7 @@ export interface BridgeRequestInput {
   body?: unknown;
   maximumResponseBytes?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export async function bridgeRequest<T>(input: BridgeRequestInput): Promise<T> {
@@ -30,7 +31,12 @@ export async function bridgeRequest<T>(input: BridgeRequestInput): Promise<T> {
         : { 'content-type': 'application/json' }),
     },
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    signal: AbortSignal.timeout(input.timeoutMs ?? 35_000),
+    signal: input.signal
+      ? AbortSignal.any([
+          input.signal,
+          AbortSignal.timeout(input.timeoutMs ?? 35_000),
+        ])
+      : AbortSignal.timeout(input.timeoutMs ?? 35_000),
   });
   let parsed: unknown;
   if (input.maximumResponseBytes !== undefined) {

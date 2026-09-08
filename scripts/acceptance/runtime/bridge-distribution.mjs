@@ -75,7 +75,7 @@ async function cli(args) {
   return { code, text };
 }
 try {
-  assert.equal((await cli(['--version'])).text.trim(), '0.3.0-dev.1');
+  assert.equal((await cli(['--version'])).text.trim(), '0.4.0-dev.1');
   assert.equal((await cli(['sandbox', 'status'])).code, 0);
   assert.equal((await cli(['sandbox', 'enable'])).code, 1);
   await assert.rejects(readFile(`${path}.sandbox.json`), { code: 'ENOENT' });
@@ -124,7 +124,7 @@ try {
     JSON.stringify({
       passed: true,
       architecture: process.arch,
-      version: '0.3.0-dev.1',
+      version: '0.4.0-dev.1',
       nativePreflight: true,
       enableRejectDoesNotPersist: true,
       localOptInPersists: true,

@@ -22,6 +22,9 @@ export function localProcessManager(input: ManagerInput) {
 export async function stopLocalProcesses(journal: BridgeJournal) {
   await managers.get(journal)?.close();
 }
+export function activeLocalProcessCount(journal: BridgeJournal) {
+  return managers.get(journal)?.activeCount ?? 0;
+}
 
 /** Recovery/terminal delivery only. Ignores all control values and cannot write
  * stdin or resume a service; the server must not renew leases for this request. */
@@ -243,6 +246,8 @@ export class LocalProcessManager {
   async close() {
     const current = [...this.active.values()];
     for (const task of current) task.abort.abort();
-    await Promise.allSettled(current.map((task) => task.done));
+    const results = await Promise.allSettled(current.map((task) => task.done));
+    if (results.some((result) => result.status === 'rejected'))
+      throw new LocalCommandError('LOCAL_STOP_UNCONFIRMED');
   }
 }

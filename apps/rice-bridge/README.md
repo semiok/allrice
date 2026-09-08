@@ -1,5 +1,15 @@
 # Rice Bridge v0.2
 
+## 2.0 P13 菜单栏 Dev 宿主
+
+新增原生 `Rice Bridge.app`：菜单提供图形化配对、工作区选择、暂停并停止本地任务、恢复、有限诊断日志、撤销与安全退出；不再要求长期保持终端窗口。Swift/AppKit 仅负责界面及随包子进程，网络、凭证、授权、journal 和实际执行继续复用同一个 TypeScript core。
+
+已有配对沿用原 Application Support 路径和 Keychain 服务，不复制或删除旧 journal。首次迁移前请正常退出旧终端版；新 CLI 和菜单栏版共享排他锁，不能同时运行。`status`、`sandbox status` 仍可只读查看；修改配对/授权/沙箱的 CLI 命令需先退出另一实例。新 core 的单实例锁需要 Node 22.13+，SEA 包自带对应运行时。
+
+暂停会停止本地任务并保留执行证据、未回传结果；不会回滚已发生的文件修改，也不会在恢复时自动重启旧服务。退出等待实际停止，宿主失联走同一清理路径。不提供任意 Shell、公开管理端口或新的执行权限。
+
+旧命令包打包入口保留。菜单栏 `.app` 采用独立入口 `node scripts/package-rice-bridge-app-macos.mjs NEW_OUTPUT_DIRECTORY`；仍为 ad-hoc Dev 包，**没有 Developer ID、公证或自动更新承诺**。完整边界、原生界面和两架构验收记录见 [P13 说明](../../docs/architecture/allrice-2.0/p13-desktop-bridge.md)。
+
 Rice Bridge 是 AllRice 的轻量本地受控执行端。DSH 仍在 SaaS 端负责理解、规划与工具选择，Bridge 只执行 Tool Broker 已授权的结构化本地命令。
 
 v0.2 支持 Apple Silicon（M 芯片）和 Intel 64 位 macOS，且只提供：

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +19,8 @@ export interface BridgeConfig {
   deviceId: string;
   deviceName: string;
   grants: LocalGrant[];
+  /** New pairings get an independent journal; existing configs keep their path. */
+  journalNamespace?: string;
 }
 
 export function configPath() {
@@ -95,9 +97,19 @@ export async function storeDeviceToken(deviceId: string, token: string) {
   await writeFallbackToken(token);
 }
 
-export async function readDeviceToken(deviceId: string) {
+export interface DeviceCredentials {
+  token: string;
+  storage: 'environment' | 'keychain' | 'private-file';
+  privateFileSecure?: boolean;
+}
+
+/** Read-only source metadata; does not migrate credentials or unlock Keychain. */
+export async function readDeviceCredentials(
+  deviceId: string,
+): Promise<DeviceCredentials> {
   const environmentToken = process.env.ALLRICE_BRIDGE_DEVICE_TOKEN;
-  if (environmentToken) return environmentToken;
+  if (environmentToken)
+    return { token: environmentToken, storage: 'environment' };
   if (platform() === 'darwin') {
     try {
       const result = await execFileAsync('/usr/bin/security', [
@@ -108,13 +120,28 @@ export async function readDeviceToken(deviceId: string) {
         deviceId,
         '-w',
       ]);
-      return result.stdout.trim();
+      return { token: result.stdout.trim(), storage: 'keychain' };
     } catch {
       // Fall through to the private local token written when Keychain access
       // was unavailable during first launch.
     }
   }
-  return (await readFile(fallbackTokenPath(), 'utf8')).trim();
+  const token = (await readFile(fallbackTokenPath(), 'utf8')).trim();
+  const metadata = await lstat(fallbackTokenPath()).catch(() => null);
+  return {
+    token,
+    storage: 'private-file',
+    privateFileSecure: Boolean(
+      metadata?.isFile() &&
+      !metadata.isSymbolicLink() &&
+      metadata.uid === process.getuid?.() &&
+      (metadata.mode & 0o777) === 0o600,
+    ),
+  };
+}
+
+export async function readDeviceToken(deviceId: string) {
+  return (await readDeviceCredentials(deviceId)).token;
 }
 
 export async function deleteDeviceToken(deviceId: string) {

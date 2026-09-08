@@ -42,6 +42,7 @@ export class RuntimeBridgeOperationClient {
       // Test seams retain the real filesystem journal and HTTP adapter.
       execute?: typeof executeLocalCommand;
       request?: typeof bridgeRequest;
+      onActivity?: (active: boolean) => void;
     },
   ) {
     input.journal.assertIdentity(input.config.server, input.config.deviceId);
@@ -103,6 +104,7 @@ export class RuntimeBridgeOperationClient {
   }
 
   async pollOnce() {
+    if (this.input.signal?.aborted) return false;
     if (this.input.runner)
       for (const dispatch of await this.input.journal.unknownLocalCommands()) {
         if (dispatch.payload.capability !== 'local.process.execute') continue;
@@ -124,6 +126,7 @@ export class RuntimeBridgeOperationClient {
       }
     // A failed/full outbox prevents acquiring more work, providing backpressure.
     if (!(await this.flush())) return false;
+    if (this.input.signal?.aborted) return false;
     const response = await this.request<{ dispatch: unknown }>({
       server: this.input.config.server,
       path: `${runtimeBridgeOperationPath}/next`,
@@ -149,7 +152,12 @@ export class RuntimeBridgeOperationClient {
       maximumResponseBytes: 750_000,
     });
     if (response.dispatch === null) return false;
-    await this.handle(RuntimeBridgeDispatchSchema.parse(response.dispatch));
+    this.input.onActivity?.(true);
+    try {
+      await this.handle(RuntimeBridgeDispatchSchema.parse(response.dispatch));
+    } finally {
+      this.input.onActivity?.(false);
+    }
     await this.flush();
     return true;
   }
@@ -158,6 +166,14 @@ export class RuntimeBridgeOperationClient {
     const { journal, config, token } = this.input;
     const operationId = dispatch.snapshot.binding.attempt.operationId;
     if ((await journal.receive(dispatch)) === 'duplicate') return;
+    if (this.input.signal?.aborted) {
+      await journal.stopped(
+        operationId,
+        { reason: 'bridge_paused' },
+        'Bridge 已停止领取；此操作未执行',
+      );
+      return;
+    }
     const grant = config.grants.find(
       (item) => item.id === dispatch.snapshot.binding.execution.grantId,
     );
@@ -241,6 +257,14 @@ export class RuntimeBridgeOperationClient {
       // A start response can be lost AFTER the server recorded started. There
       // is no safe reason to repeat start or execute after this ambiguity.
       await journal.uncertain(operationId, 'connection_lost');
+      return;
+    }
+    if (this.input.signal?.aborted) {
+      await journal.stopped(
+        operationId,
+        { reason: 'bridge_paused' },
+        'Bridge 已停止；此操作未执行',
+      );
       return;
     }
     if (dispatch.payload.capability === 'local.process.execute') {

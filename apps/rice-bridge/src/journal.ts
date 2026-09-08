@@ -548,6 +548,23 @@ export class BridgeJournal {
     });
   }
 
+  /** Aggregate facts only; do not export dispatch, lease, output or paths. */
+  async diagnosticCounts() {
+    await this.guard();
+    return {
+      pendingReceipts: Number(
+        this.database
+          .prepare('SELECT count(*) AS n FROM outbox WHERE delivered=0')
+          .get()?.n ?? 0,
+      ),
+      unknownOperations: Number(
+        this.database
+          .prepare("SELECT count(*) AS n FROM entries WHERE state='unknown'")
+          .get()?.n ?? 0,
+      ),
+    };
+  }
+
   async stopped(operationId: string, output: unknown, summary: string) {
     await this.guard();
     return this.transaction(() => {
