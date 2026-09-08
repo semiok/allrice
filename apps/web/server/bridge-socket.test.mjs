@@ -218,9 +218,13 @@ suite(
       const source = process.env.ALLRICE_TEST_DATABASE_URL;
       if (!source) throw new Error('Explicit isolated test database required');
       const base = new URL(source);
+      const isolatedCiDatabase =
+        base.hostname === '127.0.0.1' &&
+        base.port === '54329' &&
+        base.pathname === '/allrice';
       if (
         !['localhost', '127.0.0.1'].includes(base.hostname) ||
-        !/^\/allrice_(b2|test)$/.test(base.pathname)
+        (!/^\/allrice_(b2|test)$/.test(base.pathname) && !isolatedCiDatabase)
       )
         throw new Error('REFUSE_NON_TEST_DATABASE');
       base.search = '';
