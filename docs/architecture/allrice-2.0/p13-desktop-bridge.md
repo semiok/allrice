@@ -4,6 +4,8 @@
 
 ## 交付与边界
 
+追加的真实 PostgreSQL → 精确审批 → 桌面 core → 活跃 VM 任务 → 暂停/恢复回执验收与账本修复，见 [P13 补测记录](./p13-governed-desktop-acceptance.md)。该补测已通过，不改变下文 M5 AX、Keychain 与正式分发的未覆盖说明。
+
 - 薄 Swift/AppKit `.app` 宿主，菜单栏与独立状态窗口；配对、工作区、暂停/恢复、有限诊断日志、撤销、安全退出。没有 Electron、WebView、第二套 Agent Loop 或新的运行时 npm 依赖。
 - Node SEA 继续拥有 Keychain、config、HTTP/WSS、授权、Runner、SQLite journal、Outbox 和本实例有限进程管理。CLI 的实现提取到 `core.ts`，原命令包入口仍保留。
 - 宿主仅用私有父子进程 stdin/stdout 管道，JSONL 白名单控制协议；没有 localhost 管理服务，更没有公网入站端口。任意命令、额外字段、协议版本不符、超长帧、重复请求均拒绝。

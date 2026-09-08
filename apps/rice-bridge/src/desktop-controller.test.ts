@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, expect, it } from 'vitest';
 import { BridgeJournal } from './journal.js';
 import { journalDispatch, fixtureId } from './journal-fixtures.js';
+import { nativeSandboxConfig } from './sandbox-settings.js';
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -17,6 +18,8 @@ afterEach(async () => {
 const index = fileURLToPath(new URL('./index.ts', import.meta.url));
 const project = fileURLToPath(new URL('../../../', import.meta.url));
 const deviceId = '00000000-0000-4000-8000-000000000011';
+const supportedNativeSandbox =
+  process.platform === 'darwin' && ['arm64', 'x64'].includes(process.arch);
 
 async function fixture(paired = true, ledger: boolean | null = false) {
   const root = await realpath(
@@ -92,6 +95,8 @@ async function fixture(paired = true, ledger: boolean | null = false) {
         TMPDIR: process.env.TMPDIR,
         ALLRICE_BRIDGE_CONFIG_PATH: path,
         ALLRICE_BRIDGE_DEVICE_TOKEN: 'synthetic-secret-token',
+        // Never probe the developer's real allrice-b2 VM for this protocol test.
+        ALLRICE_LOCAL_DOCKER_SOCKET: join(root, 'absent-test-docker.sock'),
         TSX_TSCONFIG_PATH: join(project, 'tsconfig.base.json'),
         ...(ledger === null
           ? {}
@@ -336,28 +341,73 @@ it('a failed runtime cannot be relabelled paused or acknowledged as a clean stop
   expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
 });
 
-it('saved sandbox opt-in enables the operation protocol without an operation environment flag', async () => {
-  const f = await fixture(true, null);
-  await writeFile(
-    `${f.path}.sandbox.json`,
-    JSON.stringify({
-      version: 1,
-      enabled: true,
-      deviceId,
-      server: f.config.server,
-    }),
-    { mode: 0o600 },
-  );
-  const app = f.launch();
-  await wait(() => f.operationPolls() > 0);
-  expect((await app.request('status')).data).toMatchObject({
-    credentialStorage: 'environment',
-  });
-  expect((await app.request('pause')).ok).toBe(true);
-  const count = f.operationPolls();
-  await delay(150);
-  expect(f.operationPolls()).toBe(count);
-  await app.request('stop');
-  await exited(app.child);
-  expect(app.child.exitCode).toBe(0);
-}, 15_000);
+it.skipIf(!supportedNativeSandbox)(
+  'saved macOS sandbox opt-in enables the operation protocol without an operation environment flag',
+  async () => {
+    const f = await fixture(true, null);
+    await writeFile(
+      `${f.path}.sandbox.json`,
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        deviceId,
+        server: f.config.server,
+      }),
+      { mode: 0o600 },
+    );
+    const app = f.launch();
+    await wait(() => f.operationPolls() > 0);
+    expect((await app.request('status')).data).toMatchObject({
+      credentialStorage: 'environment',
+    });
+    expect((await app.request('pause')).ok).toBe(true);
+    const count = f.operationPolls();
+    await delay(150);
+    expect(f.operationPolls()).toBe(count);
+    await app.request('stop');
+    await exited(app.child);
+    expect(app.child.exitCode).toBe(0);
+  },
+  15_000,
+);
+
+it.skipIf(supportedNativeSandbox)(
+  'saved sandbox opt-in rejects an unsupported native platform without polling or pretending to be paused',
+  async () => {
+    expect(() => nativeSandboxConfig()).toThrow('UNSUPPORTED_NATIVE_PLATFORM');
+    const f = await fixture(true, null);
+    await writeFile(
+      `${f.path}.sandbox.json`,
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        deviceId,
+        server: f.config.server,
+      }),
+      { mode: 0o600 },
+    );
+    const app = f.launch();
+    await wait(() =>
+      app.frames.some(
+        (frame) =>
+          frame.type === 'state' &&
+          (frame.state as { mode?: string })?.mode === 'error',
+      ),
+    );
+    expect(f.operationPolls()).toBe(0);
+    expect(f.polls()).toBe(0);
+    expect((await app.request('status')).data).toMatchObject({ mode: 'error' });
+    expect(await app.request('pause')).toMatchObject({
+      ok: false,
+      code: 'DESKTOP_STOP_UNCONFIRMED',
+    });
+    expect(await app.request('stop')).toMatchObject({
+      ok: false,
+      code: 'DESKTOP_STOP_UNCONFIRMED',
+    });
+    await exited(app.child);
+    expect(app.child.exitCode).toBe(1);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  },
+  15_000,
+);
