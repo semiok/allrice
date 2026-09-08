@@ -1129,6 +1129,27 @@ export function createRuntimeOperationLedger(options: {
                 type: 'operation.cancel_requested',
                 requestId: input.receiptId,
               });
+            } else if (payload.capability === 'local.process.execute') {
+              // Desktop pause also stops foreground commands without a prior
+              // server cancellation request. Accept only the same immutable
+              // attempt/lease's actual isolated-copy stop evidence; this is
+              // fact reconciliation, never permission to start/replay work.
+              const evidence = input.evidence as
+                { output?: unknown } | null | undefined;
+              const result = RuntimeLocalCommandResultSchema.safeParse(
+                evidence?.output,
+              );
+              if (
+                !result.success ||
+                content.signal.effects !== 'none' ||
+                !['canceled', 'lease_lost'].includes(result.data.reason) ||
+                result.data.imageDigest !== payload.arguments.imageDigest
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              await append(tx, row, {
+                type: 'operation.cancel_requested',
+                requestId: input.receiptId,
+              });
             }
           }
           try {

@@ -22,7 +22,7 @@ import { BridgeJournal, bridgeDigest } from './journal.js';
 import { fixtureId, journalDispatch } from './journal-fixtures.js';
 import { executeLocalCommand } from './executor.js';
 import { RuntimeBridgeOperationClient } from './operation-client.js';
-import { bridgeRequest } from './client.js';
+import { bridgeRequest, type BridgeRequestInput } from './client.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -216,6 +216,36 @@ async function createFixture(
 }
 
 describe('HTTP device journal adapter', () => {
+  it.each(['before_start', 'after_start_ack'])(
+    'P13 pause %s persists stopped evidence without executing',
+    async (moment) => {
+      const test = await createFixture();
+      const abort = new AbortController();
+      if (moment === 'before_start') abort.abort();
+      const client = new RuntimeBridgeOperationClient({
+        config: test.config,
+        token: 'fixture-device-token',
+        journal: test.journal,
+        execute: test.execute,
+        signal: abort.signal,
+        request: async <T>(input: BridgeRequestInput) => {
+          const response = await bridgeRequest<T>(input);
+          if (input.path.endsWith('/start')) abort.abort();
+          return response;
+        },
+      });
+      await client.handle(test.dispatch);
+      expect(test.execute).not.toHaveBeenCalled();
+      expect((await test.journal.pending())[0]?.signal.type).toBe(
+        'operation.stopped',
+      );
+      const facts = await test.journal.diagnosticCounts();
+      expect(facts).toEqual({ pendingReceipts: 1, unknownOperations: 0 });
+      expect(await client.pollOnce()).toBe(false);
+      await client.handle(test.dispatch);
+      expect(test.execute).not.toHaveBeenCalled();
+    },
+  );
   it('keeps known success when a real legal long path exceeds summary length', async () => {
     const test = await createFixture();
     const parent = Array.from({ length: 6 }, () => 'd'.repeat(90)).join('/');
