@@ -19,6 +19,7 @@ import {
 import type postgres from 'postgres';
 
 import { getDatabase } from './core/client.ts';
+import { checkCloudBindingAuthority } from './cloud-authority.ts';
 
 type Transaction = postgres.TransactionSql;
 type Database = ReturnType<typeof getDatabase>;
@@ -290,7 +291,11 @@ async function checkBindingAuthority(
     !['online', 'degraded'].includes(target.state)
   )
     throw new RuntimePolicyError('target_unavailable');
-  // B1 registers the existing Bridge grant adapter only. Cloud/data adapters are separate future slices.
+  if (binding.execution.targetKind === 'cloud_sandbox') {
+    await checkCloudBindingAuthority(transaction, context, binding);
+    return { binding, policyExpiresAt: snapshot.expires_at };
+  }
+  // Existing Bridge authority remains separate from cloud data transfer scopes.
   if (
     binding.execution.targetKind !== 'rice_bridge' ||
     binding.dataScope.length > 0 ||

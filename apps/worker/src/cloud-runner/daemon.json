@@ -1,0 +1,10 @@
+{
+  "exec-opts": ["native.cgroupdriver=cgroupfs"],
+  "features": { "buildkit": true, "containerd-snapshotter": true },
+  "runtimes": {
+    "runsc": {
+      "path": "/usr/local/bin/runsc",
+      "runtimeArgs": ["--directfs=false", "--oci-seccomp=false"]
+    }
+  }
+}

@@ -36,6 +36,7 @@ export const runtimeGovernedActions = [
   'local.fs.mkdir',
   'local.process.execute',
   'local.fs.changeset',
+  'cloud.process.execute',
 ] as const;
 
 const readActions = new Set<string>([
@@ -69,10 +70,14 @@ export function evaluateRuntimePolicy(
     return { effect: 'deny', reason: 'tenant_deny' };
   if (matches.some((rule) => rule.effect === 'ask'))
     return { effect: 'ask', reason: 'exact_approval_required' };
-  // B2 command execution always needs an exact, single-use approval, even if
+  // Governed command execution always needs an exact, single-use approval, even if
   // a tenant's broad tool rule is Allow. Unknown tools still fail registration.
   if (
-    ['local.process.execute', 'local.fs.changeset'].includes(action) &&
+    [
+      'local.process.execute',
+      'local.fs.changeset',
+      'cloud.process.execute',
+    ].includes(action) &&
     matches.some((rule) => rule.effect === 'allow')
   )
     return { effect: 'ask', reason: 'exact_approval_required' };

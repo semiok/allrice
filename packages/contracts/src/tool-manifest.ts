@@ -32,6 +32,12 @@ export interface AllRiceToolManifestEntry {
  */
 export const allRiceToolManifest = [
   {
+    canonicalName: 'cloud.process.execute',
+    capability: 'storage:write',
+    risk: 'side_effect',
+    transport: 'envelope',
+  },
+  {
     canonicalName: 'workspace.file.list',
     capability: 'storage:read',
     risk: 'read_only',

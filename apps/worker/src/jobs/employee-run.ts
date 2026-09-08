@@ -51,6 +51,7 @@ import {
 import { buildAuthorizedKnowledgeContext } from '../knowledge.js';
 import { estimateModelCostCents } from '../model-cost.js';
 import { decideCapabilityRoute } from '../routing/capability-router.js';
+import { nativeGovernedToolNames } from '../tool-broker/definitions.js';
 import {
   providerSnapshotForModelTarget,
   replayProviderSnapshot,
@@ -323,7 +324,9 @@ export async function executeEmployeeRun({
       executionSnapshot,
       tools: authorizedTools.flatMap((tool) => {
         const requiredCapability = riceToolCapability(tool.name);
-        return requiredCapability && riceToolRisk(tool.name) !== 'read_only'
+        return requiredCapability &&
+          riceToolRisk(tool.name) !== 'read_only' &&
+          !nativeGovernedToolNames.has(tool.name)
           ? [{ ...tool, requiredCapability }]
           : [];
       }),
@@ -621,7 +624,7 @@ export async function executeEmployeeRun({
       systemInstructions: [
         kernel.systemInstructions,
         `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
-        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set; decide whether to call them using the native DSH Agent Loop. Side-effect tools are available only when explicitly selected. Use only the capabilities and tools supplied for this turn.`,
+        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Explicitly granted cloud.process.execute is selected by the native DSH Agent Loop and requires its own exact, durable per-call approval. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
       ].join('\n\n'),
       authorizedMemoryContext: [
         kernel.authorizedMemoryContext,

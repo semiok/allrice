@@ -5,6 +5,8 @@ export * from './workspace.ts';
 export * from './bridge.ts';
 export * from './bridge-connections.ts';
 export * from './runtime-policy.ts';
+export * from './cloud-execution.ts';
+export { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 export * from './runtime-governed-bridge.ts';
 export * from './local-command-profile.ts';
 export * from './local-command-service.ts';

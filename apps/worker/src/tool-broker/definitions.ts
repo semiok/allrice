@@ -1,6 +1,7 @@
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
+  CloudCommandInputSchema,
   type AllRiceToolRisk,
   type SkillCapability,
 } from '@allrice/contracts';
@@ -8,7 +9,21 @@ import { z } from 'zod';
 
 export type RiceToolRisk = AllRiceToolRisk;
 
+// Visibility is not authorization. Native DSH selects these adapters, but every
+// invocation requires its own durable exact-input approval before execution.
+export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
+  'cloud.process.execute',
+]);
+
 export const riceToolDefinitions = [
+  {
+    name: 'cloud.process.execute',
+    description:
+      '经明确审批在隔离云端运行 Node 22 脚本。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT。执行前显示精确输入和输出范围。',
+    inputSchema: z.toJSONSchema(CloudCommandInputSchema, {
+      unrepresentable: 'any',
+    }),
+  },
   {
     name: 'workspace.file.list',
     description: '列出当前用户在当前工作区有权读取的文件。',
@@ -450,6 +465,10 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (definition.name !== 'cloud.process.execute' ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
+          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1')) &&
       (!['local.process.status', 'local.process.stop'].includes(
         definition.name,
       ) ||
@@ -468,8 +487,9 @@ export function riceToolDefinitionsForCapabilities(
 
 /**
  * Stable DSH turn capability set. Tenant-authorized read-only tools are always
- * visible to the native Agent Loop; side-effect and secret-bearing tools only
- * become visible after an explicit Skill/Workflow/Tool route selected them.
+ * visible to the native Agent Loop. Exact-approval adapters are also visible
+ * after frozen/environment admission; other side-effect and secret-bearing
+ * tools require an explicit Skill/Workflow/Tool route selection.
  */
 export function riceToolDefinitionsForTurn(
   capabilities: SkillCapability[],
@@ -484,7 +504,9 @@ export function riceToolDefinitionsForTurn(
     (definition) =>
       ['read_only', 'managed_write'].includes(
         riceToolRisk(definition.name) ?? '',
-      ) || selected.has(definition.name),
+      ) ||
+      nativeGovernedToolNames.has(definition.name) ||
+      selected.has(definition.name),
   );
 }
 
