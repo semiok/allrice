@@ -28,6 +28,7 @@ import {
   deliverDshInput,
   discardPendingDshInputs,
 } from './allrice-dsh-inputs.mjs';
+import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
@@ -35,6 +36,7 @@ const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
   ...mcpNativeTools,
+  ...cloudNativeTools,
   {
     canonicalName: 'browser.run',
     wireName: 'browser_run',

@@ -600,7 +600,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const active = activeNativeTools.get(callId);
         const name = active?.name ?? 'tool';
         const skillName = name === 'skill' ? active?.query : undefined;
-        const failed = Boolean(data.error);
+        // Pinned DSH's ToolResultMessage carries the authoritative outcome on
+        // its single tool-result block; event.error is optional diagnostics.
+        // Keep legacy event errors, but never infer status from result text or
+        // truthy strings and never copy raw arguments/results into the stream.
+        const failed =
+          Boolean(data.error) ||
+          (firstBlock?.type === 'tool-result' && firstBlock.isError === true);
         await input.onNative({
           type: failed ? 'tool.failed' : 'tool.completed',
           toolCallId: callId,
