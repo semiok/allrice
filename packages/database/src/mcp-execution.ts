@@ -12,6 +12,7 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
+import { assertEmployeeMcpAuthorization } from './mcp-employee-bindings.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
@@ -127,6 +128,12 @@ export async function createMcpRuntimeOperation(
   const { endpoint } = await createMcpStore({ database }).assertAuthorized(
     scope,
     tool,
+  );
+  await assertEmployeeMcpAuthorization(
+    database,
+    scope,
+    tool,
+    run.employee_version_id,
   );
   const payload = McpExecutionPayloadSchema.parse({
     capability: 'cloud.mcp.call',

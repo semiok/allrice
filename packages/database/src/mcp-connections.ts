@@ -439,13 +439,17 @@ export function createMcpStore(
       });
       return publicConnection(scope, grant.connectionId);
     },
-    async freeze(scopeInput: McpScope): Promise<FrozenMcpTool[]> {
+    async freeze(
+      scopeInput: McpScope,
+      connectionIds?: readonly string[],
+    ): Promise<FrozenMcpTool[]> {
       const scope = McpScopeSchema.parse(scopeInput);
       const rows = await db()<
         { binding_id: string }[]
       >`select c.binding_id from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and d.enabled`;
       const frozen: FrozenMcpTool[] = [];
       for (const row of rows) {
+        if (connectionIds && !connectionIds.includes(row.binding_id)) continue;
         const c = await read(scope, row.binding_id);
         for (const tool of await tools(scope, c.id))
           if (tool.available && tool.allowed)

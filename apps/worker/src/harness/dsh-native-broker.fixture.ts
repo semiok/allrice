@@ -17,12 +17,14 @@ export async function nativeBrokerRoundtrip(input: {
   wireName: string;
   args: Record<string, unknown>;
   invalidArgs: Record<string, unknown>;
+  onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-native-broker-'));
   const requests: Record<string, unknown>[] = [];
   const errors: unknown[] = [];
   const received: unknown[] = [];
   const sentinel = `synthetic-broker-${randomUUID()}`;
+  let expectedModelContent = sentinel;
   const server = createServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -137,7 +139,11 @@ export async function nativeBrokerRoundtrip(input: {
         received.push(call);
         expect(call.name).toBe(input.canonicalName);
         expect(call.arguments).toEqual(input.args);
-        return { modelContent: sentinel, summary: 'synthetic only' };
+        const result = input.onToolCall
+          ? await input.onToolCall(call)
+          : { modelContent: sentinel, summary: 'synthetic only' };
+        expectedModelContent = result.modelContent;
+        return result;
       },
     } satisfies Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>),
   );
@@ -157,7 +163,9 @@ export async function nativeBrokerRoundtrip(input: {
       true,
     );
     expect(received).toHaveLength(1);
-    expect(JSON.stringify(requests[1])).toContain(sentinel);
+    expect(JSON.stringify(requests[1])).toContain(
+      JSON.stringify(expectedModelContent).slice(1, -1),
+    );
     await client.prompt(session, 'Reject invalid arguments before the Broker.');
     await expect.poll(() => requests.length, { timeout: 15000 }).toBe(4);
     await expect.poll(() => completed, { timeout: 15000 }).toBe(2);

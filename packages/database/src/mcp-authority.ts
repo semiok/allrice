@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type postgres from 'postgres';
+import { assertEmployeeMcpAuthorization } from './mcp-employee-bindings.ts';
 import {
   FrozenMcpToolSchema,
   McpExecutionPayloadSchema,
@@ -106,6 +107,22 @@ export async function checkMcpBindingAuthority(
     throw new RuntimePolicyError('mcp_input_changed');
   const payload = McpExecutionPayloadSchema.parse(stored.payload),
     tool = payload.tool;
+  // Employee first: archive/assignment management and tenant grant changes
+  // acquire this row before assignments or grant rows. Keep that global order.
+  try {
+    await assertEmployeeMcpAuthorization(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId,
+        actorId: context.actor.id,
+      },
+      tool,
+      binding.task.frozenConfiguration.employeeVersionId!,
+    );
+  } catch {
+    throw new RuntimePolicyError('mcp_employee_binding_changed');
+  }
   const [run] = await tx<
     {
       execution_snapshot: { mcpTools?: unknown };
@@ -119,13 +136,14 @@ export async function checkMcpBindingAuthority(
     join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
     join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id
     join allrice_jobs j on j.id=${stored.job_id} and j.run_id=e.run_id and j.organization_id=e.organization_id and j.workspace_id=e.workspace_id and j.owner_id=e.owner_id
+    join allrice_employee_assignments a on a.id=e.employee_assignment_id and a.organization_id=e.organization_id and a.workspace_id=e.workspace_id and a.user_id=e.owner_id and a.employee_id=${tool.employeeAuthorization?.employeeId ?? null} and a.active
     where e.run_id=${binding.task.runId} and e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId} and e.owner_id=${context.actor.id}
     and e.session_id=${binding.task.chatSessionId} and e.employee_version_id=${binding.task.frozenConfiguration.employeeVersionId}
     and r.state='running' and c.active_run_id=e.run_id and c.state='running' and c.thread_generation=${binding.attempt.generation}
     and j.status='running' and j.worker_id=${stored.worker_id} and j.lease_token::text=${stored.job_lease_token}
     and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null and p.expires_at>clock_timestamp()
     and e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'cloud.mcp.call'
-    for share of e,r,p,c,j`;
+    for share of e,r,p,c,j,a`;
   if (
     !run ||
     run.policy_snapshot_id !== binding.policy.snapshotId ||
