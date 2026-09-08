@@ -47,43 +47,59 @@ describe('P16 production egress boundary (isolated DNS/TLS transport-unit tests)
     ).rejects.toMatchObject({ code: 'MCP_SOURCE_DENIED' });
     expect(mocks.request).not.toHaveBeenCalled();
   });
-  it('pins the checked IP into the actual HTTPS lookup and prevents redirects', async () => {
-    mocks.lookup.mockResolvedValue([{ address: '1.1.1.1', family: 4 }]);
-    const request = Object.assign(new EventEmitter(), {
-      setTimeout: vi.fn(),
-      destroy: vi.fn(),
-      end: vi.fn(),
-    });
-    const response = Object.assign(new PassThrough(), {
-      statusCode: 302,
-      headers: { location: 'http://127.0.0.1/private' },
-    });
-    mocks.request.mockImplementation((_url, _options, callback) => {
-      request.end.mockImplementation(() => callback(response));
-      return request;
-    });
-    const authorized = input();
-    await expect(
-      createPinnedMcpFetch(authorized)(endpoint, {
-        method: 'POST',
-        headers: {
-          cookie: 'not-forwarded',
-          'proxy-authorization': 'not-forwarded',
-        },
-        body: '{}',
-      }),
-    ).rejects.toMatchObject({ code: 'MCP_SOURCE_DENIED' });
-    const [url, options] = mocks.request.mock.calls[0]!;
-    expect(url.href).toBe(endpoint);
-    expect(options.headers.authorization).toBe('Bearer synthetic-key');
-    expect(options.headers.cookie).toBeUndefined();
-    expect(options.headers['proxy-authorization']).toBeUndefined();
-    const resolved = vi.fn();
-    options.lookup('mcp.example.test', {}, resolved);
-    expect(resolved).toHaveBeenCalledWith(null, '1.1.1.1', 4);
-    expect(authorized.assertAuthorized).toHaveBeenCalledOnce();
-    expect(mocks.request).toHaveBeenCalledOnce();
-  });
+  it.each([
+    { address: '1.1.1.1', family: 4 },
+    { address: '2606:4700:4700::1111', family: 6 },
+  ])(
+    'pins $address into HTTPS lookup and prevents redirects',
+    async (address) => {
+      mocks.lookup.mockResolvedValue([address]);
+      const request = Object.assign(new EventEmitter(), {
+        setTimeout: vi.fn(),
+        destroy: vi.fn(),
+        end: vi.fn(),
+      });
+      const response = Object.assign(new PassThrough(), {
+        statusCode: 302,
+        headers: { location: 'http://127.0.0.1/private' },
+      });
+      mocks.request.mockImplementation((_url, _options, callback) => {
+        request.end.mockImplementation(() => callback(response));
+        return request;
+      });
+      const authorized = input();
+      await expect(
+        createPinnedMcpFetch(authorized)(endpoint, {
+          method: 'POST',
+          headers: {
+            cookie: 'not-forwarded',
+            'proxy-authorization': 'not-forwarded',
+          },
+          body: '{}',
+        }),
+      ).rejects.toMatchObject({ code: 'MCP_SOURCE_DENIED' });
+      const [url, options] = mocks.request.mock.calls[0]!;
+      expect(url.href).toBe(endpoint);
+      expect(options.family).toBe(address.family);
+      expect(options.rejectUnauthorized).toBeUndefined();
+      expect(options.servername).toBeUndefined();
+      expect(options.headers.authorization).toBe('Bearer synthetic-key');
+      expect(options.headers.cookie).toBeUndefined();
+      expect(options.headers['proxy-authorization']).toBeUndefined();
+      const resolved = vi.fn();
+      options.lookup('mcp.example.test', {}, resolved);
+      expect(resolved).toHaveBeenCalledWith(
+        null,
+        address.address,
+        address.family,
+      );
+      const resolvedAll = vi.fn();
+      options.lookup('mcp.example.test', { all: true }, resolvedAll);
+      expect(resolvedAll).toHaveBeenCalledWith(null, [address]);
+      expect(authorized.assertAuthorized).toHaveBeenCalledOnce();
+      expect(mocks.request).toHaveBeenCalledOnce();
+    },
+  );
   it('does not look up or connect after current authority is revoked', async () => {
     const authorized = input();
     authorized.assertAuthorized.mockRejectedValue(Error('revoked'));

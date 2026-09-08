@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import { McpEndpointSchema, McpError } from '@allrice/contracts';
+import { createPinnedLookup } from '../pinned-lookup.js';
 import { isPublicWebAddress } from '../web-fetch.js';
 
 export function validateMcpEndpoint(input: string) {
@@ -74,8 +75,8 @@ export function createPinnedMcpFetch(input: {
           method: init?.method ?? 'GET',
           headers: Object.fromEntries(headers),
           signal,
-          lookup: (_hostname, _options, callback) =>
-            callback(null, address.address, address.family),
+          family: address.family,
+          lookup: createPinnedLookup(address),
         },
         (response) => {
           const status = response.statusCode ?? 500;

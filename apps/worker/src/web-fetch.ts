@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import { HandlerError } from './errors.js';
+import { createPinnedLookup } from './pinned-lookup.js';
 
 const maximumRedirects = 3;
 const maximumResponseBytes = 750_000;
@@ -205,8 +206,8 @@ async function readOnce(url: URL) {
           'accept-encoding': 'identity',
           'user-agent': 'AllRice-WebFetch/1.0',
         },
-        lookup: (_hostname, _options, callback) =>
-          callback(null, resolved.address, resolved.family),
+        family: resolved.family,
+        lookup: createPinnedLookup(resolved),
       },
       (response) => {
         const chunks: Buffer[] = [];
