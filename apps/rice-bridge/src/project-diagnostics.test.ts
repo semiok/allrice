@@ -1,3 +1,4 @@
+import { testImage } from '../test/toolchain.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RuntimeLocalCommandSchema,
   RuntimeLocalCommandProfileSchema,
-  localCommandToolchainImageV1,
 } from '@allrice/contracts';
 import { LocalCommandRunner } from './local-command-runner.js';
 import { readLocalCommandInputs } from './local-command-inputs.js';
@@ -51,7 +51,7 @@ async function fixture(
         path,
         sha256: `sha256:${createHash('sha256').update(text).digest('hex')}`,
       })),
-      imageDigest: localCommandToolchainImageV1,
+      imageDigest: testImage,
       isolation: 'local-vm-container-v1',
       network: 'none',
       limits: {
@@ -82,7 +82,7 @@ it('P09-a rejects extra scripts/commands and unknown profile feature claims', as
   const profile = {
     contractVersion: 1,
     backend: 'local-vm-container-v1',
-    imageDigest: localCommandToolchainImageV1,
+    imageDigest: testImage,
     architecture: 'amd64',
     available: true,
   };
@@ -117,7 +117,7 @@ const socket = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET;
         throw Error('dedicated test VM required');
       const runner = new LocalCommandRunner({
         socketPath: socket,
-        imageDigest: localCommandToolchainImageV1,
+        imageDigest: testImage,
       });
       const f = await fixture(files);
       f.command.arguments.diagnostics = { kind: 'node_project', ...expected };

@@ -861,14 +861,16 @@ export function ChatFlowClient({
           ariaLabel="本地工作区状态"
           bodyClassName={styles.bridgeBody}
           className={styles.bridgeDialog}
-          eyebrow="Rice Bridge v0.2"
+          eyebrow="Rice Bridge"
           onClose={() => setBridgeOpen(false)}
           title="本地工作区"
         >
           <div className={styles.bridgeIntro}>
             <p>
               Bridge 只访问你明确授权的文件夹；读写能力由员工配置和 Tool Broker
-              控制，不开放 Shell，也不会把模型密钥下发到电脑。
+              控制，不开放宿主
+              Shell，也不会把模型密钥下发到电脑。新版的本地命令在独立 Linux
+              沙箱中执行，需要单独启用及逐次审批。
             </p>
             <button
               disabled={bridgeBusy}
@@ -878,6 +880,37 @@ export function ChatFlowClient({
               刷新状态
             </button>
           </div>
+          <div className={styles.bridgeDownloads}>
+            <a
+              className={styles.bridgeClientDownload}
+              download="RiceBridge-M.zip"
+              href="/api/v1/bridge/client/macos-arm64"
+              onClick={() => noteBridgeDownload('M 芯片版 0.3.0-dev.1')}
+            >
+              下载 M 芯片版 · 0.3.0-dev.1
+            </a>
+            <a
+              className={styles.bridgeClientDownload}
+              download="RiceBridge-Intel.zip"
+              href="/api/v1/bridge/client/macos-x64"
+              onClick={() => noteBridgeDownload('Intel 芯片版')}
+            >
+              下载 Intel 芯片版
+            </a>
+          </div>
+          <p>
+            升级前退出旧 Bridge，再解压打开新版；原有配对和工作区会保留。M 芯片
+            Dev 包含沙箱检查入口，但不会自动安装沙箱或开放执行权限。
+          </p>
+          {bridgeFeedback ? (
+            <p
+              className={styles.bridgeFeedback}
+              data-kind={bridgeFeedback.kind}
+              role="status"
+            >
+              {bridgeFeedback.message}
+            </p>
+          ) : null}
           <div className={styles.bridgeDevices}>
             {bridgeDevices.map((device) => (
               <article key={device.id}>
@@ -937,24 +970,6 @@ export function ChatFlowClient({
                       中要求输入配对码；配对成功后会保存在本机，以后打开即可自动连接。
                     </p>
                   )}
-                  <div className={styles.bridgeDownloads}>
-                    <a
-                      className={styles.bridgeClientDownload}
-                      download="RiceBridge-M.zip"
-                      href="/api/v1/bridge/client/macos-arm64"
-                      onClick={() => noteBridgeDownload('M 芯片版')}
-                    >
-                      下载 M 芯片版
-                    </a>
-                    <a
-                      className={styles.bridgeClientDownload}
-                      download="RiceBridge-Intel.zip"
-                      href="/api/v1/bridge/client/macos-x64"
-                      onClick={() => noteBridgeDownload('Intel 芯片版')}
-                    >
-                      下载 Intel 芯片版
-                    </a>
-                  </div>
                   <button
                     className={styles.bridgePairingButton}
                     disabled={bridgePairingBusy}
@@ -967,15 +982,6 @@ export function ChatFlowClient({
                         ? '重新生成配对码'
                         : '生成配对码'}
                   </button>
-                  {bridgeFeedback ? (
-                    <p
-                      className={styles.bridgeFeedback}
-                      data-kind={bridgeFeedback.kind}
-                      role="status"
-                    >
-                      {bridgeFeedback.message}
-                    </p>
-                  ) : null}
                   {bridgePairing ? (
                     <div className={styles.bridgePairing}>
                       <strong>配对码</strong>

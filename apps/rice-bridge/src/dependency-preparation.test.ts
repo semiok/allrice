@@ -1,3 +1,4 @@
+import { testImage } from '../test/toolchain.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   RuntimeLocalCommandSchema,
   RuntimeDependencyPreparationSchema,
-  localCommandToolchainImageV1,
 } from '@allrice/contracts';
 import { dependencyFixture } from '../test/dependency-fixture.js';
 import {
@@ -51,7 +51,7 @@ function input(script?: string) {
         path,
         sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       })),
-      imageDigest: localCommandToolchainImageV1,
+      imageDigest: testImage,
       isolation: 'local-vm-container-v1',
       network: 'none',
       limits: {
@@ -201,7 +201,7 @@ const socket = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET;
         );
       const runner = new LocalCommandRunner({
           socketPath: socket,
-          imageDigest: localCommandToolchainImageV1,
+          imageDigest: testImage,
         }),
         attemptId = randomUUID();
       const result = await runner.execute(root, f.command, {

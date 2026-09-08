@@ -6,6 +6,7 @@ import {
   RuntimeOperationSnapshotSchema,
   RuntimeLocalCommandSchema,
   RuntimeLocalCommandProfileSchema,
+  isLocalCommandProfileForPlatform,
   RuntimeLocalCommandToolInputSchema,
   RuntimeActionApprovalRequestSchema,
   UuidSchema,
@@ -101,12 +102,15 @@ export async function createLocalCommandOperation(
     join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.state='online'
     join lateral (select * from allrice_bridge_folder_grants where device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null order by created_at desc limit 1) g on true
     where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${owner} and d.revoked_at is null
-      and d.platform='macos-x64' and d.last_seen_at>clock_timestamp()-interval '90 seconds' and p.reported_at>clock_timestamp()-interval '90 seconds'
+      and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds' and p.reported_at>clock_timestamp()-interval '90 seconds'
     order by d.last_seen_at desc limit 1`;
   if (!target) throw new RuntimePolicyError('local_runner_unavailable');
   const device = BridgeDeviceSchema.parse(target.device);
   const profile = RuntimeLocalCommandProfileSchema.parse(target.profile);
-  if (!profile.available)
+  if (
+    !profile.available ||
+    !isLocalCommandProfileForPlatform(device.platform, profile)
+  )
     throw new RuntimePolicyError('local_runner_unavailable');
   if (args.diagnostics && !profile.features?.includes('project_diagnostics'))
     throw new RuntimePolicyError('local_runner_upgrade_required');

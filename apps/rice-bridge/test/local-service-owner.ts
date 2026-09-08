@@ -1,12 +1,10 @@
+import { testImage, testSocket } from './toolchain.js';
 /** Synthetic dedicated-VM lifecycle fixture. Never invoked by shipped Bridge. */
 import { readFile } from 'node:fs/promises';
 import { LocalCommandRunner } from '../src/local-command-runner.js';
 import { LocalServiceRunner } from '../src/local-service-runner.js';
 import { BridgeJournal } from '../src/journal.js';
-import {
-  RuntimeBridgeDispatchSchema,
-  localCommandToolchainImageV1,
-} from '@allrice/contracts';
+import { RuntimeBridgeDispatchSchema } from '@allrice/contracts';
 
 const config = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as {
   root: string;
@@ -28,8 +26,8 @@ await journal.receive(dispatch);
 await journal.begin(dispatch.snapshot.binding.attempt.operationId);
 const services = journal.serviceJournal();
 const runner = new LocalCommandRunner({
-  socketPath: '/Users/a123/.colima/allrice-b2/docker.sock',
-  imageDigest: localCommandToolchainImageV1,
+  socketPath: testSocket,
+  imageDigest: testImage,
 });
 const result = await new LocalServiceRunner(runner).execute(
   config.root,

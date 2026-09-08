@@ -129,6 +129,8 @@ describe('Gemini credential administration HTTP boundary', () => {
     { apiKey: '' },
     { apiKey: 'x'.repeat(5000) },
     { apiKey: `${key}\n` },
+    { apiKey: `AQ.${key}\\_ESCAPED` },
+    { apiKey: `AQ.${key}\t` },
     { apiKey: key, reference: 'tenant:other' },
     { apiKey: key, enabled: true },
     [],
@@ -159,6 +161,27 @@ describe('Gemini credential administration HTTP boundary', () => {
     );
     expect(JSON.stringify(ports.audit.mock.calls)).not.toContain(key);
   });
+  it.each([
+    'AIza_SYNTHETIC_NOT_A_REAL_GOOGLE_KEY',
+    'AQ.SYNTHETIC_NOT-A-REAL_GOOGLE_KEY',
+  ])(
+    'accepts legacy and Auth key formats without exposing the key (%#)',
+    async (value) => {
+      const response = await PUT(request({ apiKey: ` ${value} ` }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await response.json()).toEqual({
+        credential,
+        auditRecorded: true,
+      });
+      expect(ports.save).toHaveBeenCalledWith(value, context.actor.id);
+      expect(ports.audit.mock.calls.map((args) => args[2])).toEqual([
+        'requested',
+        'saved',
+      ]);
+      expect(JSON.stringify(ports.audit.mock.calls)).not.toContain(value);
+    },
+  );
   it('does not change credentials when durable audit intent fails; never logs exceptions', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     ports.audit.mockRejectedValue(new Error(key));

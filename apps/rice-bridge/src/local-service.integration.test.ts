@@ -1,3 +1,4 @@
+import { testImage, testSocket } from '../test/toolchain.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   RuntimeLocalCommandSchema,
-  localCommandToolchainImageV1,
   canonicalRuntimeBridgeJson,
   type RuntimeLocalCommandResult,
   type RuntimeLocalServiceEvent,
@@ -29,11 +29,11 @@ const digest = (s: string) =>
 
 suite('P09-c actual dedicated VM service lifecycle', () => {
   beforeAll(async () => {
-    if (socketPath !== '/Users/a123/.colima/allrice-b2/docker.sock')
+    if (socketPath !== testSocket)
       throw Error('dedicated synthetic VM required');
     runner = new LocalCommandRunner({
       socketPath,
-      imageDigest: localCommandToolchainImageV1,
+      imageDigest: testImage,
     });
     await runner.preflight();
   });
@@ -72,7 +72,7 @@ suite('P09-c actual dedicated VM service lifecycle', () => {
         args: ['service.mjs'],
         path: '.',
         files: [{ path: 'service.mjs', sha256: digest(source) }],
-        imageDigest: localCommandToolchainImageV1,
+        imageDigest: testImage,
         isolation: 'local-vm-container-v1',
         network: 'none',
         limits: {
@@ -376,7 +376,7 @@ suite('P09-c actual dedicated VM service lifecycle', () => {
         args: ['service.mjs'],
         path: '.',
         files: [{ path: 'service.mjs', sha256: digest(source) }],
-        imageDigest: localCommandToolchainImageV1,
+        imageDigest: testImage,
         isolation: 'local-vm-container-v1',
         network: 'none',
         limits: {

@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type * as Playwright from '../../../apps/worker/node_modules/playwright-core/index.js';
 import { dependencyFixture } from '../../../apps/rice-bridge/test/dependency-fixture.js';
+import { testSocket } from '../../../apps/rice-bridge/test/toolchain.js';
 
 import {
   BridgeCommandPayloadSchema,
@@ -108,6 +109,16 @@ const artifactRoots: string[] = [];
 let admin: ReturnType<typeof postgres>;
 let database: ReturnType<typeof postgres>;
 const schema = `runtime_bridge_test_${randomUUID().replaceAll('-', '')}`;
+
+// Real-VM cases must report the host actually running the Bridge. Synthetic
+// ledger cases below still explicitly exercise both device platforms.
+function nativeTestPlatform(): 'macos-x64' | 'macos-arm64' {
+  if (process.platform !== 'darwin' || !['x64', 'arm64'].includes(process.arch))
+    throw Error('real Bridge VM acceptance requires a supported native Mac');
+  if (process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET !== testSocket)
+    throw Error('dedicated test VM required');
+  return process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64';
+}
 
 async function fixture(
   effect: 'allow' | 'ask' | 'deny' = 'ask',
@@ -382,6 +393,7 @@ async function commandFixture(
   toolNames = ['local.process.execute'],
   manifest?: unknown,
   network = false,
+  platform: 'macos-x64' | 'macos-arm64' = 'macos-x64',
 ) {
   vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '1');
   vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
@@ -484,13 +496,15 @@ async function commandFixture(
   );
   const imageDigest =
     process.env.ALLRICE_LOCAL_DOCKER_TEST_IMAGE ?? localCommandToolchainImageV1;
+  f.device.platform = platform;
+  await database`update allrice_bridge_devices set platform=${platform} where id=${f.device.id}`;
   await reportLocalCommandProfile(
     f.device,
     {
       contractVersion: 1,
       backend: 'local-vm-container-v1',
       imageDigest,
-      architecture: 'amd64',
+      architecture: platform === 'macos-arm64' ? 'arm64' : 'amd64',
       available: true,
     },
     database,
@@ -567,6 +581,46 @@ async function commandFixture(
 
 suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it.each(['profile', 'platform', 'revoked', 'stale'] as const)(
+    'ARM native approval/dispatch/lease rejects changed %s',
+    async (change) => {
+      const f = await commandFixture(
+        undefined,
+        undefined,
+        false,
+        'macos-arm64',
+      );
+      await f.create('arm-native');
+      expect(await f.claim()).toBeNull(); // Exact approval still required.
+      await f.approve();
+      const dispatch = (await f.claim())!;
+      expect(dispatch.bridgePayload?.capability).toBe('local.process.execute');
+      const ledger = f.ledger(),
+        attempt = dispatch.snapshot.binding.attempt;
+      const lease = {
+        scope: f.task.scope,
+        operationId: attempt.operationId,
+        leaseToken: dispatch.leaseToken,
+      };
+      await ledger.startOperation({
+        ...lease,
+        attempt,
+        receiptId: randomUUID(),
+      });
+      await ledger.heartbeat({ ...lease, leaseMs: 30000 });
+      if (change === 'profile')
+        await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{architecture}','"amd64"'::jsonb) where device_id=${f.device.id}`;
+      if (change === 'platform')
+        await database`update allrice_bridge_devices set platform='macos-x64' where id=${f.device.id}`;
+      if (change === 'revoked')
+        await database`update allrice_bridge_devices set revoked_at=clock_timestamp() where id=${f.device.id}`;
+      if (change === 'stale')
+        await database`update allrice_bridge_runtime_profiles set reported_at=clock_timestamp()-interval '91 seconds' where device_id=${f.device.id}`;
+      await expect(
+        ledger.heartbeat({ ...lease, leaseMs: 30000 }),
+      ).rejects.toThrow();
+    },
+  );
   it.each([
     'approve',
     'reject',
@@ -832,6 +886,8 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   beforeAll(async () => {
     if (!process.env.ALLRICE_TEST_DATABASE_URL)
       throw Error('ALLRICE_TEST_DATABASE_URL required');
+    // Fresh test archives do not contain the gitignored evidence directory.
+    await mkdir(resolve('.local'), { recursive: true });
     admin = postgres(process.env.ALLRICE_TEST_DATABASE_URL, {
       max: 2,
       onnotice: () => {},
@@ -1346,6 +1402,19 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           await page
             .getByRole('button', { name: '批准这一次文件操作', exact: true })
             .click();
+          // A completed click is not a committed HTTP decision. In particular,
+          // cross-host PG can still be processing the request at this point.
+          await vi.waitFor(
+            async () => {
+              const accepted = await getRuntimeActionApproval(
+                f.context,
+                apply.approval!.request.approvalId,
+                database,
+              );
+              expect(accepted.response).toMatchObject({ decision: 'approved' });
+            },
+            { timeout: 10000 },
+          );
         } else await approve(apply);
         expect(
           await f.ledger().claimNextBridgeOperation({
@@ -3238,13 +3307,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     'P09-c actual HTTP Bridge VM service preserves output across lost ACK before targeted stop evidence',
     async () => {
       const socketPath = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET!;
-      if (socketPath !== '/Users/a123/.colima/allrice-b2/docker.sock')
-        throw Error('dedicated test VM required');
-      const f = await commandFixture([
-        'local.process.execute',
-        'local.process.status',
-        'local.process.stop',
-      ]);
+      const f = await commandFixture(
+        ['local.process.execute', 'local.process.status', 'local.process.stop'],
+        undefined,
+        false,
+        nativeTestPlatform(),
+      );
       vi.stubEnv('ALLRICE_LOCAL_SERVICE_ENABLED', '1');
       const directory = await mkdtemp(join(tmpdir(), 'allrice-p09c-http-'));
       artifactRoots.push(directory);
@@ -3763,7 +3831,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       }),
     ).toBeNull();
   });
-  it('P05 rejects same-call mutations, expired profiles, unverified platforms and frozen tool removal', async () => {
+  it('P05 rejects same-call mutations, expired profiles, architecture mismatches and frozen tool removal', async () => {
     const f = await commandFixture();
     await f.create();
     await expect(
@@ -3780,7 +3848,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           contractVersion: 1,
           backend: 'local-vm-container-v1',
           imageDigest: f.imageDigest,
-          architecture: 'arm64',
+          architecture: 'amd64',
           available: true,
         },
         database,
@@ -3916,7 +3984,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   it.skipIf(!process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET)(
     'P05 real Chrome → approval DB → HTTP Bridge → local VM → durable receipt; lost ACK never repeats execution',
     async () => {
-      const f = await commandFixture();
+      const f = await commandFixture(
+        undefined,
+        undefined,
+        false,
+        nativeTestPlatform(),
+      );
       const temporary = await realpath(
           await mkdtemp(join(tmpdir(), 'allrice-p05-e2e-')),
         ),

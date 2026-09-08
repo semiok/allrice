@@ -1,3 +1,4 @@
+import { testImage } from '../test/toolchain.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,7 +7,6 @@ import { describe, it, expect } from 'vitest';
 import {
   RuntimeChangesetSchema,
   RuntimeLocalCommandSchema,
-  localCommandToolchainImageV1,
 } from '@allrice/contracts';
 import { executeChangeset } from './changeset-executor.js';
 import { LocalCommandRunner } from './local-command-runner.js';
@@ -22,9 +22,7 @@ suite('P08/P05 real supported project modification → VM test → repair', () =
     const root = await mkdtemp(join(tmpdir(), 'allrice-p08-vm-project-'));
     const runner = new LocalCommandRunner({
       socketPath: process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET!,
-      imageDigest:
-        process.env.ALLRICE_LOCAL_DOCKER_TEST_IMAGE ??
-        localCommandToolchainImageV1,
+      imageDigest: process.env.ALLRICE_LOCAL_DOCKER_TEST_IMAGE ?? testImage,
     });
     const attemptIds: { attemptId: string; containerId: string }[] = [];
     const bad = side('throw new Error("synthetic failing test");'),

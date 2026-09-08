@@ -33,29 +33,38 @@ afterEach(async () => {
 });
 
 describe('Gemini private credential storage', () => {
-  it('reports missing binding, persists and resolves through the real Worker resolver', async () => {
-    expect(await getGeminiCredentialStatus()).toEqual({
-      configured: false,
-      writable: true,
-      updatedAt: null,
-    });
-    const saved = await saveGeminiCredential(` ${key} `, 'admin-id');
-    expect(saved.configured).toBe(true);
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
-    expect(await getGeminiCredentialStatus()).toEqual(saved);
-    const resolver = new DeploymentDshCredentialResolver();
-    await expect(
-      resolver.resolve({
-        reference: 'deployment:gemini-default',
-        organizationId: 'org',
-        workspaceId: 'ws',
-        ownerId: 'owner',
-        route: 'gemini',
-      }),
-    ).resolves.toEqual({ apiKey: key });
-    expect(JSON.stringify(saved)).not.toContain(key);
-    expect(await readdir(directory)).toEqual(['credentials.json']);
-  });
+  it.each([
+    key,
+    'AIza_SYNTHETIC_NOT_A_REAL_GOOGLE_KEY',
+    'AQ.SYNTHETIC_NOT-A-REAL_GOOGLE_KEY',
+    'x'.repeat(20),
+    'x'.repeat(256),
+  ])(
+    'persists a supported key unchanged and resolves through the real Worker resolver (%#)',
+    async (value) => {
+      expect(await getGeminiCredentialStatus()).toEqual({
+        configured: false,
+        writable: true,
+        updatedAt: null,
+      });
+      const saved = await saveGeminiCredential(` ${value} `, 'admin-id');
+      expect(saved.configured).toBe(true);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect(await getGeminiCredentialStatus()).toEqual(saved);
+      const resolver = new DeploymentDshCredentialResolver();
+      await expect(
+        resolver.resolve({
+          reference: 'deployment:gemini-default',
+          organizationId: 'org',
+          workspaceId: 'ws',
+          ownerId: 'owner',
+          route: 'gemini',
+        }),
+      ).resolves.toEqual({ apiKey: value });
+      expect(JSON.stringify(saved)).not.toContain(value);
+      expect(await readdir(directory)).toEqual(['credentials.json']);
+    },
+  );
   it('replaces only Gemini and preserves unrelated credential bindings', async () => {
     const unrelated = {
       scope: 'deployment',
@@ -77,6 +86,14 @@ describe('Gemini private credential storage', () => {
     'short',
     `${key}\n`,
     `${key}\nrun`,
+    `${key}\r`,
+    `\t${key}`,
+    `${key}\u0000`,
+    `${key}\u007f`,
+    `AQ.${key}\\_ESCAPED`,
+    `AQ.${key}/suffix`,
+    `AQ.${key} suffix`,
+    'x'.repeat(19),
     'x'.repeat(257),
     'curl --key anything',
     '<script>not-a-key</script>',

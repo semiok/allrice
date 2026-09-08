@@ -89,7 +89,7 @@ export class LocalServiceRunner {
       hardDeadlineMs > Date.now() + config.durationMs + 1000
     )
       throw new LocalCommandError('SERVICE_CONFIG_INVALID');
-    await this.runner.preflight();
+    const profile = await this.runner.preflight();
     const bundle = await readLocalCommandInputs(root, command);
     const first = await options.maintainLease();
     if (
@@ -112,7 +112,7 @@ export class LocalServiceRunner {
       limits = command.arguments.limits;
     const container = await api.json<{ Id: string }>(
       'POST',
-      `/containers/create?name=allrice-${options.attemptId}`,
+      `/containers/create?name=allrice-${options.attemptId}&platform=linux%2F${profile.architecture}`,
       {
         Image: this.runner.config.imageDigest,
         Entrypoint: ['/usr/local/bin/node'],

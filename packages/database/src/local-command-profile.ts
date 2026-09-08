@@ -1,6 +1,6 @@
 import {
   RuntimeLocalCommandProfileSchema,
-  localCommandToolchainImageV1,
+  isLocalCommandProfileForPlatform,
   type BridgeDevice,
   type RuntimeLocalCommand,
 } from '@allrice/contracts';
@@ -22,10 +22,8 @@ export async function reportLocalCommandProfile(
   const profile = RuntimeLocalCommandProfileSchema.parse(input);
   // Release allowlist follows actual platform evidence, not a client boolean.
   if (
-    device.platform !== 'macos-x64' ||
-    profile.architecture !== 'amd64' ||
-    device.revokedAt ||
-    profile.imageDigest !== localCommandToolchainImageV1
+    !isLocalCommandProfileForPlatform(device.platform, profile) ||
+    device.revokedAt
   )
     throw new RuntimePolicyError('target_unavailable');
   await database`insert into allrice_bridge_runtime_profiles(device_id,organization_id,workspace_id,profile)

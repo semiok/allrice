@@ -98,6 +98,9 @@ export function GeminiCredentialSettings({
       <p className={styles.muted}>
         平台共用密钥，仅管理员可修改。密钥只保存在服务端，保存后不回显；留空不修改。
       </p>
+      <p className={styles.muted}>
+        支持 AQ. 和 AIza 开头的密钥，请从 Google AI Studio 完整复制，保留点号。
+      </p>
       {!usesDefault ? (
         <p role="alert" className={styles.credentialError}>
           此草稿使用自定义凭证引用，不能在这里修改平台默认密钥。请先明确该凭证的配置范围。
