@@ -84,7 +84,7 @@ export class RuntimeBridgeOperationClient {
     // Preserve per-attempt output order before terminal receipts. Bounded batches
     // provide backpressure rather than loading the complete journal into memory.
     if ((await this.input.journal.pendingOutput(1)).length) return false;
-    for (const receipt of await this.input.journal.pending()) {
+    for (const receipt of await this.input.journal.pendingForDelivery()) {
       const ack = RuntimeBridgeReceiptAckSchema.parse(
         await this.request({
           server: this.input.config.server,

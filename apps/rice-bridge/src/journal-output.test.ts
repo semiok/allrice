@@ -1,6 +1,7 @@
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   RuntimeBridgeDispatchSchema,
@@ -158,6 +159,73 @@ it('preserves output until delivery after the final receipt, with bounded retrie
   ).rejects.toThrow('JOURNAL_OUTPUT_ALREADY_FINAL');
   expect(await journal.pending()).toHaveLength(1);
 });
+
+it('does not let a terminal receipt overtake late output after an empty drain', async () => {
+  const { journal, open, id } = await fixture();
+  expect(await journal.pendingOutput()).toEqual([]);
+  // The runner can finish between flush's separate output and receipt scans.
+  await journal.recordOutput(id, {
+    sequence: 0,
+    stream: 'stdout',
+    text: 'last\n',
+  });
+  await journal.outcome(id, {
+    status: 'succeeded',
+    effects: 'none',
+    summary: 'finished between scans',
+  });
+  const raw = await journal.pending();
+  expect(raw).toHaveLength(1);
+  expect(await journal.pendingForDelivery()).toEqual([]);
+  await journal.close();
+  const reopened = await open();
+  expect(await reopened.pendingForDelivery()).toEqual([]);
+  await reopened.acknowledgeOutput(id, 0);
+  await reopened.acknowledgeOutput(id, 0);
+  expect(await reopened.pendingForDelivery()).toEqual(raw);
+  await reopened.acknowledge(raw[0]!.receiptId);
+  await reopened.acknowledge(raw[0]!.receiptId);
+  expect(await reopened.pendingForDelivery()).toEqual([]);
+});
+
+it.each(['output', 'receipt'] as const)(
+  'stops new journal work after a %s ACK commit I/O failure, preserving evidence on reopen',
+  async (kind) => {
+    const { journal, open, id } = await fixture();
+    await journal.recordOutput(id, {
+      sequence: 0,
+      stream: 'stdout',
+      text: 'retained\n',
+    });
+    await journal.outcome(id, {
+      status: 'succeeded',
+      effects: 'none',
+      summary: 'retained result',
+    });
+    const receipt = (await journal.pending())[0]!;
+    const database = (journal as unknown as { database: DatabaseSync })
+      .database;
+    const exec = database.exec.bind(database);
+    const failure = vi.spyOn(database, 'exec').mockImplementation((sql) => {
+      if (sql === 'COMMIT') throw Error('synthetic SQLite commit I/O failure');
+      return exec(sql);
+    });
+    try {
+      await expect(
+        kind === 'output'
+          ? journal.acknowledgeOutput(id, 0)
+          : journal.acknowledge(receipt.receiptId),
+      ).rejects.toThrow('synthetic SQLite commit I/O failure');
+      await expect(journal.pending()).rejects.toThrow('JOURNAL_UNAVAILABLE');
+    } finally {
+      failure.mockRestore();
+      await journal.close();
+    }
+    const reopened = await open();
+    expect(await reopened.pendingOutput()).toHaveLength(1);
+    expect(await reopened.pending()).toEqual([receipt]);
+  },
+);
 
 it('persists subsequent real callbacks while the first network ACK stalls, and rejects a mismatched ACK', async () => {
   const { journal, id, parsed } = await fixture();

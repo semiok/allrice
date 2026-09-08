@@ -786,11 +786,13 @@ export class BridgeJournal {
 
   async acknowledgeOutput(operationId: string, sequence: number) {
     await this.guard();
-    this.database
-      .prepare(
-        'UPDATE output_outbox SET delivered=1 WHERE operation_id=? AND sequence=?',
-      )
-      .run(operationId, sequence);
+    this.transaction(() => {
+      this.database
+        .prepare(
+          'UPDATE output_outbox SET delivered=1 WHERE operation_id=? AND sequence=?',
+        )
+        .run(operationId, sequence);
+    });
   }
 
   async pending(limit = 16): Promise<RuntimeBridgeReceipt[]> {
@@ -806,11 +808,35 @@ export class BridgeJournal {
       );
   }
 
+  /** Check delivery eligibility with the receipt in one SQLite read. A live
+   * background callback may have committed output/events since the preceding
+   * drain returned empty. Raw pending() intentionally still exposes all facts.
+   */
+  async pendingForDelivery(limit = 16): Promise<RuntimeBridgeReceipt[]> {
+    await this.guard();
+    const bounded = Math.min(32, Math.max(1, Math.floor(limit)));
+    return this.database
+      .prepare(
+        `SELECT o.body FROM outbox o WHERE o.delivered=0
+          AND NOT EXISTS (SELECT 1 FROM output_outbox p
+            WHERE p.operation_id=o.operation_id AND p.delivered=0)
+          AND NOT EXISTS (SELECT 1 FROM service_events s
+            WHERE s.operation_id=o.operation_id AND s.acknowledged=0)
+         ORDER BY o.rowid LIMIT ?`,
+      )
+      .all(bounded)
+      .map((row) =>
+        RuntimeBridgeReceiptSchema.parse(JSON.parse(String(row.body))),
+      );
+  }
+
   async acknowledge(receiptId: string) {
     await this.guard();
-    this.database
-      .prepare('UPDATE outbox SET delivered=1 WHERE receipt_id=?')
-      .run(receiptId);
+    this.transaction(() => {
+      this.database
+        .prepare('UPDATE outbox SET delivered=1 WHERE receipt_id=?')
+        .run(receiptId);
+    });
     // Keep immutable evidence and operation tombstones. An ACK never makes the
     // operation executable again; retention/full-disk requires explicit handling.
   }

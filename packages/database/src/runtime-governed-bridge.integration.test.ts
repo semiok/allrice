@@ -3235,7 +3235,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     60000,
   );
   it.skipIf(!process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET)(
-    'P09-c actual HTTP Bridge VM service ready, user input and targeted stop keep durable process evidence',
+    'P09-c actual HTTP Bridge VM service preserves output across lost ACK before targeted stop evidence',
     async () => {
       const socketPath = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET!;
       if (socketPath !== '/Users/a123/.colima/allrice-b2/docker.sock')
@@ -3309,11 +3309,24 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         },
         ledgerForDevice: async () => f.ledger(),
       });
+      let lostOutputAck = false;
+      const outputDeliveries = new Map<number, number>();
       const server = createServer((req, res) => {
         void (async () => {
           const chunks: Buffer[] = [];
           for await (const part of req) chunks.push(Buffer.from(part));
           const path = new URL(req.url!, 'http://localhost').pathname;
+          const body = Buffer.concat(chunks);
+          const action = path.split('/').at(-1)!;
+          if (action === 'output') {
+            const sequence = (
+              JSON.parse(body.toString()) as { sequence: number }
+            ).sequence;
+            outputDeliveries.set(
+              sequence,
+              (outputDeliveries.get(sequence) ?? 0) + 1,
+            );
+          }
           const response = await handler(
             new Request(`http://localhost${path}`, {
               method: 'POST',
@@ -3321,7 +3334,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
                 authorization: String(req.headers.authorization ?? ''),
                 'content-type': 'application/json',
               },
-              body: Buffer.concat(chunks),
+              body,
             }),
             path.split('/').at(-1) as
               | 'next'
@@ -3332,6 +3345,11 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
               | 'service',
             path.split('/').at(-2),
           );
+          if (action === 'output' && response.ok && !lostOutputAck) {
+            lostOutputAck = true; // PostgreSQL accepted it, but Bridge never receives its ACK.
+            res.destroy();
+            return;
+          }
           res.statusCode = response.status;
           res.end(await response.text());
         })().catch(() => {
@@ -3441,6 +3459,30 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
               )
             )?.requests[0]?.delivered,
         );
+        await until(async () => (await journal.pendingOutput()).length > 0);
+        const pendingOutput = await journal.pendingOutput();
+        expect(pendingOutput[0]?.content).toContain('accepted-count:1');
+        const [beforeUpload] = await database<
+          { n: number }[]
+        >`select count(*)::int as n from allrice_runtime_operation_output where operation_id=${processId}`;
+        expect(beforeUpload?.n).toBe(0); // Background output is SQLite-first, not a direct upload.
+        await expect(bridge.flush()).rejects.toThrow();
+        expect(lostOutputAck).toBe(true);
+        expect(await journal.pendingOutput()).toEqual(pendingOutput);
+        expect(
+          (await f.ledger().readOperation(f.task.scope, processId)).status,
+        ).toBe('running');
+        const [acceptedWithoutAck] = await database<
+          { n: number }[]
+        >`select count(*)::int as n from allrice_runtime_operation_output where operation_id=${processId}`;
+        expect(acceptedWithoutAck?.n).toBe(1);
+        await bridge.flush();
+        expect(await journal.pendingOutput()).toEqual([]);
+        expect(outputDeliveries.get(0)).toBe(2);
+        const [afterRetry] = await database<
+          { n: number }[]
+        >`select count(*)::int as n from allrice_runtime_operation_output where operation_id=${processId}`;
+        expect(afterRetry?.n).toBe(1); // Same sequence/content; no duplicate record or pipe input.
         const requested = await localServiceUserAction(
           f.context,
           f.run,
@@ -3469,6 +3511,10 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         expect(result.stdout).toContain('accepted-count:1');
         expect(result.stdout).not.toContain('accepted-count:2');
         expect(view!.service?.state).toBe('stopped');
+        expect(view!.output).toEqual([
+          { sequence: 0, stream: 'stdout', content: pendingOutput[0]!.content },
+        ]);
+        expect(await journal.pendingOutput()).toEqual([]);
         expect(await readFile(join(project, 'service.mjs'), 'utf8')).toBe(
           source,
         );
