@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { allRiceToolManifest } from './tool-manifest.ts';
 
 describe('AllRice tool manifest', () => {
-  it('adds one P15 envelope adapter while retaining the 22 native transports', () => {
+  it('adds the P15 native cloud adapter while retaining legacy envelope transports', () => {
     const canonicalNames = allRiceToolManifest.map(
       (tool) => tool.canonicalName,
     );
@@ -25,8 +25,8 @@ describe('AllRice tool manifest', () => {
 
     expect(canonicalNames).toHaveLength(26);
     expect(new Set(canonicalNames).size).toBe(26);
-    expect(nativeTools).toHaveLength(22);
-    expect(brokerNativeTools).toHaveLength(21);
+    expect(nativeTools).toHaveLength(23);
+    expect(brokerNativeTools).toHaveLength(22);
     expect(
       brokerNativeTools
         .filter((tool) =>
@@ -55,7 +55,6 @@ describe('AllRice tool manifest', () => {
       },
     ]);
     expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
-      'cloud.process.execute',
       'workspace.file.list',
       'workspace.file.read',
       'web.fetch',
@@ -64,7 +63,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(22);
+    expect(new Set(wireNames).size).toBe(23);
   });
 
   it('defines capability and risk metadata for every canonical tool', () => {

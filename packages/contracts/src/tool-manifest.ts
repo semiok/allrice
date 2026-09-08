@@ -35,7 +35,8 @@ export const allRiceToolManifest = [
     canonicalName: 'cloud.process.execute',
     capability: 'storage:write',
     risk: 'side_effect',
-    transport: 'envelope',
+    transport: 'dsh_broker_native',
+    dshWireName: 'cloud_process_execute',
   },
   {
     canonicalName: 'workspace.file.list',
