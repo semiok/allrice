@@ -14,6 +14,10 @@ import {
 } from './local-command-inputs.js';
 import { localCommandSupervisor } from './local-command-supervisor.js';
 import { diagnosticEvidence } from './project-diagnostics.js';
+import {
+  prepareDependencyArchives,
+  dependencyEvidence,
+} from './dependency-preparation.js';
 
 interface Container {
   Id: string;
@@ -78,7 +82,7 @@ export class LocalCommandRunner {
       backend: 'local-vm-container-v1' as const,
       imageDigest: image.Id,
       architecture: image.Architecture,
-      features: ['project_diagnostics'] as const,
+      features: ['project_diagnostics', 'npm_dependencies'] as const,
     };
   }
 
@@ -116,8 +120,17 @@ export class LocalCommandRunner {
       Date.now() + command.arguments.limits.timeoutMs,
       leaseDeadline - 250,
     );
+    const prepareSignal = AbortSignal.any([
+      AbortSignal.timeout(Math.max(1, deadlineUnixMs - Date.now())),
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    const archives = await prepareDependencyArchives(command, bundle.files, {
+      signal: prepareSignal,
+      maintainLease: options.maintainLease,
+    });
+    if (prepareSignal.aborted) throw new LocalCommandError('EXECUTION_REVOKED');
     const encoded = Buffer.from(
-      JSON.stringify({ ...bundle, deadlineUnixMs }),
+      JSON.stringify({ ...bundle, deadlineUnixMs, archives }),
     ).toString('base64');
     const parts = encoded.match(/.{1,32768}/g) ?? [];
     const limits = command.arguments.limits;
@@ -320,6 +333,7 @@ export class LocalCommandRunner {
           filters.stderr.truncated,
         workCopy: 'local_isolated_copy',
         sourceDirectoryModified: false,
+        ...dependencyEvidence(command, inspected.State.ExitCode, reason),
         ...diagnosticEvidence(
           command,
           stdout,
@@ -458,6 +472,7 @@ export class LocalCommandRunner {
       truncated: truncated || reason === 'output_limit',
       workCopy: 'local_isolated_copy',
       sourceDirectoryModified: false,
+      ...dependencyEvidence(command, state.State.ExitCode, reason),
       ...diagnosticEvidence(command, stdout, state.State.ExitCode, reason),
     });
   }

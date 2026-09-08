@@ -5,6 +5,10 @@ import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
 import {
+  RuntimeDependencyPreparationSchema,
+  RuntimeDependencyPreparationResultSchema,
+} from './dependency-preparation.ts';
+import {
   RuntimeProjectDiagnosticsRequestSchema,
   RuntimeProjectDiagnosticsSchema,
 } from './project-diagnostics.ts';
@@ -33,6 +37,7 @@ export const RuntimeLocalCommandSchema = z
           .max(32),
         path: z.union([z.literal('.'), path]),
         diagnostics: RuntimeProjectDiagnosticsRequestSchema.optional(),
+        dependencies: RuntimeDependencyPreparationSchema.optional(),
         files: z
           .array(z.object({ path, sha256: ChecksumSchema }).strict())
           .min(1)
@@ -54,6 +59,11 @@ export const RuntimeLocalCommandSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.arguments.dependencies && value.arguments.diagnostics)
+      context.addIssue({
+        code: 'custom',
+        message: 'diagnostics never installs dependencies',
+      });
     if (
       value.arguments.diagnostics &&
       (value.arguments.executable !== '/usr/local/bin/node' ||
@@ -98,7 +108,7 @@ export const RuntimeLocalCommandProfileSchema = z
     architecture: z.enum(['amd64', 'arm64']),
     available: z.boolean(),
     features: z
-      .array(z.enum(['project_diagnostics']))
+      .array(z.enum(['project_diagnostics', 'npm_dependencies']))
       .max(8)
       .optional(),
   })
@@ -129,6 +139,7 @@ export const RuntimeLocalCommandResultSchema = z
     workCopy: z.literal('local_isolated_copy'),
     sourceDirectoryModified: z.literal(false),
     diagnostics: RuntimeProjectDiagnosticsSchema.optional(),
+    dependencies: RuntimeDependencyPreparationResultSchema.optional(),
   })
   .strict();
 export type RuntimeLocalCommandResult = z.infer<

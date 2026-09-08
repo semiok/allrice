@@ -54,7 +54,10 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
       version: 'local-vm-container-v1',
       credentials: 'none',
     }),
-    networkPolicyDigest: runtimePolicyDigest({ network: args.network }),
+    networkPolicyDigest: runtimePolicyDigest({
+      network: args.network,
+      ...(args.dependencies ? { dependencyDownloads: args.dependencies } : {}),
+    }),
     toolchainDigest: runtimePolicyDigest({
       imageDigest: args.imageDigest,
       backend: args.isolation,

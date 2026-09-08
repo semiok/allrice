@@ -43,14 +43,28 @@ try {
   for (const dir of directories) await chown(dir,1000,1000);
   const oomCount = async () => Number((await readFile('/sys/fs/cgroup/memory.events','utf8')).match(/^oom_kill (\d+)$/m)?.[1] || 0);
   const beforeOom = await oomCount();
+  for(const name of ['user','global']) await writeFile('/tmp/allrice-npm-'+name+'.conf','',{flag:'wx',mode:0o444});
+  const commands = [];
+  const npmFlags = ['--offline','--cache=/tmp/npm-cache','--userconfig=/tmp/allrice-npm-user.conf','--globalconfig=/tmp/allrice-npm-global.conf','--registry=https://registry.npmjs.org','--no-audit','--no-fund'];
+  if(bundle.command.dependencies) {
+    await mkdir('/tmp/allrice-archives',{mode:0o755});
+    for(let i=0;i<bundle.archives.length;i++) {
+      const path='/tmp/allrice-archives/'+i+'.tgz';
+      await writeFile(path,Buffer.from(bundle.archives[i],'base64'),{flag:'wx',mode:0o444});
+      commands.push(['/usr/local/bin/npm',['cache','add',path,'--ignore-scripts',...npmFlags]]);
+    }
+    commands.push(['/usr/local/bin/npm',['ci','--foreground-scripts',bundle.command.dependencies.scripts==='disabled'?'--ignore-scripts':'--ignore-scripts=false',...npmFlags]]);
+  }
   const args = bundle.command.diagnostics
     ? ['--input-type=module','--eval', ${JSON.stringify(projectDiagnosticProgram)}, JSON.stringify(bundle.command.diagnostics)]
     : bundle.command.args;
-  const child = spawn(bundle.command.executable, args, {
+  commands.push([bundle.command.executable,args]);
+  const runChild = (executable,args) => new Promise(resolve => {
+  const child = spawn(executable, args, {
     cwd: bundle.command.path === '.' ? '/workspace' : '/workspace/' + bundle.command.path,
     uid:1000, gid:1000, detached:false, stdio:['ignore','pipe','pipe'],
     env:{PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',LANG:'C.UTF-8',CI:'1',
-      npm_config_cache:'/tmp/npm-cache',npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false'},
+      npm_config_cache:'/tmp/npm-cache',npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false',npm_config_userconfig:'/tmp/allrice-npm-user.conf',npm_config_globalconfig:'/tmp/allrice-npm-global.conf'},
   });
   for (const stream of ['stdout','stderr']) child[stream].on('data', (bytes) => {
     const available = Math.max(0, bundle.command.limits.outputBytes - size);
@@ -67,10 +81,16 @@ try {
     drainTimer = setTimeout(() => end('output_limit', exitCode(code,signal)), 250);
   });
   child.once('close', async (code, signal) => {
-    clearTimeout(timer); clearTimeout(drainTimer);
-    try { end((await oomCount()) > beforeOom ? 'memory_limit' : 'exited', exitCode(code,signal)); }
+    clearTimeout(drainTimer);
+    try { resolve({reason:(await oomCount()) > beforeOom ? 'memory_limit' : 'exited',code:exitCode(code,signal)}); }
     catch { end('supervisor_failed',125); }
   });
+  });
+  for(let i=0;i<commands.length;i++) {
+    if(finished) break;
+    const result=await runChild(...commands[i]);
+    if(result.code!==0 || i===commands.length-1) {clearTimeout(timer);end(result.reason,result.code);break;}
+  }
 } catch {
   clearTimeout(timer);
   end('supervisor_failed',125);

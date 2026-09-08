@@ -7,6 +7,7 @@ import {
   RuntimeBridgeStartResponseSchema,
   RuntimeOperationSnapshotSchema,
   runtimeContractEqual,
+  dependencyPreparationErrorLabels,
   type RuntimeBridgeDispatch,
 } from '@allrice/contracts';
 
@@ -85,7 +86,11 @@ export class RuntimeBridgeOperationClient {
       body: {
         supportsChangeset: true,
         ...(this.input.runner
-          ? { supportsLocalCommand: true, supportsProjectDiagnostics: true }
+          ? {
+              supportsLocalCommand: true,
+              supportsProjectDiagnostics: true,
+              supportsNpmDependencies: true,
+            }
           : {}),
       },
       maximumResponseBytes: 750_000,
@@ -419,12 +424,24 @@ export class RuntimeBridgeOperationClient {
           'SENSITIVE_INPUT',
           'INPUT_LIMIT',
           'EXECUTION_REVOKED',
+          'DEPENDENCY_SOURCE_DENIED',
+          'DEPENDENCY_DOWNLOAD_REJECTED',
+          'DEPENDENCY_ARCHIVE_LIMIT',
+          'DEPENDENCY_MANIFEST_REQUIRED',
+          'DEPENDENCY_MANIFEST_INVALID',
+          'DEPENDENCY_LAYOUT_UNSUPPORTED',
+          'DEPENDENCY_LOCK_MISMATCH',
+          'DEPENDENCY_ARCHIVE_REQUIRED',
+          'DEPENDENCY_INTEGRITY_MISMATCH',
+          'DEPENDENCY_NETWORK_UNAVAILABLE',
         ].includes(error.code);
       if (noExecution)
         await journal.outcome(operationId, {
           status: 'failed',
           effects: 'none',
-          summary: '本地执行前检查未通过，命令未运行',
+          summary:
+            dependencyPreparationErrorLabels[error.code] ??
+            '本地执行前检查未通过，命令未运行',
           errorCode: error.code,
         });
       else await journal.uncertain(operationId, 'receipt_missing');

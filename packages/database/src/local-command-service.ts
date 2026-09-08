@@ -104,6 +104,8 @@ export async function createLocalCommandOperation(
     throw new RuntimePolicyError('local_runner_unavailable');
   if (args.diagnostics && !profile.features?.includes('project_diagnostics'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (args.dependencies && !profile.features?.includes('npm_dependencies'))
+    throw new RuntimePolicyError('local_runner_upgrade_required');
   const payload = RuntimeLocalCommandSchema.parse({
     capability: 'local.process.execute',
     arguments: {
