@@ -3,6 +3,7 @@ import type { riceToolDefinitions } from './definitions.js';
 import { createAutomation } from './handlers/automation.js';
 import { runManagedBrowser } from './handlers/browser.js';
 import { createWorkspaceExport } from './handlers/delivery.js';
+import { executeCloudCommand } from './handlers/cloud.js';
 import {
   executeLocalBridgeTool,
   executeControlledLocalCommand,
@@ -54,6 +55,7 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'cloud.process.execute': registration('cloud_runner', executeCloudCommand),
   'workspace.file.list': registration('workspace', listWorkspaceFiles),
   'workspace.file.read': registration('workspace', readWorkspaceFile),
   'workspace.document.read': registration('workspace', readWorkspaceDocument),

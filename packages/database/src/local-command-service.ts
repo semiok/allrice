@@ -16,6 +16,7 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import {
   localCommandBinding,
@@ -174,19 +175,12 @@ export async function createLocalCommandOperation(
     database,
     initialOperation: { binding, payload },
   });
-  await ledger.createRoot({
-    task: binding.task,
-    deadlineAt: row.timeout_at.toISOString(),
-    budgets: [
-      {
-        metric: 'tool_calls',
-        unit: 'calls',
-        currency: null,
-        capacity: 32,
-        source: { kind: 'worker', sourceId: 'local-command-v1' },
-      },
-    ],
-  });
+  await ensureRuntimeOperationRoot(
+    ledger,
+    binding.task,
+    row.timeout_at.toISOString(),
+    database,
+  );
   const snapshot = await ledger.createOperation({
     snapshot: RuntimeOperationSnapshotSchema.parse({
       contractVersion: 1,

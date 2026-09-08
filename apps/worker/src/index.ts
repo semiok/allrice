@@ -24,6 +24,7 @@ import {
 import { executeClaimedJob } from './runtime.js';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
+import { recoverCloudCommandOperations } from './cloud-runner/executor.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -79,6 +80,18 @@ let platformEmployeeTestTickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
 let platformEmployeeTestAborter: AbortController | null = null;
+let cloudRecoveryTask: Promise<void> | null = null;
+function cloudRecoveryTick() {
+  if (cloudRecoveryTask || stopping || !databaseReady) return;
+  cloudRecoveryTask = recoverCloudCommandOperations()
+    .then(() => undefined)
+    .catch(() => {
+      console.error('[P15] cloud recovery failed');
+    })
+    .finally(() => {
+      cloudRecoveryTask = null;
+    });
+}
 
 async function refreshReadiness() {
   try {
@@ -251,6 +264,7 @@ const dshRuntimeInventoryTimer = setInterval(
   dshRuntimeInventoryIntervalMs,
 );
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
+const cloudRecoveryTimer = setInterval(cloudRecoveryTick, 10_000);
 const automationTimer = setInterval(
   () => void automationTick(),
   pollIntervalMs,
@@ -284,6 +298,7 @@ async function shutdown(signal: string) {
   clearInterval(codexProviderStatusTimer);
   clearInterval(dshRuntimeInventoryTimer);
   clearInterval(queueTimer);
+  clearInterval(cloudRecoveryTimer);
   clearInterval(automationTimer);
   clearInterval(platformEmployeeTestTimer);
   clearInterval(codexAuthorizationTimer);
@@ -291,6 +306,7 @@ async function shutdown(signal: string) {
   platformEmployeeTestAborter?.abort();
   server.close();
   await Promise.allSettled(activeExecutions);
+  if (cloudRecoveryTask) await cloudRecoveryTask;
   await codexAuthorizationBroker.close();
   await closeHarnessAdapters();
   await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);

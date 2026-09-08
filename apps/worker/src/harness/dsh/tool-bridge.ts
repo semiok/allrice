@@ -129,7 +129,9 @@ export function parseDshToolCall(text: string): HarnessToolCall | null {
   return { id: input.id, name: input.name, arguments: args };
 }
 
-export function dshInboundToolHandler(input: HarnessExecutionInput) {
+export function dshInboundToolHandler(
+  input: Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>,
+) {
   return async (method: string, params: Record<string, unknown>) => {
     if (method !== 'allrice/tool-call') {
       throw new HandlerError(

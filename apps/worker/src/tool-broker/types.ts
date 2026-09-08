@@ -71,6 +71,7 @@ export type RiceToolHandler = (
 ) => Promise<RiceToolResult>;
 
 export type RiceToolHandlerCategory =
+  | 'cloud_runner'
   | 'workspace'
   | 'research'
   | 'managed_browser'

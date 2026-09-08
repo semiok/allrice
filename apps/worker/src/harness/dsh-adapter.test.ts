@@ -479,6 +479,44 @@ describe('DshHarnessAdapter', () => {
     ]);
   });
 
+  it.each([
+    ['failed', 'tool.failed', 'failed', '工具执行失败'],
+    ['succeeded', 'tool.completed', 'completed', '工具执行完成'],
+    ['legacy-error', 'tool.failed', 'failed', '工具执行失败'],
+    ['truthy-string', 'tool.completed', 'completed', '工具执行完成'],
+    ['legacy-success', 'tool.completed', 'completed', '工具执行完成'],
+  ])(
+    'projects native result %s without exposing raw result or reasoning',
+    async (outcome, type, status, summary) => {
+      const events: HarnessEvent[] = [];
+      const result = await createAdapter().execute(
+        executionInput({
+          prompt: `native-result-outcome:${outcome}`,
+          events,
+        }),
+      );
+      expect(result.answer).toBe('native-result-outcome-finished');
+      expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
+        expect.objectContaining({
+          type: 'tool.started',
+          name: 'local.fs.list',
+          toolCallId: 'native-result-outcome-1',
+        }),
+        expect.objectContaining({
+          type,
+          name: 'local.fs.list',
+          toolCallId: 'native-result-outcome-1',
+          summary,
+          source: 'harness',
+          sourcePayload: expect.objectContaining({ status }),
+        }),
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(
+        /private-tool-arguments|private-tool-result|private-error-text|private reasoning/,
+      );
+    },
+  );
+
   it('routes native local tools through the active AllRice Tool Broker', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];

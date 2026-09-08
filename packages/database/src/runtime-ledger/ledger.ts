@@ -331,6 +331,12 @@ function receiptContent(receipt: RuntimeLedgerReceipt) {
 export function createRuntimeOperationLedger(options: {
   database?: ReturnType<typeof getDatabase>;
   admission: RuntimeLedgerAdmission;
+  /** Trusted server-only private recovery journal; never returned to a client.
+   * Atomic with dispatch so ACK loss cannot orphan the authenticated lease. */
+  persistLease?: (input: {
+    transaction: Tx;
+    lease: RuntimeLedgerLease;
+  }) => Promise<void>;
 }) {
   if (typeof options.admission !== 'function')
     throw new RuntimeLedgerError('unavailable');
@@ -436,6 +442,19 @@ export function createRuntimeOperationLedger(options: {
         lease_token_hash = ${hash(leaseToken)}, lease_expires_at = ${expiresAt}
       where id = ${row.id}
     `;
+    await options.persistLease?.({
+      transaction: tx,
+      lease: {
+        snapshot: row.snapshot,
+        leaseToken,
+        leaseExpiresAt: expiresAt.toISOString(),
+        createdAt: row.created_at.toISOString(),
+        bridgePayload:
+          row.bridge_payload === null
+            ? null
+            : RuntimeBridgePayloadSchema.parse(row.bridge_payload),
+      },
+    });
     // Event/lease writes can themselves wait on database locks. Recheck current
     // authority after the last write without consuming the approval a second time.
     await admit(tx, row, 'heartbeat', await now(tx));

@@ -19,6 +19,7 @@ import type {
   RuntimeLedgerAdmission,
   RuntimeLedgerLease,
 } from './types.ts';
+import { ensureRuntimeOperationRoot } from './root-service.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -246,6 +247,65 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     expect(
       (await ledger().readBudget(f.scope, f.ids.runId)).budgets[0]!.capacity,
     ).toBe(10);
+  });
+
+  it('reuses a root across adapters without expanding its original deadline or budget', async () => {
+    const f = await fixture(3);
+    const budgets = await ensureRuntimeOperationRoot(
+      ledger(),
+      f.task,
+      new Date(Date.now() + 7200000).toISOString(),
+      db,
+    );
+    expect(budgets).toEqual(f.root.budgets);
+    expect(
+      (await ledger().readBudget(f.scope, f.ids.runId)).budgets[0]!.capacity,
+    ).toBe(3);
+    await expect(
+      ensureRuntimeOperationRoot(
+        ledger(),
+        { ...f.task, scope: { ...f.scope, workspaceId: randomUUID() } },
+        f.root.deadlineAt,
+        db,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('atomically rolls back dispatch when private recovery journal persistence fails', async () => {
+    const f = await fixture(),
+      operation = f.make();
+    await ledger().createOperation(operation);
+    const journaled = createRuntimeOperationLedger({
+      database: db,
+      admission: allow,
+      persistLease: async ({ transaction, lease }) => {
+        await transaction`insert into p03a_test_approvals(operation_id,approved) values(${lease.snapshot.binding.attempt.operationId},true)`;
+        throw Error('synthetic journal failure');
+      },
+    });
+    await expect(
+      journaled.dispatch({
+        scope: f.scope,
+        operationId: operation.snapshot.binding.attempt.operationId,
+        leaseOwner: randomUUID(),
+        leaseMs: 15000,
+      }),
+    ).rejects.toThrow('synthetic journal failure');
+    const [stored] =
+      await db`select lease_token_hash,snapshot->>'status' as status from allrice_runtime_operations where id=${operation.snapshot.binding.attempt.operationId}`;
+    expect(stored!.lease_token_hash).toBeNull();
+    expect(stored!.status).toBe('ready');
+    expect(
+      await db`select * from p03a_test_approvals where operation_id=${operation.snapshot.binding.attempt.operationId}`,
+    ).toHaveLength(0);
+    expect(
+      await ledger().dispatch({
+        scope: f.scope,
+        operationId: operation.snapshot.binding.attempt.operationId,
+        leaseOwner: randomUUID(),
+        leaseMs: 15000,
+      }),
+    ).toHaveProperty('leaseToken');
   });
 
   it('enforces immutable operation bindings and one leased attempt at the database boundary', async () => {

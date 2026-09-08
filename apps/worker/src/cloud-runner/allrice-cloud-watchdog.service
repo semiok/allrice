@@ -1,0 +1,23 @@
+[Unit]
+Description=AllRice dedicated cloud sandbox deadline guard
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/allrice-cloud/watchdog.py
+Restart=always
+RestartSec=1
+User=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=64M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target
