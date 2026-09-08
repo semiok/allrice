@@ -1,12 +1,12 @@
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
-  CloudCommandInputSchema,
   type AllRiceToolRisk,
   type SkillCapability,
   type FrozenMcpTool,
 } from '@allrice/contracts';
 import { z } from 'zod';
+import { CloudToolInputSchema } from '../cloud-runner/tool-input.js';
 
 export type RiceToolRisk = AllRiceToolRisk;
 
@@ -18,6 +18,21 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
+  {
+    name: 'workspace.reconciliation.export',
+    description:
+      '把本次 Run 的已确认云端对账 JSON 工件按原始整数分直接导出为 XLSX；不由模型抄写或重新计算金额。artifactId 使用 cloud.process.execute 返回的 versionId。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        artifactId: { type: 'string', format: 'uuid' },
+        fileName: { type: 'string' },
+        parentObjectId: { type: 'string', format: 'uuid' },
+      },
+      required: ['artifactId', 'fileName'],
+      additionalProperties: false,
+    },
+  },
   {
     name: 'workspace.skill.read',
     description:
@@ -50,8 +65,8 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.process.execute',
     description:
-      '经明确审批在隔离云端运行 Node 22 脚本。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT。执行前显示精确输入和输出范围。',
-    inputSchema: z.toJSONSchema(CloudCommandInputSchema, {
+      '经明确审批在隔离云端运行 Node 22 脚本。script 与 frozenScript 二选一；Skill 任务优先用 frozenScript:{skill,path} 引用当前 Run 冻结脚本，由平台保留完整原始字节。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT。执行前显示精确脚本、输入和输出范围。',
+    inputSchema: z.toJSONSchema(CloudToolInputSchema, {
       unrepresentable: 'any',
     }),
   },
@@ -497,6 +512,10 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (definition.name !== 'workspace.reconciliation.export' ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
+          process.env.ALLRICE_WORKBENCH_ENABLED === '1')) &&
       (definition.name !== 'cloud.mcp.call' ||
         (allowed?.has(definition.name) &&
           frozenMcpTools.some((tool) => Boolean(tool.employeeAuthorization)) &&

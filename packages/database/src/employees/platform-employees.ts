@@ -49,6 +49,7 @@ export {
 } from '../platform-employees/runtime-package.ts';
 
 const allowedToolNames = new Set([
+  'workspace.reconciliation.export',
   'cloud.process.execute',
   'cloud.mcp.call',
   'workspace.skill.read',

@@ -32,6 +32,13 @@ export interface AllRiceToolManifestEntry {
  */
 export const allRiceToolManifest = [
   {
+    canonicalName: 'workspace.reconciliation.export',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_reconciliation_export',
+  },
+  {
     canonicalName: 'workspace.skill.read',
     capability: 'storage:read',
     risk: 'read_only',

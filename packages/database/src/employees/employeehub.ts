@@ -90,6 +90,7 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 ]);
 
 const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
+  'workspace.reconciliation.export': 'storage:write',
   'cloud.process.execute': 'storage:write',
   'cloud.mcp.call': 'secret:use',
   'workspace.skill.read': 'storage:read',

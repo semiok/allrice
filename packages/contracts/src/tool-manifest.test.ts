@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { allRiceToolManifest } from './tool-manifest.ts';
 
 describe('AllRice tool manifest', () => {
-  it('retains native MCP and cloud prerequisites and frozen resource reading', () => {
+  it('registers native reconciliation, frozen resources, MCP and cloud execution', () => {
     const canonicalNames = allRiceToolManifest.map(
       (tool) => tool.canonicalName,
     );
@@ -23,10 +23,10 @@ describe('AllRice tool manifest', () => {
       'dshWireName' in tool ? tool.dshWireName : undefined,
     );
 
-    expect(canonicalNames).toHaveLength(28);
-    expect(new Set(canonicalNames).size).toBe(28);
-    expect(nativeTools).toHaveLength(25);
-    expect(brokerNativeTools).toHaveLength(24);
+    expect(canonicalNames).toHaveLength(29);
+    expect(new Set(canonicalNames).size).toBe(29);
+    expect(nativeTools).toHaveLength(26);
+    expect(brokerNativeTools).toHaveLength(25);
     expect(
       brokerNativeTools
         .filter((tool) =>
@@ -63,7 +63,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(25);
+    expect(new Set(wireNames).size).toBe(26);
   });
 
   it('defines capability and risk metadata for every canonical tool', () => {

@@ -10,8 +10,9 @@ describe('platform content catalog', () => {
   it('loads every current production Skill from its canonical source file', async () => {
     const catalog = await loadPlatformContentCatalog();
 
-    expect(catalog.skills).toHaveLength(10);
+    expect(catalog.skills).toHaveLength(11);
     expect(catalog.skills.map((skill) => skill.name)).toEqual([
+      'business-reconciliation',
       'web-research',
       'workspace-briefing',
       'wechat-research',
