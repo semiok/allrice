@@ -15,7 +15,11 @@ import {
   rollbackPlatformEmployee,
 } from './employees/platform-employees.ts';
 import { resolveEmployeeExecution } from './employees/employeehub.ts';
-import { synchronizePlatformContent } from './platform-content/sync.ts';
+import {
+  planPlatformSkillSync,
+  readExistingPlatformSkills,
+  synchronizePlatformContent,
+} from './platform-content/sync.ts';
 import type { PlatformContentCatalog } from './platform-content/catalog.ts';
 import {
   buildEmployeeRuntimePackage,
@@ -375,6 +379,22 @@ suite(
         updated: 0,
         unchanged: 1,
       });
+      // This is the exact read-only projection and planner used by db:verify.
+      // A READ ONLY transaction also rejects accidental sync FOR UPDATE locks.
+      const verifiedRows = await db.begin(async (transaction) => {
+        await transaction`set transaction read only`;
+        return readExistingPlatformSkills(transaction);
+      });
+      expect(verifiedRows.find((row) => row.id === id)?.bundle).toEqual(
+        f.v1.bundle,
+      );
+      expect(planPlatformSkillSync(verifiedRows, catalog.skills)).toMatchObject(
+        {
+          inserts: [],
+          updates: [],
+          unchanged: catalog.skills,
+        },
+      );
       const bytes = Buffer.from('Resource-only update; body remains frozen.\n');
       const { checksum: priorChecksum, ...payload } = f.v1.bundle;
       const changedPayload = {
@@ -393,6 +413,9 @@ suite(
         ...changedPayload,
         checksum: skillBundleChecksum(changedPayload),
       };
+      expect(() => planPlatformSkillSync(verifiedRows, changed.skills)).toThrow(
+        'platform_skill_version_bump_required',
+      );
       await expect(synchronizePlatformContent(changed)).rejects.toThrow(
         'platform_skill_version_bump_required',
       );
@@ -409,6 +432,12 @@ suite(
         updated: 0,
         unchanged: 1,
       });
+      expect(
+        planPlatformSkillSync(
+          await readExistingPlatformSkills(db),
+          changed.skills,
+        ),
+      ).toMatchObject({ inserts: [], updates: [], unchanged: changed.skills });
       const versions =
         await db`select version,checksum,bundle from allrice_platform_skill_bundle_versions where skill_id=${id} order by version`;
       expect(versions).toHaveLength(2);

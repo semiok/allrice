@@ -199,19 +199,23 @@ type PlatformSkillRow = {
   reviewedByLabel: string | null;
 };
 
-async function readExistingSkills(transaction: postgres.TransactionSql) {
-  return transaction<PlatformSkillRow[]>`
+/** Sync and read-only verification must compare the same revision fields.
+ * Only the synchronization transaction requests row locks. */
+export async function readExistingPlatformSkills(
+  sql: postgres.Sql | postgres.TransactionSql,
+  options: { forUpdate?: boolean } = {},
+) {
+  return sql<PlatformSkillRow[]>`
     select id, name, description, content, checksum,
       model_invocable as "modelInvocable",
       user_invocable as "userInvocable",
       required_tool_refs as "requiredToolRefs", enabled, source,
       source_ref as "sourceRef", version, license,
       review_status as "reviewStatus",
-      reviewed_by_label as "reviewedByLabel"
-      , bundle
+      reviewed_by_label as "reviewedByLabel", bundle
     from allrice_platform_dsh_skills
     order by name, id
-    for update
+    ${options.forUpdate ? sql`for update` : sql``}
   `;
 }
 
@@ -275,7 +279,9 @@ export async function synchronizePlatformContent(
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     await transaction`select pg_advisory_xact_lock(9223372036854769001)`;
-    const existing = await readExistingSkills(transaction);
+    const existing = await readExistingPlatformSkills(transaction, {
+      forUpdate: true,
+    });
     const plan = planPlatformSkillSync(existing, catalog.skills);
 
     for (const skill of catalog.skills)
