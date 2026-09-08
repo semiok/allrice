@@ -28,6 +28,37 @@ describe('Rice Bridge portal boundary', () => {
       false,
     );
   });
+
+  it('only exempts exact governed device endpoints, never management or arbitrary actions', () => {
+    const prefix = '/api/v1/bridge/device/operations';
+    expect(isBridgeDeviceApiPath(`${prefix}/next`)).toBe(true);
+    expect(isBridgeDeviceApiPath('/api/v1/bridge/device/runtime-profile')).toBe(
+      true,
+    );
+    for (const action of [
+      'start',
+      'heartbeat',
+      'output',
+      'receipts',
+      'service',
+    ]) {
+      const path = `${prefix}/6f9619ff-8b86-d011-b42d-00cf4fc964ff/${action}`;
+      expect(isBridgeDeviceApiPath(path)).toBe(true);
+      const response = proxy(
+        new NextRequest(`https://allrice-snow.bplabs.xyz${path}`, {
+          headers: { host: 'allrice-snow.bplabs.xyz' },
+        }),
+      );
+      expect(response.status).toBe(200);
+    }
+    for (const suffix of [
+      '../devices',
+      'foo/start',
+      '6f9619ff-8b86-d011-b42d-00cf4fc964ff/approve',
+      'next/extra',
+    ])
+      expect(isBridgeDeviceApiPath(`${prefix}/${suffix}`)).toBe(false);
+  });
 });
 
 describe('portal authentication response boundary', () => {
