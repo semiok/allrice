@@ -48,6 +48,8 @@ export {
 } from '../platform-employees/runtime-package.ts';
 
 const allowedToolNames = new Set([
+  'cloud.process.execute',
+  'cloud.mcp.call',
   'workspace.file.list',
   'workspace.file.read',
   'workspace.document.read',
@@ -1282,8 +1284,17 @@ export async function compilePlatformEmployee(
     if (definition.securityPolicy.approvalPolicy === 'autonomous') {
       errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
     }
-    if (definition.securityPolicy.connectorIdentityModes.includes('service')) {
-      errors.push('平台当前未开放 Service Connector 身份给 AI 员工');
+    if (
+      definition.securityPolicy.connectorIdentityModes.includes('service') &&
+      (!definition.capabilities.toolNames.includes('cloud.mcp.call') ||
+        definition.securityPolicy.deniedCapabilities.includes('secret:use') ||
+        definition.securityPolicy.deniedCapabilities.includes(
+          'network:outbound',
+        ))
+    ) {
+      errors.push(
+        'Service Connector 仅支持已声明 cloud.mcp.call 且未禁止 secret:use/network:outbound 的员工策略；租户连接须另行绑定',
+      );
     }
     if (definition.capabilities.workflowRevisionIds.length > 0) {
       errors.push(
@@ -1402,6 +1413,7 @@ function tenantManifest(
       deniedCapabilities: definition.securityPolicy.deniedCapabilities,
     },
     toolNames: definition.capabilities.toolNames,
+    connectorRefs: definition.capabilities.connectorRefs,
     systemPromptOverride: runtimePackageSystemPrompt({
       platformPolicy: definition.systemPrompt,
       runtimePackage,

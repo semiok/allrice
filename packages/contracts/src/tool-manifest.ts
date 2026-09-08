@@ -32,6 +32,13 @@ export interface AllRiceToolManifestEntry {
  */
 export const allRiceToolManifest = [
   {
+    canonicalName: 'cloud.mcp.call',
+    capability: 'secret:use',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'cloud_mcp_call',
+  },
+  {
     canonicalName: 'cloud.process.execute',
     capability: 'storage:write',
     risk: 'side_effect',

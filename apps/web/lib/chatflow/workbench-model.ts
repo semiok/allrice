@@ -6,6 +6,7 @@ import {
   type ChangesetDocument,
   type ReviewFeedback,
   type WorkbenchArtifact,
+  type RuntimeExecutionScope,
 } from '@allrice/contracts';
 
 export type ArtifactPreview =
@@ -18,6 +19,28 @@ export type ArtifactPreview =
     }
   | { kind: 'download_only'; reason: string };
 export type ArtifactCursor = { createdAt: string; id: string };
+export function artifactExecutionLabels(execution: RuntimeExecutionScope) {
+  return {
+    target:
+      {
+        cloud_sandbox: '云端沙箱',
+        cloud_mcp: '远程 MCP 服务',
+        rice_bridge: '本地 Bridge',
+      }[execution.targetKind] ?? '未知执行目标',
+    workCopy:
+      {
+        in_place: '授权原目录',
+        git_worktree: 'Git 隔离工作树',
+        cloud_copy: '云端隔离副本',
+        local_copy: '本地隔离副本',
+        remote_service: '远程服务（无本地工作副本）',
+      }[execution.workCopy.kind] ?? '未知工作副本',
+    availability:
+      execution.targetKind === 'rice_bridge'
+        ? '此处不证明设备当前在线'
+        : '执行时的目标记录，不代表当前运行状态',
+  };
+}
 export function parseArtifactList(input: unknown): {
   artifacts: WorkbenchArtifact[];
   nextCursor: ArtifactCursor | null;

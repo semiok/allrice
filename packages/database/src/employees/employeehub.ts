@@ -30,6 +30,7 @@ import {
 } from '@allrice/contracts';
 
 import { DataAccessError } from '../data.ts';
+import { createEmployeeMcpBindingStore } from '../mcp-employee-bindings.ts';
 import {
   resolveEmployeeCapabilitiesForRun,
   synchronizeEmployeeSkillBindings,
@@ -88,6 +89,8 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 ]);
 
 const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
+  'cloud.process.execute': 'storage:write',
+  'cloud.mcp.call': 'secret:use',
   'workspace.document.read': 'storage:read',
   'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
@@ -1227,6 +1230,33 @@ export async function prepareEmployeeRunBinding(input: {
       requiredToolRefs: skill.required_tool_refs,
     }),
   );
+  const mcpEnabled =
+    process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
+    manifest.data.schemaVersion === 2 &&
+    manifest.data.capabilityBindings.toolNames.includes('cloud.mcp.call');
+  const mcpTools =
+    mcpEnabled && manifest.data.schemaVersion === 2
+      ? await createEmployeeMcpBindingStore().freeze(
+          {
+            organizationId: input.context.organizationId,
+            workspaceId: input.workspaceId,
+            actorId,
+          },
+          assignment.employee_id,
+          assignment.id,
+        )
+      : [];
+  // Explicit tenant MCP binding is an additional source for the already
+  // declared secret capability, never a bypass for Deny or a fabricated Skill.
+  // It does not activate network tools or any other capability.
+  if (
+    mcpTools.length &&
+    manifest.data.schemaVersion === 2 &&
+    manifest.data.capabilities.includes('secret:use') &&
+    !manifest.data.securityPolicy.deniedCapabilities.includes('secret:use') &&
+    !grantedCapabilities.includes('secret:use')
+  )
+    grantedCapabilities.push('secret:use');
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
@@ -1239,6 +1269,7 @@ export async function prepareEmployeeRunBinding(input: {
     nativeSkills,
     executionSnapshot: {
       schemaVersion: 2,
+      ...(mcpEnabled ? { mcpTools } : {}),
       employee: {
         id: assignment.employee_id,
         key: assignment.employee_key,

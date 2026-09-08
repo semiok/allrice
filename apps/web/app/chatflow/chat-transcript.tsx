@@ -23,6 +23,7 @@ import {
 } from './managed-browser-task-panel';
 import { UserQuestionReceipt } from './user-question-receipt';
 import { LocalCommandPanel } from './local-command-panel';
+import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 
 interface ChatTranscriptProps {
@@ -230,6 +231,14 @@ export function ChatTranscript({
                           workspaceId={workspaceId}
                         />
                       ) : null}
+                      {message.runId && (
+                        <CloudOperationPanel
+                          runId={message.runId}
+                          workspaceId={workspaceId}
+                          tenantHeaders={tenantHeaders}
+                          runActive={messageIsRunning}
+                        />
+                      )}
                       {message.runId && (
                         <LocalCommandPanel
                           runId={message.runId}

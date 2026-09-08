@@ -4,6 +4,7 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
 
 import {
   boot,
@@ -34,6 +35,7 @@ const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
+  ...mcpNativeTools,
   ...cloudNativeTools,
   {
     canonicalName: 'browser.run',

@@ -24,6 +24,8 @@ import {
 import { executeClaimedJob } from './runtime.js';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
+import { executeNextMcpDiscovery } from './mcp/lifecycle.js';
+import { recoverMcpRuntimeOperations } from './mcp/executor.js';
 import { recoverCloudCommandOperations } from './cloud-runner/executor.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
@@ -80,7 +82,21 @@ let platformEmployeeTestTickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
 let platformEmployeeTestAborter: AbortController | null = null;
+const mcpDiscoveryAborter = new AbortController();
+let mcpDiscoveryTask: Promise<void> | null = null;
 let cloudRecoveryTask: Promise<void> | null = null;
+let mcpRecoveryTask: Promise<void> | null = null;
+function mcpRecoveryTick() {
+  if (mcpRecoveryTask || stopping || !databaseReady) return;
+  mcpRecoveryTask = recoverMcpRuntimeOperations()
+    .then(() => undefined)
+    .catch(() => {
+      console.error('[P16] MCP recovery failed');
+    })
+    .finally(() => {
+      mcpRecoveryTask = null;
+    });
+}
 function cloudRecoveryTick() {
   if (cloudRecoveryTask || stopping || !databaseReady) return;
   cloudRecoveryTask = recoverCloudCommandOperations()
@@ -90,6 +106,26 @@ function cloudRecoveryTick() {
     })
     .finally(() => {
       cloudRecoveryTask = null;
+    });
+}
+function mcpDiscoveryTick() {
+  if (
+    mcpDiscoveryTask ||
+    stopping ||
+    !databaseReady ||
+    process.env.ALLRICE_CLOUD_MCP_ENABLED !== '1'
+  )
+    return;
+  mcpDiscoveryTask = executeNextMcpDiscovery({
+    workerId,
+    signal: mcpDiscoveryAborter.signal,
+  })
+    .then(() => undefined)
+    .catch(() => {
+      console.error('[P16] MCP discovery failed');
+    })
+    .finally(() => {
+      mcpDiscoveryTask = null;
     });
 }
 
@@ -264,7 +300,9 @@ const dshRuntimeInventoryTimer = setInterval(
   dshRuntimeInventoryIntervalMs,
 );
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
+const mcpDiscoveryTimer = setInterval(mcpDiscoveryTick, pollIntervalMs);
 const cloudRecoveryTimer = setInterval(cloudRecoveryTick, 10_000);
+const mcpRecoveryTimer = setInterval(mcpRecoveryTick, 10_000);
 const automationTimer = setInterval(
   () => void automationTick(),
   pollIntervalMs,
@@ -298,7 +336,10 @@ async function shutdown(signal: string) {
   clearInterval(codexProviderStatusTimer);
   clearInterval(dshRuntimeInventoryTimer);
   clearInterval(queueTimer);
+  clearInterval(mcpDiscoveryTimer);
   clearInterval(cloudRecoveryTimer);
+  clearInterval(mcpRecoveryTimer);
+  mcpDiscoveryAborter.abort();
   clearInterval(automationTimer);
   clearInterval(platformEmployeeTestTimer);
   clearInterval(codexAuthorizationTimer);
@@ -306,7 +347,9 @@ async function shutdown(signal: string) {
   platformEmployeeTestAborter?.abort();
   server.close();
   await Promise.allSettled(activeExecutions);
+  if (mcpDiscoveryTask) await mcpDiscoveryTask;
   if (cloudRecoveryTask) await cloudRecoveryTask;
+  if (mcpRecoveryTask) await mcpRecoveryTask;
   await codexAuthorizationBroker.close();
   await closeHarnessAdapters();
   await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);

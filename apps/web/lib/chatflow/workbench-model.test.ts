@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkbenchArtifactSchema } from '@allrice/contracts';
+import {
+  WorkbenchArtifactSchema,
+  type RuntimeExecutionScope,
+} from '@allrice/contracts';
 import {
   artifactKindLabel,
+  artifactExecutionLabels,
   boundedRichDiff,
   mergeArtifactPage,
   parseArtifactDetail,
@@ -64,6 +68,45 @@ const artifact = WorkbenchArtifactSchema.parse({
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('workbench UI boundary', () => {
+  it('distinguishes historical cloud, MCP and Bridge execution provenance', () => {
+    const scope: RuntimeExecutionScope = {
+      targetId: randomUUID(),
+      targetKind: 'cloud_sandbox',
+      deviceId: null,
+      grantId: randomUUID(),
+      grantVersion: 1,
+      scopeDigest: checksum,
+      workCopy: { id: randomUUID(), kind: 'cloud_copy' },
+    };
+    expect(artifactExecutionLabels(scope)).toEqual({
+      target: '云端沙箱',
+      workCopy: '云端隔离副本',
+      availability: '执行时的目标记录，不代表当前运行状态',
+    });
+    expect(
+      artifactExecutionLabels({
+        ...scope,
+        targetKind: 'cloud_mcp',
+        workCopy: { ...scope.workCopy, kind: 'remote_service' },
+      }),
+    ).toEqual({
+      target: '远程 MCP 服务',
+      workCopy: '远程服务（无本地工作副本）',
+      availability: '执行时的目标记录，不代表当前运行状态',
+    });
+    expect(
+      artifactExecutionLabels({
+        ...scope,
+        targetKind: 'rice_bridge',
+        deviceId: randomUUID(),
+        workCopy: { ...scope.workCopy, kind: 'in_place' },
+      }),
+    ).toEqual({
+      target: '本地 Bridge',
+      workCopy: '授权原目录',
+      availability: '此处不证明设备当前在线',
+    });
+  });
   it('validates bounded pages, identities and cursors', () => {
     expect(
       parseArtifactList({ artifacts: [artifact], nextCursor: null }).artifacts,

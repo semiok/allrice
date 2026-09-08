@@ -111,6 +111,7 @@ export const CreateCheckpointMemoryCandidateInputSchema = z
 export const ExecutionTargetKindSchema = z.enum([
   'cloud_sandbox',
   'rice_bridge',
+  'cloud_mcp',
 ]);
 export type ExecutionTargetKind = z.infer<typeof ExecutionTargetKindSchema>;
 

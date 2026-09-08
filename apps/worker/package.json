@@ -46,6 +46,7 @@
     "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
     "@deepseek-ai/dsh-user-questions": "0.1.1-rc.2",
     "@earendil-works/pi-ai": "0.82.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "cheerio": "1.1.2",
     "docx": "9.5.1",
     "exceljs": "4.4.0",

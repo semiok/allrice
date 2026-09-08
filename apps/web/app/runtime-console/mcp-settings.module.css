@@ -1,0 +1,67 @@
+.panel {
+  border: 1px solid #34373b;
+  border-radius: 16px;
+  padding: 20px;
+  margin-top: 20px;
+}
+.panel p {
+  color: #9ca1aa;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.header,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.header h3 {
+  margin: 0;
+}
+.form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-block: 16px;
+  align-items: end;
+}
+.panel label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+.panel input,
+.panel select,
+.panel button {
+  background: #25272b;
+  color: #eceef1;
+  border: 1px solid #484c53;
+  border-radius: 8px;
+  padding: 9px 12px;
+  min-width: 0;
+}
+.panel button {
+  cursor: pointer;
+}
+.panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.connection {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #3b3e43;
+  border-radius: 12px;
+}
+.tool {
+  display: grid;
+  gap: 9px;
+  border-top: 1px solid #3b3e43;
+  padding-block: 12px;
+  margin-top: 12px;
+}
+.error {
+  color: #ef9999 !important;
+}

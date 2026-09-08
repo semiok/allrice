@@ -12,6 +12,7 @@ import {
 } from '../../../apps/worker/src/cloud-runner/executor.js';
 import { cloudStableId } from './cloud-execution.ts';
 import { revokeRuntimeActionApproval } from './runtime-policy.ts';
+import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -92,6 +93,22 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
     expect(c.snapshot.binding.dataScope[0]?.destination).toBe(
       'cloud_execution',
     );
+    const views = await listCloudRuntimeOperations(f.context, f.run, db);
+    expect(views[0]?.proposal).toEqual({
+      kind: 'cloud',
+      script: c.payload.arguments.script,
+      inputs: c.payload.arguments.inputs,
+      outputs: c.payload.arguments.outputs,
+      limits: c.payload.arguments.limits,
+    });
+    vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '0');
+    try {
+      expect(
+        (await listCloudRuntimeOperations(f.context, f.run, db))[0]?.enabled,
+      ).toBe(false);
+    } finally {
+      vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
+    }
     expect((await f.create()).snapshot.binding).toEqual(c.snapshot.binding);
     await expect(
       f.create('p15-task', { ...f.args, script: 'console.log(1)' }),

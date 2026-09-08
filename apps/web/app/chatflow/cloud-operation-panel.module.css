@@ -1,0 +1,91 @@
+.root {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  min-width: 0;
+}
+.root article {
+  border: 1px solid #a4c9c4;
+  border-left: 4px solid #2d8279;
+  border-radius: 12px;
+  padding: 16px;
+  background: #f1faf8;
+  color: #203d3b;
+  min-width: 0;
+}
+.root header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.root p,
+.root small {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.root small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #4f6966;
+}
+.root code {
+  overflow-wrap: anywhere;
+}
+.root pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow: auto;
+  font-size: 12px;
+  padding: 10px;
+  background: #e4f2ee;
+  border-radius: 6px;
+}
+.root summary {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 8px 0;
+}
+.root button {
+  cursor: pointer;
+  border: 1px solid #79a39e;
+  border-radius: 8px;
+  background: #fff;
+  color: #28564f;
+  padding: 8px 12px;
+}
+.root button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.root button:focus-visible,
+.root summary:focus-visible {
+  outline: 2px solid #21786f;
+  outline-offset: 3px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.actions small {
+  flex-basis: 100%;
+}
+.notice {
+  color: #795025;
+}
+.root article[data-status='unknown'],
+.root article[data-status='failed'] {
+  border-color: #b88758;
+}
+@media (max-width: 640px) {
+  .root article {
+    padding: 12px;
+  }
+  .actions button {
+    flex: 1 1 auto;
+  }
+}
