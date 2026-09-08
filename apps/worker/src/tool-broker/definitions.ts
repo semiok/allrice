@@ -4,6 +4,7 @@ import {
   CloudCommandInputSchema,
   type AllRiceToolRisk,
   type SkillCapability,
+  type FrozenMcpTool,
 } from '@allrice/contracts';
 import { z } from 'zod';
 
@@ -490,6 +491,7 @@ export function riceToolRisk(name: string) {
 export function riceToolDefinitionsForCapabilities(
   capabilities: SkillCapability[],
   allowedToolNames?: readonly string[],
+  frozenMcpTools: readonly FrozenMcpTool[] = [],
 ) {
   const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
   return riceToolDefinitions.filter(
@@ -497,6 +499,7 @@ export function riceToolDefinitionsForCapabilities(
       (!allowed || allowed.has(definition.name)) &&
       (definition.name !== 'cloud.mcp.call' ||
         (allowed?.has(definition.name) &&
+          frozenMcpTools.some((tool) => Boolean(tool.employeeAuthorization)) &&
           process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
           process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1')) &&
       (definition.name !== 'cloud.process.execute' ||
@@ -529,11 +532,13 @@ export function riceToolDefinitionsForTurn(
   capabilities: SkillCapability[],
   allowedToolNames: readonly string[] | undefined,
   selectedToolNames: readonly string[],
+  frozenMcpTools: readonly FrozenMcpTool[] = [],
 ) {
   const selected = new Set(selectedToolNames);
   return riceToolDefinitionsForCapabilities(
     capabilities,
     allowedToolNames,
+    frozenMcpTools,
   ).filter(
     (definition) =>
       ['read_only', 'managed_write'].includes(

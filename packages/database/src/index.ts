@@ -7,6 +7,7 @@ export * from './bridge-connections.ts';
 export * from './runtime-policy.ts';
 export * from './skill-bundles.ts';
 export * from './mcp-connections.ts';
+export * from './mcp-employee-bindings.ts';
 export {
   createMcpRuntimeOperation,
   createMcpOperationLedger,

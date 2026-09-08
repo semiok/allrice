@@ -6,6 +6,7 @@ import type {
   ExecutionContext,
   SkillCapability,
   DshNativeSkillSnapshot,
+  FrozenMcpTool,
 } from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
@@ -44,6 +45,7 @@ export type ManagedBrowserCancellationCheck =
 export interface RiceToolExecutionInput {
   context: ExecutionContext;
   capabilities: SkillCapability[];
+  frozenMcpTools?: readonly FrozenMcpTool[];
   storageRoot: string;
   skillVersionIds?: string[];
   nativeSkills?: readonly DshNativeSkillSnapshot[];

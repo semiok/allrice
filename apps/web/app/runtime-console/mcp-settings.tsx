@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { McpConnection } from '@allrice/contracts';
+import type { McpConnection, McpEmployeeTarget } from '@allrice/contracts';
 
 import styles from './mcp-settings.module.css';
 
@@ -9,6 +9,10 @@ const endpoint = '/api/v1/admin/mcp';
 type Risk = McpConnection['tools'][number]['risk'];
 export function McpSettings({ workspaceId }: { workspaceId: string }) {
   const [connections, setConnections] = useState<McpConnection[]>([]);
+  const [employees, setEmployees] = useState<McpEmployeeTarget[]>([]);
+  const [selectedEmployees, setSelectedEmployees] = useState<
+    Record<string, string>
+  >({});
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -22,6 +26,7 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     const controller = new AbortController();
     setConnections([]);
+    setEmployees([]);
     setEnabled(false);
     setError('');
     fetch(`${endpoint}?workspaceId=${encodeURIComponent(workspaceId)}`, {
@@ -34,6 +39,7 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
           throw new Error(body.error?.message ?? '无法读取 MCP 配置。');
         if (!controller.signal.aborted) {
           setConnections(body.connections);
+          setEmployees(body.employees ?? []);
           setEnabled(body.enabled);
         }
       })
@@ -154,9 +160,118 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
             员工连接引用：<code>{`mcp.${connection.id}`}</code>
           </p>
           <p>
-            另需员工版本显式绑定该连接并授权 cloud.mcp.call；只影响新
-            Run，不扩大已运行会话的权限。
+            仅已发布且明确许可 cloud.mcp.call、Service 身份以及
+            secret:use/network:outbound 的员工可绑定。
+            不符合资格时须由平台保存新草稿、试用并发布；这里不会修改员工策略或解除禁止权限。
           </p>
+          <section aria-label={`员工版本授权 ${connection.name}`}>
+            <h4>员工版本授权</h4>
+            <p>
+              仅限此连接与确切员工版本。新增授权只影响新
+              Run；每次调用仍须审批。撤销会阻止旧 Run
+              后续派发，已发送的远端操作不保证立即停止。
+            </p>
+            <label>
+              选择员工版本
+              <select
+                aria-label={`选择员工版本 ${connection.name}`}
+                value={selectedEmployees[connection.id] ?? ''}
+                onChange={(event) =>
+                  setSelectedEmployees((previous) => ({
+                    ...previous,
+                    [connection.id]: event.target.value,
+                  }))
+                }
+              >
+                <option value="">请选择已获许可的版本</option>
+                {employees.map((employee) => (
+                  <option
+                    key={employee.employeeVersionId}
+                    value={employee.employeeVersionId}
+                    disabled={!employee.eligible}
+                  >
+                    {employee.name} · v{employee.version}
+                    {employee.eligible
+                      ? ''
+                      : `（${employee.reasons.join('；')}）`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={
+                !enabled ||
+                busy ||
+                !connection.enabled ||
+                !selectedEmployees[connection.id]
+              }
+              onClick={() => {
+                const employee = employees.find(
+                  (e) =>
+                    e.employeeVersionId === selectedEmployees[connection.id],
+                );
+                if (!employee?.eligible) return;
+                const binding = employee.bindings.find(
+                  (b) => b.connectionId === connection.id,
+                );
+                void mutate('PATCH', {
+                  action: 'employee_binding',
+                  connectionId: connection.id,
+                  employeeId: employee.employeeId,
+                  employeeVersionId: employee.employeeVersionId,
+                  expectedRevision: binding?.revision ?? 0,
+                  enabled: true,
+                });
+              }}
+            >
+              绑定此连接
+            </button>
+            {!employees.some((employee) => employee.eligible) ? (
+              <p role="status">
+                当前没有可绑定的员工版本。需先发布具备上述 MCP
+                策略的员工，不会自动扩展现有员工权限。
+              </p>
+            ) : null}
+            {employees
+              .filter((e) => !e.eligible)
+              .map((e) => (
+                <p key={e.employeeVersionId}>
+                  {e.name} · v{e.version}：{e.reasons.join('；')}
+                </p>
+              ))}
+            {employees.flatMap((employee) =>
+              employee.bindings
+                .filter((b) => b.connectionId === connection.id)
+                .map((binding) => (
+                  <div key={binding.id}>
+                    <span>
+                      {employee.name} · v{employee.version} ·{' '}
+                      {binding.enabled ? '已绑定' : '已撤销'} · 授权版本{' '}
+                      {binding.revision}
+                    </span>
+                    {binding.enabled ? (
+                      <button
+                        type="button"
+                        disabled={!enabled || busy}
+                        onClick={() =>
+                          void mutate('PATCH', {
+                            action: 'employee_binding',
+                            connectionId: connection.id,
+                            employeeId: employee.employeeId,
+                            employeeVersionId: employee.employeeVersionId,
+                            expectedRevision: binding.revision,
+                            enabled: false,
+                          })
+                        }
+                      >
+                        撤销员工绑定
+                      </button>
+                    ) : null}
+                  </div>
+                )),
+            )}
+          </section>
           <p>凭证已加密保存，不回显。{connection.discoveryCode ?? ''}</p>
           <div className={styles.actions}>
             <button
