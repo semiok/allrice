@@ -5,6 +5,10 @@ import type { MutableRefObject, RefObject } from 'react';
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 
 import { PendingAttachmentRail } from './attachment-components';
+import {
+  bridgeComposerStatus,
+  type BridgeConnectionState,
+} from './bridge-view';
 import type { History, PendingAttachment, Visibility } from './chatflow-types';
 import { resizeComposerTextarea } from './chatflow-utils';
 import inputUi from './dsh-upstream/InputBar.module.css';
@@ -25,6 +29,7 @@ interface ChatComposerProps {
   onInputModeChange?: (mode: 'steer' | 'follow_up') => void;
   localWorkspaceLabel?: string;
   localWorkspaceOnline: boolean;
+  bridgeConnectionState: BridgeConnectionState;
   nativeContextStatus: History['nativeContextStatus'];
   pendingAttachments: PendingAttachment[];
   providerLabel: string;
@@ -57,6 +62,7 @@ export function ChatComposer({
   onInputModeChange,
   localWorkspaceLabel,
   localWorkspaceOnline,
+  bridgeConnectionState,
   nativeContextStatus,
   pendingAttachments,
   providerLabel,
@@ -73,6 +79,11 @@ export function ChatComposer({
   onUploadAttachments,
   onUploadVisibilityChange,
 }: ChatComposerProps) {
+  const bridgeStatus = bridgeComposerStatus(
+    bridgeConnectionState,
+    localWorkspaceOnline,
+    localWorkspaceLabel,
+  );
   return (
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
       {error ? <div className={inputUi.notice}>{error}</div> : null}
@@ -246,28 +257,18 @@ export function ChatComposer({
       <div className={styles.composerStatus}>
         <div className={styles.composerStatusLeft}>
           <button
-            aria-label={
-              localWorkspaceOnline
-                ? `本地工作区 ${localWorkspaceLabel}`
-                : '本地工作区离线'
-            }
+            aria-label={bridgeStatus.ariaLabel}
             className={`${styles.localWorkspaceStatus} ${
-              localWorkspaceOnline
+              bridgeStatus.online
                 ? styles.localWorkspaceOnline
                 : styles.localWorkspaceOffline
             }`}
             onClick={() => void onLoadBridgeDevices()}
-            title={
-              localWorkspaceOnline
-                ? `Rice Bridge 已连接：${localWorkspaceLabel}`
-                : localWorkspaceLabel
-                  ? `${localWorkspaceLabel} 已选择，但 Rice Bridge 当前离线`
-                  : '尚未连接 Rice Bridge 或选择本地授权文件夹'
-            }
+            title={bridgeStatus.title}
             type="button"
           >
             <span aria-hidden="true" />
-            {localWorkspaceLabel ?? '本地工作区离线'}
+            {bridgeStatus.label}
           </button>
           {nativeContextStatus ? (
             <span

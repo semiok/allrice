@@ -136,6 +136,7 @@ function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
   const status = row.revoked_at
     ? 'revoked'
     : row.last_seen_at &&
+        row.last_seen_at.getTime() <= now &&
         now - row.last_seen_at.getTime() <= onlineWindowSeconds * 1_000
       ? 'online'
       : 'offline';
@@ -669,6 +670,7 @@ export async function requestBridgeWorkspaceSelection(
         and owner_id = ${ownerId}
         and revoked_at is null
         and last_seen_at > now() - (${onlineWindowSeconds} * interval '1 second')
+        and last_seen_at <= now()
       for update
     `;
     if (!devices[0]) throw new BridgeDataError('device_offline');
@@ -893,6 +895,7 @@ export async function dispatchBridgeCommand(input: {
       and d.workspace_id = ${workspaceId} and d.owner_id = ${ownerId}
       and d.revoked_at is null
       and d.last_seen_at > now() - (${onlineWindowSeconds} * interval '1 second')
+      and d.last_seen_at <= now()
       and ${payload.capability} = any(d.capabilities)
     order by d.last_seen_at desc limit 1
   `;

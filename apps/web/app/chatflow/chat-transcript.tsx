@@ -28,6 +28,7 @@ import { ArtifactSummaryCards } from './artifact-workbench';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
+  localCommandsEnabled?: boolean;
   messages: Message[];
   recoverableRunView?: RunView;
   runTraces: Record<string, RunTrace>;
@@ -44,6 +45,7 @@ interface ChatTranscriptProps {
 
 export function ChatTranscript({
   atBottom,
+  localCommandsEnabled = false,
   messages,
   recoverableRunView,
   runTraces,
@@ -239,7 +241,7 @@ export function ChatTranscript({
                           runActive={messageIsRunning}
                         />
                       )}
-                      {message.runId && (
+                      {localCommandsEnabled && message.runId && (
                         <LocalCommandPanel
                           runId={message.runId}
                           workspaceId={workspaceId}
