@@ -6,6 +6,7 @@ import { createWorkspaceExport } from './handlers/delivery.js';
 import { executeCloudCommand } from './handlers/cloud.js';
 import { executeMcpTool } from './handlers/mcp.js';
 import { readSkillResource } from './handlers/skill.js';
+import { exportReconciliation } from './handlers/reconciliation.js';
 import {
   executeLocalBridgeTool,
   executeControlledLocalCommand,
@@ -57,6 +58,10 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'workspace.reconciliation.export': registration(
+    'delivery',
+    exportReconciliation,
+  ),
   'workspace.skill.read': registration('workspace', readSkillResource),
   'cloud.mcp.call': registration('cloud_mcp', executeMcpTool),
   'cloud.process.execute': registration('cloud_runner', executeCloudCommand),

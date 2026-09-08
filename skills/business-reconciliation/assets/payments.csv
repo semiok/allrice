@@ -1,0 +1,7 @@
+payment_id,invoice_id,amount,currency
+P1,A,100.50,CNY
+P2,B,180.00,CNY
+P3,C,60.00,CNY
+PX,UNKNOWN,5.00,CNY
+PDUP,B,10.00,CNY
+PDUP,B,10.00,CNY

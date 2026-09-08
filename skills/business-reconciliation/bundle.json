@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "contentChecksum": "sha256:ba3871d1a9be863b43905a15c3282b9d2e82caf9eebfd00873a6582cc57400cc",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=ba3871d1a9be863b43905a15c3282b9d2e82caf9eebfd00873a6582cc57400cc",
+  "license": "Apache-2.0",
+  "reviewedBy": "MET-131/P19 reviewed B4 source",
+  "resources": [
+    {
+      "path": "references/format.md",
+      "mediaType": "text/markdown",
+      "byteLength": 1517,
+      "checksum": "sha256:86675eee7e7acef4c32b316cd12e0a538e1f7fe68909b29ca9e391095269d944"
+    },
+    {
+      "path": "scripts/reconcile.mjs",
+      "mediaType": "text/javascript",
+      "byteLength": 5982,
+      "checksum": "sha256:c747a90c5bae56e8712e57e84f6a09d25dda4af8c32616d69927983830a27449"
+    },
+    {
+      "path": "assets/invoices.csv",
+      "mediaType": "text/csv",
+      "byteLength": 107,
+      "checksum": "sha256:3c59baee1a71a571d977acbeb0ebdab16c16dda8dac0fcfeb059d12e96408cce"
+    },
+    {
+      "path": "assets/payments.csv",
+      "mediaType": "text/csv",
+      "byteLength": 139,
+      "checksum": "sha256:66264d671a1f01eb0747d9bc1e0aa23aeec99fd9150a8840908c42de5341e413"
+    }
+  ],
+  "dependencies": [
+    {
+      "kind": "tool",
+      "name": "workspace.document.read"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.skill.read"
+    },
+    {
+      "kind": "tool",
+      "name": "cloud.process.execute"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.reconciliation.export"
+    },
+    {
+      "kind": "runtime",
+      "name": "node",
+      "version": "22.23.2",
+      "imageDigest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+    }
+  ],
+  "checksum": "sha256:bd7ad54c7826301c36798cc80e74cb26e9bc710850181d95ba3b630ab8c50a49"
+}

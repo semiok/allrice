@@ -1,0 +1,7 @@
+invoice_id,amount,currency
+A,100.50,CNY
+B,200.00,CNY
+C,50.00,CNY
+DUP,10.00,CNY
+DUP,10.00,CNY
+MISS,9.99,CNY

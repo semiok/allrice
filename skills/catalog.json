@@ -1,6 +1,29 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "skills": [
+    {
+      "id": "b04a0000-0019-4000-8000-000000000001",
+      "name": "business-reconciliation",
+      "contentFile": "skills/business-reconciliation/SKILL.md",
+      "bundleFile": "skills/business-reconciliation/bundle.json",
+      "version": "1.0.0",
+      "checksum": "sha256:ba3871d1a9be863b43905a15c3282b9d2e82caf9eebfd00873a6582cc57400cc",
+      "source": "allrice",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=ba3871d1a9be863b43905a15c3282b9d2e82caf9eebfd00873a6582cc57400cc",
+      "license": "Apache-2.0",
+      "reviewStatus": "reviewed",
+      "reviewedByLabel": "MET-131/P19 reviewed B4 source",
+      "createdByLabel": "B4 P19 business acceptance",
+      "modelInvocable": true,
+      "userInvocable": true,
+      "requiredToolRefs": [
+        "workspace.document.read",
+        "workspace.skill.read",
+        "cloud.process.execute",
+        "workspace.reconciliation.export"
+      ],
+      "enabled": true
+    },
     {
       "id": "c037049c-4892-403e-84c5-cf14fe07805d",
       "name": "web-research",

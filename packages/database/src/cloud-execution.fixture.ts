@@ -4,6 +4,9 @@ import {
   ExecutionContextSchema,
   EmployeeExecutionSnapshotSchema,
   cloudToolchainImageV1,
+  type DshExecutionSnapshot,
+  type DshNativeSkillSnapshot,
+  type EmployeePromptSnapshotSchema,
   type RequestContext,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
@@ -26,6 +29,13 @@ export async function createCloudExecutionFixture(
     frozenTool?: boolean;
     planOnly?: boolean;
     workbench?: boolean;
+    reconciliationOnly?: boolean;
+    /** Test-only initial values: persisted once, never mutate a frozen Run. */
+    dsh?: {
+      provider: DshExecutionSnapshot;
+      skills: DshNativeSkillSnapshot[];
+      prompt: ReturnType<typeof EmployeePromptSnapshotSchema.parse>;
+    };
   } = {},
 ) {
   const org = randomUUID(),
@@ -72,11 +82,28 @@ export async function createCloudExecutionFixture(
     authenticatedAt: now,
     memberships,
   };
-  const capabilities = ['storage:read', 'storage:write'];
-  const toolNames = [
-    ...(options.frozenTool === false ? [] : ['cloud.process.execute']),
-    ...(options.workbench ? ['workspace.export.create'] : []),
+  const capabilities = [
+    ...(options.dsh ? ['model:invoke'] : []),
+    'storage:read',
+    'storage:write',
   ];
+  const toolNames = options.dsh
+    ? [
+        ...new Set(
+          options.dsh.skills.flatMap((skill) => skill.requiredToolRefs),
+        ),
+      ]
+    : [
+        ...(options.frozenTool === false ? [] : ['cloud.process.execute']),
+        ...(options.workbench
+          ? [
+              ...(options.reconciliationOnly
+                ? []
+                : ['workspace.export.create']),
+              'workspace.reconciliation.export',
+            ]
+          : []),
+      ];
   const frozen = EmployeeExecutionSnapshotSchema.parse({
     schemaVersion: 1,
     employee: {
@@ -111,11 +138,12 @@ export async function createCloudExecutionFixture(
     runtimePolicy: {
       harness: 'dsh',
       provider: 'openai-codex',
-      model: 'fixture',
-      reasoningEffort: 'high',
-      timeoutMs: 300000,
+      model: options.dsh?.provider.model ?? 'fixture',
+      reasoningEffort: options.dsh?.provider.reasoningEffort ?? 'high',
+      timeoutMs: options.dsh ? 180000 : 300000,
       fallbackModels: [],
-      credentialReference: 'test:never-resolved',
+      credentialReference:
+        options.dsh?.provider.credentialReference ?? 'test:never-resolved',
     },
     capabilitySnapshot: {
       declaredCapabilities: capabilities,
@@ -155,7 +183,7 @@ export async function createCloudExecutionFixture(
     const um = randomUUID(),
       am = randomUUID();
     await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content) values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),(${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
-    await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot) values(${run},${org},${workspace},${user},${assignment},${version},${session},${um},${am},'{}','{}',${tx.json(JSON.parse(JSON.stringify(frozen)))})`;
+    await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot,native_skills) values(${run},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(options.dsh?.provider ?? {})},${tx.json(options.dsh?.prompt ?? {})},${tx.json(JSON.parse(JSON.stringify(frozen)))},${tx.json(options.dsh?.skills ?? [])})`;
     await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id) values(${org},${workspace},${session},${user},1,${digest('p15')},'running',${run},${worker})`;
     await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at) values(${job},${org},${workspace},${user},${run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
     await tx`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities) values(${target},${org},${workspace},'cloud.p15','cloud_sandbox','P15 gVisor','online','["process.execute","artifacts.write"]')`;

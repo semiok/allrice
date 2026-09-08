@@ -316,6 +316,7 @@ async function assertPublishingRun(
   tx: TransactionSql,
   context: ExecutionContext,
   sessionId: string,
+  requiredTool = 'workspace.export.create',
 ) {
   const [row] = await tx<
     { execution_snapshot: unknown }[]
@@ -324,7 +325,8 @@ async function assertPublishingRun(
     join allrice_jobs j on j.id=${context.jobId} and j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
     where r.id=${context.runId} and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and r.owner_id=${context.policySnapshot.subjectId}
       and r.policy_snapshot_id=${context.policySnapshot.id} and e.session_id=${sessionId} and r.state='running'
-      and j.status='running' and j.worker_id=${context.worker.id} and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null`;
+      and j.status='running' and j.worker_id=${context.worker.id} and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null
+      for share of e,r,j`;
   const parsed = EmployeeExecutionSnapshotSchema.safeParse(
     row?.execution_snapshot,
   );
@@ -337,11 +339,27 @@ async function assertPublishingRun(
     !parsed.data.capabilitySnapshot.grantedCapabilities.includes(
       'storage:write',
     ) ||
-    !parsed.data.capabilitySnapshot.bindings.toolNames.includes(
-      'workspace.export.create',
-    )
+    !parsed.data.capabilitySnapshot.bindings.toolNames.includes(requiredTool)
   )
     fail('run_unavailable');
+}
+
+async function assertCloudDerivationLease(
+  tx: TransactionSql,
+  context: ExecutionContext,
+  operationId: string,
+) {
+  // Derivation is another effect of the same originating cloud job. The same
+  // Worker ID acquiring a new lease cannot resume the stale publication.
+  const [current] =
+    await tx`select i.operation_id from allrice_cloud_execution_inputs i
+    join allrice_jobs j on j.id=i.job_id and j.run_id=i.run_id and j.organization_id=i.organization_id and j.workspace_id=i.workspace_id and j.owner_id=i.owner_id
+      and j.worker_id=i.worker_id and j.lease_token=i.job_lease_token
+    where i.operation_id=${operationId} and i.job_id=${context.jobId} and i.run_id=${context.runId}
+      and i.organization_id=${context.organizationId} and i.workspace_id=${context.workspaceId!} and i.owner_id=${context.policySnapshot.subjectId}
+      and j.worker_id=${context.worker.id} and j.status='running' and j.cancel_requested_at is null
+      and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() for share of i,j`;
+  if (!current) fail('run_unavailable');
 }
 
 /** Existing export generator calls this opt-in publisher; bytes/versions retain the existing StoragePort lineage. */
@@ -357,6 +375,11 @@ export async function publishWorkbenchArtifact(
     mediaType: string;
     parentObjectId?: string;
     changeSummary?: string;
+    /** Server-only deterministic renderer input; never accepted by generic export HTTP/tool arguments. */
+    trustedCloudDerivation?: {
+      sourceArtifactId: string;
+      renderer: 'reconciliation-xlsx-v1';
+    };
   },
   storage: StoragePort,
   db: Database = getDatabase(),
@@ -390,7 +413,9 @@ export async function publishWorkbenchArtifact(
       kind: input.kind,
       fileName: input.fileName,
       format: input.format,
-      checksum,
+      ...(input.trustedCloudDerivation
+        ? { derivation: input.trustedCloudDerivation }
+        : { checksum }),
       mediaType: input.mediaType,
       parentObjectId: input.parentObjectId ?? null,
       changeSummary: input.changeSummary ?? null,
@@ -400,6 +425,32 @@ export async function publishWorkbenchArtifact(
   try {
     return await db.begin(async (tx) => {
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
+      let derivedSource: WorkbenchArtifact | null = null;
+      if (input.trustedCloudDerivation) {
+        if (
+          input.trustedCloudDerivation.renderer !== 'reconciliation-xlsx-v1' ||
+          input.kind !== 'document' ||
+          input.format !== 'xlsx'
+        )
+          fail('invalid_publication');
+        derivedSource = await readArtifact(
+          tx,
+          principal,
+          input.sessionId,
+          UuidSchema.parse(input.trustedCloudDerivation.sourceArtifactId),
+        );
+        if (
+          derivedSource.provenance.kind !== 'tool_result' ||
+          derivedSource.provenance.runId !== context.runId ||
+          !derivedSource.provenance.operationId ||
+          derivedSource.execution?.targetKind !== 'cloud_sandbox' ||
+          derivedSource.object.mediaType !== 'application/json'
+        )
+          fail('invalid_publication');
+        const [operation] =
+          await tx`select id from allrice_runtime_operations where id=${derivedSource.provenance.operationId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and snapshot->>'status'='succeeded' and snapshot->'binding'->>'action'='cloud.process.execute' for share`;
+        if (!operation) fail('invalid_publication');
+      }
       await tx`select pg_advisory_xact_lock(hashtextextended(${`artifact:${context.runId}:${input.callId}`},0))`;
       const [existing] = await tx<
         { version_id: string; request_digest: string }[]
@@ -415,7 +466,16 @@ export async function publishWorkbenchArtifact(
           existing.version_id,
         );
       }
-      await assertPublishingRun(tx, context, input.sessionId);
+      const requiredTool = derivedSource
+        ? 'workspace.reconciliation.export'
+        : 'workspace.export.create';
+      await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      if (derivedSource)
+        await assertCloudDerivationLease(
+          tx,
+          context,
+          derivedSource.provenance.operationId!,
+        );
       let parent: WorkbenchArtifact | null = null;
       if (input.parentObjectId) {
         const [p] = await tx<
@@ -429,7 +489,7 @@ export async function publishWorkbenchArtifact(
       const execution =
         input.kind === 'changeset'
           ? await assertArtifactExecution(tx, context, input.bytes)
-          : null;
+          : (derivedSource?.execution ?? null);
       // Serialize new publication quota checks in this workspace, including concurrent sessions.
       await tx`select id from allrice_workspaces where id=${context.workspaceId!} and organization_id=${context.organizationId} for update`;
       created = {
@@ -462,17 +522,32 @@ export async function publishWorkbenchArtifact(
         tx,
       );
       const provenance = {
-        kind: 'model_proposal',
+        kind: derivedSource ? 'tool_result' : 'model_proposal',
         runId: context.runId,
-        operationId: null,
+        operationId: derivedSource?.provenance.operationId ?? null,
         stepId: null,
       };
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
       values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${context.runId},${input.kind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
-      await assertPublishingRun(tx, context, input.sessionId);
+      await assertPublishingRun(tx, context, input.sessionId, requiredTool);
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-      values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: input.kind })})`;
-      return readArtifact(tx, principal, input.sessionId, version.id);
+      values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: input.kind, ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
+      const artifact = await readArtifact(
+        tx,
+        principal,
+        input.sessionId,
+        version.id,
+      );
+      // Audit insertion and projection reads may block. Recheck the authoritative
+      // deadline after those waits, immediately before committing the new version.
+      if (derivedSource)
+        await assertCloudDerivationLease(
+          tx,
+          context,
+          derivedSource.provenance.operationId!,
+        );
+      await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      return artifact;
     });
   } catch (error) {
     if (created) {
@@ -490,6 +565,42 @@ export async function publishWorkbenchArtifact(
     }
     throw error;
   }
+}
+
+export async function publishReconciliationWorkbook(
+  input: {
+    context: ExecutionContext;
+    sessionId: string;
+    callId: string;
+    sourceArtifactId: string;
+    fileName: string;
+    bytes: Uint8Array;
+    parentObjectId?: string;
+  },
+  storage: StoragePort,
+  db: Database = getDatabase(),
+) {
+  return publishWorkbenchArtifact(
+    {
+      context: input.context,
+      sessionId: input.sessionId,
+      callId: input.callId,
+      kind: 'document',
+      fileName: input.fileName,
+      format: 'xlsx',
+      bytes: input.bytes,
+      mediaType:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      trustedCloudDerivation: {
+        sourceArtifactId: input.sourceArtifactId,
+        renderer: 'reconciliation-xlsx-v1',
+      },
+      ...(input.parentObjectId ? { parentObjectId: input.parentObjectId } : {}),
+      changeSummary: '按已确认的云端整数分对账结果生成；未重新计算或改写金额',
+    },
+    storage,
+    db,
+  );
 }
 
 interface FeedbackRow {

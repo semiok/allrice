@@ -18,6 +18,21 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 
 export const riceToolDefinitions = [
   {
+    name: 'workspace.reconciliation.export',
+    description:
+      '把本次 Run 的已确认云端对账 JSON 工件按原始整数分直接导出为 XLSX；不由模型抄写或重新计算金额。artifactId 使用 cloud.process.execute 返回的 versionId。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        artifactId: { type: 'string', format: 'uuid' },
+        fileName: { type: 'string' },
+        parentObjectId: { type: 'string', format: 'uuid' },
+      },
+      required: ['artifactId', 'fileName'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'workspace.skill.read',
     description:
       '读取当前 Run 冻结 Skill 包中的指定资源，不执行脚本、不读取宿主路径。',
@@ -495,6 +510,10 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (definition.name !== 'workspace.reconciliation.export' ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
+          process.env.ALLRICE_WORKBENCH_ENABLED === '1')) &&
       (definition.name !== 'cloud.mcp.call' ||
         (allowed?.has(definition.name) &&
           process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
