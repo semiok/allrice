@@ -26,6 +26,8 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      # Cross-app tests must not become production Web dependency edges.
+      - run: pnpm exec tsc -p tests/integration/tsconfig.json
       - run: pnpm test
       - run: pnpm build
 
@@ -70,7 +72,7 @@ jobs:
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # These suites use their own synthetic MCP server and random PG schemas.
         # This Linux CI job does not provision the dedicated macOS/runsc test VM.
-        run: pnpm exec vitest run packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts
+        run: pnpm exec vitest run packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts packages/database/src/workspace-access.integration.test.ts tests/integration/mcp-revocation.integration.test.ts
       - name: Verify frozen Skill bundles and rollback against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1

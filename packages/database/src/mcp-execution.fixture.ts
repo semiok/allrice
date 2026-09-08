@@ -1,7 +1,7 @@
 /** Synthetic fixture only; never imported by the production Worker. */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import {
   ExecutionContextSchema,
   EmployeeExecutionSnapshotSchema,
@@ -22,6 +22,9 @@ import { startMcpAcceptanceService } from '../../../apps/worker/src/mcp/test-ser
 import { createMcpTransport } from '../../../apps/worker/src/mcp/transport.js';
 import { executeNextMcpDiscovery } from '../../../apps/worker/src/mcp/lifecycle.js';
 import { runMcpRuntimeOperation } from '../../../apps/worker/src/mcp/executor.js';
+// Web integration suites reuse the database package's declared test dependency
+// instead of adding a direct production postgres dependency to the Web app.
+export const createMcpFixtureDatabase = postgres;
 /** Synthetic scoped Worker+frozen Run fixtures. Real PG policy, approvals,
  * operation leases and authenticated owned MCP HTTP; no personal connectors,
  * real model or public TLS/frontend route is claimed by this suite. */

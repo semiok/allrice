@@ -15,6 +15,7 @@ function view(): CloudOperationView {
       binding: { attempt: { operationId: 'synthetic-display-id' } },
     },
     enabled: true,
+    mcpAuthorization: { available: true, reason: 'available' },
     proposal: {
       kind: 'mcp',
       endpoint: 'https://owned.example.test/mcp',
@@ -70,6 +71,43 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('请求停止本轮全部操作');
     expect(html).not.toContain('批准这一次执行');
   });
+  it.each([
+    ['connection_revoked', '连接授权已撤销'],
+    ['connection_or_tool_changed', '连接或工具授权已变化'],
+    ['employee_authorization_changed', '员工授权已失效'],
+    ['unavailable', '当前授权暂时无法核实'],
+  ] as const)(
+    'removes approval for current %s without rewriting its historical request',
+    (reason, label) => {
+      const op = view();
+      const approval = structuredClone(op.approval);
+      op.mcpAuthorization = { available: false, reason };
+      const html = render(op);
+      expect(cloudOperationDisplayStatus(op)).toBe(label);
+      expect(html).toContain(label);
+      expect(html).not.toContain('批准这一次执行');
+      expect(html).toContain('请求停止本轮全部操作');
+      expect(html).toContain('已派发的操作不等于已经停止');
+      expect(op.approval).toEqual(approval);
+      expect(op.approval!.revokedAt).toBeNull();
+    },
+  );
+  it('fails closed for missing MCP authority, but preserves a terminal result', () => {
+    const op = view();
+    op.mcpAuthorization = null;
+    expect(render(op)).not.toContain('批准这一次执行');
+    op.snapshot.status = 'succeeded';
+    op.result = {
+      output: 'saved:synthetic;call-count:1',
+      code: null,
+      trusted: false,
+    };
+    const html = render(op);
+    expect(cloudOperationDisplayStatus(op)).toBe('执行已返回成功');
+    expect(html).toContain('saved:synthetic;call-count:1');
+    expect(html).not.toContain('请求停止本轮全部操作');
+    expect(op.result.trusted).toBe(false);
+  });
   it('marks unknown results without implying remote stop or offering replay', () => {
     const op = view();
     op.snapshot.status = 'unknown';
@@ -108,6 +146,7 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('input.json');
     expect(html).toContain('256');
     expect(html).toContain('disabled=""');
+    expect(html).toContain('批准这一次执行');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('第三方 MCP');
   });

@@ -5,24 +5,38 @@ import {
   RuntimeActionApprovalSnapshotSchema,
   RuntimeOperationSnapshotSchema,
   UuidSchema,
+  McpError,
   type RequestContext,
   type RuntimeActionApprovalSnapshot,
   type RuntimeOperationSnapshot,
   type CloudCommand,
+  type McpExecutionPayload,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
 import { createMcpOperationLedger } from './mcp-execution.ts';
+import { assertEmployeeMcpAuthorization } from './mcp-employee-bindings.ts';
 import {
   getRuntimeActionApproval,
   RuntimePolicyError,
 } from './runtime-policy.ts';
 
 type Database = ReturnType<typeof getDatabase>;
+export type McpDisplayAuthorization = {
+  available: boolean;
+  reason:
+    | 'available'
+    | 'connection_revoked'
+    | 'connection_or_tool_changed'
+    | 'employee_authorization_changed'
+    | 'unavailable';
+};
 export type CloudOperationView = {
   snapshot: RuntimeOperationSnapshot;
   enabled: boolean;
+  /** Current display availability only, never an approval or execution grant. */
+  mcpAuthorization: McpDisplayAuthorization | null;
   proposal:
     | {
         kind: 'cloud';
@@ -41,6 +55,54 @@ export type CloudOperationView = {
   approval: RuntimeActionApprovalSnapshot | null;
   result: { output: string; code: string | null; trusted: false } | null;
 };
+async function mcpDisplayAuthorization(
+  context: RequestContext,
+  snapshot: RuntimeOperationSnapshot,
+  payload: McpExecutionPayload,
+  connectionEnabled: boolean | null,
+  database: Database,
+): Promise<McpDisplayAuthorization> {
+  if (connectionEnabled === false)
+    return { available: false, reason: 'connection_revoked' };
+  if (connectionEnabled !== true)
+    return { available: false, reason: 'unavailable' };
+  const scope = {
+    organizationId: context.organizationId,
+    workspaceId: context.workspaceId!,
+    actorId: context.actor.id,
+  };
+  try {
+    // Reuse the live, read-only connection/schema/tool-grant revision check.
+    // This does not decrypt an execution credential or reserve any authority.
+    await createMcpStore({ database }).assertAuthorized(scope, payload.tool);
+  } catch (error) {
+    return {
+      available: false,
+      reason:
+        error instanceof McpError && error.code === 'MCP_DENIED'
+          ? 'connection_or_tool_changed'
+          : 'unavailable',
+    };
+  }
+  try {
+    const version = snapshot.binding.task.frozenConfiguration.employeeVersionId;
+    if (!version)
+      return { available: false, reason: 'employee_authorization_changed' };
+    // The same bounded SELECT/lock check used by admission, with no state write.
+    await database.begin((tx) =>
+      assertEmployeeMcpAuthorization(tx, scope, payload.tool, version),
+    );
+  } catch (error) {
+    return {
+      available: false,
+      reason:
+        error instanceof McpError && error.code === 'MCP_DENIED'
+          ? 'employee_authorization_changed'
+          : 'unavailable',
+    };
+  }
+  return { available: true, reason: 'available' };
+}
 async function ownedRun(
   tx: postgres.TransactionSql,
   context: RequestContext,
@@ -75,13 +137,15 @@ export async function listCloudRuntimeOperations(
         } | null;
         cloud_outcome: { output: string; reason: string } | null;
         endpoint: string | null;
+        connection_enabled: boolean | null;
         approval_id: string | null;
       }[]
     >`
-      select o.snapshot,mi.payload as mcp_payload,ci.payload as cloud_payload,ma.result as mcp_result,ca.outcome as cloud_outcome,mc.endpoint,a.id as approval_id
+      select o.snapshot,mi.payload as mcp_payload,ci.payload as cloud_payload,ma.result as mcp_result,ca.outcome as cloud_outcome,mc.endpoint,cb.enabled as connection_enabled,a.id as approval_id
       from allrice_runtime_operations o
       left join allrice_mcp_execution_inputs mi on mi.operation_id=o.id and mi.organization_id=o.organization_id and mi.workspace_id=o.workspace_id and mi.owner_id=${context.actor.id}
       left join allrice_mcp_binding_config mc on mc.binding_id=mi.binding_id
+      left join allrice_connector_bindings cb on cb.id=mi.binding_id and cb.organization_id=o.organization_id and cb.workspace_id=o.workspace_id
       left join allrice_mcp_execution_attempts ma on ma.operation_id=mi.operation_id
       left join allrice_cloud_execution_inputs ci on ci.operation_id=o.id and ci.organization_id=o.organization_id and ci.workspace_id=o.workspace_id and ci.owner_id=${context.actor.id}
       left join allrice_cloud_execution_attempts ca on ca.operation_id=ci.operation_id
@@ -117,6 +181,13 @@ export async function listCloudRuntimeOperations(
       );
       views.push({
         snapshot,
+        mcpAuthorization: await mcpDisplayAuthorization(
+          context,
+          snapshot,
+          payload,
+          row.connection_enabled,
+          database,
+        ),
         enabled:
           process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
           process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1',
@@ -140,6 +211,7 @@ export async function listCloudRuntimeOperations(
       const payload = CloudCommandSchema.parse(row.cloud_payload);
       views.push({
         snapshot,
+        mcpAuthorization: null,
         enabled:
           process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
           process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1',

@@ -25,12 +25,26 @@ export function cloudOperationDisplayStatus(
     if (op.approval.response?.decision === 'rejected') return '已拒绝本次操作';
     if (Date.parse(op.approval.request.expiresAt) <= now)
       return '本次授权已过期';
+    if (op.proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true)
+      return mcpAuthorizationLabel(op);
     if (op.approval.response?.decision === 'approved')
       return '已批准，等待派发';
   }
   return labels[op.snapshot.status] ?? op.snapshot.status;
 }
 type Decision = 'approved' | 'rejected' | 'cancel';
+function mcpAuthorizationLabel(op: CloudOperationView) {
+  switch (op.mcpAuthorization?.reason) {
+    case 'connection_revoked':
+      return '连接授权已撤销';
+    case 'connection_or_tool_changed':
+      return '连接或工具授权已变化';
+    case 'employee_authorization_changed':
+      return '员工授权已失效';
+    default:
+      return '当前授权暂时无法核实';
+  }
+}
 export function CloudOperationCard({
   op,
   busy,
@@ -42,8 +56,11 @@ export function CloudOperationCard({
 }) {
   const request = op.approval?.request,
     proposal = op.proposal;
+  const mcpUnavailable =
+    proposal.kind === 'mcp' && op.mcpAuthorization?.available !== true;
   const pending =
     op.enabled &&
+    !mcpUnavailable &&
     request &&
     !op.approval?.response &&
     !op.approval?.revokedAt &&
@@ -68,6 +85,13 @@ export function CloudOperationCard({
       {!op.enabled && (
         <p className={styles.notice}>
           新执行已停用；保留已有记录与授权状态，仍可请求停止本轮。
+        </p>
+      )}
+      {mcpUnavailable && (
+        <p role="status" className={styles.notice}>
+          {mcpAuthorizationLabel(op)}。不能再批准此操作；未派发的操作不会执行。
+          已派发的操作不等于已经停止，请核实返回记录。历史结果仍保留。
+          {!terminal && '仍可请求停止本轮。'}
         </p>
       )}
       {proposal.kind === 'cloud' ? (
