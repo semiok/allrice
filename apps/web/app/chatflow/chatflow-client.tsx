@@ -885,22 +885,26 @@ export function ChatFlowClient({
               className={styles.bridgeClientDownload}
               download="RiceBridge-M.zip"
               href="/api/v1/bridge/client/macos-arm64"
-              onClick={() => noteBridgeDownload('M 芯片版 0.3.0-dev.1')}
+              onClick={() => noteBridgeDownload('M 芯片菜单栏版 0.4.0-dev.1')}
             >
-              下载 M 芯片版 · 0.3.0-dev.1
+              下载 M 芯片版 · 0.4.0-dev.1
             </a>
             <a
               className={styles.bridgeClientDownload}
               download="RiceBridge-Intel.zip"
               href="/api/v1/bridge/client/macos-x64"
-              onClick={() => noteBridgeDownload('Intel 芯片版')}
+              onClick={() =>
+                noteBridgeDownload('Intel 芯片菜单栏版 0.4.0-dev.1')
+              }
             >
-              下载 Intel 芯片版
+              下载 Intel 芯片版 · 0.4.0-dev.1
             </a>
           </div>
           <p>
-            升级前退出旧 Bridge，再解压打开新版；原有配对和工作区会保留。M 芯片
-            Dev 包含沙箱检查入口，但不会自动安装沙箱或开放执行权限。
+            升级前正常退出旧 Bridge，再解压打开 Rice
+            Bridge.app；原有配对和工作区会保留。
+            新版在菜单栏运行，无需保持终端窗口，可查看状态、选择工作区、暂停和诊断。
+            这是尚未 Apple 公证的 Dev 包，不会自动安装沙箱或开放执行权限。
           </p>
           {bridgeFeedback ? (
             <p
@@ -966,8 +970,8 @@ export function ChatFlowClient({
                     </p>
                   ) : (
                     <p>
-                      下载并解压后直接打开 RiceBridge。首次打开会在 Bridge
-                      中要求输入配对码；配对成功后会保存在本机，以后打开即可自动连接。
+                      下载并解压后打开 Rice Bridge.app，在状态窗口中配对；
+                      配对成功后会保存在本机，以后打开即可自动连接。
                     </p>
                   )}
                   <button
@@ -986,7 +990,8 @@ export function ChatFlowClient({
                     <div className={styles.bridgePairing}>
                       <strong>配对码</strong>
                       <small>
-                        10 分钟内打开解压后的 RiceBridge，在首次配对窗口中输入：
+                        10 分钟内打开解压后的 Rice
+                        Bridge.app，在配对窗口中输入：
                       </small>
                       <div className={styles.bridgePairingCode}>
                         <code>{bridgePairing.code.replaceAll('-', '')}</code>
