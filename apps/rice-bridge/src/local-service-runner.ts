@@ -26,6 +26,21 @@ export interface LocalServiceLease {
   inputs: RuntimeLocalServiceInput[];
 }
 type Reason = RuntimeLocalCommandResult['reason'];
+
+/** Classify the first locally observed stop, not the later inspection time.
+ * A server stop/lease response arriving at the immutable hard deadline is a
+ * timeout; a loss/cancellation already observed earlier keeps its real cause.
+ */
+export function localServiceStopReason(
+  reason: Reason,
+  hardDeadlineMs: number,
+  observedAt = Date.now(),
+): Reason {
+  return observedAt >= hardDeadlineMs &&
+    (reason === 'lease_lost' || reason === 'canceled')
+    ? 'timeout'
+    : reason;
+}
 interface Container {
   Id: string;
   Config: { Image: string; Labels: Record<string, string> };
@@ -185,7 +200,7 @@ export class LocalServiceRunner {
     let stoppedFor: Reason | null = null,
       stopPromise: Promise<void> | undefined;
     const stop = (reason: Reason) => {
-      stoppedFor ??= reason;
+      stoppedFor ??= localServiceStopReason(reason, hardDeadlineMs);
       stopPromise ??= api
         .json('POST', `/containers/${id}/kill?signal=KILL`)
         .then(() => undefined)
@@ -357,8 +372,18 @@ export class LocalServiceRunner {
         if (busy) return;
         busy = true;
         try {
+          if (Date.now() >= hardDeadlineMs) {
+            await stop('timeout');
+            return;
+          }
           const lease = await options.maintainLease();
           if (serviceEnded) return;
+          // An in-flight authorization call may cross the root hard deadline;
+          // its stopRequested/expired lease must not override timeout attribution.
+          if (Date.now() >= hardDeadlineMs) {
+            await stop('timeout');
+            return;
+          }
           if (lease.stopRequested || options.signal?.aborted) {
             await stop('canceled');
             return;
