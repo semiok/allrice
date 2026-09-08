@@ -5,6 +5,7 @@ import type {
 import type {
   ExecutionContext,
   SkillCapability,
+  DshNativeSkillSnapshot,
   FrozenMcpTool,
 } from '@allrice/contracts';
 
@@ -47,6 +48,7 @@ export interface RiceToolExecutionInput {
   frozenMcpTools?: readonly FrozenMcpTool[];
   storageRoot: string;
   skillVersionIds?: string[];
+  nativeSkills?: readonly DshNativeSkillSnapshot[];
   sessionId?: string;
   employeeId?: string;
   userMessageId?: string;

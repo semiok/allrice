@@ -26,6 +26,7 @@ import {
 } from '@allrice/contracts';
 
 import { employeeManifest } from './employee-config.ts';
+import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
 import {
   buildEmployeeRuntimePackage,
@@ -50,6 +51,7 @@ export {
 const allowedToolNames = new Set([
   'cloud.process.execute',
   'cloud.mcp.call',
+  'workspace.skill.read',
   'workspace.file.list',
   'workspace.file.read',
   'workspace.document.read',
@@ -418,13 +420,19 @@ export async function listPlatformNativeSkills() {
       reviewStatus: 'draft' | 'reviewed' | 'rejected';
       reviewedByLabel: string | null;
       reviewedAt: Date | null;
+      bundleChecksum: string | null;
+      resourceCount: number;
+      bundleDependencies: unknown[];
     }[]
   >`
     select id, name, description, checksum,
       required_tool_refs as "requiredToolRefs", enabled, source,
       source_ref as "sourceRef", version, license,
       review_status as "reviewStatus",
-      reviewed_by_label as "reviewedByLabel", reviewed_at as "reviewedAt"
+      reviewed_by_label as "reviewedByLabel", reviewed_at as "reviewedAt",
+      bundle ->> 'checksum' as "bundleChecksum",
+      coalesce(jsonb_array_length(bundle -> 'resources'), 0) as "resourceCount",
+      coalesce(bundle -> 'dependencies', '[]'::jsonb) as "bundleDependencies"
     from allrice_platform_dsh_skills
     order by enabled desc, name, id
   `;
@@ -1167,16 +1175,29 @@ export async function compilePlatformEmployee(
   const employeeId = UuidSchema.parse(employeeIdInput);
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    // Match save/rollback/publish lock order and never recompile an immutable
+    // published revision (rollback may legitimately point the draft at one).
+    const [employee] = await transaction<
+      { current_draft_revision_id: string | null }[]
+    >`
+      select current_draft_revision_id from allrice_platform_employees
+      where id = ${employeeId} and status <> 'archived'
+      for update
+    `;
+    if (!employee?.current_draft_revision_id)
+      throw new Error('platform_employee_draft_not_found');
     const revisions = await transaction<RevisionRow[]>`
-      select revision.*
-      from allrice_platform_employees employee
-      join allrice_platform_employee_revisions revision
-        on revision.id = employee.current_draft_revision_id
-      where employee.id = ${employeeId}
-      for update of revision
+      select * from allrice_platform_employee_revisions
+      where id = ${employee.current_draft_revision_id}
+        and employee_id = ${employeeId}
+      for update
     `;
     const revision = revisions[0];
     if (!revision) throw new Error('platform_employee_draft_not_found');
+    if (revision.status === 'published' || revision.published_at !== null)
+      throw new Error('platform_employee_published_revision_immutable');
+    if (!['draft', 'testing'].includes(revision.status))
+      throw new Error('platform_employee_draft_unavailable');
     const definition = PlatformEmployeeDefinitionSchema.parse(
       revision.definition,
     );
@@ -1211,12 +1232,13 @@ export async function compilePlatformEmployee(
               review_status: 'draft' | 'reviewed' | 'rejected';
               reviewed_by_label: string | null;
               reviewed_at: Date | null;
+              bundle: unknown;
             }[]
           >`
             select id, name, description, content, checksum, enabled,
               model_invocable, user_invocable, required_tool_refs, source,
               source_ref, version, license, review_status,
-              reviewed_by_label, reviewed_at
+              reviewed_by_label, reviewed_at, bundle
             from allrice_platform_dsh_skills
             where id in ${transaction(definition.capabilities.nativeSkillIds)}
           `;
@@ -1255,6 +1277,14 @@ export async function compilePlatformEmployee(
       );
     }
     const grantedTools = new Set(definition.capabilities.toolNames);
+    for (const skill of skills)
+      if (skill.bundle) {
+        try {
+          validateSkillBundle(skill.bundle, skill.content);
+        } catch {
+          errors.push(`Skill 资源包校验失败：${skill.name}`);
+        }
+      }
     const missingRequiredTools = skills.flatMap((skill) =>
       skill.required_tool_refs.filter((name) => !grantedTools.has(name)),
     );
@@ -1443,6 +1473,16 @@ async function materializePlatformEmployeeRevision(
     runtimeProfile.runtimePackage,
   );
   const manifestChecksum = runtimeProfile.runtimePackage.checksum;
+  const frozenSkills = frozenPackageSkills(runtimeProfile.runtimePackage);
+  if (
+    frozenSkills.length !==
+      input.definition.capabilities.nativeSkillIds.length ||
+    frozenSkills.some(
+      (skill) =>
+        !input.definition.capabilities.nativeSkillIds.includes(skill.id),
+    )
+  )
+    throw Error('platform_employee_frozen_skill_mismatch');
   for (const workspaceId of input.workspaceIds) {
     const workspaces = await transaction<
       { id: string; organization_id: string }[]
@@ -1555,25 +1595,25 @@ async function materializePlatformEmployeeRevision(
         and workspace_id = ${workspace.id}
         and employee_id = ${tenantEmployeeId}
     `;
-    for (const platformSkillId of input.definition.capabilities
-      .nativeSkillIds) {
+    for (const frozenSkill of frozenSkills) {
       const materialized = await transaction<{ id: string }[]>`
         insert into allrice_dsh_skills (
           organization_id, workspace_id, name, description, content,
           checksum, model_invocable, user_invocable, required_tool_refs,
-          enabled, created_by
+          enabled, created_by, bundle
         )
-        select ${workspace.organization_id}, ${workspace.id}, name,
-          description, content, checksum, model_invocable, user_invocable,
-          required_tool_refs, enabled, ${actorId}
-        from allrice_platform_dsh_skills where id = ${platformSkillId}
+        values (${workspace.organization_id}, ${workspace.id}, ${frozenSkill.name},
+          ${frozenSkill.description}, ${frozenSkill.content}, ${frozenSkill.checksum},
+          ${frozenSkill.invocation.modelInvocable}, ${frozenSkill.invocation.userInvocable},
+          ${transaction.json(frozenSkill.requiredToolRefs)}, true, ${actorId},
+          ${frozenSkill.bundle ? transaction.json(frozenSkill.bundle) : null})
         on conflict (organization_id, workspace_id, name)
         do update set description = excluded.description,
           content = excluded.content, checksum = excluded.checksum,
           model_invocable = excluded.model_invocable,
           user_invocable = excluded.user_invocable,
           required_tool_refs = excluded.required_tool_refs,
-          enabled = excluded.enabled, updated_at = now()
+          enabled = excluded.enabled, bundle = excluded.bundle, updated_at = now()
         returning id
       `;
       const skillId = materialized[0]?.id;
@@ -1695,19 +1735,25 @@ export async function publishPlatformEmployee(
     return compilation;
   }
   const sql = getDatabase();
+  const packageChecksum = compilation.runtimeProfile?.runtimePackage?.checksum;
+  if (!packageChecksum)
+    throw new Error('platform_employee_runtime_package_missing');
   const successfulTests = await sql<{ id: string }[]>`
     select id from allrice_platform_employee_test_runs
     where employee_id = ${employeeId}
       and revision_id = ${compilation.revisionId}
+      and frozen_package_checksum = ${packageChecksum}
       and status = 'succeeded'
-      and completed_at >= now() - interval '24 hours'
+      and completed_at >= clock_timestamp() - interval '24 hours'
     order by completed_at desc limit 1
   `;
   if (!successfulTests[0]) {
     const rejected = {
       ...compilation,
       valid: false,
-      errors: ['发布前必须在 24 小时内成功试用一次当前配置。'],
+      errors: [
+        '发布前必须在 24 小时内成功试用一次当前确切运行包；Skill 或资源变更后需重新试用。',
+      ],
     };
     await recordPlatformEmployeeAudit({
       employeeId,
@@ -1799,13 +1845,20 @@ export async function publishPlatformEmployee(
     return rejected;
   }
   const published = await sql.begin(async (transaction) => {
+    const [employee] = await transaction<
+      { current_draft_revision_id: string | null }[]
+    >`
+      select current_draft_revision_id from allrice_platform_employees
+      where id = ${employeeId} and status <> 'archived'
+      for update
+    `;
+    if (employee?.current_draft_revision_id !== compilation.revisionId)
+      throw new Error('platform_employee_publish_snapshot_changed');
     const revisions = await transaction<RevisionRow[]>`
-      select revision.*
-      from allrice_platform_employees employee
-      join allrice_platform_employee_revisions revision
-        on revision.id = employee.current_draft_revision_id
-      where employee.id = ${employeeId} and revision.status = 'testing'
-      for update of employee, revision
+      select * from allrice_platform_employee_revisions
+      where id = ${compilation.revisionId} and employee_id = ${employeeId}
+        and status = 'testing' and published_at is null
+      for update
     `;
     const revision = revisions[0];
     if (!revision?.runtime_profile)
@@ -1813,6 +1866,63 @@ export async function publishPlatformEmployee(
     const definition = PlatformEmployeeDefinitionSchema.parse(
       revision.definition,
     );
+    const profile = PlatformEmployeeRuntimeProfileSchema.parse(
+      revision.runtime_profile,
+    );
+    if (
+      profile.runtimePackage?.checksum !== packageChecksum ||
+      checksum(profile) !== checksum(compilation.runtimeProfile)
+    )
+      throw new Error('platform_employee_publish_snapshot_changed');
+    validatePlatformEmployeeTestExecutionSnapshot({
+      runtimeProfile: profile,
+      definition,
+      nativeSkills: profile.runtimePackage.skills,
+      packageChecksum,
+    });
+    // Recheck authority after obtaining the publication locks. The initial
+    // UI-facing checks do not authorize a later transaction or another draft.
+    const targets = await transaction<{ id: string }[]>`
+      select workspace.id from allrice_workspaces workspace
+      join allrice_organizations organization on organization.id = workspace.organization_id
+      where workspace.id in ${transaction(uniqueWorkspaceIds)}
+        and workspace.archived_at is null and organization.archived_at is null
+        and organization.slug <> 'allrice-platform'
+      for share of workspace, organization
+    `;
+    if (targets.length !== uniqueWorkspaceIds.length)
+      throw new Error('platform_employee_publish_workspace_unavailable');
+    const providers = await transaction<{ checked_at: Date }[]>`
+      select checked_at from allrice_provider_status
+      where provider = 'codex' and status = 'connected'
+        and checked_at >= clock_timestamp() - interval '120 seconds'
+      for share
+    `;
+    if (profile.provider !== 'openai-codex' || !providers[0])
+      throw new Error('platform_employee_publish_provider_unavailable');
+    const exactTests = await transaction<{ id: string; completed_at: Date }[]>`
+      select id, completed_at from allrice_platform_employee_test_runs
+      where id = ${successfulTests[0]!.id} and employee_id = ${employeeId}
+        and revision_id = ${revision.id} and frozen_package_checksum = ${packageChecksum}
+        and status = 'succeeded'
+        and completed_at >= clock_timestamp() - interval '24 hours'
+      for share
+    `;
+    if (!exactTests[0])
+      throw new Error('platform_employee_publish_test_unavailable');
+    const assertFreshPublication = async () => {
+      // WHERE predicates can have been evaluated before a row-lock wait.
+      // Read the DB wall clock after all locks, and again before committing.
+      const [clock] = await transaction<
+        { at: Date }[]
+      >`select clock_timestamp() as at`;
+      const at = clock!.at.getTime();
+      if (providers[0]!.checked_at.getTime() < at - 120_000)
+        throw new Error('platform_employee_publish_provider_unavailable');
+      if (exactTests[0]!.completed_at.getTime() < at - 86_400_000)
+        throw new Error('platform_employee_publish_test_unavailable');
+    };
+    await assertFreshPublication();
     await materializePlatformEmployeeRevision(transaction, {
       employeeId,
       revision,
@@ -1840,8 +1950,10 @@ export async function publishPlatformEmployee(
         revisionId: revision.id,
         workspaceIds: uniqueWorkspaceIds,
         testRunId: successfulTests[0]!.id,
+        packageChecksum,
       },
     });
+    await assertFreshPublication();
     return {
       valid: true,
       employeeId,

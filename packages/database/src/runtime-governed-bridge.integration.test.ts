@@ -1011,7 +1011,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       const f = await artifactFixture(manifest);
       f.context.memberships = f.policyPayload.memberships;
       const skillId = randomUUID();
-      await database`insert into allrice_dsh_skills(id,organization_id,workspace_id,name,description,content,checksum,required_tool_refs,created_by) values(${skillId},${f.context.organizationId},${f.context.workspaceId},'p08-write-fixture','Synthetic only','Synthetic file editing',${digest('Synthetic file editing')},'["local.fs.write"]',${f.context.actor.id})`;
+      await database`insert into allrice_dsh_skills(id,organization_id,workspace_id,name,description,content,checksum,required_tool_refs,created_by) values(${skillId},${f.context.organizationId},${f.context.workspaceId},'p08-write-fixture','Synthetic only','Synthetic file editing',${`sha256:${createHash('sha256').update('Synthetic file editing').digest('hex')}`},'["local.fs.write"]',${f.context.actor.id})`;
       await database`insert into allrice_employee_dsh_skill_bindings(organization_id,workspace_id,employee_id,skill_id,bound_by) values(${f.context.organizationId},${f.context.workspaceId},${f.employeeId},${skillId},${f.context.actor.id})`;
       vi.stubEnv('ALLRICE_STORAGE_ROOT', f.root);
       const root = join(await realpath(f.root), 'project');

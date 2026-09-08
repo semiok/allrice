@@ -71,6 +71,11 @@ jobs:
         # These suites use their own synthetic MCP server and random PG schemas.
         # This Linux CI job does not provision the dedicated macOS/runsc test VM.
         run: pnpm exec vitest run packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts
+      - name: Verify frozen Skill bundles and rollback against PostgreSQL
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run packages/database/src/skill-bundles.integration.test.ts packages/database/src/platform-skill-publication.integration.test.ts
       - name: Build contracts, database and Web for real Bridge startup verification
         run: pnpm --filter @allrice/web... build
       - name: Verify real Bridge WSS, PostgreSQL and production Next startup

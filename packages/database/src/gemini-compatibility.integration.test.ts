@@ -36,14 +36,19 @@ suite('Gemini compatibility on real isolated PostgreSQL', () => {
     if (!process.env.ALLRICE_TEST_DATABASE_URL)
       throw Error('ALLRICE_TEST_DATABASE_URL required');
     const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL);
-    const localDisposable = url.pathname === '/allrice_b1';
+    const localDisposable =
+      ['/allrice_b1', '/allrice_b2'].includes(url.pathname) &&
+      ['127.0.0.1', 'localhost'].includes(url.hostname) &&
+      ['', '5432'].includes(url.port);
     const ciDisposable =
       url.pathname === '/allrice' &&
       url.hostname === '127.0.0.1' &&
       url.port === '54329' &&
       url.username === 'allrice';
     if (!localDisposable && !ciDisposable)
-      throw Error('Only the disposable B1 or CI database is permitted');
+      throw Error(
+        'Only the local disposable B1/B2 or CI database is permitted',
+      );
     admin = postgres(url.toString(), { max: 1, onnotice: () => {} });
     await admin.begin(async (t) => {
       await t`select pg_advisory_xact_lock(20260907,1)`;

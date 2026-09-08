@@ -30,6 +30,7 @@ import {
 } from '@allrice/contracts';
 
 import { DataAccessError } from '../data.ts';
+import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
 import { createEmployeeMcpBindingStore } from '../mcp-employee-bindings.ts';
 import {
   resolveEmployeeCapabilitiesForRun,
@@ -91,6 +92,7 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'cloud.process.execute': 'storage:write',
   'cloud.mcp.call': 'secret:use',
+  'workspace.skill.read': 'storage:read',
   'workspace.document.read': 'storage:read',
   'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
@@ -1075,7 +1077,7 @@ export async function prepareEmployeeRunBinding(input: {
     employeeId: assignment.employee_id,
     actorId,
   });
-  const nativeSkillRows = await sql<
+  const mutableSkillRows = await sql<
     {
       id: string;
       name: string;
@@ -1085,11 +1087,12 @@ export async function prepareEmployeeRunBinding(input: {
       model_invocable: boolean;
       user_invocable: boolean;
       required_tool_refs: string[];
+      bundle?: unknown;
     }[]
   >`
     select skill.id, skill.name, skill.description, skill.content,
       skill.checksum, skill.model_invocable, skill.user_invocable,
-      skill.required_tool_refs
+      skill.required_tool_refs, skill.bundle
     from allrice_employee_dsh_skill_bindings binding
     join allrice_dsh_skills skill
       on skill.organization_id = binding.organization_id
@@ -1101,6 +1104,26 @@ export async function prepareEmployeeRunBinding(input: {
       and binding.enabled and skill.enabled
     order by skill.name, skill.id
   `;
+  let nativeSkillRows: Array<(typeof mutableSkillRows)[number]> = [
+    ...mutableSkillRows,
+  ];
+  // Platform-published revisions are authoritative; mutable tenant catalog
+  // rows remain only the compatibility path for historical non-packaged employees.
+  if (manifest.data.schemaVersion === 2 && manifest.data.runtimePackage) {
+    nativeSkillRows = frozenPackageSkills(manifest.data.runtimePackage).map(
+      (skill) => ({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        content: skill.content,
+        checksum: skill.checksum,
+        model_invocable: skill.invocation.modelInvocable,
+        user_invocable: skill.invocation.userInvocable,
+        required_tool_refs: skill.requiredToolRefs,
+        ...(skill.bundle ? { bundle: skill.bundle } : {}),
+      }),
+    );
+  }
   const skillBindings: EmployeeRunBinding['skillBindings'] = [];
   const skillVersionIds: string[] = [];
   const grantedCapabilities = resolveEmployeeCapabilities(
@@ -1217,7 +1240,7 @@ export async function prepareEmployeeRunBinding(input: {
     timeoutMs: modelSnapshot.runLimits.timeoutMs,
   });
   const nativeSkills = nativeSkillRows.map((skill) =>
-    DshNativeSkillSnapshotSchema.parse({
+    validateFrozenSkill({
       id: skill.id,
       name: skill.name,
       description: skill.description,
@@ -1228,6 +1251,7 @@ export async function prepareEmployeeRunBinding(input: {
         userInvocable: skill.user_invocable,
       },
       requiredToolRefs: skill.required_tool_refs,
+      ...(skill.bundle ? { bundle: skill.bundle } : {}),
     }),
   );
   const mcpEnabled =
@@ -1353,9 +1377,9 @@ export async function resolveEmployeeExecution(input: {
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
   );
-  const nativeSkills = DshNativeSkillSnapshotSchema.array().parse(
-    row.native_skills,
-  );
+  const nativeSkills = DshNativeSkillSnapshotSchema.array()
+    .parse(row.native_skills)
+    .map(validateFrozenSkill);
   const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
     row.execution_snapshot,
   );

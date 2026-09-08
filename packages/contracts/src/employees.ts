@@ -174,7 +174,7 @@ export type EmployeeUserProfilePolicy = z.infer<
 
 export const EmployeeRuntimePackageSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     packageVersion: z.string().trim().min(1).max(240),
     checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     capabilityFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
