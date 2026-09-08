@@ -22,6 +22,11 @@ import { fileURLToPath } from 'node:url';
 import type { HarnessEvent, StorageObject } from '@allrice/contracts';
 import type Postgres from '../../../packages/database/node_modules/postgres/types/index.d.ts';
 import { verifyRenderedDownloadLink } from './rendered-download-link.ts';
+import {
+  assertReconciliationAudits,
+  readReconciliationAudits,
+  saveReconciliationAssistantMessage,
+} from './reconciliation-audit.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 assert.equal(
@@ -440,6 +445,19 @@ try {
     reconciliationOnly: true,
     dsh: { provider, skills: [skill], prompt: promptSnapshot },
   });
+  const auditScope = {
+    organizationId: f.org,
+    workspaceId: f.workspace,
+    actorId: f.user,
+    runId: f.run,
+    executionId: f.execution.executionId,
+  };
+  assert.equal(
+    (await readReconciliationAudits(db, auditScope)).length,
+    0,
+    'Audit query and empty synthetic scope pass before invoking the model',
+  );
+  evidence.auditPreflight = { ...auditScope, empty: true };
   const [saved] =
     await db`select execution_snapshot,provider_snapshot,employee_assignment_id,employee_version_id,user_message_id,assistant_message_id from allrice_employee_runs where run_id=${f.run}`;
   const executionSnapshot = EmployeeExecutionSnapshotSchema.parse(
@@ -455,7 +473,10 @@ try {
   const nativeSkills = (frozen!.native_skills as unknown[]).map(
     validateFrozenSkill,
   );
-  const frozenScript = new TextDecoder().decode(
+  const frozenScript = new TextDecoder('utf-8', {
+    fatal: true,
+    ignoreBOM: true,
+  }).decode(
     Buffer.from(
       readFrozenSkillResource(nativeSkills, skill.name, 'scripts/reconcile.mjs')
         .contentBase64,
@@ -753,7 +774,23 @@ try {
     finalExport.artifactId,
     db,
   );
+  assert.equal(artifact.id, finalExport.artifactId);
+  assert.equal(
+    artifact.object.id,
+    finalExport.objectId,
+    'Downloaded link and verified XLSX refer to the same authoritative object',
+  );
+  assert.equal(artifact.version.sessionId, f.session);
+  assert.equal(artifact.object.organizationId, f.org);
+  assert.equal(artifact.object.workspaceId, f.workspace);
+  assert.equal(artifact.object.ownerId, f.user);
+  assert.equal(artifact.provenance.runId, f.run);
   const bytes = await readArtifactBytes(f.storage, artifact.object, 2_000_000);
+  assert.equal(
+    `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    artifact.object.checksum,
+    'Retained bytes match the authoritative artifact checksum',
+  );
   await writeFile(join(temporary, 'reconciliation.xlsx'), bytes, {
     mode: 0o600,
   });
@@ -854,19 +891,17 @@ try {
     );
   evidence.sandboxDestroyed = true;
   await checkpoint('sandbox_destroyed');
-  const audits =
-    await db`select action,decision,resource_type from allrice_audit_events where organization_id=${f.org} and workspace_id=${f.workspace} order by created_at`;
+  const audits = await readReconciliationAudits(db, auditScope);
   assert.ok(
-    audits.some(
-      (a) => a.action === 'tool.execute' || a.resource_type === 'tool',
-    ),
-    'Tool Broker audit exists',
+    toolCalls.every((call) => call.ok),
+    'All recorded Broker calls succeeded',
   );
-  evidence.audit = audits.map(({ action, decision, resource_type }) => ({
-    action,
-    decision,
-    resourceType: resource_type,
-  }));
+  assertReconciliationAudits(
+    audits,
+    auditScope,
+    toolCalls.map((call) => call.name),
+  );
+  evidence.audit = audits;
   await checkpoint('audit_verified');
   evidence.downloadLink = await verifyRenderedDownloadLink({
     answer: result.answer,
@@ -874,7 +909,16 @@ try {
     objectId: finalExport.objectId,
   });
   await checkpoint('rendered_download_link_verified');
-  await db`update allrice_messages set content=${db.json({ text: result.answer, citations: [] })} where id=${saved!.assistant_message_id}`;
+  await saveReconciliationAssistantMessage(
+    db,
+    {
+      ...auditScope,
+      sessionId: f.session,
+      messageId: saved!.assistant_message_id,
+    },
+    result.answer,
+  );
+  await checkpoint('assistant_message_saved');
   evidence.passed = true;
   evidence.elapsedMs = Date.now() - startedAt;
   evidence.usage = result.usage;
@@ -954,14 +998,17 @@ try {
     evidence.passed = false;
     process.exitCode = 1;
   }
-  await finish('report_write', () =>
-    writeFile(
+  // Do not race the final tiny local report write: a timed-out write could
+  // otherwise finish later with passed=true after the process reported failure.
+  // A passing receipt is emitted only after the actual write has completed.
+  try {
+    await writeFile(
       join(temporary, 'result.json'),
       JSON.stringify(evidence, null, 2),
-      { mode: 0o600 },
-    ),
-  );
-  if (cleanupFailures.length) {
+      { mode: 0o600, flag: 'wx' },
+    );
+  } catch (error) {
+    cleanupFailures.push({ stage: 'report_write', error: safeError(error) });
     evidence.passed = false;
     process.exitCode = 1;
   }

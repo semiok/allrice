@@ -19,7 +19,7 @@
 
 脚本按阶段追加只写一次的私有 JSON：初始化、澄清采纳、精确审批、每次 Broker 完成、模型完成、工件字节保存、XLSX 逐 cell 核对、容器销毁、审计和渲染链接。后续断言失败不会抹去先前阶段。报告仅记录限量公开回答/安全事件元数据；已知原生工具诊断只保留脚本长度和 hash、合成输入引用、限制与 schema 错误 code/path，不保留原始推理、完整脚本或 provider 原始响应。
 
-结束后逐项、相互独立清理该随机 schema、测试存储和运行目录，保留阶段报告及已读取的 XLSX。每阶段清理等待上限 20 秒，任何失败均令最终结果失败；等待超时并不声称能够强制终止底层 Promise。最终 `result.json` 不能因后续异步 driver 错误被假标为成功。
+结束后逐项、相互独立清理该随机 schema、测试存储和运行目录，保留阶段报告及已读取的 XLSX。每阶段清理等待上限 20 秒，任何失败均令最终结果失败；等待超时并不声称能够强制终止底层 Promise。最终小型本地报告写入不参与超时 race，只有实际完成写入后才输出成功回执，避免超时后迟到的文件带有 `passed: true`。验收需要同时核对最终报告及进程成功退出，不能仅以中间阶段报告判定整链成功。
 
 ## 真实验收推动的产品修正
 
@@ -40,11 +40,31 @@
 | 离线实际前端复核                             | 同一公开回答经实际 renderer、独立 Chrome 得到正确完整 anchor 并点击；错误 object ID、路径、query 三个反例均拒绝。原始回答不能 raw-string 匹配 URL，但实际链接语义有效                         |
 | 最终集成 SHA 的完整验收                      | **待主代理统一安排一次 bounded 重验**；不追溯修改旧失败报告，不因离线复核改称已完成最终端到端验收                                                                                             |
 
-最新真实模型的数值核对：发票/回款各 6 行，发票 36,049 分、有效回款 34,550 分、分配回款 34,050 分、未分配 500 分、差额 1,999 分。5 个对象明细、重复发票/未分配回款/重复回款 3 条问题均逐 cell 比对，不只检查行数。
+该次真实模型的数值核对：发票/回款各 6 行，发票 36,049 分、有效回款 34,550 分、分配回款 34,050 分、未分配 500 分、差额 1,999 分。5 个对象明细、重复发票/未分配回款/重复回款 3 条问题均逐 cell 比对，不只检查行数。
 
 **旧证据的保留局限：** 最新 Run 执行时，XLSX 保存、export 返回元数据和审计查询尚位于错误链接断言之后。因此原报告虽证明工具调用已完成，并可结合固定脚本控制流确认 XLSX 逐 cell 检查和容器销毁已通过，但没有保留原 XLSX 字节和独立的权威 export 下载 URL；审计查询未运行。离线复核预期 URL 来自公开回答及生产导出格式，证明 renderer/click 语义，不能独立补证文件身份或已完成审计。分阶段保存和真实 export URL 比对是为最终重验补齐证据，不能倒填成旧 Run 的证据。
 
 本机私有证据目录：系统临时目录 `allrice-b4-dsh-2goLCR/`，内含原 `result.json`（SHA-256 `c0489b7574c3ec7250c8aca18e4cc0b826240b33b973b2d52a9f367c42da7d17`）和 `renderer-replay-utf8.json`。没有新模型调用参与离线复核，原报告未被更改。
+
+## 整合 SHA 924ed7e 的单次模型结果与验收脚本补正
+
+2026-09-08 19:16–19:17，在只读冻结的 `924ed7e664566ac9e222ad5455a088dfff162f67` 整合树执行一次真实模型验收，开始和结束均确认 tracked tree 干净，没有循环重试。
+
+- 44,952 ms 内完成 1 次澄清采纳、2 次资源读取、1 次独立精确审批的云计算和 1 次真实 XLSX 导出。11 个分阶段报告保留到 `sandbox_destroyed`，XLSX 全部 cell 校验通过。
+- 真实 XLSX 已保存，8,903 字节，SHA-256 `15b61433558441edb3c159162506169b51aca9e5c0e6a43d5b5fb4a217a85b3d`。报告同时保留权威 export 返回的工件 ID、object ID 和完整下载 URL。
+- **该次原报告依然为 `passed: false`**：验收脚本的审计排序使用了不存在的 `created_at`；实际表定义为 `occurred_at`，PostgreSQL 错误码 `42703`。业务执行未失败，但本 Run 的审计查询未验证，清理错误 0；不把后续离线补证写成整链成功。
+- 无新增模型请求的离线补证，直接读取此次保存的真实 XLSX，再核对 checksum 和所有 cell；使用此次真实 export 的下载 URL/object ID，实际前端 renderer 与独立 Chrome 完整 href/路径/query/点击均通过。这次预期 URL 不再从公开回答推断。
+
+私有证据为系统临时目录 `allrice-b4-dsh-1sscQk/` 内的 `result.json`、`reconciliation.xlsx`、11 个阶段报告及 `offline-final-replay.json`。原报告 SHA-256 为 `ae105c7cdd52d73f9209d2feb0f84ab46b7391d1e4ee299800069f081f7948d3`。私有启动器旁的 `final-launch-result.json` 记录完整源 SHA、脚本 hash、退出码及证据位置。
+
+为避免再用模型发现测试 SQL 笔误，已提取 `reconciliation-audit.ts`：
+
+1. 模型调用前，在已迁移的真实随机 schema 执行同一审计查询，要求当前合成执行的审计为空；SQL 字段错误会在花费模型预算之前失败。
+2. 模型结束后，严格按 organization/workspace/actor 和 `metadata.runId`、`metadata.executionId` 过滤，使用 `occurred_at` 排序；逐项核对 `tool.execute / tool_broker / allowed` 及每次实际成功 Broker 调用的工具名称和数量。只投影安全字段，不导出整个 metadata。
+3. 最后消息写入也复用测试覆盖的作用域 SQL：organization/workspace/session/owner、assistant role、明确 message ID，并要求该 message 是当前 Run 持久化记录绑定的 assistant message，`RETURNING` 恰好一行。
+4. 额外核对 `artifact.object.id === finalExport.objectId`、工件当前 Run/Session/租户/owner 归属和实际文件 hash，确保逐 cell 核对的文件就是最终链接所指的工件。
+
+`reconciliation-audit.integration.test.ts` 在真实 PostgreSQL、实际 `recordToolBrokerAudit` 写入结构下 **5/5 通过**，不使用模型或 VM。覆盖原 SQL 错误码的精确复现、空查询 preflight、4 条正确工具审计、跨五个作用域的查询/邻居记录排除、缺失/重复/拒绝审计，以及最后消息写入的正反作用域和 user role 拒绝。此补正之后，完整模型验收仍需由主代理在重新整合的固定版本统一安排。
 
 ## 早期失败与处理记录
 
