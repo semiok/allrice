@@ -2797,15 +2797,13 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       const op = await f.create('install', args);
       expect(op.snapshot.status).toBe('waiting_user');
       const claim = () =>
-        f
-          .ledger()
-          .claimNextBridgeOperation({
-            scope: f.task.scope,
-            deviceId: f.device.id,
-            leaseMs: 30000,
-            supportsLocalCommand: true,
-            supportsNpmDependencies: true,
-          });
+        f.ledger().claimNextBridgeOperation({
+          scope: f.task.scope,
+          deviceId: f.device.id,
+          leaseMs: 30000,
+          supportsLocalCommand: true,
+          supportsNpmDependencies: true,
+        });
       expect(await claim()).toBeNull();
       await f.approve();
       expect(await f.claim()).toBeNull();
@@ -2839,15 +2837,13 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     });
     await f.approve('rejected');
     expect(
-      await f
-        .ledger()
-        .claimNextBridgeOperation({
-          scope: f.task.scope,
-          deviceId: f.device.id,
-          leaseMs: 30000,
-          supportsLocalCommand: true,
-          supportsNpmDependencies: true,
-        }),
+      await f.ledger().claimNextBridgeOperation({
+        scope: f.task.scope,
+        deviceId: f.device.id,
+        leaseMs: 30000,
+        supportsLocalCommand: true,
+        supportsNpmDependencies: true,
+      }),
     ).toBeNull();
   });
   it('P05 rejects same-call mutations, expired profiles, unverified platforms and frozen tool removal', async () => {
