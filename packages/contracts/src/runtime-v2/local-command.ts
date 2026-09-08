@@ -4,6 +4,7 @@ import { BridgeCommandPayloadSchema } from '../bridge.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
+import { RuntimeLocalServiceConfigSchema } from './local-service.ts';
 import {
   RuntimeDependencyPreparationSchema,
   RuntimeDependencyPreparationResultSchema,
@@ -38,6 +39,7 @@ export const RuntimeLocalCommandSchema = z
         path: z.union([z.literal('.'), path]),
         diagnostics: RuntimeProjectDiagnosticsRequestSchema.optional(),
         dependencies: RuntimeDependencyPreparationSchema.optional(),
+        background: RuntimeLocalServiceConfigSchema.optional(),
         files: z
           .array(z.object({ path, sha256: ChecksumSchema }).strict())
           .min(1)
@@ -59,6 +61,15 @@ export const RuntimeLocalCommandSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.arguments.background &&
+      (value.arguments.dependencies || value.arguments.diagnostics)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'background service does not combine preparation/diagnostics in v1',
+      });
     if (value.arguments.dependencies && value.arguments.diagnostics)
       context.addIssue({
         code: 'custom',
@@ -108,7 +119,13 @@ export const RuntimeLocalCommandProfileSchema = z
     architecture: z.enum(['amd64', 'arm64']),
     available: z.boolean(),
     features: z
-      .array(z.enum(['project_diagnostics', 'npm_dependencies']))
+      .array(
+        z.enum([
+          'project_diagnostics',
+          'npm_dependencies',
+          'background_services',
+        ]),
+      )
       .max(8)
       .optional(),
   })
@@ -132,6 +149,10 @@ export const RuntimeLocalCommandResultSchema = z
       'memory_limit',
       'lease_lost',
       'supervisor_failed',
+      'readiness_timeout',
+      'port_conflict',
+      'input_expired',
+      'input_protocol_error',
     ]),
     stdout: z.string().max(100_000),
     stderr: z.string().max(100_000),

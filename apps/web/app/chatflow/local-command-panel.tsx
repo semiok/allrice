@@ -9,6 +9,7 @@ import {
   type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
 import styles from './local-command-panel.module.css';
+import { LocalServiceCard, type LocalServiceView } from './local-service-card';
 
 interface Operation {
   snapshot: RuntimeOperationSnapshot;
@@ -16,6 +17,7 @@ interface Operation {
   approval: RuntimeActionApprovalSnapshot | null;
   output: { sequence: number; stream: 'stdout' | 'stderr'; content: string }[];
   evidence: { summary: string; output?: unknown } | null;
+  service?: LocalServiceView | null;
 }
 const statusLabels: Record<string, string> = {
   planned: '正在准备',
@@ -188,6 +190,16 @@ export function LocalCommandPanel({
               在你的电脑的 Linux
               隔离副本中执行；项目进程无网络，不会写回原工作区。
             </p>
+            {op.command.background && (
+              <LocalServiceCard
+                config={op.command.background}
+                service={op.service}
+                runId={runId}
+                workspaceId={workspaceId}
+                tenantHeaders={tenantHeaders}
+                onChanged={() => setRevision((v) => v + 1)}
+              />
+            )}
             {op.command.dependencies && (
               <section aria-label="依赖安装授权范围">
                 <p>
@@ -224,9 +236,11 @@ export function LocalCommandPanel({
             </pre>
             <p>
               工作目录：<code>{op.command.path}</code> · 时限{' '}
-              {op.command.limits.timeoutMs / 1000} 秒 · 内存{' '}
-              {op.command.limits.memoryMiB} MiB · 最多 {op.command.limits.pids}{' '}
-              个进程
+              {op.command.background
+                ? `服务硬期限 ${op.command.background.durationMs / 1000}`
+                : op.command.limits.timeoutMs / 1000}{' '}
+              秒 · 内存 {op.command.limits.memoryMiB} MiB · 最多{' '}
+              {op.command.limits.pids} 个进程
             </p>
             <details>
               <summary>

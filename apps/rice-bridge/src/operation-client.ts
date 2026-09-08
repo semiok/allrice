@@ -18,6 +18,10 @@ import { executeChangeset } from './changeset-executor.js';
 import { BridgeJournalError, type BridgeJournal } from './journal.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
+import {
+  localProcessManager,
+  flushLocalServiceEvents,
+} from './local-process-manager.js';
 
 export const runtimeBridgeOperationPath = '/api/v1/bridge/device/operations';
 
@@ -38,6 +42,7 @@ export class RuntimeBridgeOperationClient {
   }
 
   async flush() {
+    await flushLocalServiceEvents(this.input);
     for (const receipt of await this.input.journal.pending()) {
       const ack = RuntimeBridgeReceiptAckSchema.parse(
         await bridgeRequest({
@@ -90,6 +95,12 @@ export class RuntimeBridgeOperationClient {
               supportsLocalCommand: true,
               supportsProjectDiagnostics: true,
               supportsNpmDependencies: true,
+              supportsBackgroundServices:
+                process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
+                localProcessManager({
+                  ...this.input,
+                  runner: this.input.runner,
+                }).capacity,
             }
           : {}),
       },
@@ -191,6 +202,34 @@ export class RuntimeBridgeOperationClient {
       return;
     }
     if (dispatch.payload.capability === 'local.process.execute') {
+      if (dispatch.payload.arguments.background) {
+        if (
+          process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '1' ||
+          !this.input.runner
+        ) {
+          await journal.outcome(operationId, {
+            status: 'failed',
+            effects: 'none',
+            summary: '本机未启用后台服务',
+            errorCode: 'SERVICE_DISABLED',
+          });
+          return;
+        }
+        try {
+          await localProcessManager({
+            ...this.input,
+            runner: this.input.runner,
+          }).start(dispatch, root);
+        } catch {
+          await journal.outcome(operationId, {
+            status: 'failed',
+            effects: 'none',
+            summary: '后台服务未启动；授权或并发条件不满足',
+            errorCode: 'SERVICE_START_REJECTED',
+          });
+        }
+        return;
+      }
       await this.executeProcess(dispatch, root);
       return;
     }

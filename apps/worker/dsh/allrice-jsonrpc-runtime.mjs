@@ -226,7 +226,7 @@ const brokerNativeTools = [
     wireName: 'local_process_execute',
     timeoutMs: 670_000,
     description:
-      'Run one explicitly approved Node/npm command in a local Linux VM copy of an exact file manifest. No network, dependency installation or writes to the original folder. Supply current SHA-256 for every input file. Wait for the web approval and real exit evidence; approval is not execution success.',
+      'Run an explicitly approved Node/npm command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional diagnostics is read-only fixed Node with empty args; optional dependencies performs bounded locked npm preparation; optional background is a finite originating-Run-owned service. These three modes are mutually exclusive. Supply current SHA-256 for every input file. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
     parameters: {
       executable: {
         type: 'string',
@@ -271,7 +271,89 @@ const brokerNativeTools = [
         description:
           'timeoutMs 500..60000; outputBytes 1024..65536; memoryMiB 128..512; cpuMillis 100..1000; pids 16..64.',
       },
+      diagnostics: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: { type: 'string', required: true },
+          expectedNodeMajor: { type: 'integer' },
+          expectedNpmMajor: { type: 'integer' },
+        },
+        description:
+          'Read-only kind=node_project; executable=/usr/local/bin/node and args=[]; never install or run project code.',
+      },
+      dependencies: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          manager: { type: 'string', required: true },
+          strategy: { type: 'string', required: true },
+          registry: { type: 'string', required: true },
+          scripts: { type: 'string', required: true },
+          packages: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                version: { type: 'string', required: true },
+                integrity: { type: 'string', required: true },
+                archivePath: { type: 'string' },
+              },
+            },
+          },
+        },
+        description:
+          'manager=npm,strategy=locked_ci,registry=https://registry.npmjs.org,scripts=disabled or allow_in_isolated_copy. Exact v3 package-lock/package.json and all transitive versions/SHA512 required. Max8 packages,total archives128KiB. Explicit archivePath avoids download; otherwise frozen network:outbound required. npm ci then requested verification, ephemeral isolated copy only.',
+      },
+      background: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          durationMs: { type: 'integer', required: true },
+          readiness: {
+            type: 'object',
+            required: true,
+            additionalProperties: false,
+            properties: {
+              kind: { type: 'string', required: true },
+              port: { type: 'integer', required: true },
+              path: { type: 'string' },
+              timeoutMs: { type: 'integer', required: true },
+            },
+          },
+          stdin: {
+            type: 'object',
+            required: true,
+            additionalProperties: false,
+            properties: {
+              mode: { type: 'string', required: true },
+              maxRequests: { type: 'integer', required: true },
+              maxBytes: { type: 'integer', required: true },
+              requestTimeoutMs: { type: 'integer', required: true },
+            },
+          },
+        },
+        description:
+          'Finite service, duration1000..300000ms; readiness tcp/http, port1024..65535 and private-container only, timeout500..30000ms. stdin mode none/requests-v1, maxRequests1..16,maxBytes1..4096,requestTimeout500..60000ms. Input requests are fd3 NDJSON {type:input.request,prompt}; no TTY. At most one per Run and two per Bridge. Ends on Run completion, lost authorization or fixed deadline. Never combine with diagnostics/dependencies.',
+      },
     },
+  },
+  {
+    canonicalName: 'local.process.status',
+    wireName: 'local_process_status',
+    description:
+      'Read a finite local service owned by the current user and Run. processId must be from a prior service result. Readiness is not completion; no stdin text is disclosed.',
+    parameters: { processId: { type: 'string', required: true } },
+  },
+  {
+    canonicalName: 'local.process.stop',
+    wireName: 'local_process_stop',
+    description:
+      'Request stopping one finite local service owned by the current user and Run. This is intent only; query status to confirm actual stop.',
+    parameters: { processId: { type: 'string', required: true } },
   },
   {
     canonicalName: 'local.fs.mkdir',

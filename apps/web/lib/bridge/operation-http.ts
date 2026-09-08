@@ -6,6 +6,7 @@ import {
   RuntimeBridgeStartSchema,
   RuntimeBridgeHeartbeatSchema,
   RuntimeBridgeOutputSchema,
+  RuntimeLocalServiceExchangeSchema,
   UuidSchema,
   canonicalRuntimeBridgeJson,
   runtimeContractEqual,
@@ -15,6 +16,8 @@ import {
   type RuntimeBridgeReceipt,
   type RuntimeOperationSnapshot,
   type RuntimeScope,
+  type RuntimeLocalServiceEvent,
+  type RuntimeLocalServiceInput,
 } from '@allrice/contracts';
 
 import { getBridgeDeviceToken } from './request.ts';
@@ -36,6 +39,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsLocalCommand?: boolean;
     supportsProjectDiagnostics?: boolean;
     supportsNpmDependencies?: boolean;
+    supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
   }): Promise<{
     snapshot: Snapshot;
@@ -44,6 +48,21 @@ export interface RuntimeBridgeLedgerPort {
     bridgePayload: RuntimeBridgePayload | null;
   } | null>;
   readOperation(scope: Scope, id: string): Promise<Snapshot>;
+  exchangeLocalService?(input: {
+    scope: Scope;
+    operationId: string;
+    leaseToken: string;
+    attempt: RuntimeBridgeReceipt['attempt'];
+    events: RuntimeLocalServiceEvent[];
+    deliveryOnly?: boolean;
+  }): Promise<{
+    snapshot: Snapshot;
+    leaseExpiresAt: string;
+    hardDeadlineAt: string;
+    acceptedSequence: number;
+    inputs: RuntimeLocalServiceInput[];
+    stopRequested: boolean;
+  }>;
   heartbeat?(input: {
     scope: Scope;
     operationId: string;
@@ -117,7 +136,7 @@ export function createRuntimeBridgeHttpHandler(input: {
 }) {
   return async (
     request: Request,
-    action: 'next' | 'start' | 'receipts' | 'heartbeat' | 'output',
+    action: 'next' | 'start' | 'receipts' | 'heartbeat' | 'output' | 'service',
     operationId?: string,
   ) => {
     try {
@@ -150,6 +169,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsChangeset',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
+                'supportsBackgroundServices',
               ].includes(key),
           ) ||
           ('supportsLocalCommand' in selection &&
@@ -159,7 +179,9 @@ export function createRuntimeBridgeHttpHandler(input: {
           ('supportsProjectDiagnostics' in selection &&
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
-            typeof selection.supportsNpmDependencies !== 'boolean')
+            typeof selection.supportsNpmDependencies !== 'boolean') ||
+          ('supportsBackgroundServices' in selection &&
+            typeof selection.supportsBackgroundServices !== 'boolean')
         )
           throw new HttpProblem(400, 'INVALID_REQUEST');
         const lease = await ledger.claimNextBridgeOperation({
@@ -170,6 +192,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
           supportsNpmDependencies: selection.supportsNpmDependencies === true,
+          supportsBackgroundServices:
+            selection.supportsBackgroundServices === true,
           supportsChangeset: selection.supportsChangeset === true,
         });
         if (!lease) return json({ dispatch: null });
@@ -203,6 +227,25 @@ export function createRuntimeBridgeHttpHandler(input: {
         snapshot.binding.execution.targetKind !== 'rice_bridge'
       )
         throw new HttpProblem(404, 'OPERATION_UNAVAILABLE');
+      if (action === 'service') {
+        if (
+          !ledger.exchangeLocalService ||
+          process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '1'
+        )
+          throw new HttpProblem(404, 'FEATURE_DISABLED');
+        const body = RuntimeLocalServiceExchangeSchema.parse(
+          await boundedJson(request, 32_768),
+        );
+        if (!runtimeContractEqual(body.attempt, snapshot.binding.attempt))
+          throw new HttpProblem(409, 'OPERATION_MISMATCH');
+        return json(
+          await ledger.exchangeLocalService({
+            ...body,
+            scope,
+            operationId: id,
+          }),
+        );
+      }
       if (action === 'start') {
         const grant = grants.find(
           (item) =>

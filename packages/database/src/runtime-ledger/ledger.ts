@@ -10,6 +10,8 @@ import {
   RuntimeScopeSchema,
   RuntimeTaskRefSchema,
   RuntimeUsageObservationSchema,
+  RuntimeLocalServiceEventSchema,
+  RuntimeLocalCommandResultSchema,
   UuidSchema,
   advanceRuntimeOperation,
   isTerminalRuntimeOperationStatus,
@@ -22,6 +24,7 @@ import {
   type RuntimeScope,
   type RuntimeTaskRef,
   type RuntimeUsageObservation,
+  type RuntimeLocalServiceEvent,
 } from '@allrice/contracts';
 import { z } from 'zod';
 
@@ -36,6 +39,7 @@ import {
   type RuntimeLedgerReceipt,
   type RuntimeLedgerTransaction,
 } from './types.ts';
+import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -656,6 +660,7 @@ export function createRuntimeOperationLedger(options: {
       supportsLocalCommand?: boolean;
       supportsProjectDiagnostics?: boolean;
       supportsNpmDependencies?: boolean;
+      supportsBackgroundServices?: boolean;
       supportsChangeset?: boolean;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
@@ -669,6 +674,7 @@ export function createRuntimeOperationLedger(options: {
           and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
+          and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
           and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
@@ -705,6 +711,103 @@ export function createRuntimeOperationLedger(options: {
       return db.begin(async (tx) => {
         const { row } = await lockOperation(tx, scope, operationId);
         return row.snapshot;
+      });
+    },
+
+    async exchangeLocalService(input: {
+      scope: RuntimeScope;
+      operationId: string;
+      leaseToken: string;
+      attempt: RuntimeAttemptRef;
+      events: RuntimeLocalServiceEvent[];
+      deliveryOnly?: boolean;
+    }) {
+      const events = z
+        .array(RuntimeLocalServiceEventSchema)
+        .max(16)
+        .parse(input.events);
+      return db.begin(async (tx) => {
+        const { root, row } = await lockOperation(
+          tx,
+          input.scope,
+          input.operationId,
+        );
+        verifyLease(row, input.leaseToken);
+        if (
+          !runtimeContractEqual(input.attempt, row.snapshot.binding.attempt) ||
+          row.snapshot.binding.action !== 'local.process.execute'
+        )
+          throw new RuntimeLedgerError('scope_mismatch');
+        const at = await now(tx);
+        let allowed = false;
+        if (
+          row.snapshot.status === 'running' &&
+          !row.snapshot.cancelRequestId &&
+          row.lease_expires_at &&
+          row.lease_expires_at > at
+        ) {
+          try {
+            ensureRootAdmits(root, at);
+            await admit(tx, row, 'heartbeat', at);
+            ensureRootAdmits(root, await now(tx));
+            allowed = true;
+          } catch {
+            /* A revoked/ended Run may still request a bounded stop, never more input. */
+          }
+        }
+        const service = await exchangeLocalServiceLocked(tx, {
+          snapshot: row.snapshot,
+          payload: row.bridge_payload,
+          rootDeadlineAt: root.deadline_at,
+          events,
+          allowed,
+          deliveryOnly: input.deliveryOnly === true,
+          now: await now(tx),
+        });
+        if (
+          service.acceptedSequence >= 0 &&
+          row.snapshot.processId === null &&
+          ['running', 'cancel_requested', 'unknown'].includes(
+            row.snapshot.status,
+          )
+        )
+          await append(tx, row, {
+            type: 'operation.started',
+            processId: row.id,
+          });
+        if (
+          !input.deliveryOnly &&
+          service.stopRequested &&
+          row.snapshot.status === 'running' &&
+          row.snapshot.cancelRequestId === null
+        )
+          await append(tx, row, {
+            type: 'operation.cancel_requested',
+            requestId: randomUUID(),
+          });
+        let expiry = row.lease_expires_at ?? at;
+        if (!input.deliveryOnly && allowed && !service.stopRequested) {
+          if (!row.lease_expires_at || row.lease_expires_at <= (await now(tx)))
+            throw new RuntimeLedgerError('lease_lost');
+          expiry = new Date(
+            Math.min(
+              Date.parse(service.hardDeadlineAt),
+              (await now(tx)).getTime() + 120_000,
+              root.deadline_at.getTime(),
+            ),
+          );
+          await tx`update allrice_runtime_operations set lease_expires_at=${expiry},updated_at=clock_timestamp() where id=${row.id}`;
+          await admit(tx, row, 'heartbeat', await now(tx));
+          ensureRootAdmits(root, await now(tx));
+          const committedAt = await now(tx);
+          if (expiry <= committedAt || row.lease_expires_at <= committedAt)
+            throw new RuntimeLedgerError('lease_lost');
+        }
+        return {
+          ...service,
+          snapshot: row.snapshot,
+          leaseExpiresAt: expiry.toISOString(),
+        };
       });
     },
 
@@ -950,6 +1053,43 @@ export function createRuntimeOperationLedger(options: {
         )
           disposition = 'stale';
         else {
+          // A finite service may be stopped locally (Bridge shutdown/lease
+          // loss) before the server saw a stop request. Preserve the targeted
+          // intent and then its authenticated actual stop fact; never cancel
+          // the entire Run or infer process termination from intent alone.
+          if (
+            content.signal.type === 'operation.stopped' &&
+            row.snapshot.status === 'running' &&
+            row.bridge_payload !== null
+          ) {
+            const payload = RuntimeBridgePayloadSchema.parse(
+              row.bridge_payload,
+            );
+            if (
+              payload.capability === 'local.process.execute' &&
+              payload.arguments.background
+            ) {
+              const evidence = input.evidence as
+                { output?: unknown } | null | undefined;
+              const result = RuntimeLocalCommandResultSchema.safeParse(
+                evidence?.output,
+              );
+              const [service] = await tx<
+                { container_id: string | null }[]
+              >`select container_id from allrice_local_services where operation_id=${row.id}`;
+              if (
+                !result.success ||
+                !['canceled', 'lease_lost'].includes(result.data.reason) ||
+                result.data.containerId !== service?.container_id ||
+                result.data.imageDigest !== payload.arguments.imageDigest
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              await append(tx, row, {
+                type: 'operation.cancel_requested',
+                requestId: input.receiptId,
+              });
+            }
+          }
           try {
             advanceRuntimeOperation(row.snapshot, content.signal);
           } catch {

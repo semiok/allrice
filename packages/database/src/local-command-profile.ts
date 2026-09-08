@@ -62,6 +62,10 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
       imageDigest: args.imageDigest,
       backend: args.isolation,
     }),
-    budgetDigest: runtimePolicyDigest(args.limits),
+    budgetDigest: runtimePolicyDigest(
+      args.background
+        ? { limits: args.limits, background: args.background }
+        : args.limits,
+    ),
   };
 }

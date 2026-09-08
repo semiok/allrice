@@ -70,3 +70,7 @@ P03-b 新增本地 SQLite journal 与结果 Outbox，防止连接中断后重复
 
 P05 增加经验证的专用 VM 中的结构化命令，P08 增加准确 Changeset 审批、逐文件应用及反向恢复。以上 v0.2 capability 列表和默认路径不变；新能力只能由新设备日志协议、服务端开关、员工冻结权限和精确审批共同启用，不是打开任意 Shell 或通用删除接口。
 参见 [P05 边界与平台前置](../../docs/architecture/allrice-2.0/p05-local-command.md) 和 [P08 文件操作、未知结果与恢复](../../docs/architecture/allrice-2.0/p08-changesets.md)。新版源码存在不代表正式签名下载包或双芯片新能力已完成发布。
+
+## 2.0 有限后台服务（默认关闭）
+
+P09-c 在原精确审批后允许同一 Run 内启动有限后台服务，真实就绪后继续其他任务，并通过独立输入请求表单提交有限文本或 EOF。它不提供 PTY、任意 Shell、主机挂载或公开端口；容器内部就绪不代表浏览器已可访问。需要新 profile 的 `background_services` 和两端显式 `ALLRICE_LOCAL_SERVICE_ENABLED=1`，仍受既有执行/策略开关控制。Run 结束、授权消失或期限到达时停止；重启只核对旧执行，不自动继续或重放输入。详见 [P09-c 生命周期、输入协议与验证边界](../../docs/architecture/allrice-2.0/p09c-local-services.md)。

@@ -162,6 +162,20 @@ export const allRiceToolManifest = [
     dshWireName: 'local_process_execute',
   },
   {
+    canonicalName: 'local.process.status',
+    capability: 'storage:write',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_process_status',
+  },
+  {
+    canonicalName: 'local.process.stop',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_process_stop',
+  },
+  {
     canonicalName: 'local.fs.mkdir',
     capability: 'storage:write',
     risk: 'managed_write',

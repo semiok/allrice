@@ -82,7 +82,13 @@ export class LocalCommandRunner {
       backend: 'local-vm-container-v1' as const,
       imageDigest: image.Id,
       architecture: image.Architecture,
-      features: ['project_diagnostics', 'npm_dependencies'] as const,
+      features: [
+        'project_diagnostics',
+        'npm_dependencies',
+        ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1'
+          ? ['background_services']
+          : []),
+      ],
     };
   }
 
@@ -99,6 +105,8 @@ export class LocalCommandRunner {
     },
   ): Promise<RuntimeLocalCommandResult> {
     const command = RuntimeLocalCommandSchema.parse(input);
+    if (command.arguments.background)
+      throw new LocalCommandError('SERVICE_MANAGER_REQUIRED');
     if (!uuid.test(options.attemptId))
       throw new LocalCommandError('INVALID_ATTEMPT');
     if (command.arguments.imageDigest !== this.config.imageDigest)
@@ -423,13 +431,25 @@ export class LocalCommandRunner {
               'output_limit',
               'memory_limit',
               'supervisor_failed',
+              'canceled',
+              'lease_lost',
+              'readiness_timeout',
+              'port_conflict',
+              'input_expired',
+              'input_protocol_error',
             ].includes(String(event.reason))
           ) {
             observed = {
               reason: event.reason as StopReason,
               code: Number(event.code),
             };
-          } else if (event.type !== 'signal')
+          } else if (
+            event.type !== 'signal' &&
+            !(
+              command.arguments.background &&
+              ['service', 'control_ack'].includes(String(event.type))
+            )
+          )
             throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
         }
       },

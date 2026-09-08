@@ -6,6 +6,7 @@ import { createWorkspaceExport } from './handlers/delivery.js';
 import {
   executeLocalBridgeTool,
   executeControlledLocalCommand,
+  controlLocalService,
 } from './handlers/local.js';
 import {
   executeResearchTool,
@@ -84,6 +85,8 @@ export const riceToolHandlerRegistry = Object.freeze({
     'local_bridge',
     executeControlledLocalCommand,
   ),
+  'local.process.status': registration('local_bridge', controlLocalService),
+  'local.process.stop': registration('local_bridge', controlLocalService),
   'local.fs.search': registration('local_bridge', executeLocalBridgeTool),
   'local.fs.read': registration('local_bridge', executeLocalBridgeTool),
   'local.fs.write': registration('local_bridge', executeLocalBridgeTool),
