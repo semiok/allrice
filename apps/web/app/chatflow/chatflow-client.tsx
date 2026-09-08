@@ -41,6 +41,7 @@ import styles from './dsh-saas.module.css';
 import { WorkspaceFilePickerDialog } from './workspace-file-picker-dialog';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
+import { projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
 import {
@@ -50,8 +51,10 @@ import {
 
 export function ChatFlowClient({
   workbenchEnabled = false,
+  localCommandsEnabled = false,
 }: {
   workbenchEnabled?: boolean;
+  localCommandsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
@@ -268,6 +271,9 @@ export function ChatFlowClient({
     bridgeBusy,
     bridgeDevices,
     bridgeFeedback,
+    bridgeStatusKnown,
+    bridgeLastRefreshedAt,
+    bridgeRefreshError,
     bridgeOpen,
     bridgePairing,
     bridgePairingBusy,
@@ -552,14 +558,12 @@ export function ChatFlowClient({
     .reverse()
     .map((message) => (message.runId ? runViews[message.runId] : undefined))
     .find((view) => view?.status === 'failed' || view?.status === 'canceled');
-  const selectedBridgeDevice = bridgeDevices.find(
-    (device) => device.status !== 'revoked' && device.folderGrants.length > 0,
-  );
-  const onlineBridgeDevice = bridgeDevices.find(
-    (device) => device.status === 'online',
-  );
-  const localWorkspaceOnline = selectedBridgeDevice?.status === 'online';
-  const localWorkspaceLabel = selectedBridgeDevice?.folderGrants[0]?.label;
+  const {
+    onlineBridgeDevice,
+    localWorkspaceOnline,
+    localWorkspaceLabel,
+    bridgeConnectionState,
+  } = projectBridgeView(bridgeDevices, bridgeStatusKnown);
 
   const renderComposer = (hero = false) => (
     <ChatComposer
@@ -579,6 +583,7 @@ export function ChatFlowClient({
       onInputModeChange={workbenchEnabled ? setInputMode : undefined}
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
+      bridgeConnectionState={bridgeConnectionState}
       nativeContextStatus={history?.nativeContextStatus ?? null}
       onAttachmentMenuOpenChange={setAttachmentMenuOpen}
       onCancelRun={cancelRun}
@@ -768,6 +773,7 @@ export function ChatFlowClient({
                 ) : null}
                 <ChatTranscript
                   atBottom={atTranscriptBottom}
+                  localCommandsEnabled={localCommandsEnabled}
                   messages={history?.messages ?? []}
                   onLoadRunTrace={loadRunTrace}
                   onRecoverRun={recoverRun}
@@ -877,9 +883,15 @@ export function ChatFlowClient({
               onClick={() => void loadBridgeDevices()}
               type="button"
             >
-              刷新状态
+              {bridgeBusy ? '正在刷新…' : '刷新状态'}
             </button>
           </div>
+          <small role="status" data-bridge-refresh-status>
+            {bridgeStatusKnown && bridgeLastRefreshedAt
+              ? `状态已刷新 · ${new Date(bridgeLastRefreshedAt).toLocaleTimeString()}`
+              : bridgeRefreshError || '尚未取得最新状态，请刷新确认'}
+            {' · '}在线状态根据最近 90 秒的设备心跳判断。
+          </small>
           <div className={styles.bridgeDownloads}>
             <a
               className={styles.bridgeClientDownload}
@@ -920,7 +932,7 @@ export function ChatFlowClient({
               <article key={device.id}>
                 <span
                   className={
-                    device.status === 'online'
+                    bridgeStatusKnown && device.status === 'online'
                       ? styles.bridgeOnline
                       : styles.bridgeOffline
                   }
@@ -928,23 +940,38 @@ export function ChatFlowClient({
                 <div>
                   <strong>{device.name}</strong>
                   <small>
-                    {device.status === 'online' ? '在线' : '离线'} ·{' '}
+                    {!bridgeStatusKnown
+                      ? '状态待确认'
+                      : device.status === 'online'
+                        ? '在线'
+                        : '离线'}{' '}
+                    ·{' '}
                     {device.platform === 'macos-arm64'
                       ? 'Apple Silicon（M 芯片）'
                       : 'Intel 芯片'}
                   </small>
-                  {device.folderGrants.length ? (
-                    <small>
-                      本地工作区：
-                      {device.folderGrants
-                        .map((grant) => grant.label)
-                        .join('、')}
-                    </small>
-                  ) : (
-                    <small>尚未选择本地工作区</small>
-                  )}
+                  <small>
+                    最后心跳：
+                    {device.lastSeenAt
+                      ? new Date(device.lastSeenAt).toLocaleString()
+                      : '尚未收到'}
+                  </small>
+                  {bridgeStatusKnown && device.status === 'online' ? (
+                    device.folderGrants.length ? (
+                      <small>
+                        本地工作区：
+                        {device.folderGrants
+                          .map((grant) => grant.label)
+                          .join('、')}
+                      </small>
+                    ) : (
+                      <small>尚未选择本地工作区</small>
+                    )
+                  ) : null}
                 </div>
-                {device.folderGrants.length ? (
+                {bridgeStatusKnown &&
+                device.status === 'online' &&
+                device.folderGrants.length ? (
                   <button
                     disabled={bridgeBusy}
                     onClick={() => void disconnectBridgeWorkspace(device)}
@@ -959,11 +986,17 @@ export function ChatFlowClient({
               <section className={styles.bridgeRecovery}>
                 <div>
                   <strong>
-                    {onlineBridgeDevice
-                      ? 'Bridge 在线，工作区未连接'
-                      : 'Bridge 当前离线'}
+                    {!bridgeStatusKnown
+                      ? 'Bridge 状态待确认'
+                      : onlineBridgeDevice
+                        ? 'Bridge 在线，工作区未连接'
+                        : 'Bridge 当前离线'}
                   </strong>
-                  {onlineBridgeDevice ? (
+                  {!bridgeStatusKnown ? (
+                    <p>
+                      未能取得最新设备状态，不能确认是否在线。请刷新重试，确认后再选择工作区。
+                    </p>
+                  ) : onlineBridgeDevice ? (
                     <p>
                       点击“选择工作区”后，当前 Mac 会立即弹出 macOS
                       文件夹选择器。选择完成后，这里会自动显示文件夹名称。
@@ -1034,7 +1067,9 @@ export function ChatFlowClient({
                     ? '等待本地选择…'
                     : onlineBridgeDevice
                       ? '选择工作区'
-                      : '等待 Bridge 上线'}
+                      : bridgeStatusKnown
+                        ? '等待 Bridge 上线'
+                        : '等待状态确认'}
                 </button>
                 {bridgeRecoveryActive ? (
                   <small>

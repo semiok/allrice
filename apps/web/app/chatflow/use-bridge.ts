@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { BridgeRefreshCoordinator } from './bridge-refresh';
 import type { BridgeDevice, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 
@@ -29,7 +30,27 @@ export function useBridge({
   workspace,
 }: UseBridgeOptions) {
   const [bridgeOpen, setBridgeOpen] = useState(false);
-  const [bridgeDevices, setBridgeDevices] = useState<BridgeDevice[]>([]);
+  const [bridgeSnapshot, setBridgeSnapshot] = useState<{
+    scope: string;
+    devices: BridgeDevice[];
+    known: boolean;
+    refreshedAt: string | null;
+    error: string | null;
+  } | null>(null);
+  const refresh = useRef(new BridgeRefreshCoordinator());
+  const workspaceId = workspace?.workspaceId;
+  const scope = JSON.stringify([
+    workspaceId ?? null,
+    Object.entries(tenantHeaders).sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  ]);
+  const currentSnapshot =
+    bridgeSnapshot?.scope === scope ? bridgeSnapshot : null;
+  const bridgeDevices = currentSnapshot?.devices ?? [];
+  const bridgeStatusKnown = currentSnapshot?.known ?? false;
+  const bridgeLastRefreshedAt = currentSnapshot?.refreshedAt ?? null;
+  const bridgeRefreshError = currentSnapshot?.error ?? null;
   const [bridgePairing, setBridgePairing] = useState<BridgePairing | null>(
     null,
   );
@@ -42,16 +63,31 @@ export function useBridge({
 
   const loadBridgeDevices = useCallback(
     async (open = false, quiet = false) => {
-      if (!workspace) return;
+      if (!workspaceId) return;
+      const request = refresh.current.start(scope, !quiet);
+      if (!request) return;
+      if (open) setBridgeOpen(true);
       if (!quiet) setBridgeBusy(true);
+      const timeout = window.setTimeout(
+        () => request.controller.abort(),
+        20_000,
+      );
       try {
         const result = await readJson<{ devices: BridgeDevice[] }>(
-          await fetch(
-            `/api/v1/bridge/devices?workspaceId=${workspace.workspaceId}`,
-            { cache: 'no-store', headers: tenantHeaders },
-          ),
+          await fetch(`/api/v1/bridge/devices?workspaceId=${workspaceId}`, {
+            cache: 'no-store',
+            headers: tenantHeaders,
+            signal: request.controller.signal,
+          }),
         );
-        setBridgeDevices(result.devices);
+        if (!refresh.current.isCurrent(request)) return;
+        setBridgeSnapshot({
+          scope,
+          devices: result.devices,
+          known: true,
+          refreshedAt: new Date().toISOString(),
+          error: null,
+        });
         if (
           result.devices.some(
             (device) =>
@@ -60,23 +96,36 @@ export function useBridge({
         ) {
           setBridgeRecoveryActive(false);
         }
-        if (open) setBridgeOpen(true);
       } catch (cause) {
-        if (!quiet) {
-          setError(
-            cause instanceof Error ? cause.message : '本地电脑状态加载失败',
-          );
-        }
+        if (!refresh.current.isCurrent(request)) return;
+        const message = request.controller.signal.aborted
+          ? 'Bridge 状态刷新超时，请重试'
+          : cause instanceof Error
+            ? cause.message
+            : '本地电脑状态加载失败';
+        setBridgeSnapshot((previous) => ({
+          scope,
+          devices: previous?.scope === scope ? previous.devices : [],
+          known: false,
+          refreshedAt: previous?.scope === scope ? previous.refreshedAt : null,
+          error: message,
+        }));
       } finally {
-        if (!quiet) setBridgeBusy(false);
+        window.clearTimeout(timeout);
+        if (refresh.current.isCurrent(request)) {
+          if (!quiet) setBridgeBusy(false);
+          refresh.current.finish(request);
+        }
       }
     },
-    [setError, tenantHeaders, workspace],
+    [scope, tenantHeaders, workspaceId],
   );
 
   const disconnectBridgeWorkspace = useCallback(
     async (device: BridgeDevice) => {
       if (!workspace) return;
+      const inScope = refresh.current.capture(scope);
+      if (!inScope) return;
       setBridgeBusy(true);
       try {
         await Promise.all(
@@ -92,20 +141,24 @@ export function useBridge({
             });
           }),
         );
+        if (!inScope()) return;
         setBridgeRecoveryActive(false);
         await loadBridgeDevices();
       } catch (cause) {
+        if (!inScope()) return;
         setError(cause instanceof Error ? cause.message : '工作区断开失败');
       } finally {
-        setBridgeBusy(false);
+        if (inScope()) setBridgeBusy(false);
       }
     },
-    [loadBridgeDevices, setError, tenantHeaders, workspace],
+    [loadBridgeDevices, scope, setError, tenantHeaders, workspace],
   );
 
   const requestBridgeWorkspaceSelection = useCallback(
     async (device: BridgeDevice) => {
       if (!workspace) return;
+      const inScope = refresh.current.capture(scope);
+      if (!inScope) return;
       setBridgeBusy(true);
       setBridgeRecoveryActive(true);
       try {
@@ -116,19 +169,22 @@ export function useBridge({
           ),
         );
       } catch (cause) {
+        if (!inScope()) return;
         setBridgeRecoveryActive(false);
         setError(
           cause instanceof Error ? cause.message : '无法打开本地文件夹选择器',
         );
       } finally {
-        setBridgeBusy(false);
+        if (inScope()) setBridgeBusy(false);
       }
     },
-    [setError, tenantHeaders, workspace],
+    [scope, setError, tenantHeaders, workspace],
   );
 
   const createBridgePairing = useCallback(async () => {
     if (!workspace) return;
+    const inScope = refresh.current.capture(scope);
+    if (!inScope) return;
     setBridgePairingBusy(true);
     setBridgeFeedback({ kind: 'info', message: '正在生成租户专属配对码…' });
     try {
@@ -142,19 +198,21 @@ export function useBridge({
           }),
         }),
       );
+      if (!inScope()) return;
       setBridgePairing(result.pairing);
       setBridgeFeedback({
         kind: 'info',
         message: '配对码已生成，10 分钟内有效。',
       });
     } catch (cause) {
+      if (!inScope()) return;
       const message = cause instanceof Error ? cause.message : '配对码生成失败';
       setBridgeFeedback({ kind: 'error', message });
       setError(message);
     } finally {
-      setBridgePairingBusy(false);
+      if (inScope()) setBridgePairingBusy(false);
     }
-  }, [setError, tenantHeaders, workspace]);
+  }, [scope, setError, tenantHeaders, workspace]);
 
   const noteBridgeDownload = useCallback((label: string) => {
     setBridgeFeedback({
@@ -165,6 +223,8 @@ export function useBridge({
 
   const copyBridgePairingCode = useCallback(
     async (code: string) => {
+      const inScope = refresh.current.capture(scope);
+      if (!inScope) return;
       const compactCode = code.replaceAll('-', '');
       try {
         if (navigator.clipboard?.writeText) {
@@ -180,19 +240,23 @@ export function useBridge({
           input.remove();
           if (!copied) throw new Error('copy_failed');
         }
-        setBridgeFeedback({ kind: 'info', message: '配对码已复制。' });
+        if (inScope())
+          setBridgeFeedback({ kind: 'info', message: '配对码已复制。' });
       } catch {
+        if (!inScope()) return;
         const message = '复制失败，请手动选择配对码';
         setBridgeFeedback({ kind: 'error', message });
         setError(message);
       }
     },
-    [setError],
+    [scope, setError],
   );
 
   useEffect(() => {
-    if (!workspace) {
-      setBridgeDevices([]);
+    refresh.current.reset(scope);
+    setBridgeBusy(false);
+    if (!workspaceId) {
+      setBridgeSnapshot(null);
       setBridgePairing(null);
       setBridgeFeedback(null);
       return;
@@ -201,13 +265,19 @@ export function useBridge({
     const timer = window.setInterval(() => {
       void loadBridgeDevices(false, true);
     }, 15_000);
-    return () => window.clearInterval(timer);
-  }, [loadBridgeDevices, workspace]);
+    const coordinator = refresh.current;
+    return () => {
+      window.clearInterval(timer);
+      coordinator.reset(null);
+    };
+  }, [loadBridgeDevices, scope, workspaceId]);
 
   useEffect(() => {
     setBridgePairing(null);
     setBridgeFeedback(null);
-  }, [workspace?.workspaceId]);
+    setBridgePairingBusy(false);
+    setBridgeRecoveryActive(false);
+  }, [scope]);
 
   useEffect(() => {
     if (!bridgeRecoveryActive || !workspace) return;
@@ -220,6 +290,9 @@ export function useBridge({
   return {
     bridgeBusy,
     bridgeDevices,
+    bridgeStatusKnown,
+    bridgeLastRefreshedAt,
+    bridgeRefreshError,
     bridgeFeedback,
     bridgeOpen,
     bridgePairing,
