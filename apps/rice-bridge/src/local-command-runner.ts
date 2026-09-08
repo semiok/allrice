@@ -2,6 +2,7 @@ import {
   RuntimeLocalCommandSchema,
   RuntimeLocalCommandResultSchema,
   localCommandToolchainImageV1,
+  localCommandToolchainForPlatform,
   type RuntimeLocalCommand,
   type RuntimeLocalCommandResult,
 } from '@allrice/contracts';
@@ -50,9 +51,17 @@ export class LocalCommandRunner {
   }
 
   async preflight() {
+    const toolchain = localCommandToolchainForPlatform(
+      process.platform === 'darwin'
+        ? `macos-${process.arch}`
+        : process.platform,
+    );
+    if (!toolchain || toolchain.imageDigest !== this.config.imageDigest)
+      throw new LocalCommandError('UNSUPPORTED_NATIVE_PLATFORM');
     await this.api.verifySocket();
     const info = await this.api.json<{
       OSType: string;
+      Architecture: string;
       CgroupVersion: string;
       MemoryLimit: boolean;
       SwapLimit: boolean;
@@ -62,6 +71,9 @@ export class LocalCommandRunner {
     }>('GET', '/info');
     if (
       info.OSType !== 'linux' ||
+      !(toolchain.architecture === 'arm64'
+        ? ['aarch64', 'arm64'].includes(info.Architecture)
+        : ['x86_64', 'amd64'].includes(info.Architecture)) ||
       info.CgroupVersion !== '2' ||
       !info.MemoryLimit ||
       !info.SwapLimit ||
@@ -76,7 +88,11 @@ export class LocalCommandRunner {
       Os: string;
       Architecture: string;
     }>('GET', `/images/${this.config.imageDigest}/json`);
-    if (image.Id !== this.config.imageDigest || image.Os !== 'linux')
+    if (
+      image.Id !== this.config.imageDigest ||
+      image.Os !== 'linux' ||
+      image.Architecture !== toolchain.architecture
+    )
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
     return {
       backend: 'local-vm-container-v1' as const,
@@ -111,7 +127,7 @@ export class LocalCommandRunner {
       throw new LocalCommandError('INVALID_ATTEMPT');
     if (command.arguments.imageDigest !== this.config.imageDigest)
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
-    await this.preflight();
+    const profile = await this.preflight();
     const bundle = await readLocalCommandInputs(root, command);
     if (
       options.signal?.aborted ||
@@ -144,7 +160,7 @@ export class LocalCommandRunner {
     const limits = command.arguments.limits;
     const container = await this.api.json<{ Id: string }>(
       'POST',
-      `/containers/create?name=allrice-${options.attemptId}`,
+      `/containers/create?name=allrice-${options.attemptId}&platform=linux%2F${profile.architecture}`,
       {
         Image: this.config.imageDigest,
         Entrypoint: ['/usr/local/bin/node'],

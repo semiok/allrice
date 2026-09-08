@@ -5,7 +5,7 @@ import {
   RuntimeLocalCommandProfileSchema,
   BridgeDeviceSchema,
   EmployeeExecutionSnapshotSchema,
-  localCommandToolchainImageV1,
+  isLocalCommandProfileForPlatform,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   isRuntimeRelativePath,
@@ -149,11 +149,12 @@ export function createGovernedBridgeOperationLedger(
 
       const [currentDevice] = await tx<
         {
+          platform: string;
           capabilities: string[];
           last_seen_at: Date | null;
           revoked_at: Date | null;
         }[]
-      >`select capabilities,last_seen_at,revoked_at from allrice_bridge_devices
+      >`select platform,capabilities,last_seen_at,revoked_at from allrice_bridge_devices
         where id=${device.id} and organization_id=${device.organizationId}
           and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} for share`;
       const [grant] = await tx<
@@ -215,7 +216,10 @@ export function createGovernedBridgeOperationLedger(
 
       let profileReportedAt: Date | null = null;
       if (command) {
-        if (!localCommandEnabled() || device.platform !== 'macos-x64')
+        if (
+          !localCommandEnabled() ||
+          device.platform !== currentDevice.platform
+        )
           throw new RuntimePolicyError('bridge_authority_changed');
         const [reported] = await tx<{ profile: unknown; reported_at: Date }[]>`
           select profile,reported_at from allrice_bridge_runtime_profiles
@@ -237,9 +241,11 @@ export function createGovernedBridgeOperationLedger(
             !profile.data.features?.includes('npm_dependencies')) ||
           (command.arguments.diagnostics &&
             !profile.data.features?.includes('project_diagnostics')) ||
-          profile.data.architecture !== 'amd64' ||
+          !isLocalCommandProfileForPlatform(
+            currentDevice.platform,
+            profile.data,
+          ) ||
           profile.data.imageDigest !== command.arguments.imageDigest ||
-          profile.data.imageDigest !== localCommandToolchainImageV1 ||
           !current ||
           reported.reported_at.getTime() <= current.now.getTime() - 90_000 ||
           reported.reported_at > current.now

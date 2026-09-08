@@ -16,10 +16,32 @@ import {
 
 const path = z.string().max(1024).refine(isRuntimeRelativePath);
 
-// Immutable, actually exercised P05 toolchain. Availability reports cannot
-// substitute an arbitrary image for this reviewed executable base.
+// Immutable multi-platform OCI index (not a per-architecture config digest).
+// Docker's containerd image store reports this index as image.Id on both hosts.
+// Always bind it to the verified native platform; a digest alone is insufficient.
 export const localCommandToolchainImageV1 =
   'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5';
+
+export function localCommandToolchainForPlatform(platform: string) {
+  if (platform !== 'macos-x64' && platform !== 'macos-arm64') return null;
+  return {
+    imageDigest: localCommandToolchainImageV1,
+    architecture:
+      platform === 'macos-arm64' ? ('arm64' as const) : ('amd64' as const),
+  };
+}
+
+export function isLocalCommandProfileForPlatform(
+  platform: string,
+  profile: { imageDigest: string; architecture: string },
+) {
+  const toolchain = localCommandToolchainForPlatform(platform);
+  return (
+    toolchain !== null &&
+    profile.architecture === toolchain.architecture &&
+    profile.imageDigest === toolchain.imageDigest
+  );
+}
 
 /** Opt-in v2 ledger payload; never part of the legacy advertised capabilities. */
 export const RuntimeLocalCommandSchema = z

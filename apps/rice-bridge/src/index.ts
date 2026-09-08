@@ -18,7 +18,7 @@ import {
   type BridgeWorkspaceSelectionRequest,
 } from '@allrice/contracts';
 
-import { bridgeRequest } from './client.js';
+import { bridgeRequest, BridgeClientError } from './client.js';
 import { BridgeDualTransport } from './dual-transport.js';
 import {
   deleteConfig,
@@ -31,6 +31,12 @@ import {
   type BridgeConfig,
 } from './config.js';
 import { LocalExecutionError, executeLocalCommand } from './executor.js';
+import {
+  nativeSandboxConfig,
+  sandboxOptIn,
+  saveSandboxOptIn,
+} from './sandbox-settings.js';
+import { bridgeVersion } from './version.js';
 
 const execFileAsync = promisify(execFile);
 const defaultBridgeServer =
@@ -247,8 +253,15 @@ async function completeWorkspaceSelection(
 
 async function start() {
   let { config, token } = await credentials(await readConfig());
+  const optedIn = await sandboxOptIn(config).catch(() => {
+    console.warn(
+      '沙箱设置无效，保持普通文件功能；请运行 sandbox status 检查。',
+    );
+    return false;
+  });
   const operationLedgerEnabled =
-    process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1';
+    (process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED ??
+      (optedIn ? '1' : '0')) === '1';
   const operationModule = operationLedgerEnabled
     ? await import('./operation-client.js')
     : null;
@@ -285,16 +298,22 @@ async function start() {
     : null;
   let stopping = false;
   const commandAbort = new AbortController();
+  const sandboxConfig = optedIn ? nativeSandboxConfig() : undefined;
+  const runnerSocket =
+    process.env.ALLRICE_LOCAL_DOCKER_SOCKET ?? sandboxConfig?.socketPath;
+  const runnerImage =
+    process.env.ALLRICE_LOCAL_COMMAND_IMAGE ?? sandboxConfig?.imageDigest;
   const runner =
     operationLedgerEnabled &&
-    process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
+    (process.env.ALLRICE_LOCAL_COMMAND_ENABLED ?? (optedIn ? '1' : '0')) ===
+      '1' &&
     process.platform === 'darwin' &&
-    process.arch === 'x64' &&
-    process.env.ALLRICE_LOCAL_DOCKER_SOCKET &&
-    process.env.ALLRICE_LOCAL_COMMAND_IMAGE
+    ['x64', 'arm64'].includes(process.arch) &&
+    runnerSocket &&
+    runnerImage
       ? new (await import('./local-command-runner.js')).LocalCommandRunner({
-          socketPath: process.env.ALLRICE_LOCAL_DOCKER_SOCKET,
-          imageDigest: process.env.ALLRICE_LOCAL_COMMAND_IMAGE,
+          socketPath: runnerSocket,
+          imageDigest: runnerImage,
         })
       : undefined;
   let runnerAvailable = false;
@@ -306,7 +325,7 @@ async function start() {
     stopping = true;
     commandAbort.abort();
   });
-  console.info(`Rice Bridge 正在运行：${config.deviceName}`);
+  console.info(`Rice Bridge ${bridgeVersion} 正在运行：${config.deviceName}`);
   let lastHeartbeatAt = 0;
   let heartbeatInFlight: Promise<void> | null = null;
   const heartbeat = () => {
@@ -388,7 +407,19 @@ async function start() {
               signal: commandAbort.signal,
               request: currentTransport()?.request,
             },
-          ).pollOnce();
+          )
+            .pollOnce()
+            .catch((error: unknown) => {
+              // A server-side rollback must not break the legacy file queue.
+              // Retain the journal/outbox; never reinterpret a rejected command.
+              if (
+                error instanceof BridgeClientError &&
+                error.status === 404 &&
+                error.message === 'FEATURE_DISABLED'
+              )
+                return false;
+              throw error;
+            });
           reconnectDelayMs = 1_000;
           if (worked) continue;
           // Existing file/git tools still use the legacy queue in P05. Keep
@@ -512,8 +543,43 @@ async function revoke() {
 
 function help() {
   console.info(
-    `Rice Bridge v0.2\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  revoke`,
+    `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  --version\n  revoke\n\n沙箱默认关闭，enable 需要已安装的独立 allrice-b2 VM；不自动安装、不开放宿主 Shell，仍需服务端启用、工作区授权和逐次审批。`,
   );
+}
+
+async function sandbox(args: string[]) {
+  const action = args[0] ?? 'status';
+  if (!['status', 'enable', 'disable'].includes(action))
+    throw Error('sandbox status|enable|disable');
+  if (action === 'disable') {
+    await saveSandboxOptIn(await readConfig(), false);
+    console.info('已关闭本地沙箱设置，请退出并重新打开 Bridge 生效。');
+    return;
+  }
+  const runner = new (
+    await import('./local-command-runner.js')
+  ).LocalCommandRunner(nativeSandboxConfig());
+  const profile = await runner.preflight();
+  console.info(
+    `本地 Linux 沙箱可用：${profile.architecture} · 固定 Node 工具链；不等于服务端已授权执行。`,
+  );
+  if (action === 'enable') {
+    const { config, token } = await credentials(await readConfig());
+    // Fail closed before persisting opt-in if this tenant/server has not enabled it.
+    await bridgeRequest({
+      server: config.server,
+      path: '/api/v1/bridge/device/runtime-profile',
+      method: 'POST',
+      token,
+      body: { contractVersion: 1, ...profile, available: true },
+      maximumResponseBytes: 4096,
+      timeoutMs: 5000,
+    });
+    await saveSandboxOptIn(config, true);
+    console.info(
+      '已保存本机沙箱设置；退出并重新打开 Bridge 后生效。命令仍需工作区授权、员工权限和网页单次审批。',
+    );
+  }
 }
 
 async function main() {
@@ -524,6 +590,9 @@ async function main() {
   else if (command === 'grant') await grant(args);
   else if (command === 'start') await start();
   else if (command === 'status') await status();
+  else if (command === 'sandbox') await sandbox(args);
+  else if (command === '--version' || command === 'version')
+    console.info(bridgeVersion);
   else if (command === 'revoke') await revoke();
   else help();
 }
