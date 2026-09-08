@@ -1,7 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +28,11 @@ const deviceId = '00000000-0000-4000-8000-000000000011';
 const supportedNativeSandbox =
   process.platform === 'darwin' && ['arm64', 'x64'].includes(process.arch);
 
-async function fixture(paired = true, ledger: boolean | null = false) {
+async function fixture(
+  paired = true,
+  ledger: boolean | null = false,
+  credentialReason?: string,
+) {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-p13-desktop-')),
   );
@@ -86,6 +97,20 @@ async function fixture(paired = true, ledger: boolean | null = false) {
   };
   const path = join(root, 'config.json');
   if (paired) await writeFile(path, JSON.stringify(config), { mode: 0o600 });
+  if (credentialReason) {
+    await mkdir(`${path}.credentials`, { mode: 0o700 });
+    await writeFile(
+      join(`${path}.credentials`, `${deviceId}.json`),
+      JSON.stringify({
+        version: 1,
+        deviceId,
+        storage: 'private-file',
+        token: 'synthetic-secret-token',
+        keychainUnavailableReason: credentialReason,
+      }),
+      { mode: 0o600 },
+    );
+  }
   const launch = (command = 'desktop') => {
     const child = spawn(process.execPath, ['--import', 'tsx', index, command], {
       cwd: project,
@@ -94,7 +119,9 @@ async function fixture(paired = true, ledger: boolean | null = false) {
         HOME: process.env.HOME,
         TMPDIR: process.env.TMPDIR,
         ALLRICE_BRIDGE_CONFIG_PATH: path,
-        ALLRICE_BRIDGE_DEVICE_TOKEN: 'synthetic-secret-token',
+        ...(credentialReason
+          ? {}
+          : { ALLRICE_BRIDGE_DEVICE_TOKEN: 'synthetic-secret-token' }),
         // Never probe the developer's real allrice-b2 VM for this protocol test.
         ALLRICE_LOCAL_DOCKER_SOCKET: join(root, 'absent-test-docker.sock'),
         TSX_TSCONFIG_PATH: join(project, 'tsconfig.base.json'),
@@ -205,6 +232,56 @@ it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and
   expect(app.child.exitCode).toBe(0);
   expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
   expect(app.text()).not.toContain('synthetic-secret-token');
+}, 15_000);
+
+it.each([
+  'interaction-not-allowed',
+  'item-not-found',
+  'timed-out',
+  'unavailable',
+])(
+  'real desktop core projects only the safe %s reason from a device-bound private fixture',
+  async (reason) => {
+    // This is a real core process and a real private file, not an OS Keychain
+    // test. A committed private source must never query the system Keychain.
+    const f = await fixture(true, false, reason);
+    const app = f.launch();
+    await wait(() => f.polls() > 0);
+    expect((await app.request('status')).data).toMatchObject({
+      credentialStorage: 'private-file',
+      credentialFileSecure: true,
+      keychainUnavailableReason: reason,
+    });
+    expect((await app.request('diagnostics')).data).toMatchObject({
+      credentialStorage: 'private-file',
+      keychainUnavailableReason: reason,
+    });
+    expect((await app.request('stop')).ok).toBe(true);
+    await exited(app.child);
+    expect(app.child.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    expect(app.text()).not.toContain('synthetic-secret-token');
+    expect(app.text()).not.toContain(f.root);
+  },
+  15_000,
+);
+
+it('rejects a forged credential reason without exporting its content or requesting another pairing', async () => {
+  const f = await fixture(true, false, 'synthetic-secret-forged-reason');
+  const app = f.launch();
+  await wait(() => app.frames.some((frame) => frame.type === 'state'));
+  expect((await app.request('status')).data).toMatchObject({
+    mode: 'error',
+    errorCode: 'DESKTOP_CREDENTIAL_UNAVAILABLE',
+    keychainUnavailableReason: null,
+    deviceId,
+  });
+  expect(f.polls()).toBe(0);
+  expect((await app.request('stop')).ok).toBe(true);
+  await exited(app.child);
+  expect(app.text()).not.toContain('synthetic-secret-forged-reason');
+  expect(app.text()).not.toContain('synthetic-secret-token');
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
 }, 15_000);
 
 it('new GUI and CLI cannot double-consume even with operation ledger disabled; crash releases owner', async () => {

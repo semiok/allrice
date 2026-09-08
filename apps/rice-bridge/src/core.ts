@@ -628,13 +628,26 @@ export async function start(
   console.info('Rice Bridge 已停止');
 }
 
-async function hasStoredPairing() {
+export async function hasStoredPairing() {
+  let config: BridgeConfig;
   try {
-    const config = await readConfig();
+    config = await readConfig();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return false;
+    throw Error('本机配对配置无法读取，请保留原文件并检查诊断，不要重新配对。');
+  }
+  if (!config || typeof config.deviceId !== 'string' || !config.deviceId) {
+    throw Error('本机配对配置无效，请保留原文件并检查诊断，不要重新配对。');
+  }
+  try {
     await readDeviceToken(config.deviceId);
     return true;
   } catch {
-    return false;
+    // A temporarily inaccessible credential is not a new installation. Never
+    // consume another pairing code or replace the existing identity here.
+    throw Error(
+      '本机已有配对，但凭证暂不可读。请检查钥匙串或凭证文件权限，不要重新配对或删除配置。',
+    );
   }
 }
 
@@ -692,9 +705,20 @@ export async function revoke() {
     method: 'POST',
     token,
   });
-  await deleteDeviceToken(config.deviceId);
-  await deleteConfig();
-  console.info('Rice Bridge 设备授权已撤销');
+  const credentialCleanup = await deleteDeviceToken(config.deviceId);
+  const configDeleted = await deleteConfig();
+  const cleanupComplete = credentialCleanup.complete && configDeleted;
+  if (cleanupComplete) console.info('Rice Bridge 设备授权已撤销');
+  else
+    console.warn(
+      'Rice Bridge 服务端授权已撤销，但本机凭证清理未完成。请保留诊断记录；不要使用已失效的令牌重试撤销，也不要把此结果当作所有本机凭证均已删除。',
+    );
+  return {
+    serverRevoked: true as const,
+    cleanupComplete,
+    configDeleted,
+    credentialCleanup,
+  };
 }
 
 export function help() {
