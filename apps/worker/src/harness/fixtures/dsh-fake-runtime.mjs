@@ -234,6 +234,46 @@ lines.on('line', (line) => {
   } else if (prompt.includes('think-first')) {
     reasoning(sessionId, turn, 0);
     text = 'visible answer';
+  } else if (prompt.includes('native-result-outcome:')) {
+    const outcome = prompt.match(/native-result-outcome:([a-z-]+)/)?.[1];
+    reasoning(sessionId, turn, 0);
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId: 'native-result-outcome-1',
+      name: 'local_fs_list',
+      arguments: JSON.stringify({ secret: 'private-tool-arguments' }),
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 1,
+      ...(outcome === 'legacy-error'
+        ? {
+            error: {
+              name: 'TestError',
+              code: 'SYNTHETIC_FAILURE',
+              message: 'private-error-text',
+            },
+          }
+        : {}),
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'native-result-outcome-1',
+            ...(outcome === 'failed'
+              ? { isError: true }
+              : outcome === 'succeeded'
+                ? { isError: false }
+                : outcome === 'truthy-string'
+                  ? { isError: 'false' }
+                  : {}),
+            content: [{ type: 'text', text: 'private-tool-result' }],
+          },
+        ],
+      },
+    });
+    text = 'native-result-outcome-finished';
   } else if (prompt.includes('native-search')) {
     reasoning(sessionId, turn, 0);
     event(sessionId, 'tool/call', {
