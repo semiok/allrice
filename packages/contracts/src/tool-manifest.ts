@@ -41,7 +41,8 @@ export const allRiceToolManifest = [
     canonicalName: 'workspace.skill.read',
     capability: 'storage:read',
     risk: 'read_only',
-    transport: 'envelope',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_skill_read',
   },
   {
     canonicalName: 'cloud.mcp.call',
@@ -53,7 +54,8 @@ export const allRiceToolManifest = [
     canonicalName: 'cloud.process.execute',
     capability: 'storage:write',
     risk: 'side_effect',
-    transport: 'envelope',
+    transport: 'dsh_broker_native',
+    dshWireName: 'cloud_process_execute',
   },
   {
     canonicalName: 'workspace.file.list',

@@ -108,7 +108,9 @@ colima ssh --profile allrice-cloud-b4 -- sudo /usr/local/lib/allrice-cloud/watch
 
 ## 独立分片的验证与发布边界
 
-本片只新增 `cloud.process.execute` envelope 工具：manifest 26 项、原生 DSH 22 项、Broker 原生 21 项。它仅在云开关和 Runtime Policy 开关开启、冻结工具 allowlist 精确包含该工具且具备 storage:write 时对原生 Agent Loop 可见。可见不等于批准；不走旧关键词副作用路由，每次调用仍须精确审批。其他未选中的副作用工具和只读预览不因此获得执行权限。
+本片只新增 `cloud.process.execute` 原生 Broker 工具：manifest 26 项、原生 DSH 23 项、Broker 原生 22 项。它仅在云开关和 Runtime Policy 开关开启、冻结工具 allowlist 精确包含该工具且具备 storage:write 时对原生 Agent Loop 可见。可见不等于批准；不走旧关键词副作用路由，每次调用仍须精确审批。其他未选中的副作用工具和只读预览不因此获得执行权限。
+
+新增独立 `allrice-cloud-native-tools.mjs` 将工具结构与参数边界注册给 DSH，再经原有 JSON-RPC 回到 Worker Broker；不依赖模型生成 XML 文本。共用原生登记入口保留逐次冻结 allowlist，执行命令明确禁止并发；Broker 仍是租户、目标、审批和预算的最终校验层。真实 pinned DSH 子进程与本地合成 Provider 的工具往返测试证明参数/结果回传、非法限额在 Broker 前拒绝；该协议测试不冒称真实模型业务已完成。
 
 P15 复用现有 P04 审批与共享账本；统一云/MCP 审批工作台留在后续 P16。此片不复制其 cloud-operation-view/API/UI，也不复制 Skill 包、MCP 连接或对账工具。默认关闭的功能在 B4 整批界面与业务链验收前不应向真实租户开启。
 

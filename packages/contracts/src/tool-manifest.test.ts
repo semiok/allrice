@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { allRiceToolManifest } from './tool-manifest.ts';
 
 describe('AllRice tool manifest', () => {
-  it('adds the P19 deterministic export adapter while retaining 22 native transports', () => {
+  it('adds the P19 export adapter with native cloud and frozen resource prerequisites', () => {
     const canonicalNames = allRiceToolManifest.map(
       (tool) => tool.canonicalName,
     );
@@ -25,8 +25,8 @@ describe('AllRice tool manifest', () => {
 
     expect(canonicalNames).toHaveLength(29);
     expect(new Set(canonicalNames).size).toBe(29);
-    expect(nativeTools).toHaveLength(22);
-    expect(brokerNativeTools).toHaveLength(21);
+    expect(nativeTools).toHaveLength(24);
+    expect(brokerNativeTools).toHaveLength(23);
     expect(
       brokerNativeTools
         .filter((tool) =>
@@ -56,9 +56,7 @@ describe('AllRice tool manifest', () => {
     ]);
     expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
       'workspace.reconciliation.export',
-      'workspace.skill.read',
       'cloud.mcp.call',
-      'cloud.process.execute',
       'workspace.file.list',
       'workspace.file.read',
       'web.fetch',
@@ -67,7 +65,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(22);
+    expect(new Set(wireNames).size).toBe(24);
   });
 
   it('defines capability and risk metadata for every canonical tool', () => {

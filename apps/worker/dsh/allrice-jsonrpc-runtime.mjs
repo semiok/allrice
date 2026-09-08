@@ -27,12 +27,16 @@ import {
   deliverDshInput,
   discardPendingDshInputs,
 } from './allrice-dsh-inputs.mjs';
+import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
+import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
+  ...cloudNativeTools,
+  ...skillNativeTools,
   {
     canonicalName: 'browser.run',
     wireName: 'browser_run',
@@ -1073,8 +1077,10 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           },
           timeoutMs: tool.timeoutMs ?? 65_000,
           isConcurrencySafe: () =>
+            tool.isConcurrencySafe ??
             tool.canonicalName !== 'local.process.execute',
           execute: async (args, exec) => {
+            tool.validateArguments?.(args);
             const response = await this.toolBrokerRequest(
               {
                 toolCallId: exec.callId,
