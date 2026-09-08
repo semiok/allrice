@@ -68,6 +68,20 @@
 
 ## 早期失败与处理记录
 
+### 最终源码整合验收：通过（2026-09-08）
+
+源 SHA `6e9d7f1b48544417dac18b165b9856106720d69d` 在上述脚本补正后完成一次 bounded 模型调用，39,928 ms，进程退出码 0，起止工作树干净。调用前同源码的真实 PostgreSQL audit 5 项和 frozen script 15 项预检全部通过，无跳过。
+
+15 个阶段完整：一次澄清采纳、两次冻结资源读取、一次精确审批的云计算、一次导出；4 条允许审计的组织/工作区/actor/Run/execution、工具名称和次数精确匹配。工件归属与 object ID、8,902 字节 XLSX 的 hash 及全部 cell、实际 ChatFlow renderer 的完整 URL/路径/query/点击、当前 Run 绑定的 assistant message 保存均通过。清理错误 0，独立复核确认合成 schema、运行和存储目录均已删除。
+
+- 私有证据：系统临时目录 `allrice-b4-dsh-1xqypU/`，保留原 `result.json`、`reconciliation.xlsx`、15 个阶段报告及 `cleanup-verified.json`。
+- 报告 SHA-256：`e72ae3a30e081e089e5f639e3412d8755b264ef8163f6cbdbd84b0480ef141c5`。
+- XLSX SHA-256：`7a70019c767e454c08d7ac7f3f41edec812203b6631c492ed52ced6443a7ced1`。
+
+相同整合源码全量检查：lint、typecheck、format、DSH 验证和 build 通过；1294 个测试通过，343 个需显式启用的测试跳过，不把跳过记成通过。构建 ID `ke2HY9T9lTWxJlVLYJ3aM`。此前整合 `924ed7e` 的独立 Chrome→Next→PG→gVisor→实际 HTTP 下载 XLSX 与 MCP 浏览器检查亦已通过；两个 SHA 之间只变更数据库内容校验、测试、验收与文档，没有更改执行 handler 或页面实现。
+
+本次证明隔离环境的真实模型业务闭环，并不等于已完成实际 Dev 租户的高权限启用验收。Dev 可先安装兼容版本且所有新增执行开关关闭；真实登录→常驻 Worker→公共 HTTPS 自有 MCP 服务→精确审批/撤权仍为独立待验门禁，不得借用 Snow/Drink 或个人账号扩权，也不得将这部分标为 B4 全部完成。
+
 初期真实 DSH 返回 `DSH_PI_AI_ERROR`，安全诊断为 `Provided authentication token is expired.`。这是远端拒绝，并不证明本地过期字段已经到期；后台 `connected` 也不能代替真实 token 可用性验证。主代理按已授权的同一个 Dev 账号完成原生刷新后恢复模型测试，没有切换账号或另行登录。
 
 第一次并行运行两个云集成文件出现 6 个 `unknown`，原 schema 随生命周期清理，没有足够证据断言根因。相同代码逐文件和 `--no-file-parallelism` 重跑均 14/14。共享 VM 瞬态资源/attestation 竞争只是待验证假设；没有放宽 preflight、租约或 fail-closed。实机验收应独占专属 VM、串行执行。
