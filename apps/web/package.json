@@ -6,8 +6,9 @@
   "scripts": {
     "build": "next build",
     "clean": "rm -rf .next",
-    "dev": "next dev --hostname 0.0.0.0 --port ${ALLRICE_WEB_PORT:-3000}",
-    "start": "next start --hostname 0.0.0.0 --port ${ALLRICE_WEB_PORT:-3000}",
+    "dev": "node server.mjs --dev --hostname 0.0.0.0 --port ${ALLRICE_WEB_PORT:-3000}",
+    "start": "node server.mjs --hostname 0.0.0.0 --port ${ALLRICE_WEB_PORT:-3000}",
+    "start:http": "next start --hostname 0.0.0.0 --port ${ALLRICE_WEB_PORT:-3000}",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,7 +21,8 @@
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

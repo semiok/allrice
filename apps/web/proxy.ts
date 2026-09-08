@@ -26,11 +26,16 @@ const bridgeDevicePaths = new Set([
   '/api/v1/bridge/device/commands/next',
   '/api/v1/bridge/device/workspace-selections/next',
   '/api/v1/bridge/device/revoke',
+  '/api/v1/bridge/device/runtime-profile',
+  '/api/v1/bridge/device/operations/next',
 ]);
 
 export function isBridgeDeviceApiPath(pathname: string) {
   return (
     bridgeDevicePaths.has(pathname) ||
+    /^\/api\/v1\/bridge\/device\/operations\/[0-9a-f-]{36}\/(start|heartbeat|output|receipts|service)$/.test(
+      pathname,
+    ) ||
     /^\/api\/v1\/bridge\/device\/commands\/[^/]+\/complete$/.test(pathname) ||
     /^\/api\/v1\/bridge\/device\/workspace-selections\/[^/]+\/complete$/.test(
       pathname,

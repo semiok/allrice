@@ -5,6 +5,7 @@ export * from './usage.ts';
 export * from './interactions.ts';
 export * from './policy.ts';
 export * from './bridge-journal.ts';
+export * from './bridge-socket.ts';
 export * from './local-command.ts';
 export * from './local-service.ts';
 export * from './local-service-http.ts';
