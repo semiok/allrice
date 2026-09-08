@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { allRiceToolManifest } from '@allrice/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -98,6 +99,33 @@ describe('AllRice worker tool manifest contract', () => {
         /canonicalName: '([^']+)',\s+wireName: '([^']+)'/g,
       ),
     ].map((match) => ({ canonicalName: match[1]!, wireName: match[2]! }));
+    // Native registrations may live in audited modules. Inspect the actual
+    // exports only when the runtime imports AND spreads them into its registry.
+    const moduleImports = [
+      ...runtimeSource.matchAll(
+        /import \{ (\w+) \} from '(\.\/allrice-[a-z-]+-native-tools\.mjs)';/g,
+      ),
+    ];
+    const spreads = [...brokerNativeBlock.matchAll(/\.\.\.(\w+),/g)];
+    expect(spreads.map((match) => match[1]).toSorted()).toEqual(
+      moduleImports.map((match) => match[1]).toSorted(),
+    );
+    for (const [, exported, modulePath] of moduleImports) {
+      const module = await import(
+        pathToFileURL(resolve(import.meta.dirname, '../dsh', modulePath!)).href
+      );
+      const registrations = module[exported!] as {
+        canonicalName: string;
+        wireName: string;
+      }[];
+      expect(Array.isArray(registrations)).toBe(true);
+      runtimePairs.push(
+        ...registrations.map(({ canonicalName, wireName }) => ({
+          canonicalName,
+          wireName,
+        })),
+      );
+    }
     const expectedPairs = allRiceToolManifest
       .filter((tool) => tool.transport === 'dsh_broker_native')
       .map((tool) => ({
