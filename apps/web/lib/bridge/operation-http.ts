@@ -305,12 +305,18 @@ export function createRuntimeBridgeHttpHandler(input: {
         }
         if (!ledger.recordOutput)
           throw new HttpProblem(404, 'FEATURE_DISABLED');
+        const output = RuntimeBridgeOutputSchema.parse(body);
         await ledger.recordOutput({
-          ...RuntimeBridgeOutputSchema.parse(body),
+          ...output,
           scope,
           operationId: id,
         });
-        return json({ accepted: true });
+        return json({
+          accepted: true,
+          operationId: id,
+          sequence: output.sequence,
+          digest: `sha256:${createHash('sha256').update(canonicalRuntimeBridgeJson(output)).digest('hex')}`,
+        });
       }
       const receipt = RuntimeBridgeReceiptSchema.parse(
         await boundedJson(request),

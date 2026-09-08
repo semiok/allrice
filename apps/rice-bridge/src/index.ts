@@ -430,7 +430,7 @@ async function start() {
     }
   } finally {
     clearInterval(heartbeatTimer);
-    transport?.close();
+    (transport as BridgeDualTransport | null)?.close();
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
     if (journal)
       await (

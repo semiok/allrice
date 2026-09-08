@@ -95,6 +95,15 @@ export const RuntimeBridgeOutputSchema = RuntimeBridgeHeartbeatSchema.extend({
   content: z.string().max(65_536),
 }).strict();
 
+export const RuntimeBridgeOutputAckSchema = z
+  .object({
+    accepted: z.literal(true),
+    operationId: UuidSchema,
+    sequence: z.number().int().min(0).max(255),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+
 export const RuntimeBridgeReceiptAckSchema = z
   .object({
     receiptId: UuidSchema,

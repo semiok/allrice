@@ -36,6 +36,8 @@ import {
 
 import { BridgeJournal } from '../../../../apps/rice-bridge/src/journal.js';
 import { RuntimeBridgeOperationClient } from '../../../../apps/rice-bridge/src/operation-client.js';
+import { BridgeDualTransport } from '../../../../apps/rice-bridge/src/dual-transport.js';
+import { createBridgeConnectionAuthority } from '../bridge-connections.ts';
 import { createRuntimeBridgeHttpHandler } from '../../../../apps/web/lib/bridge/operation-http.js';
 import { bridgeDeviceStatus } from '../bridge.ts';
 import type * as DatabaseClient from '../core/client.ts';
@@ -67,7 +69,7 @@ afterEach(async () => {
   for (const action of cleanups.splice(0).reverse()) await action();
 });
 
-async function fixture() {
+async function fixture(options: { wss?: boolean } = {}) {
   const temporary = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-b1-integration-')),
   );
@@ -315,6 +317,22 @@ async function fixture() {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
   const origin = `http://127.0.0.1:${address.port}`;
+  if (options.wss) {
+    // Runtime import preserves the production .mjs gateway, not a test copy.
+    const modulePath = '../../../../apps/web/server/bridge-socket.mjs';
+    const { createBridgeSocketGateway, createBridgeLoopbackDispatch } =
+      await import(modulePath);
+    const gateway = await createBridgeSocketGateway({
+      authority: createBridgeConnectionAuthority(database),
+      enabled: () => true,
+      dispatch: createBridgeLoopbackDispatch(address.port),
+      heartbeatMs: 100,
+    });
+    server.on('upgrade', (request, socket, head) => {
+      void gateway.upgrade(request, socket, head);
+    });
+    cleanups.push(() => gateway.close());
+  }
   const config = {
     server: origin,
     deviceId: ids.device,
@@ -335,7 +353,21 @@ async function fixture() {
   };
   const journal = await BridgeJournal.open(journalInput);
   cleanups.push(() => journal.close());
-  const client = new RuntimeBridgeOperationClient({ config, token, journal });
+  const transport = options.wss
+    ? new BridgeDualTransport({
+        server: origin,
+        token,
+        deviceId: ids.device,
+        retryBaseMs: 1,
+      })
+    : undefined;
+  if (transport) cleanups.push(async () => transport.close());
+  const client = new RuntimeBridgeOperationClient({
+    config,
+    token,
+    journal,
+    request: transport?.request,
+  });
   async function post(path: string, body?: unknown, credential = token) {
     return fetch(`${origin}/api/v1/bridge/device/operations/${path}`, {
       method: 'POST',
@@ -507,6 +539,38 @@ suite(
         (await f.post('next', { supportsClaimRecovery: true })).status,
       ).toBe(200);
     });
+
+    it.each(['next', 'start', 'receipts'] as const)(
+      'P12 real WSS/HTTP/PG/SQLite lost %s response does not duplicate an actual file write',
+      async (stage) => {
+        const f = await fixture({ wss: true });
+        await f.approve();
+        f.loseResponse(stage);
+        expect(await f.client.pollOnce()).toBe(true);
+        const state = await f.ledger.readOperation(f.scope, f.operationId);
+        if (stage === 'start') {
+          expect(state.status).toBe('unknown');
+          await expect(
+            readFile(join(f.workspaceRoot, 'result.txt')),
+          ).rejects.toMatchObject({ code: 'ENOENT' });
+        } else {
+          expect(state.status).toBe('succeeded');
+          expect(
+            await readFile(join(f.workspaceRoot, 'result.txt'), 'utf8'),
+          ).toBe('one exact approved write');
+          expect(
+            (await f.ledger.readEvents(f.scope, f.operationId)).filter(
+              (e) => e.signal.type === 'operation.outcome',
+            ),
+          ).toHaveLength(1);
+        }
+        expect(await f.client.pollOnce()).toBe(false);
+        expect(await f.journal.pending()).toEqual([]);
+        const [connection] =
+          await database`select epoch from allrice_bridge_connections where device_id=${f.ids.device}`;
+        expect(Number(connection?.epoch)).toBeGreaterThan(0); // this really used WSS, not only HTTP
+      },
+    );
 
     it('P12 claim recovery cannot revive an expired or revoked dispatch or a legacy random lease', async () => {
       for (const mode of ['expired', 'revoked', 'legacy'] as const) {

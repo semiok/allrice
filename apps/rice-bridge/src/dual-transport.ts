@@ -183,7 +183,7 @@ export class BridgeDualTransport {
   }
 
   private async rpc(frame: BridgeSocketRequest, timeoutMs: number) {
-    if (!(await this.connect()) || !this.socket || !this.ready)
+    if (!(await this.connect()) || this.closed || !this.socket || !this.ready)
       throw new SocketUnavailable(false);
     const socket = this.socket,
       text = JSON.stringify(frame);
@@ -218,6 +218,7 @@ export class BridgeDualTransport {
   readonly request: typeof bridgeRequest = async <T>(
     input: BridgeRequestInput,
   ): Promise<T> => {
+    if (this.closed) throw new SocketUnavailable(false);
     if (
       new URL(input.server).origin !== this.origin ||
       input.token !== this.config.token
@@ -260,6 +261,7 @@ export class BridgeDualTransport {
       return response.body as T;
     } catch (error) {
       if (!(error instanceof SocketUnavailable)) throw error;
+      if (this.closed) throw error;
       // Side effects may already have started despite the transport error. Only
       // identical durable evidence/current-state queries are retryable after send.
       const recoverableNext =

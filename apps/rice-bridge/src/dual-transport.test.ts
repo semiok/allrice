@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import type { Socket } from 'node:net';
 import { once } from 'node:events';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { afterEach, expect, it } from 'vitest';
 import {
   bridgeSocketPath,
-  bridgeSocketProtocol,
   bridgeSocketMaximumFrameBytes,
 } from '@allrice/contracts';
 import { BridgeDualTransport } from './dual-transport.js';
@@ -21,6 +21,7 @@ async function fixture(
     lose?: string;
     stall?: boolean;
     wrongDevice?: boolean;
+    stallHandshake?: boolean;
   } = {},
 ) {
   const deviceId = randomUUID(),
@@ -44,12 +45,20 @@ async function fixture(
     })();
   });
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const connectionsToClean = new Set<Socket>();
+  server.on('connection', (socket) => {
+    connectionsToClean.add(socket);
+    socket.once('close', () => connectionsToClean.delete(socket));
+  });
   const sockets: WebSocket[] = [];
+  let upgradeSeen = false;
   server.on('upgrade', (req, socket, head) => {
+    upgradeSeen = true;
     expect(req.url).toBe(bridgeSocketPath);
     expect(req.headers.authorization).toBe(`Bearer ${token}`);
     expect(req.headers.origin).toBeUndefined();
     expect(req.headers.cookie).toBeUndefined();
+    if (options.stallHandshake) return;
     if (options.disabled || options.reject) {
       socket.end(
         `HTTP/1.1 ${options.reject ?? 404} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
@@ -102,6 +111,7 @@ async function fixture(
   const origin = `http://127.0.0.1:${address.port}`;
   cleanup.push(async () => {
     for (const ws of sockets) ws.terminate();
+    for (const socket of connectionsToClean) socket.destroy();
     wss.close();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -135,6 +145,9 @@ async function fixture(
     request,
     get connections() {
       return connections;
+    },
+    get upgradeSeen() {
+      return upgradeSeen;
     },
   };
 }
@@ -228,4 +241,19 @@ it('recovers after a real server-side socket close without parallel reconnect st
     await Promise.all([f.request(), f.request()]);
   }
   expect(f.connections).toBe(2);
+});
+
+it('closing during the initial handshake cannot send a new HTTP start afterward', async () => {
+  const f = await fixture({ stallHandshake: true });
+  const pending = f.request('start', {});
+  const failure = expect(pending).rejects.toThrow('Bridge socket unavailable');
+  for (let i = 0; i < 100 && !f.upgradeSeen; i++)
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  expect(f.upgradeSeen).toBe(true);
+  f.client.close();
+  await failure;
+  expect(f.calls).toHaveLength(0);
+  await expect(f.request('start', {})).rejects.toThrow(
+    'Bridge socket unavailable',
+  );
 });

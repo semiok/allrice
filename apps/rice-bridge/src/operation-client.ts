@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises';
 import {
   RuntimeBridgeDispatchSchema,
   RuntimeBridgeReceiptAckSchema,
+  RuntimeBridgeOutputAckSchema,
   RuntimeBridgeStartResponseSchema,
   RuntimeOperationSnapshotSchema,
   runtimeContractEqual,
@@ -15,7 +16,11 @@ import { bridgeRequest } from './client.js';
 import type { BridgeConfig } from './config.js';
 import { executeLocalCommand } from './executor.js';
 import { executeChangeset } from './changeset-executor.js';
-import { BridgeJournalError, type BridgeJournal } from './journal.js';
+import {
+  BridgeJournalError,
+  bridgeDigest,
+  type BridgeJournal,
+} from './journal.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import {
@@ -45,9 +50,10 @@ export class RuntimeBridgeOperationClient {
   private request: typeof bridgeRequest = (input) =>
     (this.input.request ?? bridgeRequest)(input);
 
-  async flush() {
-    await flushLocalServiceEvents(this.input);
-    for (const chunk of await this.input.journal.pendingOutput()) {
+  private async deliverOutput(
+    chunk: Awaited<ReturnType<BridgeJournal['recordOutput']>>,
+  ) {
+    const ack = RuntimeBridgeOutputAckSchema.parse(
       await this.request({
         server: this.input.config.server,
         path: `${runtimeBridgeOperationPath}/${chunk.attempt.operationId}/output`,
@@ -56,11 +62,24 @@ export class RuntimeBridgeOperationClient {
         body: chunk,
         maximumResponseBytes: 4096,
         timeoutMs: 2500,
-      });
-      await this.input.journal.acknowledgeOutput(
-        chunk.attempt.operationId,
-        chunk.sequence,
-      );
+      }),
+    );
+    if (
+      ack.operationId !== chunk.attempt.operationId ||
+      ack.sequence !== chunk.sequence ||
+      ack.digest !== bridgeDigest(chunk)
+    )
+      throw new BridgeJournalError('JOURNAL_OUTPUT_ACK_MISMATCH');
+    await this.input.journal.acknowledgeOutput(
+      chunk.attempt.operationId,
+      chunk.sequence,
+    );
+  }
+
+  async flush() {
+    await flushLocalServiceEvents(this.input);
+    for (const chunk of await this.input.journal.pendingOutput()) {
+      await this.deliverOutput(chunk);
     }
     // Preserve per-attempt output order before terminal receipts. Bounded batches
     // provide backpressure rather than loading the complete journal into memory.
@@ -387,6 +406,7 @@ export class RuntimeBridgeOperationClient {
       leaseToken: dispatch.leaseToken,
     };
     let outputQueue = Promise.resolve(),
+      persistenceQueue = Promise.resolve(),
       outputFailed = false,
       journalFailed = false;
     try {
@@ -426,32 +446,30 @@ export class RuntimeBridgeOperationClient {
           }
         },
         onOutput: (chunk) => {
+          // Disk commit must not wait behind a stalled network acknowledgment.
+          const saved = persistenceQueue.then(async () => {
+            if (journalFailed)
+              throw new BridgeJournalError('JOURNAL_OUTPUT_NOT_DURABLE');
+            return journal.recordOutput(operationId, chunk);
+          });
+          persistenceQueue = saved
+            .then(() => undefined)
+            .catch(() => {
+              journalFailed = true;
+              outputFailed = true;
+            });
           outputQueue = outputQueue
             .then(async () => {
-              if (journalFailed) return;
-              const saved = await journal
-                .recordOutput(operationId, chunk)
-                .catch((error) => {
-                  journalFailed = true;
-                  throw error;
-                });
+              const body = await saved;
               if (outputFailed) return; // still retain every later bounded chunk on disk
-              await this.request({
-                server: config.server,
-                path: `${runtimeBridgeOperationPath}/${operationId}/output`,
-                method: 'POST',
-                token,
-                body: saved,
-                maximumResponseBytes: 4096,
-                timeoutMs: 2500,
-              });
-              await journal.acknowledgeOutput(operationId, chunk.sequence);
+              await this.deliverOutput(body);
             })
             .catch(() => {
               outputFailed = true;
             });
         },
       });
+      await persistenceQueue;
       await outputQueue;
       if (journalFailed)
         throw new BridgeJournalError('JOURNAL_OUTPUT_NOT_DURABLE');
@@ -479,6 +497,10 @@ export class RuntimeBridgeOperationClient {
         .catch(() => undefined);
       await outputQueue;
     } catch (error) {
+      // A daemon/log failure can reject after onOutput has queued disk commits.
+      // Drain those callbacks before unknown/final closes the entry to new output.
+      await persistenceQueue;
+      await outputQueue;
       // Before creating a container these failures prove no execution. Other
       // daemon/transport failures may be after start and must remain unknown.
       const noExecution =
