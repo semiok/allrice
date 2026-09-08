@@ -176,13 +176,48 @@ export function LocalCommandPanel({
               <strong>
                 {op.command.diagnostics
                   ? '项目环境诊断 · 操作授权'
-                  : '本地命令 · 操作授权'}
+                  : op.command.dependencies
+                    ? '依赖准备与验证 · 操作授权'
+                    : '本地命令 · 操作授权'}
               </strong>
               <span>
                 {statusLabels[op.snapshot.status] ?? op.snapshot.status}
               </span>
             </header>
-            <p>在你的电脑的 Linux 隔离副本中执行；无网络，不会写回原工作区。</p>
+            <p>
+              在你的电脑的 Linux
+              隔离副本中执行；项目进程无网络，不会写回原工作区。
+            </p>
+            {op.command.dependencies && (
+              <section aria-label="依赖安装授权范围">
+                <p>
+                  先运行 npm
+                  ci，再执行下方验证命令；安装位置为本次临时隔离副本，结束后销毁，不安装到本机全局或原工作区。
+                </p>
+                <p>
+                  安装生命周期脚本：
+                  {op.command.dependencies.scripts === 'disabled'
+                    ? '禁止（--ignore-scripts）'
+                    : '明确允许在隔离副本执行；仍无网络和主机权限'}
+                  。最多 8 个锁定包，归档合计不超过 128 KiB。
+                </p>
+                <ul>
+                  {op.command.dependencies.packages.map((p) => (
+                    <li key={`${p.name}@${p.version}`}>
+                      <code>
+                        {p.name}@{p.version}
+                      </code>
+                      <small>
+                        {p.archivePath
+                          ? `使用已授权归档：${p.archivePath}`
+                          : '由 Bridge 从 registry.npmjs.org 下载；不传送源码或凭证'}
+                      </small>
+                      <small>{p.integrity}</small>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <pre aria-label="待执行命令">
               {op.command.executable}
               {op.command.args.map((arg) => ` ${JSON.stringify(arg)}`).join('')}
@@ -247,6 +282,16 @@ export function LocalCommandPanel({
                 </button>
               )}
             {op.evidence && <p>{op.evidence.summary}</p>}
+            {result.success && result.data.dependencies && (
+              <p role="status">
+                依赖准备：
+                {result.data.dependencies.status ===
+                'installed_and_verification_succeeded'
+                  ? '安装及指定验证命令成功'
+                  : '安装或指定验证命令未成功'}
+                ；临时环境已停止，原工作区未修改。
+              </p>
+            )}
             {result.success && result.data.diagnostics && (
               <section aria-label="项目环境诊断结果">
                 <p>

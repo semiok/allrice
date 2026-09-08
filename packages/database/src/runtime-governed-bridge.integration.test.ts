@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type * as Playwright from '../../../apps/worker/node_modules/playwright-core/index.js';
+import { dependencyFixture } from '../../../apps/rice-bridge/test/dependency-fixture.js';
 
 import {
   BridgeCommandPayloadSchema,
@@ -375,12 +376,18 @@ async function fixture(
 async function commandFixture(
   toolNames = ['local.process.execute'],
   manifest?: unknown,
+  network = false,
 ) {
   vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '1');
   vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
   vi.stubEnv('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED', '1');
   const now = new Date().toISOString();
-  const capabilities = ['model:invoke', 'storage:read', 'storage:write'];
+  const capabilities = [
+    'model:invoke',
+    'storage:read',
+    'storage:write',
+    ...(network ? ['network:outbound'] : []),
+  ];
   const f = await fixture(
     'allow',
     true,
@@ -2763,6 +2770,86 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       },
     });
   });
+  it('P09-b keeps install source and script policy under exact approval, old-client exclusion and frozen outbound capability', async () => {
+    for (const network of [false, true]) {
+      const f = await commandFixture(undefined, undefined, network);
+      const p = dependencyFixture().pkg;
+      const args = {
+        ...f.args,
+        dependencies: {
+          manager: 'npm',
+          strategy: 'locked_ci',
+          registry: 'https://registry.npmjs.org',
+          scripts: 'disabled',
+          packages: [
+            { name: p.name, version: p.version, integrity: p.integrity },
+          ],
+        },
+      };
+      await expect(f.create('install', args)).rejects.toThrow(
+        'local_runner_upgrade_required',
+      );
+      await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["npm_dependencies"]'::jsonb) where device_id=${f.device.id}`;
+      if (!network) {
+        await expect(f.create('install', args)).rejects.toThrow();
+        continue;
+      }
+      const op = await f.create('install', args);
+      expect(op.snapshot.status).toBe('waiting_user');
+      const claim = () =>
+        f
+          .ledger()
+          .claimNextBridgeOperation({
+            scope: f.task.scope,
+            deviceId: f.device.id,
+            leaseMs: 30000,
+            supportsLocalCommand: true,
+            supportsNpmDependencies: true,
+          });
+      expect(await claim()).toBeNull();
+      await f.approve();
+      expect(await f.claim()).toBeNull();
+      await expect(
+        f.create('install', {
+          ...args,
+          dependencies: {
+            ...args.dependencies,
+            scripts: 'allow_in_isolated_copy',
+          },
+        }),
+      ).rejects.toThrow('idempotency_conflict');
+      expect((await claim())?.bridgePayload).toMatchObject({
+        arguments: { dependencies: { scripts: 'disabled' } },
+      });
+    }
+  });
+  it('P09-b rejecting install leaves no claimable operation, even for a capable Bridge', async () => {
+    const f = await commandFixture();
+    await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["npm_dependencies"]'::jsonb) where device_id=${f.device.id}`;
+    const p = dependencyFixture().pkg;
+    await f.create('rejected-install', {
+      ...f.args,
+      dependencies: {
+        manager: 'npm',
+        strategy: 'locked_ci',
+        registry: 'https://registry.npmjs.org',
+        scripts: 'disabled',
+        packages: [p],
+      },
+    });
+    await f.approve('rejected');
+    expect(
+      await f
+        .ledger()
+        .claimNextBridgeOperation({
+          scope: f.task.scope,
+          deviceId: f.device.id,
+          leaseMs: 30000,
+          supportsLocalCommand: true,
+          supportsNpmDependencies: true,
+        }),
+    ).toBeNull();
+  });
   it('P05 rejects same-call mutations, expired profiles, unverified platforms and frozen tool removal', async () => {
     const f = await commandFixture();
     await f.create();
@@ -3219,6 +3306,80 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           manifest,
         );
         expect(pageErrors).toEqual([]);
+
+        const dependency = dependencyFixture();
+        for (const [path, bytes] of Object.entries(dependency.files))
+          await writeFile(join(root, path), bytes);
+        await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["project_diagnostics","npm_dependencies"]'::jsonb) where device_id=${f.device.id}`;
+        const install = await f.create('p09b-browser', {
+          ...f.args,
+          args: ['verify.cjs'],
+          limits: {
+            ...f.args.limits,
+            timeoutMs: 20000,
+            memoryMiB: 256,
+            cpuMillis: 1000,
+            pids: 64,
+          },
+          dependencies: {
+            manager: 'npm',
+            strategy: 'locked_ci',
+            registry: 'https://registry.npmjs.org',
+            scripts: 'disabled',
+            packages: [dependency.pkg],
+          },
+          files: Object.entries(dependency.files).map(([path, bytes]) => ({
+            path,
+            sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          })),
+        });
+        await page.reload();
+        await page.getByLabel('依赖安装授权范围').waitFor();
+        expect(
+          await page.getByLabel('依赖安装授权范围').textContent(),
+        ).toContain('禁止（--ignore-scripts）');
+        await page
+          .getByRole('button', { name: '批准这一次执行', exact: true })
+          .click();
+        await vi.waitFor(async () => {
+          const [row] = await database<
+            { runtime_response: unknown }[]
+          >`select runtime_response from allrice_approval_requests where resource_id=${install.snapshot.binding.attempt.operationId}`;
+          expect(row?.runtime_response).toMatchObject({ decision: 'approved' });
+        });
+        expect(await client.pollOnce()).toBe(true);
+        await page
+          .getByText('依赖准备：安装及指定验证命令成功', { exact: false })
+          .waitFor();
+        await page.reload();
+        await page
+          .getByText('依赖准备：安装及指定验证命令成功', { exact: false })
+          .waitFor();
+        const installedViews = await listLocalCommandOperations(
+          f.context,
+          f.run,
+          database,
+        );
+        expect(
+          installedViews.find(
+            (v) =>
+              v.snapshot.binding.attempt.operationId ===
+              install.snapshot.binding.attempt.operationId,
+          )?.evidence,
+        ).toMatchObject({
+          output: {
+            stdout: expect.stringContaining('dependency verification: 42'),
+            dependencies: { status: 'installed_and_verification_succeeded' },
+          },
+        });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await expect(
+          readFile(join(root, 'node_modules', dependency.pkg.name, 'index.js')),
+        ).rejects.toThrow();
 
         const crashSource =
           'console.log("crash fixture started");setInterval(()=>{},100);';

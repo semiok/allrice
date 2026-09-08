@@ -230,6 +230,8 @@ export function createGovernedBridgeOperationLedger(
           !reported ||
           !profile.success ||
           !profile.data.available ||
+          (command.arguments.dependencies &&
+            !profile.data.features?.includes('npm_dependencies')) ||
           (command.arguments.diagnostics &&
             !profile.data.features?.includes('project_diagnostics')) ||
           profile.data.architecture !== 'amd64' ||
@@ -285,7 +287,13 @@ export function createGovernedBridgeOperationLedger(
           ) ||
           !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
             'storage:write',
-          )
+          ) ||
+          (command.arguments.dependencies?.packages.some(
+            (p) => !p.archivePath,
+          ) &&
+            !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
+              'network:outbound',
+            ))
         )
           throw new RuntimePolicyError('bridge_authority_changed');
       }
