@@ -4,6 +4,10 @@ import { BridgeCommandPayloadSchema } from '../bridge.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
+import {
+  RuntimeProjectDiagnosticsRequestSchema,
+  RuntimeProjectDiagnosticsSchema,
+} from './project-diagnostics.ts';
 
 const path = z.string().max(1024).refine(isRuntimeRelativePath);
 
@@ -28,6 +32,7 @@ export const RuntimeLocalCommandSchema = z
           )
           .max(32),
         path: z.union([z.literal('.'), path]),
+        diagnostics: RuntimeProjectDiagnosticsRequestSchema.optional(),
         files: z
           .array(z.object({ path, sha256: ChecksumSchema }).strict())
           .min(1)
@@ -49,6 +54,16 @@ export const RuntimeLocalCommandSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.arguments.diagnostics &&
+      (value.arguments.executable !== '/usr/local/bin/node' ||
+        value.arguments.args.length)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'diagnostics requires node and empty args; project scripts are never run',
+      });
     const paths = value.arguments.files.map((file) => file.path);
     if (
       new Set(paths).size !== paths.length ||
@@ -82,6 +97,10 @@ export const RuntimeLocalCommandProfileSchema = z
     imageDigest: ChecksumSchema,
     architecture: z.enum(['amd64', 'arm64']),
     available: z.boolean(),
+    features: z
+      .array(z.enum(['project_diagnostics']))
+      .max(8)
+      .optional(),
   })
   .strict();
 export type RuntimeLocalCommandProfile = z.infer<
@@ -109,6 +128,7 @@ export const RuntimeLocalCommandResultSchema = z
     truncated: z.boolean(),
     workCopy: z.literal('local_isolated_copy'),
     sourceDirectoryModified: z.literal(false),
+    diagnostics: RuntimeProjectDiagnosticsSchema.optional(),
   })
   .strict();
 export type RuntimeLocalCommandResult = z.infer<

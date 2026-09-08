@@ -230,6 +230,8 @@ export function createGovernedBridgeOperationLedger(
           !reported ||
           !profile.success ||
           !profile.data.available ||
+          (command.arguments.diagnostics &&
+            !profile.data.features?.includes('project_diagnostics')) ||
           profile.data.architecture !== 'amd64' ||
           profile.data.imageDigest !== command.arguments.imageDigest ||
           profile.data.imageDigest !== localCommandToolchainImageV1 ||

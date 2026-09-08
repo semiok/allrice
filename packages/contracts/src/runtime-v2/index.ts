@@ -6,6 +6,7 @@ export * from './interactions.ts';
 export * from './policy.ts';
 export * from './bridge-journal.ts';
 export * from './local-command.ts';
+export * from './project-diagnostics.ts';
 export * from './artifact-review.ts';
 export * from './input-status.ts';
 export * from './changeset-execution.ts';

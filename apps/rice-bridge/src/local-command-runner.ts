@@ -13,6 +13,7 @@ import {
   readLocalCommandInputs,
 } from './local-command-inputs.js';
 import { localCommandSupervisor } from './local-command-supervisor.js';
+import { diagnosticEvidence } from './project-diagnostics.js';
 
 interface Container {
   Id: string;
@@ -77,6 +78,7 @@ export class LocalCommandRunner {
       backend: 'local-vm-container-v1' as const,
       imageDigest: image.Id,
       architecture: image.Architecture,
+      features: ['project_diagnostics'] as const,
     };
   }
 
@@ -318,6 +320,12 @@ export class LocalCommandRunner {
           filters.stderr.truncated,
         workCopy: 'local_isolated_copy',
         sourceDirectoryModified: false,
+        ...diagnosticEvidence(
+          command,
+          stdout,
+          inspected.State.ExitCode,
+          reason,
+        ),
       });
     } catch {
       await stop('supervisor_failed').catch(() => undefined);
@@ -450,6 +458,7 @@ export class LocalCommandRunner {
       truncated: truncated || reason === 'output_limit',
       workCopy: 'local_isolated_copy',
       sourceDirectoryModified: false,
+      ...diagnosticEvidence(command, stdout, state.State.ExitCode, reason),
     });
   }
 

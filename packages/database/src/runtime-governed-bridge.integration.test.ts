@@ -2724,6 +2724,45 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     expect(retry.snapshot.binding).toEqual(created.snapshot.binding);
     expect(await f.claim()).toBeNull();
   });
+  it('P09-a requires a current diagnostic feature report, exact approval and compatible claim; revocation closes admission', async () => {
+    const f = await commandFixture();
+    const args = {
+      ...f.args,
+      args: [],
+      diagnostics: { kind: 'node_project', expectedNodeMajor: 22 },
+    };
+    await expect(f.create('diagnose', args)).rejects.toThrow(
+      'local_runner_upgrade_required',
+    );
+    await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["project_diagnostics"]'::jsonb) where device_id=${f.device.id}`;
+    const op = await f.create('diagnose', args);
+    expect(op.snapshot.status).toBe('waiting_user');
+    const claim = () =>
+      f.ledger().claimNextBridgeOperation({
+        scope: f.task.scope,
+        deviceId: f.device.id,
+        leaseMs: 30000,
+        supportsLocalCommand: true,
+        supportsProjectDiagnostics: true,
+      });
+    expect(await claim()).toBeNull();
+    await f.approve();
+    expect(await f.claim()).toBeNull(); // P05 clients must not claim the extended payload.
+    await expect(
+      f.create('diagnose', {
+        ...args,
+        diagnostics: { kind: 'node_project', expectedNodeMajor: 23 },
+      }),
+    ).rejects.toThrow('idempotency_conflict');
+    await database`update allrice_bridge_runtime_profiles set profile=profile-'features' where device_id=${f.device.id}`;
+    expect(await claim()).toBeNull();
+    await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["project_diagnostics"]'::jsonb) where device_id=${f.device.id}`;
+    expect((await claim())?.bridgePayload).toMatchObject({
+      arguments: {
+        diagnostics: { kind: 'node_project', expectedNodeMajor: 22 },
+      },
+    });
+  });
   it('P05 rejects same-call mutations, expired profiles, unverified platforms and frozen tool removal', async () => {
     const f = await commandFixture();
     await f.create();
@@ -3125,6 +3164,61 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           { n: number }[]
         >`select count(*)::int as n from allrice_runtime_operation_events where operation_id=${created.snapshot.binding.attempt.operationId} and payload->'signal'->>'type'='operation.started'`;
         expect(count?.n).toBe(1);
+
+        // P09-a uses the SAME browser approval, HTTP queue and durable receipt.
+        const manifest = JSON.stringify({
+          packageManager: 'npm@10.9.8',
+          dependencies: { fixture: '1.0.0' },
+          scripts: { postinstall: 'touch must-not-run' },
+        });
+        await writeFile(join(root, 'package.json'), manifest);
+        await writeFile(join(root, 'package-lock.json'), '{}');
+        await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["project_diagnostics"]'::jsonb) where device_id=${f.device.id}`;
+        const diagnostic = await f.create('p09a-browser', {
+          ...f.args,
+          args: [],
+          diagnostics: { kind: 'node_project' },
+          files: [
+            {
+              path: 'package.json',
+              sha256: `sha256:${createHash('sha256').update(manifest).digest('hex')}`,
+            },
+            {
+              path: 'package-lock.json',
+              sha256: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+            },
+          ],
+        });
+        await page.reload();
+        await page
+          .getByRole('button', { name: '批准这一次执行', exact: true })
+          .click();
+        await vi.waitFor(async () => {
+          const [row] = await database<
+            { runtime_response: unknown }[]
+          >`select runtime_response from allrice_approval_requests where resource_id=${diagnostic.snapshot.binding.attempt.operationId}`;
+          expect(row?.runtime_response).toMatchObject({ decision: 'approved' });
+        });
+        expect(await client.pollOnce()).toBe(true);
+        await page.getByLabel('项目环境诊断结果').waitFor();
+        expect(
+          await page.getByLabel('项目环境诊断结果').textContent(),
+        ).toContain('隔离副本的依赖尚未准备');
+        expect(
+          await page.getByLabel('项目环境诊断结果').textContent(),
+        ).toContain('v22.23.2');
+        await page.reload();
+        await page.getByLabel('项目环境诊断结果').waitFor();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await expect(readFile(join(root, 'must-not-run'))).rejects.toThrow();
+        expect(await readFile(join(root, 'package.json'), 'utf8')).toBe(
+          manifest,
+        );
+        expect(pageErrors).toEqual([]);
 
         const crashSource =
           'console.log("crash fixture started");setInterval(()=>{},100);';

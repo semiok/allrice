@@ -654,6 +654,7 @@ export function createRuntimeOperationLedger(options: {
       deviceId: string;
       leaseMs: number;
       supportsLocalCommand?: boolean;
+      supportsProjectDiagnostics?: boolean;
       supportsChangeset?: boolean;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
@@ -665,6 +666,7 @@ export function createRuntimeOperationLedger(options: {
       >`select id from allrice_runtime_operations
         where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and device_id=${deviceId}
           and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
+          and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {

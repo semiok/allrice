@@ -84,7 +84,9 @@ export class RuntimeBridgeOperationClient {
       token: this.input.token,
       body: {
         supportsChangeset: true,
-        ...(this.input.runner ? { supportsLocalCommand: true } : {}),
+        ...(this.input.runner
+          ? { supportsLocalCommand: true, supportsProjectDiagnostics: true }
+          : {}),
       },
       maximumResponseBytes: 750_000,
     });
