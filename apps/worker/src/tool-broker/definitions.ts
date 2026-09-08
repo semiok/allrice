@@ -1,11 +1,11 @@
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
-  CloudCommandInputSchema,
   type AllRiceToolRisk,
   type SkillCapability,
 } from '@allrice/contracts';
 import { z } from 'zod';
+import { CloudToolInputSchema } from '../cloud-runner/tool-input.js';
 
 export type RiceToolRisk = AllRiceToolRisk;
 
@@ -64,8 +64,8 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.process.execute',
     description:
-      '经明确审批在隔离云端运行 Node 22 脚本。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT。执行前显示精确输入和输出范围。',
-    inputSchema: z.toJSONSchema(CloudCommandInputSchema, {
+      '经明确审批在隔离云端运行 Node 22 脚本。script 与 frozenScript 二选一；Skill 任务优先用 frozenScript:{skill,path} 引用当前 Run 冻结脚本，由平台保留完整原始字节。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT。执行前显示精确脚本、输入和输出范围。',
+    inputSchema: z.toJSONSchema(CloudToolInputSchema, {
       unrepresentable: 'any',
     }),
   },

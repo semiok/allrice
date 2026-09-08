@@ -25,8 +25,8 @@ describe('AllRice tool manifest', () => {
 
     expect(canonicalNames).toHaveLength(29);
     expect(new Set(canonicalNames).size).toBe(29);
-    expect(nativeTools).toHaveLength(24);
-    expect(brokerNativeTools).toHaveLength(23);
+    expect(nativeTools).toHaveLength(25);
+    expect(brokerNativeTools).toHaveLength(24);
     expect(
       brokerNativeTools
         .filter((tool) =>
@@ -55,7 +55,6 @@ describe('AllRice tool manifest', () => {
       },
     ]);
     expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
-      'workspace.reconciliation.export',
       'cloud.mcp.call',
       'workspace.file.list',
       'workspace.file.read',
@@ -65,7 +64,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(24);
+    expect(new Set(wireNames).size).toBe(25);
   });
 
   it('defines capability and risk metadata for every canonical tool', () => {

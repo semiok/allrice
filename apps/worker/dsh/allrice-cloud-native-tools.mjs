@@ -29,7 +29,21 @@ export const CloudNativeArgumentsSchema = z
       .string()
       .min(1)
       .max(100000)
-      .refine((value) => !value.includes('\0')),
+      .refine((value) => !value.includes('\0'))
+      .optional(),
+    frozenScript: z
+      .object({
+        skill: z
+          .string()
+          .min(1)
+          .max(100)
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+        path: path.refine(
+          (value) => value.startsWith('scripts/') && /\.m?js$/.test(value),
+        ),
+      })
+      .strict()
+      .optional(),
     inputs: z
       .array(
         z
@@ -68,6 +82,11 @@ export const CloudNativeArgumentsSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if ((value.script === undefined) === (value.frozenScript === undefined))
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Exactly one of script or frozenScript is required',
+      });
     for (const files of [value.inputs ?? [], value.outputs ?? []]) {
       const paths = files.map((file) => file.path);
       if (
@@ -89,7 +108,7 @@ export const cloudNativeTools = [
     canonicalName: 'cloud.process.execute',
     wireName: 'cloud_process_execute',
     description:
-      'Propose and await exact approval to run a Node 22 script in a no-network SaaS gVisor sandbox. Only explicitly selected uploaded object copies are inputs; no Bridge or host access. Approval binds exact script, objects/checksums, output files and limits. Returned artifact versionId is not a local path. A proposal is not execution success.',
+      'Propose and await exact approval to run a Node 22 script in a no-network SaaS gVisor sandbox. Supply exactly one of script or frozenScript. For a frozen Skill task prefer frozenScript:{skill,path}: the server resolves exact bytes from this Run, do not copy/rewrite the script. Only explicitly selected uploaded object copies are inputs; no Bridge or host access. Approval binds resolved exact script, objects/checksums, outputs and limits. A proposal is not execution success.',
     timeoutMs: 180000,
     isConcurrencySafe: false,
     validateArguments(args) {
@@ -99,9 +118,23 @@ export const cloudNativeTools = [
     parameters: {
       script: {
         type: 'string',
-        required: true,
         description:
-          'Exact JavaScript ES module, at most 100000 characters. For a Skill task use its frozen script without rewriting it.',
+          'Inline JavaScript ES module, at most 100000 characters. Omit when using frozenScript.',
+      },
+      frozenScript: {
+        type: 'object',
+        additionalProperties: false,
+        description:
+          'Preferred for a frozen Skill: server resolves original bytes/version/hash from this Run; no manual script copying. Mutually exclusive with script.',
+        properties: {
+          skill: { type: 'string', required: true },
+          path: {
+            type: 'string',
+            required: true,
+            description:
+              'scripts/*.mjs or scripts/*.js bundle path, e.g. scripts/reconcile.mjs.',
+          },
+        },
       },
       inputs: {
         type: 'array',
