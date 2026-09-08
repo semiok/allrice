@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { DataAccessError, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
 import { McpSettings } from '../../runtime-console/mcp-settings';
 
@@ -11,14 +12,33 @@ export default async function WorkspaceMcpPage() {
   const context = await getRequestContext(
     new Request('http://localhost/workspace/mcp', { headers: requestHeaders }),
   );
-  if (!context?.workspaceId) redirect('/login');
+  if (!context) redirect('/login');
+  // Email/password sessions are organization-scoped until a workspace is
+  // selected. Resolve an accessible workspace without provisioning employees
+  // or writing workspace state merely by visiting the settings page.
+  let workspaceId: string;
+  try {
+    workspaceId = await resolveWorkspaceId(context);
+  } catch (error) {
+    if (
+      !(error instanceof DataAccessError) ||
+      error.code !== 'authorization_denied'
+    )
+      throw error;
+    return (
+      <main>
+        <Link href="/chatflow">返回工作台</Link>
+        <p role="alert">当前租户没有你可访问的工作区，无法管理 MCP 连接。</p>
+      </main>
+    );
+  }
   if (
     !context.memberships.some(
       (m) =>
         m.active &&
         m.userId === context.actor.id &&
         m.organizationId === context.organizationId &&
-        (m.workspaceId === null || m.workspaceId === context.workspaceId) &&
+        (m.workspaceId === null || m.workspaceId === workspaceId) &&
         m.role === 'admin',
     )
   )
@@ -32,7 +52,7 @@ export default async function WorkspaceMcpPage() {
     <main>
       <Link href="/chatflow">← 返回工作台</Link>
       <h1>当前租户的 MCP 连接</h1>
-      <McpSettings workspaceId={context.workspaceId} />
+      <McpSettings workspaceId={workspaceId} />
     </main>
   );
 }

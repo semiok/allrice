@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
+import * as McpConnections from './mcp-connections.ts';
 import {
   revokeRuntimeActionApproval,
   runtimePolicyDigest as digest,
@@ -568,6 +569,135 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     await db`update allrice_memberships set active=false where user_id=${other.user}`;
     expect((await other.execute(d)).code).toBe('MCP_DISPATCH_DENIED');
     expect(other.service.state.calls).toBe(0);
+  });
+  it('projects real connection revocation without rewriting approval, and the old decision is denied', async () => {
+    const f = await fixture();
+    const created = await f.create();
+    const [before] = await listCloudRuntimeOperations(f.context, f.run, db);
+    expect(before!.mcpAuthorization).toEqual({
+      available: true,
+      reason: 'available',
+    });
+    const originalApproval = before!.approval!;
+    await f.store.revoke(f.context, {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+    });
+    const [after] = await listCloudRuntimeOperations(f.context, f.run, db);
+    expect(after!.mcpAuthorization).toEqual({
+      available: false,
+      reason: 'connection_revoked',
+    });
+    expect(after!.enabled).toBe(true); // Environment enablement is not connector authority.
+    expect(after!.snapshot).toEqual(before!.snapshot);
+    expect(after!.approval).toEqual(originalApproval);
+    expect(after!.approval!.revokedAt).toBeNull();
+    await expect(f.decide(created)).rejects.toThrow();
+    const [retained] = await listCloudRuntimeOperations(f.context, f.run, db);
+    expect(retained!.approval).toEqual(originalApproval);
+    expect(f.service.state.calls).toBe(0);
+  });
+  it.each(['tool', 'credential', 'employee'] as const)(
+    'projects current %s authorization changes and never revives the frozen approval',
+    async (kind) => {
+      const f = await fixture();
+      const created = await f.create();
+      const [before] = await listCloudRuntimeOperations(f.context, f.run, db);
+      if (kind === 'tool') {
+        const tool = f.mcpTools.find((tool) => tool.name === 'records.append')!;
+        await f.store.grant(f.context, {
+          workspaceId: f.workspace,
+          connectionId: f.connection.id,
+          revisionId: tool.toolRevisionId,
+          allowed: false,
+          risk: 'write',
+        });
+      } else if (kind === 'credential') {
+        await f.store.rotate(f.context, {
+          workspaceId: f.workspace,
+          connectionId: f.connection.id,
+          bearerToken: 'synthetic-rotated-bearer-token',
+        });
+      } else {
+        await f.employeeBindings.bind(f.context, {
+          workspaceId: f.workspace,
+          connectionId: f.connection.id,
+          employeeId: f.employee,
+          employeeVersionId: f.version,
+          expectedRevision: 1,
+          enabled: false,
+        });
+      }
+      const [after] = await listCloudRuntimeOperations(f.context, f.run, db);
+      expect(after!.mcpAuthorization).toEqual({
+        available: false,
+        reason:
+          kind === 'employee'
+            ? 'employee_authorization_changed'
+            : 'connection_or_tool_changed',
+      });
+      expect(after!.approval).toEqual(before!.approval);
+      expect(after!.snapshot).toEqual(before!.snapshot);
+      await expect(f.decide(created)).rejects.toThrow();
+      expect(f.service.state.calls).toBe(0);
+    },
+  );
+  it('fails closed on unexpected display-authority errors without losing historical results or cancel access', async () => {
+    const f = await fixture();
+    const created = await f.create();
+    await f.decide(created);
+    await f.execute(created);
+    const [before] = await listCloudRuntimeOperations(f.context, f.run, db);
+    expect(before!.snapshot.status).toBe('succeeded');
+    const original = McpConnections.createMcpStore;
+    const unavailable = vi
+      .spyOn(McpConnections, 'createMcpStore')
+      .mockImplementation((options) => ({
+        ...original(options),
+        assertAuthorized: async () => {
+          throw new Error('secret database failure');
+        },
+      }));
+    try {
+      const [after] = await listCloudRuntimeOperations(f.context, f.run, db);
+      expect(after!.mcpAuthorization).toEqual({
+        available: false,
+        reason: 'unavailable',
+      });
+      expect(after!.snapshot).toEqual(before!.snapshot);
+      expect(after!.result).toEqual(before!.result);
+      expect(after!.approval).toEqual(before!.approval);
+      expect(JSON.stringify(after)).not.toContain('secret database failure');
+      expect(f.service.state.calls).toBe(1);
+    } finally {
+      unavailable.mockRestore();
+    }
+    await f.store.revoke(f.context, {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+    });
+    const [revokedHistory] = await listCloudRuntimeOperations(
+      f.context,
+      f.run,
+      db,
+    );
+    expect(revokedHistory!.mcpAuthorization).toEqual({
+      available: false,
+      reason: 'connection_revoked',
+    });
+    expect(revokedHistory!.snapshot).toEqual(before!.snapshot);
+    expect(revokedHistory!.result).toEqual(before!.result);
+    expect(f.service.state.calls).toBe(1);
+    const pending = await fixture();
+    await pending.create();
+    await pending.store.revoke(pending.context, {
+      workspaceId: pending.workspace,
+      connectionId: pending.connection.id,
+    });
+    expect(
+      await cancelCloudRuntimeRun(pending.context, pending.run, db),
+    ).toMatchObject({ accepted: true, remoteStopped: false });
+    expect(pending.service.state.calls).toBe(0);
   });
   it('live schema drift fails before tools/call and requires a new discovery and grant', async () => {
     const f = await fixture(),
