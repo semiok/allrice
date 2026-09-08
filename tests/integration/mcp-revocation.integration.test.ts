@@ -1,18 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type * as Client from '../../../../../../../../packages/database/src/core/client.ts';
+import type * as Client from '../../packages/database/src/core/client.ts';
 import {
   createMcpExecutionFixture,
   createMcpFixtureDatabase as postgres,
-} from '../../../../../../../../packages/database/src/mcp-execution.fixture.ts';
-import { createSession } from '../../../../../../../../packages/database/src/identity.ts';
-import { listCloudRuntimeOperations } from '../../../../../../../../packages/database/src/cloud-operation-view.ts';
-import { POST } from './route';
+} from '../../packages/database/src/mcp-execution.fixture.ts';
+import { createSession } from '../../packages/database/src/identity.ts';
+import { listCloudRuntimeOperations } from '../../packages/database/src/cloud-operation-view.ts';
+import { POST } from '../../apps/web/app/api/v1/runtime/approvals/[id]/route';
+import { getRequestContext } from '../../apps/web/lib/identity/session';
 
 let db: ReturnType<typeof postgres>, admin: ReturnType<typeof postgres>;
 const routeSession = vi.hoisted(() => ({ token: '' }));
-vi.mock('next/headers', () => ({
+// Resolve the accessor from its owning Web package: Next is deliberately not a
+// root integration-test dependency. Mocking bare next/headers from here would
+// leave the Web import untouched and invoke Next without a request context.
+vi.mock('../../apps/web/node_modules/next/headers.js', () => ({
   cookies: async () => ({
     get: (name: string) =>
       name === 'allrice_session' && routeSession.token
@@ -20,13 +24,10 @@ vi.mock('next/headers', () => ({
         : undefined,
   }),
 }));
-vi.mock(
-  '../../../../../../../../packages/database/src/core/client.ts',
-  async (original) => ({
-    ...(await original<typeof Client>()),
-    getDatabase: () => db,
-  }),
-);
+vi.mock('../../packages/database/src/core/client.ts', async (original) => ({
+  ...(await original<typeof Client>()),
+  getDatabase: () => db,
+}));
 const schema = `mcp_revoke_http_${randomUUID().replaceAll('-', '')}`;
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -58,7 +59,7 @@ suite(
       url.searchParams.set('options', `-csearch_path=${schema},public`);
       db = postgres(url.toString(), { max: 12, onnotice: () => {} });
       const directory = new URL(
-        '../../../../../../../../packages/database/migrations/',
+        '../../packages/database/migrations/',
         import.meta.url,
       );
       for (const name of (await readdir(directory))
@@ -96,6 +97,17 @@ suite(
       // accessor is adapted only for this in-process HTTP handler test; this is not
       // browser-login or public production-transport coverage.
       routeSession.token = (await createSession(f.user)).token;
+      const authenticated = await getRequestContext(
+        new Request('https://allrice.test/api/v1/auth/session', {
+          headers: {
+            'x-allrice-organization-id': f.org,
+            'x-allrice-workspace-id': f.workspace,
+          },
+        }),
+      );
+      expect(authenticated?.actor.id).toBe(f.user);
+      expect(authenticated?.organizationId).toBe(f.org);
+      expect(authenticated?.workspaceId).toBe(f.workspace);
       const request = before!.approval!.request;
       const response = await POST(
         new Request(
