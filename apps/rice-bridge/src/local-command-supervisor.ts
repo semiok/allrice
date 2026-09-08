@@ -1,3 +1,5 @@
+import { projectDiagnosticProgram } from './project-diagnostics.js';
+
 /** Trusted PID 1. This source is sent only to an explicitly configured local VM.
  * Project code runs in a separate UID and cannot replace/stop its deadline timer.
  * Exiting PID 1 destroys the PID namespace, including setsid/reparented children.
@@ -26,6 +28,7 @@ const end = (reason, code) => {
 const timer = setTimeout(() => end('timeout', 124), Math.max(0, Math.min(bundle.command.limits.timeoutMs,
   bundle.deadlineUnixMs === undefined ? Infinity : bundle.deadlineUnixMs - Date.now())));
 try {
+  const directories = new Set(['/workspace']);
   for (const file of bundle.files) {
     if (!file.path || file.path.startsWith('/') || file.path.split('/').some(p => !p || p === '.' || p === '..')) throw Error('path');
     const target = '/workspace/' + file.path;
@@ -33,11 +36,17 @@ try {
     await writeFile(target, Buffer.from(file.content, 'base64'), {flag:'wx', mode:0o600});
     await chown(target, 1000, 1000);
     let dir = dirname(target);
-    while (dir.startsWith('/workspace')) { await chown(dir,1000,1000); dir = dirname(dir); }
+    while (dir.startsWith('/workspace')) { directories.add(dir); dir = dirname(dir); }
   }
+  // PID 1 deliberately lacks DAC_OVERRIDE. Transfer directories only AFTER all
+  // inputs were staged, otherwise creating the second file fails with EACCES.
+  for (const dir of directories) await chown(dir,1000,1000);
   const oomCount = async () => Number((await readFile('/sys/fs/cgroup/memory.events','utf8')).match(/^oom_kill (\d+)$/m)?.[1] || 0);
   const beforeOom = await oomCount();
-  const child = spawn(bundle.command.executable, bundle.command.args, {
+  const args = bundle.command.diagnostics
+    ? ['--input-type=module','--eval', ${JSON.stringify(projectDiagnosticProgram)}, JSON.stringify(bundle.command.diagnostics)]
+    : bundle.command.args;
+  const child = spawn(bundle.command.executable, args, {
     cwd: bundle.command.path === '.' ? '/workspace' : '/workspace/' + bundle.command.path,
     uid:1000, gid:1000, detached:false, stdio:['ignore','pipe','pipe'],
     env:{PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',LANG:'C.UTF-8',CI:'1',

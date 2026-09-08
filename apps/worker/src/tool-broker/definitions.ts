@@ -339,7 +339,7 @@ export const riceToolDefinitions = [
   {
     name: 'local.process.execute',
     description:
-      '在当前已授权 Bridge 的本地 Linux 隔离副本中运行一次 Node/npm 命令；不是 macOS 原生 Shell。先读取需要的文件获得 SHA-256，只复制明确的 files 清单，总计不超过 256 KiB。无网络、不安装依赖、不写回原目录。必须等待网页上的准确操作审批，返回真实 stdout/stderr、退出码和停止原因；不可把排队、批准或取消请求当作执行完成。',
+      '在当前已授权 Bridge 的本地 Linux 隔离副本中运行一次 Node/npm 命令；不是 macOS 原生 Shell。先读取需要的文件获得 SHA-256，只复制明确的 files 清单，总计不超过 256 KiB。无网络、不安装依赖、不写回原目录。诊断项目时设置 diagnostics:{kind:"node_project"}、executable:"/usr/local/bin/node"、args:[]，提供 package.json/锁文件的准确清单；诊断不运行项目脚本，不检查主机 PATH，不隐式安装；可指定 expectedNodeMajor/expectedNpmMajor，复杂 engines 声明需另行审查。必须等待网页上的准确操作审批，返回真实 stdout/stderr、退出码和停止原因；不可把排队、批准或取消请求当作执行完成。',
     inputSchema: z.toJSONSchema(RuntimeLocalCommandToolInputSchema, {
       io: 'input',
     }),

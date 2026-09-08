@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   RuntimeLocalCommandResultSchema,
+  projectDiagnosticLabels,
   type RuntimeActionApprovalSnapshot,
   type RuntimeLocalCommand,
   type RuntimeOperationSnapshot,
@@ -172,7 +173,11 @@ export function LocalCommandPanel({
             data-status={op.snapshot.status}
           >
             <header>
-              <strong>本地命令 · 操作授权</strong>
+              <strong>
+                {op.command.diagnostics
+                  ? '项目环境诊断 · 操作授权'
+                  : '本地命令 · 操作授权'}
+              </strong>
               <span>
                 {statusLabels[op.snapshot.status] ?? op.snapshot.status}
               </span>
@@ -242,6 +247,44 @@ export function LocalCommandPanel({
                 </button>
               )}
             {op.evidence && <p>{op.evidence.summary}</p>}
+            {result.success && result.data.diagnostics && (
+              <section aria-label="项目环境诊断结果">
+                <p>
+                  实际目标：本机 Linux 隔离副本 ·{' '}
+                  {result.data.diagnostics.architecture} ·{' '}
+                  {result.data.diagnostics.directory}
+                </p>
+                <p>
+                  Node {result.data.diagnostics.node.version}：
+                  {projectDiagnosticLabels[result.data.diagnostics.node.status]}
+                  ；npm {result.data.diagnostics.npm.version ?? '未知'}：
+                  {projectDiagnosticLabels[result.data.diagnostics.npm.status]}
+                </p>
+                <p>
+                  项目：
+                  {projectDiagnosticLabels[result.data.diagnostics.project]}
+                  ；包管理器：{result.data.diagnostics.packageManager}；锁文件：
+                  {projectDiagnosticLabels[result.data.diagnostics.lockfile] ??
+                    result.data.diagnostics.lockfile}
+                </p>
+                <p>
+                  依赖：
+                  {
+                    projectDiagnosticLabels[
+                      result.data.diagnostics.dependencies
+                    ]
+                  }
+                  。未检查主机工具链，未安装或修复任何内容。
+                </p>
+                {result.data.diagnostics.engineStatus === 'requires_review' && (
+                  <p>
+                    项目 Node engines 声明：
+                    {result.data.diagnostics.nodeEngine ?? '无法安全展示'}
+                    （声明尚需核对，不代表版本已满足）
+                  </p>
+                )}
+              </section>
+            )}
             {(op.output.length > 0 || result.success) && (
               <details open={op.snapshot.status === 'running'}>
                 <summary>

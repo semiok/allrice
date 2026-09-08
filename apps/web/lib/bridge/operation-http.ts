@@ -34,6 +34,7 @@ export interface RuntimeBridgeLedgerPort {
     deviceId: string;
     leaseMs: number;
     supportsLocalCommand?: boolean;
+    supportsProjectDiagnostics?: boolean;
     supportsChangeset?: boolean;
   }): Promise<{
     snapshot: Snapshot;
@@ -143,12 +144,18 @@ export function createRuntimeBridgeHttpHandler(input: {
           Array.isArray(selection) ||
           Object.keys(selection).some(
             (key) =>
-              !['supportsLocalCommand', 'supportsChangeset'].includes(key),
+              ![
+                'supportsLocalCommand',
+                'supportsChangeset',
+                'supportsProjectDiagnostics',
+              ].includes(key),
           ) ||
           ('supportsLocalCommand' in selection &&
             typeof selection.supportsLocalCommand !== 'boolean') ||
           ('supportsChangeset' in selection &&
-            typeof selection.supportsChangeset !== 'boolean')
+            typeof selection.supportsChangeset !== 'boolean') ||
+          ('supportsProjectDiagnostics' in selection &&
+            typeof selection.supportsProjectDiagnostics !== 'boolean')
         )
           throw new HttpProblem(400, 'INVALID_REQUEST');
         const lease = await ledger.claimNextBridgeOperation({
@@ -156,6 +163,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           deviceId: device.id,
           leaseMs: 120_000,
           supportsLocalCommand: selection.supportsLocalCommand === true,
+          supportsProjectDiagnostics:
+            selection.supportsProjectDiagnostics === true,
           supportsChangeset: selection.supportsChangeset === true,
         });
         if (!lease) return json({ dispatch: null });
