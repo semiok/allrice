@@ -11,7 +11,31 @@ import {
   isRequestValidationError,
 } from '../api-error-response';
 
+const publicationConflicts: Readonly<Record<string, string>> = {
+  platform_employee_published_revision_immutable:
+    '已发布版本不能重新编译。请先保存为新草稿，再编译和试用。',
+  platform_employee_draft_unavailable: '当前草稿不可用，请刷新并保存新草稿。',
+  platform_employee_publish_snapshot_changed:
+    '待发布的配置或资源版本已变化，请刷新并重新试用当前版本。',
+  platform_employee_publish_workspace_unavailable:
+    '发布目标工作区已不可用，请刷新并重新选择。',
+  platform_employee_publish_provider_unavailable:
+    '模型服务健康状态已变化，请确认服务恢复后重新发布。',
+  platform_employee_publish_test_unavailable:
+    '当前确切运行包没有有效的成功试用记录，请重新试用后发布。',
+};
+
 export function executionErrorResponse(error: unknown) {
+  if (
+    error instanceof Error &&
+    Object.hasOwn(publicationConflicts, error.message)
+  )
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: publicationConflicts[error.message]!,
+      retryable: false,
+    });
   let status = 400;
   let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Execution request validation failed';

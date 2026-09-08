@@ -49,6 +49,7 @@ export * from './platform-employees.ts';
 export * from './quality.ts';
 export * from './secrets.ts';
 export * from './skills.ts';
+export * from './skill-bundle.ts';
 export * from './mcp.ts';
 export * from './sse.ts';
 export * from './storage.ts';

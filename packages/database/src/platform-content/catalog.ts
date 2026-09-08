@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { lstat, open, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { z } from 'zod';
 
-import { allRiceToolManifest } from '@allrice/contracts';
+import {
+  allRiceToolManifest,
+  SkillResourcePathSchema,
+  type SkillBundle,
+} from '@allrice/contracts';
+import { validateSkillBundle } from '../skill-bundles.ts';
 
 const SkillNameSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 const ToolReferenceSchema = z
@@ -16,6 +22,10 @@ const PlatformSkillCatalogEntrySchema = z.object({
   id: z.uuid(),
   name: SkillNameSchema,
   contentFile: z.string().regex(/^skills\/[a-z0-9-]+\/SKILL\.md$/),
+  bundleFile: z
+    .string()
+    .regex(/^skills\/[a-z0-9-]+\/bundle\.json$/)
+    .optional(),
   version: z.string().regex(/^\d+\.\d+\.\d+$/),
   checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   source: z.enum(['allrice', 'dsh-migrated']),
@@ -31,7 +41,7 @@ const PlatformSkillCatalogEntrySchema = z.object({
 });
 
 const PlatformSkillCatalogSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   skills: z.array(PlatformSkillCatalogEntrySchema).min(1),
 });
 
@@ -48,10 +58,11 @@ export type PlatformSkillCatalogEntry = z.infer<
 export type ResolvedPlatformSkill = PlatformSkillCatalogEntry & {
   description: string;
   content: string;
+  bundle?: SkillBundle;
 };
 
 export type PlatformContentCatalog = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   catalogChecksum: string;
   skills: ResolvedPlatformSkill[];
 };
@@ -106,6 +117,7 @@ export function parseSkillMarkdown(rawInput: string, sourceLabel: string) {
 export async function parsePlatformContentCatalog(
   input: unknown,
   readSkill: (contentFile: string) => Promise<string>,
+  readResource?: (path: string) => Promise<Uint8Array>,
 ): Promise<PlatformContentCatalog> {
   const catalog = PlatformSkillCatalogSchema.parse(input);
   const ids = new Set<string>();
@@ -122,6 +134,12 @@ export async function parsePlatformContentCatalog(
     if (entry.contentFile !== `skills/${entry.name}/SKILL.md`) {
       throw new Error(`platform_skill_catalog_path_mismatch:${entry.name}`);
     }
+    if (
+      entry.bundleFile &&
+      (catalog.schemaVersion !== 2 ||
+        entry.bundleFile !== `skills/${entry.name}/bundle.json`)
+    )
+      throw Error('platform_skill_bundle_path_mismatch');
     if (
       new Set(entry.requiredToolRefs).size !== entry.requiredToolRefs.length
     ) {
@@ -153,12 +171,47 @@ export async function parsePlatformContentCatalog(
       );
     }
 
+    let bundle: SkillBundle | undefined;
+    if (entry.bundleFile) {
+      const manifest = JSON.parse(await readSkill(entry.bundleFile));
+      if (!Array.isArray(manifest.resources) || manifest.resources.length > 32)
+        throw Error('platform_skill_bundle_resources_invalid');
+      const resources = [];
+      for (const resource of manifest.resources) {
+        const path = SkillResourcePathSchema.parse(resource.path);
+        if ('contentBase64' in resource)
+          throw Error('platform_skill_bundle_embedded_content');
+        const file = `skills/${entry.name}/${path}`;
+        const bytes = readResource
+          ? await readResource(file)
+          : Buffer.from(await readSkill(file));
+        resources.push({
+          ...resource,
+          contentBase64: Buffer.from(bytes).toString('base64'),
+        });
+      }
+      bundle = validateSkillBundle({ ...manifest, resources }, source.content);
+      if (
+        bundle.version !== entry.version ||
+        bundle.license !== entry.license ||
+        bundle.sourceRef !== entry.sourceRef ||
+        bundle.reviewedBy !== entry.reviewedByLabel
+      )
+        throw Error('platform_skill_bundle_governance_mismatch');
+      if (
+        bundle.dependencies.some(
+          (d) => d.kind === 'tool' && !entry.requiredToolRefs.includes(d.name),
+        )
+      )
+        throw Error('platform_skill_bundle_undeclared_tool');
+    }
     ids.add(entry.id);
     names.add(entry.name);
     skills.push({
       ...entry,
       description: source.description,
       content: source.content,
+      ...(bundle ? { bundle } : {}),
     });
   }
 
@@ -172,16 +225,53 @@ export async function parsePlatformContentCatalog(
 export async function loadPlatformContentCatalog(
   rootDirectory = repositoryRoot,
 ): Promise<PlatformContentCatalog> {
-  const catalogPath = resolve(rootDirectory, 'skills/catalog.json');
-  const skillsRoot = `${resolve(rootDirectory, 'skills')}${sep}`;
-  const raw = await readFile(catalogPath, 'utf8');
-  const input = JSON.parse(raw) as unknown;
+  const canonicalRoot = await realpath(rootDirectory);
+  const directory = resolve(canonicalRoot, 'skills');
+  if ((await lstat(directory)).isSymbolicLink())
+    throw Error('platform_skill_resource_symlink');
+  const skillsRoot = `${directory}${sep}`;
 
-  return parsePlatformContentCatalog(input, async (contentFile) => {
-    const absolutePath = resolve(rootDirectory, contentFile);
+  const readAsset = async (contentFile: string) => {
+    const absolutePath = resolve(canonicalRoot, contentFile);
     if (!absolutePath.startsWith(skillsRoot)) {
       throw new Error(`platform_skill_catalog_path_escaped:${contentFile}`);
     }
-    return readFile(absolutePath, 'utf8');
-  });
+    let current = skillsRoot.slice(0, -1);
+    for (const part of absolutePath.slice(skillsRoot.length).split(sep)) {
+      current = resolve(current, part);
+      const stat = await lstat(current);
+      if (stat.isSymbolicLink()) throw Error('platform_skill_resource_symlink');
+    }
+    // Reject special files before opening: O_RDONLY can otherwise block forever
+    // on a FIFO. Recheck the opened descriptor to close the leaf replacement race.
+    const expected = await lstat(absolutePath);
+    if (!expected.isFile() || expected.nlink !== 1 || expected.size > 900000)
+      throw Error('platform_skill_resource_unsafe');
+    const handle = await open(
+      absolutePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const stat = await handle.stat();
+      if (
+        !stat.isFile() ||
+        stat.nlink !== 1 ||
+        stat.size > 900000 ||
+        stat.dev !== expected.dev ||
+        stat.ino !== expected.ino
+      )
+        throw Error('platform_skill_resource_unsafe');
+      return await handle.readFile();
+    } finally {
+      await handle.close();
+    }
+  };
+  const input = JSON.parse(
+    (await readAsset('skills/catalog.json')).toString('utf8'),
+  ) as unknown;
+  return parsePlatformContentCatalog(
+    input,
+    async (file) => (await readAsset(file)).toString('utf8'),
+    readAsset,
+  );
 }

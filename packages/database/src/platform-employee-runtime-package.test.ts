@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import type { PlatformEmployeeDefinition } from '@allrice/contracts';
 
 import { employeeManifest } from './employee-config.js';
+import { frozenPackageSkills } from './skill-bundles.ts';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -77,7 +78,7 @@ const skills = [
     name: 'web-research',
     description: '检索并核验最新公开信息。',
     content: '# Web Research\n\n先搜索，再交叉核验并附来源。',
-    checksum: `sha256:${'a'.repeat(64)}`,
+    checksum: `sha256:${createHash('sha256').update('# Web Research\n\n先搜索，再交叉核验并附来源。').digest('hex')}`,
     model_invocable: true,
     user_invocable: true,
     required_tool_refs: ['web.search'],
@@ -150,6 +151,20 @@ function jsonbLikeRoundTrip(value: unknown): unknown {
 }
 
 describe('platform employee runtime package', () => {
+  it('keeps v1 resource-free package identities readable after JSONB reordering', () => {
+    const pkg = buildEmployeeRuntimePackage({
+      revision: 7,
+      definition,
+      skills,
+    });
+    expect(pkg.schemaVersion).toBe(1);
+    const bytes = JSON.stringify(pkg);
+    expect(frozenPackageSkills(jsonbLikeRoundTrip(pkg))).toEqual(pkg.skills);
+    expect(JSON.stringify(pkg)).toBe(bytes);
+    expect(pkg.skills.every((skill) => !Object.hasOwn(skill, 'bundle'))).toBe(
+      true,
+    );
+  });
   it('migrates active previews to frozen snapshots and per-run deadlines', () => {
     expect(previewSnapshotMigration).toContain(
       'add column frozen_runtime_profile jsonb',
@@ -347,7 +362,7 @@ describe('platform employee runtime package', () => {
         {
           ...skills[0]!,
           content: '# Web Research\n\n更新后的生产说明。',
-          checksum: `sha256:${'b'.repeat(64)}`,
+          checksum: `sha256:${createHash('sha256').update('# Web Research\n\n更新后的生产说明。').digest('hex')}`,
         },
       ],
     });

@@ -176,7 +176,10 @@ export async function executeEmployeeRun({
         provider: resolved.providerSnapshot,
         systemPrompt: resolved.promptSnapshot.systemPrompt,
         skills: resolved.nativeSkills
-          .map((skill) => `${skill.id}:${skill.checksum}`)
+          .map(
+            (skill) =>
+              `${skill.id}:${skill.checksum}${skill.bundle ? `:${skill.bundle.checksum}` : ''}`,
+          )
           .sort(),
         capabilities: [...resolved.grantedCapabilities].sort(),
         ...(resolved.executionSnapshot?.schemaVersion === 2 &&
@@ -765,6 +768,7 @@ export async function executeEmployeeRun({
                       ? (configuredArguments as Record<string, unknown>)
                       : value;
                   const toolResult = await executeRiceTool({
+                    nativeSkills: resolved.nativeSkills,
                     context: execution.context,
                     managedBrowserJobAttempt: execution.job.attempt,
                     managedBrowserJobLeaseToken: workflowLease.leaseToken,
@@ -941,6 +945,7 @@ export async function executeEmployeeRun({
                 tools.length > 0
                   ? (call) =>
                       executeRiceTool({
+                        nativeSkills: resolved.nativeSkills,
                         context: execution.context,
                         managedBrowserJobAttempt: execution.job.attempt,
                         managedBrowserJobLeaseToken: workflowLease.leaseToken,

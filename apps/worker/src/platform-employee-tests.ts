@@ -130,6 +130,7 @@ export async function executeNextPlatformEmployeeTest(input: {
         tools.length > 0
           ? (call) =>
               executeRiceTool({
+                nativeSkills: test.nativeSkills,
                 context: executionContext,
                 managedBrowserJobAttempt: test.previewExecution.jobAttempt,
                 managedBrowserJobLeaseToken: test.previewExecution.leaseToken,

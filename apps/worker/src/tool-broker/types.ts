@@ -2,7 +2,11 @@ import type {
   createTraceableMemory,
   isManagedBrowserTaskCancelRequested,
 } from '@allrice/database';
-import type { ExecutionContext, SkillCapability } from '@allrice/contracts';
+import type {
+  ExecutionContext,
+  SkillCapability,
+  DshNativeSkillSnapshot,
+} from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
 import type { runManagedBrowserTask } from '../managed-browser.js';
@@ -42,6 +46,7 @@ export interface RiceToolExecutionInput {
   capabilities: SkillCapability[];
   storageRoot: string;
   skillVersionIds?: string[];
+  nativeSkills?: readonly DshNativeSkillSnapshot[];
   sessionId?: string;
   employeeId?: string;
   userMessageId?: string;

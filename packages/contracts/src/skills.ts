@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { SkillBundleSchema } from './skill-bundle.ts';
 
 export const SkillCapabilitySchema = z.enum([
   'network:outbound',
@@ -63,6 +64,8 @@ export const DshNativeSkillSnapshotSchema = z
       })
       .strict(),
     requiredToolRefs: z.array(z.string().trim().min(1).max(240)).max(32),
+    // Deliberately optional without a default: v1 persisted checksums must not change.
+    bundle: SkillBundleSchema.optional(),
   })
   .strict();
 export type DshNativeSkillSnapshot = z.infer<

@@ -1,6 +1,7 @@
 import type postgres from 'postgres';
 
 import { getDatabase } from '../core/client.ts';
+import { skillBundleChecksum, validateSkillBundle } from '../skill-bundles.ts';
 import type {
   PlatformContentCatalog,
   ResolvedPlatformSkill,
@@ -8,8 +9,13 @@ import type {
 
 export type ExistingPlatformSkill = Omit<
   ResolvedPlatformSkill,
-  'contentFile' | 'createdByLabel' | 'reviewStatus' | 'reviewedByLabel'
+  | 'contentFile'
+  | 'createdByLabel'
+  | 'reviewStatus'
+  | 'reviewedByLabel'
+  | 'bundle'
 > & {
+  bundle?: ResolvedPlatformSkill['bundle'] | null;
   reviewStatus: 'draft' | 'reviewed' | 'rejected';
   reviewedByLabel: string | null;
 };
@@ -41,6 +47,7 @@ export function buildPlatformContentCatalogMetadata(
       version: skill.version,
       checksum: skill.checksum,
       sourceRef: skill.sourceRef,
+      ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
     })),
     authority: 'skills/catalog.json',
     mutationScope: 'platform-skill-catalog-only',
@@ -66,6 +73,7 @@ function operationalFields(
     license: skill.license,
     reviewStatus: skill.reviewStatus,
     reviewedByLabel: skill.reviewedByLabel,
+    bundle: skill.bundle ? skillBundleChecksum(skill.bundle) : null,
   };
 }
 
@@ -78,6 +86,7 @@ function revisionFields(skill: ExistingPlatformSkill | ResolvedPlatformSkill) {
     sourceRef: skill.sourceRef,
     license: skill.license,
     requiredToolRefs: skill.requiredToolRefs,
+    bundle: skill.bundle ? skillBundleChecksum(skill.bundle) : null,
   };
 }
 
@@ -172,6 +181,7 @@ export function planPlatformSkillSync(
 }
 
 type PlatformSkillRow = {
+  bundle?: ResolvedPlatformSkill['bundle'] | null;
   id: string;
   name: string;
   description: string;
@@ -198,6 +208,7 @@ async function readExistingSkills(transaction: postgres.TransactionSql) {
       source_ref as "sourceRef", version, license,
       review_status as "reviewStatus",
       reviewed_by_label as "reviewedByLabel"
+      , bundle
     from allrice_platform_dsh_skills
     order by name, id
     for update
@@ -267,8 +278,24 @@ export async function synchronizePlatformContent(
     const existing = await readExistingSkills(transaction);
     const plan = planPlatformSkillSync(existing, catalog.skills);
 
+    for (const skill of catalog.skills)
+      if (skill.bundle) validateSkillBundle(skill.bundle, skill.content);
     for (const skill of plan.inserts) await insertSkill(transaction, skill);
     for (const skill of plan.updates) await updateSkill(transaction, skill);
+    for (const skill of catalog.skills) {
+      if (skill.bundle) {
+        await transaction`insert into allrice_platform_skill_bundle_versions(skill_id,version,checksum,bundle)
+          values (${skill.id},${skill.version},${skill.bundle.checksum},${transaction.json(skill.bundle)})
+          on conflict (skill_id,version) do nothing`;
+        const [stored] = await transaction<
+          { checksum: string }[]
+        >`select checksum from allrice_platform_skill_bundle_versions where skill_id=${skill.id} and version=${skill.version}`;
+        if (stored?.checksum !== skill.bundle.checksum)
+          throw Error('skill_bundle_version_conflict');
+      }
+      await transaction`update allrice_platform_dsh_skills set bundle=${skill.bundle ? transaction.json(skill.bundle) : null}
+        where id=${skill.id} and bundle is distinct from ${skill.bundle ? transaction.json(skill.bundle) : null}`;
+    }
 
     const metadata = buildPlatformContentCatalogMetadata(catalog);
     await transaction`

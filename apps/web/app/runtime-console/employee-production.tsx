@@ -21,6 +21,8 @@ import { GeminiCredentialSettings } from './gemini-credential-settings';
 type Employee = PlatformEmployeeSummary;
 
 interface NativeSkill {
+  bundleChecksum?: string | null;
+  resourceCount?: number;
   id: string;
   name: string;
   description: string;
@@ -747,7 +749,7 @@ export function EmployeeProduction() {
             items={directory.skills.map((skill) => ({
               id: skill.id,
               label: skill.name,
-              detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'} · ${skill.description}`,
+              detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'}${skill.bundleChecksum ? ` · 冻结资源包 ${skill.resourceCount ?? 0} 项` : ''} · ${skill.description}`,
               disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
             }))}
             selected={draft.capabilities.nativeSkillIds}

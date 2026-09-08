@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { allRiceToolManifest } from './tool-manifest.ts';
 
 describe('AllRice tool manifest', () => {
-  it('adds P15 and P16 envelope adapters while retaining the 22 native transports', () => {
+  it('adds P15/P16 execution adapters and P18 frozen resource reading while retaining 22 native transports', () => {
     const canonicalNames = allRiceToolManifest.map(
       (tool) => tool.canonicalName,
     );
@@ -23,8 +23,8 @@ describe('AllRice tool manifest', () => {
       'dshWireName' in tool ? tool.dshWireName : undefined,
     );
 
-    expect(canonicalNames).toHaveLength(27);
-    expect(new Set(canonicalNames).size).toBe(27);
+    expect(canonicalNames).toHaveLength(28);
+    expect(new Set(canonicalNames).size).toBe(28);
     expect(nativeTools).toHaveLength(22);
     expect(brokerNativeTools).toHaveLength(21);
     expect(
@@ -55,6 +55,7 @@ describe('AllRice tool manifest', () => {
       },
     ]);
     expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
+      'workspace.skill.read',
       'cloud.mcp.call',
       'cloud.process.execute',
       'workspace.file.list',

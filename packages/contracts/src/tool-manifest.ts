@@ -32,6 +32,12 @@ export interface AllRiceToolManifestEntry {
  */
 export const allRiceToolManifest = [
   {
+    canonicalName: 'workspace.skill.read',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'envelope',
+  },
+  {
     canonicalName: 'cloud.mcp.call',
     capability: 'secret:use',
     risk: 'side_effect',
