@@ -220,6 +220,13 @@ export class LocalCommandRunner {
       outputTruncated = false;
     const publish = (stream: 'stdout' | 'stderr', text: string) => {
       if (!text) return;
+      // The durable output contract is 0..255, including final filter flushes.
+      // Do not let a valid byte budget poison the journal with a 257th frame.
+      if (sequence >= 256) {
+        outputTruncated = true;
+        void stop('output_limit').catch(() => undefined);
+        return;
+      }
       const available = limits.outputBytes - publishedBytes;
       if (Buffer.byteLength(text) > available) {
         outputTruncated = true;
@@ -311,9 +318,10 @@ export class LocalCommandRunner {
         },
         limits.timeoutMs + 15_000,
       );
-      if (stopPromise) await stopPromise;
       for (const stream of ['stdout', 'stderr'] as const)
         publish(stream, filters[stream].push(Buffer.alloc(0), true));
+      // A final incomplete line can itself exhaust the frame budget.
+      if (stopPromise) await stopPromise;
       const inspected = await this.inspect(options.attemptId, id);
       if (inspected.State.Running || inspected.State.Status !== 'exited')
         throw new LocalCommandError('STOP_NOT_CONFIRMED');

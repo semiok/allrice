@@ -175,22 +175,11 @@ export class LocalProcessManager {
               if (event.type === 'starting') await exchange();
             },
             onOutput: async (output) => {
-              await (this.input.request ?? bridgeRequest)({
-                server: this.input.config.server,
-                path: `/api/v1/bridge/device/operations/${operationId}/output`,
-                method: 'POST',
-                token: this.input.token,
-                body: {
-                  contractVersion: 1,
-                  attempt: dispatch.snapshot.binding.attempt,
-                  leaseToken: dispatch.leaseToken,
-                  sequence: output.sequence,
-                  stream: output.stream,
-                  content: output.text,
-                },
-                maximumResponseBytes: 4096,
-                timeoutMs: 2500,
-              });
+              // Commit every bounded chunk independently of network delivery.
+              // RuntimeBridgeOperationClient.flush owns strict ACK/retry for
+              // both foreground and background output; service control ACKs
+              // and the next disk write never wait behind a slow upload.
+              await journal.recordOutput(operationId, output);
             },
           },
         );

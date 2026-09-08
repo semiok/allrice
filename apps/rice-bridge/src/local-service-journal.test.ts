@@ -115,13 +115,13 @@ describe('P09-c durable local service evidence', () => {
       fixture({ limits: { entries: 10, bytes: 800_000 } }),
     ).rejects.toThrow('JOURNAL_CAPACITY_REACHED');
     const f = await fixture({
-      limits: { entries: 10, bytes: 2_000_000 },
+      limits: { entries: 10, bytes: 2_600_000 },
       maxBytes: 4096,
     });
     const ordinary = await BridgeJournal.open({
       ...f.config,
       directory: `${f.config.directory}-ordinary`,
-      limits: { entries: 10, bytes: 800_000 },
+      limits: { entries: 10, bytes: 1_200_000 },
     });
     journals.push(ordinary);
     await expect(
@@ -183,7 +183,7 @@ describe('P09-c durable local service evidence', () => {
     expect(await f.journal.pending()).toHaveLength(1);
     expect(
       (await stat(join(f.config.directory, 'journal.sqlite'))).size,
-    ).toBeLessThan(2_000_000);
+    ).toBeLessThan(2_600_000);
     await f.journal.close();
     const reopened = await BridgeJournal.open(f.config);
     journals.push(reopened);
@@ -211,6 +211,37 @@ describe('P09-c durable local service evidence', () => {
     expect(await reopened.serviceJournal().pending(fixtureId(6))).toHaveLength(
       2,
     );
+  });
+  it('does not deliver a terminal receipt ahead of service events queued after an empty drain', async () => {
+    const f = await fixture();
+    await f.services.acknowledge(fixtureId(6), 1);
+    expect(await f.services.pending(fixtureId(6))).toEqual([]);
+    expect(await f.journal.pendingOutput()).toEqual([]);
+    // Model the real race: poll just observed empty evidence queues, then a
+    // live service publishes its last event and terminal state before polling
+    // reads the receipt list. Eligibility must inspect the new event too.
+    await f.services.event(fixtureId(6), {
+      type: 'ready',
+      processId: fixtureId(6),
+      attemptId: fixtureId(7),
+      sequence: 2,
+      port: 3100,
+      visibility: 'container_only',
+    });
+    await f.journal.outcome(fixtureId(6), {
+      status: 'succeeded',
+      effects: 'none',
+      summary: 'synthetic ended service',
+    });
+    const raw = await f.journal.pending();
+    expect(raw).toHaveLength(1);
+    expect(await f.journal.pendingForDelivery()).toEqual([]);
+    await f.journal.close();
+    const reopened = await BridgeJournal.open(f.config);
+    journals.push(reopened);
+    expect(await reopened.pendingForDelivery()).toEqual([]);
+    await reopened.serviceJournal().acknowledge(fixtureId(6), 2);
+    expect(await reopened.pendingForDelivery()).toEqual(raw);
   });
   it('ACK loss retries evidence only after a durable pipe delivery', async () => {
     const f = await fixture();

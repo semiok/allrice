@@ -36,6 +36,8 @@ import {
 
 import { BridgeJournal } from '../../../../apps/rice-bridge/src/journal.js';
 import { RuntimeBridgeOperationClient } from '../../../../apps/rice-bridge/src/operation-client.js';
+import { BridgeDualTransport } from '../../../../apps/rice-bridge/src/dual-transport.js';
+import { createBridgeConnectionAuthority } from '../bridge-connections.ts';
 import { createRuntimeBridgeHttpHandler } from '../../../../apps/web/lib/bridge/operation-http.js';
 import { bridgeDeviceStatus } from '../bridge.ts';
 import type * as DatabaseClient from '../core/client.ts';
@@ -67,7 +69,7 @@ afterEach(async () => {
   for (const action of cleanups.splice(0).reverse()) await action();
 });
 
-async function fixture() {
+async function fixture(options: { wss?: boolean } = {}) {
   const temporary = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-b1-integration-')),
   );
@@ -255,7 +257,7 @@ async function fixture() {
     );
   }
   let before: ((action: string) => Promise<void>) | null = null;
-  let loseNextResponse: 'start' | 'receipts' | null = null;
+  let loseNextResponse: 'next' | 'start' | 'receipts' | null = null;
   const handler = createRuntimeBridgeHttpHandler({
     enabled: () => true,
     authenticate: bridgeDeviceStatus,
@@ -315,6 +317,22 @@ async function fixture() {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
   const origin = `http://127.0.0.1:${address.port}`;
+  if (options.wss) {
+    // Runtime import preserves the production .mjs gateway, not a test copy.
+    const modulePath = '../../../../apps/web/server/bridge-socket.mjs';
+    const { createBridgeSocketGateway, createBridgeLoopbackDispatch } =
+      await import(modulePath);
+    const gateway = await createBridgeSocketGateway({
+      authority: createBridgeConnectionAuthority(database),
+      enabled: () => true,
+      dispatch: createBridgeLoopbackDispatch(address.port),
+      heartbeatMs: 100,
+    });
+    server.on('upgrade', (request, socket, head) => {
+      void gateway.upgrade(request, socket, head);
+    });
+    cleanups.push(() => gateway.close());
+  }
   const config = {
     server: origin,
     deviceId: ids.device,
@@ -335,7 +353,21 @@ async function fixture() {
   };
   const journal = await BridgeJournal.open(journalInput);
   cleanups.push(() => journal.close());
-  const client = new RuntimeBridgeOperationClient({ config, token, journal });
+  const transport = options.wss
+    ? new BridgeDualTransport({
+        server: origin,
+        token,
+        deviceId: ids.device,
+        retryBaseMs: 1,
+      })
+    : undefined;
+  if (transport) cleanups.push(async () => transport.close());
+  const client = new RuntimeBridgeOperationClient({
+    config,
+    token,
+    journal,
+    request: transport?.request,
+  });
   async function post(path: string, body?: unknown, credential = token) {
     return fetch(`${origin}/api/v1/bridge/device/operations/${path}`, {
       method: 'POST',
@@ -375,7 +407,7 @@ async function fixture() {
     beforeAction(action: ((action: string) => Promise<void>) | null) {
       before = action;
     },
-    loseResponse(action: 'start' | 'receipts') {
+    loseResponse(action: 'next' | 'start' | 'receipts') {
       loseNextResponse = action;
     },
   };
@@ -459,6 +491,107 @@ suite(
         ),
       ).toHaveLength(1);
       expect(await f.journal.pending()).toEqual([]);
+    });
+
+    it('P12 lost claim response resumes the exact unstarted lease without another approval/event/effect', async () => {
+      const f = await fixture();
+      await f.approve();
+      f.loseResponse('next');
+      await expect(f.client.pollOnce()).rejects.toThrow();
+      const snapshot = await f.ledger.readOperation(f.scope, f.operationId);
+      expect(snapshot.status).toBe('dispatched');
+      await expect(
+        readFile(join(f.workspaceRoot, 'result.txt')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      const [before] =
+        await database`select lease_token_hash,lease_expires_at from allrice_runtime_operations where id=${f.operationId}`;
+      // Concurrent HTTP clients (and the WSS HTTP adapter) must obtain precisely
+      // the same binding/token/expiry, even with no shared request ID or memory.
+      const responses = await Promise.all([
+        f.post('next', { supportsClaimRecovery: true }),
+        f.post('next', { supportsClaimRecovery: true }),
+      ]);
+      const bodies = await Promise.all(responses.map((r) => r.json()));
+      expect(bodies[0]).toEqual(bodies[1]);
+      const recovered = RuntimeBridgeDispatchSchema.parse(
+        (bodies[0] as { dispatch: unknown }).dispatch,
+      );
+      expect(
+        createHash('sha256').update(recovered.leaseToken).digest('hex'),
+      ).toBe(before!.lease_token_hash);
+      expect(recovered.leaseExpiresAt).toBe(
+        (before!.lease_expires_at as Date).toISOString(),
+      );
+      await f.client.handle(recovered);
+      await f.client.handle(recovered);
+      await f.client.flush();
+      expect(await readFile(join(f.workspaceRoot, 'result.txt'), 'utf8')).toBe(
+        'one exact approved write',
+      );
+      const events = await f.ledger.readEvents(f.scope, f.operationId);
+      expect(
+        events.filter((e) => e.signal.type === 'operation.dispatched'),
+      ).toHaveLength(1);
+      expect(
+        events.filter((e) => e.signal.type === 'operation.outcome'),
+      ).toHaveLength(1);
+      expect(
+        (await f.post('next', { supportsClaimRecovery: true })).status,
+      ).toBe(200);
+    });
+
+    it.each(['next', 'start', 'receipts'] as const)(
+      'P12 real WSS/HTTP/PG/SQLite lost %s response does not duplicate an actual file write',
+      async (stage) => {
+        const f = await fixture({ wss: true });
+        await f.approve();
+        f.loseResponse(stage);
+        expect(await f.client.pollOnce()).toBe(true);
+        const state = await f.ledger.readOperation(f.scope, f.operationId);
+        if (stage === 'start') {
+          expect(state.status).toBe('unknown');
+          await expect(
+            readFile(join(f.workspaceRoot, 'result.txt')),
+          ).rejects.toMatchObject({ code: 'ENOENT' });
+        } else {
+          expect(state.status).toBe('succeeded');
+          expect(
+            await readFile(join(f.workspaceRoot, 'result.txt'), 'utf8'),
+          ).toBe('one exact approved write');
+          expect(
+            (await f.ledger.readEvents(f.scope, f.operationId)).filter(
+              (e) => e.signal.type === 'operation.outcome',
+            ),
+          ).toHaveLength(1);
+        }
+        expect(await f.client.pollOnce()).toBe(false);
+        expect(await f.journal.pending()).toEqual([]);
+        const [connection] =
+          await database`select epoch from allrice_bridge_connections where device_id=${f.ids.device}`;
+        expect(Number(connection?.epoch)).toBeGreaterThan(0); // this really used WSS, not only HTTP
+      },
+    );
+
+    it('P12 claim recovery cannot revive an expired or revoked dispatch or a legacy random lease', async () => {
+      for (const mode of ['expired', 'revoked', 'legacy'] as const) {
+        const f = await fixture();
+        await f.approve();
+        const response = await f.post(
+          'next',
+          mode === 'legacy' ? {} : { supportsClaimRecovery: true },
+        );
+        expect(response.ok).toBe(true);
+        if (mode === 'expired')
+          await database`update allrice_runtime_operations set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.operationId}`;
+        if (mode === 'revoked')
+          await database`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.ids.grant}`;
+        expect(
+          await (await f.post('next', { supportsClaimRecovery: true })).json(),
+        ).toEqual({ dispatch: null });
+        await expect(
+          readFile(join(f.workspaceRoot, 'result.txt')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      }
     });
 
     it('lost accepted result ACK survives reopening and does not repeat the write', async () => {

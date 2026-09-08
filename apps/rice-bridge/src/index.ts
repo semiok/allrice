@@ -19,6 +19,7 @@ import {
 } from '@allrice/contracts';
 
 import { bridgeRequest } from './client.js';
+import { BridgeDualTransport } from './dual-transport.js';
 import {
   deleteConfig,
   deleteDeviceToken,
@@ -251,6 +252,28 @@ async function start() {
   const operationModule = operationLedgerEnabled
     ? await import('./operation-client.js')
     : null;
+  let transport: BridgeDualTransport | null = null;
+  let transportIdentity = '';
+  const currentTransport = () => {
+    if (
+      !operationLedgerEnabled ||
+      process.env.ALLRICE_BRIDGE_WSS_ENABLED !== '1'
+    )
+      return null;
+    // Credential/config changes close the old connection instead of borrowing it
+    // across devices or tenants. The identity string is never logged/persisted.
+    const identity = JSON.stringify([config.server, config.deviceId, token]);
+    if (identity !== transportIdentity) {
+      transport?.close();
+      transport = new BridgeDualTransport({
+        server: config.server,
+        deviceId: config.deviceId,
+        token,
+      });
+      transportIdentity = identity;
+    }
+    return transport;
+  };
   const journal = operationLedgerEnabled
     ? await (
         await import('./journal.js')
@@ -363,6 +386,7 @@ async function start() {
               journal,
               runner: runnerAvailable ? runner : undefined,
               signal: commandAbort.signal,
+              request: currentTransport()?.request,
             },
           ).pollOnce();
           reconnectDelayMs = 1_000;
@@ -387,7 +411,9 @@ async function start() {
             BridgeCommandSchema.parse(response.command),
           );
         } else {
-          await new Promise((resolve) => setTimeout(resolve, 750));
+          const channel = currentTransport();
+          if (channel) await channel.waitForWork(750);
+          else await new Promise((resolve) => setTimeout(resolve, 750));
         }
         reconnectDelayMs = 1_000;
       } catch (error) {
@@ -404,6 +430,7 @@ async function start() {
     }
   } finally {
     clearInterval(heartbeatTimer);
+    (transport as BridgeDualTransport | null)?.close();
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
     if (journal)
       await (

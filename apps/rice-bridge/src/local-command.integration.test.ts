@@ -42,6 +42,7 @@ suite('P05 real local VM / cgroup v2 isolation', () => {
       maintainLease?: () => Promise<boolean>;
       pids?: number;
       onOutput?: (text: string) => void;
+      onSequence?: (sequence: number) => void;
     } = {},
   ) {
     const root = await mkdtemp(join(tmpdir(), 'allrice-p05-vm-'));
@@ -75,7 +76,10 @@ suite('P05 real local VM / cgroup v2 isolation', () => {
     const result = await runner.execute(root, command, {
       attemptId,
       ...options,
-      onOutput: (chunk) => options.onOutput?.(chunk.text),
+      onOutput: (chunk) => {
+        options.onSequence?.(chunk.sequence);
+        options.onOutput?.(chunk.text);
+      },
     });
     results.push({ attemptId, result });
     expect(await readFile(join(root, 'probe.mjs'), 'utf8')).toBe(source);
@@ -194,5 +198,32 @@ suite('P05 real local VM / cgroup v2 isolation', () => {
     expect(
       Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
     ).toBeLessThanOrEqual(8192);
+  }, 30_000);
+  it('bounds spaced output frames below the byte limit and confirms an actual output_limit stop', async () => {
+    const sequences: number[] = [];
+    const result = await execute(
+      `let count=0;const timer=setInterval(()=>{
+        process.stdout.write('frame-'+count+'\\n');
+        if(++count===320){clearInterval(timer);process.exit(0);}
+      },15);`,
+      {
+        onSequence: (sequence) => {
+          // Mirrors the strict SQLite/PG contract; overflow must never reach it.
+          expect(sequence).toBeLessThan(256);
+          sequences.push(sequence);
+        },
+      },
+    );
+    expect(sequences.length).toBeGreaterThan(200);
+    expect(sequences.length).toBeLessThanOrEqual(256);
+    expect(sequences).toEqual(sequences.map((_, index) => index));
+    expect(
+      Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+    ).toBeLessThan(8192);
+    expect(result.reason).toBe('output_limit');
+    expect(result.truncated).toBe(true);
+    expect(result.stopped).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).not.toContain('frame-319');
   }, 30_000);
 });
