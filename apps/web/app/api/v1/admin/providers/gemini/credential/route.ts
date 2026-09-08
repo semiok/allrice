@@ -54,7 +54,7 @@ function errorResponse(error: unknown) {
       return problem(
         400,
         'INVALID_KEY',
-        '密钥格式不正确，请只粘贴 API Key，不要包含命令或换行。',
+        '密钥格式不正确，请完整粘贴 API Key（保留 AQ. 中的点号），不要包含命令、换行或转义反斜杠。',
       );
     if (error.code === 'busy')
       return problem(

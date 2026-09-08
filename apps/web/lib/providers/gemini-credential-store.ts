@@ -24,7 +24,14 @@ export function validateGeminiApiKey(value: unknown): string {
   if (typeof value !== 'string') throw new GeminiCredentialError('invalid_key');
   // Reject pasted multiline commands/control characters; do not echo any input.
   const key = value.trim();
-  if (!/^[A-Za-z0-9_-]{20,256}$/.test(key) || /[\r\n]/.test(value))
+  // Treat the key as opaque: Google Auth keys (AQ.) also contain a dot.
+  if (
+    !/^[A-Za-z0-9_.-]{20,256}$/.test(key) ||
+    [...value].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  )
     throw new GeminiCredentialError('invalid_key');
   return key;
 }
