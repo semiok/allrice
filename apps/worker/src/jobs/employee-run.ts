@@ -312,6 +312,7 @@ export async function executeEmployeeRun({
     const authorizedTools = riceToolDefinitionsForCapabilities(
       resolved.grantedCapabilities,
       allowedToolNames,
+      executionSnapshot.schemaVersion === 2 ? executionSnapshot.mcpTools : [],
     );
     const routePlan = decideCapabilityRoute({
       request: {
@@ -608,6 +609,7 @@ export async function executeEmployeeRun({
       resolved.grantedCapabilities,
       allowedToolNames,
       selectedToolNames,
+      executionSnapshot.schemaVersion === 2 ? executionSnapshot.mcpTools : [],
     );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
@@ -765,6 +767,10 @@ export async function executeEmployeeRun({
                       ? (configuredArguments as Record<string, unknown>)
                       : value;
                   const toolResult = await executeRiceTool({
+                    frozenMcpTools:
+                      executionSnapshot.schemaVersion === 2
+                        ? executionSnapshot.mcpTools
+                        : [],
                     context: execution.context,
                     managedBrowserJobAttempt: execution.job.attempt,
                     managedBrowserJobLeaseToken: workflowLease.leaseToken,
@@ -941,6 +947,10 @@ export async function executeEmployeeRun({
                 tools.length > 0
                   ? (call) =>
                       executeRiceTool({
+                        frozenMcpTools:
+                          executionSnapshot.schemaVersion === 2
+                            ? executionSnapshot.mcpTools
+                            : [],
                         context: execution.context,
                         managedBrowserJobAttempt: execution.job.attempt,
                         managedBrowserJobLeaseToken: workflowLease.leaseToken,

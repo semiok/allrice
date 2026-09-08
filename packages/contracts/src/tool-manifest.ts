@@ -35,7 +35,8 @@ export const allRiceToolManifest = [
     canonicalName: 'cloud.mcp.call',
     capability: 'secret:use',
     risk: 'side_effect',
-    transport: 'envelope',
+    transport: 'dsh_broker_native',
+    dshWireName: 'cloud_mcp_call',
   },
   {
     canonicalName: 'cloud.process.execute',

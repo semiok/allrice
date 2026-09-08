@@ -2,7 +2,11 @@ import type {
   createTraceableMemory,
   isManagedBrowserTaskCancelRequested,
 } from '@allrice/database';
-import type { ExecutionContext, SkillCapability } from '@allrice/contracts';
+import type {
+  ExecutionContext,
+  SkillCapability,
+  FrozenMcpTool,
+} from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
 import type { runManagedBrowserTask } from '../managed-browser.js';
@@ -40,6 +44,7 @@ export type ManagedBrowserCancellationCheck =
 export interface RiceToolExecutionInput {
   context: ExecutionContext;
   capabilities: SkillCapability[];
+  frozenMcpTools?: readonly FrozenMcpTool[];
   storageRoot: string;
   skillVersionIds?: string[];
   sessionId?: string;

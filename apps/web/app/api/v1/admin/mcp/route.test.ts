@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataAccessError } from '@allrice/database';
+import { McpError } from '@allrice/contracts';
 import type * as DatabaseModule from '@allrice/database';
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   grant: vi.fn(),
   rotate: vi.fn(),
   revoke: vi.fn(),
+  employees: vi.fn(),
+  bind: vi.fn(),
 }));
 vi.mock('../../../../../lib/identity/session', () => ({
   requireRequestContext: mocks.context,
@@ -18,6 +21,10 @@ vi.mock('../../../../../lib/identity/session', () => ({
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof DatabaseModule>()),
   createMcpStore: () => mocks,
+  createEmployeeMcpBindingStore: () => ({
+    list: mocks.employees,
+    bind: mocks.bind,
+  }),
 }));
 import { GET, POST, PATCH } from './route';
 const workspaceId = randomUUID(),
@@ -40,6 +47,7 @@ describe('P16 MCP management HTTP boundary', () => {
       actor: { type: 'user', id: randomUUID() },
     });
     mocks.list.mockResolvedValue([]);
+    mocks.employees.mockResolvedValue([]);
   });
   afterEach(() => vi.unstubAllEnvs());
   it('returns no-store protocol/auth metadata without exposing token fields', async () => {
@@ -55,12 +63,48 @@ describe('P16 MCP management HTTP boundary', () => {
       protocol: '2025-11-25',
       auth: 'tenant_bearer',
       connections: [],
+      employees: [],
     });
   });
   it('cannot mutate when feature is off', async () => {
     vi.stubEnv('ALLRICE_CLOUD_MCP_ENABLED', '0');
     expect((await POST(request({ workspaceId }))).status).toBe(503);
     expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it('routes exact employee version grants and maps concurrent revisions without retry', async () => {
+    const payload = {
+      action: 'employee_binding',
+      workspaceId,
+      connectionId,
+      employeeId: randomUUID(),
+      employeeVersionId: randomUUID(),
+      expectedRevision: 0,
+      enabled: true,
+    };
+    mocks.bind.mockResolvedValue({ id: randomUUID(), revision: 1 });
+    expect((await PATCH(request(payload, 'PATCH'))).status).toBe(200);
+    const input = {
+      workspaceId,
+      connectionId,
+      employeeId: payload.employeeId,
+      employeeVersionId: payload.employeeVersionId,
+      expectedRevision: 0,
+      enabled: true,
+    };
+    expect(mocks.bind.mock.calls[0]![1]).toEqual(input);
+    mocks.bind.mockRejectedValue(new McpError('MCP_BINDING_CHANGED'));
+    expect((await PATCH(request(payload, 'PATCH'))).status).toBe(409);
+    expect(mocks.bind).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        await PATCH(
+          request(
+            { ...payload, manifest: { capabilities: ['secret:use'] } },
+            'PATCH',
+          ),
+        )
+      ).status,
+    ).toBe(400);
   });
   it('requires authentication', async () => {
     mocks.context.mockRejectedValue(
@@ -75,6 +119,25 @@ describe('P16 MCP management HTTP boundary', () => {
         .status,
     ).toBe(403);
     expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it('uses actual browser Host behind the reverse proxy and requires Origin', async () => {
+    mocks.create.mockResolvedValue({ id: connectionId });
+    const local = new Request('http://localhost:3001/api/v1/admin/mcp', {
+      method: 'POST',
+      headers: {
+        host: 'allrice.test',
+        origin: 'https://allrice.test',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ workspaceId }),
+    });
+    expect((await POST(local)).status).toBe(201);
+    const missing = new Request('https://allrice.test/api/v1/admin/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect((await POST(missing)).status).toBe(403);
   });
   it('rejects oversized bodies without reflecting the secret', async () => {
     const result = await POST(request({ bearerToken: 'private'.repeat(3000) }));

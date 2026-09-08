@@ -80,6 +80,43 @@ export const McpConnectionSchema = z
   })
   .strict();
 export type McpConnection = z.infer<typeof McpConnectionSchema>;
+export const McpEmployeeAuthorizationSchema = z
+  .object({
+    id: UuidSchema,
+    revision: z.number().int().positive(),
+    employeeId: UuidSchema,
+    employeeVersionId: UuidSchema,
+  })
+  .strict();
+export const McpEmployeeBindingInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    connectionId: UuidSchema,
+    employeeId: UuidSchema,
+    employeeVersionId: UuidSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    enabled: z.boolean(),
+  })
+  .strict();
+export const McpEmployeeBindingSchema = McpEmployeeAuthorizationSchema.extend({
+  connectionId: UuidSchema,
+  enabled: z.boolean(),
+}).strict();
+export const McpEmployeeTargetSchema = z
+  .object({
+    employeeId: UuidSchema,
+    employeeVersionId: UuidSchema,
+    name: z.string(),
+    version: z.number().int().positive(),
+    eligible: z.boolean(),
+    reasons: z.array(z.string()),
+    bindings: z.array(McpEmployeeBindingSchema),
+  })
+  .strict();
+export type McpEmployeeTarget = z.infer<typeof McpEmployeeTargetSchema>;
+export type McpEmployeeAuthorization = z.infer<
+  typeof McpEmployeeAuthorizationSchema
+>;
 export const McpGrantInputSchema = z
   .object({
     workspaceId: UuidSchema,
@@ -90,6 +127,9 @@ export const McpGrantInputSchema = z
   })
   .strict();
 export const FrozenMcpToolSchema = McpDiscoveredToolSchema.extend({
+  // Optional for read-only legacy history. New dispatch requires exact tenant
+  // employee authorization and its current revocation revision.
+  employeeAuthorization: McpEmployeeAuthorizationSchema.optional(),
   connectionId: UuidSchema,
   connectionRevision: z.number().int().positive(),
   toolRevisionId: UuidSchema,
@@ -127,6 +167,9 @@ export const McpManagementMutationSchema = z.discriminatedUnion('action', [
     bearerToken: McpBearerSchema,
   }).strict(),
   McpGrantInputSchema.extend({ action: z.literal('grant') }).strict(),
+  McpEmployeeBindingInputSchema.extend({
+    action: z.literal('employee_binding'),
+  }).strict(),
 ]);
 export function isMcpInputValidationError(error: unknown) {
   return error instanceof z.ZodError;
@@ -150,7 +193,8 @@ export class McpError extends Error {
       | 'MCP_UNAVAILABLE'
       | 'MCP_LIMIT'
       | 'MCP_UNKNOWN'
-      | 'MCP_CANCELED',
+      | 'MCP_CANCELED'
+      | 'MCP_BINDING_CHANGED',
   ) {
     super(code);
   }

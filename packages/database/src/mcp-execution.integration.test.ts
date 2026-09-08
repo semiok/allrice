@@ -3,32 +3,31 @@ import { readFile, readdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
 import {
-  ExecutionContextSchema,
-  type RequestContext,
-} from '@allrice/contracts';
-import { createMcpStore } from './mcp-connections.ts';
-import { createMcpRuntimeOperation } from './mcp-execution.ts';
-import {
-  setRuntimePolicyControls,
-  getRuntimeActionApproval,
-  decideRuntimeActionApproval,
   revokeRuntimeActionApproval,
   runtimePolicyDigest as digest,
 } from './runtime-policy.ts';
-import { createMcpTransport } from '../../../apps/worker/src/mcp/transport.js';
-import { startMcpAcceptanceService } from '../../../apps/worker/src/mcp/test-service.js';
-import { executeNextMcpDiscovery } from '../../../apps/worker/src/mcp/lifecycle.js';
-import {
-  runMcpRuntimeOperation,
-  recoverMcpRuntimeOperations,
-} from '../../../apps/worker/src/mcp/executor.js';
+import type { startMcpAcceptanceService } from '../../../apps/worker/src/mcp/test-service.js';
+import { recoverMcpRuntimeOperations } from '../../../apps/worker/src/mcp/executor.js';
 import {
   listCloudRuntimeOperations,
   cancelCloudRuntimeRun,
 } from './cloud-operation-view.ts';
 import { mcpStableId } from './mcp-authority.ts';
 import type * as Client from './core/client.ts';
+import { nativeBrokerRoundtrip } from '../../../apps/worker/src/harness/dsh-native-broker.fixture.js';
+import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
+import { riceToolDefinitionsForCapabilities } from '../../../apps/worker/src/tool-broker/definitions.js';
+import * as McpExecutor from '../../../apps/worker/src/mcp/executor.js';
+import { updateEmployeeStatus } from './employees/employeehub.ts';
+import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
+import {
+  compilePlatformEmployee,
+  queuePlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+  publishPlatformEmployee,
+} from './employees/platform-employees.ts';
 
 let db: ReturnType<typeof postgres>, admin: ReturnType<typeof postgres>;
 vi.mock('./core/client.ts', async (original) => ({
@@ -42,210 +41,11 @@ const suite =
     : describe.skip;
 const services: Awaited<ReturnType<typeof startMcpAcceptanceService>>[] = [];
 
-/** Synthetic scoped Worker+frozen Run fixtures. Real PG policy, approvals,
- * operation leases and authenticated owned MCP HTTP; no personal connectors,
- * real model or public TLS/frontend route is claimed by this suite. */
 async function fixture() {
-  const org = randomUUID(),
-    workspace = randomUUID(),
-    user = randomUUID(),
-    membership = randomUUID(),
-    run = randomUUID(),
-    policy = randomUUID(),
-    employee = randomUUID(),
-    version = randomUUID(),
-    assignment = randomUUID(),
-    session = randomUUID(),
-    job = randomUUID(),
-    worker = randomUUID(),
-    lease = randomUUID();
-  const now = new Date().toISOString();
-  const memberships = [
-    {
-      id: membership,
-      organizationId: org,
-      workspaceId: workspace,
-      userId: user,
-      role: 'admin' as const,
-      active: true,
-    },
-  ];
-  const policyPayload = {
-    memberships,
-    grants: [
-      { resourceType: 'job', action: 'job:execute', workspaceId: workspace },
-    ],
-  };
-  const context: RequestContext = {
-    actor: { type: 'user', id: user },
-    organizationId: org,
-    workspaceId: workspace,
-    requestId: randomUUID(),
-    sessionId: randomUUID(),
-    authenticatedAt: now,
-    memberships,
-  };
-  await db.begin(async (tx) => {
-    await tx`insert into allrice_users(id,email,display_name,password_hash) values(${user},${`${user}@example.test`},'P16 synthetic','not-login')`;
-    await tx`insert into allrice_organizations(id,slug,name) values(${org},${`p16-${org}`},'P16 synthetic')`;
-    await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'test','P16 synthetic')`;
-    await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${org},${workspace},${user},'admin')`;
-  });
-  const service = await startMcpAcceptanceService();
-  services.push(service);
-  const store = createMcpStore({
-      database: db,
-      credentialKey: 'af'.repeat(32),
-    }),
-    transport = createMcpTransport({ fetchOverride: service.fetchOverride });
-  const connection = await store.create(context, {
-    workspaceId: workspace,
-    name: 'P16 owned acceptance',
-    endpoint: service.endpoint,
-    bearerToken: service.state.token,
-  });
-  await store.queueDiscovery(context, {
-    workspaceId: workspace,
-    connectionId: connection.id,
-  });
-  expect(
-    await executeNextMcpDiscovery({
-      workerId: worker,
-      signal: AbortSignal.timeout(10000),
-      store,
-      transport,
-    }),
-  ).toBe(true);
-  const [list] = await store.list(context, workspace);
-  for (const tool of list!.tools)
-    await store.grant(context, {
-      workspaceId: workspace,
-      connectionId: connection.id,
-      revisionId: tool.revisionId,
-      allowed: true,
-      risk: tool.name === 'records.list' ? 'read_only' : 'write',
-    });
-  const mcpTools = await store.freeze({
-    organizationId: org,
-    workspaceId: workspace,
-    actorId: user,
-  });
-  await db.begin(async (tx) => {
-    await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policy},${org},${user},1,${tx.json(policyPayload)},clock_timestamp()+interval '1 hour')`;
-    await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},'{}','{}')`;
-    await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p16','P16')`;
-    await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${workspace},${employee},1,'P16','synthetic','synthetic','[]',${digest('p16')},'{}')`;
-    await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignment},${org},${workspace},${employee},${version},${user})`;
-    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id) values(${session},${org},${workspace},${user},'P16 synthetic',${assignment},${version})`;
-    const um = randomUUID(),
-      am = randomUUID();
-    await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content) values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),(${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
-    await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot) values(${run},${org},${workspace},${user},${assignment},${version},${session},${um},${am},'{}','{}',${tx.json(JSON.parse(JSON.stringify({ capabilitySnapshot: { bindings: { toolNames: ['cloud.mcp.call'] } }, mcpTools })))})`;
-    await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id) values(${org},${workspace},${session},${user},1,${digest('p16')},'running',${run},${worker})`;
-    await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at) values(${job},${org},${workspace},${user},${run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker},${lease},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
-  });
-  const execution = ExecutionContextSchema.parse({
-    executionId: randomUUID(),
-    runId: run,
-    jobId: job,
-    worker: { type: 'worker', id: worker },
-    delegatedBy: context.actor,
-    organizationId: org,
-    workspaceId: workspace,
-    policySnapshot: {
-      id: policy,
-      organizationId: org,
-      subjectId: user,
-      version: 1,
-      issuedAt: now,
-      expiresAt: new Date(Date.now() + 3600000).toISOString(),
-      ...policyPayload,
-    },
-    startedAt: now,
-  });
-  await setRuntimePolicyControls(
-    context,
-    {
-      version: 1,
-      enabled: true,
-      mode: 'execute',
-      rules: [{ action: 'cloud.mcp.call', effect: 'allow' }],
-    },
-    null,
-    db,
-  );
-  const args = {
-    connectionId: connection.id,
-    tool: 'records.append',
-    arguments: { value: 'synthetic-owned-record' },
-  };
-  const create = (callId = 'mcp-test', input: unknown = args) =>
-    createMcpRuntimeOperation(
-      { context: execution, arguments: input, callId },
-      db,
-    );
-  const decide = async (
-    c: Awaited<ReturnType<typeof create>>,
-    decision: 'approved' | 'rejected' = 'approved',
-  ) => {
-    const [row] = await db<
-      { id: string }[]
-    >`select id from allrice_approval_requests where resource_type='runtime_operation' and resource_id=${c.snapshot.binding.attempt.operationId}`;
-    const { request: req } = await getRuntimeActionApproval(
-      context,
-      row!.id,
-      db,
-    );
-    await decideRuntimeActionApproval(
-      context,
-      req.approvalId,
-      {
-        contractVersion: 1,
-        direction: 'response',
-        kind: 'action_approval',
-        requestId: req.requestId,
-        version: req.version,
-        requestDigest: req.requestDigest,
-        task: req.task,
-        responseId: randomUUID(),
-        respondedBy: user,
-        respondedAt: now,
-        approvalId: req.approvalId,
-        decision,
-      },
-      db,
-    );
-    return req;
-  };
-  const execute = (
-    c: Awaited<ReturnType<typeof create>>,
-    signal?: AbortSignal,
-  ) =>
-    runMcpRuntimeOperation(c, {
-      database: db,
-      store,
-      transport,
-      ...(signal ? { signal } : {}),
-    });
-  return {
-    context,
-    execution,
-    store,
-    transport,
-    service,
-    connection,
-    mcpTools,
-    args,
-    create,
-    decide,
-    execute,
-    org,
-    workspace,
-    user,
-    worker,
-    run,
-    job,
-  };
+  const f = await createMcpExecutionFixture(db);
+  services.push(f.service);
+  if (!f.employeeGrant) throw Error('fixture employee grant required');
+  return { ...f, employeeGrant: f.employeeGrant };
 }
 async function waitUntil(check: () => boolean | Promise<boolean>) {
   for (let i = 0; i < 100; i++) {
@@ -286,6 +86,397 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     await admin?.end({ timeout: 5 });
     vi.unstubAllEnvs();
   });
+  it('real platform compile/preview/publish permits narrow MCP service policy, never tenant IDs or explicit denials', async () => {
+    const f = await fixture();
+    await db`update allrice_provider_status set status='connected',checked_at=clock_timestamp() where provider='codex'`;
+    const base = PlatformEmployeeDefinitionSchema.parse({
+      schemaVersion: 1,
+      key: 'synthetic-mcp',
+      name: 'MCP policy',
+      description: 'Synthetic only',
+      appearance: { avatarType: 'initials', avatarValue: 'M' },
+      identity: {
+        role: 'Reviewer',
+        mission: 'Test scoped service',
+        workStyle: 'Controlled',
+        behaviorRules: ['No implicit authority'],
+        safetyBoundaries: ['Synthetic only'],
+        expressionStyle: 'structured',
+        outputLanguage: 'zh-CN',
+      },
+      systemPrompt: 'Synthetic policy',
+      modelPolicy: {
+        provider: 'openai-codex',
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'xhigh',
+        timeoutMs: 300000,
+        fallbackModels: [],
+        credentialReference: 'deployment:codex-default',
+        baseUrl: null,
+      },
+      capabilities: {
+        nativeSkillIds: [],
+        workflowRevisionIds: [],
+        knowledgeRevisionIds: [],
+        toolNames: ['cloud.mcp.call'],
+        connectorRefs: [],
+      },
+      securityPolicy: {
+        dataScopes: ['workspace'],
+        approvalPolicy: 'confirm_side_effects',
+        bridgeAccess: 'none',
+        connectorIdentityModes: ['service'],
+        deniedCapabilities: [],
+      },
+    });
+    async function draft(definition: typeof base) {
+      const id = randomUUID(),
+        revision = randomUUID(),
+        value = { ...definition, key: `mcp-${id}` };
+      await db`insert into allrice_platform_employees(id,employee_key,name,description,status) values(${id},${value.key},${value.name},${value.description},'draft')`;
+      await db`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,checksum) values(${revision},${id},1,'draft',${db.json(value)},${digest(value)})`;
+      await db`update allrice_platform_employees set current_draft_revision_id=${revision} where id=${id}`;
+      return { id, value };
+    }
+    for (const cap of ['secret:use', 'network:outbound'] as const) {
+      const denied = await draft({
+        ...base,
+        securityPolicy: { ...base.securityPolicy, deniedCapabilities: [cap] },
+      });
+      const result = await compilePlatformEmployee(denied.id);
+      expect(result.valid).toBe(false);
+      expect(result.errors.join(' ')).toContain('Service Connector');
+    }
+    const tenantIds = await draft({
+      ...base,
+      capabilities: {
+        ...base.capabilities,
+        connectorRefs: [`mcp.${f.connection.id}`],
+      },
+    });
+    expect(
+      (await compilePlatformEmployee(tenantIds.id)).errors.join(' '),
+    ).toContain('草稿不能引用租户 Connector');
+    const noMcp = await draft({
+      ...base,
+      capabilities: { ...base.capabilities, toolNames: ['web.fetch'] },
+    });
+    expect(
+      (await compilePlatformEmployee(noMcp.id)).errors.join(' '),
+    ).toContain('Service Connector');
+    const allowed = await draft(base);
+    expect((await compilePlatformEmployee(allowed.id)).valid).toBe(true);
+    const trial = await queuePlatformEmployeeTestRun(allowed.id, {
+      workspaceId: f.workspace,
+      prompt: 'Synthetic compile and release only',
+    });
+    expect(trial.queued).toBe(true);
+    await db`update allrice_platform_employee_test_runs set status='running',started_at=clock_timestamp(),timeout_at=clock_timestamp()+interval '5 minutes' where id=${trial.testRun!.id}`;
+    await completePlatformEmployeeTestRun(trial.testRun!.id, {
+      answer: 'Synthetic preview complete; no remote tools executed.',
+      provider: 'openai-codex',
+      model: 'gpt-5.6-luna',
+      threadId: null,
+      usage: null,
+      events: [],
+      error: null,
+    });
+    await publishPlatformEmployee(allowed.id, { workspaceIds: [f.workspace] });
+    const [published] =
+      await db`select v.manifest from allrice_employee_versions v join allrice_employees e on e.id=v.employee_id where e.organization_id=${f.org} and e.workspace_id=${f.workspace} and e.employee_key=${allowed.value.key}`;
+    expect(published!.manifest.capabilities).toContain('secret:use');
+    expect(published!.manifest.securityPolicy.connectorIdentityModes).toContain(
+      'service',
+    );
+    expect(published!.manifest.capabilityBindings.connectorRefs ?? []).toEqual(
+      [],
+    );
+    expect(f.service.state.calls).toBe(0);
+  });
+  it('tenant binding activates only the pre-declared MCP tool through real new Run freeze; missing binding never exposes it', async () => {
+    const f = await fixture();
+    const before = f.beforeBinding.executionSnapshot,
+      after = f.prepared.executionSnapshot;
+    expect(before.mcpTools).toEqual([]);
+    expect(before.capabilitySnapshot.grantedCapabilities).not.toContain(
+      'secret:use',
+    );
+    expect(after.capabilitySnapshot.grantedCapabilities).toContain(
+      'secret:use',
+    );
+    expect(after.capabilitySnapshot.grantedCapabilities).not.toContain(
+      'network:outbound',
+    );
+    const visible = (value: typeof after) =>
+      riceToolDefinitionsForCapabilities(
+        value.capabilitySnapshot.grantedCapabilities,
+        value.capabilitySnapshot.bindings.toolNames,
+        value.mcpTools,
+      ).map((t) => t.name);
+    expect(visible(before)).not.toContain('cloud.mcp.call');
+    expect(visible(after).filter((n) => !visible(before).includes(n))).toEqual([
+      'cloud.mcp.call',
+    ]);
+    expect(visible(after)).not.toContain('web.fetch');
+    expect(
+      after.mcpTools?.every(
+        (t) => t.employeeAuthorization?.id === f.employeeGrant.id,
+      ),
+    ).toBe(true);
+    const listing = await f.employeeBindings.list(f.context, f.workspace);
+    expect(listing[0]?.eligible).toBe(true);
+    expect(listing[0]?.bindings[0]?.revision).toBe(1);
+    await expect(
+      executeRiceTool({
+        context: f.execution,
+        storageRoot: `/tmp/${schema}`,
+        call: { id: 'no-secret', name: 'cloud.mcp.call', arguments: f.args },
+        capabilities: ['storage:read'],
+        frozenMcpTools: f.mcpTools,
+      }),
+    ).rejects.toThrow('Rice 未被授予');
+    await expect(
+      executeRiceTool({
+        context: f.execution,
+        storageRoot: `/tmp/${schema}`,
+        call: { id: 'no-freeze', name: 'cloud.mcp.call', arguments: f.args },
+        capabilities: ['secret:use'],
+      }),
+    ).rejects.toThrow('当前 Run 未冻结');
+  });
+  it('revoke and regrant cannot revive an old Run or approval, while new Runs freeze the new revision', async () => {
+    const f = await fixture(),
+      c = await f.create();
+    await f.decide(c);
+    const change = {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+      employeeId: f.employee,
+      employeeVersionId: f.version,
+    };
+    const revoked = await f.employeeBindings.bind(f.context, {
+      ...change,
+      expectedRevision: 1,
+      enabled: false,
+    });
+    expect(revoked.revision).toBe(2);
+    expect((await f.prepare()).executionSnapshot.mcpTools).toEqual([]);
+    await expect(f.create('after-revoke')).rejects.toThrow('MCP_DENIED');
+    const result = await f.execute(c);
+    expect(result.code).toBe('MCP_DISPATCH_DENIED');
+    expect(f.service.state.calls).toBe(0);
+    const restored = await f.employeeBindings.bind(f.context, {
+      ...change,
+      expectedRevision: 2,
+      enabled: true,
+    });
+    expect(restored.revision).toBe(3);
+    await expect(f.create('after-regrant')).rejects.toThrow('MCP_DENIED');
+    expect(
+      (await f.prepare()).executionSnapshot.mcpTools?.[0]?.employeeAuthorization
+        ?.revision,
+    ).toBe(3);
+    const [row] =
+      await db`select execution_snapshot from allrice_employee_runs where run_id=${f.run}`;
+    expect(row!.execution_snapshot).toEqual(f.snapshot);
+    await expect(
+      db`update allrice_employee_mcp_bindings set grant_revision=grant_revision where id=${f.employeeGrant.id}`,
+    ).rejects.toThrow('employee_mcp_binding_identity_or_revision_immutable');
+    await expect(
+      db`delete from allrice_employee_mcp_bindings where id=${f.employeeGrant.id}`,
+    ).rejects.toThrow('employee_mcp_binding_must_be_revoked');
+  });
+  it('current assignment revocation blocks already-approved operations before dispatch', async () => {
+    const f = await fixture(),
+      c = await f.create();
+    await f.decide(c);
+    await db`update allrice_employee_assignments set active=false where id=${f.assignment}`;
+    expect((await f.execute(c)).code).toBe('MCP_DISPATCH_DENIED');
+    expect(f.service.state.calls).toBe(0);
+  });
+  it('actual employee archival races dispatch without employee/assignment lock inversion', async () => {
+    const f = await fixture(),
+      c = await f.create();
+    await f.decide(c);
+    const [archived, dispatch] = await Promise.allSettled([
+      updateEmployeeStatus(f.context, f.employee, {
+        workspaceId: f.workspace,
+        status: 'archived',
+      }),
+      c.ledger.dispatch({
+        scope: c.snapshot.binding.task.scope,
+        operationId: c.snapshot.binding.attempt.operationId,
+        leaseOwner: f.worker,
+        leaseMs: 15000,
+      }),
+    ]);
+    expect(archived.status).toBe('fulfilled');
+    if (dispatch.status === 'rejected')
+      expect(dispatch.reason?.code).not.toBe('40P01');
+    else
+      await expect(
+        c.ledger.startOperation({
+          scope: c.snapshot.binding.task.scope,
+          operationId: c.snapshot.binding.attempt.operationId,
+          leaseToken: dispatch.value.leaseToken,
+          attempt: c.snapshot.binding.attempt,
+          receiptId: randomUUID(),
+        }),
+      ).rejects.toThrow();
+    expect(f.service.state.calls).toBe(0);
+  });
+  it.each(['secret:use', 'network:outbound'] as const)(
+    'real tenant admin cannot bind or freeze a version that explicitly denies %s',
+    async (cap) => {
+      const f = await createMcpExecutionFixture(db, {
+        bind: false,
+        deniedCapabilities: [cap],
+      });
+      services.push(f.service);
+      const [target] = await f.employeeBindings.list(f.context, f.workspace);
+      expect(target!.eligible).toBe(false);
+      expect(target!.reasons).toContain(`员工策略明确禁止 ${cap}`);
+      await expect(
+        f.employeeBindings.bind(f.context, {
+          workspaceId: f.workspace,
+          connectionId: f.connection.id,
+          employeeId: f.employee,
+          employeeVersionId: f.version,
+          expectedRevision: 0,
+          enabled: true,
+        }),
+      ).rejects.toThrow('MCP_DENIED');
+      expect(f.prepared.executionSnapshot.mcpTools).toEqual([]);
+      await expect(f.create()).rejects.toThrow('mcp_frozen_tool_not_allowed');
+      expect(f.service.state.calls).toBe(0);
+    },
+  );
+  it('concurrent employee revoke and approval/dispatch share lock order and never authorize a post-revoke START', async () => {
+    for (let i = 0; i < 3; i++) {
+      const f = await fixture(),
+        c = await f.create();
+      await f.decide(c);
+      const result = await Promise.allSettled([
+        f.employeeBindings.bind(f.context, {
+          workspaceId: f.workspace,
+          connectionId: f.connection.id,
+          employeeId: f.employee,
+          employeeVersionId: f.version,
+          expectedRevision: 1,
+          enabled: false,
+        }),
+        c.ledger.dispatch({
+          scope: c.snapshot.binding.task.scope,
+          operationId: c.snapshot.binding.attempt.operationId,
+          leaseOwner: f.worker,
+          leaseMs: 15000,
+        }),
+      ]);
+      expect(result[0]!.status).toBe('fulfilled');
+      for (const item of result)
+        if (item.status === 'rejected')
+          expect(item.reason?.code).not.toBe('40P01');
+      if (result[1]!.status === 'fulfilled')
+        await expect(
+          c.ledger.startOperation({
+            scope: c.snapshot.binding.task.scope,
+            operationId: c.snapshot.binding.attempt.operationId,
+            leaseToken: result[1].value.leaseToken,
+            attempt: c.snapshot.binding.attempt,
+            receiptId: randomUUID(),
+          }),
+        ).rejects.toThrow();
+      expect(f.service.state.calls).toBe(0);
+    }
+  }, 15000);
+  it('checks current DB administrator, tenant/version scope and stale revisions rather than trusting claims', async () => {
+    const f = await fixture(),
+      other = await fixture();
+    const change = {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+      employeeId: f.employee,
+      employeeVersionId: f.version,
+      enabled: false,
+      expectedRevision: 1,
+    };
+    await expect(
+      f.employeeBindings.bind(other.context, change),
+    ).rejects.toThrow('MCP_DENIED');
+    await expect(
+      f.employeeBindings.bind(f.context, {
+        ...change,
+        connectionId: other.connection.id,
+      }),
+    ).rejects.toThrow('MCP_DENIED');
+    await expect(
+      f.employeeBindings.bind(f.context, {
+        ...change,
+        employeeVersionId: other.version,
+      }),
+    ).rejects.toThrow('MCP_DENIED');
+    await expect(
+      f.employeeBindings.bind(f.context, { ...change, expectedRevision: 0 }),
+    ).rejects.toThrow('MCP_BINDING_CHANGED');
+    await db`update allrice_memberships set role='member' where user_id=${f.user} and organization_id=${f.org}`;
+    await expect(
+      f.employeeBindings.list(f.context, f.workspace),
+    ).rejects.toThrow('MCP_DENIED');
+    await expect(f.employeeBindings.bind(f.context, change)).rejects.toThrow(
+      'MCP_DENIED',
+    );
+    await db`update allrice_memberships set active=false where user_id=${f.user} and organization_id=${f.org}`;
+    await expect(f.prepare()).rejects.toThrow('MCP_DENIED');
+  });
+  it('actual DSH native → generic Broker → real PG approval → owned HTTP, without a model key or production localhost bypass', async () => {
+    const f = await fixture(),
+      realExecute = McpExecutor.runMcpRuntimeOperation;
+    const spy = vi
+      .spyOn(McpExecutor, 'runMcpRuntimeOperation')
+      .mockImplementation((created, options) =>
+        realExecute(created, {
+          ...options,
+          database: db,
+          store: f.store,
+          transport: f.transport,
+        }),
+      );
+    try {
+      await nativeBrokerRoundtrip({
+        canonicalName: 'cloud.mcp.call',
+        wireName: 'cloud_mcp_call',
+        args: f.args,
+        invalidArgs: { ...f.args, connectionId: 'not-a-uuid' },
+        onToolCall: async (call) => {
+          const pending = executeRiceTool({
+            context: f.execution,
+            storageRoot: `/tmp/${schema}`,
+            call,
+            capabilities: f.snapshot.capabilitySnapshot.grantedCapabilities,
+            frozenMcpTools: f.mcpTools,
+          });
+          await waitUntil(async () => {
+            const rows =
+              await db`select id from allrice_approval_requests where organization_id=${f.org} and resource_type='runtime_operation'`;
+            return rows.length === 1;
+          });
+          expect(f.service.state.calls).toBe(0);
+          const c = await f.create(call.id);
+          await f.decide(c);
+          const result = await pending;
+          expect(JSON.parse(result.modelContent).status).toBe('succeeded');
+          return result;
+        },
+      });
+      expect(f.service.state.calls).toBe(1);
+      const rows =
+        await db`select id from allrice_audit_events where organization_id=${f.org} and action='tool.execute' and resource_type='tool_broker' and decision='allowed'`;
+      // The real Broker always records its normal tenant-scoped audit.
+      expect(rows).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 30000);
   it('freezes exact tool authority, immutable input and always asks even for an allowed read', async () => {
     const f = await fixture(),
       c = await f.create();
