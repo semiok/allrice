@@ -7,7 +7,7 @@ export class BridgeClientError extends Error {
   }
 }
 
-export async function bridgeRequest<T>(input: {
+export interface BridgeRequestInput {
   server: string;
   path: string;
   method?: 'GET' | 'POST';
@@ -15,7 +15,9 @@ export async function bridgeRequest<T>(input: {
   body?: unknown;
   maximumResponseBytes?: number;
   timeoutMs?: number;
-}): Promise<T> {
+}
+
+export async function bridgeRequest<T>(input: BridgeRequestInput): Promise<T> {
   const response = await fetch(new URL(input.path, input.server), {
     // Opt-in operation requests are bounded and cannot silently redirect their
     // authenticated execution channel. Legacy request behavior is unchanged.

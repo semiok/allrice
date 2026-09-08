@@ -18,9 +18,11 @@ import {
   type RuntimeScope,
   type RuntimeLocalServiceEvent,
   type RuntimeLocalServiceInput,
+  type RuntimeActionBinding,
 } from '@allrice/contracts';
 
 import { getBridgeDeviceToken } from './request.ts';
+import { recoverableBridgeLeaseToken } from './claim-token.ts';
 
 type Snapshot = RuntimeOperationSnapshot;
 type Scope = RuntimeScope;
@@ -41,6 +43,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsNpmDependencies?: boolean;
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
+    recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
   }): Promise<{
     snapshot: Snapshot;
     leaseToken: string;
@@ -170,6 +173,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
                 'supportsBackgroundServices',
+                'supportsClaimRecovery',
               ].includes(key),
           ) ||
           ('supportsLocalCommand' in selection &&
@@ -181,7 +185,9 @@ export function createRuntimeBridgeHttpHandler(input: {
           ('supportsNpmDependencies' in selection &&
             typeof selection.supportsNpmDependencies !== 'boolean') ||
           ('supportsBackgroundServices' in selection &&
-            typeof selection.supportsBackgroundServices !== 'boolean')
+            typeof selection.supportsBackgroundServices !== 'boolean') ||
+          ('supportsClaimRecovery' in selection &&
+            typeof selection.supportsClaimRecovery !== 'boolean')
         )
           throw new HttpProblem(400, 'INVALID_REQUEST');
         const lease = await ledger.claimNextBridgeOperation({
@@ -195,6 +201,12 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsBackgroundServices:
             selection.supportsBackgroundServices === true,
           supportsChangeset: selection.supportsChangeset === true,
+          ...(selection.supportsClaimRecovery === true
+            ? {
+                recoverLeaseToken: (binding: RuntimeActionBinding) =>
+                  recoverableBridgeLeaseToken(token, binding),
+              }
+            : {}),
         });
         if (!lease) return json({ dispatch: null });
         const grant = grants.find(

@@ -255,7 +255,7 @@ async function fixture() {
     );
   }
   let before: ((action: string) => Promise<void>) | null = null;
-  let loseNextResponse: 'start' | 'receipts' | null = null;
+  let loseNextResponse: 'next' | 'start' | 'receipts' | null = null;
   const handler = createRuntimeBridgeHttpHandler({
     enabled: () => true,
     authenticate: bridgeDeviceStatus,
@@ -375,7 +375,7 @@ async function fixture() {
     beforeAction(action: ((action: string) => Promise<void>) | null) {
       before = action;
     },
-    loseResponse(action: 'start' | 'receipts') {
+    loseResponse(action: 'next' | 'start' | 'receipts') {
       loseNextResponse = action;
     },
   };
@@ -459,6 +459,75 @@ suite(
         ),
       ).toHaveLength(1);
       expect(await f.journal.pending()).toEqual([]);
+    });
+
+    it('P12 lost claim response resumes the exact unstarted lease without another approval/event/effect', async () => {
+      const f = await fixture();
+      await f.approve();
+      f.loseResponse('next');
+      await expect(f.client.pollOnce()).rejects.toThrow();
+      const snapshot = await f.ledger.readOperation(f.scope, f.operationId);
+      expect(snapshot.status).toBe('dispatched');
+      await expect(
+        readFile(join(f.workspaceRoot, 'result.txt')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      const [before] =
+        await database`select lease_token_hash,lease_expires_at from allrice_runtime_operations where id=${f.operationId}`;
+      // Concurrent HTTP clients (and the WSS HTTP adapter) must obtain precisely
+      // the same binding/token/expiry, even with no shared request ID or memory.
+      const responses = await Promise.all([
+        f.post('next', { supportsClaimRecovery: true }),
+        f.post('next', { supportsClaimRecovery: true }),
+      ]);
+      const bodies = await Promise.all(responses.map((r) => r.json()));
+      expect(bodies[0]).toEqual(bodies[1]);
+      const recovered = RuntimeBridgeDispatchSchema.parse(
+        (bodies[0] as { dispatch: unknown }).dispatch,
+      );
+      expect(
+        createHash('sha256').update(recovered.leaseToken).digest('hex'),
+      ).toBe(before!.lease_token_hash);
+      expect(recovered.leaseExpiresAt).toBe(
+        (before!.lease_expires_at as Date).toISOString(),
+      );
+      await f.client.handle(recovered);
+      await f.client.handle(recovered);
+      await f.client.flush();
+      expect(await readFile(join(f.workspaceRoot, 'result.txt'), 'utf8')).toBe(
+        'one exact approved write',
+      );
+      const events = await f.ledger.readEvents(f.scope, f.operationId);
+      expect(
+        events.filter((e) => e.signal.type === 'operation.dispatched'),
+      ).toHaveLength(1);
+      expect(
+        events.filter((e) => e.signal.type === 'operation.outcome'),
+      ).toHaveLength(1);
+      expect(
+        (await f.post('next', { supportsClaimRecovery: true })).status,
+      ).toBe(200);
+    });
+
+    it('P12 claim recovery cannot revive an expired or revoked dispatch or a legacy random lease', async () => {
+      for (const mode of ['expired', 'revoked', 'legacy'] as const) {
+        const f = await fixture();
+        await f.approve();
+        const response = await f.post(
+          'next',
+          mode === 'legacy' ? {} : { supportsClaimRecovery: true },
+        );
+        expect(response.ok).toBe(true);
+        if (mode === 'expired')
+          await database`update allrice_runtime_operations set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.operationId}`;
+        if (mode === 'revoked')
+          await database`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.ids.grant}`;
+        expect(
+          await (await f.post('next', { supportsClaimRecovery: true })).json(),
+        ).toEqual({ dispatch: null });
+        await expect(
+          readFile(join(f.workspaceRoot, 'result.txt')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      }
     });
 
     it('lost accepted result ACK survives reopening and does not repeat the write', async () => {

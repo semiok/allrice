@@ -36,16 +36,38 @@ export class RuntimeBridgeOperationClient {
       signal?: AbortSignal;
       // Test seams retain the real filesystem journal and HTTP adapter.
       execute?: typeof executeLocalCommand;
+      request?: typeof bridgeRequest;
     },
   ) {
     input.journal.assertIdentity(input.config.server, input.config.deviceId);
   }
 
+  private request: typeof bridgeRequest = (input) =>
+    (this.input.request ?? bridgeRequest)(input);
+
   async flush() {
     await flushLocalServiceEvents(this.input);
+    for (const chunk of await this.input.journal.pendingOutput()) {
+      await this.request({
+        server: this.input.config.server,
+        path: `${runtimeBridgeOperationPath}/${chunk.attempt.operationId}/output`,
+        method: 'POST',
+        token: this.input.token,
+        body: chunk,
+        maximumResponseBytes: 4096,
+        timeoutMs: 2500,
+      });
+      await this.input.journal.acknowledgeOutput(
+        chunk.attempt.operationId,
+        chunk.sequence,
+      );
+    }
+    // Preserve per-attempt output order before terminal receipts. Bounded batches
+    // provide backpressure rather than loading the complete journal into memory.
+    if ((await this.input.journal.pendingOutput(1)).length) return false;
     for (const receipt of await this.input.journal.pending()) {
       const ack = RuntimeBridgeReceiptAckSchema.parse(
-        await bridgeRequest({
+        await this.request({
           server: this.input.config.server,
           path: `${runtimeBridgeOperationPath}/${receipt.attempt.operationId}/receipts`,
           method: 'POST',
@@ -83,12 +105,13 @@ export class RuntimeBridgeOperationClient {
       }
     // A failed/full outbox prevents acquiring more work, providing backpressure.
     if (!(await this.flush())) return false;
-    const response = await bridgeRequest<{ dispatch: unknown }>({
+    const response = await this.request<{ dispatch: unknown }>({
       server: this.input.config.server,
       path: `${runtimeBridgeOperationPath}/next`,
       method: 'POST',
       token: this.input.token,
       body: {
+        supportsClaimRecovery: true,
         supportsChangeset: true,
         ...(this.input.runner
           ? {
@@ -168,7 +191,7 @@ export class RuntimeBridgeOperationClient {
     const start = await journal.begin(operationId);
     try {
       const permission = RuntimeBridgeStartResponseSchema.parse(
-        await bridgeRequest({
+        await this.request({
           server: config.server,
           path: `${runtimeBridgeOperationPath}/${operationId}/start`,
           method: 'POST',
@@ -240,7 +263,7 @@ export class RuntimeBridgeOperationClient {
         authorize: async () => {
           if (this.input.signal?.aborted) return false;
           try {
-            const current = await bridgeRequest<{
+            const current = await this.request<{
               snapshot: unknown;
               leaseExpiresAt: string;
             }>({
@@ -364,7 +387,8 @@ export class RuntimeBridgeOperationClient {
       leaseToken: dispatch.leaseToken,
     };
     let outputQueue = Promise.resolve(),
-      outputFailed = false;
+      outputFailed = false,
+      journalFailed = false;
     try {
       const result = await runner.execute(root, dispatch.payload, {
         attemptId,
@@ -373,7 +397,7 @@ export class RuntimeBridgeOperationClient {
         maintainLease: async () => {
           if (outputFailed || this.input.signal?.aborted) return false;
           try {
-            const current = await bridgeRequest<{
+            const current = await this.request<{
               snapshot: unknown;
               leaseExpiresAt: string;
             }>({
@@ -404,27 +428,33 @@ export class RuntimeBridgeOperationClient {
         onOutput: (chunk) => {
           outputQueue = outputQueue
             .then(async () => {
-              if (outputFailed) return;
-              await bridgeRequest({
+              if (journalFailed) return;
+              const saved = await journal
+                .recordOutput(operationId, chunk)
+                .catch((error) => {
+                  journalFailed = true;
+                  throw error;
+                });
+              if (outputFailed) return; // still retain every later bounded chunk on disk
+              await this.request({
                 server: config.server,
                 path: `${runtimeBridgeOperationPath}/${operationId}/output`,
                 method: 'POST',
                 token,
-                body: {
-                  ...body,
-                  sequence: chunk.sequence,
-                  stream: chunk.stream,
-                  content: chunk.text,
-                },
+                body: saved,
                 maximumResponseBytes: 4096,
                 timeoutMs: 2500,
               });
+              await journal.acknowledgeOutput(operationId, chunk.sequence);
             })
             .catch(() => {
               outputFailed = true;
             });
         },
       });
+      await outputQueue;
+      if (journalFailed)
+        throw new BridgeJournalError('JOURNAL_OUTPUT_NOT_DURABLE');
       // A dropped streaming chunk does not erase the complete bounded local result.
       // Evidence is committed before disposal; ACK retries can never rerun a command.
       if (['canceled', 'lease_lost'].includes(result.reason)) {

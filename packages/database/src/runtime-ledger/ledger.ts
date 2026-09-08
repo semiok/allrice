@@ -25,6 +25,7 @@ import {
   type RuntimeTaskRef,
   type RuntimeUsageObservation,
   type RuntimeLocalServiceEvent,
+  type RuntimeActionBinding,
 } from '@allrice/contracts';
 import { z } from 'zod';
 
@@ -367,10 +368,38 @@ export function createRuntimeOperationLedger(options: {
     row: OperationRow,
     owner: string,
     duration: number,
+    recoverLeaseToken?: (binding: RuntimeActionBinding) => string,
   ) {
     const at = await now(tx);
     ensureRootAdmits(root, at);
     await assertRun(tx, root.task, true);
+    if (row.snapshot.status === 'dispatched' && recoverLeaseToken) {
+      const token = UuidSchema.parse(recoverLeaseToken(row.snapshot.binding));
+      if (
+        row.lease_owner !== owner ||
+        !row.lease_expires_at ||
+        row.lease_expires_at <= at
+      )
+        throw new RuntimeLedgerError('lease_lost');
+      verifyLease(row, token);
+      // The original dispatch already consumed approval. Recovery only verifies
+      // current authority; no new event, budget, start or lease extension.
+      await admit(tx, row, 'heartbeat', at);
+      const recoveredAt = await now(tx);
+      ensureRootAdmits(root, recoveredAt);
+      if (row.lease_expires_at <= recoveredAt)
+        throw new RuntimeLedgerError('lease_lost');
+      return {
+        snapshot: row.snapshot,
+        leaseToken: token,
+        leaseExpiresAt: row.lease_expires_at.toISOString(),
+        createdAt: row.created_at.toISOString(),
+        bridgePayload:
+          row.bridge_payload === null
+            ? null
+            : RuntimeBridgePayloadSchema.parse(row.bridge_payload),
+      } satisfies RuntimeLedgerLease;
+    }
     if (
       ![
         'ready',
@@ -396,7 +425,9 @@ export function createRuntimeOperationLedger(options: {
     if (row.snapshot.status !== 'ready')
       await append(tx, row, { type: 'operation.ready' });
     await append(tx, row, { type: 'operation.dispatched' });
-    const leaseToken = randomUUID();
+    const leaseToken = recoverLeaseToken
+      ? UuidSchema.parse(recoverLeaseToken(row.snapshot.binding))
+      : randomUUID();
     const expiresAt = new Date(
       Math.min(admittedAt.getTime() + duration, root.deadline_at.getTime()),
     );
@@ -662,6 +693,7 @@ export function createRuntimeOperationLedger(options: {
       supportsNpmDependencies?: boolean;
       supportsBackgroundServices?: boolean;
       supportsChangeset?: boolean;
+      recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
         deviceId = UuidSchema.parse(input.deviceId),
@@ -671,7 +703,8 @@ export function createRuntimeOperationLedger(options: {
         { id: string }[]
       >`select id from allrice_runtime_operations
         where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and device_id=${deviceId}
-          and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
+          and (snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')
+            or (${!!input.recoverLeaseToken} and snapshot->>'status'='dispatched' and lease_expires_at>clock_timestamp()))
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
@@ -681,7 +714,14 @@ export function createRuntimeOperationLedger(options: {
         try {
           return await db.begin(async (tx) => {
             const { root, row } = await lockOperation(tx, scope, candidate.id);
-            return dispatchLocked(tx, root, row, deviceId, duration);
+            return dispatchLocked(
+              tx,
+              root,
+              row,
+              deviceId,
+              duration,
+              input.recoverLeaseToken,
+            );
           });
         } catch (error) {
           if (
@@ -692,6 +732,7 @@ export function createRuntimeOperationLedger(options: {
               'root_canceled',
               'deadline_exceeded',
               'budget_exhausted',
+              'lease_lost',
             ].includes(error.code)
           )
             throw error;
@@ -701,7 +742,7 @@ export function createRuntimeOperationLedger(options: {
           await db`update allrice_runtime_operations set updated_at=clock_timestamp()
             where id=${candidate.id} and organization_id=${scope.organizationId}
               and workspace_id=${scope.workspaceId} and device_id=${deviceId}
-              and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency')`;
+              and snapshot->>'status' in ('ready','waiting_user','waiting_device','waiting_dependency','dispatched')`;
         }
       }
       return null;

@@ -15,6 +15,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   RuntimeBridgeDispatchSchema,
   RuntimeBridgeReceiptSchema,
+  RuntimeBridgeOutputSchema,
   RuntimeLocalCommandResultSchema,
   ChangesetFileResultSchema,
   type ChangesetFileResult,
@@ -29,7 +30,8 @@ import { BridgeJournalError } from './journal-error.js';
 export { BridgeJournalError } from './journal-error.js';
 
 export const maximumReceiptBytes = 500_000;
-const reservePerEntry = maximumReceiptBytes + 32_768;
+// Reserve bounded stdout/stderr alongside the terminal receipt.
+const reservePerEntry = maximumReceiptBytes + 32_768 + 512_000;
 // In addition to the terminal receipt: 16 inputs (including worst-case JSON
 // escaping), 64 bounded lifecycle events and SQLite/index overhead. Ordinary
 // file/foreground operations keep the existing reservation.
@@ -190,6 +192,14 @@ export class BridgeJournal {
           file_index INTEGER NOT NULL CHECK(file_index>=0 AND file_index<32),
           result TEXT NOT NULL,
           PRIMARY KEY(operation_id,file_index)
+        );
+        CREATE TABLE IF NOT EXISTS output_outbox (
+          operation_id TEXT NOT NULL REFERENCES entries(operation_id),
+          sequence INTEGER NOT NULL CHECK(sequence>=0 AND sequence<256),
+          body TEXT NOT NULL,
+          content_bytes INTEGER NOT NULL CHECK(content_bytes>=0),
+          delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1)),
+          PRIMARY KEY(operation_id,sequence)
         );
         PRAGMA user_version=1;
         COMMIT;
@@ -705,6 +715,82 @@ export class BridgeJournal {
         .run(operationId);
       return receipt;
     });
+  }
+
+  /** Local output evidence is committed BEFORE any network send. Never an execution queue. */
+  async recordOutput(
+    operationId: string,
+    chunk: { sequence: number; stream: 'stdout' | 'stderr'; text: string },
+  ) {
+    await this.guard();
+    return this.transaction(() => {
+      const row = this.entry(operationId);
+      const dispatch = RuntimeBridgeDispatchSchema.parse(
+        JSON.parse(row.dispatch),
+      );
+      if (dispatch.payload.capability !== 'local.process.execute')
+        throw new BridgeJournalError('JOURNAL_OUTPUT_INVALID');
+      const output = RuntimeBridgeOutputSchema.parse({
+        contractVersion: 1,
+        attempt: dispatch.snapshot.binding.attempt,
+        leaseToken: dispatch.leaseToken,
+        sequence: chunk.sequence,
+        stream: chunk.stream,
+        content: chunk.text,
+      });
+      const body = canonicalRuntimeBridgeJson(output);
+      const prior = this.database
+        .prepare(
+          'SELECT body FROM output_outbox WHERE operation_id=? AND sequence=?',
+        )
+        .get(operationId, chunk.sequence);
+      if (prior) {
+        if (prior.body !== body)
+          throw new BridgeJournalError('JOURNAL_OUTPUT_CONFLICT');
+        return output;
+      }
+      if (row.state !== 'executing')
+        throw new BridgeJournalError('JOURNAL_OUTPUT_ALREADY_FINAL');
+      const total = this.database
+        .prepare(
+          'SELECT coalesce(max(sequence)+1,0) AS next,coalesce(sum(content_bytes),0) AS bytes FROM output_outbox WHERE operation_id=?',
+        )
+        .get(operationId)!;
+      const size = Buffer.byteLength(chunk.text);
+      if (
+        Number(total.next) !== chunk.sequence ||
+        Number(total.bytes) + size > 65_536
+      )
+        throw new BridgeJournalError('JOURNAL_OUTPUT_LIMIT');
+      this.database
+        .prepare(
+          'INSERT INTO output_outbox(operation_id,sequence,body,content_bytes) VALUES(?,?,?,?)',
+        )
+        .run(operationId, chunk.sequence, body, size);
+      return output;
+    });
+  }
+
+  async pendingOutput(limit = 32) {
+    await this.guard();
+    const bounded = Math.min(32, Math.max(1, Math.floor(limit)));
+    return this.database
+      .prepare(
+        'SELECT body FROM output_outbox WHERE delivered=0 ORDER BY operation_id,sequence LIMIT ?',
+      )
+      .all(bounded)
+      .map((row) =>
+        RuntimeBridgeOutputSchema.parse(JSON.parse(String(row.body))),
+      );
+  }
+
+  async acknowledgeOutput(operationId: string, sequence: number) {
+    await this.guard();
+    this.database
+      .prepare(
+        'UPDATE output_outbox SET delivered=1 WHERE operation_id=? AND sequence=?',
+      )
+      .run(operationId, sequence);
   }
 
   async pending(limit = 16): Promise<RuntimeBridgeReceipt[]> {

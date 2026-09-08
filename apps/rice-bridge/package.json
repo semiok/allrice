@@ -14,9 +14,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@allrice/contracts": "workspace:*"
+    "@allrice/contracts": "workspace:*",
+    "ws": "8.21.3"
   },
   "devDependencies": {
+    "@types/ws": "8.18.1",
     "tsx": "^4.21.0"
   }
 }
