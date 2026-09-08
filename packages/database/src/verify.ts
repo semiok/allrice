@@ -7,7 +7,7 @@ import { loadPlatformContentCatalog } from './platform-content/catalog.js';
 import {
   buildPlatformContentCatalogMetadata,
   planPlatformSkillSync,
-  type ExistingPlatformSkill,
+  readExistingPlatformSkills,
 } from './platform-content/sync.js';
 
 const migrationsDirectory = fileURLToPath(
@@ -31,17 +31,7 @@ try {
   }
 
   const platformContentCatalog = await loadPlatformContentCatalog();
-  const platformContentRows = await sql<ExistingPlatformSkill[]>`
-    select id, name, description, content, checksum,
-      model_invocable as "modelInvocable",
-      user_invocable as "userInvocable",
-      required_tool_refs as "requiredToolRefs", enabled, source,
-      source_ref as "sourceRef", version, license,
-      review_status as "reviewStatus",
-      reviewed_by_label as "reviewedByLabel"
-    from allrice_platform_dsh_skills
-    order by name, id
-  `;
+  const platformContentRows = await readExistingPlatformSkills(sql);
   const platformContentPlan = planPlatformSkillSync(
     platformContentRows,
     platformContentCatalog.skills,
