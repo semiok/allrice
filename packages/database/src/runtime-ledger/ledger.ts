@@ -1185,13 +1185,17 @@ export function createRuntimeOperationLedger(options: {
       scope: RuntimeScope,
       rootRunId: string,
       requestId: string,
+      transaction?: Tx,
     ) {
       UuidSchema.parse(requestId);
-      return db.begin(async (tx) => {
+      const apply = async (tx: Tx) => {
         const root = await lockRoot(tx, scope, rootRunId);
         // Intention only; no operation or process is declared stopped here.
         return cancelLocked(tx, root, requestId, 'user_request');
-      });
+      };
+      // Keep current membership authorization and cancellation atomic without
+      // borrowing a second pool connection from a caller's transaction.
+      return transaction ? apply(transaction) : db.begin(apply);
     },
 
     async settleUsage(input: {

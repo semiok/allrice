@@ -1,7 +1,9 @@
 import { NextRequest } from 'next/server';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isBridgeDeviceApiPath, proxy } from './proxy.js';
+import { createPortalSession } from './lib/portal/session';
+import { resolvePortal } from './lib/portal/config';
 
 describe('Rice Bridge portal boundary', () => {
   it('lets device-credential routes reach their Bearer-token handlers', () => {
@@ -70,11 +72,54 @@ describe('portal authentication response boundary', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (originalPortalAuthEnabled === undefined) {
       delete process.env.ALLRICE_PORTAL_AUTH_ENABLED;
     } else {
       process.env.ALLRICE_PORTAL_AUTH_ENABLED = originalPortalAuthEnabled;
     }
+  });
+
+  it('passes only the exact tenant MCP endpoint to its tenant-admin handler, not platform APIs', () => {
+    vi.stubEnv(
+      'ALLRICE_PORTAL_SESSION_SECRET',
+      'synthetic-portal-secret-with-more-than-32-characters',
+    );
+    const host = 'allrice-snow.bplabs.xyz';
+    const session = createPortalSession({
+      portal: resolvePortal(host)!,
+      subject: 'test',
+      organizationId: 'test-org',
+      workspaceId: 'test-workspace',
+    });
+    const headers = { host, cookie: `allrice_portal_session=${session.value}` };
+    expect(
+      proxy(new NextRequest(`https://${host}/api/v1/admin/mcp`, { headers }))
+        .status,
+    ).toBe(200);
+    for (const path of [
+      '/api/v1/admin/mcp-extra',
+      '/api/v1/admin/mcp/extra',
+      '/api/v1/admin/platform-employees',
+      '/api/v1/admin/model-governance',
+    ])
+      expect(
+        proxy(new NextRequest(`https://${host}${path}`, { headers })).status,
+      ).toBe(403);
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/api/v1/admin/mcp`, {
+          headers: { host },
+        }),
+      ).status,
+    ).toBe(401);
+    expect(
+      proxy(
+        new NextRequest('https://allrice-drink.bplabs.xyz/api/v1/admin/mcp', {
+          headers: { ...headers, host: 'allrice-drink.bplabs.xyz' },
+        }),
+      ).status,
+    ).toBe(401);
   });
 
   it('redirects anonymous tenant navigation but keeps its initial API failure as JSON', async () => {

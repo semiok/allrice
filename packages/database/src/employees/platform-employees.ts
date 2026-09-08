@@ -48,6 +48,8 @@ export {
 } from '../platform-employees/runtime-package.ts';
 
 const allowedToolNames = new Set([
+  'cloud.process.execute',
+  'cloud.mcp.call',
   'workspace.file.list',
   'workspace.file.read',
   'workspace.document.read',
@@ -1402,6 +1404,7 @@ function tenantManifest(
       deniedCapabilities: definition.securityPolicy.deniedCapabilities,
     },
     toolNames: definition.capabilities.toolNames,
+    connectorRefs: definition.capabilities.connectorRefs,
     systemPromptOverride: runtimePackageSystemPrompt({
       platformPolicy: definition.systemPrompt,
       runtimePackage,

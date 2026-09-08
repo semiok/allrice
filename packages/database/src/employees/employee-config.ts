@@ -144,6 +144,7 @@ export function employeeManifest(input: {
     scope: 'employee_user';
   };
   toolNames?: string[];
+  connectorRefs?: string[];
   systemPromptOverride?: string;
   runtimePackage?: EmployeeRuntimePackage | null;
 }): EmployeeManifest {
@@ -265,9 +266,16 @@ export function employeeManifest(input: {
       'storage:write',
       'network:outbound',
       'automation:write',
+      ...(input.toolNames?.includes('cloud.mcp.call') &&
+      !securityPolicy.deniedCapabilities.includes('secret:use')
+        ? ['secret:use' as const]
+        : []),
     ],
     skillVersionIds,
     capabilityBindings: {
+      ...(input.connectorRefs?.length
+        ? { connectorRefs: input.connectorRefs }
+        : {}),
       skillVersionIds,
       toolNames: input.toolNames ?? [
         'workspace.file.list',

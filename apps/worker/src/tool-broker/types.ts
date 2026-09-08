@@ -72,6 +72,7 @@ export type RiceToolHandler = (
 
 export type RiceToolHandlerCategory =
   | 'cloud_runner'
+  | 'cloud_mcp'
   | 'workspace'
   | 'research'
   | 'managed_browser'

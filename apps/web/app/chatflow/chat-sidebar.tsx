@@ -149,6 +149,11 @@ export function ChatSidebar({
           {!collapsed ? (
             <>
               <nav className={styles.saasNavigation}>
+                {manifest.roles.includes('tenant_admin') ? (
+                  <Link href="/workspace/mcp">
+                    <span aria-hidden="true">↔</span>MCP 连接管理
+                  </Link>
+                ) : null}
                 {manifest.surfaces.includes('platform_admin') ? (
                   <Link href="/runtime-console?view=governance">
                     <span aria-hidden="true">⚙</span>

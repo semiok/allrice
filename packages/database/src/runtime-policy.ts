@@ -20,6 +20,7 @@ import type postgres from 'postgres';
 
 import { getDatabase } from './core/client.ts';
 import { checkCloudBindingAuthority } from './cloud-authority.ts';
+import { checkMcpBindingAuthority } from './mcp-authority.ts';
 
 type Transaction = postgres.TransactionSql;
 type Database = ReturnType<typeof getDatabase>;
@@ -293,6 +294,10 @@ async function checkBindingAuthority(
     throw new RuntimePolicyError('target_unavailable');
   if (binding.execution.targetKind === 'cloud_sandbox') {
     await checkCloudBindingAuthority(transaction, context, binding);
+    return { binding, policyExpiresAt: snapshot.expires_at };
+  }
+  if (binding.execution.targetKind === 'cloud_mcp') {
+    await checkMcpBindingAuthority(transaction, context, binding);
     return { binding, policyExpiresAt: snapshot.expires_at };
   }
   // Existing Bridge authority remains separate from cloud data transfer scopes.

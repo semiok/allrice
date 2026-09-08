@@ -20,6 +20,7 @@ import {
 } from '@allrice/contracts';
 import {
   artifactKindLabel,
+  artifactExecutionLabels,
   parseArtifactDetail,
   parseArtifactPreview,
   reviewAnchorLabel,
@@ -715,14 +716,16 @@ function ArtifactReview({
             </p>
             {artifact.execution ? (
               <p>
-                目标：本地 Bridge · {artifact.execution.deviceId?.slice(0, 8)}
+                目标：{artifactExecutionLabels(artifact.execution).target}
+                {artifact.execution.targetKind === 'rice_bridge' &&
+                artifact.execution.deviceId
+                  ? ` · ${artifact.execution.deviceId.slice(0, 8)}`
+                  : ''}
                 <br />
                 工作副本：
-                {artifact.execution.workCopy.kind === 'in_place'
-                  ? '授权原目录'
-                  : '隔离副本'}{' '}
-                · 授权 v{artifact.execution.grantVersion}
-                （此处不证明设备当前在线）
+                {artifactExecutionLabels(artifact.execution).workCopy} · 授权 v
+                {artifact.execution.grantVersion}（
+                {artifactExecutionLabels(artifact.execution).availability}）
               </p>
             ) : (
               <p>

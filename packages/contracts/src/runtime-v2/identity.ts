@@ -72,7 +72,13 @@ export const RuntimeExecutionScopeSchema = z
     workCopy: z
       .object({
         id: UuidSchema,
-        kind: z.enum(['in_place', 'git_worktree', 'cloud_copy', 'local_copy']),
+        kind: z.enum([
+          'in_place',
+          'git_worktree',
+          'cloud_copy',
+          'local_copy',
+          'remote_service',
+        ]),
       })
       .strict(),
   })

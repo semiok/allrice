@@ -38,7 +38,10 @@ describe('P15 native exact-approval visibility, no new DSH transport', () => {
   );
   it('lets the native loop choose cloud without keyword routing, but does not expose other unselected side effects or preview execution', () => {
     enable();
-    expect([...nativeGovernedToolNames]).toEqual(['cloud.process.execute']);
+    expect([...nativeGovernedToolNames]).toEqual([
+      'cloud.process.execute',
+      'cloud.mcp.call',
+    ]);
     expect(
       names(
         riceToolDefinitionsForTurn(

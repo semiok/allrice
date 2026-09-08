@@ -30,6 +30,7 @@ import {
 } from '@allrice/contracts';
 
 import { DataAccessError } from '../data.ts';
+import { createMcpStore } from '../mcp-connections.ts';
 import {
   resolveEmployeeCapabilitiesForRun,
   synchronizeEmployeeSkillBindings,
@@ -88,6 +89,8 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 ]);
 
 const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
+  'cloud.process.execute': 'storage:write',
+  'cloud.mcp.call': 'secret:use',
   'workspace.document.read': 'storage:read',
   'web.search': 'network:outbound',
   'web.fetch': 'network:outbound',
@@ -1227,6 +1230,28 @@ export async function prepareEmployeeRunBinding(input: {
       requiredToolRefs: skill.required_tool_refs,
     }),
   );
+  const mcpEnabled =
+    process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
+    manifest.data.schemaVersion === 2 &&
+    manifest.data.capabilityBindings.toolNames.includes('cloud.mcp.call') &&
+    grantedCapabilities.includes('secret:use') &&
+    manifest.data.securityPolicy.connectorIdentityModes.includes('service');
+  const mcpTools =
+    mcpEnabled && manifest.data.schemaVersion === 2
+      ? (
+          await createMcpStore().freeze({
+            organizationId: input.context.organizationId,
+            workspaceId: input.workspaceId,
+            actorId,
+          })
+        ).filter(
+          (tool) =>
+            manifest.data.schemaVersion === 2 &&
+            manifest.data.capabilityBindings.connectorRefs?.includes(
+              `mcp.${tool.connectionId}`,
+            ),
+        )
+      : [];
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
@@ -1239,6 +1264,7 @@ export async function prepareEmployeeRunBinding(input: {
     nativeSkills,
     executionSnapshot: {
       schemaVersion: 2,
+      ...(mcpEnabled ? { mcpTools } : {}),
       employee: {
         id: assignment.employee_id,
         key: assignment.employee_key,

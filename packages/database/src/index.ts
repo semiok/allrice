@@ -5,6 +5,21 @@ export * from './workspace.ts';
 export * from './bridge.ts';
 export * from './bridge-connections.ts';
 export * from './runtime-policy.ts';
+export * from './mcp-connections.ts';
+export {
+  createMcpRuntimeOperation,
+  createMcpOperationLedger,
+} from './mcp-execution.ts';
+export {
+  mcpStableId,
+  checkMcpBindingAuthority,
+  mcpExecutionEnabled,
+} from './mcp-authority.ts';
+export {
+  listCloudRuntimeOperations,
+  cancelCloudRuntimeRun,
+  type CloudOperationView,
+} from './cloud-operation-view.ts';
 export * from './cloud-execution.ts';
 export { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 export * from './runtime-governed-bridge.ts';

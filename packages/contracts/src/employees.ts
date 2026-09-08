@@ -7,6 +7,7 @@ import {
 } from './capabilities.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { SessionModelSnapshotSchema } from './models.ts';
+import { FrozenMcpToolSchema } from './mcp.ts';
 import {
   MemoryClassSchema,
   MemoryLifecycleStateSchema,
@@ -132,6 +133,7 @@ export type EmployeeRuntimePolicy = z.infer<typeof EmployeeRuntimePolicySchema>;
 
 export const EmployeeCapabilityBindingsSchema = z
   .object({
+    connectorRefs: z.array(z.string().min(1).max(200)).max(32).optional(),
     skillVersionIds: z.array(UuidSchema).max(32),
     toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
     knowledgeScopes: z
@@ -469,6 +471,8 @@ export const EmployeeExecutionSnapshotV2Schema =
   EmployeeExecutionSnapshotV1Schema.extend({
     schemaVersion: z.literal(2),
     modelSnapshot: SessionModelSnapshotSchema.optional(),
+    // Optional without defaults preserves old execution snapshots byte-for-byte.
+    mcpTools: z.array(FrozenMcpToolSchema).max(128).optional(),
     capabilitySnapshot: z
       .object({
         declaredCapabilities: z.array(SkillCapabilitySchema).max(16),
