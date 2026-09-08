@@ -133,7 +133,10 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
   }
   const request = () =>
     requestRuntimeActionApproval(options, binding, 600_000, database);
-  async function approve(existingRequest?: RuntimeActionApprovalRequest) {
+  async function approve(
+    existingRequest?: RuntimeActionApprovalRequest,
+    clientTime = new Date().toISOString(),
+  ) {
     const req = existingRequest ?? (await request());
     const response = {
       contractVersion: 1 as const,
@@ -145,17 +148,17 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
       task: req.task,
       responseId: randomUUID(),
       respondedBy: user,
-      respondedAt: new Date().toISOString(),
+      respondedAt: clientTime,
       approvalId: req.approvalId,
       decision: 'approved' as const,
     };
-    await decideRuntimeActionApproval(
+    const accepted = await decideRuntimeActionApproval(
       context,
       req.approvalId,
       response,
       database,
     );
-    return { req, response };
+    return { req, response: accepted, submitted: response };
   }
   return {
     context,
@@ -297,6 +300,49 @@ suite('P04 real PostgreSQL policy / exact approval', () => {
     ).rejects.toThrow('approval_response_conflict');
     await expect(f.admit()).rejects.toThrow('approval_already_consumed');
   });
+  it.each([-86_400_000, 86_400_000])(
+    'uses database receipt time despite client clock skew %i; retry cannot extend or mutate approval',
+    async (offset) => {
+      const f = await fixture();
+      const req = await f.request();
+      const clientTime = new Date(Date.now() + offset).toISOString();
+      const { response, submitted } = await f.approve(req, clientTime);
+      const [row] = await database<{ decided_at: Date }[]>`
+        select decided_at from allrice_approval_requests where id=${req.approvalId}`;
+      expect(response.respondedAt).toBe(row!.decided_at.toISOString());
+      expect(response.respondedAt).not.toBe(clientTime);
+      expect(Date.parse(response.respondedAt)).toBeGreaterThanOrEqual(
+        Date.parse(req.createdAt),
+      );
+      await f.admit();
+      expect(
+        await decideRuntimeActionApproval(
+          f.context,
+          req.approvalId,
+          submitted,
+          database,
+        ),
+      ).toEqual(response);
+      await expect(
+        decideRuntimeActionApproval(
+          f.context,
+          req.approvalId,
+          { ...submitted, decision: 'rejected' },
+          database,
+        ),
+      ).rejects.toThrow('approval_response_conflict');
+      await expect(f.admit()).rejects.toThrow('approval_already_consumed');
+      await revokeRuntimeActionApproval(f.context, req.approvalId, database);
+      await expect(
+        decideRuntimeActionApproval(
+          f.context,
+          req.approvalId,
+          submitted,
+          database,
+        ),
+      ).rejects.toThrow('approval_invalid_or_stale');
+    },
+  );
   it('rejects Ask User/plan acknowledgement as execution permission', async () => {
     const f = await fixture();
     const req = await f.request();
@@ -309,6 +355,21 @@ suite('P04 real PostgreSQL policy / exact approval', () => {
       ),
     ).rejects.toThrow();
     await expect(f.admit()).rejects.toThrow('approval_invalid_or_stale');
+  });
+  it('client timestamps cannot revive a server-expired approval', async () => {
+    const f = await fixture();
+    const req = await f.request();
+    await database`update allrice_approval_requests
+      set requested_at=clock_timestamp()-interval '2 seconds',
+          runtime_expires_at=clock_timestamp()-interval '1 second'
+      where id=${req.approvalId}`;
+    await expect(f.approve(req, req.createdAt)).rejects.toThrow(
+      'approval_invalid_or_stale',
+    );
+    expect(
+      (await getRuntimeActionApproval(f.context, req.approvalId, database))
+        .response,
+    ).toBeNull();
   });
   it('cross-tenant reads and response attempts reveal no approval', async () => {
     const a = await fixture(),

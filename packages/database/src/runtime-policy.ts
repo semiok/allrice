@@ -581,7 +581,7 @@ export async function decideRuntimeActionApproval(
   input: unknown,
   database: Database = getDatabase(),
 ) {
-  const response = RuntimeActionApprovalResponseSchema.parse(input);
+  const submitted = RuntimeActionApprovalResponseSchema.parse(input);
   return database.begin(async (transaction) => {
     const controls = await controlsFor(transaction, context);
     await identity(transaction, context);
@@ -591,6 +591,18 @@ export async function decideRuntimeActionApproval(
       approvalId,
     );
     const now = await clock(transaction);
+    // Browser/device clocks are not authorization clocks. Stamp the accepted
+    // response using PostgreSQL, just like request expiry and decided_at. For
+    // retries preserve the first accepted timestamp, then compare every other
+    // identity/decision field exactly; retrying never extends the approval.
+    const response = {
+      ...submitted,
+      respondedAt:
+        row.runtime_response === null
+          ? now.toISOString()
+          : RuntimeActionApprovalResponseSchema.parse(row.runtime_response)
+              .respondedAt,
+    };
     if (
       !matchesRuntimeInteractionResponse(request, response, {
         trustedScope: request.task.scope,
