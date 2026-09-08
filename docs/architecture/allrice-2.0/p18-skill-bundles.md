@@ -21,6 +21,8 @@
 不受可变 tenant Skill 行的覆盖影响。非 package 历史员工保留原读取路径。
 DSH 进程 fingerprint 加入 bundle digest，防止正文不变但资源升级时误用旧实例。
 
+`workspace.skill.read` 通过独立原生 DSH 模块登记，参数先做受限路径校验，再由 Worker 读取该 Run 冻结资源；不依赖模型生成 XML 工具文本。真实 DSH 子进程/JSON-RPC 往返测试验证正常参数与结果、越界路径在 Broker 前拒绝；这项本地合成 Provider 的协议测试与真实模型业务验收分开记录。
+
 发布证据绑定到本次编译的确切 `frozen_package_checksum`，不能仅凭相同 revision ID 的旧成功记录发布新资源。
 没有精确 package hash 的旧试用记录保留为历史，不授予新发布权限。回退指向的已发布 revision 不允许重新编译；必须保存新草稿，再编译、试用和发布。
 发布事务按员工 → revision 的一致顺序锁定，重验当前草稿、运行包、工作区、Provider 健康与成功试用记录。
