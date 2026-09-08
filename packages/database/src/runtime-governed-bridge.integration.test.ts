@@ -43,7 +43,12 @@ import {
   createLocalCommandOperation,
   listLocalCommandOperations,
   cancelLocalCommandRun,
+  waitLocalCommandOperation,
 } from './local-command-service.ts';
+import {
+  localServiceUserAction,
+  localServiceWorkerAction,
+} from './local-service-runtime.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { LocalCommandRunner } from '../../../apps/rice-bridge/src/local-command-runner.js';
 import { BridgeJournal } from '../../../apps/rice-bridge/src/journal.js';
@@ -2770,6 +2775,872 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       },
     });
   });
+  async function serviceFixture(requestTimeoutMs = 10000) {
+    const f = await commandFixture([
+      'local.process.execute',
+      'local.process.status',
+      'local.process.stop',
+    ]);
+    vi.stubEnv('ALLRICE_LOCAL_SERVICE_ENABLED', '1');
+    const args = {
+      ...f.args,
+      background: {
+        durationMs: 60000,
+        readiness: { kind: 'tcp', port: 3100, path: '/', timeoutMs: 5000 },
+        stdin: {
+          mode: 'requests-v1',
+          maxRequests: 4,
+          maxBytes: 100,
+          requestTimeoutMs,
+        },
+      },
+    };
+    await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["background_services"]'::jsonb) where device_id=${f.device.id}`;
+    const op = await f.create('service', args);
+    await f.approve();
+    const claim = () =>
+      f.ledger().claimNextBridgeOperation({
+        scope: f.task.scope,
+        deviceId: f.device.id,
+        leaseMs: 30000,
+        supportsLocalCommand: true,
+        supportsBackgroundServices: true,
+      });
+    expect(await f.claim()).toBeNull();
+    const lease = (await claim())!;
+    await f.ledger().startOperation({
+      scope: f.task.scope,
+      operationId: lease.snapshot.binding.attempt.operationId,
+      leaseToken: lease.leaseToken,
+      attempt: lease.snapshot.binding.attempt,
+      receiptId: randomUUID(),
+    });
+    const base = {
+      scope: f.task.scope,
+      operationId: lease.snapshot.binding.attempt.operationId,
+      leaseToken: lease.leaseToken,
+      attempt: lease.snapshot.binding.attempt,
+    };
+    const exchange = (
+      events: Parameters<
+        ReturnType<typeof f.ledger>['exchangeLocalService']
+      >[0]['events'] = [],
+    ) => f.ledger().exchangeLocalService({ ...base, events });
+    const initialized = await exchange();
+    const event = {
+      processId: base.operationId,
+      attemptId: base.attempt.attemptId,
+    };
+    const starting = {
+      ...event,
+      sequence: 0,
+      type: 'starting' as const,
+      containerId: 'a'.repeat(64),
+      hardDeadlineAt: initialized.hardDeadlineAt,
+    };
+    await exchange([starting]);
+    return { ...f, op, args, base, event, starting, exchange, initialized };
+  }
+  it('P09-c preserves exact finite service identity, deduplicates readiness and returns nonterminal readiness to Worker', async () => {
+    const f = await serviceFixture();
+    const ready = {
+      ...f.event,
+      sequence: 1,
+      type: 'ready' as const,
+      port: 3100,
+      visibility: 'container_only' as const,
+    };
+    const first = await f.exchange([ready]);
+    expect(first.hardDeadlineAt).toBe(f.initialized.hardDeadlineAt);
+    expect(first.snapshot.status).toBe('running');
+    expect(first.snapshot.processId).toBe(f.base.operationId);
+    expect((await f.exchange([ready])).acceptedSequence).toBe(1);
+    await expect(f.exchange([{ ...ready, port: 3101 }])).rejects.toThrow(
+      'receipt_conflict',
+    );
+    await expect(
+      f.exchange([{ ...ready, sequence: 2, attemptId: randomUUID() }]),
+    ).rejects.toThrow('scope_mismatch');
+    const result = await waitLocalCommandOperation(f.op, undefined, database);
+    expect(result.status).toBe('service_ready');
+    expect(
+      await localServiceWorkerAction(
+        f.execution,
+        f.base.operationId,
+        'status',
+        database,
+      ),
+    ).toMatchObject({ state: 'ready', visibility: 'container_only' });
+    const stop = await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'stop',
+      undefined,
+      database,
+    );
+    expect(stop?.state).toBe('stopping');
+    expect((await f.exchange()).stopRequested).toBe(true);
+    expect(
+      (await f.ledger().readOperation(f.task.scope, f.base.operationId)).status,
+    ).toBe('cancel_requested');
+  });
+  it('P09-c retains late readiness before an input delivery fact without resurrecting a stopped service', async () => {
+    const f = await serviceFixture();
+    const request = {
+      requestId: randomUUID(),
+      sequence: 0,
+      prompt: 'Short input',
+      expiresAt: new Date(Date.now() + 8000).toISOString(),
+      maxBytes: 100,
+    };
+    await f.exchange([
+      { ...f.event, type: 'input_request', sequence: 1, request },
+    ]);
+    const input = {
+      inputId: randomUUID(),
+      requestId: request.requestId,
+      sequence: 0,
+      expiresAt: request.expiresAt,
+      kind: 'text' as const,
+      text: 'test',
+      digest: digest({ kind: 'text', text: 'test' }),
+    };
+    await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'input',
+      input,
+      database,
+    );
+    await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'stop',
+      undefined,
+      database,
+    );
+    const priorLease = (await f.exchange()).leaseExpiresAt;
+    const response = await f.ledger().exchangeLocalService({
+      ...f.base,
+      deliveryOnly: true,
+      events: [
+        {
+          ...f.event,
+          type: 'ready',
+          sequence: 2,
+          port: 3100,
+          visibility: 'container_only',
+        },
+        {
+          ...f.event,
+          type: 'input_delivered',
+          sequence: 3,
+          inputId: input.inputId,
+          requestId: input.requestId,
+          inputSequence: 0,
+          digest: input.digest,
+          kind: 'text',
+        },
+      ],
+    });
+    expect(response.stopRequested).toBe(true);
+    expect(response.inputs).toEqual([]);
+    expect(response.acceptedSequence).toBe(3);
+    expect(response.leaseExpiresAt).toBe(priorLease);
+    const view = await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'status',
+      undefined,
+      database,
+    );
+    expect(view?.state).toBe('stopping');
+    expect(view?.ready).toBe(false);
+    expect(view?.requests[0]?.delivered).toBe(true);
+  });
+  it('P09-c delivery-only records late pipe facts without renewing, returning input or inventing cancellation', async () => {
+    const f = await serviceFixture();
+    const request = {
+      requestId: randomUUID(),
+      sequence: 0,
+      prompt: 'Short input',
+      expiresAt: new Date(Date.now() + 8000).toISOString(),
+      maxBytes: 100,
+    };
+    await f.exchange([
+      { ...f.event, type: 'input_request', sequence: 1, request },
+    ]);
+    const input = {
+      inputId: randomUUID(),
+      requestId: request.requestId,
+      sequence: 0,
+      expiresAt: request.expiresAt,
+      kind: 'text' as const,
+      text: 'test',
+      digest: digest({ kind: 'text', text: 'test' }),
+    };
+    await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'input',
+      input,
+      database,
+    );
+    const prior = await f.exchange();
+    expect(prior.inputs).toEqual([input]);
+    const flush = (events: Parameters<typeof f.exchange>[0] = []) =>
+      f
+        .ledger()
+        .exchangeLocalService({ ...f.base, events, deliveryOnly: true });
+    const idle = await flush();
+    expect(idle.inputs).toEqual([]);
+    expect(idle.leaseExpiresAt).toBe(prior.leaseExpiresAt);
+    expect(idle.snapshot.cancelRequestId).toBeNull();
+    const events = [
+      {
+        ...f.event,
+        type: 'ready' as const,
+        sequence: 2,
+        port: 3100,
+        visibility: 'container_only' as const,
+      },
+      {
+        ...f.event,
+        type: 'input_delivered' as const,
+        sequence: 3,
+        inputId: input.inputId,
+        requestId: input.requestId,
+        inputSequence: 0,
+        digest: input.digest,
+        kind: input.kind,
+      },
+    ];
+    const archived = await flush(events);
+    expect(archived.leaseExpiresAt).toBe(prior.leaseExpiresAt);
+    expect(archived.inputs).toEqual([]);
+    expect(archived.snapshot.status).toBe('running');
+    expect(archived.snapshot.cancelRequestId).toBeNull();
+    expect(archived.acceptedSequence).toBe(3);
+    expect((await flush(events)).acceptedSequence).toBe(3);
+    const view = await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'status',
+      undefined,
+      database,
+    );
+    expect(view?.ready).toBe(false);
+    expect(view?.requests[0]?.delivered).toBe(true);
+  });
+  it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
+    'P09-c real Chrome narrow service card keeps one input intent, recovers lost ACK and distinguishes stop intent from evidence',
+    async () => {
+      const f = await serviceFixture(60000);
+      const request = {
+        requestId: randomUUID(),
+        sequence: 0,
+        prompt: '输入测试文字',
+        expiresAt: new Date(Date.now() + 50000).toISOString(),
+        maxBytes: 100,
+      };
+      await f.exchange([
+        {
+          ...f.event,
+          type: 'ready',
+          sequence: 1,
+          port: 3100,
+          visibility: 'container_only',
+        },
+        { ...f.event, type: 'input_request', sequence: 2, request },
+      ]);
+      const require = createRequire(resolve('apps/worker/package.json'));
+      const { chromium } = require('playwright-core') as typeof Playwright;
+      const build = createRequire(require.resolve('tsx/package.json'))(
+        'esbuild',
+      ).build;
+      const assets = await build({
+        entryPoints: [resolve('apps/web/test/local-command-page.tsx')],
+        bundle: true,
+        write: false,
+        outdir: tmpdir(),
+        platform: 'browser',
+        format: 'iife',
+        jsx: 'automatic',
+        define: { 'process.env.NODE_ENV': '"production"' },
+      });
+      const js = assets.outputFiles.find((file: { path: string }) =>
+        file.path.endsWith('.js'),
+      ).text;
+      const css = assets.outputFiles.find((file: { path: string }) =>
+        file.path.endsWith('.css'),
+      ).text;
+      let submissions = 0;
+      const inputIds = new Set<string>();
+      const server = createServer((req, res) => {
+        void (async () => {
+          const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+          if (path === '/') {
+            res.setHeader('content-type', 'text/html');
+            res.end(
+              `<!doctype html><meta name="viewport" content="width=device-width"><style>body{font:14px system-ui;margin:12px}*{box-sizing:border-box}${css}</style><div id="root"></div><script id="p05-input" type="application/json">${JSON.stringify({ runId: f.run, workspaceId: f.context.workspaceId, tenantHeaders: { 'x-p09c-browser': 'synthetic' }, runActive: false })}</script><script src="/fixture.js"></script>`,
+            );
+            return;
+          }
+          if (path === '/fixture.js') {
+            res.setHeader('content-type', 'application/javascript');
+            res.end(js);
+            return;
+          }
+          if (req.headers['x-p09c-browser'] !== 'synthetic') {
+            res.statusCode = 401;
+            res.end();
+            return;
+          }
+          res.setHeader('content-type', 'application/json');
+          if (path === '/api/v1/runtime/local-commands') {
+            res.end(
+              JSON.stringify({
+                operations: await listLocalCommandOperations(
+                  f.context,
+                  f.run,
+                  database,
+                ),
+              }),
+            );
+            return;
+          }
+          if (
+            path === '/api/v1/runtime/local-services' &&
+            req.method === 'POST'
+          ) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString()) as {
+              action: 'stop' | 'input';
+              input: unknown;
+            };
+            const service = await localServiceUserAction(
+              f.context,
+              f.run,
+              f.base.operationId,
+              body.action,
+              body.input,
+              database,
+            );
+            if (body.action === 'input') {
+              submissions++;
+              inputIds.add((body.input as { inputId: string }).inputId);
+              if (submissions === 1) {
+                res.destroy();
+                return;
+              }
+            }
+            res.end(JSON.stringify({ service }));
+            return;
+          }
+          res.statusCode = 404;
+          res.end();
+        })().catch(() => {
+          res.statusCode = 500;
+          res.end('fixture request failed');
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw Error('fixture listener');
+      const origin = `http://127.0.0.1:${address.port}`;
+      const browser = await chromium.launch({
+        headless: true,
+        executablePath:
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      });
+      try {
+        const page = await browser.newPage({
+          viewport: { width: 390, height: 844 },
+        });
+        await page.goto(origin);
+        const card = page.getByRole('region', { name: '有限后台服务' });
+        await card.getByRole('textbox').waitFor();
+        expect(await card.innerText()).toContain('仅隔离容器内可达');
+        expect(await card.innerText()).toContain('不是 Rice 的聊天提问');
+        await card.getByRole('textbox').fill('user-input-once');
+        await card
+          .getByRole('button', { name: '发送进程输入', exact: true })
+          .evaluate((button) => {
+            (button as HTMLButtonElement).click();
+            (button as HTMLButtonElement).click();
+          });
+        await page.waitForFunction(() =>
+          document.body.textContent?.includes('已提交，等待投递确认'),
+        );
+        expect(inputIds.size).toBe(1);
+        expect(submissions).toBeLessThanOrEqual(2); // Chrome may retry the same POST after a dropped response.
+        expect(await card.getByRole('textbox').count()).toBe(0);
+        const pending = (await f.exchange()).inputs;
+        expect(pending).toHaveLength(1);
+        expect(pending[0]?.text).toBe('user-input-once');
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        await page.reload();
+        await page.waitForFunction(() =>
+          document.body.textContent?.includes('已提交，等待投递确认'),
+        );
+        await card
+          .getByRole('button', { name: '停止此服务', exact: true })
+          .click();
+        await page.waitForFunction(() =>
+          document.body.textContent?.includes('正在请求停止，尚未确认'),
+        );
+        expect(await card.innerText()).toContain('投递结果未确认');
+        expect(
+          await card
+            .getByRole('button', { name: '停止此服务', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          (await f.ledger().readOperation(f.task.scope, f.base.operationId))
+            .status,
+        ).toBe('running');
+        await f.exchange();
+        expect(
+          (await f.ledger().readOperation(f.task.scope, f.base.operationId))
+            .status,
+        ).toBe('cancel_requested');
+        const evidenceDirectory = await mkdtemp(
+          resolve('.local/p09c-browser-'),
+        );
+        await page.screenshot({
+          path: join(evidenceDirectory, 'narrow-stopping.png'),
+          fullPage: true,
+        });
+        console.log('P09-c browser evidence:', evidenceDirectory);
+        expect(inputIds.size).toBe(1);
+        expect(submissions).toBeLessThanOrEqual(2);
+      } finally {
+        await browser.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    60000,
+  );
+  it.skipIf(!process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET)(
+    'P09-c actual HTTP Bridge VM service ready, user input and targeted stop keep durable process evidence',
+    async () => {
+      const socketPath = process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET!;
+      if (socketPath !== '/Users/a123/.colima/allrice-b2/docker.sock')
+        throw Error('dedicated test VM required');
+      const f = await commandFixture([
+        'local.process.execute',
+        'local.process.status',
+        'local.process.stop',
+      ]);
+      vi.stubEnv('ALLRICE_LOCAL_SERVICE_ENABLED', '1');
+      const directory = await mkdtemp(join(tmpdir(), 'allrice-p09c-http-'));
+      artifactRoots.push(directory);
+      const project = join(directory, 'project');
+      await mkdir(project);
+      const root = await realpath(project);
+      const fingerprint = createHash('sha256').update(root).digest('hex');
+      const source = [
+        "import http from 'node:http';import fs from 'node:fs';import {spawn} from 'node:child_process';",
+        "spawn('/usr/local/bin/node',['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}).unref();",
+        "http.createServer((q,s)=>s.end('ready')).listen(3100,'127.0.0.1',()=>fs.writeSync(3,JSON.stringify({type:'input.request',prompt:'测试进程输入'})+'\\n'));",
+        "let n=0;process.stdin.on('data',()=>console.log('accepted-count:'+ ++n));",
+      ].join('\n');
+      await writeFile(join(project, 'service.mjs'), source);
+      await database`update allrice_bridge_folder_grants set root_fingerprint=${fingerprint} where id=${f.grant}`;
+      await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["background_services"]'::jsonb) where device_id=${f.device.id}`;
+      const op = await f.create('p09c-http', {
+        ...f.args,
+        args: ['service.mjs'],
+        files: [
+          {
+            path: 'service.mjs',
+            sha256: `sha256:${createHash('sha256').update(source).digest('hex')}`,
+          },
+        ],
+        limits: {
+          ...f.args.limits,
+          timeoutMs: 10000,
+          memoryMiB: 128,
+          cpuMillis: 500,
+          pids: 32,
+        },
+        background: {
+          durationMs: 45000,
+          readiness: { kind: 'tcp', port: 3100, path: '/', timeoutMs: 15000 },
+          stdin: {
+            mode: 'requests-v1',
+            maxRequests: 4,
+            maxBytes: 100,
+            requestTimeoutMs: 20000,
+          },
+        },
+      });
+      const processId = op.snapshot.binding.attempt.operationId;
+      const handler = createRuntimeBridgeHttpHandler({
+        enabled: () => true,
+        authenticate: async (token) => {
+          if (token !== 'p09c-synthetic') throw Error('unauthorized');
+          return {
+            device: f.device,
+            grants: [
+              {
+                id: f.grant,
+                deviceId: f.device.id,
+                label: 'P09-c synthetic',
+                rootFingerprint: fingerprint,
+                createdAt: new Date().toISOString(),
+                revokedAt: null,
+              },
+            ],
+          };
+        },
+        ledgerForDevice: async () => f.ledger(),
+      });
+      const server = createServer((req, res) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const part of req) chunks.push(Buffer.from(part));
+          const path = new URL(req.url!, 'http://localhost').pathname;
+          const response = await handler(
+            new Request(`http://localhost${path}`, {
+              method: 'POST',
+              headers: {
+                authorization: String(req.headers.authorization ?? ''),
+                'content-type': 'application/json',
+              },
+              body: Buffer.concat(chunks),
+            }),
+            path.split('/').at(-1) as
+              | 'next'
+              | 'start'
+              | 'receipts'
+              | 'heartbeat'
+              | 'output'
+              | 'service',
+            path.split('/').at(-2),
+          );
+          res.statusCode = response.status;
+          res.end(await response.text());
+        })().catch(() => {
+          res.statusCode = 500;
+          res.end();
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      const journal = await BridgeJournal.open({
+        directory: join(directory, 'journal'),
+        server: origin,
+        deviceId: f.device.id,
+      });
+      const runner = new LocalCommandRunner({
+        socketPath,
+        imageDigest: localCommandToolchainImageV1,
+      });
+      const bridge = new RuntimeBridgeOperationClient({
+        config: {
+          server: origin,
+          deviceId: f.device.id,
+          deviceName: 'P09-c fixture',
+          grants: [
+            {
+              id: f.grant,
+              label: 'Fixture',
+              rootPath: root,
+              rootFingerprint: fingerprint,
+            },
+          ],
+        },
+        token: 'p09c-synthetic',
+        journal,
+        runner,
+      });
+      const { stopLocalProcesses } =
+        await import('../../../apps/rice-bridge/src/local-process-manager.js');
+      const until = async (check: () => Promise<boolean>) => {
+        const until = Date.now() + 25000;
+        while (Date.now() < until) {
+          if (await check()) return;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        throw Error('P09-c evidence timeout');
+      };
+      try {
+        expect(await bridge.pollOnce()).toBe(false);
+        await f.approve();
+        expect(await bridge.pollOnce()).toBe(true);
+        await until(async () => {
+          const view = await localServiceUserAction(
+            f.context,
+            f.run,
+            processId,
+            'status',
+            undefined,
+            database,
+          );
+          return !!view?.ready && view.requests.length === 1;
+        });
+        const ready = await localServiceUserAction(
+          f.context,
+          f.run,
+          processId,
+          'status',
+          undefined,
+          database,
+        );
+        expect(ready?.visibility).toBe('container_only');
+        expect(
+          (await f.ledger().readOperation(f.task.scope, processId)).processId,
+        ).toBe(processId);
+        const request = ready!.requests[0]!.request as {
+          requestId: string;
+          sequence: number;
+          expiresAt: string;
+        };
+        const input = {
+          requestId: request.requestId,
+          sequence: request.sequence,
+          expiresAt: request.expiresAt,
+          inputId: randomUUID(),
+          kind: 'text' as const,
+          text: 'synthetic-value\n',
+          digest: digest({ kind: 'text', text: 'synthetic-value\n' }),
+        };
+        await localServiceUserAction(
+          f.context,
+          f.run,
+          processId,
+          'input',
+          input,
+          database,
+        );
+        await until(
+          async () =>
+            !!(
+              await localServiceUserAction(
+                f.context,
+                f.run,
+                processId,
+                'status',
+                undefined,
+                database,
+              )
+            )?.requests[0]?.delivered,
+        );
+        const requested = await localServiceUserAction(
+          f.context,
+          f.run,
+          processId,
+          'stop',
+          undefined,
+          database,
+        );
+        expect(requested?.state).toBe('stopping');
+        await until(async () => {
+          await bridge.flush();
+          return (
+            (await f.ledger().readOperation(f.task.scope, processId)).status ===
+            'canceled'
+          );
+        });
+        const [view] = await listLocalCommandOperations(
+          f.context,
+          f.run,
+          database,
+        );
+        const result = RuntimeLocalCommandResultSchema.parse(
+          (view!.evidence as { output: unknown }).output,
+        );
+        expect(result.stopped).toBe(true);
+        expect(result.stdout).toContain('accepted-count:1');
+        expect(result.stdout).not.toContain('accepted-count:2');
+        expect(view!.service?.state).toBe('stopped');
+        expect(await readFile(join(project, 'service.mjs'), 'utf8')).toBe(
+          source,
+        );
+      } finally {
+        await stopLocalProcesses(journal);
+        await journal.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    60000,
+  );
+  it('P09-c scopes bounded human input, handles input before readiness and never calls pipe delivery application consumption', async () => {
+    const f = await serviceFixture();
+    const request = {
+      requestId: randomUUID(),
+      sequence: 0,
+      prompt: 'Provide a short value',
+      expiresAt: new Date(Date.now() + 8000).toISOString(),
+      maxBytes: 100,
+    };
+    await f.exchange([
+      { ...f.event, type: 'input_request', sequence: 1, request },
+    ]);
+    await f.exchange([
+      {
+        ...f.event,
+        type: 'ready',
+        sequence: 2,
+        port: 3100,
+        visibility: 'container_only',
+      },
+    ]);
+    const input = {
+      inputId: randomUUID(),
+      requestId: request.requestId,
+      sequence: 0,
+      expiresAt: request.expiresAt,
+      kind: 'text' as const,
+      text: 'user-private-input',
+      digest: digest({ kind: 'text', text: 'user-private-input' }),
+    };
+    await expect(
+      localServiceUserAction(
+        { ...f.context, actor: { type: 'user', id: randomUUID() } },
+        f.run,
+        f.base.operationId,
+        'input',
+        input,
+        database,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      localServiceUserAction(
+        f.context,
+        randomUUID(),
+        f.base.operationId,
+        'input',
+        input,
+        database,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      localServiceUserAction(
+        f.context,
+        f.run,
+        f.base.operationId,
+        'input',
+        { ...input, digest: digest('wrong') },
+        database,
+      ),
+    ).rejects.toThrow();
+    const saved = await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'input',
+      input,
+      database,
+    );
+    expect(JSON.stringify(saved)).not.toContain(input.text);
+    await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'input',
+      input,
+      database,
+    );
+    await expect(
+      localServiceUserAction(
+        f.context,
+        f.run,
+        f.base.operationId,
+        'input',
+        { ...input, inputId: randomUUID() },
+        database,
+      ),
+    ).rejects.toThrow();
+    expect((await f.exchange()).inputs).toEqual([input]);
+    expect((await f.exchange()).inputs).toEqual([input]);
+    const delivered = {
+      ...f.event,
+      type: 'input_delivered' as const,
+      sequence: 3,
+      inputId: input.inputId,
+      requestId: input.requestId,
+      inputSequence: input.sequence,
+      digest: input.digest,
+      kind: input.kind,
+    };
+    expect((await f.exchange([delivered])).inputs).toEqual([]);
+    expect((await f.exchange([delivered])).acceptedSequence).toBe(3);
+    const view = await localServiceUserAction(
+      f.context,
+      f.run,
+      f.base.operationId,
+      'status',
+      undefined,
+      database,
+    );
+    expect(view?.requests[0]?.delivered).toBe(true);
+    expect(JSON.stringify(view)).not.toContain(input.text);
+  });
+  it.each(['run_end', 'cancel', 'expiry'] as const)(
+    'P09-c %s requests stop without extending its deadline or claiming process termination',
+    async (mode) => {
+      const f = await serviceFixture();
+      const request = {
+        requestId: randomUUID(),
+        sequence: 0,
+        prompt: 'Short input',
+        expiresAt: new Date(Date.now() + 8000).toISOString(),
+        maxBytes: 100,
+      };
+      await f.exchange([
+        { ...f.event, type: 'input_request', sequence: 1, request },
+      ]);
+      if (mode === 'run_end')
+        await database`update allrice_runs set state='succeeded' where id=${f.run}`;
+      else if (mode === 'cancel')
+        await f.ledger().cancelRoot(f.task.scope, f.run, randomUUID());
+      else
+        await database`update allrice_local_services set hard_deadline_at=clock_timestamp()-interval '1 second' where operation_id=${f.base.operationId}`;
+      await expect(
+        localServiceUserAction(
+          f.context,
+          f.run,
+          f.base.operationId,
+          'input',
+          {
+            inputId: randomUUID(),
+            requestId: request.requestId,
+            sequence: 0,
+            expiresAt: request.expiresAt,
+            kind: 'text',
+            text: 'late',
+            digest: digest({ kind: 'text', text: 'late' }),
+          },
+          database,
+        ),
+      ).rejects.toThrow();
+      const stopped = await f.exchange();
+      expect(stopped.stopRequested).toBe(true);
+      expect(stopped.inputs).toEqual([]);
+      expect(['running', 'cancel_requested']).toContain(
+        stopped.snapshot.status,
+      );
+      expect(Date.parse(stopped.hardDeadlineAt)).toBeLessThanOrEqual(
+        Date.parse(f.initialized.hardDeadlineAt),
+      );
+    },
+  );
   it('P09-b keeps install source and script policy under exact approval, old-client exclusion and frozen outbound capability', async () => {
     for (const network of [false, true]) {
       const f = await commandFixture(undefined, undefined, network);

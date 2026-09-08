@@ -405,6 +405,10 @@ async function start() {
   } finally {
     clearInterval(heartbeatTimer);
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
+    if (journal)
+      await (
+        await import('./local-process-manager.js')
+      ).stopLocalProcesses(journal);
     await journal?.close();
   }
   console.info('Rice Bridge 已停止');

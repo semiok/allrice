@@ -106,6 +106,12 @@ describe('AllRice worker tool manifest contract', () => {
       }));
 
     expect(runtimePairs).toHaveLength(expectedPairs.length);
+    const localProcessBlock = brokerNativeBlock.slice(
+      brokerNativeBlock.indexOf("canonicalName: 'local.process.execute'"),
+      brokerNativeBlock.indexOf("canonicalName: 'local.process.status'"),
+    );
+    for (const field of ['diagnostics', 'dependencies', 'background'])
+      expect(localProcessBlock).toContain(`${field}:`);
     expect(
       runtimePairs.toSorted((left, right) =>
         left.canonicalName.localeCompare(right.canonicalName),

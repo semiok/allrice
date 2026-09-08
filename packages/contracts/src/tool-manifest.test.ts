@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { allRiceToolManifest } from './tool-manifest.ts';
 
 describe('AllRice tool manifest', () => {
-  it('adds one explicitly gated command to the governed 23/20/19 transport inventory', () => {
+  it('includes finite service status and stop in the governed 25/22/21 transport inventory', () => {
     const canonicalNames = allRiceToolManifest.map(
       (tool) => tool.canonicalName,
     );
@@ -23,10 +23,37 @@ describe('AllRice tool manifest', () => {
       'dshWireName' in tool ? tool.dshWireName : undefined,
     );
 
-    expect(canonicalNames).toHaveLength(23);
-    expect(new Set(canonicalNames).size).toBe(23);
-    expect(nativeTools).toHaveLength(20);
-    expect(brokerNativeTools).toHaveLength(19);
+    expect(canonicalNames).toHaveLength(25);
+    expect(new Set(canonicalNames).size).toBe(25);
+    expect(nativeTools).toHaveLength(22);
+    expect(brokerNativeTools).toHaveLength(21);
+    expect(
+      brokerNativeTools
+        .filter((tool) =>
+          ['local.process.status', 'local.process.stop'].includes(
+            tool.canonicalName,
+          ),
+        )
+        .map((tool) => ({
+          name: tool.canonicalName,
+          wireName: tool.dshWireName,
+          capability: tool.capability,
+          risk: tool.risk,
+        })),
+    ).toEqual([
+      {
+        name: 'local.process.status',
+        wireName: 'local_process_status',
+        capability: 'storage:write',
+        risk: 'read_only',
+      },
+      {
+        name: 'local.process.stop',
+        wireName: 'local_process_stop',
+        capability: 'storage:write',
+        risk: 'managed_write',
+      },
+    ]);
     expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
       'workspace.file.list',
       'workspace.file.read',
@@ -36,7 +63,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(20);
+    expect(new Set(wireNames).size).toBe(22);
   });
 
   it('defines capability and risk metadata for every canonical tool', () => {

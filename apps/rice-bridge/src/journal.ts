@@ -24,16 +24,17 @@ import {
   type RuntimeBridgeReceipt,
 } from '@allrice/contracts';
 import { initialChangesetResults } from './changeset-executor.js';
+import { LocalServiceJournal } from './local-service-journal.js';
+import { BridgeJournalError } from './journal-error.js';
+export { BridgeJournalError } from './journal-error.js';
 
 export const maximumReceiptBytes = 500_000;
 const reservePerEntry = maximumReceiptBytes + 32_768;
+// In addition to the terminal receipt: 16 inputs (including worst-case JSON
+// escaping), 64 bounded lifecycle events and SQLite/index overhead. Ordinary
+// file/foreground operations keep the existing reservation.
+const reservePerService = 1024 * 1024;
 const openDirectories = new Set<string>();
-
-export class BridgeJournalError extends Error {
-  constructor(public readonly code: string) {
-    super(code);
-  }
-}
 
 export function bridgeDigest(value: unknown) {
   return `sha256:${createHash('sha256')
@@ -193,6 +194,7 @@ export class BridgeJournal {
         PRAGMA user_version=1;
         COMMIT;
       `);
+        LocalServiceJournal.initialize(database);
         const stored = database
           .prepare('SELECT server, device_id FROM identity WHERE singleton=1')
           .get();
@@ -366,6 +368,25 @@ export class BridgeJournal {
     return row;
   }
 
+  serviceJournal() {
+    return new LocalServiceJournal(this.database, async (id, action) => {
+      await this.guard();
+      return this.transaction(() => {
+        const row = this.entry(id);
+        const dispatch = RuntimeBridgeDispatchSchema.parse(
+          JSON.parse(row.dispatch),
+        );
+        if (
+          row.state === 'received' ||
+          dispatch.payload.capability !== 'local.process.execute' ||
+          !dispatch.payload.arguments.background
+        )
+          throw new BridgeJournalError('JOURNAL_SERVICE_MISMATCH');
+        return action();
+      });
+    });
+  }
+
   async receive(input: RuntimeBridgeDispatch): Promise<'new' | 'duplicate'> {
     const dispatch = RuntimeBridgeDispatchSchema.parse(input);
     await this.guard();
@@ -389,13 +410,19 @@ export class BridgeJournal {
       const count = Number(
         this.database.prepare('SELECT count(*) AS n FROM entries').get()?.n,
       );
-      const pending = Number(
-        this.database
-          .prepare(
-            "SELECT count(*) AS n FROM entries WHERE state IN ('received','executing')",
-          )
-          .get()?.n,
-      );
+      const active = this.database
+        .prepare(
+          `SELECT count(*) AS n,
+            coalesce(sum(CASE WHEN json_extract(dispatch,'$.payload.capability')='local.process.execute'
+              AND json_type(dispatch,'$.payload.arguments.background')='object' THEN 1 ELSE 0 END),0) AS services
+           FROM entries WHERE state IN ('received','executing')`,
+        )
+        .get();
+      const pending = Number(active?.n);
+      const pendingServices = Number(active?.services);
+      const newService =
+        dispatch.payload.capability === 'local.process.execute' &&
+        Boolean(dispatch.payload.arguments.background);
       const pages = Number(
         this.database.prepare('PRAGMA page_count').get()?.page_count,
       );
@@ -408,6 +435,7 @@ export class BridgeJournal {
         count >= this.limits.entries ||
         pages * pageSize +
           (pending + 1) * reservePerEntry +
+          (pendingServices + Number(newService)) * reservePerService +
           Buffer.byteLength(body) >
           this.limits.bytes
       ) {
@@ -614,6 +642,20 @@ export class BridgeJournal {
     return rows.map((row) =>
       RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
     );
+  }
+
+  /** Finite lifecycle outbox for ended/recovering services. Live services own
+   * their exchange loop; this path never acquires execution/input permission. */
+  async pendingServiceDispatches() {
+    await this.guard();
+    return this.database
+      .prepare(
+        "SELECT e.dispatch FROM entries e WHERE e.state IN ('completed','unknown') AND EXISTS (SELECT 1 FROM service_events s WHERE s.operation_id=e.operation_id AND s.acknowledged=0) ORDER BY e.rowid LIMIT 4",
+      )
+      .all()
+      .map((row) =>
+        RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
+      );
   }
 
   /** Caller must obtain exact-container terminal evidence from LocalCommandRunner.recover. */

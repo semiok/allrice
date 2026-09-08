@@ -230,6 +230,9 @@ export function createGovernedBridgeOperationLedger(
           !reported ||
           !profile.success ||
           !profile.data.available ||
+          (command.arguments.background &&
+            (process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '1' ||
+              !profile.data.features?.includes('background_services'))) ||
           (command.arguments.dependencies &&
             !profile.data.features?.includes('npm_dependencies')) ||
           (command.arguments.diagnostics &&
@@ -243,6 +246,16 @@ export function createGovernedBridgeOperationLedger(
         )
           throw new RuntimePolicyError('bridge_authority_changed');
         profileReportedAt = reported.reported_at;
+        if (command.arguments.background) {
+          const [active] = await tx<
+            { n: number; same_run: number }[]
+          >`select count(*)::int as n,count(*) filter(where o.run_id=${binding.task.runId})::int as same_run
+            from allrice_local_services s join allrice_runtime_operations o on o.id=s.operation_id
+            where o.device_id=${device.id} and o.id<>${binding.attempt.operationId} and s.hard_deadline_at>clock_timestamp()
+              and o.snapshot->>'status' in ('running','dispatched','cancel_requested')`;
+          if ((active?.n ?? 0) >= 2 || (active?.same_run ?? 0) >= 1)
+            throw new RuntimePolicyError('bridge_authority_changed');
+        }
       }
       const [policy] = await tx<
         { payload: unknown }[]

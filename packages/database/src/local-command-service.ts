@@ -25,6 +25,10 @@ import {
   requestRuntimeActionApproval,
   runtimePolicyDigest as digest,
 } from './runtime-policy.ts';
+import {
+  readLocalService,
+  localServiceFeatureEnabled,
+} from './local-service-runtime.ts';
 
 type Database = ReturnType<typeof getDatabase>;
 // Stable identities support concurrent delivery of one tool call. A changed
@@ -50,6 +54,8 @@ export async function createLocalCommandOperation(
   if (!localCommandFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const args = RuntimeLocalCommandToolInputSchema.parse(input.arguments);
+  if (args.background && !localServiceFeatureEnabled())
+    throw new RuntimePolicyError('runtime_policy_disabled');
   const ctx = input.context;
   const owner = ctx.policySnapshot.subjectId;
   UuidSchema.parse(ctx.runId);
@@ -105,6 +111,8 @@ export async function createLocalCommandOperation(
   if (args.diagnostics && !profile.features?.includes('project_diagnostics'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args.dependencies && !profile.features?.includes('npm_dependencies'))
+    throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (args.background && !profile.features?.includes('background_services'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
   const payload = RuntimeLocalCommandSchema.parse({
     capability: 'local.process.execute',
@@ -208,9 +216,9 @@ export async function createLocalCommandOperation(
 }
 
 /** Authoritative membership and owner checks shared by browser read/cancel. */
-async function ownedRun(
+export async function ownedLocalCommandRun(
   database: Database,
-  context: RequestContext,
+  context: Pick<RequestContext, 'organizationId' | 'workspaceId' | 'actor'>,
   runId: string,
 ) {
   UuidSchema.parse(runId);
@@ -231,7 +239,7 @@ export async function listLocalCommandOperations(
   runId: string,
   database: Database = getDatabase(),
 ) {
-  await ownedRun(database, context, runId);
+  await ownedLocalCommandRun(database, context, runId);
   const rows = await database<
     {
       id: string;
@@ -271,6 +279,9 @@ export async function listLocalCommandOperations(
           : null,
         output,
         evidence: receipt?.evidence ?? null,
+        service: localServiceFeatureEnabled()
+          ? await readLocalService(row.id, database)
+          : null,
       };
     }),
   );
@@ -281,7 +292,7 @@ export async function cancelLocalCommandRun(
   runId: string,
   database: Database = getDatabase(),
 ) {
-  await ownedRun(database, context, runId);
+  await ownedLocalCommandRun(database, context, runId);
   // This ledger instance can record cancellation intent only; its execution admission always denies.
   const { createRuntimeOperationLedger } =
     await import('./runtime-ledger/index.ts');
@@ -327,6 +338,28 @@ export async function waitLocalCommandOperation(
     );
     const snapshot: RuntimeOperationSnapshot =
       await created.ledger.readOperation(scope, operationId);
+    if (
+      !canceled &&
+      snapshot.status === 'running' &&
+      localServiceFeatureEnabled()
+    ) {
+      const service = await readLocalService(operationId, database);
+      if (
+        service &&
+        service.ready &&
+        ['ready', 'waiting_input'].includes(service.state) &&
+        Date.parse(service.hardDeadlineAt) > Date.now()
+      )
+        return {
+          operationId,
+          status: 'service_ready',
+          evidence: {
+            summary:
+              '有限后台服务已启动；端口仅隔离容器内部可达，Run结束或到期将停止',
+            output: service,
+          },
+        };
+    }
     if (
       ['succeeded', 'failed', 'canceled', 'partial', 'unknown'].includes(
         snapshot.status,

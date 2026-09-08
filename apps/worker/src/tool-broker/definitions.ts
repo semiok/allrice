@@ -340,9 +340,32 @@ export const riceToolDefinitions = [
     name: 'local.process.execute',
     description:
       '在当前已授权 Bridge 的本地 Linux 隔离副本中运行一次 Node/npm 命令；不是 macOS Shell。先读取文件取得 SHA-256，只复制准确 files 清单（合计256 KiB），不写回原目录。诊断：diagnostics:{kind:"node_project"}、固定 node 路径、args:[]，只读清单/锁文件，不运行项目脚本、不检查主机 PATH；expectedNodeMajor/expectedNpmMajor 可选。依赖安装必须显式提交 dependencies:{manager:"npm",strategy:"locked_ci",registry:"https://registry.npmjs.org",scripts:"disabled"或"allow_in_isolated_copy",packages:[{name,version,integrity,archivePath?}]}；提供 v3 package-lock.json/package.json，所有传递包精确列出（最多8个、归档合计128KiB），否则不安装。优先已有授权归档，否则须有 network:outbound 权限，由 Bridge 仅下载固定公开 npm 归档；项目/安装脚本本身始终无网络。执行 npm ci 后才运行本次 executable/args 验证，环境不跨操作保留。批准绑定版本/来源/脚本/验证命令，不得将诊断或计划认可当作安装授权。必须等待网页精确审批；排队、批准、取消请求都不等于执行完成。',
+    // Service configuration is schema-bound and never an implicit shell/PTY grant.
     inputSchema: z.toJSONSchema(RuntimeLocalCommandToolInputSchema, {
       io: 'input',
     }),
+  },
+  {
+    name: 'local.process.status',
+    description:
+      '读取当前用户、当前Run已经启动的有限后台服务，必须使用返回的 processId；不读取其他Run服务，不返回用户进程输入正文。ready只代表容器内部端口就绪，不代表跨机器浏览器可达或任务完成。',
+    inputSchema: {
+      type: 'object',
+      properties: { processId: { type: 'string', format: 'uuid' } },
+      required: ['processId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local.process.stop',
+    description:
+      '请求停止当前用户、当前Run的一个有限后台服务（processId）。这只记录停止请求，必须后续查询确认停止，不得把请求成功说成进程已经停止。',
+    inputSchema: {
+      type: 'object',
+      properties: { processId: { type: 'string', format: 'uuid' } },
+      required: ['processId'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'local.fs.mkdir',
@@ -427,6 +450,13 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (!['local.process.status', 'local.process.stop'].includes(
+        definition.name,
+      ) ||
+        (process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
+          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
+          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
+          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1')) &&
       (definition.name !== 'local.process.execute' ||
         (allowed?.has(definition.name) &&
           process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
