@@ -303,6 +303,7 @@ describe('P22 local controller with durable outbox and strict authority port', (
         expect(f.authority.claim).toHaveBeenLastCalledWith(
           f.controller.controllerId,
           false,
+          false,
         );
     },
   );

@@ -2,14 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chromium } from 'playwright-core';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   BrowserProfileSchema,
   RuntimeLocalCommandSchema,
   LocalPreviewTargetSchema,
   localPreviewOrigin,
-  localPreviewUrlAllowed,
+  type LocalPreviewLease,
   type LocalPreviewTarget,
   type RuntimeLocalCommandResult,
 } from '@allrice/contracts';
@@ -20,10 +20,59 @@ import {
   testImage,
   testSocket,
 } from '../../../apps/rice-bridge/test/toolchain.js';
-import {
-  createControlledBrowserRenderer,
-  type BrowserRequestEffect,
-} from './index.js';
+import type { BrowserRequestEffect } from './index.js';
+import { startLocalBrowserDriver } from '../../../apps/rice-bridge/src/local-browser-driver.js';
+import { LocalBrowserProfiles } from '../../../apps/rice-bridge/src/local-browser-profiles.js';
+
+// The preceding raw-Playwright fixture intermittently exceeded its original
+// 20s close gate after denied navigation. Those failures are retained in the
+// batch evidence. This test exercises production supervision, not that driver
+// with a larger timeout or an ignored close error.
+
+/** Forward every real launch argument/result unchanged. A native startup
+ * failure stays a failed test; record only allowlisted phase/category, never
+ * raw Playwright text (which can contain private proxy authentication). */
+async function diagnosedStart(
+  input: Parameters<typeof startLocalBrowserDriver>[0],
+) {
+  const realLaunch = chromium.launchPersistentContext.bind(chromium);
+  let phase = 'before-native-launch',
+    category = 'unclassified';
+  const spy = vi
+    .spyOn(chromium, 'launchPersistentContext')
+    .mockImplementation(async (...args) => {
+      phase = 'native-launch';
+      try {
+        const context = await realLaunch(...args);
+        phase = 'native-launched';
+        return context;
+      } catch (error) {
+        const text = error instanceof Error ? error.message : '';
+        category = /LOCAL_BROWSER_LAUNCHER_DENIED/.test(text)
+          ? 'launcher-denied'
+          : /Timeout.*exceeded/s.test(text)
+            ? 'launch-timeout'
+            : /Resource temporarily unavailable|pthread_create/s.test(text)
+              ? 'resource-unavailable'
+              : /Target page, context or browser has been closed/.test(text)
+                ? 'browser-closed'
+                : 'unclassified';
+        throw error;
+      }
+    });
+  try {
+    return await startLocalBrowserDriver(input);
+  } catch (error) {
+    const outcome =
+      error instanceof Error &&
+      error.message === 'LOCAL_BROWSER_CLEANUP_PENDING'
+        ? 'cleanup-pending'
+        : 'unavailable';
+    throw Error(`P23_NATIVE_START_FAILED:${phase}:${category}:${outcome}`);
+  } finally {
+    spy.mockRestore();
+  }
+}
 
 const suite =
   process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET &&
@@ -175,98 +224,99 @@ suite(
       }
       if (root) await rm(root, { recursive: true, force: true });
     }, 20000);
-    async function launch(options: { relay: boolean; allowWrite: boolean }) {
+    async function launch(options: {
+      relay: boolean;
+      allowWrite: boolean;
+      approvalGate?: Promise<void>;
+    }) {
       let authority = true,
-        relays = 0;
+        expiresAt = Infinity;
       const effects: BrowserRequestEffect[] = [],
-        receipts: boolean[] = [],
-        relayErrors: string[] = [];
-      const browser = await chromium.launch({
-        executablePath:
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        chromiumSandbox: true,
-        headless: true,
-        proxy: { server: 'http://127.0.0.1:9' },
-        args: [
-          '--disable-background-networking',
-          '--disable-quic',
-          '--host-resolver-rules=MAP * ~NOTFOUND',
-          '--proxy-bypass-list=<-loopback>',
-        ],
-      });
-      try {
-        const context = await browser.newContext({
-          serviceWorkers: 'block',
-          permissions: [],
-          acceptDownloads: false,
-        });
-        const assertCurrent = async () => {
-          if (!authority) throw Error('synthetic lease revoked');
-        };
-        const driver = await createControlledBrowserRenderer(
-          context,
-          browser,
-          {
-            profileId: target.browserProfileId,
-            profile: BrowserProfileSchema.parse({
-              version: 1,
-              origins: [localPreviewOrigin(target.endpointId)],
-            }),
-            authorizeUrl: (url) => localPreviewUrlAllowed(target, url),
-            assertCurrent,
-            requestApproval: async (effect) => {
-              effects.push(effect);
-              if (!options.allowWrite) throw Error('denied');
-              return {
-                complete: async (confirmed) => {
-                  receipts.push(confirmed);
-                },
-              };
-            },
-            requestSent: () => {},
-            requestStarted: () => () => {},
-            ...(options.relay
-              ? {
-                  localPreviewRelay: async (
-                    input: Parameters<LocalPreviewRelay['fetch']>[1],
-                  ) => {
-                    relays++;
-                    try {
-                      return await relay.fetch(target, input, {
-                        assertCurrent: async () => {
-                          await assertCurrent();
-                          return current();
-                        },
-                      });
-                    } catch (error) {
-                      relayErrors.push(
-                        error instanceof Error ? error.message : 'unknown',
-                      );
-                      throw error;
-                    }
-                  },
-                }
-              : {}),
-          },
-          async () => {},
-        );
+        receipts: boolean[] = [];
+      const assertCurrent = async () => {
+        if (!authority || Date.now() >= expiresAt)
+          throw Error('synthetic lease revoked');
+      };
+      const endpointLeaseId = randomUUID();
+      let currentTarget = structuredClone(target);
+      const lease = async (): Promise<LocalPreviewLease> => {
+        await assertCurrent();
         return {
-          driver,
-          effects,
-          receipts,
-          relayErrors,
-          relays: () => relays,
-          revoke: () => {
-            authority = false;
-          },
+          target: currentTarget,
+          endpointLeaseId,
+          expiresAt: new Date(
+            Math.min(Date.now() + 4900, expiresAt),
+          ).toISOString(),
         };
-      } catch (error) {
-        await browser.close();
-        throw error;
-      }
+      };
+      const fixture = await mkdtemp(join(root, 'browser-'));
+      const driver = await diagnosedStart({
+        binding: {
+          version: 1,
+          scope: target.scope,
+          ownerId: target.ownerId,
+          deviceId: target.deviceId,
+          grantId: target.browserGrantId,
+          grantRevision: 1,
+          logicalProfileId: randomUUID(),
+          persistLogin: false,
+        },
+        profiles: new LocalBrowserProfiles(
+          join(fixture, 'config.json'),
+          'https://saas.example',
+        ),
+        assertAlive: assertCurrent,
+        leaseExpiresAt: () => Math.min(Date.now() + 4900, expiresAt),
+        ...(options.relay ? { preview: { runner, current: lease } } : {}),
+        options: {
+          profileId: target.browserProfileId,
+          profile: BrowserProfileSchema.parse({
+            version: 1,
+            origins: [localPreviewOrigin(target.endpointId)],
+          }),
+          assertCurrent,
+          requestApproval: async (effect) => {
+            effects.push(effect);
+            if (!options.allowWrite) throw Error('denied');
+            await options.approvalGate;
+            return {
+              complete: async (confirmed) => {
+                receipts.push(confirmed);
+              },
+            };
+          },
+          requestSent: () => {},
+          requestStarted: () => () => {},
+        },
+      });
+      return {
+        driver,
+        effects,
+        receipts,
+        mutateTarget: () => {
+          currentTarget = {
+            ...currentTarget,
+            generation: currentTarget.generation + 1,
+          };
+        },
+        expire: () => {
+          expiresAt = Date.now() + 1000;
+        },
+        revoke: () => {
+          authority = false;
+        },
+      };
     }
     it('renders real HTML/JavaScript and requires exact body approval before the project receives POST', async () => {
-      const value = await launch({ relay: true, allowWrite: true });
+      let approve!: () => void;
+      const approvalGate = new Promise<void>((resolve) => {
+        approve = resolve;
+      });
+      const value = await launch({
+        relay: true,
+        allowWrite: true,
+        approvalGate,
+      });
       try {
         await value.driver.perform(
           {
@@ -281,7 +331,6 @@ suite(
           'Actual project JavaScript loaded',
         );
         expect(view.screenshot.length).toBeGreaterThan(100);
-        expect(value.relays()).toBeGreaterThanOrEqual(2);
         const button = view.observation.elements.find(
           (e) => e.label === 'Save',
         );
@@ -290,23 +339,38 @@ suite(
           { type: 'click', elementId: button!.id },
           view.observation,
         );
+        await expect.poll(() => value.effects.length).toBe(1);
+        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
+          0,
+        );
+        expect(value.receipts).toEqual([]);
+        approve();
         await expect
-          .poll(async () => ({
-            writes: JSON.parse((await get('/status')).body.toString()).writes,
-            errors: value.relayErrors,
-          }))
-          .toEqual({ writes: 1, errors: [] });
+          .poll(
+            async () =>
+              JSON.parse((await get('/status')).body.toString()).writes,
+          )
+          .toBe(1);
         expect(value.effects).toHaveLength(1);
         expect(value.effects[0]).toMatchObject({
           method: 'POST',
           url: localPreviewOrigin(target.endpointId) + '/save',
+          urlDigest:
+            'sha256:' +
+            createHash('sha256')
+              .update(localPreviewOrigin(target.endpointId) + '/save')
+              .digest('hex'),
+          bodyDigest: 'sha256:' + createHash('sha256').update('').digest('hex'),
+          bodyBytes: 0,
         });
         await expect.poll(() => value.receipts).toEqual([true]);
       } finally {
-        await value.driver.close();
+        approve();
+        await value.driver.close('lost');
       }
     }, 35000);
     it('refused write approval sends no request to the actual service', async () => {
+      const before = JSON.parse((await get('/status')).body.toString()).writes;
       const value = await launch({ relay: true, allowWrite: false });
       try {
         await value.driver.perform(
@@ -324,11 +388,11 @@ suite(
         );
         await expect.poll(() => value.effects.length).toBe(1);
         expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
-          1,
+          before,
         );
         expect(value.receipts).toEqual([]);
       } finally {
-        await value.driver.close();
+        await value.driver.close('lost');
       }
     }, 30000);
     it('reserved origins never fall back to network if the trusted relay is absent', async () => {
@@ -343,9 +407,9 @@ suite(
             null,
           ),
         ).rejects.toThrow();
-        expect(value.relays()).toBe(0);
+        expect(value.effects).toEqual([]);
       } finally {
-        await value.driver.close();
+        await value.driver.close('lost');
       }
     }, 20000);
     it('revocation rejects navigation before relay execution', async () => {
@@ -361,9 +425,137 @@ suite(
             null,
           ),
         ).rejects.toThrow();
-        expect(value.relays()).toBe(0);
+        expect(value.effects).toEqual([]);
       } finally {
-        await value.driver.close();
+        await value.driver.close('lost');
+      }
+    }, 20000);
+    it('closing while exact approval is pending cannot send the later-approved request', async () => {
+      let approve!: () => void;
+      const approvalGate = new Promise<void>((resolve) => {
+        approve = resolve;
+      });
+      const value = await launch({
+        relay: true,
+        allowWrite: true,
+        approvalGate,
+      });
+      try {
+        await value.driver.perform(
+          {
+            type: 'navigate',
+            url: localPreviewOrigin(target.endpointId) + '/',
+          },
+          null,
+        );
+        const { observation } = await value.driver.observe(1);
+        await value.driver.perform(
+          {
+            type: 'click',
+            elementId: observation.elements.find((e) => e.label === 'Save')!.id,
+          },
+          observation,
+        );
+        await expect.poll(() => value.effects.length).toBe(1);
+        const before = JSON.parse(
+          (await get('/status')).body.toString(),
+        ).writes;
+        const began = Date.now();
+        await value.driver.close('lost');
+        expect(Date.now() - began).toBeLessThan(8000);
+        approve();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
+          before,
+        );
+        await expect.poll(() => value.receipts).toEqual([false]);
+      } finally {
+        approve();
+        await value.driver.close('lost');
+      }
+    }, 20000);
+    it('a changed preview generation is rejected without writing to the real service', async () => {
+      const before = JSON.parse((await get('/status')).body.toString()).writes;
+      const value = await launch({ relay: true, allowWrite: true });
+      try {
+        value.mutateTarget();
+        await expect(
+          value.driver.perform(
+            {
+              type: 'navigate',
+              url: localPreviewOrigin(target.endpointId) + '/',
+            },
+            null,
+          ),
+        ).rejects.toThrow();
+        expect(value.effects).toEqual([]);
+        expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
+          before,
+        );
+      } finally {
+        await value.driver.close('lost');
+      }
+    }, 20000);
+    it('an expired preview lease kills the real browser and does not leave close waiting on CDP', async () => {
+      const value = await launch({ relay: true, allowWrite: true });
+      try {
+        await value.driver.perform(
+          {
+            type: 'navigate',
+            url: localPreviewOrigin(target.endpointId) + '/',
+          },
+          null,
+        );
+        value.expire();
+        await new Promise((resolve) => setTimeout(resolve, 1400));
+        await expect(value.driver.observe(1)).rejects.toThrow();
+        const began = Date.now();
+        await value.driver.close('lost');
+        expect(Date.now() - began).toBeLessThan(8000);
+      } finally {
+        await value.driver.close('lost');
+      }
+    }, 20000);
+    it('never forwards unauthorized loopback, cross-preview or external addresses', async () => {
+      const value = await launch({ relay: true, allowWrite: true });
+      try {
+        for (const url of [
+          'http://127.0.0.1:3100/',
+          localPreviewOrigin(randomUUID()) + '/',
+          'https://example.com/',
+          localPreviewOrigin(target.endpointId) + ':444/',
+        ])
+          await expect(
+            value.driver.perform({ type: 'navigate', url }, null),
+          ).rejects.toThrow();
+        expect(value.effects).toEqual([]);
+      } finally {
+        await value.driver.close('lost');
+      }
+    }, 20000);
+    it('stopping the real owned service invalidates preview I/O and still closes the supervised browser', async () => {
+      const value = await launch({ relay: true, allowWrite: true });
+      try {
+        await value.driver.perform(
+          {
+            type: 'navigate',
+            url: localPreviewOrigin(target.endpointId) + '/',
+          },
+          null,
+        );
+        stop = true;
+        await lifecycle;
+        await expect(
+          value.driver.perform(
+            {
+              type: 'navigate',
+              url: localPreviewOrigin(target.endpointId) + '/status',
+            },
+            null,
+          ),
+        ).rejects.toThrow();
+      } finally {
+        await value.driver.close('lost');
       }
     }, 20000);
   },
