@@ -197,7 +197,24 @@ async function fixture(configDeleted: boolean) {
     await close();
     throw error;
   }
-  return { request, close, starts, frames };
+  const completeNextRevoke = () => {
+    ports.revoke.mockImplementationOnce(async () => {
+      expect(current?.deviceId).toBe(newDevice);
+      expect(stops).toEqual([oldDevice, newDevice]);
+      current = null;
+      return {
+        serverRevoked: true,
+        cleanupComplete: true,
+        configDeleted: true,
+        credentialCleanup: {
+          complete: true,
+          keychainDeleted: true,
+          localFilesDeleted: true,
+        },
+      };
+    });
+  };
+  return { request, close, starts, frames, completeNextRevoke };
 }
 
 it('reports unpaired plus pending cleanup and an explicit partial-success response when config was removed', async () => {
@@ -291,6 +308,55 @@ it('retains the old cleanup warning while a deliberately newly paired device sta
     expect(app.starts).toEqual([oldDevice, newDevice]);
     expect(ports.pair).toHaveBeenCalledTimes(1);
     expect(ports.revoke).toHaveBeenCalledTimes(1);
+  } finally {
+    await app.close();
+  }
+}, 5000);
+
+it('does not erase prior pending cleanup when the new device later revokes completely', async () => {
+  const app = await fixture(true);
+  try {
+    expect(
+      await app.request('revoke', { confirmDeviceId: oldDevice }),
+    ).toMatchObject({
+      ok: true,
+      data: {
+        serverRevoked: true,
+        cleanupComplete: false,
+        configDeleted: true,
+      },
+    });
+    expect(
+      await app.request('pair', {
+        server: 'https://synthetic.example/',
+        code: 'ABCDEF12',
+      }),
+    ).toMatchObject({ ok: true });
+    app.completeNextRevoke();
+    expect(
+      await app.request('revoke', { confirmDeviceId: newDevice }),
+    ).toMatchObject({
+      ok: true,
+      data: { serverRevoked: true, cleanupComplete: true, configDeleted: true },
+    });
+    expect((await app.request('status')).data).toMatchObject({
+      mode: 'unpaired',
+      deviceId: null,
+      connection: 'stopped',
+      credentialCleanupPending: true,
+      errorCode: 'DESKTOP_REVOKED_CLEANUP_PENDING',
+    });
+    expect((await app.request('diagnostics')).data).toMatchObject({
+      mode: 'unpaired',
+      connection: 'stopped',
+      credentialCleanupPending: true,
+      notices: expect.arrayContaining([
+        expect.objectContaining({ code: 'DESKTOP_REVOKED_CLEANUP_PENDING' }),
+      ]),
+    });
+    expect(app.starts).toEqual([oldDevice, newDevice]);
+    expect(ports.pair).toHaveBeenCalledTimes(1);
+    expect(ports.revoke).toHaveBeenCalledTimes(2);
   } finally {
     await app.close();
   }

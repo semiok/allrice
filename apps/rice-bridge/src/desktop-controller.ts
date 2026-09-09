@@ -261,7 +261,9 @@ export async function runDesktopController() {
       await halt();
       // If the server is unavailable this throws; config and token remain.
       const result = await revoke();
-      credentialCleanupPending = !result.cleanupComplete;
+      // A later device's successful cleanup says nothing about credentials
+      // retained by an earlier revocation in this Core process.
+      credentialCleanupPending ||= !result.cleanupComplete;
       if (credentialCleanupPending) note('DESKTOP_REVOKED_CLEANUP_PENDING');
       if (!result.configDeleted) {
         mode = 'error';
