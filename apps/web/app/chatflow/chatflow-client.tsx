@@ -897,19 +897,19 @@ export function ChatFlowClient({
               className={styles.bridgeClientDownload}
               download="RiceBridge-M.zip"
               href="/api/v1/bridge/client/macos-arm64"
-              onClick={() => noteBridgeDownload('M 芯片菜单栏版 0.4.0-dev.1')}
+              onClick={() => noteBridgeDownload('M 芯片菜单栏版 0.4.0-dev.2')}
             >
-              下载 M 芯片版 · 0.4.0-dev.1
+              下载 M 芯片版 · 0.4.0-dev.2
             </a>
             <a
               className={styles.bridgeClientDownload}
               download="RiceBridge-Intel.zip"
               href="/api/v1/bridge/client/macos-x64"
               onClick={() =>
-                noteBridgeDownload('Intel 芯片菜单栏版 0.4.0-dev.1')
+                noteBridgeDownload('Intel 芯片菜单栏版 0.4.0-dev.2')
               }
             >
-              下载 Intel 芯片版 · 0.4.0-dev.1
+              下载 Intel 芯片版 · 0.4.0-dev.2
             </a>
           </div>
           <p>
