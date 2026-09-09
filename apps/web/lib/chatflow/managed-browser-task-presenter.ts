@@ -1,7 +1,15 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 export function hasBrowserWorkspaceEvents(events: ChatFlowEventEnvelope[]) {
-  const tools = ['browser.workspace', 'local.browser.workspace'];
+  // A process service can acquire its preview through the explicit service
+  // card, without a new model event. Mount the same read-only panel for that
+  // native task so page reloads recover the persisted browser intent too.
+  const tools = [
+    'browser.workspace',
+    'local.browser.workspace',
+    'local.preview.open',
+    'local.process.execute',
+  ];
   return events.some((event) =>
     event.type.startsWith('tool.')
       ? tools.includes(String(event.payload.name))

@@ -51,6 +51,16 @@ export function BrowserWorkspacePanel({
           cache: 'no-store',
           signal: abort.signal,
         });
+        if (response.status === 404) {
+          // Older/default-off servers do not have a browser control surface.
+          // No state is invented and no error-poll loop is started.
+          pending = false;
+          if (live) {
+            setWorkspaces([]);
+            setLoadError('');
+          }
+          return;
+        }
         if (!response.ok) throw Error('浏览器状态暂不可用');
         const result = await response.json();
         pending = browserWorkspacePollingRequired(runActive, result.workspaces);

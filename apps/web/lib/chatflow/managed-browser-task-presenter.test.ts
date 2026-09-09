@@ -41,7 +41,12 @@ function event(
 
 describe('managed browser task presentation', () => {
   it('opens the shared workspace for cloud and local canonical/native events, never legacy tool output text', () => {
-    for (const name of ['browser.workspace', 'local.browser.workspace']) {
+    for (const name of [
+      'browser.workspace',
+      'local.browser.workspace',
+      'local.preview.open',
+      'local.process.execute',
+    ]) {
       expect(hasBrowserWorkspaceEvents([event('tool.started', { name })])).toBe(
         true,
       );
