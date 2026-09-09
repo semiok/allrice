@@ -64,6 +64,9 @@ importers:
 
   apps/rice-bridge:
     dependencies:
+      '@allrice/browser-control':
+        specifier: workspace:*
+        version: link:../../packages/browser-control
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -126,6 +129,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@allrice/browser-control':
+        specifier: workspace:*
+        version: link:../../packages/browser-control
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -277,6 +283,15 @@ importers:
       '@types/pdfkit':
         specifier: 0.17.4
         version: 0.17.4
+
+  packages/browser-control:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      playwright-core:
+        specifier: 1.62.1
+        version: 1.62.1
 
   packages/contracts:
     dependencies:
