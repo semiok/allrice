@@ -32,6 +32,7 @@ import { handleLocalBrowserRequest } from '../../../apps/web/lib/bridge/local-br
 import { LocalBrowserHttpAuthority } from '../../../apps/rice-bridge/src/local-browser-client.ts';
 import { LocalBrowserController } from '../../../apps/rice-bridge/src/local-browser-controller.ts';
 import { startLocalBrowserDriver } from '../../../apps/rice-bridge/src/local-browser-driver.ts';
+import { resolveLocalBrowserLauncher } from '../../../apps/rice-bridge/src/local-browser-supervisor.ts';
 import { LocalBrowserProfiles } from '../../../apps/rice-bridge/src/local-browser-profiles.ts';
 import { LocalBrowserOutbox } from '../../../apps/rice-bridge/src/local-browser-outbox.ts';
 import { LocalCommandRunner } from '../../../apps/rice-bridge/src/local-command-runner.ts';
@@ -114,6 +115,9 @@ suite(
         process.env.ALLRICE_LOCAL_DOCKER_TEST_SOCKET !== testSocket
       )
         throw Error('dedicated Intel VM required');
+      // This is a native build prerequisite, not a renderer stub or fallback.
+      // Fail before allocating resources if this worktree has not built it.
+      await resolveLocalBrowserLauncher();
       for (const key of [
         'ALLRICE_BROWSER_CONTROL_ENABLED',
         'ALLRICE_LOCAL_BROWSER_ENABLED',
@@ -304,6 +308,13 @@ suite(
             );
             outgoing.end(Buffer.from(await response.arrayBuffer()));
           } catch (error) {
+            traffic.push({
+              path: (incoming.url ?? '/').split('?')[0]!,
+              status: 500,
+              kind: 'fixture-http-boundary',
+              at: Date.now(),
+              code: error instanceof Error ? error.message : 'server failure',
+            });
             outgoing.writeHead(500).end(
               JSON.stringify({
                 error:
@@ -745,6 +756,12 @@ suite(
             deadlockCount,
             'no hidden SQL deadlock may be counted as successful cleanup',
           ).toBe(0);
+          expect(
+            traffic.filter(
+              (entry) => entry.status >= 500 && entry.at < revokedAt,
+            ),
+            'no server failure may be hidden before explicit stop/disconnect',
+          ).toEqual([]);
           expect(ready).toBeTruthy();
           console.info(
             'P23 real native acceptance',
