@@ -30,6 +30,7 @@ export async function createCloudExecutionFixture(
     planOnly?: boolean;
     workbench?: boolean;
     reconciliationOnly?: boolean;
+    browserControl?: boolean;
     /** Test-only initial values: persisted once, never mutate a frozen Run. */
     dsh?: {
       provider: DshExecutionSnapshot;
@@ -86,6 +87,7 @@ export async function createCloudExecutionFixture(
     ...(options.dsh ? ['model:invoke'] : []),
     'storage:read',
     'storage:write',
+    ...(options.browserControl ? ['network:outbound'] : []),
   ];
   const toolNames = options.dsh
     ? [
@@ -94,6 +96,7 @@ export async function createCloudExecutionFixture(
         ),
       ]
     : [
+        ...(options.browserControl ? ['browser.workspace'] : []),
         ...(options.frozenTool === false ? [] : ['cloud.process.execute']),
         ...(options.workbench
           ? [
@@ -185,8 +188,8 @@ export async function createCloudExecutionFixture(
     await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content) values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),(${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
     await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot,native_skills) values(${run},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(options.dsh?.provider ?? {})},${tx.json(options.dsh?.prompt ?? {})},${tx.json(JSON.parse(JSON.stringify(frozen)))},${tx.json(options.dsh?.skills ?? [])})`;
     await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id) values(${org},${workspace},${session},${user},1,${digest('p15')},'running',${run},${worker})`;
-    await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at) values(${job},${org},${workspace},${user},${run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
-    await tx`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities) values(${target},${org},${workspace},'cloud.p15','cloud_sandbox','P15 gVisor','online','["process.execute","artifacts.write"]')`;
+    await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt) values(${job},${org},${workspace},${user},${run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes',${options.browserControl ? 1 : 0})`;
+    await tx`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities) values(${target},${org},${workspace},'cloud.p15','cloud_sandbox','P15 gVisor','online',${tx.json(['process.execute', 'artifacts.write', ...(options.browserControl ? ['browser.navigate'] : [])])})`;
   });
   const execution = ExecutionContextSchema.parse({
     executionId: randomUUID(),
@@ -213,7 +216,21 @@ export async function createCloudExecutionFixture(
       version: 1,
       enabled: true,
       mode: options.planOnly ? 'plan_only' : 'execute',
-      rules: [{ action: 'cloud.process.execute', effect: 'allow' }],
+      rules: [
+        { action: 'cloud.process.execute', effect: 'allow' },
+        ...(options.browserControl
+          ? [
+              {
+                action: 'cloud.browser.act' as const,
+                effect: 'allow' as const,
+              },
+              {
+                action: 'cloud.browser.observe' as const,
+                effect: 'allow' as const,
+              },
+            ]
+          : []),
+      ],
     },
     null,
     db,
@@ -264,7 +281,9 @@ export async function createCloudExecutionFixture(
       { context: execution, arguments: argumentsInput, callId },
       db,
     );
-  const approve = async (created: Awaited<ReturnType<typeof create>>) => {
+  const approve = async (
+    created: Pick<Awaited<ReturnType<typeof create>>, 'snapshot'>,
+  ) => {
     const [row] = await db<
       { id: string }[]
     >`select id from allrice_approval_requests where resource_id=${created.snapshot.binding.attempt.operationId} and resource_type='runtime_operation'`;

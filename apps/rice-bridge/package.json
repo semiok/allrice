@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@allrice/browser-control": "workspace:*",
     "@allrice/contracts": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "ws": "8.21.3"

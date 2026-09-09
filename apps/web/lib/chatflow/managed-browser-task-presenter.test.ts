@@ -6,6 +6,7 @@ import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 import {
   hasManagedBrowserEvents,
+  hasBrowserWorkspaceEvents,
   safeBrowserHost,
 } from './managed-browser-task-presenter';
 
@@ -39,6 +40,28 @@ function event(
 }
 
 describe('managed browser task presentation', () => {
+  it('opens the new workspace panel only for its canonical/native events', () => {
+    expect(
+      hasBrowserWorkspaceEvents([
+        event('tool.started', { name: 'browser.workspace' }),
+      ]),
+    ).toBe(true);
+    expect(
+      hasBrowserWorkspaceEvents([
+        event('harness.native', { label: 'browser.workspace' }),
+      ]),
+    ).toBe(true);
+    expect(
+      hasBrowserWorkspaceEvents([
+        event('harness.native', {}, { toolName: 'browser.workspace' }),
+      ]),
+    ).toBe(true);
+    expect(
+      hasBrowserWorkspaceEvents([
+        event('tool.started', { name: 'browser.run' }),
+      ]),
+    ).toBe(false);
+  });
   it('detects canonical and native DSH browser tool events', () => {
     expect(
       hasManagedBrowserEvents([

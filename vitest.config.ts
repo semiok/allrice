@@ -13,6 +13,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/browser-control': fileURLToPath(
+        new URL('./packages/browser-control/src/index.ts', import.meta.url),
+      ),
       '@allrice/contracts': fileURLToPath(
         new URL('./packages/contracts/src/index.ts', import.meta.url),
       ),

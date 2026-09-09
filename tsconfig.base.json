@@ -13,6 +13,7 @@
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
     "paths": {
+      "@allrice/browser-control": ["packages/browser-control/src/index.ts"],
       "@allrice/contracts": ["packages/contracts/src/index.ts"],
       "@allrice/database": ["packages/database/src/index.ts"],
       "@allrice/storage": ["packages/storage/src/index.ts"]

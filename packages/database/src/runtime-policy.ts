@@ -23,6 +23,7 @@ import { getDatabase } from './core/client.ts';
 import { checkCloudBindingAuthority } from './cloud-authority.ts';
 import { checkMcpBindingAuthority } from './mcp-authority.ts';
 import { assertLocalMcpApprovalAuthority } from './local-mcp-connections.ts';
+import { checkBrowserBindingAuthority } from './browser-control-authority.ts';
 
 type Transaction = postgres.TransactionSql;
 type Database = ReturnType<typeof getDatabase>;
@@ -294,6 +295,13 @@ async function checkBindingAuthority(
     !['online', 'degraded'].includes(target.state)
   )
     throw new RuntimePolicyError('target_unavailable');
+  if (
+    binding.action === 'cloud.browser.act' ||
+    binding.action === 'cloud.browser.observe'
+  ) {
+    await checkBrowserBindingAuthority(transaction, context, binding);
+    return { binding, policyExpiresAt: snapshot.expires_at };
+  }
   if (binding.execution.targetKind === 'cloud_sandbox') {
     await checkCloudBindingAuthority(transaction, context, binding);
     return { binding, policyExpiresAt: snapshot.expires_at };

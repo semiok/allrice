@@ -1,0 +1,76 @@
+.root {
+  display: grid;
+  gap: 16px;
+  color: #203d3b;
+  font-size: 14px;
+  line-height: 1.65;
+  min-width: 0;
+}
+.root p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.root form,
+.root article {
+  display: grid;
+  gap: 14px;
+  border: 1px solid #a4c9c4;
+  border-radius: 12px;
+  padding: 20px;
+  background: #f1faf8;
+  min-width: 0;
+}
+.root h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.root label {
+  display: block;
+}
+.root select,
+.root textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid #79a39e;
+  border-radius: 8px;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+.root input[type='checkbox'] {
+  margin-right: 8px;
+}
+.root button {
+  justify-self: start;
+  cursor: pointer;
+  border: 1px solid #79a39e;
+  border-radius: 8px;
+  background: #fff;
+  color: #28564f;
+  padding: 9px 14px;
+  font: inherit;
+}
+.root button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.root [role='alert'] {
+  color: #933;
+}
+.root :focus-visible {
+  outline: 2px solid #21786f;
+  outline-offset: 3px;
+}
+@media (max-width: 640px) {
+  .root form,
+  .root article {
+    padding: 14px;
+  }
+  .root button {
+    width: 100%;
+  }
+}

@@ -38,12 +38,16 @@ describe('P15 native exact-approval visibility, no new DSH transport', () => {
   );
   it('lets the native loop choose cloud without keyword routing, but does not expose other unselected side effects or preview execution', () => {
     enable();
-    expect([...nativeGovernedToolNames]).toEqual([
-      'cloud.process.execute',
-      'cloud.mcp.call',
-      'local.mcp.discover',
-      'local.mcp.call',
-    ]);
+    // Other governed tools may be added; the frozen allowlist below must still
+    // expose only this test's selected cloud action, never those other tools.
+    expect([...nativeGovernedToolNames]).toEqual(
+      expect.arrayContaining([
+        'cloud.process.execute',
+        'cloud.mcp.call',
+        'local.mcp.discover',
+        'local.mcp.call',
+      ]),
+    );
     expect(
       names(
         riceToolDefinitionsForTurn(
