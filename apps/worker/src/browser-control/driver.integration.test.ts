@@ -41,11 +41,15 @@ suite(
           acceptDownloads: true,
           serviceWorkers: 'block',
         }),
-        requests: { method: string; path: string }[] = [];
+        requests: { method: string; path: string; body: Buffer }[] = [];
       await context.route('**/*', async (route) => {
         const request = route.request(),
           path = new URL(request.url()).pathname;
-        requests.push({ method: request.method(), path });
+        requests.push({
+          method: request.method(),
+          path,
+          body: Buffer.from(request.postDataBuffer() ?? Buffer.alloc(0)),
+        });
         if (path === '/submit')
           await route.fulfill({
             status: 200,
@@ -214,12 +218,21 @@ suite(
           url: origin + '/submit',
           method: 'POST',
           urlDigest: hash(Buffer.from(origin + '/submit')),
+          bodyDigest: hash(
+            Buffer.from('username=&password=SyntheticPrivateValue'),
+          ),
+          bodyBytes: Buffer.byteLength(
+            'username=&password=SyntheticPrivateValue',
+          ),
         });
         expect(JSON.stringify(effects)).not.toContain('SyntheticPrivateValue');
         allow();
         for (let i = 0; i < 80 && !finished; i++) await delay(25);
         expect(finished).toBe(true);
         expect(f.requests.filter((r) => r.method === 'POST')).toHaveLength(1);
+        expect(f.requests.find((r) => r.method === 'POST')!.body).toEqual(
+          Buffer.from('username=&password=SyntheticPrivateValue'),
+        );
         expect((await f.driver.observe(1)).observation.text).toContain(
           'saved:synthetic',
         );

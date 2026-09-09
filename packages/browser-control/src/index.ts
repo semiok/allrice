@@ -151,7 +151,9 @@ export async function createControlledBrowserRenderer(
           (!/^\d+$/.test(declared) || Number(declared) > 2500000)
         )
           throw Error();
-        const bytes = request.postDataBuffer() ?? Buffer.alloc(0);
+        // Playwright returns its cached Buffer, not caller-owned storage. Wipe
+        // only our copy: the original still supplies the approved network body.
+        const bytes = Buffer.from(request.postDataBuffer() ?? Buffer.alloc(0));
         try {
           if (bytes.length > 2500000) throw Error();
           // Query strings may contain login material: bind exact bytes by digest,
