@@ -41,6 +41,7 @@ import {
   requestLocalBrowserEffect,
   localBrowserEffectStatus,
   completeLocalBrowserEffect,
+  renewLocalBrowserOperations,
 } from './local-browser-operations.ts';
 import {
   captureLocalBrowserFile,
@@ -407,6 +408,151 @@ suite('P22 real PostgreSQL device browser authority', () => {
           (results[0] as PromiseFulfilledResult<{ objectId: string }>).value
             .objectId,
         ).toBeTruthy();
+    },
+    15000,
+  );
+  it.each([
+    'succeeded',
+    'failed',
+    'canceled',
+    'unknown',
+    'input-token-changed',
+    'ledger-token-immutable',
+    'attempt-immutable',
+    'unapplied-receipt',
+    'revoked',
+    'expired-running',
+  ] as const)(
+    'handles only proven same-attempt completion between renewal transactions: %s',
+    async (outcome) => {
+      const f = await fixture(),
+        b = f.browser!;
+      const op = await createBrowserOperation(
+        f.context,
+        b.command,
+        randomUUID(),
+        db,
+      );
+      const operationId = op.snapshot.binding.attempt.operationId;
+      await f.approve(op);
+      const start = await startLocalBrowserOperation(
+        f.device,
+        { ...b.identity!, operationId },
+        db,
+      );
+      let waiting!: () => void, resume!: () => void;
+      const atHeartbeat = new Promise<void>((r) => {
+        waiting = r;
+      });
+      const completed = new Promise<void>((r) => {
+        resume = r;
+      });
+      let begins = 0;
+      const instrumented = new Proxy(db, {
+        get(target, key) {
+          if (key !== 'begin') return Reflect.get(target, key, target);
+          return async (
+            work: (tx: postgres.TransactionSql) => Promise<unknown>,
+          ) => {
+            if (++begins === 2) {
+              waiting();
+              await completed;
+            }
+            return target.begin(work);
+          };
+        },
+      });
+      const renewal = renewLocalBrowserOperations(
+        f.device,
+        b.identity!,
+        instrumented,
+      );
+      void renewal.catch(() => undefined);
+      try {
+        await Promise.race([
+          atHeartbeat,
+          renewal.then(() => {
+            throw Error('renewal missed heartbeat transaction');
+          }),
+        ]);
+        if (outcome === 'expired-running') {
+          await db`update allrice_runtime_operations set lease_expires_at=clock_timestamp()-interval '1 second' where id=${operationId}`;
+        } else if (outcome === 'canceled') {
+          const ledger = createBrowserOperationLedger(f.context, db);
+          await ledger.cancelRoot(
+            op.snapshot.binding.task.scope,
+            f.run,
+            randomUUID(),
+          );
+          await ledger.recordReceipt({
+            scope: op.snapshot.binding.task.scope,
+            operationId,
+            leaseToken: start.operationLeaseToken!,
+            attempt: op.snapshot.binding.attempt,
+            receiptId: randomUUID(),
+            signal: {
+              type: 'operation.stopped',
+              effects: 'none',
+              evidence: {
+                id: randomUUID(),
+                recordedAt: new Date().toISOString(),
+                digest: runtimePolicyDigest('synthetic stop evidence'),
+              },
+            },
+          });
+        } else {
+          await recordLocalBrowserReceipt(
+            f.device,
+            {
+              ...b.identity!,
+              operationId,
+              operationLeaseToken: start.operationLeaseToken!,
+              receiptId: randomUUID(),
+              status: ['succeeded', 'failed', 'unknown'].includes(outcome)
+                ? (outcome as 'succeeded' | 'failed' | 'unknown')
+                : 'succeeded',
+              networkEffect: false,
+              observationId: null,
+              downloadObjectId: null,
+              errorCode: null,
+            },
+            db,
+          );
+        }
+        if (outcome === 'input-token-changed')
+          await db`update allrice_browser_operation_inputs set lease_token=${randomUUID()} where operation_id=${operationId}`;
+        if (outcome === 'ledger-token-immutable')
+          await expect(
+            db`update allrice_runtime_operations set lease_token_hash=${'0'.repeat(64)} where id=${operationId}`,
+          ).rejects.toThrow('immutable');
+        if (outcome === 'attempt-immutable')
+          await expect(
+            db`update allrice_runtime_operations set snapshot=jsonb_set(snapshot,'{binding,attempt,attemptId}',to_jsonb(${randomUUID()}::text)) where id=${operationId}`,
+          ).rejects.toThrow('immutable');
+        if (outcome === 'unapplied-receipt')
+          await db`update allrice_runtime_operation_receipts set disposition='stale' where operation_id=${operationId}`;
+        if (outcome === 'revoked')
+          await revokeLocalBrowserGrant(f.context, f.localGrant.grantId, db);
+        const [before] =
+          await db`select snapshot,lease_expires_at from allrice_runtime_operations where id=${operationId}`;
+        resume();
+        if (
+          [
+            'succeeded',
+            'failed',
+            'ledger-token-immutable',
+            'attempt-immutable',
+          ].includes(outcome)
+        )
+          await expect(renewal).resolves.toBeUndefined();
+        else await expect(renewal).rejects.toBeTruthy();
+        const [after] =
+          await db`select snapshot,lease_expires_at from allrice_runtime_operations where id=${operationId}`;
+        expect(after).toEqual(before); // No extension, retry, replay or state rewrite.
+      } finally {
+        resume();
+        await renewal.catch(() => undefined);
+      }
     },
     15000,
   );
