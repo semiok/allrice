@@ -7,6 +7,7 @@ export * from './policy.ts';
 export * from './bridge-journal.ts';
 export * from './bridge-socket.ts';
 export * from './local-command.ts';
+export * from './local-mcp.ts';
 export * from './cloud-command.ts';
 export * from './local-service.ts';
 export * from './local-service-http.ts';

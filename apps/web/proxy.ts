@@ -65,7 +65,10 @@ export function proxy(request: NextRequest) {
   if (session) {
     // This exact endpoint is tenant-admin management, not platform control.
     // The handler still requires a current DB-backed tenant admin membership.
-    const tenantManagement = request.nextUrl.pathname === '/api/v1/admin/mcp';
+    const tenantManagement = [
+      '/api/v1/admin/mcp',
+      '/api/v1/admin/local-mcp',
+    ].includes(request.nextUrl.pathname);
     const tenantForbidden =
       portal.kind === 'tenant' &&
       ((request.nextUrl.pathname.startsWith('/api/v1/admin') &&

@@ -7,6 +7,7 @@ import type {
   SkillCapability,
   DshNativeSkillSnapshot,
   FrozenMcpTool,
+  LocalMcpSnapshot,
 } from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
@@ -46,6 +47,7 @@ export interface RiceToolExecutionInput {
   context: ExecutionContext;
   capabilities: SkillCapability[];
   frozenMcpTools?: readonly FrozenMcpTool[];
+  localMcp?: LocalMcpSnapshot;
   storageRoot: string;
   skillVersionIds?: string[];
   nativeSkills?: readonly DshNativeSkillSnapshot[];

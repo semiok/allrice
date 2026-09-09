@@ -92,8 +92,8 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
       </div>
       <p>
         租户专用服务凭证 · Streamable HTTP
-        2025-11-25。连接成功不会授予工具权限；每个工具须单独授权。暂不支持 OAuth
-        和本地 stdio。
+        2025-11-25。连接成功不会授予工具权限；每个工具须单独授权。暂不支持
+        OAuth。 本地 stdio 在独立的本地 MCP 区域登记与授权。
       </p>
       {!enabled ? (
         <p role="status">此环境尚未启用云端 MCP，不能创建或执行连接。</p>

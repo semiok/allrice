@@ -23,6 +23,8 @@ import {
 } from './journal.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
+import { LocalMcpRunner, validateLocalMcpTools } from './local-mcp-runner.js';
+import { readLocalMcpCredential } from './local-mcp-credentials.js';
 import {
   localProcessManager,
   flushLocalServiceEvents,
@@ -105,6 +107,16 @@ export class RuntimeBridgeOperationClient {
 
   async pollOnce() {
     if (this.input.signal?.aborted) return false;
+    if (this.input.runner) {
+      const mcpRunner = new LocalMcpRunner(this.input.runner);
+      for (const dispatch of await this.input.journal.unknownLocalMcpOperations()) {
+        // Reconcile only process ownership/termination. An interrupted MCP
+        // call remains unknown; do not reconnect or execute it again.
+        await mcpRunner
+          .stopOrphan(dispatch.snapshot.binding.attempt.attemptId)
+          .catch(() => undefined);
+      }
+    }
     if (this.input.runner)
       for (const dispatch of await this.input.journal.unknownLocalCommands()) {
         if (dispatch.payload.capability !== 'local.process.execute') continue;
@@ -138,6 +150,7 @@ export class RuntimeBridgeOperationClient {
         ...(this.input.runner
           ? {
               supportsLocalCommand: true,
+              supportsLocalMcp: await this.input.runner.localMcpEnabled(),
               supportsProjectDiagnostics: true,
               supportsNpmDependencies: true,
               supportsBackgroundServices:
@@ -212,7 +225,11 @@ export class RuntimeBridgeOperationClient {
       return;
     }
     if (
-      dispatch.payload.capability === 'local.process.execute' &&
+      [
+        'local.process.execute',
+        'local.mcp.discover',
+        'local.mcp.call',
+      ].includes(dispatch.payload.capability) &&
       !this.input.runner
     ) {
       await journal.outcome(operationId, {
@@ -297,6 +314,13 @@ export class RuntimeBridgeOperationClient {
         return;
       }
       await this.executeProcess(dispatch, root);
+      return;
+    }
+    if (
+      dispatch.payload.capability === 'local.mcp.discover' ||
+      dispatch.payload.capability === 'local.mcp.call'
+    ) {
+      await this.executeMcp(dispatch, root);
       return;
     }
     if (dispatch.payload.capability === 'local.fs.changeset') {
@@ -412,6 +436,114 @@ export class RuntimeBridgeOperationClient {
         summary:
           'Operation completed; output exceeded the journal limit and was omitted',
         output: { truncated: true, reason: 'output_limit' },
+      });
+    }
+  }
+
+  private async executeMcp(dispatch: RuntimeBridgeDispatch, root: string) {
+    if (
+      dispatch.payload.capability !== 'local.mcp.discover' &&
+      dispatch.payload.capability !== 'local.mcp.call'
+    )
+      throw new Error('LOCAL_MCP_TOOL_DENIED');
+    const { config, token, journal, runner } = this.input,
+      { operationId, attemptId } = dispatch.snapshot.binding.attempt,
+      payload = dispatch.payload;
+    if (!runner || !(await runner.localMcpEnabled())) {
+      await journal.outcome(operationId, {
+        status: 'failed',
+        effects: 'none',
+        summary: '本机未启用本地 MCP，进程未启动',
+        errorCode: 'LOCAL_MCP_DISABLED',
+      });
+      return;
+    }
+    const mcp = new LocalMcpRunner(runner);
+    try {
+      const result = await mcp.execute(root, payload, {
+        attemptId,
+        hardDeadlineAt: new Date(
+          Math.min(
+            Date.parse(dispatch.leaseExpiresAt),
+            Date.now() + payload.arguments.limits.timeoutMs,
+          ),
+        ).toISOString(),
+        signal: this.input.signal,
+        prepareCall: (intent) =>
+          journal.prepareLocalMcpCall(operationId, intent),
+        resolveCredential: (reference) =>
+          readLocalMcpCredential({
+            server: new URL(config.server).origin,
+            deviceId: config.deviceId,
+            connectionId: payload.arguments.connectionId,
+            sourceDigest: payload.arguments.source.digest,
+            reference,
+          }),
+        validateTools: validateLocalMcpTools,
+        maintainLease: async () => {
+          if (this.input.signal?.aborted)
+            throw Error('LOCAL_MCP_STOP_REQUESTED');
+          const current = await this.request<{
+            snapshot: unknown;
+            leaseExpiresAt: string;
+          }>({
+            server: config.server,
+            path: `${runtimeBridgeOperationPath}/${operationId}/heartbeat`,
+            method: 'POST',
+            token,
+            body: {
+              contractVersion: 1,
+              attempt: dispatch.snapshot.binding.attempt,
+              leaseToken: dispatch.leaseToken,
+            },
+            maximumResponseBytes: 200000,
+            timeoutMs: 2500,
+          });
+          const snapshot = RuntimeOperationSnapshotSchema.parse(
+            current.snapshot,
+          );
+          if (
+            !runtimeContractEqual(snapshot.binding, dispatch.snapshot.binding)
+          )
+            throw Error('LOCAL_MCP_BINDING_CHANGED');
+          return {
+            leaseExpiresAt: current.leaseExpiresAt,
+            stopRequested:
+              snapshot.status !== 'running' ||
+              snapshot.cancelRequestId !== null ||
+              Boolean(this.input.signal?.aborted),
+          };
+        },
+      });
+      // initialize/tools/list already execute untrusted server code. Missing
+      // results cannot prove absence of effects even before tools/call.
+      if (
+        !result.stopConfirmed ||
+        !result.resultKnown ||
+        result.toolResult?.isError
+      ) {
+        await journal.uncertain(operationId, 'receipt_missing', {
+          summary: '本地 MCP 结果待核实，不自动重试',
+          output: result,
+        });
+      } else {
+        await journal.outcome(operationId, {
+          status: result.resultKnown ? 'succeeded' : 'failed',
+          effects: result.callAttempted ? 'applied' : 'none',
+          summary: result.resultKnown
+            ? '本地 MCP 已返回；隔离进程已停止'
+            : '本地 MCP 未返回成功结果；已确认停止',
+          output: result,
+        });
+      }
+      // Store complete evidence before removing the exact stopped container.
+      if (result.stopConfirmed)
+        await mcp.cleanup(attemptId, result.containerId).catch(() => undefined);
+    } catch {
+      // A failure can occur after starting code or dispatching a call. Cold
+      // recovery stops only our exact container and never replays protocol.
+      await journal.uncertain(operationId, 'receipt_missing', {
+        summary: '本地 MCP 执行中断，结果待核实；不会自动重发',
       });
     }
   }

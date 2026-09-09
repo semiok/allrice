@@ -5,6 +5,7 @@ import { runManagedBrowser } from './handlers/browser.js';
 import { createWorkspaceExport } from './handlers/delivery.js';
 import { executeCloudCommand } from './handlers/cloud.js';
 import { executeMcpTool } from './handlers/mcp.js';
+import { executeLocalMcp } from './handlers/local-mcp.js';
 import { readSkillResource } from './handlers/skill.js';
 import { exportReconciliation } from './handlers/reconciliation.js';
 import {
@@ -64,6 +65,8 @@ export const riceToolHandlerRegistry = Object.freeze({
   ),
   'workspace.skill.read': registration('workspace', readSkillResource),
   'cloud.mcp.call': registration('cloud_mcp', executeMcpTool),
+  'local.mcp.discover': registration('local_bridge', executeLocalMcp),
+  'local.mcp.call': registration('local_bridge', executeLocalMcp),
   'cloud.process.execute': registration('cloud_runner', executeCloudCommand),
   'workspace.file.list': registration('workspace', listWorkspaceFiles),
   'workspace.file.read': registration('workspace', readWorkspaceFile),

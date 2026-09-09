@@ -44,10 +44,26 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 /** Explicit, fixed local backend. Callers still need current server approval and leases. */
 export class LocalCommandRunner {
   readonly api: LocalDockerApi;
-  constructor(readonly config: { socketPath: string; imageDigest: string }) {
+  constructor(
+    readonly config: {
+      socketPath: string;
+      imageDigest: string;
+      localMcpEnabled?: () => Promise<boolean>;
+    },
+  ) {
     if (config.imageDigest !== localCommandToolchainImageV1)
       throw new LocalCommandError('PINNED_IMAGE_REQUIRED');
     this.api = new LocalDockerApi(config.socketPath);
+  }
+
+  async localMcpEnabled() {
+    try {
+      return this.config.localMcpEnabled
+        ? await this.config.localMcpEnabled()
+        : process.env.ALLRICE_LOCAL_MCP_ENABLED === '1';
+    } catch {
+      return false;
+    }
   }
 
   async preflight() {
@@ -101,6 +117,7 @@ export class LocalCommandRunner {
       features: [
         'project_diagnostics',
         'npm_dependencies',
+        ...((await this.localMcpEnabled()) ? ['local_mcp'] : []),
         ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1'
           ? ['background_services']
           : []),

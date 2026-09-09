@@ -41,6 +41,8 @@ describe('P15 native exact-approval visibility, no new DSH transport', () => {
     expect([...nativeGovernedToolNames]).toEqual([
       'cloud.process.execute',
       'cloud.mcp.call',
+      'local.mcp.discover',
+      'local.mcp.call',
     ]);
     expect(
       names(

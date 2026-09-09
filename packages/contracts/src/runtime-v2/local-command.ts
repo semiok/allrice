@@ -4,6 +4,7 @@ import { BridgeCommandPayloadSchema } from '../bridge.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
+import { RuntimeLocalMcpPayloadSchema } from './local-mcp.ts';
 import { RuntimeLocalServiceConfigSchema } from './local-service.ts';
 import {
   RuntimeDependencyPreparationSchema,
@@ -130,6 +131,7 @@ export const RuntimeBridgePayloadSchema = z.union([
   BridgeCommandPayloadSchema,
   RuntimeLocalCommandSchema,
   RuntimeChangesetSchema,
+  RuntimeLocalMcpPayloadSchema,
 ]);
 export type RuntimeBridgePayload = z.infer<typeof RuntimeBridgePayloadSchema>;
 
@@ -146,6 +148,7 @@ export const RuntimeLocalCommandProfileSchema = z
           'project_diagnostics',
           'npm_dependencies',
           'background_services',
+          'local_mcp',
         ]),
       )
       .max(8)

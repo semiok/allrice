@@ -266,8 +266,11 @@ export function employeeManifest(input: {
       'storage:write',
       'network:outbound',
       'automation:write',
-      ...(input.toolNames?.includes('cloud.mcp.call') &&
-      !securityPolicy.deniedCapabilities.includes('secret:use')
+      ...(input.toolNames?.some((name) =>
+        ['cloud.mcp.call', 'local.mcp.discover', 'local.mcp.call'].includes(
+          name,
+        ),
+      ) && !securityPolicy.deniedCapabilities.includes('secret:use')
         ? ['secret:use' as const]
         : []),
     ],

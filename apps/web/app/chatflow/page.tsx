@@ -1,5 +1,5 @@
 import { ChatFlowClient } from './chatflow-client';
-import { localCommandFeatureEnabled } from '@allrice/database';
+import { localCommandFeatureEnabled, localMcpEnabled } from '@allrice/database';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,6 +8,7 @@ export default function ChatFlowPage() {
     <ChatFlowClient
       workbenchEnabled={process.env.ALLRICE_WORKBENCH_ENABLED === '1'}
       localCommandsEnabled={localCommandFeatureEnabled()}
+      localMcpEnabled={localMcpEnabled()}
     />
   );
 }

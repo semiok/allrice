@@ -52,6 +52,8 @@ const allowedToolNames = new Set([
   'workspace.reconciliation.export',
   'cloud.process.execute',
   'cloud.mcp.call',
+  'local.mcp.discover',
+  'local.mcp.call',
   'workspace.skill.read',
   'workspace.file.list',
   'workspace.file.read',
@@ -1305,9 +1307,13 @@ export async function compilePlatformEmployee(
     if (
       definition.securityPolicy.bridgeAccess === 'read_only' &&
       definition.capabilities.toolNames.some((name) =>
-        ['local.fs.write', 'local.fs.mkdir', 'local.process.execute'].includes(
-          name,
-        ),
+        [
+          'local.fs.write',
+          'local.fs.mkdir',
+          'local.process.execute',
+          'local.mcp.discover',
+          'local.mcp.call',
+        ].includes(name),
       )
     ) {
       errors.push('Bridge 为只读，但员工仍配置了本地写入工具');
@@ -1317,14 +1323,18 @@ export async function compilePlatformEmployee(
     }
     if (
       definition.securityPolicy.connectorIdentityModes.includes('service') &&
-      (!definition.capabilities.toolNames.includes('cloud.mcp.call') ||
+      ((!definition.capabilities.toolNames.includes('cloud.mcp.call') &&
+        !['local.mcp.discover', 'local.mcp.call'].every((name) =>
+          definition.capabilities.toolNames.includes(name),
+        )) ||
         definition.securityPolicy.deniedCapabilities.includes('secret:use') ||
-        definition.securityPolicy.deniedCapabilities.includes(
-          'network:outbound',
-        ))
+        (definition.capabilities.toolNames.includes('cloud.mcp.call') &&
+          definition.securityPolicy.deniedCapabilities.includes(
+            'network:outbound',
+          )))
     ) {
       errors.push(
-        'Service Connector 仅支持已声明 cloud.mcp.call 且未禁止 secret:use/network:outbound 的员工策略；租户连接须另行绑定',
+        'Service Connector 需要声明云端或本地 MCP 工具并许可相应能力；本地无需网络，租户连接仍须逐项绑定',
       );
     }
     if (definition.capabilities.workflowRevisionIds.length > 0) {

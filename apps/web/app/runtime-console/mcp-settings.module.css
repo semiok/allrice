@@ -33,6 +33,7 @@
   font-size: 13px;
 }
 .panel input,
+.panel textarea,
 .panel select,
 .panel button {
   background: #25272b;
@@ -41,6 +42,24 @@
   border-radius: 8px;
   padding: 9px 12px;
   min-width: 0;
+}
+.wide {
+  grid-column: 1 / -1;
+}
+.panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+  resize: vertical;
+}
+.panel pre {
+  overflow: auto;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.panel small {
+  overflow-wrap: anywhere;
 }
 .panel button {
   cursor: pointer;

@@ -23,12 +23,14 @@ import {
 } from './managed-browser-task-panel';
 import { UserQuestionReceipt } from './user-question-receipt';
 import { LocalCommandPanel } from './local-command-panel';
+import { LocalMcpPanel } from './local-mcp-panel';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
   localCommandsEnabled?: boolean;
+  localMcpEnabled?: boolean;
   messages: Message[];
   recoverableRunView?: RunView;
   runTraces: Record<string, RunTrace>;
@@ -46,6 +48,7 @@ interface ChatTranscriptProps {
 export function ChatTranscript({
   atBottom,
   localCommandsEnabled = false,
+  localMcpEnabled = false,
   messages,
   recoverableRunView,
   runTraces,
@@ -243,6 +246,14 @@ export function ChatTranscript({
                       )}
                       {localCommandsEnabled && message.runId && (
                         <LocalCommandPanel
+                          runId={message.runId}
+                          workspaceId={workspaceId}
+                          tenantHeaders={tenantHeaders}
+                          runActive={messageIsRunning}
+                        />
+                      )}
+                      {localMcpEnabled && message.runId && (
+                        <LocalMcpPanel
                           runId={message.runId}
                           workspaceId={workspaceId}
                           tenantHeaders={tenantHeaders}

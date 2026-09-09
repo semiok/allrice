@@ -43,7 +43,7 @@ describe('P16 explicit MCP visibility is never execution permission', () => {
       allRiceToolManifest
         .filter((t) => t.capability === 'secret:use')
         .map((t) => t.canonicalName),
-    ).toEqual(['cloud.mcp.call']);
+    ).toEqual(['local.mcp.discover', 'local.mcp.call', 'cloud.mcp.call']);
   });
   it('requires a frozen manifest allowlist and secret:use independently', () => {
     enable();

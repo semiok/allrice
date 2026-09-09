@@ -8,6 +8,7 @@ import {
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { SessionModelSnapshotSchema } from './models.ts';
 import { FrozenMcpToolSchema } from './mcp.ts';
+import { LocalMcpSnapshotSchema } from './local-mcp.ts';
 import {
   MemoryClassSchema,
   MemoryLifecycleStateSchema,
@@ -473,6 +474,7 @@ export const EmployeeExecutionSnapshotV2Schema =
     modelSnapshot: SessionModelSnapshotSchema.optional(),
     // Optional without defaults preserves old execution snapshots byte-for-byte.
     mcpTools: z.array(FrozenMcpToolSchema).max(128).optional(),
+    localMcp: LocalMcpSnapshotSchema.optional(),
     capabilitySnapshot: z
       .object({
         declaredCapabilities: z.array(SkillCapabilitySchema).max(16),

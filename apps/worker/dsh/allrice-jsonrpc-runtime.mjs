@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
+import { localMcpNativeTools } from './allrice-local-mcp-native-tools.mjs';
 
 import {
   boot,
@@ -38,6 +39,7 @@ const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
   ...mcpNativeTools,
+  ...localMcpNativeTools,
   ...cloudNativeTools,
   ...skillNativeTools,
   ...reconciliationNativeTools,

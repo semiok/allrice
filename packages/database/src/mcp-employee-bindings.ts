@@ -36,15 +36,27 @@ type Binding = {
 
 /** Tenant grants only narrow an immutable pre-authorized policy. Explicit
  * denials are never removed and the published package is never rewritten. */
-export function mcpEmployeeEligibility(manifest: unknown): string[] {
+export function mcpEmployeeEligibility(
+  manifest: unknown,
+  transport: 'streamable_http' | 'local_stdio' = 'streamable_http',
+): string[] {
   const parsed = EmployeeManifestSchema.safeParse(manifest);
   if (!parsed.success || parsed.data.schemaVersion !== 2)
     return ['需要发布新版员工策略'];
   const value = parsed.data,
     reasons: string[] = [];
-  if (!value.capabilityBindings.toolNames.includes('cloud.mcp.call'))
-    reasons.push('员工版本未声明 cloud.mcp.call');
-  for (const capability of ['secret:use', 'network:outbound'] as const) {
+  const requiredTools =
+    transport === 'local_stdio'
+      ? ['local.mcp.discover', 'local.mcp.call']
+      : ['cloud.mcp.call'];
+  for (const tool of requiredTools)
+    if (!value.capabilityBindings.toolNames.includes(tool))
+      reasons.push(`员工版本未声明 ${tool}`);
+  const requiredCapabilities =
+    transport === 'local_stdio'
+      ? (['secret:use', 'storage:write'] as const)
+      : (['secret:use', 'network:outbound'] as const);
+  for (const capability of requiredCapabilities) {
     if (value.securityPolicy.deniedCapabilities.includes(capability))
       reasons.push(`员工策略明确禁止 ${capability}`);
     else if (!value.capabilities.includes(capability))
@@ -92,9 +104,13 @@ function publicBinding(row: Binding) {
   };
 }
 export function createEmployeeMcpBindingStore(
-  options: { database?: Database } = {},
+  options: {
+    database?: Database;
+    transport?: 'streamable_http' | 'local_stdio';
+  } = {},
 ) {
   const db = () => options.database ?? getDatabase();
+  const transport = options.transport ?? 'streamable_http';
   return {
     async list(context: RequestContext, workspaceId: string) {
       const scope = scopeFor(context, workspaceId);
@@ -111,9 +127,10 @@ export function createEmployeeMcpBindingStore(
           order by e.name,v.version desc`;
         const bindings = await tx<
           Binding[]
-        >`select * from allrice_employee_mcp_bindings where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+        >`select b.* from allrice_employee_mcp_bindings b join allrice_mcp_binding_config c on c.binding_id=b.connector_binding_id where b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId} and c.transport=${transport}
+          and (${transport}<>'local_stdio' or exists(select 1 from allrice_local_mcp_config l where l.binding_id=b.connector_binding_id and l.owner_id=${scope.actorId}))`;
         return versions.map((v) => {
-          const reasons = mcpEmployeeEligibility(v.manifest);
+          const reasons = mcpEmployeeEligibility(v.manifest, transport);
           if (v.status !== 'active') reasons.push('员工已归档');
           if (!v.assigned) reasons.push('此版本已不再分配；只能撤销已有绑定');
           return McpEmployeeTargetSchema.parse({
@@ -143,8 +160,13 @@ export function createEmployeeMcpBindingStore(
           await tx`select id,manifest from allrice_employee_versions where id=${change.employeeVersionId} and employee_id=${change.employeeId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
         if (!version) throw new McpError('MCP_DENIED');
         const [connection] =
-          await tx`select b.id,b.enabled,d.enabled as definition_enabled from allrice_connector_bindings b join allrice_mcp_binding_config c on c.binding_id=b.id and c.organization_id=b.organization_id and c.workspace_id=b.workspace_id join allrice_connector_definitions d on d.id=b.connector_id and d.organization_id=b.organization_id and d.workspace_id=b.workspace_id where b.id=${change.connectionId} and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId} and b.identity_mode='service' for share of b,c,d`;
+          await tx`select b.id,b.enabled,d.enabled as definition_enabled from allrice_connector_bindings b join allrice_mcp_binding_config c on c.binding_id=b.id and c.organization_id=b.organization_id and c.workspace_id=b.workspace_id join allrice_connector_definitions d on d.id=b.connector_id and d.organization_id=b.organization_id and d.workspace_id=b.workspace_id where b.id=${change.connectionId} and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId} and c.transport=${transport} and b.identity_mode='service' for share of b,c,d`;
         if (!connection) throw new McpError('MCP_DENIED');
+        if (transport === 'local_stdio') {
+          const [owned] =
+            await tx`select binding_id from allrice_local_mcp_config where binding_id=${change.connectionId} and owner_id=${scope.actorId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
+          if (!owned) throw new McpError('MCP_DENIED');
+        }
         if (change.enabled) {
           const [assignment] =
             await tx`select id from allrice_employee_assignments where employee_id=${change.employeeId} and employee_version_id=${change.employeeVersionId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and active limit 1 for share`;
@@ -153,7 +175,7 @@ export function createEmployeeMcpBindingStore(
             !assignment ||
             !connection.enabled ||
             !connection.definition_enabled ||
-            mcpEmployeeEligibility(version.manifest).length
+            mcpEmployeeEligibility(version.manifest, transport).length
           )
             throw new McpError('MCP_DENIED');
         }
@@ -174,7 +196,7 @@ export function createEmployeeMcpBindingStore(
               Binding[]
             >`insert into allrice_employee_mcp_bindings(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id,enabled,granted_by) values(${scope.organizationId},${scope.workspaceId},${change.employeeId},${change.employeeVersionId},${change.connectionId},true,${scope.actorId}) returning *`;
         const row = rows[0]!;
-        await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata) values(${scope.organizationId},${scope.workspaceId},${scope.actorId},'mcp.employee.binding','employee',${change.employeeId},'allowed','tenant_narrowed_pre_authorized_mcp_policy',${context.requestId},${tx.json({ bindingId: row.id, employeeVersionId: change.employeeVersionId, connectionId: change.connectionId, revision: row.grant_revision, enabled: row.enabled, scope: 'cloud.mcp.call:connector_only:every_call' })})`;
+        await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata) values(${scope.organizationId},${scope.workspaceId},${scope.actorId},'mcp.employee.binding','employee',${change.employeeId},'allowed','tenant_narrowed_pre_authorized_mcp_policy',${context.requestId},${tx.json({ bindingId: row.id, employeeVersionId: change.employeeVersionId, connectionId: change.connectionId, revision: row.grant_revision, enabled: row.enabled, scope: transport === 'local_stdio' ? 'local.mcp:device_owner:every_initialize_and_call' : 'cloud.mcp.call:connector_only:every_call' })})`;
         return publicBinding(row);
       });
     },
@@ -183,6 +205,7 @@ export function createEmployeeMcpBindingStore(
       employeeId: string,
       employeeVersionId: string,
     ): Promise<FrozenMcpTool[]> {
+      if (transport !== 'streamable_http') throw new McpError('MCP_DENIED');
       const scope = McpScopeSchema.parse(scopeInput),
         eid = UuidSchema.parse(employeeId),
         vid = UuidSchema.parse(employeeVersionId);
@@ -235,8 +258,9 @@ export function createEmployeeMcpBindingStore(
 export async function assertEmployeeMcpAuthorization(
   tx: Database | Tx,
   scope: McpScope,
-  tool: FrozenMcpTool,
+  tool: Pick<FrozenMcpTool, 'connectionId' | 'employeeAuthorization'>,
   employeeVersionId: string,
+  transport: 'streamable_http' | 'local_stdio' = 'streamable_http',
 ) {
   const auth = tool.employeeAuthorization;
   if (!auth || auth.employeeVersionId !== employeeVersionId)
@@ -249,7 +273,7 @@ export async function assertEmployeeMcpAuthorization(
     where e.id=${auth.employeeId} and v.id=${employeeVersionId}
       and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.status='active'
     for share of e,v`;
-  if (!version || mcpEmployeeEligibility(version.manifest).length)
+  if (!version || mcpEmployeeEligibility(version.manifest, transport).length)
     throw new McpError('MCP_DENIED');
   const [row] = await tx`select b.id from allrice_employee_mcp_bindings b
     where b.id=${auth.id} and b.employee_id=${auth.employeeId} and b.employee_version_id=${employeeVersionId}
