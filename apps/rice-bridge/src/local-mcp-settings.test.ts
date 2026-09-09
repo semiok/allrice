@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeConfig, type BridgeConfig } from './config.js';
 import { saveSandboxOptIn } from './sandbox-settings.js';
+import * as sandboxSettings from './sandbox-settings.js';
 import {
   readLocalMcpOptIn,
   saveLocalMcpOptIn,
@@ -108,6 +109,13 @@ describe('P17 normal App persistent explicit local MCP opt-in', () => {
     ).toBe(config.deviceId);
   });
   it('enable requires prior sandbox choice and successful preflight, while status/disable do not touch Docker', async () => {
+    // This is a settings transaction test, not a native Mac/VM acceptance.
+    // Model a supported sandbox explicitly on every test host; Linux must not
+    // accidentally reach the real Mac-only config before the preflight mock.
+    vi.spyOn(sandboxSettings, 'nativeSandboxConfig').mockReturnValue({
+      socketPath: join(directory, 'absent-test-docker.sock'),
+      imageDigest: testImage,
+    });
     const preflight = vi
       .spyOn(LocalCommandRunner.prototype, 'preflight')
       .mockResolvedValue({
@@ -139,5 +147,27 @@ describe('P17 normal App persistent explicit local MCP opt-in', () => {
     expect(
       JSON.parse(String(output.mock.calls.at(-1)![0])).serverAuthorization,
     ).toBe('not_checked');
+  });
+  it('keeps the actual host platform gate before any Docker preflight or opt-in write', async () => {
+    const preflight = vi.spyOn(LocalCommandRunner.prototype, 'preflight');
+    await saveSandboxOptIn(config, true);
+    const supported =
+      process.platform === 'darwin' && ['x64', 'arm64'].includes(process.arch);
+    if (supported) {
+      // Construction only: do not probe or install a developer's real VM.
+      expect(sandboxSettings.nativeSandboxConfig()).toMatchObject({
+        imageDigest: testImage,
+      });
+    } else {
+      expect(() => sandboxSettings.nativeSandboxConfig()).toThrow(
+        'UNSUPPORTED_NATIVE_PLATFORM',
+      );
+      await expect(localMcpSettingsCli(['enable'])).rejects.toThrow(
+        'LOCAL_MCP_SETTINGS_UNAVAILABLE',
+      );
+      expect(await readLocalMcpOptIn(config)).toBe(null);
+      expect(await localMcpEnabledForBinding(config)).toBe(false);
+    }
+    expect(preflight).not.toHaveBeenCalled();
   });
 });
