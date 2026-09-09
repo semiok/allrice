@@ -68,6 +68,7 @@ export function proxy(request: NextRequest) {
     const tenantManagement = [
       '/api/v1/admin/mcp',
       '/api/v1/admin/local-mcp',
+      '/api/v1/admin/browser-control',
     ].includes(request.nextUrl.pathname);
     const tenantForbidden =
       portal.kind === 'tenant' &&

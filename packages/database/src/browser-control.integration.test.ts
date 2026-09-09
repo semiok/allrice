@@ -6,6 +6,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { BrowserObservationSchema } from '@allrice/contracts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
+import { listBrowserControlManagement } from './browser-control-management.ts';
 import {
   installBrowserControlGrant,
   createBrowserWorkspace,
@@ -19,8 +20,14 @@ import {
   readCurrentBrowserWorkspace,
   recordBrowserStopped,
 } from './browser-control.ts';
-import { runtimePolicyDigest } from './runtime-policy.ts';
-import { startBrowserWorkspaceController } from '../../../apps/worker/src/browser-control/controller.js';
+import {
+  runtimePolicyDigest,
+  decideRuntimeActionApproval,
+} from './runtime-policy.ts';
+import {
+  startBrowserWorkspaceController,
+  waitBrowserOperationResult,
+} from '../../../apps/worker/src/browser-control/controller.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
@@ -173,6 +180,38 @@ suite('P21 real PostgreSQL control and exact admission', () => {
     expect(
       (await readCurrentBrowserWorkspace(f.context, f.w.id, db)).state,
     ).toBe('human');
+  });
+  it('management is read-only, exact tenant/admin scoped, including archived and revoked grants', async () => {
+    const f = await fixture(),
+      other = await fixture();
+    const list = await listBrowserControlManagement(f.context, db);
+    expect(list.grants.map((g) => g.id)).toEqual([f.grant.id]);
+    expect(list.targets.some((t) => t.id === other.target)).toBe(false);
+    const [before] =
+      await db`select count(*)::int n from allrice_browser_control_grants`;
+    await listBrowserControlManagement(f.context, db);
+    expect(
+      (await db`select count(*)::int n from allrice_browser_control_grants`)[0]!
+        .n,
+    ).toBe(before!.n);
+    await revokeBrowserControlGrant(f.context, f.grant.id, db);
+    expect(
+      (await listBrowserControlManagement(f.context, db)).grants[0]!.revokedAt,
+    ).not.toBeNull();
+    await db`update allrice_memberships set role='member' where user_id=${f.user}`;
+    await expect(listBrowserControlManagement(f.context, db)).rejects.toThrow(
+      'membership_denied',
+    );
+    await expect(
+      listBrowserControlManagement(
+        { ...other.context, workspaceId: f.workspace },
+        db,
+      ),
+    ).rejects.toThrow('membership_denied');
+    await db`update allrice_workspaces set archived_at=clock_timestamp() where id=${other.workspace}`;
+    await expect(
+      listBrowserControlManagement(other.context, db),
+    ).rejects.toThrow('membership_denied');
   });
   it('encrypted human input binds all scope, is consumed once, and never appears in model payload', async () => {
     const f = await fixture();
@@ -387,6 +426,111 @@ suite('P21 real PostgreSQL control and exact admission', () => {
         false,
         db,
       );
+      await controller.closed;
+    }
+  }, 15000);
+  it('a rejected head does not starve the next approved action; result waits for a new observation', async () => {
+    const f = await fixture(),
+      command = {
+        ...f.command,
+        observationId: null,
+        action: { type: 'navigate' as const, url: profile.origins[0] + '/' },
+      };
+    const rejected = await createBrowserOperation(
+        f.context,
+        command,
+        randomUUID(),
+        db,
+      ),
+      approved = await createBrowserOperation(
+        f.context,
+        command,
+        randomUUID(),
+        db,
+      );
+    const req = (
+      await listBrowserWorkspaces(f.context, f.run, db)
+    )[0]!.operations.find(
+      (o) =>
+        o.snapshot.binding.attempt.operationId ===
+        rejected.snapshot.binding.attempt.operationId,
+    )!.approval!.request;
+    await decideRuntimeActionApproval(
+      f.context,
+      req.approvalId,
+      {
+        contractVersion: 1,
+        direction: 'response',
+        kind: 'action_approval',
+        requestId: req.requestId,
+        version: req.version,
+        requestDigest: req.requestDigest,
+        task: req.task,
+        responseId: randomUUID(),
+        respondedBy: f.user,
+        respondedAt: new Date().toISOString(),
+        approvalId: req.approvalId,
+        decision: 'rejected',
+      },
+      db,
+    );
+    await f.approve(approved);
+    const fake = {
+      observe: async (fence: number) => {
+        // A physical capture may cross the 500ms operation heartbeat interval.
+        // A completed ledger operation must no longer renew a running lease.
+        await delay(750);
+        return {
+          observation: f.observation(fence),
+          screenshot: Buffer.from('synthetic-image'),
+        };
+      },
+      perform: vi.fn(async () => ({})),
+      close: async () => {},
+    };
+    const abort = new AbortController(),
+      controller = startBrowserWorkspaceController(f.w, {
+        storage: f.storage,
+        database: db,
+        driver: async () => fake,
+        signal: abort.signal,
+      });
+    try {
+      const result = await waitBrowserOperationResult(
+        f.context,
+        f.w.id,
+        approved.snapshot.binding.attempt.operationId,
+        db,
+        abort.signal,
+      );
+      expect(result.status).toBe('succeeded');
+      expect(result.observation).not.toBeNull();
+      expect(result.observation!.id).not.toBe(f.obs.id);
+      expect(result.observationRefreshRequired).toBe(false);
+      await delay(250);
+      expect(
+        (await readCurrentBrowserWorkspace(f.context, f.w.id, db)).state,
+      ).toBe('agent');
+      expect(fake.perform).toHaveBeenCalledOnce();
+      const denied = await waitBrowserOperationResult(
+        f.context,
+        f.w.id,
+        rejected.snapshot.binding.attempt.operationId,
+        db,
+        abort.signal,
+      );
+      expect(denied.result).toMatchObject({
+        effects: 'none',
+        code: 'BROWSER_APPROVAL_UNAVAILABLE',
+      });
+      expect(denied.observation).toBeNull();
+      expect(
+        (
+          await db`select version_id from allrice_workbench_artifacts where run_id=${f.run}`
+        ).length,
+      ).toBeGreaterThan(0);
+    } finally {
+      abort.abort();
       await controller.closed;
     }
   }, 15000);

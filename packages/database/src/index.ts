@@ -41,5 +41,6 @@ export * from './memory/index.ts';
 export * from './providers/index.ts';
 export * from './runtime-ledger/index.ts';
 export * from './browser-control.ts';
+export * from './browser-control-management.ts';
 export * from './browser-control-artifact.ts';
 export * from './browser-control-authority.ts';

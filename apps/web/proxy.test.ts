@@ -80,7 +80,7 @@ describe('portal authentication response boundary', () => {
     }
   });
 
-  it('passes only the exact tenant MCP endpoint to its tenant-admin handler, not platform APIs', () => {
+  it('passes only exact tenant MCP/browser endpoints to their tenant-admin handlers, not platform APIs', () => {
     vi.stubEnv(
       'ALLRICE_PORTAL_SESSION_SECRET',
       'synthetic-portal-secret-with-more-than-32-characters',
@@ -97,23 +97,25 @@ describe('portal authentication response boundary', () => {
       proxy(new NextRequest(`https://${host}/api/v1/admin/mcp`, { headers }))
         .status,
     ).toBe(200);
-    expect(
-      proxy(
-        new NextRequest(`https://${host}/api/v1/admin/local-mcp`, { headers }),
-      ).status,
-    ).toBe(200);
-    expect(
-      proxy(
-        new NextRequest(`https://${host}/api/v1/admin/local-mcp`, {
-          headers: { host },
-        }),
-      ).status,
-    ).toBe(401);
+    for (const path of [
+      '/api/v1/admin/local-mcp',
+      '/api/v1/admin/browser-control',
+    ]) {
+      expect(
+        proxy(new NextRequest(`https://${host}${path}`, { headers })).status,
+      ).toBe(200);
+      expect(
+        proxy(new NextRequest(`https://${host}${path}`, { headers: { host } }))
+          .status,
+      ).toBe(401);
+    }
     for (const path of [
       '/api/v1/admin/mcp-extra',
       '/api/v1/admin/mcp/extra',
       '/api/v1/admin/local-mcp-extra',
       '/api/v1/admin/local-mcp/extra',
+      '/api/v1/admin/browser-control-extra',
+      '/api/v1/admin/browser-control/extra',
       '/api/v1/admin/platform-employees',
       '/api/v1/admin/model-governance',
     ])

@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { BrowserWorkspaceView } from '@allrice/database';
 import type { BrowserAction } from '@allrice/contracts';
 import styles from './cloud-operation-panel.module.css';
+import {
+  browserControlAvailability,
+  browserWorkspacePollingRequired,
+} from '../../lib/chatflow/browser-control-state';
 const labels: Record<string, string> = {
   starting: '正在启动',
   agent: 'Rice 控制中',
@@ -28,6 +32,7 @@ export function BrowserWorkspacePanel({
 }) {
   const [workspaces, setWorkspaces] = useState<BrowserWorkspaceView[]>([]),
     [error, setError] = useState(''),
+    [loadError, setLoadError] = useState(''),
     [busy, setBusy] = useState(false),
     [preview, setPreview] = useState<string | null>(null),
     [revision, setRevision] = useState(0);
@@ -36,6 +41,7 @@ export function BrowserWorkspacePanel({
   const submitted = useRef(new Set<string>());
   useEffect(() => {
     let live = true,
+      pending = runActive,
       timer: ReturnType<typeof setTimeout>;
     const abort = new AbortController();
     const load = async () => {
@@ -47,15 +53,16 @@ export function BrowserWorkspacePanel({
         });
         if (!response.ok) throw Error('浏览器状态暂不可用');
         const result = await response.json();
+        pending = browserWorkspacePollingRequired(runActive, result.workspaces);
         if (live) {
           setWorkspaces(result.workspaces);
-          setError('');
+          setLoadError('');
         }
       } catch (e) {
         if (live && !abort.signal.aborted)
-          setError(e instanceof Error ? e.message : '读取失败');
+          setLoadError(e instanceof Error ? e.message : '读取失败');
       } finally {
-        if (live && runActive) timer = setTimeout(() => void load(), 1000);
+        if (live && pending) timer = setTimeout(() => void load(), 1000);
       }
     };
     void load();
@@ -167,7 +174,7 @@ export function BrowserWorkspacePanel({
       ),
     );
   }
-  if (!workspaces.length && !error) return null;
+  if (!workspaces.length && !error && !loadError) return null;
   return (
     <section className={styles.root} aria-label="受控浏览器工作台">
       {preview && (
@@ -183,25 +190,22 @@ export function BrowserWorkspacePanel({
           />
         </figure>
       )}
-      {error && (
+      {(error || loadError) && (
         <p role="alert">
-          {error}
-          <button onClick={() => setRevision((v) => v + 1)}>刷新状态</button>
+          {error || loadError}
+          <button
+            onClick={() => {
+              setError('');
+              setRevision((v) => v + 1);
+            }}
+          >
+            刷新状态
+          </button>
         </p>
       )}
       {workspaces.map((w) => {
-        const human =
-          w.available &&
-          w.state === 'human' &&
-          w.fence === w.acknowledgedFence &&
-          !!w.observation &&
-          Date.parse(w.observation.expiresAt) > Date.now();
-        const canResume =
-          w.available &&
-          ['human', 'paused'].includes(w.state) &&
-          w.fence === w.acknowledgedFence &&
-          !!w.observation &&
-          Date.parse(w.observation.expiresAt) > Date.now();
+        const controls = browserControlAvailability(w),
+          human = controls.human;
         return (
           <article key={w.id}>
             <h3>云端浏览器 · 当前 Run 专用</h3>
@@ -218,15 +222,13 @@ export function BrowserWorkspacePanel({
               {w.observation?.capturedAt ?? ''}
             </p>
             <button
-              disabled={
-                busy || !w.available || !['agent', 'paused'].includes(w.state)
-              }
+              disabled={busy || !controls.takeover}
               onClick={() => void control(w, 'human')}
             >
               人工接管
             </button>
             <button
-              disabled={busy || !canResume}
+              disabled={busy || !controls.resume}
               onClick={() => void control(w, 'agent')}
             >
               交还 Rice
@@ -246,7 +248,7 @@ export function BrowserWorkspacePanel({
               关闭浏览器
             </button>
             <button
-              disabled={busy || !human}
+              disabled={busy || !controls.observe}
               onClick={() => void guarded(() => act(w, { type: 'observe' }))}
             >
               更新观察
@@ -408,6 +410,16 @@ export function BrowserWorkspacePanel({
               </details>
             )}
             {w.operations.map((op) => {
+              const downloadObjectId =
+                op.result &&
+                typeof op.result === 'object' &&
+                'downloadObjectId' in op.result &&
+                typeof op.result.downloadObjectId === 'string' &&
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                  op.result.downloadObjectId,
+                )
+                  ? op.result.downloadObjectId
+                  : null;
               const r = op.approval?.request,
                 can =
                   op.available &&
@@ -420,6 +432,7 @@ export function BrowserWorkspacePanel({
               return (
                 <article
                   key={op.snapshot.binding.attempt.operationId}
+                  id={`browser-operation-${op.snapshot.binding.attempt.operationId}`}
                   aria-label="浏览器精确审批"
                 >
                   <p>
@@ -448,6 +461,17 @@ export function BrowserWorkspacePanel({
                       <summary>不可重放的执行回执</summary>
                       <pre>{JSON.stringify(op.result, null, 2)}</pre>
                     </details>
+                  )}
+                  {downloadObjectId && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        void guarded(() => openObject(downloadObjectId, false))
+                      }
+                    >
+                      保存已交付文件
+                    </button>
                   )}
                 </article>
               );
