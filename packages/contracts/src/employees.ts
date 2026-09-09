@@ -535,6 +535,7 @@ export const EmployeePromptSnapshotSchema = z
         z
           .object({
             id: UuidSchema,
+            revision: z.number().int().positive().optional(),
             content: z.string().max(100_000),
             lifecycleState: MemoryLifecycleStateSchema.optional(),
             memoryClass: MemoryClassSchema.optional(),

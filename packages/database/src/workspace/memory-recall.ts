@@ -9,6 +9,7 @@ import type {
 
 export interface RankedMemoryRecallCandidate {
   id: string;
+  revision?: number;
   content: string;
   sourceType: MemorySourceType;
   sourceId: string | null;
@@ -100,6 +101,7 @@ export function applyWorkspaceMemoryRecallBudget(
 export function rankWorkspaceMemoryRecallCandidates(
   candidates: Array<{
     id: string;
+    revision?: number;
     content: string;
     sourceType: MemorySourceType;
     sourceId: string | null;
@@ -147,6 +149,9 @@ export function rankWorkspaceMemoryRecallCandidates(
     return [
       {
         id: candidate.id,
+        ...(candidate.revision === undefined
+          ? {}
+          : { revision: candidate.revision }),
         content: candidate.content,
         sourceType: candidate.sourceType,
         sourceId: candidate.sourceId,
