@@ -12,6 +12,7 @@ import {
   type BrowserProfile,
   type BrowserObservation,
   type BrowserWorkspaceState,
+  type LocalPreviewLease,
 } from '@allrice/contracts';
 import {
   RuntimePolicyError,
@@ -19,6 +20,7 @@ import {
   type RuntimePolicyPrincipal,
 } from './runtime-policy.ts';
 import { getDatabase } from './core/client.ts';
+import { currentLocalPreviewAuthority } from './local-preview-authority.ts';
 
 export const browserControlEnabled = () =>
   process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
@@ -60,6 +62,7 @@ export type BrowserWorkspaceRow = {
   target_kind: string;
   target_state: string;
   target_capabilities: string[];
+  preview?: LocalPreviewLease;
 };
 /** Same current identity check for HTTP and Worker. Never accepts stale membership arrays. */
 export async function browserIdentity(
@@ -118,7 +121,8 @@ export async function currentBrowserWorkspace(
     and j.cancel_requested_at is null and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
     and p.expires_at>clock_timestamp()
     and e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ?
-      case when w.transport='local' then 'local.browser.workspace' else 'browser.workspace' end
+      case when exists(select 1 from allrice_local_browser_grants lg where lg.grant_id=w.grant_id and lg.purpose='local_preview') then 'local.preview.open'
+        when w.transport='local' then 'local.browser.workspace' else 'browser.workspace' end
     and (w.transport<>'local' or e.execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ? 'network:outbound')
     for share of w,g,t,r,e,a,pe,c,j,p`;
   if (!w) throw new RuntimePolicyError('browser_authority_unavailable');
@@ -131,8 +135,8 @@ export async function currentBrowserWorkspace(
     )
       throw new RuntimePolicyError('browser_authority_unavailable');
     const [local] = await tx<
-      { device_id: string }[]
-    >`select l.device_id from allrice_local_browser_workspaces l
+      { device_id: string; purpose: string; persist_login: boolean }[]
+    >`select l.device_id,g.purpose,g.persist_login from allrice_local_browser_workspaces l
       join allrice_local_browser_grants g on g.grant_id=l.grant_id and g.device_id=l.device_id
         and g.organization_id=l.organization_id and g.workspace_id=l.workspace_id and g.owner_id=l.owner_id
       join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
@@ -144,6 +148,17 @@ export async function currentBrowserWorkspace(
       for share of l,g,d`;
     if (!local) throw new RuntimePolicyError('browser_authority_unavailable');
     w.device_id = local.device_id;
+    if (local.purpose === 'local_preview') {
+      if (local.persist_login)
+        throw new RuntimePolicyError('browser_authority_unavailable');
+      try {
+        w.preview = await currentLocalPreviewAuthority(tx, ctx, w);
+      } catch (error) {
+        if (error instanceof RuntimePolicyError)
+          throw new RuntimePolicyError('browser_authority_unavailable');
+        throw error;
+      }
+    }
   } else {
     if (
       w.target_kind !== 'cloud_sandbox' ||

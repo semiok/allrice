@@ -6,6 +6,9 @@ import { RuntimeScopeSchema } from './identity.ts';
 /** Reserved virtual origin: only the trusted process relay can serve it.
  * Never resolve through DNS, publish a host port or accept a model chosen host. */
 export const localPreviewSuffix = '.preview.allrice.invalid';
+export const LocalPreviewOpenInputSchema = z
+  .object({ processId: UuidSchema })
+  .strict();
 export function localPreviewOrigin(endpointId: string) {
   return `https://p-${UuidSchema.parse(endpointId)}${localPreviewSuffix}`;
 }

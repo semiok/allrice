@@ -91,7 +91,7 @@ export async function installLocalBrowserGrant(
     const [count] = await tx<
       { n: number }[]
     >`select count(*)::integer as n from allrice_local_browser_grants l
-      join allrice_browser_control_grants g on g.id=l.grant_id where l.device_id=${input.deviceId} and g.enabled and g.revoked_at is null`;
+      join allrice_browser_control_grants g on g.id=l.grant_id where l.device_id=${input.deviceId} and l.purpose='public' and g.enabled and g.revoked_at is null`;
     if ((count?.n ?? 0) >= 8)
       throw new RuntimePolicyError('local_browser_grant_limit');
     await tx`insert into allrice_browser_control_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled,transport)
@@ -116,7 +116,7 @@ export async function listLocalBrowserGrants(
       l.cleanup_requested_at,l.cleanup_confirmed_at,l.cleanup_error_code,d.name as device_name,d.last_seen_at,d.revoked_at as device_revoked_at
       from allrice_local_browser_grants l join allrice_browser_control_grants g on g.id=l.grant_id
       join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
-      where l.organization_id=${ctx.organizationId} and l.workspace_id=${ctx.workspaceId} and l.owner_id=${ctx.actor.id}
+      where l.organization_id=${ctx.organizationId} and l.workspace_id=${ctx.workspaceId} and l.owner_id=${ctx.actor.id} and l.purpose='public'
       order by l.created_at desc limit 100`;
     return rows.map((r) => ({
       grantId: r.grant_id as string,

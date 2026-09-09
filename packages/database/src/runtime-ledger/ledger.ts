@@ -892,6 +892,7 @@ export function createRuntimeOperationLedger(options: {
           await tx`update allrice_runtime_operations set lease_expires_at=${expiry},updated_at=clock_timestamp() where id=${row.id}`;
           await admit(tx, row, 'heartbeat', await now(tx));
           ensureRootAdmits(root, await now(tx));
+          await tx`update allrice_local_services set preview_heartbeat_at=clock_timestamp() where operation_id=${row.id}`;
           const committedAt = await now(tx);
           if (expiry <= committedAt || row.lease_expires_at <= committedAt)
             throw new RuntimeLedgerError('lease_lost');

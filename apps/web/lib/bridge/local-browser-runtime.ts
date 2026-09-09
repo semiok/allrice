@@ -33,6 +33,8 @@ export const handleLocalBrowserRequest = createLocalBrowserHttpHandler({
           device,
           input.controllerId,
           input.acceptWork,
+          undefined,
+          input.acceptPreview,
         );
       case 'heartbeat': {
         const result = await heartbeatLocalBrowserWorkspace(device, input);

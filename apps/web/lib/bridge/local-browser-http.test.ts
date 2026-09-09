@@ -77,7 +77,10 @@ describe('P22 device browser HTTP envelope', () => {
     const response = await f.handle(request(body));
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('private, no-store');
-    expect(f.port.execute).toHaveBeenCalledWith(device, body);
+    expect(f.port.execute).toHaveBeenCalledWith(device, {
+      ...body,
+      acceptPreview: false,
+    });
   });
   it('rejects malformed or oversized bodies before reaching the authority', async () => {
     const f = make();

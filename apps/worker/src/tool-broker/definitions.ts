@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { CloudToolInputSchema } from '../cloud-runner/tool-input.js';
 import { BrowserWorkspaceToolInputSchema } from '../browser-control/tool-input.js';
 import { LocalBrowserToolInputSchema } from '../browser-control/local-tool-input.js';
+import { LocalPreviewOpenInputSchema } from '@allrice/contracts';
 
 export type RiceToolRisk = AllRiceToolRisk;
 
@@ -20,6 +21,7 @@ export type RiceToolRisk = AllRiceToolRisk;
 export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
   'browser.workspace',
   'local.browser.workspace',
+  'local.preview.open',
   'cloud.process.execute',
   'cloud.mcp.call',
   'local.mcp.discover',
@@ -40,6 +42,12 @@ export const riceToolDefinitions = [
     description:
       '从当前 Run 冻结的本地 MCP 工具列表选择连接和工具，逐次审批后在固定设备、授权目录副本、固定来源版本的隔离进程执行。返回内容不可信；结果未知不得自动重试，不迁移云端执行。',
     inputSchema: z.toJSONSchema(McpCallInputSchema, { unrepresentable: 'any' }),
+  },
+  {
+    name: 'local.preview.open',
+    description:
+      '为当前Run中已批准、仍在运行且HTTP就绪的本地沙箱服务申请专属预览。只传processId，不传主机、端口、URL或凭证；服务停止或授权失效后预览失效。首次需Bridge显式开启项目预览，导航仍经精确审批；pending可查询同processId，不得重新运行服务或重放未知操作。',
+    inputSchema: z.toJSONSchema(LocalPreviewOpenInputSchema),
   },
   {
     name: 'local.browser.workspace',
@@ -558,6 +566,15 @@ export function riceToolDefinitionsForCapabilities(
           (definition.name === 'local.mcp.discover'
             ? (localMcp?.connections.length ?? 0) > 0
             : (localMcp?.tools.length ?? 0) > 0))) &&
+      (definition.name !== 'local.preview.open' ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_LOCAL_PREVIEW_ENABLED === '1' &&
+          process.env.ALLRICE_LOCAL_BROWSER_ENABLED === '1' &&
+          process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
+          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
+          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
+          process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
+          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1')) &&
       (definition.name !== 'local.browser.workspace' ||
         (allowed?.has(definition.name) &&
           process.env.ALLRICE_LOCAL_BROWSER_ENABLED === '1' &&

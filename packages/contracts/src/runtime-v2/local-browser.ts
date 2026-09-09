@@ -4,6 +4,10 @@ import { ChecksumSchema } from '../runs.ts';
 import { RuntimeScopeSchema } from './identity.ts';
 import { RuntimeOperationSnapshotSchema } from './operations.ts';
 import {
+  LocalPreviewLeaseSchema,
+  localPreviewOrigin,
+} from './local-preview.ts';
+import {
   BrowserCommandSchema,
   BrowserObservationSchema,
   BrowserProfileSchema,
@@ -58,8 +62,38 @@ export const LocalBrowserWorkspaceSchema = z
     desiredControl: control,
     expiresAt: TimestampSchema,
     revoked: z.boolean(),
+    preview: LocalPreviewLeaseSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((w, context) => {
+    if (!w.preview) return;
+    const t = w.preview.target;
+    if (
+      t.browserWorkspaceId !== w.id ||
+      t.browserProfileId !== w.profileId ||
+      t.browserGrantId !== w.grantId ||
+      t.ownerId !== w.ownerId ||
+      t.deviceId !== w.deviceId ||
+      t.runId !== w.runId ||
+      t.rootRunId !== w.rootRunId ||
+      t.scope.organizationId !== w.scope.organizationId ||
+      t.scope.workspaceId !== w.scope.workspaceId ||
+      t.scope.projectId !== w.scope.projectId ||
+      w.persistLogin ||
+      w.profile.allowUploads ||
+      w.profile.allowDownloads ||
+      w.profile.allowHumanCredentials ||
+      w.profile.origins.length !== 1 ||
+      w.profile.origins[0] !== localPreviewOrigin(t.endpointId) ||
+      Date.parse(w.preview.expiresAt) > Date.parse(w.expiresAt) ||
+      Date.parse(w.preview.expiresAt) > Date.parse(t.hardDeadlineAt)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Preview must match the private workspace identity, profile and lifetime',
+      });
+  });
 export type LocalBrowserWorkspace = z.infer<typeof LocalBrowserWorkspaceSchema>;
 
 export const LocalBrowserControllerLeaseSchema = z
@@ -166,6 +200,7 @@ export const LocalBrowserHttpRequestSchema = z.discriminatedUnion('kind', [
       kind: z.literal('claim'),
       controllerId: UuidSchema,
       acceptWork: z.boolean(),
+      acceptPreview: z.boolean().default(false),
     })
     .strict(),
   z.object({ kind: z.literal('heartbeat'), ...owned }).strict(),

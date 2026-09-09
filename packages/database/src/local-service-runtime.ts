@@ -18,6 +18,8 @@ import {
 } from './runtime-ledger/types.ts';
 import { RuntimePolicyError } from './runtime-policy.ts';
 import { ownedLocalCommandRun } from './local-command-service.ts';
+import { localPreviewEnabled } from './local-preview-authority.ts';
+import { readLocalPreviewSummary } from './local-preview.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Database = ReturnType<typeof getDatabase>;
@@ -222,8 +224,13 @@ export async function readLocalService(
   database: Database = getDatabase(),
 ) {
   const [row] = await database<
-    (ServiceRow & { snapshot: RuntimeOperationSnapshot })[]
-  >`select s.*,o.snapshot from allrice_local_services s
+    (ServiceRow & {
+      snapshot: RuntimeOperationSnapshot;
+      bridge_payload: unknown;
+      preview_frozen: boolean;
+    })[]
+  >`select s.*,o.snapshot,o.bridge_payload,exists(select 1 from allrice_employee_runs e where e.run_id=o.run_id
+    and e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'local.preview.open') as preview_frozen from allrice_local_services s
     join allrice_runtime_operations o on o.id=s.operation_id where s.operation_id=${operationId}`;
   if (!row) return null;
   const requests = await database<
@@ -249,6 +256,12 @@ export async function readLocalService(
     visibility: 'container_only',
     ready: row.ready,
     stopRequested: row.stop_requested,
+    previewEnabled:
+      localPreviewEnabled() &&
+      row.preview_frozen &&
+      RuntimeLocalCommandSchema.parse(row.bridge_payload).arguments.background
+        ?.readiness.kind === 'http',
+    preview: await readLocalPreviewSummary(operationId, database),
     requests,
   };
 }

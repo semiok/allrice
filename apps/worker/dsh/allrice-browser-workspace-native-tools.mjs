@@ -13,6 +13,19 @@ const schema = z
   .strict();
 export const browserWorkspaceNativeTools = [
   {
+    canonicalName: 'local.preview.open',
+    wireName: 'local_preview_open',
+    description:
+      'Request the isolated preview of an already-approved live HTTP service in the current Run. Supply only processId, never host, URL, port or credentials. Bridge preview must be opted in. The first navigation requires exact approval; pending may be checked using the same processId. This does not start a new service, publish host ports or replay unknown effects.',
+    parameters: { processId: { type: 'string', required: true } },
+    timeoutMs: 180000,
+    isConcurrencySafe: false,
+    validateArguments(args) {
+      z.object({ processId: z.uuid() }).strict().parse(args);
+      return args;
+    },
+  },
+  {
     canonicalName: 'local.browser.workspace',
     wireName: 'local_browser_workspace',
     description:

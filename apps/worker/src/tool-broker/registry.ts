@@ -4,6 +4,7 @@ import { createAutomation } from './handlers/automation.js';
 import { runManagedBrowser } from './handlers/browser.js';
 import { runBrowserWorkspace } from './handlers/browser-workspace.js';
 import { runLocalBrowserWorkspace } from './handlers/local-browser.js';
+import { runLocalPreview } from './handlers/local-preview.js';
 import { createWorkspaceExport } from './handlers/delivery.js';
 import { executeCloudCommand } from './handlers/cloud.js';
 import { executeMcpTool } from './handlers/mcp.js';
@@ -61,6 +62,7 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'local.preview.open': registration('managed_browser', runLocalPreview),
   'browser.workspace': registration('managed_browser', runBrowserWorkspace),
   'local.browser.workspace': registration(
     'managed_browser',

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { LocalBrowserWorkspaceSchema } from './local-browser.ts';
 import {
   localPreviewOrigin,
   localPreviewUrlAllowed,
@@ -75,6 +76,48 @@ describe('P23 preview capability contract', () => {
     ])
       expect(
         LocalPreviewTargetSchema.safeParse({ ...target, ...overrides }).success,
+      ).toBe(false);
+  });
+  it('browser transport rejects preview scope/profile/grant/lifetime mismatches and ambient file or credential permissions', () => {
+    const expiresAt = new Date(Date.now() + 4000).toISOString(),
+      hardDeadlineAt = new Date(Date.now() + 60000).toISOString();
+    const t = { ...target, hardDeadlineAt },
+      w = {
+        id: t.browserWorkspaceId,
+        scope: t.scope,
+        ownerId: t.ownerId,
+        deviceId: t.deviceId,
+        runId: t.runId,
+        rootRunId: t.rootRunId,
+        sessionId: randomUUID(),
+        profileId: t.browserProfileId,
+        logicalProfileId: randomUUID(),
+        grantId: t.browserGrantId,
+        grantRevision: 1,
+        persistLogin: false,
+        profile: { version: 1, origins: [localPreviewOrigin(t.endpointId)] },
+        fence: 1,
+        acknowledgedFence: 0,
+        state: 'starting',
+        desiredControl: 'agent',
+        expiresAt: hardDeadlineAt,
+        revoked: false,
+        preview: { target: t, endpointLeaseId: randomUUID(), expiresAt },
+      };
+    expect(LocalBrowserWorkspaceSchema.safeParse(w).success).toBe(true);
+    for (const extra of [
+      { deviceId: randomUUID() },
+      { profileId: randomUUID() },
+      { grantId: randomUUID() },
+      { runId: randomUUID() },
+      { persistLogin: true },
+      { scope: { ...t.scope, workspaceId: randomUUID() } },
+      { profile: { ...w.profile, allowUploads: true } },
+      { profile: { ...w.profile, origins: ['https://example.com'] } },
+      { expiresAt: new Date(Date.now() + 1000).toISOString() },
+    ])
+      expect(
+        LocalBrowserWorkspaceSchema.safeParse({ ...w, ...extra }).success,
       ).toBe(false);
   });
 });
