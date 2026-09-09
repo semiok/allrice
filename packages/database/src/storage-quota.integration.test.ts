@@ -18,6 +18,7 @@ import {
   createStorageMetadata,
   markStorageReady,
   abandonStorageMetadata,
+  getStoredFile,
 } from './data.ts';
 import {
   createToolBrokerExportObject,
@@ -498,6 +499,45 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
       release.resolve();
       await transaction.catch(() => undefined);
     }
+  });
+  it('preserves organization-scoped request and visibility while charging the explicit object workspace', async () => {
+    const { f, metadata } = await sources();
+    await db`update allrice_memberships set workspace_id=null where organization_id=${f.org} and user_id=${f.user}`;
+    const context = {
+      ...f.context,
+      workspaceId: null,
+      memberships: f.context.memberships.map((m) => ({
+        ...m,
+        workspaceId: null,
+      })),
+    };
+    const baseline = await used(f);
+    await quota(f, baseline + metadata.sizeBytes);
+    const object = await createStorageMetadata(context, {
+      ...metadata,
+      visibility: 'organization',
+    });
+    expect(object.object.workspaceId).toBe(f.workspace);
+    expect(object.visibility).toBe('organization');
+    await markStorageReady(context, metadata.id);
+    expect((await getStoredFile(context, metadata.id)).object.workspaceId).toBe(
+      f.workspace,
+    );
+    await expect(
+      createStorageMetadata(context, {
+        ...metadata,
+        id: randomUUID(),
+        visibility: 'organization',
+      }),
+    ).rejects.toThrow('quota_exceeded');
+    await expect(
+      createStorageMetadata(context, {
+        ...metadata,
+        id: randomUUID(),
+        workspaceId: null,
+      }),
+    ).rejects.toThrow();
+    expect(await used(f)).toBe(baseline + metadata.sizeBytes);
   });
   it('a session-locked workbench reader and browser publication cannot recreate the tenant/session lock cycle', async () => {
     const { f, calls } = await sources(),

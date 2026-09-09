@@ -40,6 +40,13 @@ it cannot create an uncharged increase. Workflow references to an already-ready,
 scope/checksum/size-identical object do not double charge. Rollback and commit
 release the transaction gate; unrelated tenant/workspace keys remain independent.
 
+An organization-scoped request may have `context.workspaceId = null` and use
+organization visibility. Its storage object still has an explicit workspace:
+the original metadata schema requires a UUID and the storage table's workspace
+column is NOT NULL. Uploads continue to derive this gate from
+`metadata.workspaceId`, not the request's optional selected workspace. No
+`${organization}:null` writable object namespace existed or is introduced.
+
 Validation is PostgreSQL in a disposable schema, no personal accounts or models:
 all eight real entrypoints are traced to a first-position gate and quota denial;
 four cross-source concurrent pairs admit only one fitting increment; pending,
