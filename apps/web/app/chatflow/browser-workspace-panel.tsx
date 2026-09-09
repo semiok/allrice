@@ -219,8 +219,12 @@ export function BrowserWorkspacePanel({
         return (
           <article key={w.id}>
             <h3>
-              {w.transport === 'local' ? '本地浏览器' : '云端浏览器'} · 当前 Run
-              专用
+              {w.preview
+                ? '本地项目预览'
+                : w.transport === 'local'
+                  ? '本地浏览器'
+                  : '云端浏览器'}{' '}
+              · 当前 Run 专用
             </h3>
             {w.transport === 'local' && (
               <p>
@@ -229,6 +233,16 @@ export function BrowserWorkspacePanel({
                 {w.persistLogin
                   ? '已明确允许此授权保存本机登录资料；撤销后需等待设备实际清理回执。'
                   : '本次使用临时登录资料，结束后清理；不继承个人浏览器登录。'}
+              </p>
+            )}
+            {w.preview && (
+              <p>
+                来源：已批准的本地沙箱服务 · 容器端口 {w.preview.port} ·
+                最迟结束：
+                {new Date(w.preview.hardDeadlineAt).toLocaleString()}。
+                不开放本机端口或公共网址，不继承 SaaS 登录；服务停止或 Bridge
+                断开后不可用。 当前仅支持 HTTP 页面预览，不支持
+                WebSocket、热更新和登录资料保存。
               </p>
             )}
             <p role="status">

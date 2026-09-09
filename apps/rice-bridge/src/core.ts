@@ -522,6 +522,19 @@ export async function start(
         browserIdentity.deviceId,
       ),
       paired: browserPaired,
+      preview: runner
+        ? {
+            runner,
+            enabled: async () =>
+              (await browserPaired()) &&
+              (await sandboxOptIn(config).catch(() => false)) &&
+              (await (
+                await import('./local-preview-settings.js')
+              )
+                .localPreviewOptIn(config)
+                .catch(() => false)),
+          }
+        : undefined,
       enabled: async () =>
         (await browserPaired()) &&
         (await localBrowserOptIn(config).catch(() => false)),
@@ -802,6 +815,9 @@ export function help() {
   );
   console.info(
     '  browser status|enable|disable\n独立浏览器默认关闭；需要已安装的受信任 Chrome、站点授权和逐次动作审批，不读取日常 Chrome 登录资料，也不要求选中文件工作区。',
+  );
+  console.info(
+    '  preview status|enable|disable\n项目预览需独立启用、本地浏览器与沙箱均可用，以及网页批准的运行中服务；不开放本机端口或公共网址。',
   );
 }
 

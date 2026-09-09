@@ -10,7 +10,7 @@ export type DesktopRequest = { v: 1; id: string } & (
   | { type: 'workspace'; path: string }
   | { type: 'picker'; pickerId: string; path: string | null }
   | { type: 'revoke'; confirmDeviceId: string }
-  | { type: 'browser'; enabled: boolean }
+  | { type: 'browser' | 'preview'; enabled: boolean }
 );
 
 /** Strict local-control schema. It cannot represent a shell or tool request. */
@@ -39,9 +39,13 @@ export function parseDesktopRequest(bytes: string): DesktopRequest {
     picker: ['pickerId', 'path'],
     revoke: ['confirmDeviceId'],
     browser: ['enabled'],
+    preview: ['enabled'],
   };
   if (!Object.hasOwn(keys, row.type)) throw Error('DESKTOP_REQUEST_INVALID');
-  if (row.type === 'browser' && typeof row.enabled !== 'boolean')
+  if (
+    ['browser', 'preview'].includes(row.type) &&
+    typeof row.enabled !== 'boolean'
+  )
     throw Error('DESKTOP_REQUEST_INVALID');
   const allowed = ['v', 'id', 'type', ...keys[row.type]!];
   if (
@@ -128,6 +132,9 @@ export function desktopSafeError(error: unknown) {
     'LOCAL_BROWSER_UNAVAILABLE',
     'LOCAL_BROWSER_SETTINGS_UNSAFE',
     'LOCAL_BROWSER_LAUNCHER_UNAVAILABLE',
+    'LOCAL_PREVIEW_SETTINGS_UNSAFE',
+    'LOCAL_PREVIEW_REQUIRES_BROWSER_AND_SANDBOX',
+    'LOCAL_PREVIEW_RUNNER_UNAVAILABLE',
   ]);
   return safe.has(code) ? code : 'BRIDGE_ACTION_FAILED';
 }

@@ -31,6 +31,8 @@ async function main() {
   // controller reads the device/server-bound private setting before every I/O.
   if (command === 'browser')
     return (await import('./local-browser-settings.js')).localBrowserCli(args);
+  if (command === 'preview')
+    return (await import('./local-preview-cli.js')).localPreviewCli(args);
   if (command === 'sandbox' && (args[0] ?? 'status') === 'status')
     return sandbox(args);
   if (

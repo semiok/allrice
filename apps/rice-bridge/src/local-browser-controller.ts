@@ -4,6 +4,8 @@ import {
   canonicalRuntimeBridgeJson,
   localBrowserProfileBinding,
   runtimeContractEqual,
+  LocalPreviewLeaseSchema,
+  localPreviewOrigin,
   type BrowserObservation,
   type LocalBrowserControllerLease,
   type LocalBrowserOperation,
@@ -21,6 +23,7 @@ import {
 } from './local-browser-driver.js';
 import type { LocalBrowserOutbox } from './local-browser-outbox.js';
 import type { LocalBrowserProfiles } from './local-browser-profiles.js';
+import type { LocalCommandRunner } from './local-command-runner.js';
 
 type Active = {
   workspace: LocalBrowserWorkspace;
@@ -57,6 +60,7 @@ export class LocalBrowserController {
       outbox: LocalBrowserOutbox;
       enabled: () => Promise<boolean>;
       paired: () => Promise<boolean>;
+      preview?: { enabled: () => Promise<boolean>; runner: LocalCommandRunner };
       startDriver?: typeof startLocalBrowserDriver;
       onError?: (
         code: 'LOCAL_BROWSER_UNAVAILABLE' | 'LOCAL_BROWSER_CLEANUP_PENDING',
@@ -86,6 +90,7 @@ export class LocalBrowserController {
       expiry,
       sentAt + localBrowserControllerLeaseMs,
       Date.parse(workspace.expiresAt),
+      workspace.preview ? Date.parse(workspace.preview.expiresAt) : Infinity,
     );
   }
   private async assertAlive(active: Active) {
@@ -98,6 +103,8 @@ export class LocalBrowserController {
       !(await this.input.paired()) ||
       !(await this.input.enabled())
     )
+      throw lost();
+    if (active.workspace.preview && !(await this.input.preview?.enabled()))
       throw lost();
     const workspace = active.workspace;
     if (
@@ -119,6 +126,36 @@ export class LocalBrowserController {
       )
         throw Error('LOCAL_BROWSER_CONTROL_CHANGED');
     } else if (!active.observing) throw Error('LOCAL_BROWSER_CONTROL_CHANGED');
+  }
+  private async currentPreview(active: Active) {
+    await this.assertCurrent(active);
+    if (!this.input.preview || !(await this.input.preview.enabled()))
+      throw lost();
+    const lease = LocalPreviewLeaseSchema.parse(active.workspace.preview),
+      t = lease.target,
+      w = active.workspace;
+    if (
+      t.browserWorkspaceId !== w.id ||
+      t.browserProfileId !== w.profileId ||
+      t.browserGrantId !== w.grantId ||
+      t.deviceId !== this.input.deviceId ||
+      t.ownerId !== w.ownerId ||
+      t.runId !== w.runId ||
+      t.rootRunId !== w.rootRunId ||
+      !runtimeContractEqual(t.scope, w.scope) ||
+      w.persistLogin ||
+      !runtimeContractEqual(w.profile.origins, [
+        localPreviewOrigin(t.endpointId),
+      ]) ||
+      w.profile.allowUploads ||
+      w.profile.allowDownloads ||
+      w.profile.allowHumanCredentials ||
+      Date.parse(lease.expiresAt) <= Date.now() ||
+      Date.parse(lease.expiresAt) > Date.now() + 5000 ||
+      Date.parse(t.hardDeadlineAt) <= Date.now()
+    )
+      throw lost();
+    return lease;
   }
   private async flush() {
     for (const receipt of await this.input.outbox.pending()) {
@@ -216,6 +253,7 @@ export class LocalBrowserController {
       if (
         !paired ||
         !(await this.input.enabled()) ||
+        (active.workspace.preview && !(await this.input.preview?.enabled())) ||
         Date.now() >= active.deadline
       ) {
         if (!paired) await this.retirePairing();
@@ -237,6 +275,12 @@ export class LocalBrowserController {
         response.workspace.id !== active.workspace.id ||
         response.workspace.runId !== active.workspace.runId ||
         response.workspace.profileId !== active.workspace.profileId ||
+        !runtimeContractEqual(
+          response.workspace.preview?.target ?? null,
+          active.workspace.preview?.target ?? null,
+        ) ||
+        response.workspace.preview?.endpointLeaseId !==
+          active.workspace.preview?.endpointLeaseId ||
         !runtimeContractEqual(
           response.workspace.profile,
           active.workspace.profile,
@@ -452,81 +496,89 @@ export class LocalBrowserController {
       uncertain: false,
     };
     this.active = active;
-    active.starting = (this.input.startDriver ?? startLocalBrowserDriver)({
-      binding: localBrowserProfileBinding(workspace),
-      profiles: this.input.profiles,
-      assertAlive: () => this.assertAlive(active),
-      leaseExpiresAt: () => active.deadline,
-      options: {
-        profileId: workspace.profileId,
-        profile: workspace.profile,
-        assertCurrent: () => this.assertCurrent(active),
-        requestStarted: () => {
-          active.pendingRequests++;
-          let released = false;
-          return () => {
-            if (!released) {
-              released = true;
-              active.pendingRequests--;
-            }
-          };
-        },
-        requestSent: () => {
-          active.networkEffect = true;
-        },
-        requestApproval: async (effect) => {
-          const operation = active.operation;
-          const token = active.operationLeaseToken;
-          if (!operation || !token || active.observing) throw lost();
-          const operationId = operation.snapshot.binding.attempt.operationId;
-          await this.assertCurrent(active);
-          let approval = await this.input.authority.requestPermission({
-            kind: 'request_approval',
-            ...this.owned(active),
-            requestId: randomUUID(),
-            operationId,
-            operationLeaseToken: token,
-            effect,
-          });
-          while (approval.status === 'pending') {
-            await sleep(100);
-            await this.assertCurrent(active);
-            approval = await this.input.authority.requestPermission({
-              kind: 'request_status',
-              ...this.owned(active),
-              operationId,
-              approvalOperationId: approval.operationId,
-            });
-          }
-          if (approval.status !== 'ready' || !approval.permissionToken)
-            throw Error('LOCAL_BROWSER_POLICY_DENIED');
-          const permissionToken = approval.permissionToken;
-          active.pendingRequests++;
-          let completed = false;
-          return {
-            complete: async (confirmed) => {
-              if (completed) return;
-              completed = true;
-              if (!confirmed) active.uncertain = true;
-              try {
-                await this.input.authority.acknowledge({
-                  kind: 'request_complete',
-                  ...this.owned(active),
-                  approvalOperationId: approval.operationId,
-                  permissionToken,
-                  confirmed,
-                });
-              } catch {
-                await this.stopActive(active).catch(() => undefined);
-              } finally {
+    try {
+      if (workspace.preview) await this.currentPreview(active);
+      active.starting = (this.input.startDriver ?? startLocalBrowserDriver)({
+        binding: localBrowserProfileBinding(workspace),
+        profiles: this.input.profiles,
+        assertAlive: () => this.assertAlive(active),
+        leaseExpiresAt: () => active.deadline,
+        preview:
+          workspace.preview && this.input.preview
+            ? {
+                runner: this.input.preview.runner,
+                current: () => this.currentPreview(active),
+              }
+            : undefined,
+        options: {
+          profileId: workspace.profileId,
+          profile: workspace.profile,
+          assertCurrent: () => this.assertCurrent(active),
+          requestStarted: () => {
+            active.pendingRequests++;
+            let released = false;
+            return () => {
+              if (!released) {
+                released = true;
                 active.pendingRequests--;
               }
-            },
-          };
+            };
+          },
+          requestSent: () => {
+            active.networkEffect = true;
+          },
+          requestApproval: async (effect) => {
+            const operation = active.operation;
+            const token = active.operationLeaseToken;
+            if (!operation || !token || active.observing) throw lost();
+            const operationId = operation.snapshot.binding.attempt.operationId;
+            await this.assertCurrent(active);
+            let approval = await this.input.authority.requestPermission({
+              kind: 'request_approval',
+              ...this.owned(active),
+              requestId: randomUUID(),
+              operationId,
+              operationLeaseToken: token,
+              effect,
+            });
+            while (approval.status === 'pending') {
+              await sleep(100);
+              await this.assertCurrent(active);
+              approval = await this.input.authority.requestPermission({
+                kind: 'request_status',
+                ...this.owned(active),
+                operationId,
+                approvalOperationId: approval.operationId,
+              });
+            }
+            if (approval.status !== 'ready' || !approval.permissionToken)
+              throw Error('LOCAL_BROWSER_POLICY_DENIED');
+            const permissionToken = approval.permissionToken;
+            active.pendingRequests++;
+            let completed = false;
+            return {
+              complete: async (confirmed) => {
+                if (completed) return;
+                completed = true;
+                if (!confirmed) active.uncertain = true;
+                try {
+                  await this.input.authority.acknowledge({
+                    kind: 'request_complete',
+                    ...this.owned(active),
+                    approvalOperationId: approval.operationId,
+                    permissionToken,
+                    confirmed,
+                  });
+                } catch {
+                  await this.stopActive(active).catch(() => undefined);
+                } finally {
+                  active.pendingRequests--;
+                }
+              },
+            };
+          },
         },
-      },
-    });
-    try {
+      });
       active.driver = await active.starting;
       if (active.closing) {
         await active.driver.close('lost');
@@ -548,6 +600,7 @@ export class LocalBrowserController {
       const claim = await this.input.authority.claim(
         this.controllerId,
         enabled,
+        enabled && !!this.input.preview && (await this.input.preview.enabled()),
       );
       for (const revocation of claim.revocations) await this.revoke(revocation);
       if (claim.workspace && claim.lease) {

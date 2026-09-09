@@ -199,6 +199,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         add(menu, "配对设备…", #selector(pairDevice), enabled: !paired && !busy)
         add(menu, "选择工作区…", #selector(selectWorkspace), enabled: paired && !busy)
         add(menu, state["browserEnabled"] as? Bool == true ? "关闭独立浏览器…" : "启用独立浏览器…", #selector(toggleBrowser), enabled: paired && !busy)
+        add(menu, state["previewEnabled"] as? Bool == true ? "关闭项目预览…" : "启用项目预览…", #selector(togglePreview), enabled: paired && !busy)
         if state["mode"] as? String == "paused" {
             add(menu, "恢复连接", #selector(resume), enabled: paired && !busy)
         } else { add(menu, "暂停并停止本地任务", #selector(pause), enabled: paired && !busy) }
@@ -317,6 +318,16 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func selectWorkspace() { chooseFolder(pickerId: nil) }
+    @objc private func togglePreview() {
+        let enabled = state["previewEnabled"] as? Bool != true
+        let alert = NSAlert()
+        alert.messageText = enabled ? "启用项目预览？" : "关闭项目预览？"
+        alert.informativeText = "切换前会先停止本地任务。启用需要独立浏览器与命令沙箱均已启用，仍须网页明确批准运行中的项目服务。预览使用独立浏览器，不开放本机端口、公共网址或主站身份。不会自动重启旧服务。"
+        alert.addButton(withTitle: enabled ? "启用" : "关闭")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { action("preview", fields: ["enabled": enabled]) }
+    }
     @objc private func toggleBrowser() {
         let enabled = state["browserEnabled"] as? Bool != true
         let alert = NSAlert()
