@@ -29,3 +29,5 @@
 另有实际 HTTP 协商、有限桌面协议、CLI 许可顺序和持久化测试。数据库→实际服务循环→Bridge→Chrome 全链路、最终双架构 ZIP、Dev 部署仍是独立发布门禁，以执行总表的最终证据为准；本文不表示已完成发布。测试仅使用临时身份/数据/目录，不代表实际计费模型 E2E。
 
 `scripts/acceptance/runtime/p23-preview-workbench.ts` 在独立端口、临时 PostgreSQL schema 和私有 Chrome 中验证生产 ChatFlow：历史 Run 点击准备后立即刷新对应浏览器面板、刷新页面保留 pending 状态、重复请求不创建第二个端点、不伪造 control ACK 或导航、客户端不能指定 URL/端口、390px 窄屏与停止服务后禁止再次准备。该 UI 门禁使用合成身份及服务事实，不等同于上述真实 VM/Bridge 全链路。
+
+`scripts/acceptance/runtime/b5-shipped-browser.mjs <解压后的 RiceBridgeCore>` 不重打测试 SEA，也不替换 driver：直接运行指定分发程序的 `start`，经私有 loopback 合成 authority 验证真实 Chrome 截图/control ACK、正常停止、租约到期和撤权后的进程组清理。回执绑定实际 Core 与 Launcher SHA-256；不使用个人配对、Keychain、数据库或 VM。候选包通过不能替代最终 main 同源双架构包重验。
