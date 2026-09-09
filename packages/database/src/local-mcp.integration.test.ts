@@ -17,6 +17,7 @@ vi.mock('./core/client.ts', async (original) => ({
   getDatabase: () => db,
 }));
 const schema = `p17_local_mcp_${randomUUID().replaceAll('-', '')}`;
+const fallbackSchema = `${schema}_fallback`;
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -49,13 +50,22 @@ suite(
       ]);
       await admin.unsafe(`create schema ${schema}`);
       created = true;
-      url.searchParams.set('options', `-csearch_path=${schema},public`);
+      await admin.unsafe(`create schema ${fallbackSchema}`);
+      url.searchParams.set(
+        'options',
+        `-csearch_path=${schema},${fallbackSchema},public`,
+      );
       db = postgres(url.toString(), { max: 8, onnotice: () => {} });
       const directory = new URL('../migrations/', import.meta.url);
       for (const name of (await readdir(directory))
         .filter((f) => f.endsWith('.sql'))
         .sort())
         await db.unsafe(await readFile(new URL(name, directory), 'utf8'));
+      // CI has a fully migrated public schema. Reproduce its same-name table
+      // fallback without reading or changing any shared schema's business data.
+      await admin.unsafe(
+        `create table ${fallbackSchema}.allrice_bridge_folder_grants (like ${schema}.allrice_bridge_folder_grants including all)`,
+      );
       for (const name of [
         'ALLRICE_LOCAL_MCP_ENABLED',
         'ALLRICE_LOCAL_COMMAND_ENABLED',
@@ -67,8 +77,10 @@ suite(
     }, 120000);
     afterAll(async () => {
       await db?.end({ timeout: 5 });
-      if (created && /^p17_local_mcp_[a-f0-9]{32}$/.test(schema))
+      if (created && /^p17_local_mcp_[a-f0-9]{32}$/.test(schema)) {
         await admin.unsafe(`drop schema ${schema} cascade`);
+        await admin.unsafe(`drop schema if exists ${fallbackSchema} cascade`);
+      }
       await admin?.end({ timeout: 5 });
       vi.unstubAllEnvs();
     });
@@ -598,16 +610,34 @@ suite(
       expect(changes.find((x) => x.status === 'rejected')).toMatchObject({
         reason: { code: 'MCP_BINDING_CHANGED' },
       });
-      // Isolated schema only: produce a real PostgreSQL error inside the
-      // device lookup previously hidden by catch-all fallbacks.
-      await db`alter table allrice_bridge_folder_grants rename to p17_temporarily_unavailable_grants`;
+      expect(
+        (await f.store.freeze(f.scope, f.employee, f.version)).connections,
+      ).toHaveLength(1);
+      // Keep the relation name/OID: removing it lets PostgreSQL legitimately
+      // resolve the same name in a later schema (CI's populated public), then
+      // retain that prepared relation even after our table is renamed back.
+      // A missing selected column instead guarantees a real SQL error against
+      // this isolated relation, without weakening the production catch policy.
+      await db.unsafe(
+        `alter table ${schema}.allrice_bridge_folder_grants rename column runtime_generation to p17_unavailable_runtime_generation`,
+      );
       try {
         await expect(
           f.store.freeze(f.scope, f.employee, f.version),
-        ).rejects.toMatchObject({ code: '42P01' });
+        ).rejects.toMatchObject({ code: '42703' });
       } finally {
-        await db`alter table p17_temporarily_unavailable_grants rename to allrice_bridge_folder_grants`;
+        await db.unsafe(
+          `alter table ${schema}.allrice_bridge_folder_grants rename column p17_unavailable_runtime_generation to runtime_generation`,
+        );
       }
+      // The same pool must recover, not a replacement pool with cleared plans.
+      expect(
+        (await f.store.freeze(f.scope, f.employee, f.version)).connections,
+      ).toHaveLength(1);
+      const [fallback] = await db.unsafe<{ n: number }[]>(
+        `select count(*)::integer as n from ${fallbackSchema}.allrice_bridge_folder_grants`,
+      );
+      expect(fallback?.n).toBe(0);
     });
     it('discovery after connection rotation is stale even with a genuine applied old receipt', async () => {
       const f = await fixture(),
