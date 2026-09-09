@@ -27,6 +27,10 @@ async function main() {
     return (
       await import('./local-mcp-credentials.js')
     ).localMcpCredentialHelp();
+  // This opt-in can be changed while the menu-bar instance is running; its
+  // controller reads the device/server-bound private setting before every I/O.
+  if (command === 'browser')
+    return (await import('./local-browser-settings.js')).localBrowserCli(args);
   if (command === 'sandbox' && (args[0] ?? 'status') === 'status')
     return sandbox(args);
   if (
