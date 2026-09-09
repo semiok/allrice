@@ -85,6 +85,7 @@ export class BridgeJournal {
   private closed = false;
   private poisoned = false;
   private recoveryCursor = 0;
+  private mcpRecoveryCursor = 0;
 
   private constructor(
     private readonly database: DatabaseSync,
@@ -192,6 +193,11 @@ export class BridgeJournal {
           file_index INTEGER NOT NULL CHECK(file_index>=0 AND file_index<32),
           result TEXT NOT NULL,
           PRIMARY KEY(operation_id,file_index)
+        );
+        CREATE TABLE IF NOT EXISTS local_mcp_calls (
+          operation_id TEXT PRIMARY KEY REFERENCES entries(operation_id),
+          request_id TEXT NOT NULL,
+          digest TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS output_outbox (
           operation_id TEXT NOT NULL REFERENCES entries(operation_id),
@@ -469,6 +475,53 @@ export class BridgeJournal {
         .run(operationId);
       return { receiptId: row.start_receipt_id };
     });
+  }
+
+  /** Durable intent before writing a single tools/call to its stdio pipe.
+   * Every repeat is unknown, never a second invocation, even after restart. */
+  async prepareLocalMcpCall(
+    operationId: string,
+    input: { requestId: string; digest: string },
+  ) {
+    await this.guard();
+    if (
+      !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.requestId) ||
+      !/^sha256:[a-f0-9]{64}$/.test(input.digest)
+    )
+      throw new BridgeJournalError('MCP_INVALID_CALL_INTENT');
+    this.transaction(() => {
+      const row = this.entry(operationId),
+        dispatch = RuntimeBridgeDispatchSchema.parse(JSON.parse(row.dispatch));
+      if (
+        row.state !== 'executing' ||
+        dispatch.payload.capability !== 'local.mcp.call'
+      )
+        throw new BridgeJournalError('MCP_UNKNOWN');
+      if (
+        this.database
+          .prepare('SELECT 1 FROM local_mcp_calls WHERE operation_id=?')
+          .get(operationId)
+      )
+        throw new BridgeJournalError('MCP_UNKNOWN');
+      this.database
+        .prepare(
+          'INSERT INTO local_mcp_calls(operation_id,request_id,digest) VALUES(?,?,?)',
+        )
+        .run(operationId, input.requestId, input.digest);
+    });
+  }
+
+  async unknownLocalMcpOperations() {
+    await this.guard();
+    const select = this.database.prepare(
+      "SELECT rowid,dispatch FROM entries WHERE state='unknown' AND json_extract(dispatch,'$.payload.capability') IN ('local.mcp.call','local.mcp.discover') AND rowid>? ORDER BY rowid LIMIT 16",
+    );
+    let rows = select.all(this.mcpRecoveryCursor);
+    if (!rows.length) rows = select.all(0);
+    this.mcpRecoveryCursor = Number(rows.at(-1)?.rowid ?? 0);
+    return rows.map((row) =>
+      RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
+    );
   }
 
   private append(

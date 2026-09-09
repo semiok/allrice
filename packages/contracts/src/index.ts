@@ -51,6 +51,8 @@ export * from './secrets.ts';
 export * from './skills.ts';
 export * from './skill-bundle.ts';
 export * from './mcp.ts';
+export * from './mcp-schema.ts';
+export * from './local-mcp.ts';
 export * from './sse.ts';
 export * from './storage.ts';
 export * from './tool-manifest.ts';

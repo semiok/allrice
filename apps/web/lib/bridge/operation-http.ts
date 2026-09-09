@@ -39,6 +39,7 @@ export interface RuntimeBridgeLedgerPort {
     deviceId: string;
     leaseMs: number;
     supportsLocalCommand?: boolean;
+    supportsLocalMcp?: boolean;
     supportsProjectDiagnostics?: boolean;
     supportsNpmDependencies?: boolean;
     supportsBackgroundServices?: boolean;
@@ -169,6 +170,7 @@ export function createRuntimeBridgeHttpHandler(input: {
             (key) =>
               ![
                 'supportsLocalCommand',
+                'supportsLocalMcp',
                 'supportsChangeset',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
@@ -178,6 +180,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           ) ||
           ('supportsLocalCommand' in selection &&
             typeof selection.supportsLocalCommand !== 'boolean') ||
+          ('supportsLocalMcp' in selection &&
+            typeof selection.supportsLocalMcp !== 'boolean') ||
           ('supportsChangeset' in selection &&
             typeof selection.supportsChangeset !== 'boolean') ||
           ('supportsProjectDiagnostics' in selection &&
@@ -195,6 +199,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           deviceId: device.id,
           leaseMs: 120_000,
           supportsLocalCommand: selection.supportsLocalCommand === true,
+          supportsLocalMcp: selection.supportsLocalMcp === true,
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
           supportsNpmDependencies: selection.supportsNpmDependencies === true,

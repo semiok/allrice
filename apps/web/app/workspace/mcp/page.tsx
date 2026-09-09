@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { DataAccessError, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
 import { McpSettings } from '../../runtime-console/mcp-settings';
+import { LocalMcpSettings } from '../../runtime-console/local-mcp-settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,6 +54,7 @@ export default async function WorkspaceMcpPage() {
       <Link href="/chatflow">← 返回工作台</Link>
       <h1>当前租户的 MCP 连接</h1>
       <McpSettings workspaceId={workspaceId} />
+      <LocalMcpSettings workspaceId={workspaceId} />
     </main>
   );
 }

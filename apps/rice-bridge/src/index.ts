@@ -18,6 +18,15 @@ async function main() {
   if (command === '--version' || command === 'version')
     return console.info(bridgeVersion);
   if (command === 'status') return status();
+  if (command === 'local-mcp' && args.length === 1 && args[0] === 'status')
+    return (await import('./local-mcp-settings.js')).localMcpSettingsCli(args);
+  if (
+    command === 'local-mcp' &&
+    (args.length === 0 || (args.length === 1 && args[0] === '--help'))
+  )
+    return (
+      await import('./local-mcp-credentials.js')
+    ).localMcpCredentialHelp();
   if (command === 'sandbox' && (args[0] ?? 'status') === 'status')
     return sandbox(args);
   if (
@@ -29,6 +38,7 @@ async function main() {
       'sandbox',
       'revoke',
       'desktop',
+      'local-mcp',
     ].includes(command)
   )
     return help();
@@ -42,6 +52,16 @@ async function main() {
     else if (command === 'start') await start();
     else if (command === 'sandbox') await sandbox(args);
     else if (command === 'revoke') await revoke();
+    else if (command === 'local-mcp') {
+      if (['enable', 'disable'].includes(args[0] ?? ''))
+        await (
+          await import('./local-mcp-settings.js')
+        ).localMcpSettingsCli(args);
+      else
+        await (
+          await import('./local-mcp-credentials.js')
+        ).localMcpCredentialCli(args);
+    }
   } finally {
     lock.close();
   }

@@ -364,6 +364,7 @@ export async function start(
     process.env.ALLRICE_LOCAL_DOCKER_SOCKET ?? sandboxConfig?.socketPath;
   const runnerImage =
     process.env.ALLRICE_LOCAL_COMMAND_IMAGE ?? sandboxConfig?.imageDigest;
+  const runnerMcpBinding = { server: config.server, deviceId: config.deviceId };
   const runner =
     operationLedgerEnabled &&
     (process.env.ALLRICE_LOCAL_COMMAND_ENABLED ?? (optedIn ? '1' : '0')) ===
@@ -375,6 +376,10 @@ export async function start(
       ? new (await import('./local-command-runner.js')).LocalCommandRunner({
           socketPath: runnerSocket,
           imageDigest: runnerImage,
+          localMcpEnabled: () =>
+            import('./local-mcp-settings.js').then((module) =>
+              module.localMcpEnabledForBinding(runnerMcpBinding),
+            ),
         })
       : undefined;
   let runnerAvailable = false;
@@ -723,7 +728,7 @@ export async function revoke() {
 
 export function help() {
   console.info(
-    `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  --version\n  revoke\n\n沙箱默认关闭，enable 需要已安装的独立 allrice-b2 VM；不自动安装、不开放宿主 Shell，仍需服务端启用、工作区授权和逐次审批。`,
+    `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  local-mcp status|enable|disable\n  local-mcp --help\n  --version\n  revoke\n\n沙箱默认关闭，enable 需要已安装的独立 allrice-b2 VM；不自动安装、不开放宿主 Shell，仍需服务端启用、工作区授权和逐次审批。`,
   );
 }
 

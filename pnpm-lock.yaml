@@ -67,6 +67,9 @@ importers:
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@modelcontextprotocol/sdk':
+        specifier: 1.30.0
+        version: 1.30.0(zod@4.4.3)
       ws:
         specifier: 8.21.3
         version: 8.21.3

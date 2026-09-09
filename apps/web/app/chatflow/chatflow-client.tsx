@@ -52,9 +52,11 @@ import {
 export function ChatFlowClient({
   workbenchEnabled = false,
   localCommandsEnabled = false,
+  localMcpEnabled = false,
 }: {
   workbenchEnabled?: boolean;
   localCommandsEnabled?: boolean;
+  localMcpEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
@@ -774,6 +776,7 @@ export function ChatFlowClient({
                 <ChatTranscript
                   atBottom={atTranscriptBottom}
                   localCommandsEnabled={localCommandsEnabled}
+                  localMcpEnabled={localMcpEnabled}
                   messages={history?.messages ?? []}
                   onLoadRunTrace={loadRunTrace}
                   onRecoverRun={recoverRun}

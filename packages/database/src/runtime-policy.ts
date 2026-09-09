@@ -11,6 +11,7 @@ import {
   runtimeContractEqual,
   RuntimePolicyControlsSchema,
   UuidSchema,
+  McpError,
   type RequestContext,
   type RuntimeActionApprovalRequest,
   type RuntimeActionApprovalResponse,
@@ -21,6 +22,7 @@ import type postgres from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { checkCloudBindingAuthority } from './cloud-authority.ts';
 import { checkMcpBindingAuthority } from './mcp-authority.ts';
+import { assertLocalMcpApprovalAuthority } from './local-mcp-connections.ts';
 
 type Transaction = postgres.TransactionSql;
 type Database = ReturnType<typeof getDatabase>;
@@ -646,6 +648,27 @@ export async function decideRuntimeActionApproval(
         request.binding,
       );
       policyExpiresAt = authority.policyExpiresAt;
+      if (
+        ['local.mcp.discover', 'local.mcp.call'].includes(
+          request.binding.action,
+        )
+      ) {
+        try {
+          await assertLocalMcpApprovalAuthority(
+            transaction,
+            {
+              organizationId: context.organizationId,
+              workspaceId: request.task.scope.workspaceId,
+              actorId: context.actor.id,
+            },
+            request.binding,
+          );
+        } catch (error) {
+          if (error instanceof McpError)
+            throw new RuntimePolicyError('local_mcp_authority_changed');
+          throw error;
+        }
+      }
       const decidedAt = await clock(transaction);
       if (
         authority.policyExpiresAt <= decidedAt ||

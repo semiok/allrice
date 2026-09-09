@@ -97,9 +97,23 @@ describe('portal authentication response boundary', () => {
       proxy(new NextRequest(`https://${host}/api/v1/admin/mcp`, { headers }))
         .status,
     ).toBe(200);
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/api/v1/admin/local-mcp`, { headers }),
+      ).status,
+    ).toBe(200);
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/api/v1/admin/local-mcp`, {
+          headers: { host },
+        }),
+      ).status,
+    ).toBe(401);
     for (const path of [
       '/api/v1/admin/mcp-extra',
       '/api/v1/admin/mcp/extra',
+      '/api/v1/admin/local-mcp-extra',
+      '/api/v1/admin/local-mcp/extra',
       '/api/v1/admin/platform-employees',
       '/api/v1/admin/model-governance',
     ])

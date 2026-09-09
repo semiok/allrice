@@ -83,6 +83,21 @@ export async function executeRiceTool(
     );
   }
   const args = objectValue(input.call.arguments);
+  if (
+    ['local.mcp.discover', 'local.mcp.call'].includes(input.call.name) &&
+    (!input.localMcp?.connections.some(
+      (c) => c.connectionId === args.connectionId,
+    ) ||
+      (input.call.name === 'local.mcp.call' &&
+        !input.localMcp.tools.some(
+          (t) => t.connectionId === args.connectionId && t.name === args.tool,
+        )))
+  )
+    throw new HandlerError(
+      'TOOL_CAPABILITY_DENIED',
+      '当前 Run 未冻结此设备的本地 MCP 连接或工具授权',
+      false,
+    );
   try {
     if (
       input.platformTestRunId &&

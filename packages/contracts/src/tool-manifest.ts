@@ -32,6 +32,20 @@ export interface AllRiceToolManifestEntry {
  */
 export const allRiceToolManifest = [
   {
+    canonicalName: 'local.mcp.discover',
+    capability: 'secret:use',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_mcp_discover',
+  },
+  {
+    canonicalName: 'local.mcp.call',
+    capability: 'secret:use',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_mcp_call',
+  },
+  {
     canonicalName: 'workspace.reconciliation.export',
     capability: 'storage:write',
     risk: 'managed_write',

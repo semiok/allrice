@@ -279,7 +279,12 @@ async function cancelLocked(
       row.snapshot.status === 'cancel_requested' &&
       row.lease_token_hash === null &&
       row.bridge_payload !== null &&
-      ['local.process.execute', 'local.fs.changeset'].includes(
+      [
+        'local.process.execute',
+        'local.fs.changeset',
+        'local.mcp.discover',
+        'local.mcp.call',
+      ].includes(
         RuntimeBridgePayloadSchema.parse(row.bridge_payload).capability,
       )
     ) {
@@ -708,6 +713,7 @@ export function createRuntimeOperationLedger(options: {
       deviceId: string;
       leaseMs: number;
       supportsLocalCommand?: boolean;
+      supportsLocalMcp?: boolean;
       supportsProjectDiagnostics?: boolean;
       supportsNpmDependencies?: boolean;
       supportsBackgroundServices?: boolean;
@@ -727,7 +733,7 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
-          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
+          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {

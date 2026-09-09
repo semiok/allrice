@@ -33,6 +33,10 @@ import { DataAccessError } from '../data.ts';
 import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
 import { createEmployeeMcpBindingStore } from '../mcp-employee-bindings.ts';
 import {
+  createLocalMcpStore,
+  localMcpEnabled,
+} from '../local-mcp-connections.ts';
+import {
   resolveEmployeeCapabilitiesForRun,
   synchronizeEmployeeSkillBindings,
 } from '../capabilities/capability-registry.ts';
@@ -93,6 +97,8 @@ const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'workspace.reconciliation.export': 'storage:write',
   'cloud.process.execute': 'storage:write',
   'cloud.mcp.call': 'secret:use',
+  'local.mcp.discover': 'secret:use',
+  'local.mcp.call': 'secret:use',
   'workspace.skill.read': 'storage:read',
   'workspace.document.read': 'storage:read',
   'web.search': 'network:outbound',
@@ -1271,11 +1277,23 @@ export async function prepareEmployeeRunBinding(input: {
           assignment.id,
         )
       : [];
+  const localMcp =
+    localMcpEnabled() && manifest.data.schemaVersion === 2
+      ? await createLocalMcpStore().freeze(
+          {
+            organizationId: input.context.organizationId,
+            workspaceId: input.workspaceId,
+            actorId,
+          },
+          assignment.employee_id,
+          assignment.id,
+        )
+      : { connections: [], tools: [] };
   // Explicit tenant MCP binding is an additional source for the already
   // declared secret capability, never a bypass for Deny or a fabricated Skill.
   // It does not activate network tools or any other capability.
   if (
-    mcpTools.length &&
+    (mcpTools.length || localMcp.connections.length) &&
     manifest.data.schemaVersion === 2 &&
     manifest.data.capabilities.includes('secret:use') &&
     !manifest.data.securityPolicy.deniedCapabilities.includes('secret:use') &&
@@ -1295,6 +1313,7 @@ export async function prepareEmployeeRunBinding(input: {
     executionSnapshot: {
       schemaVersion: 2,
       ...(mcpEnabled ? { mcpTools } : {}),
+      ...(localMcp.connections.length ? { localMcp } : {}),
       employee: {
         id: assignment.employee_id,
         key: assignment.employee_key,

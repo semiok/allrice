@@ -171,7 +171,7 @@ export function createMcpStore(
   ) {
     const [row] = await tx<
       ConnectionRow[]
-    >`select b.id,b.connector_id as definition_id,b.organization_id,b.workspace_id,d.name,c.endpoint,c.revision,(b.enabled and d.enabled) as enabled,b.credential_reference,c.credential_envelope,c.discovery_state,c.discovery_code,c.checked_at from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where b.id=${UuidSchema.parse(bindingId)} and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId}`;
+    >`select b.id,b.connector_id as definition_id,b.organization_id,b.workspace_id,d.name,c.endpoint,c.revision,(b.enabled and d.enabled) as enabled,b.credential_reference,c.credential_envelope,c.discovery_state,c.discovery_code,c.checked_at from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and b.id=${UuidSchema.parse(bindingId)} and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId}`;
     if (!row) throw new McpError('MCP_DENIED');
     return row;
   }
@@ -281,7 +281,7 @@ export function createMcpStore(
       await currentAdmin(db(), scope);
       const rows = await db()<
         { binding_id: string }[]
-      >`select binding_id from allrice_mcp_binding_config where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} order by binding_id`;
+      >`select binding_id from allrice_mcp_binding_config where transport='streamable_http' and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} order by binding_id`;
       return Promise.all(
         rows.map((row) => publicConnection(scope, row.binding_id)),
       );
@@ -352,7 +352,7 @@ export function createMcpStore(
             created_by: string;
             credential_reference: string;
           }[]
-        >`select c.binding_id,c.organization_id,c.workspace_id,c.revision,c.endpoint,b.created_by,b.credential_reference from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where b.enabled and d.enabled and (c.discovery_state='queued' or (c.discovery_state='running' and c.discovery_lease_expires_at < clock_timestamp())) order by c.binding_id for update of c skip locked limit 1`;
+        >`select c.binding_id,c.organization_id,c.workspace_id,c.revision,c.endpoint,b.created_by,b.credential_reference from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and b.enabled and d.enabled and (c.discovery_state='queued' or (c.discovery_state='running' and c.discovery_lease_expires_at < clock_timestamp())) order by c.binding_id for update of c skip locked limit 1`;
         if (!row) return null;
         await tx`update allrice_mcp_binding_config set discovery_state='running',discovery_owner=${workerId},discovery_token_hash=${hash(token)},discovery_lease_expires_at=clock_timestamp()+interval '60 seconds' where binding_id=${row.binding_id}`;
         return {
@@ -446,7 +446,7 @@ export function createMcpStore(
       const scope = McpScopeSchema.parse(scopeInput);
       const rows = await db()<
         { binding_id: string }[]
-      >`select c.binding_id from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and d.enabled`;
+      >`select c.binding_id from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and d.enabled`;
       const frozen: FrozenMcpTool[] = [];
       for (const row of rows) {
         if (connectionIds && !connectionIds.includes(row.binding_id)) continue;

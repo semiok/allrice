@@ -38,6 +38,8 @@ export const runtimeGovernedActions = [
   'local.fs.changeset',
   'cloud.process.execute',
   'cloud.mcp.call',
+  'local.mcp.discover',
+  'local.mcp.call',
 ] as const;
 
 const readActions = new Set<string>([
@@ -79,6 +81,8 @@ export function evaluateRuntimePolicy(
       'local.fs.changeset',
       'cloud.process.execute',
       'cloud.mcp.call',
+      'local.mcp.discover',
+      'local.mcp.call',
     ].includes(action) &&
     matches.some((rule) => rule.effect === 'allow')
   )

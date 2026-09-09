@@ -183,6 +183,10 @@ export async function executeEmployeeRun({
           .sort(),
         capabilities: [...resolved.grantedCapabilities].sort(),
         ...(resolved.executionSnapshot?.schemaVersion === 2 &&
+        resolved.executionSnapshot.localMcp
+          ? { localMcp: resolved.executionSnapshot.localMcp }
+          : {}),
+        ...(resolved.executionSnapshot?.schemaVersion === 2 &&
         resolved.executionSnapshot.mcpTools?.length
           ? { mcpTools: resolved.executionSnapshot.mcpTools }
           : {}),
@@ -316,6 +320,9 @@ export async function executeEmployeeRun({
       resolved.grantedCapabilities,
       allowedToolNames,
       executionSnapshot.schemaVersion === 2 ? executionSnapshot.mcpTools : [],
+      executionSnapshot.schemaVersion === 2
+        ? executionSnapshot.localMcp
+        : undefined,
     );
     const routePlan = decideCapabilityRoute({
       request: {
@@ -613,6 +620,9 @@ export async function executeEmployeeRun({
       allowedToolNames,
       selectedToolNames,
       executionSnapshot.schemaVersion === 2 ? executionSnapshot.mcpTools : [],
+      executionSnapshot.schemaVersion === 2
+        ? executionSnapshot.localMcp
+        : undefined,
     );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
@@ -771,6 +781,10 @@ export async function executeEmployeeRun({
                       : value;
                   const toolResult = await executeRiceTool({
                     nativeSkills: resolved.nativeSkills,
+                    localMcp:
+                      executionSnapshot.schemaVersion === 2
+                        ? executionSnapshot.localMcp
+                        : undefined,
                     frozenMcpTools:
                       executionSnapshot.schemaVersion === 2
                         ? executionSnapshot.mcpTools
@@ -952,6 +966,10 @@ export async function executeEmployeeRun({
                   ? (call) =>
                       executeRiceTool({
                         nativeSkills: resolved.nativeSkills,
+                        localMcp:
+                          executionSnapshot.schemaVersion === 2
+                            ? executionSnapshot.localMcp
+                            : undefined,
                         frozenMcpTools:
                           executionSnapshot.schemaVersion === 2
                             ? executionSnapshot.mcpTools

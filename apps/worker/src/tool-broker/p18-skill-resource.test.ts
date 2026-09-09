@@ -103,6 +103,8 @@ describe('P18 immutable Skill resource reader', () => {
     expect([...nativeGovernedToolNames]).toEqual([
       'cloud.process.execute',
       'cloud.mcp.call',
+      'local.mcp.discover',
+      'local.mcp.call',
     ]);
   });
   it('returns exact frozen script bytes as inert data, with no execution authority', async () => {
