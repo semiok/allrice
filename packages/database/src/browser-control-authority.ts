@@ -25,6 +25,84 @@ import { currentLocalPreviewAuthority } from './local-preview-authority.ts';
 export const browserControlEnabled = () =>
   process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
   process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1';
+
+/** Browser admission and its read-only projections must enter the ledger's
+ * root lock before policy controls, browser rows or parent-operation checks.
+ * Resolve the root/parent from the stored, same-owner input, not a client hint.
+ * The root serializes all its operations, including a ledger call which has
+ * already locked the child. These locks supplement, never replace, admission. */
+export async function lockBrowserBindingOperations(
+  tx: postgres.TransactionSql,
+  ctx: RuntimePolicyPrincipal,
+  raw: unknown,
+) {
+  const binding = RuntimeActionBindingSchema.parse(raw);
+  if (
+    ![
+      'cloud.browser.act',
+      'cloud.browser.observe',
+      'local.browser.act',
+      'local.browser.observe',
+    ].includes(binding.action)
+  )
+    return;
+  if (
+    ctx.actor.type !== 'user' ||
+    binding.requestedBy.type !== 'user' ||
+    binding.requestedBy.id !== ctx.actor.id ||
+    binding.task.scope.organizationId !== ctx.organizationId ||
+    binding.task.scope.workspaceId !== ctx.workspaceId ||
+    binding.task.scope.projectId !== null
+  )
+    throw new RuntimePolicyError('binding_scope_mismatch');
+  const [stored] = await tx<
+    {
+      binding: unknown;
+      payload: unknown;
+      run_id: string;
+      browser_workspace_id: string;
+    }[]
+  >`
+    select i.binding,i.payload,w.run_id,i.browser_workspace_id from allrice_browser_operation_inputs i
+    join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+    where i.operation_id=${binding.attempt.operationId} and w.organization_id=${ctx.organizationId}
+      and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id}`;
+  if (
+    !stored ||
+    !runtimeContractEqual(stored.binding, binding) ||
+    stored.run_id !== binding.task.runId ||
+    binding.task.rootRunId !== stored.run_id
+  )
+    throw new RuntimePolicyError('browser_input_changed');
+  const command = BrowserCommandSchema.parse(stored.payload);
+  if (command.workspaceId !== stored.browser_workspace_id)
+    throw new RuntimePolicyError('browser_input_changed');
+  const [root] = await tx`select root_run_id from allrice_runtime_roots
+    where root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId}
+      and workspace_id=${ctx.workspaceId} and task->'scope'=${tx.json(binding.task.scope)} for update`;
+  if (!root) throw new RuntimePolicyError('browser_authority_unavailable');
+  // A newly registered child may not exist yet during ledger.createOperation;
+  // its parent must still pass the full running/fence check below admission.
+  if (command.action.type === 'request') {
+    const [parent] = await tx`select o.id from allrice_runtime_operations o
+      join allrice_browser_operation_inputs i on i.operation_id=o.id
+      where o.id=${command.action.parentOperationId} and i.browser_workspace_id=${stored.browser_workspace_id}
+      and o.root_run_id=${binding.task.rootRunId} and o.organization_id=${ctx.organizationId}
+      and o.workspace_id=${ctx.workspaceId} for share of o`;
+    if (!parent)
+      throw new RuntimePolicyError('browser_request_parent_unavailable');
+  }
+  await tx`select id from allrice_runtime_operations where id=${binding.attempt.operationId}
+    and root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId}
+    and workspace_id=${ctx.workspaceId} for share`;
+  const [unchanged] =
+    await tx`select i.operation_id from allrice_browser_operation_inputs i
+    join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+    where i.operation_id=${binding.attempt.operationId} and i.browser_workspace_id=${stored.browser_workspace_id}
+      and i.binding=${tx.json(binding)} and i.payload=${tx.json(command)} and w.run_id=${binding.task.runId}
+      and w.organization_id=${ctx.organizationId} and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id}`;
+  if (!unchanged) throw new RuntimePolicyError('browser_input_changed');
+}
 export type BrowserWorkspaceRow = {
   id: string;
   organization_id: string;
@@ -227,6 +305,7 @@ export async function checkBrowserBindingAuthority(
   ctx: RuntimePolicyPrincipal,
   binding: RuntimeActionBinding,
 ) {
+  await lockBrowserBindingOperations(tx, ctx, binding);
   const [stored] = await tx<
     {
       binding: unknown;

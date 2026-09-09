@@ -20,7 +20,10 @@ import {
   createBrowserOperationLedger,
   acknowledgeBrowserControl,
 } from './browser-control.ts';
-import { checkBrowserBindingAuthority } from './browser-control-authority.ts';
+import {
+  checkBrowserBindingAuthority,
+  lockBrowserBindingOperations,
+} from './browser-control-authority.ts';
 import { cloudStableId } from './cloud-execution.ts';
 import {
   RuntimePolicyError,
@@ -51,6 +54,22 @@ export async function ownedLocalBrowserOperation(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
+    // Discover only this authenticated device/owner's immutable input, then
+    // enter root→operations before lockLocalBrowserController takes browser.
+    // The original query and all authority/lease checks run again under locks.
+    const [registered] = await tx<{ binding: unknown }[]>`select i.binding
+      from allrice_browser_operation_inputs i join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+      join allrice_runtime_operations o on o.id=i.operation_id
+      where i.operation_id=${UuidSchema.parse(input.operationId)} and w.id=${UuidSchema.parse(input.workspaceId)}
+        and w.organization_id=${device.organizationId} and w.workspace_id=${device.workspaceId} and w.owner_id=${device.ownerId}
+        and o.organization_id=${device.organizationId} and o.workspace_id=${device.workspaceId} and o.device_id=${device.id}`;
+    if (!registered)
+      throw new RuntimePolicyError('local_browser_operation_denied');
+    await lockBrowserBindingOperations(
+      tx,
+      localBrowserPrincipal(device),
+      registered.binding,
+    );
     const current = await lockLocalBrowserController(tx, device, input, admit);
     const [row] = await tx<
       OperationRow[]

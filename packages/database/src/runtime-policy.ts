@@ -23,7 +23,10 @@ import { getDatabase } from './core/client.ts';
 import { checkCloudBindingAuthority } from './cloud-authority.ts';
 import { checkMcpBindingAuthority } from './mcp-authority.ts';
 import { assertLocalMcpApprovalAuthority } from './local-mcp-connections.ts';
-import { checkBrowserBindingAuthority } from './browser-control-authority.ts';
+import {
+  checkBrowserBindingAuthority,
+  lockBrowserBindingOperations,
+} from './browser-control-authority.ts';
 
 type Transaction = postgres.TransactionSql;
 type Database = ReturnType<typeof getDatabase>;
@@ -389,6 +392,11 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     now: Date;
   }): Promise<void | { status: 'waiting_user' }> => {
     const { transaction } = input;
+    await lockBrowserBindingOperations(
+      transaction,
+      options.context,
+      input.binding,
+    );
     const controls = await controlsFor(transaction, options.context);
     await identity(transaction, options.context);
     const { binding, policyExpiresAt } = await checkBinding(
@@ -504,6 +512,11 @@ export async function requestRuntimeActionApproval(
   )
     throw new RuntimePolicyError('approval_lifetime_invalid');
   return database.begin(async (transaction) => {
+    await lockBrowserBindingOperations(
+      transaction,
+      options.context,
+      bindingInput,
+    );
     const controls = await controlsFor(transaction, options.context);
     await identity(transaction, options.context);
     const { binding, policyExpiresAt } = await checkBinding(
@@ -605,6 +618,22 @@ export async function decideRuntimeActionApproval(
 ) {
   const submitted = RuntimeActionApprovalResponseSchema.parse(input);
   return database.begin(async (transaction) => {
+    // Discover an already stored approval in the authenticated owner scope;
+    // do not use the submitted response to select a root. Re-read/validate the
+    // approval below after taking root→operations→controls→approval locks.
+    const [registered] = await transaction<{ runtime_request: unknown }[]>`
+      select runtime_request from allrice_approval_requests where id=${UuidSchema.parse(approvalId)}
+        and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+        and resource_type='runtime_operation' and runtime_request->>'respondentId'=${context.actor.id}`;
+    if (!registered) throw new RuntimePolicyError('approval_not_found');
+    const discovered = RuntimeActionApprovalRequestSchema.parse(
+      registered.runtime_request,
+    );
+    await lockBrowserBindingOperations(
+      transaction,
+      context,
+      discovered.binding,
+    );
     const controls = await controlsFor(transaction, context);
     await identity(transaction, context);
     const { row, request } = await readApproval(
@@ -612,6 +641,8 @@ export async function decideRuntimeActionApproval(
       context,
       approvalId,
     );
+    if (!runtimeContractEqual(request, discovered))
+      throw new RuntimePolicyError('approval_binding_mismatch');
     const now = await clock(transaction);
     // Browser/device clocks are not authorization clocks. Stamp the accepted
     // response using PostgreSQL, just like request expiry and decided_at. For
