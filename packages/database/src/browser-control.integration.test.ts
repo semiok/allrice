@@ -29,7 +29,10 @@ import {
   startBrowserWorkspaceController,
   waitBrowserOperationResult,
 } from '../../../apps/worker/src/browser-control/controller.js';
-import { setTimeout as delay } from 'node:timers/promises';
+import {
+  setTimeout as delay,
+  setImmediate as yieldTurn,
+} from 'node:timers/promises';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -464,6 +467,129 @@ suite('P21 real PostgreSQL control and exact admission', () => {
         false,
         db,
       );
+      await controller.closed;
+    }
+  }, 15000);
+  it('does not return a prepared result before its ledger receipt and resulting observation are durable', async () => {
+    const f = await fixture();
+    const approved = await createBrowserOperation(
+      f.context,
+      {
+        ...f.command,
+        observationId: null,
+        action: { type: 'navigate', url: profile.origins[0] + '/' },
+      },
+      randomUUID(),
+      db,
+    );
+    const operationId = approved.snapshot.binding.attempt.operationId;
+    await f.approve(approved);
+    let prepared!: () => void,
+      observedPrepared!: () => void,
+      resumeReceipt!: () => void;
+    let capturing!: () => void, resumeCapture!: () => void;
+    const preparedResult = new Promise<void>((r) => {
+      prepared = r;
+    });
+    const readerObserved = new Promise<void>((r) => {
+      observedPrepared = r;
+    });
+    const receiptGate = new Promise<void>((r) => {
+      resumeReceipt = r;
+    });
+    const captureStarted = new Promise<void>((r) => {
+      capturing = r;
+    });
+    const captureGate = new Promise<void>((r) => {
+      resumeCapture = r;
+    });
+    const instrumented = new Proxy(db, {
+      apply(target, thisArg, args: unknown[]) {
+        const fragments = args[0];
+        const sql = Array.isArray(fragments) ? fragments.join('?') : '';
+        const result = Reflect.apply(target, thisArg, args);
+        if (sql.includes('update allrice_browser_operation_inputs set result='))
+          return result.then(async (rows: unknown) => {
+            // The real autocommit completed; only delivery to finish() pauses.
+            // No row/receipt/ledger status or query result is manufactured.
+            prepared();
+            await receiptGate;
+            return rows;
+          });
+        if (sql.includes('select i.result,o.snapshot'))
+          return result.then(
+            (rows: { result: unknown; snapshot: { status: string } }[]) => {
+              if (rows[0]?.result && rows[0].snapshot.status === 'running')
+                observedPrepared();
+              return rows;
+            },
+          );
+        return result;
+      },
+    });
+    const fake = {
+      observe: async (fence: number) => {
+        capturing();
+        await captureGate;
+        return {
+          observation: f.observation(fence),
+          screenshot: Buffer.from('synthetic-image'),
+        };
+      },
+      perform: vi.fn(async () => ({})),
+      close: async () => {},
+    };
+    const abort = new AbortController();
+    const controller = startBrowserWorkspaceController(f.w, {
+      storage: f.storage,
+      database: instrumented,
+      driver: async () => fake,
+      signal: abort.signal,
+    });
+    let resultTask: ReturnType<typeof waitBrowserOperationResult> | undefined;
+    let returned = false;
+    try {
+      await preparedResult;
+      const [saved] =
+        await db`select i.result,o.snapshot->>'status' as status from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id where o.id=${operationId}`;
+      expect(saved!.result).toBeTruthy();
+      expect(saved!.status).toBe('running');
+      resultTask = waitBrowserOperationResult(
+        f.context,
+        f.w.id,
+        operationId,
+        instrumented,
+        abort.signal,
+      );
+      void resultTask.then(
+        () => {
+          returned = true;
+        },
+        () => {
+          returned = true;
+        },
+      );
+      await readerObserved;
+      await yieldTurn(); // Drain the read's promise continuations, not a timed completion guess.
+      expect(returned).toBe(false);
+      resumeReceipt();
+      await captureStarted;
+      const [projected] =
+        await db`select snapshot->>'status' as status from allrice_runtime_operations where id=${operationId}`;
+      expect(projected!.status).toBe('succeeded');
+      await yieldTurn();
+      expect(returned).toBe(false);
+      resumeCapture();
+      const result = await resultTask;
+      expect(result.status).toBe('succeeded');
+      expect(result.observation!.id).not.toBe(f.obs.id);
+      expect(result.observationRefreshRequired).toBe(false);
+      expect(fake.perform).toHaveBeenCalledOnce();
+    } finally {
+      resumeReceipt();
+      resumeCapture();
+      abort.abort();
+      await resultTask?.catch(() => undefined);
       await controller.closed;
     }
   }, 15000);

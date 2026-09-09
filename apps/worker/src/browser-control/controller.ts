@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   makeObjectKey,
   RuntimeOperationSnapshotSchema,
+  isTerminalRuntimeOperationStatus,
   BrowserCommandSchema,
   type BrowserCommand,
   type BrowserObservation,
@@ -696,6 +697,17 @@ export async function waitBrowserOperationResult(
         untrustedExternalContent: true,
       };
     if (op.result) {
+      // finish() persists a recoverable receipt before projecting the ledger.
+      // Prepared output alone is not a completed action: wait for the exact
+      // operation's durable outcome/uncertainty, under the same abort/current
+      // workspace authority bounds as the rest of this wait.
+      if (
+        !isTerminalRuntimeOperationStatus(snapshot.status) &&
+        snapshot.status !== 'unknown'
+      ) {
+        await delay(100);
+        continue;
+      }
       const fresh =
         w.observation && w.observation.id !== op.observation_id
           ? w.observation
