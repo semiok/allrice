@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import type { UserQuestionAnswerSubmission } from '@allrice/contracts';
+import Link from 'next/link';
 
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
@@ -53,10 +54,12 @@ export function ChatFlowClient({
   workbenchEnabled = false,
   localCommandsEnabled = false,
   localMcpEnabled = false,
+  experienceEnabled = false,
 }: {
   workbenchEnabled?: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
+  experienceEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
@@ -718,6 +721,14 @@ export function ChatFlowClient({
                   </div>
                 </div>
                 <div className={conversationUi.headerActions}>
+                  {experienceEnabled && workspace ? (
+                    <Link
+                      className={workbenchUi.entry}
+                      href={`/workspace/experience?workspaceId=${encodeURIComponent(workspace.workspaceId)}${activeId ? `&sessionId=${encodeURIComponent(activeId)}` : ''}`}
+                    >
+                      经验沉淀
+                    </Link>
+                  ) : null}
                   {workbenchEnabled ? (
                     <button
                       type="button"

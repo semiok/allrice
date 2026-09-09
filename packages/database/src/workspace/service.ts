@@ -159,6 +159,7 @@ interface MemoryRow {
 
 interface MemoryRecallRow {
   id: string;
+  revision: number;
   content: string;
   source_type: WorkspaceMemory['sourceType'];
   source_id: string | null;
@@ -787,7 +788,7 @@ async function loadWorkspaceMemoryRecallCandidates(input: {
   const employeeScope = input.employeeId ?? null;
   const embedding = vectorLiteral(embedWorkspaceText(input.query));
   const rows = await sql<MemoryRecallRow[]>`
-    select m.id, m.content, m.source_type, m.source_id,
+    select m.id, m.revision, m.content, m.source_type, m.source_id,
       m.lifecycle_state, m.memory_class, m.trust_level, m.confidence,
       m.source_label, m.captured_at, m.updated_at,
       greatest(0, 1 - (c.embedding <=> ${embedding}::vector)) as vector_score,
@@ -826,6 +827,7 @@ async function loadWorkspaceMemoryRecallCandidates(input: {
   `;
   return rows.map((row) => ({
     id: row.id,
+    revision: row.revision,
     content: row.content,
     sourceType: row.source_type,
     sourceId: row.source_id,
@@ -876,6 +878,7 @@ async function recallForReply(
   }
   return recalled.map((memory) => ({
     id: memory.id,
+    revision: memory.revision,
     content: memory.content,
     lifecycleState: memory.lifecycleState,
     memoryClass: memory.memoryClass,
@@ -1706,6 +1709,9 @@ export async function correctWorkspaceMemory(
     `;
     const current = currentRows[0];
     if (!current) throw new DataAccessError('not_found');
+    const governed =
+      await transaction`select memory_id from allrice_experience_reviews where memory_id=${current.id}`;
+    if (governed.length) throw new DataAccessError('authorization_denied');
     const revision = current.revision + 1;
     const updatedRows = await transaction<MemoryRow[]>`
       update allrice_memories
@@ -1854,6 +1860,9 @@ export async function promoteWorkspaceMemory(
     `;
     const current = currentRows[0];
     if (!current) throw new DataAccessError('not_found');
+    const governed =
+      await transaction`select memory_id from allrice_experience_reviews where memory_id=${current.id}`;
+    if (governed.length) throw new DataAccessError('authorization_denied');
     if (current.lifecycle_state === 'durable') {
       return { memory: current, promoted: false };
     }

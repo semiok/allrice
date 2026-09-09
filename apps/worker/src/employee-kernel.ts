@@ -53,7 +53,10 @@ export function assembleEmployeeKernel(input: {
     input.checkpoint,
   );
   const memories = input.resolved.promptSnapshot.memories
-    .map((memory) => `- [${memory.id}] ${memory.content}`)
+    .map(
+      (memory) =>
+        `- [${memory.id}${memory.revision === undefined ? '' : ` · revision ${memory.revision}`}] ${memory.content}`,
+    )
     .join('\n');
   // Durable v1/v2 snapshots may still say `codex`, but new execution has one
   // production harness only. Codex subscription access is a DSH Provider.
