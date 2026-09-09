@@ -27,3 +27,5 @@
 真实 Intel 专用 VM 已验证 relay 7 项；原生监督 Chrome + 同一 VM 的生产 driver 验证包括 HTML/JS 渲染、POST 批准前 0 次/批准后 1 次、拒绝不写、关闭后批准不写、缺失 relay/越界 URL 拒绝、target 变化、短租约过期和服务停止。早期关闭竞态的失败保留，修复后重跑；不是以 synthetic renderer 替代物理执行。
 
 另有实际 HTTP 协商、有限桌面协议、CLI 许可顺序和持久化测试。数据库→实际服务循环→Bridge→Chrome 全链路、最终双架构 ZIP、Dev 部署仍是独立发布门禁，以执行总表的最终证据为准；本文不表示已完成发布。测试仅使用临时身份/数据/目录，不代表实际计费模型 E2E。
+
+`scripts/acceptance/runtime/p23-preview-workbench.ts` 在独立端口、临时 PostgreSQL schema 和私有 Chrome 中验证生产 ChatFlow：历史 Run 点击准备后立即刷新对应浏览器面板、刷新页面保留 pending 状态、重复请求不创建第二个端点、不伪造 control ACK 或导航、客户端不能指定 URL/端口、390px 窄屏与停止服务后禁止再次准备。该 UI 门禁使用合成身份及服务事实，不等同于上述真实 VM/Bridge 全链路。

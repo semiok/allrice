@@ -24,11 +24,13 @@ export function BrowserWorkspacePanel({
   workspaceId,
   tenantHeaders,
   runActive,
+  refreshKey = 0,
 }: {
   runId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
+  refreshKey?: number;
 }) {
   const [workspaces, setWorkspaces] = useState<BrowserWorkspaceView[]>([]),
     [error, setError] = useState(''),
@@ -81,7 +83,7 @@ export function BrowserWorkspacePanel({
       abort.abort();
       clearTimeout(timer);
     };
-  }, [api, headersKey, runActive, revision]);
+  }, [api, headersKey, runActive, revision, refreshKey]);
   async function post(body: unknown, path = api) {
     const response = await fetch(path, {
       method: 'POST',
