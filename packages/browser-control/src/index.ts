@@ -14,14 +14,17 @@ import {
 } from '@allrice/contracts';
 const hash = (value: string | Buffer) =>
   `sha256:${createHash('sha256').update(value).digest('hex')}`;
-const safeUrl = (value: string) => {
+export const browserObservationUrl = (value: string) => {
   try {
     const u = new URL(value);
-    return u.origin + u.pathname;
+    return u.protocol === 'https:' || u.protocol === 'http:'
+      ? u.origin + u.pathname
+      : 'about:blank';
   } catch {
     return 'about:blank';
   }
 };
+const safeUrl = browserObservationUrl;
 export type BrowserRequestEffect = {
   url: string;
   urlDigest: string;
