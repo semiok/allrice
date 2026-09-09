@@ -467,8 +467,8 @@ export function startBrowserWorkspaceController(
       const returned = await driver!
         .perform(row.payload.action, row.observation, bytes)
         .finally(() => bytes?.fill(0));
-      // Permit immediate page request interception to register before ending action ownership.
-      await delay(50);
+      // The renderer awaits the click's causal navigation signal; only requests
+      // already owned by this exact action may extend its settlement.
       const networkDeadline = Math.min(
         initial.expires_at.getTime(),
         Date.now() + 120000,

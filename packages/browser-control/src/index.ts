@@ -516,7 +516,11 @@ export async function createControlledBrowserRenderer(
       }
     }
     if (expected.inputType === 'file') throw Error('BROWSER_UPLOAD_REQUIRED');
-    await h.click({ noWaitAfter: true });
+    // Retain the browser's causal navigation barrier. Returning after only the
+    // mouse event can precede its intercepted form POST and incorrectly hand
+    // control back to observation. Approval may outlive the normal 5s element
+    // timeout, but never this cap or the controller's earlier lease/close.
+    await h.click({ noWaitAfter: false, timeout: 120000 });
     return {};
   }
   return {
