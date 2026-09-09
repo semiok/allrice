@@ -8,6 +8,7 @@ import type {
 import {
   BrowserObservationSchema,
   browserObservationLifetimeMs,
+  reservedLocalPreviewUrl,
   runtimeContractEqual,
   type BrowserAction,
   type BrowserObservation,
@@ -46,6 +47,19 @@ export type BrowserDriverOptions = {
   requestSent: () => void;
   /** Synchronous ownership reservation before any asynchronous request checks. */
   requestStarted: () => () => void;
+  /** P23 trusted process adapter only. Reserved origins NEVER fall back to
+   * normal network/DNS, and this hook runs after the same current-authority
+   * and exact write-request approval gates as ordinary browser traffic. */
+  localPreviewRelay?: (request: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body: Buffer;
+  }) => Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: Buffer;
+  }>;
 };
 export type BrowserDriver = {
   observe: (
@@ -154,7 +168,26 @@ export async function createControlledBrowserRenderer(
         authorized.add(request);
         options.requestSent();
       }
-      await route.fallback();
+      if (reservedLocalPreviewUrl(request.url())) {
+        if (!options.localPreviewRelay) throw Error();
+        const body = request.postDataBuffer() ?? Buffer.alloc(0);
+        try {
+          const result = await options.localPreviewRelay({
+            url: request.url(),
+            method: request.method(),
+            headers: request.headers(),
+            body,
+          });
+          try {
+            await options.assertCurrent();
+            await route.fulfill(result);
+          } finally {
+            result.body.fill(0);
+          }
+        } finally {
+          body.fill(0);
+        }
+      } else await route.fallback();
     } catch {
       await route.abort('blockedbyclient').catch(() => undefined);
     } finally {

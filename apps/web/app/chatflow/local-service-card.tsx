@@ -5,6 +5,10 @@ import {
   type RuntimeLocalServiceConfig,
   type RuntimeLocalServiceRequest,
 } from '@allrice/contracts';
+import {
+  localPreviewAvailability,
+  type LocalPreviewView,
+} from '../../lib/chatflow/local-preview-state';
 export interface LocalServiceView {
   processId: string;
   attemptId: string;
@@ -13,6 +17,8 @@ export interface LocalServiceView {
   containerId: string | null;
   visibility: string;
   stopRequested: boolean;
+  previewEnabled?: boolean;
+  preview?: LocalPreviewView | null;
   requests: {
     request: RuntimeLocalServiceRequest;
     submitted: boolean;
@@ -47,6 +53,20 @@ export function LocalServiceCard({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState('');
+  const [previewIntent, setPreviewIntent] = useState<LocalPreviewView | null>(
+    null,
+  );
+  useEffect(() => {
+    setPreviewIntent(null);
+  }, [service?.processId]);
+  const previewState = localPreviewAvailability({
+    enabled: service?.previewEnabled === true,
+    http: config.readiness.kind === 'http',
+    state: service?.state ?? 'starting',
+    stopRequested: service?.stopRequested ?? true,
+    hardDeadlineAt: service?.hardDeadlineAt ?? '',
+    preview: service?.preview ?? previewIntent,
+  });
   const lastInput = useRef<{ key: string; input: unknown } | null>(null);
   const request = service?.requests.find(
     (x) =>
@@ -58,7 +78,10 @@ export function LocalServiceCard({
     setText('');
     lastInput.current = null;
   }, [request?.requestId]);
-  async function act(action: 'stop' | 'input', kind: 'text' | 'eof' = 'text') {
+  async function act(
+    action: 'stop' | 'input' | 'preview',
+    kind: 'text' | 'eof' = 'text',
+  ) {
     if (!service || busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
@@ -108,6 +131,8 @@ export function LocalServiceCard({
           '请求未确认：可能已过期、已停止或已在其他页面处理，请刷新状态。',
         );
       if (action === 'input') setText('');
+      if (action === 'preview')
+        setPreviewIntent((await response.json()) as LocalPreviewView);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : '操作失败');
@@ -122,7 +147,8 @@ export function LocalServiceCard({
       <p>
         有限后台服务：最多 {Math.ceil(config.durationMs / 1000)} 秒，归属于本次
         Run；Run 结束、断线失去授权或达到期限时停止。端口{' '}
-        {config.readiness.port} 仅隔离容器内可达，暂不提供外部预览。
+        {config.readiness.port}{' '}
+        仅隔离容器内可达。启用项目预览后也不发布本机端口或公共网址。
       </p>
       <p>
         输入模式：
@@ -144,6 +170,23 @@ export function LocalServiceCard({
             {new Date(service.hardDeadlineAt).toLocaleTimeString()}
           </p>
           <small>Process：{service.processId}</small>
+          {previewState.visible && (
+            <section aria-label="项目预览">
+              <p>{previewState.status}</p>
+              <p>
+                预览在独立受控浏览器内呈现，截图和操作在下方浏览器工作台审查；不会在
+                AllRice 主站执行项目
+                HTML，不继承主站身份。服务停止或授权失效后预览一并失效，不自动改由云端运行。
+              </p>
+              <button
+                type="button"
+                disabled={busy || !previewState.canRequest}
+                onClick={() => void act('preview')}
+              >
+                {previewState.label}
+              </button>
+            </section>
+          )}
           {!['stopped', 'failed', 'unknown'].includes(service.state) && (
             <button
               type="button"
