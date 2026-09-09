@@ -198,6 +198,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         let busy = ["pausing", "stopping"].contains(state["mode"] as? String ?? "")
         add(menu, "配对设备…", #selector(pairDevice), enabled: !paired && !busy)
         add(menu, "选择工作区…", #selector(selectWorkspace), enabled: paired && !busy)
+        add(menu, state["browserEnabled"] as? Bool == true ? "关闭独立浏览器…" : "启用独立浏览器…", #selector(toggleBrowser), enabled: paired && !busy)
         if state["mode"] as? String == "paused" {
             add(menu, "恢复连接", #selector(resume), enabled: paired && !busy)
         } else { add(menu, "暂停并停止本地任务", #selector(pause), enabled: paired && !busy) }
@@ -233,6 +234,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         }
         var text = "\(title)\n\n设备：\(label(state["deviceName"], fallback: "未配对"))\n版本：\(label(state["version"], fallback: "—")) · \(label(state["architecture"], fallback: "—"))\n本地工作区：\(workspace)\n\n前台任务：\(count("activeForeground"))\n后台任务：\(count("activeServices"))\n待回传记录：\(count("pendingReceipts"))\n结果待核实：\(count("unknownOperations"))\n\n"
         text += "\(credential)\n\n在线不等于已授权命令执行；沙箱、员工权限和网页审批仍分别控制。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
+        text += "\n\n独立浏览器：\(state["browserEnabled"] as? Bool == true ? "本机已允许，仍需网页授权与审批" : "本机未启用")。使用 Chromium 自身沙箱，不是命令的 Linux VM，不读取个人 Chrome。"
         let keychainReasons = [
             "interaction-not-allowed": "启动会话不允许钥匙串交互。请在 Mac 解锁后从 Finder 正常打开，再核验钥匙串权限；程序不会自动解锁或迁移凭证。",
             "item-not-found": "未找到该设备对应的钥匙串条目。现有配对仍可能使用私有文件保存；不要因此重新配对。",
@@ -315,6 +317,16 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func selectWorkspace() { chooseFolder(pickerId: nil) }
+    @objc private func toggleBrowser() {
+        let enabled = state["browserEnabled"] as? Bool != true
+        let alert = NSAlert()
+        alert.messageText = enabled ? "启用独立浏览器？" : "关闭独立浏览器？"
+        alert.informativeText = "更改前会先停止本地任务，再恢复原有连接；已结束的服务不会自动重启。\n\n独立浏览器不使用个人 Chrome 的登录或标签页，不自动安装浏览器、不开放宿主 Shell。启用后仍需网页明确授权、员工权限和逐次审批。关闭不等于撤销已保存的站点登录资料；请在网页撤销对应授权并确认清理。"
+        alert.addButton(withTitle: enabled ? "启用独立浏览器" : "关闭独立浏览器")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { action("browser", fields: ["enabled": enabled]) }
+    }
     private func chooseFolder(pickerId: String?) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false

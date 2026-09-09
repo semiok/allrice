@@ -533,6 +533,40 @@ it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and
   expect(app.text()).not.toContain('synthetic-secret-token');
 }, 15_000);
 
+it('desktop browser disable is explicit, survives reopening, and preserves pairing', async () => {
+  const f = await fixture();
+  const app = f.launch();
+  await app.waitUntil(() => f.polls() > 0);
+  expect((await app.request('status')).data).toMatchObject({
+    browserEnabled: false,
+  });
+  expect((await app.request('browser', { enabled: false })).ok).toBe(true);
+  expect((await app.request('status')).data).toMatchObject({
+    browserEnabled: false,
+  });
+  const saved = JSON.parse(
+    await readFile(`${f.path}.browser-settings/opt-in.json`, 'utf8'),
+  );
+  expect(saved).toEqual({
+    version: 1,
+    enabled: false,
+    deviceId,
+    server: f.config.server,
+  });
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  await app.request('stop');
+  await exited(app.child);
+  const reopened = f.launch();
+  await reopened.waitUntil(() =>
+    reopened.frames.some((frame) => frame.type === 'state'),
+  );
+  expect((await reopened.request('status')).data).toMatchObject({
+    browserEnabled: false,
+  });
+  await reopened.request('stop');
+  await exited(reopened.child);
+}, 15000);
+
 it.each([
   'interaction-not-allowed',
   'item-not-found',
@@ -706,6 +740,10 @@ it('a failed runtime cannot be relabelled paused or acknowledged as a clean stop
     ),
   );
   expect(await app.request('pause')).toMatchObject({
+    ok: false,
+    code: 'DESKTOP_STOP_UNCONFIRMED',
+  });
+  expect(await app.request('browser', { enabled: true })).toMatchObject({
     ok: false,
     code: 'DESKTOP_STOP_UNCONFIRMED',
   });

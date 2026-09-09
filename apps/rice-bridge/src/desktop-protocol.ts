@@ -10,6 +10,7 @@ export type DesktopRequest = { v: 1; id: string } & (
   | { type: 'workspace'; path: string }
   | { type: 'picker'; pickerId: string; path: string | null }
   | { type: 'revoke'; confirmDeviceId: string }
+  | { type: 'browser'; enabled: boolean }
 );
 
 /** Strict local-control schema. It cannot represent a shell or tool request. */
@@ -37,8 +38,11 @@ export function parseDesktopRequest(bytes: string): DesktopRequest {
     workspace: ['path'],
     picker: ['pickerId', 'path'],
     revoke: ['confirmDeviceId'],
+    browser: ['enabled'],
   };
   if (!Object.hasOwn(keys, row.type)) throw Error('DESKTOP_REQUEST_INVALID');
+  if (row.type === 'browser' && typeof row.enabled !== 'boolean')
+    throw Error('DESKTOP_REQUEST_INVALID');
   const allowed = ['v', 'id', 'type', ...keys[row.type]!];
   if (
     Object.keys(row).length !== allowed.length ||
@@ -121,6 +125,9 @@ export function desktopSafeError(error: unknown) {
     'JOURNAL_NAMESPACE_INVALID',
     'BRIDGE_WORKSPACE_CONTAINS_STATE',
     'BRIDGE_WORKSPACE_REQUIRED',
+    'LOCAL_BROWSER_UNAVAILABLE',
+    'LOCAL_BROWSER_SETTINGS_UNSAFE',
+    'LOCAL_BROWSER_LAUNCHER_UNAVAILABLE',
   ]);
   return safe.has(code) ? code : 'BRIDGE_ACTION_FAILED';
 }
