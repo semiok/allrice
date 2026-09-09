@@ -328,28 +328,46 @@ suite('P23 real PostgreSQL service-derived preview authority', () => {
       (await requestLocalPreviewNavigation(f.context, b.w.id, db)).operationId,
     ).toBe(result.operationId);
   });
-  it('service stop/deadline/lease loss/folder change and container mismatch revoke existing preview admission', async () => {
-    const mutations = [
+  it.each([
+    [
+      'service stop requested',
       async (f: Awaited<ReturnType<typeof fixture>>) => {
         await db`update allrice_local_services set stop_requested=true where operation_id=${f.processId}`;
       },
+    ],
+    [
+      'preview heartbeat expired',
       async (f: Awaited<ReturnType<typeof fixture>>) => {
         await db`update allrice_local_services set preview_heartbeat_at=clock_timestamp()-interval '6 seconds' where operation_id=${f.processId}`;
       },
+    ],
+    [
+      'service hard deadline expired',
       async (f: Awaited<ReturnType<typeof fixture>>) => {
         await db`update allrice_local_services set hard_deadline_at=clock_timestamp()-interval '1 second' where operation_id=${f.processId}`;
       },
+    ],
+    [
+      'runtime operation lease expired',
       async (f: Awaited<ReturnType<typeof fixture>>) => {
         await db`update allrice_runtime_operations set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.processId}`;
       },
+    ],
+    [
+      'folder grant revoked',
       async (f: Awaited<ReturnType<typeof fixture>>) => {
         await db`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.folderId}`;
       },
+    ],
+    [
+      'service container mismatch',
       async (f: Awaited<ReturnType<typeof fixture>>) => {
         await db`update allrice_local_services set container_id=${'d'.repeat(64)} where operation_id=${f.processId}`;
       },
-    ];
-    for (const mutate of mutations) {
+    ],
+  ] as const)(
+    '%s revokes existing preview admission',
+    async (_reason, mutate) => {
       const f = await fixture(),
         b = await claimed(f);
       await mutate(f);
@@ -365,8 +383,8 @@ suite('P23 real PostgreSQL service-derived preview authority', () => {
         { ...b.identity, confirmed: true },
         db,
       );
-    }
-  });
+    },
+  );
   it('current policy withdrawal denies preview even while old service lease is still live', async () => {
     const f = await fixture(),
       b = await claimed(f);
