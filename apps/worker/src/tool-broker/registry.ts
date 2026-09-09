@@ -3,6 +3,7 @@ import type { riceToolDefinitions } from './definitions.js';
 import { createAutomation } from './handlers/automation.js';
 import { runManagedBrowser } from './handlers/browser.js';
 import { runBrowserWorkspace } from './handlers/browser-workspace.js';
+import { runLocalBrowserWorkspace } from './handlers/local-browser.js';
 import { createWorkspaceExport } from './handlers/delivery.js';
 import { executeCloudCommand } from './handlers/cloud.js';
 import { executeMcpTool } from './handlers/mcp.js';
@@ -61,6 +62,10 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  */
 export const riceToolHandlerRegistry = Object.freeze({
   'browser.workspace': registration('managed_browser', runBrowserWorkspace),
+  'local.browser.workspace': registration(
+    'managed_browser',
+    runLocalBrowserWorkspace,
+  ),
   'workspace.reconciliation.export': registration(
     'delivery',
     exportReconciliation,

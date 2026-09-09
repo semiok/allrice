@@ -34,6 +34,7 @@ const app = join(output, 'Rice Bridge.app');
 const contents = join(app, 'Contents');
 const resources = join(contents, 'Resources');
 const executable = join(contents, 'MacOS', 'RiceBridgeApp');
+const browserLauncher = join(contents, 'MacOS', 'RiceBrowserLauncher');
 await mkdir(resources, { recursive: true });
 await mkdir(join(contents, 'MacOS'));
 await copyFile(
@@ -58,6 +59,30 @@ execFileSync(
   { stdio: 'inherit' },
 );
 execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', core], {
+  stdio: 'inherit',
+});
+execFileSync(
+  '/usr/bin/xcrun',
+  [
+    'swiftc',
+    '-O',
+    '-target',
+    `${machoArch}-apple-macosx13.0`,
+    'apps/rice-bridge/native/BrowserLauncher.swift',
+    '-o',
+    browserLauncher,
+  ],
+  { stdio: 'inherit' },
+);
+assert.deepEqual(
+  execFileSync('/usr/bin/lipo', ['-archs', browserLauncher], {
+    encoding: 'utf8',
+  })
+    .trim()
+    .split(/\s+/),
+  [machoArch],
+);
+execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', browserLauncher], {
   stdio: 'inherit',
 });
 execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', app], {
@@ -86,9 +111,13 @@ const manifest = {
   builtAt: new Date().toISOString(),
   appHostSha256: await digest(executable),
   coreSha256: await digest(core),
+  browserLauncherSha256: await digest(browserLauncher),
+  browserRuntimeManifestSha256: await digest(`${core}.runtime/manifest.json`),
   signing: 'ad-hoc; not notarized',
   credentialsEmbedded: false,
   sandboxDefault: 'disabled',
+  browserDefault:
+    'disabled; independent native Chromium sandbox; no personal profile',
   sourceArchiveSha256: process.env.ALLRICE_BRIDGE_SOURCE_ARCHIVE_SHA256 ?? null,
 };
 await writeFile(
@@ -97,7 +126,7 @@ await writeFile(
 );
 await writeFile(
   join(output, '使用说明.txt'),
-  'Rice Bridge 菜单栏 Dev 版\n\n请先正常退出旧终端版，再打开 Rice Bridge.app。已有配对与目录授权保持原位，不需要删除或复制配置。菜单提供配对、工作区选择、暂停、诊断与退出。\n暂停会停止本地任务，不撤销已经完成的文件修改。恢复不会重启旧服务。\n此包为 ad-hoc 开发签名，尚未 Apple 公证，不含自动升级；不要关闭系统安全保护。旧命令包仍是独立可用分发入口。\n',
+  'Rice Bridge 菜单栏 Dev 版\n\n请先正常退出旧 Bridge，再打开 Rice Bridge.app。已有配对与目录授权保持原位，不需要删除或复制配置。菜单提供配对、工作区选择、暂停、诊断、独立浏览器开关与退出。\n暂停会停止本地任务，不撤销已经完成的文件修改。恢复不会重启旧服务。\n独立浏览器默认关闭，需本机明确启用、网页站点授权和员工具备冻结的工具权限；启用开关本身不会启动浏览器或自动授权。它使用本机已安装的受信任 Chrome 和独立 Chromium 沙箱，不使用个人 Chrome Profile，也不是 Linux VM。关闭浏览器开关会先停止本地任务；登录状态是否保留由网页授权决定，删除已保留登录状态请在网页撤销该授权并等待本机清理确认。\n包内固定版本运行资源和 RiceBrowserLauncher 必须完整保留，缺失或校验失败会拒绝运行。应用不会自动安装 Chrome、VM 或镜像。\n此包为 ad-hoc 开发签名，尚未 Apple 公证，不含自动升级；不要关闭系统安全保护。旧命令包仍是独立可用分发入口。\n',
 );
 const zip = join(
   output,

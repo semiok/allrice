@@ -1,0 +1,97 @@
+.root {
+  max-width: 920px;
+  margin: 24px auto;
+  padding: 24px;
+  color: var(--foreground, #18202b);
+  overflow-wrap: anywhere;
+}
+.root header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.root h1 {
+  font-size: 26px;
+  margin: 0;
+}
+.root h2 {
+  margin-top: 32px;
+  font-size: 20px;
+}
+.root p {
+  line-height: 1.65;
+  font-size: 14px;
+}
+.root fieldset,
+.root article {
+  border: 1px solid #8792a14d;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 20px 0;
+  min-width: 0;
+}
+.root label {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  font-size: 14px;
+}
+.root select,
+.root textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.root select,
+.root textarea,
+.root button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid #8792a180;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.root button {
+  cursor: pointer;
+}
+.root button:disabled,
+.root fieldset:disabled {
+  opacity: 0.55;
+}
+.root .check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.check input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.root .error {
+  color: #bc3347;
+}
+.root a {
+  color: #4979dd;
+}
+@media (max-width: 600px) {
+  .root {
+    margin: 0;
+    padding: 16px;
+  }
+  .root fieldset,
+  .root article {
+    padding: 12px;
+  }
+  .root header {
+    align-items: flex-start;
+  }
+}

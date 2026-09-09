@@ -7,6 +7,12 @@ const ports = vi.hoisted(() => ({
   token: vi.fn(),
   deleteToken: vi.fn(),
   deleteConfig: vi.fn(),
+  browserCleanup: vi.fn(),
+}));
+vi.mock('./local-browser-profiles.js', () => ({
+  LocalBrowserProfiles: class {
+    revokeDevice = ports.browserCleanup;
+  },
 }));
 vi.mock('./config.js', async (original) => ({
   ...(await original<typeof Config>()),
@@ -34,6 +40,28 @@ beforeEach(() => {
     localFilesDeleted: true,
   });
   ports.deleteConfig.mockResolvedValue(true);
+  ports.browserCleanup.mockResolvedValue(undefined);
+});
+
+it('retains pairing diagnostics and reports partial cleanup when inactive browser login cleanup fails', async () => {
+  ports.browserCleanup.mockRejectedValue(Error('synthetic-private-profile'));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(await revoke()).toMatchObject({
+      serverRevoked: true,
+      cleanupComplete: false,
+      configDeleted: false,
+    });
+    expect(ports.deleteConfig).not.toHaveBeenCalled();
+    expect(ports.browserCleanup).toHaveBeenCalledExactlyOnceWith(
+      'synthetic-device',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(
+      'synthetic-private-profile',
+    );
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 it('does not remove local pairing before the server confirms revocation', async () => {

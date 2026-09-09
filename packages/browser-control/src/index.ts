@@ -7,6 +7,7 @@ import type {
 } from 'playwright-core';
 import {
   BrowserObservationSchema,
+  browserObservationLifetimeMs,
   runtimeContractEqual,
   type BrowserAction,
   type BrowserObservation,
@@ -275,7 +276,7 @@ export async function createControlledBrowserRenderer(
       url = safeUrl(page.url());
     observedDomDigest = await domDigest();
     const capturedAt = new Date(),
-      expiresAt = new Date(capturedAt.getTime() + 120000);
+      expiresAt = new Date(capturedAt.getTime() + browserObservationLifetimeMs);
     const observation = BrowserObservationSchema.parse({
       version: 1,
       id: randomUUID(),

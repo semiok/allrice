@@ -19,6 +19,7 @@ import {
   revokeBrowserControlGrant,
   readCurrentBrowserWorkspace,
   recordBrowserStopped,
+  recordBrowserObservation,
 } from './browser-control.ts';
 import {
   runtimePolicyDigest,
@@ -44,7 +45,7 @@ const suite =
     : describe.skip;
 const profile = {
   version: 1 as const,
-  origins: ['https://browser.example.test'],
+  origins: ['https://example.com'],
   allowHumanCredentials: true,
 };
 async function fixture() {
@@ -69,15 +70,16 @@ async function fixture() {
     },
     db,
   );
-  const observation = (fence: number) =>
-    BrowserObservationSchema.parse({
+  const observation = (fence: number) => {
+    const capturedAt = new Date();
+    return BrowserObservationSchema.parse({
       version: 1,
       id: randomUUID(),
       profileId: w.profile_id,
       fence,
       revision: fence,
-      capturedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      capturedAt: capturedAt.toISOString(),
+      expiresAt: new Date(capturedAt.getTime() + 60000).toISOString(),
       url: profile.origins[0] + '/',
       title: 'Synthetic',
       text: 'untrusted',
@@ -100,6 +102,7 @@ async function fixture() {
       ],
       screenshotObjectId: null,
     });
+  };
   const obs = observation(1);
   await acknowledgeBrowserControl(f.context, w.id, 1, obs, db);
   const command = {
@@ -114,6 +117,22 @@ async function fixture() {
   return { ...f, w, grant, obs, observation, command };
 }
 suite('P21 real PostgreSQL control and exact admission', () => {
+  it('cloud recording and control ACK reject the same overlong observation lifetime as local admission', async () => {
+    const f = await fixture();
+    const overlong = {
+      ...f.obs,
+      expiresAt: new Date(Date.parse(f.obs.capturedAt) + 60_001).toISOString(),
+    };
+    await expect(
+      recordBrowserObservation(f.context, f.w.id, overlong, db),
+    ).rejects.toMatchObject({ code: 'browser_observation_stale' });
+    await expect(
+      acknowledgeBrowserControl(f.context, f.w.id, 1, overlong, db),
+    ).rejects.toMatchObject({ code: 'browser_observation_stale' });
+    expect(
+      (await readCurrentBrowserWorkspace(f.context, f.w.id, db)).observation,
+    ).toEqual(f.obs);
+  });
   beforeAll(async () => {
     if (!process.env.ALLRICE_TEST_DATABASE_URL)
       throw Error('dedicated DB required');
@@ -311,6 +330,25 @@ suite('P21 real PostgreSQL control and exact admission', () => {
         db,
       ),
     ).rejects.toThrow();
+    for (const origin of [
+      'https://127.0.0.1',
+      'https://localhost',
+      'https://[::1]',
+      'https://host.internal',
+    ]) {
+      await expect(
+        installBrowserControlGrant(
+          f.context,
+          {
+            targetId: f.target,
+            ownerId: f.user,
+            profile: { ...profile, origins: [origin] },
+            enabled: true,
+          },
+          db,
+        ),
+      ).rejects.toThrow('browser_public_origin_required');
+    }
     const op = await createBrowserOperation(
       f.context,
       f.command,

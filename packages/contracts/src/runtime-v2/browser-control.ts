@@ -4,6 +4,24 @@ import { ChecksumSchema } from '../runs.ts';
 
 /** Shared cloud/Bridge protocol, not a new execution authority. P21 implements cloud only. */
 export const browserControlVersion = 1;
+/** Observation freshness is shared by cloud and local controllers/admission. */
+export const browserObservationLifetimeMs = 60_000;
+export function browserObservationIsFresh(
+  observation: Pick<BrowserObservation, 'capturedAt' | 'expiresAt'>,
+  now: number,
+) {
+  const captured = Date.parse(observation.capturedAt);
+  const expires = Date.parse(observation.expiresAt);
+  return (
+    Number.isFinite(now) &&
+    Number.isFinite(captured) &&
+    Number.isFinite(expires) &&
+    captured <= now + 1000 &&
+    expires > now &&
+    expires > captured &&
+    expires - captured <= browserObservationLifetimeMs
+  );
+}
 const text = z
   .string()
   .max(4000)
@@ -201,7 +219,7 @@ export function browserObservationCurrent(
     o.profileId === input.profileId &&
     o.fence === input.fence &&
     Date.parse(o.capturedAt) <= input.now &&
-    Date.parse(o.expiresAt) > input.now
+    browserObservationIsFresh(o, input.now)
   );
 }
 export function browserOriginAllowed(url: string, profile: BrowserProfile) {

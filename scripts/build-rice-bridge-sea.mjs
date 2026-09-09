@@ -3,6 +3,10 @@ import { chmod, copyFile, mkdtemp, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import {
+  preparePlaywrightRuntime,
+  playwrightSeaPlugin,
+} from './rice-bridge-playwright-runtime.mjs';
 
 const staticEnvironment = [
   'ALLRICE_BRIDGE_DEVICE_TOKEN',
@@ -32,8 +36,6 @@ const temporary = await mkdtemp(join(tmpdir(), 'allrice-bridge-sea-'));
 const bundle = join(temporary, 'rice-bridge.cjs');
 const blob = join(temporary, 'rice-bridge.blob');
 const seaConfig = join(temporary, 'sea-config.json');
-const define = (name) =>
-  `--define:process.env.${name}=${JSON.stringify(process.env[name])}`;
 
 function run(command, args, options = {}) {
   try {
@@ -43,25 +45,9 @@ function run(command, args, options = {}) {
   }
 }
 
-const esbuildArguments = [
-  'exec',
-  'esbuild',
-  'apps/rice-bridge/src/index.ts',
-  '--bundle',
-  '--platform=node',
-  '--format=cjs',
-  `--outfile=${bundle}`,
-];
-if (staticBuild) {
-  esbuildArguments.push(
-    ...staticEnvironment.map(define),
-    '--define:process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME="Rice Bridge Static"',
-    '--define:process.env.ALLRICE_BRIDGE_AUTOSTART="1"',
-  );
-}
+const browserRuntime = await preparePlaywrightRuntime(output);
 // Use the lockfile's esbuild (tsx dependency), not a transient global binary.
-if (staticBuild) run('pnpm', esbuildArguments, { cwd: resolve('.') });
-else {
+{
   const require = createRequire(import.meta.url);
   const esbuild = createRequire(require.resolve('tsx/package.json'))('esbuild');
   await esbuild.build({
@@ -70,6 +56,22 @@ else {
     platform: 'node',
     format: 'cjs',
     outfile: bundle,
+    plugins: [playwrightSeaPlugin(browserRuntime.manifest)],
+    ...(staticBuild
+      ? {
+          define: {
+            ...Object.fromEntries(
+              staticEnvironment.map((name) => [
+                `process.env.${name}`,
+                JSON.stringify(process.env[name]),
+              ]),
+            ),
+            'process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME':
+              '"Rice Bridge Static"',
+            'process.env.ALLRICE_BRIDGE_AUTOSTART': '"1"',
+          },
+        }
+      : {}),
   });
 }
 await writeFile(
@@ -92,9 +94,7 @@ try {
 } catch {
   // A copied Node binary may already be unsigned.
 }
-run('pnpm', [
-  'dlx',
-  'postject@1.0.0-alpha.6',
+const injection = [
   output,
   'NODE_SEA_BLOB',
   blob,
@@ -102,7 +102,24 @@ run('pnpm', [
   'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
   '--macho-segment-name',
   'NODE_SEA',
-]);
+];
+if (process.env.ALLRICE_POSTJECT_CLI) {
+  const cli = resolve(process.env.ALLRICE_POSTJECT_CLI);
+  const metadata = JSON.parse(
+    await (
+      await import('node:fs/promises')
+    ).readFile(resolve(cli, '../../package.json'), 'utf8'),
+  );
+  if (metadata.name !== 'postject' || metadata.version !== '1.0.0-alpha.6')
+    throw Error('BRIDGE_POSTJECT_VERSION_NOT_LOCKED');
+  run(process.execPath, [cli, ...injection]);
+} else run('pnpm', ['dlx', 'postject@1.0.0-alpha.6', ...injection]);
 run('/usr/bin/codesign', ['--sign', '-', output]);
 await chmod(output, 0o755);
 console.info(`Rice Bridge SEA created at ${output}`);
+console.info(
+  JSON.stringify({
+    browserRuntime: browserRuntime.runtime,
+    browserRuntimeManifestSha256: browserRuntime.manifestSha256,
+  }),
+);

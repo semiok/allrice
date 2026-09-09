@@ -46,6 +46,13 @@ export const allRiceToolManifest = [
     dshWireName: 'local_mcp_call',
   },
   {
+    canonicalName: 'local.browser.workspace',
+    capability: 'network:outbound',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_browser_workspace',
+  },
+  {
     canonicalName: 'browser.workspace',
     capability: 'network:outbound',
     risk: 'side_effect',

@@ -208,7 +208,19 @@ export function BrowserWorkspacePanel({
           human = controls.human;
         return (
           <article key={w.id}>
-            <h3>云端浏览器 · 当前 Run 专用</h3>
+            <h3>
+              {w.transport === 'local' ? '本地浏览器' : '云端浏览器'} · 当前 Run
+              专用
+            </h3>
+            {w.transport === 'local' && (
+              <p>
+                设备：{w.localDeviceName ?? '已授权 Bridge'} · 独立 Chromium
+                沙箱，不是个人 Chrome。
+                {w.persistLogin
+                  ? '已明确允许此授权保存本机登录资料；撤销后需等待设备实际清理回执。'
+                  : '本次使用临时登录资料，结束后清理；不继承个人浏览器登录。'}
+              </p>
+            )}
             <p role="status">
               {labels[w.state]}
               {!w.available && w.state !== 'closed' ? ' · 当前授权不可用' : ''}

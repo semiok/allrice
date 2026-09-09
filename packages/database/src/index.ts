@@ -44,3 +44,7 @@ export * from './browser-control.ts';
 export * from './browser-control-management.ts';
 export * from './browser-control-artifact.ts';
 export * from './browser-control-authority.ts';
+export * from './local-browser-grants.ts';
+export * from './local-browser-workspaces.ts';
+export * from './local-browser-operations.ts';
+export * from './local-browser-files.ts';

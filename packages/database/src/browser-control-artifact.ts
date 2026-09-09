@@ -75,12 +75,15 @@ export async function publishBrowserObservationArtifact(
       );
       const execution = {
         targetId: w.target_id,
-        targetKind: 'cloud_sandbox',
-        deviceId: null,
+        targetKind: w.transport === 'local' ? 'rice_bridge' : 'cloud_sandbox',
+        deviceId: w.device_id,
         grantId: w.grant_id,
         grantVersion: w.grant_version,
         scopeDigest: runtimePolicyDigest(w.profile),
-        workCopy: { id: w.profile_id, kind: 'cloud_copy' },
+        workCopy: {
+          id: w.profile_id,
+          kind: w.transport === 'local' ? 'local_copy' : 'cloud_copy',
+        },
       };
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
       values(${version.id},${w.organization_id},${w.workspace_id},${w.owner_id},${w.run_id},'browser_capture',${tx.json({ kind: 'tool_result', runId: w.run_id, operationId: null, stepId: null })},${tx.json(execution)},${requestId},${runtimePolicyDigest(obs)})`;

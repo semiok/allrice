@@ -479,6 +479,60 @@ export async function start(
         publish();
       });
   }, 20_000);
+  // Browser control is independent of a folder grant or a Linux command VM.
+  // Capture this pairing so a later re-pair cannot lend its credentials to an
+  // already running browser. Cleanup/outbox/revocations run even with opt-in off.
+  const browserIdentity = { server: config.server, deviceId: config.deviceId };
+  const browserPaired = async () => {
+    try {
+      const current = await readConfig();
+      return (
+        current.server === browserIdentity.server &&
+        current.deviceId === browserIdentity.deviceId
+      );
+    } catch {
+      return false;
+    }
+  };
+  let browserTask: Promise<void> | null = null;
+  try {
+    const [
+      { LocalBrowserController },
+      { LocalBrowserHttpAuthority },
+      { LocalBrowserProfiles },
+      { LocalBrowserOutbox },
+      { localBrowserOptIn },
+    ] = await Promise.all([
+      import('./local-browser-controller.js'),
+      import('./local-browser-client.js'),
+      import('./local-browser-profiles.js'),
+      import('./local-browser-outbox.js'),
+      import('./local-browser-settings.js'),
+    ]);
+    const controller = new LocalBrowserController({
+      deviceId: browserIdentity.deviceId,
+      authority: new LocalBrowserHttpAuthority({
+        server: browserIdentity.server,
+        token,
+      }),
+      profiles: new LocalBrowserProfiles(configPath(), browserIdentity.server),
+      outbox: new LocalBrowserOutbox(
+        configPath(),
+        browserIdentity.server,
+        browserIdentity.deviceId,
+      ),
+      paired: browserPaired,
+      enabled: async () =>
+        (await browserPaired()) &&
+        (await localBrowserOptIn(config).catch(() => false)),
+      onError: (code) => console.warn(code),
+    });
+    browserTask = controller
+      .run(commandAbort.signal)
+      .catch(() => console.warn('LOCAL_BROWSER_CLEANUP_PENDING'));
+  } catch {
+    console.warn('LOCAL_BROWSER_UNAVAILABLE');
+  }
   let reconnectDelayMs = 1_000;
   try {
     while (!stopping) {
@@ -595,6 +649,8 @@ export async function start(
     }
   } finally {
     clearInterval(heartbeatTimer);
+    commandAbort.abort();
+    await browserTask;
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
     options.signal?.removeEventListener('abort', stop);
@@ -710,9 +766,23 @@ export async function revoke() {
     method: 'POST',
     token,
   });
+  // Desktop halts first; standalone revoke owns the exclusive instance lock.
+  // The private browser index covers inactive opt-in login state as well.
+  let browserCleanupComplete = false;
+  try {
+    const { LocalBrowserProfiles } =
+      await import('./local-browser-profiles.js');
+    await new LocalBrowserProfiles(configPath(), config.server).revokeDevice(
+      config.deviceId,
+    );
+    browserCleanupComplete = true;
+  } catch {
+    console.warn('LOCAL_BROWSER_CLEANUP_PENDING');
+  }
   const credentialCleanup = await deleteDeviceToken(config.deviceId);
-  const configDeleted = await deleteConfig();
-  const cleanupComplete = credentialCleanup.complete && configDeleted;
+  const configDeleted = browserCleanupComplete && (await deleteConfig());
+  const cleanupComplete =
+    browserCleanupComplete && credentialCleanup.complete && configDeleted;
   if (cleanupComplete) console.info('Rice Bridge 设备授权已撤销');
   else
     console.warn(
@@ -729,6 +799,9 @@ export async function revoke() {
 export function help() {
   console.info(
     `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  local-mcp status|enable|disable\n  local-mcp --help\n  --version\n  revoke\n\n沙箱默认关闭，enable 需要已安装的独立 allrice-b2 VM；不自动安装、不开放宿主 Shell，仍需服务端启用、工作区授权和逐次审批。`,
+  );
+  console.info(
+    '  browser status|enable|disable\n独立浏览器默认关闭；需要已安装的受信任 Chrome、站点授权和逐次动作审批，不读取日常 Chrome 登录资料，也不要求选中文件工作区。',
   );
 }
 

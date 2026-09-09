@@ -297,7 +297,9 @@ async function checkBindingAuthority(
     throw new RuntimePolicyError('target_unavailable');
   if (
     binding.action === 'cloud.browser.act' ||
-    binding.action === 'cloud.browser.observe'
+    binding.action === 'cloud.browser.observe' ||
+    binding.action === 'local.browser.act' ||
+    binding.action === 'local.browser.observe'
   ) {
     await checkBrowserBindingAuthority(transaction, context, binding);
     return { binding, policyExpiresAt: snapshot.expires_at };

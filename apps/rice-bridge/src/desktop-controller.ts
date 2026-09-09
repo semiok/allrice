@@ -25,6 +25,10 @@ import {
   type DesktopRequest,
 } from './desktop-protocol.js';
 import { bridgeVersion } from './version.js';
+import {
+  localBrowserOptIn,
+  localBrowserCli,
+} from './local-browser-settings.js';
 
 export async function runDesktopController() {
   const notices: { at: string; code: string }[] = [];
@@ -34,6 +38,7 @@ export async function runDesktopController() {
     'unpaired';
   let errorCode: string | null = null;
   let config: BridgeConfig | null = null;
+  let browserEnabled = false;
   let credentialStorage: DeviceCredentials['storage'] | null = null;
   let credentialFileSecure: boolean | null = null;
   let keychainUnavailableReason: KeychainUnavailableReason | null = null;
@@ -98,6 +103,7 @@ export async function runDesktopController() {
     credentialFileSecure,
     keychainUnavailableReason,
     credentialCleanupPending,
+    browserEnabled,
     connection: runtime.phase,
     workspaceLabels: config
       ? runtime.workspaceLabels.map(desktopSafeText).slice(0, 16)
@@ -133,6 +139,7 @@ export async function runDesktopController() {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         config = null;
+        browserEnabled = false;
         credentialStorage = null;
         credentialFileSecure = null;
         keychainUnavailableReason = null;
@@ -165,6 +172,10 @@ export async function runDesktopController() {
       throw Error('DESKTOP_CONFIG_INVALID');
     }
     config = next;
+    browserEnabled = await localBrowserOptIn(next).catch(() => {
+      note('LOCAL_BROWSER_SETTINGS_UNSAFE');
+      return false;
+    });
     runtime.workspaceLabels = next.grants.map((grant) => grant.label);
     try {
       const credentials = await readDeviceCredentials(next.deviceId);
@@ -252,6 +263,18 @@ export async function runDesktopController() {
       await createFolderGrant(request.path);
       await refresh();
       if (shouldResume) await resume();
+    } else if (request.type === 'browser') {
+      await refresh();
+      if (!config) throw Error('DESKTOP_PAIRING_REQUIRED');
+      const shouldResume = mode === 'running';
+      mode = 'pausing';
+      publish();
+      await halt();
+      // A failed stop never changes persistent permissions. Enabling does not
+      // start Chrome, install dependencies or grant any server-side capability.
+      await localBrowserCli([request.enabled ? 'enable' : 'disable']);
+      await refresh();
+      if (shouldResume) await resume();
     } else if (request.type === 'revoke') {
       await refresh();
       if (!config || config.deviceId !== request.confirmDeviceId)
@@ -277,6 +300,7 @@ export async function runDesktopController() {
         return;
       }
       config = null;
+      browserEnabled = false;
       credentialStorage = null;
       credentialFileSecure = null;
       keychainUnavailableReason = null;

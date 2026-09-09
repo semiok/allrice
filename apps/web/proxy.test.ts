@@ -24,6 +24,18 @@ describe('Rice Bridge portal boundary', () => {
   });
 
   it('keeps browser device management behind the portal session', () => {
+    expect(isBridgeDeviceApiPath('/api/v1/bridge/browser-workspaces')).toBe(
+      true,
+    );
+    expect(
+      isBridgeDeviceApiPath('/api/v1/bridge/browser-workspaces/capture'),
+    ).toBe(true);
+    expect(
+      isBridgeDeviceApiPath('/api/v1/bridge/browser-workspaces/extra'),
+    ).toBe(false);
+    expect(
+      isBridgeDeviceApiPath('/api/v1/bridge/browser-workspaces-extra'),
+    ).toBe(false);
     expect(isBridgeDeviceApiPath('/api/v1/bridge/pairings')).toBe(false);
     expect(isBridgeDeviceApiPath('/api/v1/bridge/devices')).toBe(false);
     expect(isBridgeDeviceApiPath('/api/v1/bridge/devices/device-id')).toBe(
@@ -100,6 +112,7 @@ describe('portal authentication response boundary', () => {
     for (const path of [
       '/api/v1/admin/local-mcp',
       '/api/v1/admin/browser-control',
+      '/api/v1/admin/local-browser',
     ]) {
       expect(
         proxy(new NextRequest(`https://${host}${path}`, { headers })).status,
@@ -111,6 +124,8 @@ describe('portal authentication response boundary', () => {
     }
     for (const path of [
       '/api/v1/admin/mcp-extra',
+      '/api/v1/admin/local-browser/extra',
+      '/api/v1/admin/local-browser-extra',
       '/api/v1/admin/mcp/extra',
       '/api/v1/admin/local-mcp-extra',
       '/api/v1/admin/local-mcp/extra',

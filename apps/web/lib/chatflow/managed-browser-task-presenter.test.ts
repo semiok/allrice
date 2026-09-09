@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 import {
-  hasManagedBrowserEvents,
   hasBrowserWorkspaceEvents,
+  hasManagedBrowserEvents,
   safeBrowserHost,
 } from './managed-browser-task-presenter';
 
@@ -40,25 +40,31 @@ function event(
 }
 
 describe('managed browser task presentation', () => {
-  it('opens the new workspace panel only for its canonical/native events', () => {
+  it('opens the shared workspace for cloud and local canonical/native events, never legacy tool output text', () => {
+    for (const name of ['browser.workspace', 'local.browser.workspace']) {
+      expect(hasBrowserWorkspaceEvents([event('tool.started', { name })])).toBe(
+        true,
+      );
+      expect(
+        hasBrowserWorkspaceEvents([event('harness.native', { label: name })]),
+      ).toBe(true);
+      expect(
+        hasBrowserWorkspaceEvents([
+          event('harness.native', {}, { toolName: name }),
+        ]),
+      ).toBe(true);
+    }
     expect(
       hasBrowserWorkspaceEvents([
-        event('tool.started', { name: 'browser.workspace' }),
+        event('tool.completed', {
+          name: 'browser.run',
+          text: 'local.browser.workspace',
+        }),
       ]),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       hasBrowserWorkspaceEvents([
-        event('harness.native', { label: 'browser.workspace' }),
-      ]),
-    ).toBe(true);
-    expect(
-      hasBrowserWorkspaceEvents([
-        event('harness.native', {}, { toolName: 'browser.workspace' }),
-      ]),
-    ).toBe(true);
-    expect(
-      hasBrowserWorkspaceEvents([
-        event('tool.started', { name: 'browser.run' }),
+        event('assistant.text.completed', { text: 'browser.workspace' }),
       ]),
     ).toBe(false);
   });

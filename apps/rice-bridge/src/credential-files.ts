@@ -177,8 +177,12 @@ async function fileMetadata(path: string, maxBytes = defaultMaximumBytes) {
     await opened.handle.close().catch(() => undefined);
   }
 }
-async function unchangedFile(path: string, expected: Stats | null) {
-  const current = await fileMetadata(path);
+async function unchangedFile(
+  path: string,
+  expected: Stats | null,
+  maxBytes = defaultMaximumBytes,
+) {
+  const current = await fileMetadata(path, maxBytes);
   if (
     (expected === null && current !== null) ||
     (expected !== null && (current === null || !sameVersion(expected, current)))
@@ -190,15 +194,17 @@ export async function writeCredentialRecordFile(
   directory: string,
   filename: string,
   content: string,
+  options: ReadOptions = {},
 ): Promise<void> {
   const path = recordPath(directory, filename);
   const bytes = Buffer.from(content, 'utf8');
-  if (bytes.length > defaultMaximumBytes) throw unsafe();
+  const limit = maximum(options);
+  if (bytes.length > limit) throw unsafe();
   await prepareCredentialDirectory(directory);
   const before = await directoryMetadata(directory);
   if (!before) throw unsafe();
   // Do not use atomic replacement to silently bypass an unsafe old target.
-  const previous = await fileMetadata(path);
+  const previous = await fileMetadata(path, limit);
   const temporary = join(directory, `.credential-${randomUUID()}.tmp`);
   let created: Stats | null = null;
   let handle: FileHandle | null = null;
@@ -213,19 +219,19 @@ export async function writeCredentialRecordFile(
       0o600,
     );
     created = await handle.stat();
-    privateFile(created, defaultMaximumBytes);
+    privateFile(created, limit);
     await handle.writeFile(bytes);
     await handle.sync();
     const ready = await handle.stat();
-    privateFile(ready, defaultMaximumBytes);
+    privateFile(ready, limit);
     if (!sameIdentity(created, ready) || ready.size !== bytes.length)
       throw unsafe();
     await handle.close();
     handle = null;
     await unchangedDirectory(directory, before);
-    await unchangedFile(path, previous);
+    await unchangedFile(path, previous, limit);
     const staged = await lstat(temporary);
-    privateFile(staged, defaultMaximumBytes);
+    privateFile(staged, limit);
     if (!sameVersion(ready, staged)) throw unsafe();
     await rename(temporary, path);
     committed = true;
@@ -247,11 +253,15 @@ export async function writeCredentialRecordFile(
   }
 }
 
-export async function deletePrivateCredentialFile(path: string): Promise<void> {
-  const before = await fileMetadata(path);
+export async function deletePrivateCredentialFile(
+  path: string,
+  options: ReadOptions = {},
+): Promise<void> {
+  const limit = maximum(options);
+  const before = await fileMetadata(path, limit);
   if (!before) return;
   try {
-    await unchangedFile(path, before);
+    await unchangedFile(path, before, limit);
     await unlink(path);
   } catch {
     throw unsafe();
@@ -261,10 +271,11 @@ export async function deletePrivateCredentialFile(path: string): Promise<void> {
 export async function deleteCredentialRecordFile(
   directory: string,
   filename: string,
+  options: ReadOptions = {},
 ): Promise<void> {
   const path = recordPath(directory, filename);
   const before = await directoryMetadata(directory);
   if (!before) return;
-  await deletePrivateCredentialFile(path);
+  await deletePrivateCredentialFile(path, options);
   await unchangedDirectory(directory, before);
 }

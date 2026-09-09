@@ -23,8 +23,21 @@ describe('P13 private desktop control protocol', () => {
     { type: 'workspace', path: '/tmp/a\nsecret' },
     { type: 'picker', pickerId: 'bad\n', path: null },
     { type: 'revoke', confirmDeviceId: 'not-the-device' },
+    { type: 'browser', enabled: 'true' },
+    { type: 'browser', enabled: true, executable: '/bin/sh' },
+    { type: 'browser' },
   ])('denies invalid/extra control fields: %j', (value) =>
     expect(() => parse({ ...base, ...value })).toThrow(),
+  );
+  it.each([true, false])(
+    'accepts only the explicit finite browser opt-in %s',
+    (enabled) => {
+      expect(parse({ ...base, type: 'browser', enabled })).toEqual({
+        ...base,
+        type: 'browser',
+        enabled,
+      });
+    },
   );
   it.each([
     'http://tenant.example/',

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   BridgeCapabilities,
+  BrowserCommandSchema,
   RuntimeBridgePayloadSchema,
   RuntimeAttemptRefSchema,
   RuntimeOperationEventSchema,
@@ -573,9 +574,25 @@ export function createRuntimeOperationLedger(options: {
         input.bridgePayload === undefined
           ? null
           : RuntimeBridgePayloadSchema.parse(input.bridgePayload);
+      const browserPayload =
+        input.localBrowserPayload === undefined
+          ? null
+          : BrowserCommandSchema.parse(input.localBrowserPayload);
+      const localBrowser = [
+        'local.browser.act',
+        'local.browser.observe',
+      ].includes(snapshot.binding.action);
       if (
         (snapshot.binding.execution.targetKind === 'rice_bridge') !==
-          (payload !== null) ||
+          (payload !== null || browserPayload !== null) ||
+        (browserPayload !== null &&
+          (!localBrowser ||
+            payload !== null ||
+            runtimeLedgerInputDigest(browserPayload) !==
+              snapshot.binding.inputDigest ||
+            (browserPayload.action.type === 'observe') !==
+              (snapshot.binding.action === 'local.browser.observe'))) ||
+        (localBrowser && browserPayload === null) ||
         (payload &&
           (payload.capability !== snapshot.binding.action ||
             runtimeLedgerInputDigest(payload) !== snapshot.binding.inputDigest))
@@ -586,8 +603,18 @@ export function createRuntimeOperationLedger(options: {
         accountingId: UuidSchema.parse(r.accountingId),
         amount: integer.parse(r.amount),
       }));
-      bounded({ snapshot, payload, reservations });
+      bounded({ snapshot, payload, browserPayload, reservations });
       return db.begin(async (tx) => {
+        if (browserPayload) {
+          const [registered] =
+            await tx`select i.operation_id from allrice_browser_operation_inputs i
+            join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+            where i.operation_id=${snapshot.binding.attempt.operationId} and i.browser_workspace_id=${browserPayload.workspaceId}
+              and i.payload=${json(tx, browserPayload)} and i.binding=${json(tx, snapshot.binding)} and w.transport='local'
+              and w.organization_id=${snapshot.binding.task.scope.organizationId} and w.workspace_id=${snapshot.binding.task.scope.workspaceId}
+              and w.run_id=${snapshot.binding.task.runId} and w.owner_id=${snapshot.binding.requestedBy.id}`;
+          if (!registered) throw new RuntimeLedgerError('scope_mismatch');
+        }
         const root = await lockRoot(
           tx,
           snapshot.binding.task.scope,

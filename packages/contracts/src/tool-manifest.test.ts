@@ -23,10 +23,10 @@ describe('AllRice tool manifest', () => {
       'dshWireName' in tool ? tool.dshWireName : undefined,
     );
 
-    expect(canonicalNames).toHaveLength(32);
-    expect(new Set(canonicalNames).size).toBe(32);
-    expect(nativeTools).toHaveLength(29);
-    expect(brokerNativeTools).toHaveLength(28);
+    expect(canonicalNames).toHaveLength(33);
+    expect(new Set(canonicalNames).size).toBe(33);
+    expect(nativeTools).toHaveLength(30);
+    expect(brokerNativeTools).toHaveLength(29);
     expect(
       brokerNativeTools
         .filter((t) => t.canonicalName.startsWith('local.mcp.'))
@@ -79,7 +79,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(29);
+    expect(new Set(wireNames).size).toBe(30);
     expect(
       brokerNativeTools.find(
         (tool) => tool.canonicalName === 'browser.workspace',
@@ -88,6 +88,15 @@ describe('AllRice tool manifest', () => {
       dshWireName: 'browser_workspace',
       capability: 'network:outbound',
       risk: 'side_effect',
+    });
+    expect(
+      brokerNativeTools.find(
+        (tool) => tool.canonicalName === 'local.browser.workspace',
+      ),
+    ).toMatchObject({
+      capability: 'network:outbound',
+      risk: 'side_effect',
+      dshWireName: 'local_browser_workspace',
     });
   });
 
