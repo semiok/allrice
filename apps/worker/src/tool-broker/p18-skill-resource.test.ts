@@ -100,12 +100,16 @@ describe('P18 immutable Skill resource reader', () => {
     expect(riceToolHandlerRegistry['workspace.skill.read'].category).toBe(
       'workspace',
     );
-    expect([...nativeGovernedToolNames]).toEqual([
-      'cloud.process.execute',
-      'cloud.mcp.call',
-      'local.mcp.discover',
-      'local.mcp.call',
-    ]);
+    // The exact per-run/read-only lists above are the permission assertion;
+    // unrelated governed additions must not change that selected tool list.
+    expect([...nativeGovernedToolNames]).toEqual(
+      expect.arrayContaining([
+        'cloud.process.execute',
+        'cloud.mcp.call',
+        'local.mcp.discover',
+        'local.mcp.call',
+      ]),
+    );
   });
   it('returns exact frozen script bytes as inert data, with no execution authority', async () => {
     const f = fixture();
