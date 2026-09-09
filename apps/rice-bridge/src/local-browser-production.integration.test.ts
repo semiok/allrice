@@ -221,7 +221,10 @@ describe.skipIf(!process.env.ALLRICE_BROWSER_FIXTURE_STATE)(
         await profiles.revoke(binding);
         await expect(start()).rejects.toThrow('LOCAL_BROWSER_UNAVAILABLE');
         const privateRecord = await readFile(
-          join(profiles.deviceDirectory(binding.deviceId), `${binding.logicalProfileId}.json`),
+          join(
+            profiles.deviceDirectory(binding.deviceId),
+            `${binding.logicalProfileId}.json`,
+          ),
           'utf8',
         );
         expect(JSON.parse(privateRecord).state).toBeNull();
