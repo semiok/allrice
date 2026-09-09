@@ -101,11 +101,14 @@ export async function createControlledBrowserRenderer(
     Request,
     (confirmed: boolean) => Promise<void>
   >();
+  const completedRequests = new WeakSet<Request>();
   context.on('requestfinished', (request) => {
+    completedRequests.add(request);
     void networkSettlers.get(request)?.(true);
     networkSettlers.delete(request);
   });
   context.on('requestfailed', (request) => {
+    completedRequests.add(request);
     void networkSettlers.get(request)?.(false);
     networkSettlers.delete(request);
   });
@@ -160,6 +163,13 @@ export async function createControlledBrowserRenderer(
             bodyDigest: hash(bytes),
             bodyBytes: bytes.length,
           });
+          // A close/failure can occur while authority approval is in flight.
+          // Its event has already passed: do not orphan a newly returned permit
+          // in the WeakMap, and never send the canceled request after approval.
+          if (closed || completedRequests.has(request)) {
+            await permission.complete(false);
+            throw Error('BROWSER_REQUEST_ALREADY_STOPPED');
+          }
           networkSettlers.set(request, permission.complete);
         } finally {
           bytes.fill(0);
