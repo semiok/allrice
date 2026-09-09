@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
+import {
+  browserIdentity,
+  currentBrowserWorkspace,
+} from './browser-control-authority.ts';
+import { publishBrowserObservationArtifact } from './browser-control-artifact.ts';
 import { listBrowserControlManagement } from './browser-control-management.ts';
 import {
   createBrowserOperation,
@@ -100,6 +105,73 @@ suite('P22 real PostgreSQL device browser authority', () => {
       await rm(storageRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
+  it('orders artifact quota locks before observation identity locks under deterministic concurrent admission', async () => {
+    const f = await fixture(),
+      b = f.browser!;
+    const w = await readCurrentBrowserWorkspace(f.context, b.w.id, db);
+    let quotaRequested!: () => void, identityAcquired!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      quotaRequested = resolve;
+    });
+    const identity = new Promise<void>((resolve) => {
+      identityAcquired = resolve;
+    });
+    // This only schedules actual SQL; no authority check, lock or response is mocked.
+    const instrumented = new Proxy(db, {
+      get(target, key) {
+        if (key !== 'begin') return Reflect.get(target, key, target);
+        return (work: (tx: postgres.TransactionSql) => Promise<unknown>) =>
+          target.begin((tx) =>
+            work(
+              new Proxy(tx, {
+                apply(query, thisArg, args: unknown[]) {
+                  const fragments = args[0];
+                  if (
+                    Array.isArray(fragments) &&
+                    fragments
+                      .join('?')
+                      .includes('select id from allrice_workspaces') &&
+                    fragments.join('?').includes('for update')
+                  ) {
+                    quotaRequested();
+                    return identity.then(() =>
+                      Reflect.apply(query, thisArg, args),
+                    );
+                  }
+                  return Reflect.apply(query, thisArg, args);
+                },
+              }),
+            ),
+          );
+      },
+    });
+    const publication = publishBrowserObservationArtifact(
+      w,
+      b.obs!,
+      f.storage,
+      instrumented,
+    );
+    // Avoid an unhandled failure if PostgreSQL chooses the publishing transaction
+    // as deadlock victim on the pre-fix implementation; assertion still requires success.
+    void publication.catch(() => undefined);
+    await requested;
+    const observer = db.begin(async (tx) => {
+      await browserIdentity(tx, f.context);
+      identityAcquired();
+      return currentBrowserWorkspace(tx, f.context, w.id);
+    });
+    try {
+      const [artifact, observed] = await Promise.all([publication, observer]);
+      expect(artifact).toBeTruthy();
+      expect(observed.id).toBe(w.id);
+      expect(
+        await db`select version_id from allrice_workbench_artifacts where run_id=${f.run}`,
+      ).toHaveLength(1);
+    } finally {
+      identityAcquired();
+      await Promise.allSettled([publication, observer]);
+    }
+  }, 15000);
   it('opens without folder grant; exact approval and one START precede a durable receipt', async () => {
     const f = await fixture(),
       b = f.browser!;

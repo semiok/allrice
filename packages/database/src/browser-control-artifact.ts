@@ -36,6 +36,11 @@ export async function publishBrowserObservationArtifact(
   let object: StorageObject | undefined;
   try {
     return await db.begin(async (tx) => {
+      // Acquire the tenant quota lock before browserIdentity takes a SHARE lock
+      // on this row and local admission locks the browser workspace. Upgrading
+      // it afterwards deadlocks against a concurrent observer holding tenant
+      // SHARE while waiting for the browser-workspace UPDATE lock.
+      await tx`select id from allrice_workspaces where id=${w.workspace_id} and organization_id=${w.organization_id} for update`;
       const current = await currentBrowserWorkspace(
         tx,
         browserPrincipal(w.execution_context),
@@ -52,7 +57,6 @@ export async function publishBrowserObservationArtifact(
         { version_id: string }[]
       >`select version_id from allrice_workbench_artifacts where organization_id=${w.organization_id} and workspace_id=${w.workspace_id} and run_id=${w.run_id} and request_id=${requestId}`;
       if (prior) return prior.version_id;
-      await tx`select id from allrice_workspaces where id=${w.workspace_id} and organization_id=${w.organization_id} for update`;
       object = {
         ...createToolBrokerExportObject({
           context: w.execution_context,
