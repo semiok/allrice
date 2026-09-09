@@ -29,7 +29,10 @@ import {
   startBrowserWorkspaceController,
   waitBrowserOperationResult,
 } from '../../../apps/worker/src/browser-control/controller.js';
-import { setTimeout as delay } from 'node:timers/promises';
+import {
+  setTimeout as delay,
+  setImmediate as yieldTurn,
+} from 'node:timers/promises';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -467,6 +470,307 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       await controller.closed;
     }
   }, 15000);
+  it('does not return a prepared result before its ledger receipt and resulting observation are durable', async () => {
+    const f = await fixture();
+    const approved = await createBrowserOperation(
+      f.context,
+      {
+        ...f.command,
+        observationId: null,
+        action: { type: 'navigate', url: profile.origins[0] + '/' },
+      },
+      randomUUID(),
+      db,
+    );
+    const operationId = approved.snapshot.binding.attempt.operationId;
+    await f.approve(approved);
+    let prepared!: () => void,
+      observedPrepared!: () => void,
+      resumeReceipt!: () => void;
+    let capturing!: () => void, resumeCapture!: () => void;
+    const preparedResult = new Promise<void>((r) => {
+      prepared = r;
+    });
+    const readerObserved = new Promise<void>((r) => {
+      observedPrepared = r;
+    });
+    const receiptGate = new Promise<void>((r) => {
+      resumeReceipt = r;
+    });
+    const captureStarted = new Promise<void>((r) => {
+      capturing = r;
+    });
+    const captureGate = new Promise<void>((r) => {
+      resumeCapture = r;
+    });
+    const instrumented = new Proxy(db, {
+      apply(target, thisArg, args: unknown[]) {
+        const fragments = args[0];
+        const sql = Array.isArray(fragments) ? fragments.join('?') : '';
+        const result = Reflect.apply(target, thisArg, args);
+        if (sql.includes('update allrice_browser_operation_inputs set result='))
+          return result.then(async (rows: unknown) => {
+            // The real autocommit completed; only delivery to finish() pauses.
+            // No row/receipt/ledger status or query result is manufactured.
+            prepared();
+            await receiptGate;
+            return rows;
+          });
+        if (sql.includes('select i.result,o.snapshot'))
+          return result.then(
+            (rows: { result: unknown; snapshot: { status: string } }[]) => {
+              if (rows[0]?.result && rows[0].snapshot.status === 'running')
+                observedPrepared();
+              return rows;
+            },
+          );
+        return result;
+      },
+    });
+    const fake = {
+      observe: async (fence: number) => {
+        capturing();
+        await captureGate;
+        return {
+          observation: f.observation(fence),
+          screenshot: Buffer.from('synthetic-image'),
+        };
+      },
+      perform: vi.fn(async () => ({})),
+      close: async () => {},
+    };
+    const abort = new AbortController();
+    const controller = startBrowserWorkspaceController(f.w, {
+      storage: f.storage,
+      database: instrumented,
+      driver: async () => fake,
+      signal: abort.signal,
+    });
+    let resultTask: ReturnType<typeof waitBrowserOperationResult> | undefined;
+    let returned = false;
+    try {
+      await preparedResult;
+      const [saved] =
+        await db`select i.result,o.snapshot->>'status' as status from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id where o.id=${operationId}`;
+      expect(saved!.result).toBeTruthy();
+      expect(saved!.status).toBe('running');
+      resultTask = waitBrowserOperationResult(
+        f.context,
+        f.w.id,
+        operationId,
+        instrumented,
+        abort.signal,
+      );
+      void resultTask.then(
+        () => {
+          returned = true;
+        },
+        () => {
+          returned = true;
+        },
+      );
+      await readerObserved;
+      await yieldTurn(); // Drain the read's promise continuations, not a timed completion guess.
+      expect(returned).toBe(false);
+      resumeReceipt();
+      await captureStarted;
+      const [projected] =
+        await db`select snapshot->>'status' as status from allrice_runtime_operations where id=${operationId}`;
+      expect(projected!.status).toBe('succeeded');
+      await yieldTurn();
+      expect(returned).toBe(false);
+      resumeCapture();
+      const result = await resultTask;
+      expect(result.status).toBe('succeeded');
+      expect(result.observation!.id).not.toBe(f.obs.id);
+      expect(result.observationRefreshRequired).toBe(false);
+      expect(fake.perform).toHaveBeenCalledOnce();
+    } finally {
+      resumeReceipt();
+      resumeCapture();
+      abort.abort();
+      await resultTask?.catch(() => undefined);
+      await controller.closed;
+    }
+  }, 15000);
+  it.each(['frozen prior observation', 'no frozen observation'] as const)(
+    'does not return a pre-action capture when navigate has a null observation ID: %s',
+    async (baseline) => {
+      const f = await fixture();
+      if (baseline === 'no frozen observation')
+        await acknowledgeBrowserControl(f.context, f.w.id, 1, null, db);
+      const approved = await createBrowserOperation(
+        f.context,
+        {
+          ...f.command,
+          observationId: null,
+          action: { type: 'navigate', url: profile.origins[0] + '/' },
+        },
+        randomUUID(),
+        db,
+      );
+      const operationId = approved.snapshot.binding.attempt.operationId;
+      await f.approve(approved);
+      const [input] =
+        await db`select payload,observation from allrice_browser_operation_inputs where operation_id=${operationId}`;
+      expect(input!.payload.observationId).toBeNull();
+      expect(input!.observation?.id ?? null).toBe(
+        baseline === 'no frozen observation' ? null : f.obs.id,
+      );
+      let started!: () => void, resumeAction!: () => void;
+      let capturing!: () => void, resumeCapture!: () => void;
+      let observedTerminal!: () => void;
+      let linking!: () => void,
+        resumeLink!: () => void,
+        observedUnlinked!: () => void;
+      let linkRequested = false;
+      const actionStarted = new Promise<void>((r) => {
+        started = r;
+      });
+      const actionGate = new Promise<void>((r) => {
+        resumeAction = r;
+      });
+      const captureStarted = new Promise<void>((r) => {
+        capturing = r;
+      });
+      const captureGate = new Promise<void>((r) => {
+        resumeCapture = r;
+      });
+      const readerObserved = new Promise<void>((r) => {
+        observedTerminal = r;
+      });
+      const linkStarted = new Promise<void>((r) => {
+        linking = r;
+      });
+      const linkGate = new Promise<void>((r) => {
+        resumeLink = r;
+      });
+      const readerSawUnlinked = new Promise<void>((r) => {
+        observedUnlinked = r;
+      });
+      const instrumented = new Proxy(db, {
+        apply(target, thisArg, args: unknown[]) {
+          const fragments = args[0];
+          const sql = Array.isArray(fragments) ? fragments.join('?') : '';
+          const result = Reflect.apply(target, thisArg, args);
+          if (
+            sql.includes(
+              'update allrice_browser_operation_inputs set result_observation_id=',
+            )
+          ) {
+            linkRequested = true;
+            linking();
+            return linkGate.then(() => result);
+          }
+          if (sql.includes('select i.result,o.snapshot'))
+            return result.then(
+              (
+                rows: {
+                  snapshot: { status: string };
+                  result_observation_id: string | null;
+                }[],
+              ) => {
+                if (rows[0]?.snapshot.status === 'succeeded')
+                  observedTerminal();
+                if (linkRequested && rows[0]?.result_observation_id === null)
+                  observedUnlinked();
+                return rows;
+              },
+            );
+          return result;
+        },
+      });
+      const after = f.observation(1);
+      const driver = {
+        perform: vi.fn(async () => {
+          started();
+          await actionGate;
+          return {};
+        }),
+        observe: async () => {
+          capturing();
+          await captureGate;
+          return {
+            observation: after,
+            screenshot: Buffer.from('synthetic-image'),
+          };
+        },
+        close: async () => {},
+      };
+      const abort = new AbortController();
+      const controller = startBrowserWorkspaceController(f.w, {
+        storage: f.storage,
+        database: instrumented,
+        driver: async () => driver,
+        signal: abort.signal,
+      });
+      let task: ReturnType<typeof waitBrowserOperationResult> | undefined;
+      let returned = false;
+      try {
+        await actionStarted;
+        // A real current observation may predate the physical action even when
+        // no observation was frozen into that action (for example initial open).
+        // No clock comparison or fabricated result/ledger state is involved.
+        await recordBrowserObservation(f.context, f.w.id, f.obs, db);
+        resumeAction();
+        await captureStarted;
+        task = waitBrowserOperationResult(
+          f.context,
+          f.w.id,
+          operationId,
+          instrumented,
+          abort.signal,
+        );
+        void task.then(
+          () => {
+            returned = true;
+          },
+          () => {
+            returned = true;
+          },
+        );
+        await readerObserved;
+        await yieldTurn();
+        expect(returned).toBe(false);
+        const [prepared] =
+          await db`select result,receipt from allrice_browser_operation_inputs where operation_id=${operationId}`;
+        resumeCapture();
+        await linkStarted;
+        await readerSawUnlinked;
+        await yieldTurn();
+        expect(returned).toBe(false);
+        expect(
+          (await readCurrentBrowserWorkspace(f.context, f.w.id, db)).observation
+            ?.id,
+        ).toBe(after.id);
+        resumeLink();
+        const result = await task;
+        expect(result.status).toBe('succeeded');
+        expect(result.observation?.id).toBe(after.id);
+        expect(result.observationRefreshRequired).toBe(false);
+        expect(driver.perform).toHaveBeenCalledOnce();
+        const [linked] =
+          await db`select result,receipt,result_observation_id from allrice_browser_operation_inputs where operation_id=${operationId}`;
+        expect(linked!.result_observation_id).toBe(after.id);
+        expect(linked!.result).toEqual(prepared!.result);
+        expect(linked!.receipt).toEqual(prepared!.receipt);
+        await expect(
+          db`update allrice_browser_operation_inputs set result_observation_id=${randomUUID()} where operation_id=${operationId}`,
+        ).rejects.toThrow('browser result observation is immutable');
+        await expect(
+          db`update allrice_browser_operation_inputs set result_observation_id=null where operation_id=${operationId}`,
+        ).rejects.toThrow('browser result observation is immutable');
+      } finally {
+        resumeAction();
+        resumeCapture();
+        resumeLink();
+        abort.abort();
+        await task?.catch(() => undefined);
+        await controller.closed;
+      }
+    },
+    15000,
+  );
   it('a rejected head does not starve the next approved action; result waits for a new observation', async () => {
     const f = await fixture(),
       command = {

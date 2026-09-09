@@ -109,7 +109,7 @@ export async function createLocalBrowserWorkspace(
       join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
       join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id
       where g.id=${grantId} and g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${ctx.actor.id}
-        and g.enabled and g.revoked_at is null and g.transport='local' and l.cleanup_requested_at is null
+        and g.enabled and g.revoked_at is null and g.transport='local' and l.cleanup_requested_at is null and l.purpose='public'
         and d.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'
         and t.kind='rice_bridge' and t.state='online' and t.target_key='bridge.'||d.id::text
       for update of g,l`;
@@ -208,6 +208,7 @@ function publicWorkspace(
     desiredControl: w.desired_control,
     expiresAt: w.expires_at.toISOString(),
     revoked,
+    ...(w.preview && !revoked ? { preview: w.preview } : {}),
   });
 }
 
@@ -216,6 +217,7 @@ export async function claimLocalBrowserWorkspace(
   controllerId: string,
   acceptWork: boolean,
   db = getDatabase(),
+  acceptPreview = false,
 ) {
   const revocations = await pendingLocalBrowserRevocations(device, db);
   if (!localBrowserEnabled() || !acceptWork)
@@ -232,6 +234,7 @@ export async function claimLocalBrowserWorkspace(
       from allrice_browser_workspaces w join allrice_local_browser_workspaces l on l.browser_workspace_id=w.id
       join allrice_local_browser_grants g on g.grant_id=l.grant_id
       where l.device_id=${device.id} and l.organization_id=${device.organizationId} and l.workspace_id=${device.workspaceId} and l.owner_id=${device.ownerId}
+        and (g.purpose='public' or (${acceptPreview} and g.purpose='local_preview'))
         and l.released_at is null and w.expires_at>clock_timestamp() and w.state not in ('closed','unknown','close_pending')
         and ((l.controller_lease_token is null and w.state='starting') or (l.controller_id=${UuidSchema.parse(controllerId)} and l.lease_expires_at>clock_timestamp()))
       order by w.created_at limit 8`;

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   BrowserCommandSchema,
   BrowserObservationSchema,
@@ -13,6 +13,7 @@ import {
   type LocalBrowserReceipt,
   type LocalBrowserRequestEffect,
   type RuntimeOperationSignal,
+  type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
@@ -20,7 +21,10 @@ import {
   createBrowserOperationLedger,
   acknowledgeBrowserControl,
 } from './browser-control.ts';
-import { checkBrowserBindingAuthority } from './browser-control-authority.ts';
+import {
+  checkBrowserBindingAuthority,
+  lockBrowserBindingOperations,
+} from './browser-control-authority.ts';
 import { cloudStableId } from './cloud-execution.ts';
 import {
   RuntimePolicyError,
@@ -31,6 +35,7 @@ import {
   type LocalControllerIdentity,
 } from './local-browser-workspaces.ts';
 import { localBrowserPrincipal } from './local-browser-grants.ts';
+import { RuntimeLedgerError } from './runtime-ledger/types.ts';
 
 type OperationRow = {
   snapshot: unknown;
@@ -51,6 +56,22 @@ export async function ownedLocalBrowserOperation(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
+    // Discover only this authenticated device/owner's immutable input, then
+    // enter root→operations before lockLocalBrowserController takes browser.
+    // The original query and all authority/lease checks run again under locks.
+    const [registered] = await tx<{ binding: unknown }[]>`select i.binding
+      from allrice_browser_operation_inputs i join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+      join allrice_runtime_operations o on o.id=i.operation_id
+      where i.operation_id=${UuidSchema.parse(input.operationId)} and w.id=${UuidSchema.parse(input.workspaceId)}
+        and w.organization_id=${device.organizationId} and w.workspace_id=${device.workspaceId} and w.owner_id=${device.ownerId}
+        and o.organization_id=${device.organizationId} and o.workspace_id=${device.workspaceId} and o.device_id=${device.id}`;
+    if (!registered)
+      throw new RuntimePolicyError('local_browser_operation_denied');
+    await lockBrowserBindingOperations(
+      tx,
+      localBrowserPrincipal(device),
+      registered.binding,
+    );
     const current = await lockLocalBrowserController(tx, device, input, admit);
     const [row] = await tx<
       OperationRow[]
@@ -163,6 +184,42 @@ export async function startLocalBrowserOperation(
   });
 }
 
+/** A completed receipt can win between the independent ownership and heartbeat
+ * transactions. This is proof of no work left to renew, never new authority. */
+async function completedBeforeHeartbeat(
+  device: BridgeDevice,
+  input: LocalControllerIdentity,
+  before: RuntimeOperationSnapshot,
+  token: string,
+  db: ReturnType<typeof getDatabase>,
+) {
+  return db.begin(async (tx) => {
+    const principal = localBrowserPrincipal(device);
+    await lockBrowserBindingOperations(tx, principal, before.binding);
+    await lockLocalBrowserController(tx, device, input);
+    await checkBrowserBindingAuthority(tx, principal, before.binding);
+    const [row] = await tx<{ snapshot: unknown }[]>`select o.snapshot
+      from allrice_runtime_operations o join allrice_browser_operation_inputs i on i.operation_id=o.id
+      where o.id=${before.binding.attempt.operationId} and i.browser_workspace_id=${input.workspaceId}
+        and o.organization_id=${device.organizationId} and o.workspace_id=${device.workspaceId} and o.device_id=${device.id}
+        and i.lease_token=${token} and o.lease_token_hash=${createHash('sha256').update(token).digest('hex')}
+        and o.snapshot->>'status' in ('succeeded','failed') and i.result->>'status'=o.snapshot->>'status'
+        and i.receipt->>'leaseToken'=${token} and i.receipt->'attempt'=${tx.json(before.binding.attempt)}
+        and exists(select 1 from allrice_runtime_roots root where root.root_run_id=o.root_run_id
+          and root.cancel_request_id is null and root.deadline_at>clock_timestamp())
+        and exists(select 1 from allrice_runtime_operation_receipts receipt where receipt.operation_id=o.id
+          and receipt.receipt_id::text=i.receipt->>'receiptId' and receipt.disposition='applied'
+          and receipt.payload->'attempt'=i.receipt->'attempt' and receipt.payload->'signal'=i.receipt->'signal')`;
+    return (
+      !!row &&
+      runtimeContractEqual(
+        RuntimeOperationSnapshotSchema.parse(row.snapshot).binding,
+        before.binding,
+      )
+    );
+  });
+}
+
 export async function renewLocalBrowserOperations(
   device: BridgeDevice,
   input: LocalControllerIdentity,
@@ -178,6 +235,7 @@ export async function renewLocalBrowserOperations(
     from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
     where i.browser_workspace_id=${input.workspaceId} and i.lease_token is not null and i.result is null and o.snapshot->>'status' in ('dispatched','running') limit 64`;
   for (const row of rows) {
+    let before: RuntimeOperationSnapshot | undefined;
     try {
       const current = await ownedLocalBrowserOperation(
         device,
@@ -189,6 +247,7 @@ export async function renewLocalBrowserOperations(
         true,
         db,
       );
+      before = current.snapshot;
       await ledger.heartbeat({
         scope: current.snapshot.binding.task.scope,
         operationId: row.operation_id,
@@ -196,6 +255,19 @@ export async function renewLocalBrowserOperations(
         leaseMs: 5000,
       });
     } catch (error) {
+      if (
+        before &&
+        error instanceof RuntimeLedgerError &&
+        error.code === 'lease_lost' &&
+        (await completedBeforeHeartbeat(
+          device,
+          input,
+          before,
+          row.lease_token,
+          db,
+        ))
+      )
+        continue;
       // A control fence change invalidates the old action, not the new control
       // handshake. The device receives the changed fence and settles its I/O.
       if (
@@ -222,6 +294,13 @@ export async function recordLocalBrowserReceipt(
     throw new RuntimePolicyError('local_browser_not_started');
   const requestDigest = digest(input);
   const saved = await db.begin(async (tx) => {
+    // Receipt input rows participate in parent-request authority checks.
+    // Keep the same root→operation→browser→input order as those admissions.
+    await lockBrowserBindingOperations(
+      tx,
+      localBrowserPrincipal(device),
+      current.snapshot.binding,
+    );
     await lockLocalBrowserController(tx, device, input, false);
     const [row] = await tx<
       { receipt: unknown; result: { requestDigest?: string } | null }[]

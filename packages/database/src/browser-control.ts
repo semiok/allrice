@@ -5,6 +5,8 @@ import {
   BrowserObservationSchema,
   browserObservationIsFresh,
   BrowserProfileSchema,
+  LocalPreviewTargetSchema,
+  localPreviewOrigin,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   RuntimeActionApprovalSnapshotSchema,
@@ -566,6 +568,13 @@ export type BrowserWorkspaceView = {
   transport: 'cloud' | 'local';
   localDeviceName: string | null;
   persistLogin: boolean;
+  preview: {
+    processId: string;
+    endpointId: string;
+    url: string;
+    port: number;
+    hardDeadlineAt: string;
+  } | null;
   id: string;
   runId: string;
   profileId: string;
@@ -597,10 +606,15 @@ export async function listBrowserWorkspaces(
       await tx`select id from allrice_runs where id=${UuidSchema.parse(runId)} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id}`;
     if (!run) throw new RuntimePolicyError('run_not_owned');
     return tx<
-      BrowserWorkspaceRow[]
-    >`select w.*,d.name as local_device_name,coalesce(l.persist_login,false) as persist_login from allrice_browser_workspaces w
+      (BrowserWorkspaceRow & {
+        preview_target: unknown;
+        local_device_name: string | null;
+        persist_login: boolean;
+      })[]
+    >`select w.*,d.name as local_device_name,coalesce(l.persist_login,false) as persist_login,x.target as preview_target from allrice_browser_workspaces w
       left join allrice_local_browser_grants l on l.grant_id=w.grant_id and l.organization_id=w.organization_id and l.workspace_id=w.workspace_id and l.owner_id=w.owner_id
       left join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
+      left join allrice_local_preview_endpoints x on x.browser_workspace_id=w.id and x.organization_id=w.organization_id and x.workspace_id=w.workspace_id and x.owner_id=w.owner_id
       where w.run_id=${runId} and w.organization_id=${ctx.organizationId} and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id} order by w.created_at limit 8`;
   });
   const views: BrowserWorkspaceView[] = [];
@@ -647,14 +661,22 @@ export async function listBrowserWorkspaces(
         available: opAvailable,
       });
     }
+    const preview = w.preview_target
+      ? LocalPreviewTargetSchema.parse(w.preview_target)
+      : null;
     views.push({
+      preview: preview
+        ? {
+            processId: preview.processId,
+            endpointId: preview.endpointId,
+            url: localPreviewOrigin(preview.endpointId),
+            port: preview.port,
+            hardDeadlineAt: preview.hardDeadlineAt,
+          }
+        : null,
       transport: w.transport,
-      localDeviceName:
-        (w as BrowserWorkspaceRow & { local_device_name: string | null })
-          .local_device_name ?? null,
-      persistLogin: Boolean(
-        (w as BrowserWorkspaceRow & { persist_login: boolean }).persist_login,
-      ),
+      localDeviceName: w.local_device_name ?? null,
+      persistLogin: Boolean(w.persist_login),
       id: w.id,
       runId: w.run_id,
       profileId: w.profile_id,

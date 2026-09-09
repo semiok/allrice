@@ -67,6 +67,8 @@ const manifest = {
   sandboxDefault: 'disabled',
   browserDefault:
     'disabled; independent native Chromium sandbox; no personal profile',
+  previewDefault:
+    'disabled; approved live container HTTP service only; no host port or public URL',
 };
 await writeFile(
   join(folder, 'release.json'),
@@ -79,6 +81,8 @@ for (const [name, action] of [
   ['关闭沙箱.command', 'sandbox disable'],
   ['启用独立浏览器.command', 'browser enable'],
   ['关闭独立浏览器.command', 'browser disable'],
+  ['启用项目预览.command', 'preview enable'],
+  ['关闭项目预览.command', 'preview disable'],
 ]) {
   const path = join(folder, name);
   await writeFile(
@@ -92,6 +96,7 @@ for (const [name, action] of [
 await writeFile(
   join(folder, '升级与沙箱说明.txt'),
   `Rice Bridge ${version} · ${process.arch}\n\n` +
+    'B5 项目预览默认关闭，需先启用受控浏览器与独立沙箱，再执行 preview enable。只预览当前 Run 已批准的活动 HTTP 服务，不开放本机端口或公共网址，不支持 WebSocket/热更新、上传下载或保留项目登录资料。preview disable 可随时关闭，不自动重启旧服务。\n\n' +
     '1. 先退出旧 Bridge，保留旧文件作为回退；不要删除“应用程序支持/Rice Bridge”中的配对配置。\n' +
     '2. 解压后双击“打开 RiceBridge.command”（或 RiceBridge），原有配对和目录授权继续使用。\n' +
     '3. 这是 Dev 测试包，使用 ad-hoc 签名，尚未 Apple 公证。只从可信 AllRice Dev 页面下载；若 macOS 拦截，请先核对 release.json 和发布说明，不要关闭系统安全保护。\n' +

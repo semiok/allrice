@@ -26,9 +26,26 @@ cleanup() {
 
 trap cleanup EXIT
 
+# Compose waits for services with healthchecks, but Caddy currently has none.
+# Its container can be running before the published port accepts requests.
+# Wait only on the read-only readiness endpoint, never retry business writes.
+wait_for_proxy_ready() {
+  local deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    if curl --fail --silent --connect-timeout 2 --max-time 5 \
+      "http://127.0.0.1:${proxy_port}/api/health/ready" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo 'Compose proxy did not become ready within 60 seconds' >&2
+  return 1
+}
+
 docker compose config --quiet
 docker compose --project-name "${compose_project}" up --build --wait --wait-timeout 300
 
+wait_for_proxy_ready
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/live"
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/ready"
 
@@ -171,12 +188,7 @@ docker compose --project-name "${compose_project}" run --rm migrate
 
 # Validate that both authoritative stores remain consistent after restart.
 docker compose --project-name "${compose_project}" restart postgres web
-for _ in $(seq 1 60); do
-  if curl --fail --silent "http://127.0.0.1:${proxy_port}/api/health/ready" >/dev/null; then
-    break
-  fi
-  sleep 1
-done
+wait_for_proxy_ready
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/ready" >/dev/null
 ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \

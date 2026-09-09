@@ -20,6 +20,7 @@ import {
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   createToolBrokerExportObject,
   registerToolBrokerExport,
@@ -65,9 +66,8 @@ export async function assertWorkbenchSession(
     await db`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
   const organizations =
     await db`select id from allrice_organizations where id=${context.organizationId} and archived_at is null for share`;
-  const workspaces = write
-    ? await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null for update`
-    : await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null for share`;
+  const workspaces =
+    await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null for share`;
   const memberships = await db<
     { role: string }[]
   >`select role from allrice_memberships where organization_id=${context.organizationId} and user_id=${context.actor.id}
@@ -424,6 +424,11 @@ export async function publishWorkbenchArtifact(
   let created: StorageObject | undefined;
   try {
     return await db.begin(async (tx) => {
+      await lockWorkspaceStorageQuota(
+        tx,
+        context.organizationId,
+        context.workspaceId,
+      );
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
       let derivedSource: WorkbenchArtifact | null = null;
       if (input.trustedCloudDerivation) {
@@ -490,8 +495,7 @@ export async function publishWorkbenchArtifact(
         input.kind === 'changeset'
           ? await assertArtifactExecution(tx, context, input.bytes)
           : (derivedSource?.execution ?? null);
-      // Serialize new publication quota checks in this workspace, including concurrent sessions.
-      await tx`select id from allrice_workspaces where id=${context.workspaceId!} and organization_id=${context.organizationId} for update`;
+      // The entry's quota gate still covers this increment across all storage sources.
       created = {
         ...createToolBrokerExportObject({
           context,

@@ -2,6 +2,7 @@ import {
   localCommandFeatureEnabled,
   localServiceFeatureEnabled,
   localServiceUserAction,
+  requestLocalPreviewFromUser,
   RuntimePolicyError,
 } from '@allrice/database';
 import {
@@ -21,12 +22,11 @@ async function handle(request: Request, write: boolean) {
     const context = await getRequestContext(request);
     if (!context) return new Response(null, { status: 401, headers });
     const url = new URL(request.url);
-    const runId = UuidSchema.parse(url.searchParams.get('runId'));
     const processId = UuidSchema.parse(url.searchParams.get('processId'));
     const workspaceId = UuidSchema.parse(
       url.searchParams.get('workspaceId') ?? context.workspaceId,
     );
-    let action: 'status' | 'stop' | 'input' = 'status';
+    let action: 'status' | 'stop' | 'input' | 'preview' = 'status';
     let input: unknown;
     if (write) {
       if (Number(request.headers.get('content-length') ?? 0) > 16_384)
@@ -56,6 +56,16 @@ async function handle(request: Request, write: boolean) {
       action = body.action;
       input = body.input;
     }
+    if (action === 'preview') {
+      return Response.json(
+        await requestLocalPreviewFromUser(
+          { ...context, workspaceId },
+          processId,
+        ),
+        { headers },
+      );
+    }
+    const runId = UuidSchema.parse(url.searchParams.get('runId'));
     return Response.json(
       {
         service: await localServiceUserAction(

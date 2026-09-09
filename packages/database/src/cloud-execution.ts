@@ -16,6 +16,7 @@ import {
   type CloudCommand,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
@@ -343,6 +344,7 @@ export async function publishCloudOperationArtifacts(
 ) {
   const { context: ctx, binding, payload } = input;
   return database.begin(async (tx) => {
+    await lockWorkspaceStorageQuota(tx, ctx.organizationId, ctx.workspaceId);
     const [root] =
       await tx`select root_run_id from allrice_runtime_roots where root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and cancel_request_id is null and deadline_at>clock_timestamp() for update`;
     if (!root) throw new RuntimePolicyError('cloud_publication_revoked');
@@ -386,8 +388,6 @@ export async function publishCloudOperationArtifacts(
       phase: 'heartbeat',
       now: new Date(),
     });
-    // Serialize current workspace quota checks across different operations.
-    await tx`select id from allrice_workspaces where id=${ctx.workspaceId} and organization_id=${ctx.organizationId} for update`;
     const published: {
       object: StorageObject;
       fileName: string;

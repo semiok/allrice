@@ -38,11 +38,13 @@ export function LocalCommandPanel({
   workspaceId,
   tenantHeaders,
   runActive,
+  onServiceChanged,
 }: {
   runId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
+  onServiceChanged?: () => void;
 }) {
   const [operations, setOperations] = useState<Operation[]>([]),
     [error, setError] = useState(''),
@@ -197,7 +199,10 @@ export function LocalCommandPanel({
                 runId={runId}
                 workspaceId={workspaceId}
                 tenantHeaders={tenantHeaders}
-                onChanged={() => setRevision((v) => v + 1)}
+                onChanged={() => {
+                  setRevision((v) => v + 1);
+                  onServiceChanged?.();
+                }}
               />
             )}
             {op.command.dependencies && (

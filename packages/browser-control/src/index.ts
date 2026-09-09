@@ -8,6 +8,7 @@ import type {
 import {
   BrowserObservationSchema,
   browserObservationLifetimeMs,
+  reservedLocalPreviewUrl,
   runtimeContractEqual,
   type BrowserAction,
   type BrowserObservation,
@@ -46,6 +47,19 @@ export type BrowserDriverOptions = {
   requestSent: () => void;
   /** Synchronous ownership reservation before any asynchronous request checks. */
   requestStarted: () => () => void;
+  /** P23 trusted process adapter only. Reserved origins NEVER fall back to
+   * normal network/DNS, and this hook runs after the same current-authority
+   * and exact write-request approval gates as ordinary browser traffic. */
+  localPreviewRelay?: (request: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body: Buffer;
+  }) => Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: Buffer;
+  }>;
 };
 export type BrowserDriver = {
   observe: (
@@ -87,11 +101,14 @@ export async function createControlledBrowserRenderer(
     Request,
     (confirmed: boolean) => Promise<void>
   >();
+  const completedRequests = new WeakSet<Request>();
   context.on('requestfinished', (request) => {
+    completedRequests.add(request);
     void networkSettlers.get(request)?.(true);
     networkSettlers.delete(request);
   });
   context.on('requestfailed', (request) => {
+    completedRequests.add(request);
     void networkSettlers.get(request)?.(false);
     networkSettlers.delete(request);
   });
@@ -134,7 +151,9 @@ export async function createControlledBrowserRenderer(
           (!/^\d+$/.test(declared) || Number(declared) > 2500000)
         )
           throw Error();
-        const bytes = request.postDataBuffer() ?? Buffer.alloc(0);
+        // Playwright returns its cached Buffer, not caller-owned storage. Wipe
+        // only our copy: the original still supplies the approved network body.
+        const bytes = Buffer.from(request.postDataBuffer() ?? Buffer.alloc(0));
         try {
           if (bytes.length > 2500000) throw Error();
           // Query strings may contain login material: bind exact bytes by digest,
@@ -146,6 +165,13 @@ export async function createControlledBrowserRenderer(
             bodyDigest: hash(bytes),
             bodyBytes: bytes.length,
           });
+          // A close/failure can occur while authority approval is in flight.
+          // Its event has already passed: do not orphan a newly returned permit
+          // in the WeakMap, and never send the canceled request after approval.
+          if (closed || completedRequests.has(request)) {
+            await permission.complete(false);
+            throw Error('BROWSER_REQUEST_ALREADY_STOPPED');
+          }
           networkSettlers.set(request, permission.complete);
         } finally {
           bytes.fill(0);
@@ -154,7 +180,27 @@ export async function createControlledBrowserRenderer(
         authorized.add(request);
         options.requestSent();
       }
-      await route.fallback();
+      if (reservedLocalPreviewUrl(request.url())) {
+        if (!options.localPreviewRelay) throw Error();
+        // Relay ownership is independent of Playwright's cached request body.
+        const body = Buffer.from(request.postDataBuffer() ?? Buffer.alloc(0));
+        try {
+          const result = await options.localPreviewRelay({
+            url: request.url(),
+            method: request.method(),
+            headers: request.headers(),
+            body,
+          });
+          try {
+            await options.assertCurrent();
+            await route.fulfill(result);
+          } finally {
+            result.body.fill(0);
+          }
+        } finally {
+          body.fill(0);
+        }
+      } else await route.fallback();
     } catch {
       await route.abort('blockedbyclient').catch(() => undefined);
     } finally {
@@ -473,7 +519,11 @@ export async function createControlledBrowserRenderer(
       }
     }
     if (expected.inputType === 'file') throw Error('BROWSER_UPLOAD_REQUIRED');
-    await h.click({ noWaitAfter: true });
+    // Retain the browser's causal navigation barrier. Returning after only the
+    // mouse event can precede its intercepted form POST and incorrectly hand
+    // control back to observation. Approval may outlive the normal 5s element
+    // timeout, but never this cap or the controller's earlier lease/close.
+    await h.click({ noWaitAfter: false, timeout: 120000 });
     return {};
   }
   return {

@@ -17,4 +17,5 @@ export * from './artifact-review.ts';
 export * from './input-status.ts';
 export * from './browser-control.ts';
 export * from './local-browser.ts';
+export * from './local-preview.ts';
 export * from './changeset-execution.ts';

@@ -33,16 +33,23 @@ suite(
     afterAll(async () => {
       await browser?.close();
     });
-    async function setup(overrides: Partial<BrowserDriverOptions> = {}) {
+    async function setup(
+      overrides: Partial<BrowserDriverOptions> = {},
+      document = html,
+    ) {
       const context = await browser.newContext({
           acceptDownloads: true,
           serviceWorkers: 'block',
         }),
-        requests: { method: string; path: string }[] = [];
+        requests: { method: string; path: string; body: Buffer }[] = [];
       await context.route('**/*', async (route) => {
         const request = route.request(),
           path = new URL(request.url()).pathname;
-        requests.push({ method: request.method(), path });
+        requests.push({
+          method: request.method(),
+          path,
+          body: Buffer.from(request.postDataBuffer() ?? Buffer.alloc(0)),
+        });
         if (path === '/submit')
           await route.fulfill({
             status: 200,
@@ -62,7 +69,7 @@ suite(
           await route.fulfill({
             status: 200,
             contentType: 'text/html',
-            body: html,
+            body: document,
           });
       });
       // Explicit test context injection covers renderer behavior, never the public pinned proxy.
@@ -92,6 +99,70 @@ suite(
       );
       return { driver, context, requests };
     }
+    it.each(['reject', 'close-before-late-approval'] as const)(
+      'actual Chromium form navigation retains ownership and sends zero writes on %s',
+      async (outcome) => {
+        let entered!: () => void, release!: () => void;
+        const waiting = new Promise<void>((r) => {
+          entered = r;
+        });
+        const approval = new Promise<void>((r) => {
+          release = r;
+        });
+        const completions: boolean[] = [];
+        let sent = 0;
+        const f = await setup(
+          {
+            requestSent: () => {
+              sent++;
+            },
+            requestApproval: async () => {
+              entered();
+              await approval;
+              if (outcome === 'reject') throw Error('APPROVAL_REJECTED');
+              return {
+                complete: async (confirmed) => {
+                  completions.push(confirmed);
+                },
+              };
+            },
+          },
+          '<!doctype html><title>Form</title><form method="post" action="/submit"><button>Submit</button></form>',
+        );
+        let returned = false;
+        let clicking: Promise<unknown> | undefined;
+        try {
+          await f.driver.perform({ type: 'navigate', url: origin + '/' }, null);
+          const { observation } = await f.driver.observe(1);
+          clicking = f.driver
+            .perform(
+              { type: 'click', elementId: observation.elements[0]!.id },
+              observation,
+            )
+            .finally(() => {
+              returned = true;
+            });
+          void clicking.catch(() => undefined);
+          await waiting;
+          expect(returned).toBe(false);
+          expect(f.requests.filter((r) => r.method === 'POST')).toEqual([]);
+          if (outcome === 'close-before-late-approval') await f.driver.close();
+          release();
+          await clicking.catch(() => undefined);
+          if (outcome === 'close-before-late-approval') {
+            for (let i = 0; i < 40 && !completions.length; i++) await delay(25);
+            expect(completions).toEqual([false]);
+          }
+          expect(sent).toBe(0);
+          expect(f.requests.filter((r) => r.method === 'POST')).toEqual([]);
+        } finally {
+          release();
+          await f.driver.close();
+          await clicking?.catch(() => undefined);
+        }
+      },
+      15000,
+    );
     it('real fill/click cannot send form POST until exact request approval; passwords never appear in observation', async () => {
       let allow!: () => void;
       const pending = new Promise<void>((r) => {
@@ -147,12 +218,21 @@ suite(
           url: origin + '/submit',
           method: 'POST',
           urlDigest: hash(Buffer.from(origin + '/submit')),
+          bodyDigest: hash(
+            Buffer.from('username=&password=SyntheticPrivateValue'),
+          ),
+          bodyBytes: Buffer.byteLength(
+            'username=&password=SyntheticPrivateValue',
+          ),
         });
         expect(JSON.stringify(effects)).not.toContain('SyntheticPrivateValue');
         allow();
         for (let i = 0; i < 80 && !finished; i++) await delay(25);
         expect(finished).toBe(true);
         expect(f.requests.filter((r) => r.method === 'POST')).toHaveLength(1);
+        expect(f.requests.find((r) => r.method === 'POST')!.body).toEqual(
+          Buffer.from('username=&password=SyntheticPrivateValue'),
+        );
         expect((await f.driver.observe(1)).observation.text).toContain(
           'saved:synthetic',
         );

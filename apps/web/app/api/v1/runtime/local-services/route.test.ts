@@ -6,6 +6,7 @@ const ports = vi.hoisted(() => ({
   serviceEnabled: vi.fn(),
   context: vi.fn(),
   action: vi.fn(),
+  preview: vi.fn(),
 }));
 vi.mock('../../../../../lib/identity/session', () => ({
   getRequestContext: ports.context,
@@ -15,6 +16,7 @@ vi.mock('@allrice/database', async (original) => ({
   localCommandFeatureEnabled: ports.enabled,
   localServiceFeatureEnabled: ports.serviceEnabled,
   localServiceUserAction: ports.action,
+  requestLocalPreviewFromUser: ports.preview,
 }));
 import { GET, POST } from './route';
 const context = {
@@ -39,6 +41,12 @@ beforeEach(() => {
   ports.serviceEnabled.mockReturnValue(true);
   ports.context.mockResolvedValue(context);
   ports.action.mockResolvedValue({ state: 'stopping' });
+  ports.preview.mockResolvedValue({
+    workspaceId: randomUUID(),
+    endpointId: randomUUID(),
+    previewUrl: 'https://p-synthetic.preview.allrice.invalid',
+    pending: true,
+  });
 });
 it('requires both execution feature gates before authentication', async () => {
   ports.serviceEnabled.mockReturnValue(false);
@@ -90,4 +98,34 @@ it('never reveals database errors or user input in error responses', async () =>
   const response = await GET(request());
   expect(response.status).toBe(403);
   expect(await response.text()).not.toContain('PRIVATE_DATABASE_DETAILS');
+});
+it('preview accepts only process identity plus real session scope; never accepts job, URL or port authority', async () => {
+  const make = (body: unknown, origin = 'http://localhost') =>
+    new Request(
+      `http://localhost/api/v1/runtime/local-services?processId=${processId}`,
+      {
+        method: 'POST',
+        headers: { origin, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+  const response = await POST(make({ action: 'preview' }));
+  expect(response.status).toBe(200);
+  expect(ports.preview).toHaveBeenCalledExactlyOnceWith(context, processId);
+  expect(await response.json()).toMatchObject({ pending: true });
+  expect(ports.action).not.toHaveBeenCalled();
+  for (const extra of [
+    { port: 3100 },
+    { url: 'http://localhost' },
+    { jobLeaseToken: randomUUID() },
+    { input: { text: 'secret' } },
+  ])
+    expect((await POST(make({ action: 'preview', ...extra }))).status).toBe(
+      400,
+    );
+  expect(
+    (await POST(make({ action: 'preview' }, 'https://attacker.invalid')))
+      .status,
+  ).toBe(403);
+  expect(ports.preview).toHaveBeenCalledTimes(1);
 });

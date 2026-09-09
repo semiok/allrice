@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
+import {
+  browserIdentity,
+  currentBrowserWorkspace,
+} from './browser-control-authority.ts';
+import { publishBrowserObservationArtifact } from './browser-control-artifact.ts';
 import { listBrowserControlManagement } from './browser-control-management.ts';
 import {
   createBrowserOperation,
@@ -35,12 +41,14 @@ import {
   requestLocalBrowserEffect,
   localBrowserEffectStatus,
   completeLocalBrowserEffect,
+  renewLocalBrowserOperations,
 } from './local-browser-operations.ts';
 import {
   captureLocalBrowserFile,
   takeLocalBrowserInput,
 } from './local-browser-files.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { waitBrowserOperationResult } from '../../../apps/worker/src/browser-control/controller.js';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -60,13 +68,7 @@ suite('P22 real PostgreSQL device browser authority', () => {
     const source = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!source) throw Error('dedicated DB required');
     const url = new URL(source);
-    if (!(
-      url.hostname === '127.0.0.1' &&
-      url.port === '5432' &&
-      url.username === 'a123' &&
-      url.pathname === '/allrice_b2'
-    ))
-      throw Error('disposable DB only');
+    assertRuntimeFixtureDatabase(url);
     for (const key of [
       'ALLRICE_BROWSER_CONTROL_ENABLED',
       'ALLRICE_LOCAL_BROWSER_ENABLED',
@@ -100,6 +102,71 @@ suite('P22 real PostgreSQL device browser authority', () => {
       await rm(storageRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
+  it('orders artifact quota locks before observation identity locks under deterministic concurrent admission', async () => {
+    const f = await fixture(),
+      b = f.browser!;
+    const w = await readCurrentBrowserWorkspace(f.context, b.w.id, db);
+    let quotaRequested!: () => void, identityAcquired!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      quotaRequested = resolve;
+    });
+    const identity = new Promise<void>((resolve) => {
+      identityAcquired = resolve;
+    });
+    // This only schedules actual SQL; no authority check, lock or response is mocked.
+    const instrumented = new Proxy(db, {
+      get(target, key) {
+        if (key !== 'begin') return Reflect.get(target, key, target);
+        return (work: (tx: postgres.TransactionSql) => Promise<unknown>) =>
+          target.begin((tx) =>
+            work(
+              new Proxy(tx, {
+                apply(query, thisArg, args: unknown[]) {
+                  const fragments = args[0];
+                  if (
+                    Array.isArray(fragments) &&
+                    fragments.join('?').includes('pg_advisory_xact_lock') &&
+                    fragments.join('?').includes(',42)')
+                  ) {
+                    quotaRequested();
+                    return identity.then(() =>
+                      Reflect.apply(query, thisArg, args),
+                    );
+                  }
+                  return Reflect.apply(query, thisArg, args);
+                },
+              }),
+            ),
+          );
+      },
+    });
+    const publication = publishBrowserObservationArtifact(
+      w,
+      b.obs!,
+      f.storage,
+      instrumented,
+    );
+    // Avoid an unhandled failure if PostgreSQL chooses the publishing transaction
+    // as deadlock victim on the pre-fix implementation; assertion still requires success.
+    void publication.catch(() => undefined);
+    await requested;
+    const observer = db.begin(async (tx) => {
+      await browserIdentity(tx, f.context);
+      identityAcquired();
+      return currentBrowserWorkspace(tx, f.context, w.id);
+    });
+    try {
+      const [artifact, observed] = await Promise.all([publication, observer]);
+      expect(artifact).toBeTruthy();
+      expect(observed.id).toBe(w.id);
+      expect(
+        await db`select version_id from allrice_workbench_artifacts where run_id=${f.run}`,
+      ).toHaveLength(1);
+    } finally {
+      identityAcquired();
+      await Promise.allSettled([publication, observer]);
+    }
+  }, 15000);
   it('opens without folder grant; exact approval and one START precede a durable receipt', async () => {
     const f = await fixture(),
       b = f.browser!;
@@ -175,6 +242,321 @@ suite('P22 real PostgreSQL device browser authority', () => {
     });
     expect(view!.operations[0]!.snapshot.status).toBe('succeeded');
   });
+  it.each(['upload', 'download'] as const)(
+    'orders %s I/O foreign-key locks before browser authority under a concurrent operation heartbeat',
+    async (kind) => {
+      const f = await fixture(),
+        b = f.browser!;
+      const uploaded =
+        kind === 'upload'
+          ? await f.upload(Buffer.from('synthetic-upload'), 'text/plain')
+          : null;
+      const command =
+        kind === 'upload'
+          ? {
+              ...b.command,
+              action: {
+                type: 'upload' as const,
+                elementId: 'e3',
+                objectId: uploaded!.id,
+                checksum: uploaded!.checksum,
+                fileName: 'synthetic.txt',
+              },
+            }
+          : {
+              ...b.command,
+              action: { type: 'click' as const, elementId: 'e2' },
+            };
+      const op = await createBrowserOperation(
+        f.context,
+        command,
+        randomUUID(),
+        db,
+      );
+      const operationId = op.snapshot.binding.attempt.operationId;
+      await f.approve(op);
+      const start = await startLocalBrowserOperation(
+        f.device,
+        { ...b.identity!, operationId },
+        db,
+      );
+      let preflightDone!: () => void,
+        blocked!: () => void,
+        releaseIO!: () => void;
+      const preflight = new Promise<void>((r) => {
+        preflightDone = r;
+      });
+      const atLock = new Promise<void>((r) => {
+        blocked = r;
+      });
+      const ioReady = new Promise<void>((r) => {
+        releaseIO = r;
+      });
+      let begins = 0;
+      const instrumented = new Proxy(db, {
+        get(target, key) {
+          if (key !== 'begin') return Reflect.get(target, key, target);
+          return async (
+            work: (tx: postgres.TransactionSql) => Promise<unknown>,
+          ) => {
+            if (++begins !== 2) return target.begin(work);
+            preflightDone();
+            await ioReady;
+            return target.begin((tx) =>
+              work(
+                new Proxy(tx, {
+                  apply(query, thisArg, args: unknown[]) {
+                    const fragments = args[0];
+                    const sql = Array.isArray(fragments)
+                      ? fragments.join('?')
+                      : '';
+                    // Observe real SQL, never replace results. On the old code the
+                    // INSERT takes an implicit operation KEY SHARE after browser;
+                    // on the fixed code the root gate is requested before browser.
+                    if (
+                      (sql.includes('from allrice_runtime_roots') &&
+                        sql.includes('for update')) ||
+                      sql.includes(
+                        'insert into allrice_local_browser_operation_io',
+                      ) ||
+                      sql.includes('insert into allrice_local_browser_captures')
+                    )
+                      blocked();
+                    return Reflect.apply(query, thisArg, args);
+                  },
+                }),
+              ),
+            );
+          };
+        },
+      });
+      const io =
+        kind === 'upload'
+          ? takeLocalBrowserInput(
+              f.device,
+              {
+                ...b.identity!,
+                operationId,
+                operationLeaseToken: start.operationLeaseToken!,
+                inputKind: 'upload',
+              },
+              f.storage,
+              instrumented,
+            )
+          : captureLocalBrowserFile(
+              f.device,
+              {
+                ...b.identity!,
+                kind: 'download',
+                operationId,
+                operationLeaseToken: start.operationLeaseToken!,
+                fileName: 'synthetic.txt',
+                mediaType: 'text/plain',
+              },
+              Buffer.from('synthetic-download'),
+              f.storage,
+              instrumented,
+            );
+      void io.catch(() => undefined);
+      await Promise.race([
+        preflight,
+        io.then(() => {
+          throw Error('I/O completed before publication transaction');
+        }),
+      ]);
+      const heartbeat = db.begin(async (tx) => {
+        // Exactly the ledger's root→operation locks, then its browser admission.
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${f.run} for update`;
+        await tx`select id from allrice_runtime_operations where id=${operationId} for update`;
+        releaseIO();
+        await atLock;
+        await tx`select id from allrice_browser_workspaces where id=${b.w.id} for update`;
+      });
+      const results = await Promise.allSettled([io, heartbeat]);
+      expect(
+        results.map((r) => r.status),
+        JSON.stringify(
+          results.map((r) =>
+            r.status === 'rejected'
+              ? {
+                  code: r.reason?.code,
+                  detail: r.reason?.detail,
+                  where: r.reason?.where,
+                }
+              : { status: r.status },
+          ),
+        ),
+      ).toEqual(['fulfilled', 'fulfilled']);
+      if (kind === 'upload') {
+        const bytes = (results[0] as PromiseFulfilledResult<Buffer>).value;
+        expect(bytes.toString()).toBe('synthetic-upload');
+        bytes.fill(0);
+        await expect(
+          takeLocalBrowserInput(
+            f.device,
+            {
+              ...b.identity!,
+              operationId,
+              operationLeaseToken: start.operationLeaseToken!,
+              inputKind: 'upload',
+            },
+            f.storage,
+            db,
+          ),
+        ).rejects.toThrow('browser_input_already_consumed');
+      } else
+        expect(
+          (results[0] as PromiseFulfilledResult<{ objectId: string }>).value
+            .objectId,
+        ).toBeTruthy();
+    },
+    15000,
+  );
+  it.each([
+    'succeeded',
+    'failed',
+    'canceled',
+    'unknown',
+    'input-token-changed',
+    'ledger-token-immutable',
+    'attempt-immutable',
+    'unapplied-receipt',
+    'revoked',
+    'expired-running',
+  ] as const)(
+    'handles only proven same-attempt completion between renewal transactions: %s',
+    async (outcome) => {
+      const f = await fixture(),
+        b = f.browser!;
+      const op = await createBrowserOperation(
+        f.context,
+        b.command,
+        randomUUID(),
+        db,
+      );
+      const operationId = op.snapshot.binding.attempt.operationId;
+      await f.approve(op);
+      const start = await startLocalBrowserOperation(
+        f.device,
+        { ...b.identity!, operationId },
+        db,
+      );
+      let waiting!: () => void, resume!: () => void;
+      const atHeartbeat = new Promise<void>((r) => {
+        waiting = r;
+      });
+      const completed = new Promise<void>((r) => {
+        resume = r;
+      });
+      let begins = 0;
+      const instrumented = new Proxy(db, {
+        get(target, key) {
+          if (key !== 'begin') return Reflect.get(target, key, target);
+          return async (
+            work: (tx: postgres.TransactionSql) => Promise<unknown>,
+          ) => {
+            if (++begins === 2) {
+              waiting();
+              await completed;
+            }
+            return target.begin(work);
+          };
+        },
+      });
+      const renewal = renewLocalBrowserOperations(
+        f.device,
+        b.identity!,
+        instrumented,
+      );
+      void renewal.catch(() => undefined);
+      try {
+        await Promise.race([
+          atHeartbeat,
+          renewal.then(() => {
+            throw Error('renewal missed heartbeat transaction');
+          }),
+        ]);
+        if (outcome === 'expired-running') {
+          await db`update allrice_runtime_operations set lease_expires_at=clock_timestamp()-interval '1 second' where id=${operationId}`;
+        } else if (outcome === 'canceled') {
+          const ledger = createBrowserOperationLedger(f.context, db);
+          await ledger.cancelRoot(
+            op.snapshot.binding.task.scope,
+            f.run,
+            randomUUID(),
+          );
+          await ledger.recordReceipt({
+            scope: op.snapshot.binding.task.scope,
+            operationId,
+            leaseToken: start.operationLeaseToken!,
+            attempt: op.snapshot.binding.attempt,
+            receiptId: randomUUID(),
+            signal: {
+              type: 'operation.stopped',
+              effects: 'none',
+              evidence: {
+                id: randomUUID(),
+                recordedAt: new Date().toISOString(),
+                digest: runtimePolicyDigest('synthetic stop evidence'),
+              },
+            },
+          });
+        } else {
+          await recordLocalBrowserReceipt(
+            f.device,
+            {
+              ...b.identity!,
+              operationId,
+              operationLeaseToken: start.operationLeaseToken!,
+              receiptId: randomUUID(),
+              status: ['succeeded', 'failed', 'unknown'].includes(outcome)
+                ? (outcome as 'succeeded' | 'failed' | 'unknown')
+                : 'succeeded',
+              networkEffect: false,
+              observationId: null,
+              downloadObjectId: null,
+              errorCode: null,
+            },
+            db,
+          );
+        }
+        if (outcome === 'input-token-changed')
+          await db`update allrice_browser_operation_inputs set lease_token=${randomUUID()} where operation_id=${operationId}`;
+        if (outcome === 'ledger-token-immutable')
+          await expect(
+            db`update allrice_runtime_operations set lease_token_hash=${'0'.repeat(64)} where id=${operationId}`,
+          ).rejects.toThrow('immutable');
+        if (outcome === 'attempt-immutable')
+          await expect(
+            db`update allrice_runtime_operations set snapshot=jsonb_set(snapshot,'{binding,attempt,attemptId}',to_jsonb(${randomUUID()}::text)) where id=${operationId}`,
+          ).rejects.toThrow('immutable');
+        if (outcome === 'unapplied-receipt')
+          await db`update allrice_runtime_operation_receipts set disposition='stale' where operation_id=${operationId}`;
+        if (outcome === 'revoked')
+          await revokeLocalBrowserGrant(f.context, f.localGrant.grantId, db);
+        const [before] =
+          await db`select snapshot,lease_expires_at from allrice_runtime_operations where id=${operationId}`;
+        resume();
+        if (
+          [
+            'succeeded',
+            'failed',
+            'ledger-token-immutable',
+            'attempt-immutable',
+          ].includes(outcome)
+        )
+          await expect(renewal).resolves.toBeUndefined();
+        else await expect(renewal).rejects.toBeTruthy();
+        const [after] =
+          await db`select snapshot,lease_expires_at from allrice_runtime_operations where id=${operationId}`;
+        expect(after).toEqual(before); // No extension, retry, replay or state rewrite.
+      } finally {
+        resume();
+        await renewal.catch(() => undefined);
+      }
+    },
+    15000,
+  );
   it('rejects overlong real-renderer observations without weakening the 60 second freshness boundary', async () => {
     const f = await fixture(),
       b = f.browser!;
@@ -601,6 +983,56 @@ suite('P22 real PostgreSQL device browser authority', () => {
     await expect(
       takeLocalBrowserInput(f.device, input, f.storage, db),
     ).rejects.toThrow('browser_direct_input_unavailable');
+  });
+  it('the shared result reader accepts the exact local receipt-bound capture without a cloud link', async () => {
+    const f = await fixture(),
+      b = f.browser!;
+    const op = await createBrowserOperation(
+      f.context,
+      {
+        ...b.command,
+        observationId: null,
+        action: { type: 'navigate', url: f.profile.origins[0] + '/' },
+      },
+      randomUUID(),
+      db,
+    );
+    const operationId = op.snapshot.binding.attempt.operationId;
+    await f.approve(op);
+    const started = await startLocalBrowserOperation(
+      f.device,
+      { ...b.identity!, operationId },
+      db,
+    );
+    const observation = await b.observation(1);
+    await recordLocalBrowserReceipt(
+      f.device,
+      {
+        ...b.identity!,
+        operationId,
+        operationLeaseToken: started.operationLeaseToken!,
+        receiptId: randomUUID(),
+        status: 'succeeded',
+        networkEffect: false,
+        observationId: observation.id,
+        downloadObjectId: null,
+        errorCode: null,
+      },
+      db,
+    );
+    const result = await waitBrowserOperationResult(
+      f.context,
+      b.w.id,
+      operationId,
+      db,
+    );
+    expect(result.status).toBe('succeeded');
+    expect(result.observation?.id).toBe(observation.id);
+    expect(result.observationRefreshRequired).toBe(false);
+    const [row] =
+      await db`select result_observation_id,receipt from allrice_browser_operation_inputs where operation_id=${operationId}`;
+    expect(row!.result_observation_id).toBeNull();
+    expect(row!.receipt.evidence.observationId).toBe(observation.id);
   });
   it('download requires a running exact operation; forged capture references and receipts are rejected', async () => {
     const f = await fixture(),

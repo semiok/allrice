@@ -48,3 +48,5 @@ export * from './local-browser-grants.ts';
 export * from './local-browser-workspaces.ts';
 export * from './local-browser-operations.ts';
 export * from './local-browser-files.ts';
+export * from './local-preview.ts';
+export { localPreviewEnabled } from './local-preview-authority.ts';

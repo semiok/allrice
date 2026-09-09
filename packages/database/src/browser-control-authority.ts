@@ -12,6 +12,7 @@ import {
   type BrowserProfile,
   type BrowserObservation,
   type BrowserWorkspaceState,
+  type LocalPreviewLease,
 } from '@allrice/contracts';
 import {
   RuntimePolicyError,
@@ -19,10 +20,89 @@ import {
   type RuntimePolicyPrincipal,
 } from './runtime-policy.ts';
 import { getDatabase } from './core/client.ts';
+import { currentLocalPreviewAuthority } from './local-preview-authority.ts';
 
 export const browserControlEnabled = () =>
   process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
   process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1';
+
+/** Browser admission and its read-only projections must enter the ledger's
+ * root lock before policy controls, browser rows or parent-operation checks.
+ * Resolve the root/parent from the stored, same-owner input, not a client hint.
+ * The root serializes all its operations, including a ledger call which has
+ * already locked the child. These locks supplement, never replace, admission. */
+export async function lockBrowserBindingOperations(
+  tx: postgres.TransactionSql,
+  ctx: RuntimePolicyPrincipal,
+  raw: unknown,
+) {
+  const binding = RuntimeActionBindingSchema.parse(raw);
+  if (
+    ![
+      'cloud.browser.act',
+      'cloud.browser.observe',
+      'local.browser.act',
+      'local.browser.observe',
+    ].includes(binding.action)
+  )
+    return;
+  if (
+    ctx.actor.type !== 'user' ||
+    binding.requestedBy.type !== 'user' ||
+    binding.requestedBy.id !== ctx.actor.id ||
+    binding.task.scope.organizationId !== ctx.organizationId ||
+    binding.task.scope.workspaceId !== ctx.workspaceId ||
+    binding.task.scope.projectId !== null
+  )
+    throw new RuntimePolicyError('binding_scope_mismatch');
+  const [stored] = await tx<
+    {
+      binding: unknown;
+      payload: unknown;
+      run_id: string;
+      browser_workspace_id: string;
+    }[]
+  >`
+    select i.binding,i.payload,w.run_id,i.browser_workspace_id from allrice_browser_operation_inputs i
+    join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+    where i.operation_id=${binding.attempt.operationId} and w.organization_id=${ctx.organizationId}
+      and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id}`;
+  if (
+    !stored ||
+    !runtimeContractEqual(stored.binding, binding) ||
+    stored.run_id !== binding.task.runId ||
+    binding.task.rootRunId !== stored.run_id
+  )
+    throw new RuntimePolicyError('browser_input_changed');
+  const command = BrowserCommandSchema.parse(stored.payload);
+  if (command.workspaceId !== stored.browser_workspace_id)
+    throw new RuntimePolicyError('browser_input_changed');
+  const [root] = await tx`select root_run_id from allrice_runtime_roots
+    where root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId}
+      and workspace_id=${ctx.workspaceId} and task->'scope'=${tx.json(binding.task.scope)} for update`;
+  if (!root) throw new RuntimePolicyError('browser_authority_unavailable');
+  // A newly registered child may not exist yet during ledger.createOperation;
+  // its parent must still pass the full running/fence check below admission.
+  if (command.action.type === 'request') {
+    const [parent] = await tx`select o.id from allrice_runtime_operations o
+      join allrice_browser_operation_inputs i on i.operation_id=o.id
+      where o.id=${command.action.parentOperationId} and i.browser_workspace_id=${stored.browser_workspace_id}
+      and o.root_run_id=${binding.task.rootRunId} and o.organization_id=${ctx.organizationId}
+      and o.workspace_id=${ctx.workspaceId} for share of o`;
+    if (!parent)
+      throw new RuntimePolicyError('browser_request_parent_unavailable');
+  }
+  await tx`select id from allrice_runtime_operations where id=${binding.attempt.operationId}
+    and root_run_id=${binding.task.rootRunId} and organization_id=${ctx.organizationId}
+    and workspace_id=${ctx.workspaceId} for share`;
+  const [unchanged] =
+    await tx`select i.operation_id from allrice_browser_operation_inputs i
+    join allrice_browser_workspaces w on w.id=i.browser_workspace_id
+    where i.operation_id=${binding.attempt.operationId} and i.browser_workspace_id=${stored.browser_workspace_id}
+      and i.binding=${tx.json(binding)} and i.payload=${tx.json(command)} and w.run_id=${binding.task.runId}
+      and w.organization_id=${ctx.organizationId} and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id}`;
+  if (!unchanged) throw new RuntimePolicyError('browser_input_changed');
+}
 export type BrowserWorkspaceRow = {
   id: string;
   organization_id: string;
@@ -60,6 +140,7 @@ export type BrowserWorkspaceRow = {
   target_kind: string;
   target_state: string;
   target_capabilities: string[];
+  preview?: LocalPreviewLease;
 };
 /** Same current identity check for HTTP and Worker. Never accepts stale membership arrays. */
 export async function browserIdentity(
@@ -118,7 +199,8 @@ export async function currentBrowserWorkspace(
     and j.cancel_requested_at is null and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
     and p.expires_at>clock_timestamp()
     and e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ?
-      case when w.transport='local' then 'local.browser.workspace' else 'browser.workspace' end
+      case when exists(select 1 from allrice_local_browser_grants lg where lg.grant_id=w.grant_id and lg.purpose='local_preview') then 'local.preview.open'
+        when w.transport='local' then 'local.browser.workspace' else 'browser.workspace' end
     and (w.transport<>'local' or e.execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ? 'network:outbound')
     for share of w,g,t,r,e,a,pe,c,j,p`;
   if (!w) throw new RuntimePolicyError('browser_authority_unavailable');
@@ -131,8 +213,8 @@ export async function currentBrowserWorkspace(
     )
       throw new RuntimePolicyError('browser_authority_unavailable');
     const [local] = await tx<
-      { device_id: string }[]
-    >`select l.device_id from allrice_local_browser_workspaces l
+      { device_id: string; purpose: string; persist_login: boolean }[]
+    >`select l.device_id,g.purpose,g.persist_login from allrice_local_browser_workspaces l
       join allrice_local_browser_grants g on g.grant_id=l.grant_id and g.device_id=l.device_id
         and g.organization_id=l.organization_id and g.workspace_id=l.workspace_id and g.owner_id=l.owner_id
       join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
@@ -144,6 +226,17 @@ export async function currentBrowserWorkspace(
       for share of l,g,d`;
     if (!local) throw new RuntimePolicyError('browser_authority_unavailable');
     w.device_id = local.device_id;
+    if (local.purpose === 'local_preview') {
+      if (local.persist_login)
+        throw new RuntimePolicyError('browser_authority_unavailable');
+      try {
+        w.preview = await currentLocalPreviewAuthority(tx, ctx, w);
+      } catch (error) {
+        if (error instanceof RuntimePolicyError)
+          throw new RuntimePolicyError('browser_authority_unavailable');
+        throw error;
+      }
+    }
   } else {
     if (
       w.target_kind !== 'cloud_sandbox' ||
@@ -212,6 +305,7 @@ export async function checkBrowserBindingAuthority(
   ctx: RuntimePolicyPrincipal,
   binding: RuntimeActionBinding,
 ) {
+  await lockBrowserBindingOperations(tx, ctx, binding);
   const [stored] = await tx<
     {
       binding: unknown;

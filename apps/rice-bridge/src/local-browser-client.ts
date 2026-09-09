@@ -28,6 +28,7 @@ export interface LocalBrowserAuthority {
   claim: (
     controllerId: string,
     acceptWork: boolean,
+    acceptPreview?: boolean,
   ) => Promise<LocalBrowserClaim>;
   heartbeat: (
     request: RequestOf<'heartbeat'>,
@@ -78,6 +79,7 @@ async function bounded(response: Response, maximum: number) {
 /** Private device-authenticated port, with no redirects or unbounded responses.
  * Browser site requests never share this fetch/token or the SaaS authority URL. */
 export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
+  private previewUnsupported = false;
   constructor(private readonly input: { server: string; token: string }) {
     const url = new URL(input.server);
     if (
@@ -120,9 +122,18 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
   }
   private async json(request: LocalBrowserHttpRequest) {
     try {
+      const validated = LocalBrowserHttpRequestSchema.parse(request);
+      const wire =
+        validated.kind === 'claim' && !validated.acceptPreview
+          ? {
+              kind: validated.kind,
+              controllerId: validated.controllerId,
+              acceptWork: validated.acceptWork,
+            }
+          : validated;
       const response = await this.exchange(
         localBrowserEndpoint,
-        JSON.stringify(LocalBrowserHttpRequestSchema.parse(request)),
+        JSON.stringify(wire),
         { 'content-type': 'application/json' },
         256 * 1024,
       );
@@ -134,10 +145,40 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
       throw new LocalBrowserTransportError(0);
     }
   }
-  async claim(controllerId: string, acceptWork: boolean) {
-    return LocalBrowserClaimSchema.parse(
-      await this.json({ kind: 'claim', controllerId, acceptWork }),
-    );
+  async claim(
+    controllerId: string,
+    acceptWork: boolean,
+    acceptPreview = false,
+  ) {
+    const preview = acceptPreview && !this.previewUnsupported;
+    try {
+      return LocalBrowserClaimSchema.parse(
+        await this.json({
+          kind: 'claim',
+          controllerId,
+          acceptWork,
+          acceptPreview: preview,
+        }),
+      );
+    } catch (error) {
+      // Strict P22 servers reject the new optional capability before admission.
+      // Fall back only to an ordinary claim; never execute a preview elsewhere.
+      if (
+        !preview ||
+        !(error instanceof LocalBrowserTransportError) ||
+        error.status !== 400
+      )
+        throw error;
+      this.previewUnsupported = true;
+      return LocalBrowserClaimSchema.parse(
+        await this.json({
+          kind: 'claim',
+          controllerId,
+          acceptWork,
+          acceptPreview: false,
+        }),
+      );
+    }
   }
   async heartbeat(request: RequestOf<'heartbeat'>) {
     return LocalBrowserHeartbeatSchema.parse(await this.json(request));

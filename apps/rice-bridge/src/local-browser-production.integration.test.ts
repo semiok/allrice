@@ -69,6 +69,7 @@ describe.skipIf(!process.env.ALLRICE_BROWSER_FIXTURE_STATE)(
       let approvals = 0,
         writes = 0,
         release!: () => void;
+      let clicking: Promise<unknown> | undefined;
       const pending = new Promise<void>((resolve) => {
         release = resolve;
       });
@@ -140,20 +141,28 @@ describe.skipIf(!process.env.ALLRICE_BROWSER_FIXTURE_STATE)(
         expect(JSON.stringify(observation)).not.toContain(
           'P21-Synthetic-Password',
         );
-        await driver.perform(
-          {
-            type: 'click',
-            elementId: observation.elements.find(
-              (element) => element.tag === 'button',
-            )!.id,
-          },
-          observation,
-        );
+        let clickFinished = false;
+        clicking = driver
+          .perform(
+            {
+              type: 'click',
+              elementId: observation.elements.find(
+                (element) => element.tag === 'button',
+              )!.id,
+            },
+            observation,
+          )
+          .finally(() => {
+            clickFinished = true;
+          });
+        void clicking.catch(() => undefined);
         for (let i = 0; i < 80 && approvals === 0; i++) await delay(50);
         expect(approvals).toBe(1);
+        expect(clickFinished).toBe(false);
         expect(writes).toBe(0);
         expect((await state()).logins).toBe(initial.logins);
         release();
+        await clicking;
         for (let i = 0; i < 100; i++) {
           await delay(100);
           observation = await observe();
@@ -244,6 +253,7 @@ describe.skipIf(!process.env.ALLRICE_BROWSER_FIXTURE_STATE)(
         const closed = await Promise.allSettled(
           drivers.map((driver) => driver.close('lost')),
         );
+        await clicking?.catch(() => undefined);
         await rm(root, { recursive: true });
         expect(closed.every((result) => result.status === 'fulfilled')).toBe(
           true,

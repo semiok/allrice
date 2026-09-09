@@ -76,8 +76,39 @@ export function createGovernedBridgeOperationLedger(
     };
   } = {},
 ) {
+  const policyOptions = createGovernedBridgePolicyOptions(deviceInput, options);
+  const admission = createRuntimePolicyAdmission(policyOptions);
+  const ledger = createRuntimeOperationLedger({
+    database: options.database ?? getDatabase(),
+    admission: async (input) => {
+      try {
+        return await admission(input);
+      } catch (error) {
+        if (
+          error instanceof RuntimePolicyError &&
+          unavailablePolicyCodes.has(error.code)
+        )
+          throw new RuntimeLedgerError('unavailable');
+        throw error;
+      }
+    },
+  });
+  return { ...ledger, policyOptions };
+}
+
+/** The same production authority resolver, without creating a second database
+ * client or ledger. Callers must supply their current transaction to resolve. */
+export function createGovernedBridgePolicyOptions(
+  deviceInput: BridgeDevice,
+  options: {
+    requestId?: string;
+    initialOperation?: {
+      binding: RuntimeActionBinding;
+      payload: RuntimeBridgePayload;
+    };
+  } = {},
+) {
   const device = BridgeDeviceSchema.parse(deviceInput);
-  const database = options.database ?? getDatabase();
   const initial = options.initialOperation
     ? {
         binding: RuntimeActionBindingSchema.parse(
@@ -524,21 +555,5 @@ export function createGovernedBridgeOperationLedger(
       });
     },
   };
-  const admission = createRuntimePolicyAdmission(policyOptions);
-  const ledger = createRuntimeOperationLedger({
-    database,
-    admission: async (input) => {
-      try {
-        return await admission(input);
-      } catch (error) {
-        if (
-          error instanceof RuntimePolicyError &&
-          unavailablePolicyCodes.has(error.code)
-        )
-          throw new RuntimeLedgerError('unavailable');
-        throw error;
-      }
-    },
-  });
-  return { ...ledger, policyOptions };
+  return policyOptions;
 }

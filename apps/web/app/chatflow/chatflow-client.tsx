@@ -911,25 +911,26 @@ export function ChatFlowClient({
               className={styles.bridgeClientDownload}
               download="RiceBridge-M.zip"
               href="/api/v1/bridge/client/macos-arm64"
-              onClick={() => noteBridgeDownload('M 芯片菜单栏版 0.4.0-dev.2')}
+              onClick={() => noteBridgeDownload('M 芯片菜单栏版 0.5.0-dev.1')}
             >
-              下载 M 芯片版 · 0.4.0-dev.2
+              下载 M 芯片版 · 0.5.0-dev.1
             </a>
             <a
               className={styles.bridgeClientDownload}
               download="RiceBridge-Intel.zip"
               href="/api/v1/bridge/client/macos-x64"
               onClick={() =>
-                noteBridgeDownload('Intel 芯片菜单栏版 0.4.0-dev.2')
+                noteBridgeDownload('Intel 芯片菜单栏版 0.5.0-dev.1')
               }
             >
-              下载 Intel 芯片版 · 0.4.0-dev.2
+              下载 Intel 芯片版 · 0.5.0-dev.1
             </a>
           </div>
           <p>
             升级前正常退出旧 Bridge，再解压打开 Rice
             Bridge.app；原有配对和工作区会保留。
-            新版在菜单栏运行，无需保持终端窗口，可查看状态、选择工作区、暂停和诊断。
+            新版在菜单栏运行，无需保持终端窗口，可查看状态、选择工作区、暂停和诊断，
+            以及分别开启独立浏览器和项目预览。新能力默认关闭，仍需服务端配置和逐次审批。
             这是尚未 Apple 公证的 Dev 包，不会自动安装沙箱或开放执行权限。
           </p>
           {bridgeFeedback ? (

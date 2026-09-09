@@ -17,6 +17,7 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 
 interface ResourceRow {
@@ -237,6 +238,12 @@ export async function registerToolBrokerExport(
     throw new DataAccessError('authorization_denied');
   }
   const register = async (transaction: TransactionSql) => {
+    // Transaction-owning publishers must already hold this before admission.
+    await lockWorkspaceStorageQuota(
+      transaction,
+      input.context.organizationId,
+      workspaceId,
+    );
     if (input.sessionId) {
       const sessions = await transaction<{ id: string }[]>`
         select id from allrice_chat_sessions

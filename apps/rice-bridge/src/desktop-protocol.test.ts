@@ -26,8 +26,22 @@ describe('P13 private desktop control protocol', () => {
     { type: 'browser', enabled: 'true' },
     { type: 'browser', enabled: true, executable: '/bin/sh' },
     { type: 'browser' },
+    { type: 'preview', enabled: 'true' },
+    { type: 'preview', enabled: true, port: 3000 },
+    { type: 'preview', enabled: true, containerId: 'user-supplied' },
+    { type: 'preview' },
   ])('denies invalid/extra control fields: %j', (value) =>
     expect(() => parse({ ...base, ...value })).toThrow(),
+  );
+  it.each([true, false])(
+    'accepts only a finite preview opt-in %s',
+    (enabled) => {
+      expect(parse({ ...base, type: 'preview', enabled })).toEqual({
+        ...base,
+        type: 'preview',
+        enabled,
+      });
+    },
   );
   it.each([true, false])(
     'accepts only the explicit finite browser opt-in %s',

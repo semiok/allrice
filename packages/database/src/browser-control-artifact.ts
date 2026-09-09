@@ -6,6 +6,7 @@ import type {
 } from '@allrice/contracts';
 import { BrowserObservationSchema } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   currentBrowserWorkspace,
   type BrowserWorkspaceRow,
@@ -36,6 +37,7 @@ export async function publishBrowserObservationArtifact(
   let object: StorageObject | undefined;
   try {
     return await db.begin(async (tx) => {
+      await lockWorkspaceStorageQuota(tx, w.organization_id, w.workspace_id);
       const current = await currentBrowserWorkspace(
         tx,
         browserPrincipal(w.execution_context),
@@ -52,7 +54,6 @@ export async function publishBrowserObservationArtifact(
         { version_id: string }[]
       >`select version_id from allrice_workbench_artifacts where organization_id=${w.organization_id} and workspace_id=${w.workspace_id} and run_id=${w.run_id} and request_id=${requestId}`;
       if (prior) return prior.version_id;
-      await tx`select id from allrice_workspaces where id=${w.workspace_id} and organization_id=${w.organization_id} for update`;
       object = {
         ...createToolBrokerExportObject({
           context: w.execution_context,

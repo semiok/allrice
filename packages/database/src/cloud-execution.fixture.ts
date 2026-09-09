@@ -32,6 +32,8 @@ export async function createCloudExecutionFixture(
     reconciliationOnly?: boolean;
     browserControl?: boolean;
     localBrowser?: boolean;
+    localPreview?: boolean;
+    localProcess?: boolean;
     /** Test-only initial values: persisted once, never mutate a frozen Run. */
     dsh?: {
       provider: DshExecutionSnapshot;
@@ -88,7 +90,7 @@ export async function createCloudExecutionFixture(
     ...(options.dsh ? ['model:invoke'] : []),
     'storage:read',
     'storage:write',
-    ...(options.browserControl || options.localBrowser
+    ...(options.browserControl || options.localBrowser || options.localPreview
       ? ['network:outbound']
       : []),
   ];
@@ -101,6 +103,10 @@ export async function createCloudExecutionFixture(
     : [
         ...(options.browserControl ? ['browser.workspace'] : []),
         ...(options.localBrowser ? ['local.browser.workspace'] : []),
+        ...(options.localPreview ? ['local.preview.open'] : []),
+        ...(options.localPreview || options.localProcess
+          ? ['local.process.execute']
+          : []),
         ...(options.frozenTool === false ? [] : ['cloud.process.execute']),
         ...(options.workbench
           ? [
@@ -182,7 +188,7 @@ export async function createCloudExecutionFixture(
     await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'test','P15 synthetic')`;
     await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${org},${workspace},${user},'admin')`;
     await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policy},${org},${user},1,${tx.json(policyPayload)},clock_timestamp()+interval '1 hour')`;
-    await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},'{}','{}')`;
+    await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},${tx.json(options.localPreview || options.localProcess ? { employeeVersionId: version } : {})},'{}')`;
     await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p15','P15')`;
     await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${workspace},${employee},1,'P15','synthetic','synthetic','[]',${digest('p15')},'{}')`;
     await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignment},${org},${workspace},${employee},${version},${user})`;
@@ -222,6 +228,14 @@ export async function createCloudExecutionFixture(
       mode: options.planOnly ? 'plan_only' : 'execute',
       rules: [
         { action: 'cloud.process.execute', effect: 'allow' },
+        ...(options.localPreview || options.localProcess
+          ? [
+              {
+                action: 'local.process.execute' as const,
+                effect: 'allow' as const,
+              },
+            ]
+          : []),
         ...(options.localBrowser
           ? [
               {

@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   makeObjectKey,
   RuntimeOperationSnapshotSchema,
+  isTerminalRuntimeOperationStatus,
   BrowserCommandSchema,
   type BrowserCommand,
   type BrowserObservation,
@@ -467,8 +468,8 @@ export function startBrowserWorkspaceController(
       const returned = await driver!
         .perform(row.payload.action, row.observation, bytes)
         .finally(() => bytes?.fill(0));
-      // Permit immediate page request interception to register before ending action ownership.
-      await delay(50);
+      // The renderer awaits the click's causal navigation signal; only requests
+      // already owned by this exact action may extend its settlement.
       const networkDeadline = Math.min(
         initial.expires_at.getTime(),
         Date.now() + 120000,
@@ -504,7 +505,24 @@ export function startBrowserWorkspaceController(
         networkRequestSent: networkEffect,
       });
       // Publish a new observation only AFTER the exact action's receipt is durable.
-      await observe(await assertCurrent());
+      const observation = await observe(await assertCurrent());
+      if (
+        observation.profileId !== row.payload.profileId ||
+        observation.fence !== row.payload.fence ||
+        observation.id === row.observation?.id
+      )
+        throw Error('BROWSER_OBSERVATION_CHANGED');
+      // A workspace capture alone does not prove which action preceded it.
+      // Record this causal link only after this action's terminal receipt and
+      // its subsequent capture/publication, without mutating receipt evidence.
+      const linked =
+        await db`update allrice_browser_operation_inputs set result_observation_id=${observation.id}
+        where operation_id=${row.operation_id} and browser_workspace_id=${initial.id}
+        and lease_token=${row.lease_token!} and result is not null and receipt is not null
+        and result_observation_id is null
+        and exists(select 1 from allrice_runtime_operations o where o.id=${row.operation_id} and o.snapshot->>'status'='succeeded')
+        returning operation_id`;
+      if (!linked.length) throw Error('BROWSER_OBSERVATION_UNCONFIRMED');
     } catch (error) {
       await stopHeartbeat();
       if (row.lease_token)
@@ -660,13 +678,16 @@ export async function waitBrowserOperationResult(
         result: unknown;
         snapshot: unknown;
         observation_id: string | null;
+        result_observation_id: string | null;
+        receipt_observation_id: string | null;
         lease_token: string | null;
         started_at: Date | null;
         approval_status: string | null;
         approval_expired: boolean;
         approval_revoked: boolean;
       }[]
-    >`select i.result,o.snapshot,i.payload->>'observationId' as observation_id,i.lease_token,i.started_at,
+    >`select i.result,o.snapshot,i.observation->>'id' as observation_id,i.result_observation_id,
+      i.receipt->'evidence'->>'observationId' as receipt_observation_id,i.lease_token,i.started_at,
       a.status as approval_status,a.runtime_expires_at<=clock_timestamp() as approval_expired,a.runtime_revoked_at is not null as approval_revoked
       from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
       left join allrice_approval_requests a on a.resource_type='runtime_operation' and a.resource_id=i.operation_id
@@ -696,8 +717,28 @@ export async function waitBrowserOperationResult(
         untrustedExternalContent: true,
       };
     if (op.result) {
+      // finish() persists a recoverable receipt before projecting the ledger.
+      // Prepared output alone is not a completed action: wait for the exact
+      // operation's durable outcome/uncertainty, under the same abort/current
+      // workspace authority bounds as the rest of this wait.
+      if (
+        !isTerminalRuntimeOperationStatus(snapshot.status) &&
+        snapshot.status !== 'unknown'
+      ) {
+        await delay(100);
+        continue;
+      }
+      // Local receipts already bind a validated capture ID into their evidence;
+      // cloud capture follows the terminal receipt and has its own write-once
+      // correlation. A null input ID (navigate/open) is never a freshness proof.
+      const resultingObservationId =
+        w.transport === 'local'
+          ? op.receipt_observation_id
+          : op.result_observation_id;
       const fresh =
-        w.observation && w.observation.id !== op.observation_id
+        w.observation &&
+        w.observation.id === resultingObservationId &&
+        w.observation.id !== op.observation_id
           ? w.observation
           : null;
       captureDeadline ??= Date.now() + 5000;

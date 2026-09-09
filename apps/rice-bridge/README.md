@@ -1,4 +1,15 @@
-# Rice Bridge v0.2
+# Rice Bridge
+
+## 2.0 B5 候选：独立浏览器与本地项目预览
+
+`0.5.0-dev.1` 为 B5 Dev 候选，源码与候选包不代表已部署；实际发布以执行总表和下载清单为准。保留 v0.2 文件能力和已有配对，新权限默认关闭。
+
+- `browser status|enable|disable`：本机显式同意后，仍需网页授予精确站点及员工新 Run 冻结工具。独立 Chromium 原生沙箱，不是个人 Chrome，也不是 Linux VM。默认不保存登录；显式保留的是本机私有未加密状态文件，不是 Keychain。撤销需等待设备实际清理。
+- `preview status|enable|disable`：须同时具备浏览器与受控 VM，另行同意预览当前 Run 已批准的活动 HTTP 服务。菜单切换先停止本地任务；关闭/断连/服务到期不重启旧任务。
+- 预览只在固定容器内转发 HTTP，不发布宿主端口、不产生公网隧道、不继承 SaaS 身份。第一版不支持 WebSocket/热更新、文件上传下载、Cookie 登录或 Service Worker；页面是独立浏览器截图与受控操作，不向 SaaS 页面注入项目 HTML。
+- 固定的 `RiceBrowserLauncher` 与版本锁定的 Playwright 运行资源必须随包保留。无自动下载安装 Chrome/VM，无宿主 Shell，无第二个 Agent Loop。
+
+详见 [P22 端侧边界](../../docs/architecture/allrice-2.0/p22-local-browser-runner.md) 与 [P23 权威](../../docs/architecture/allrice-2.0/p23-local-preview-authority.md)。
 
 ## 2.0 P13 菜单栏 Dev 宿主
 

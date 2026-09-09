@@ -9,7 +9,16 @@ import {
   type BrowserDriver,
   type BrowserDriverOptions,
 } from '@allrice/browser-control';
-import type { LocalBrowserProfileBinding } from '@allrice/contracts';
+import {
+  LocalPreviewLeaseSchema,
+  localPreviewUrlAllowed,
+  localPreviewOrigin,
+  runtimeContractEqual,
+  type LocalPreviewLease,
+  type LocalBrowserProfileBinding,
+} from '@allrice/contracts';
+import { LocalPreviewRelay } from './local-preview-relay.js';
+import type { LocalCommandRunner } from './local-command-runner.js';
 import type { LocalBrowserProfiles } from './local-browser-profiles.js';
 import {
   localBrowserUrlAllowed,
@@ -95,11 +104,16 @@ export type LocalBrowserDriver = Omit<BrowserDriver, 'close'> & {
 };
 
 export async function startLocalBrowserDriver(input: {
-  options: Omit<BrowserDriverOptions, 'authorizeUrl'>;
+  options: Omit<BrowserDriverOptions, 'authorizeUrl' | 'localPreviewRelay'>;
   binding: LocalBrowserProfileBinding;
   profiles: LocalBrowserProfiles;
   assertAlive: () => Promise<void>;
   leaseExpiresAt: () => number;
+  /** Trusted controller only, derived from a short server lease. Never API args. */
+  preview?: {
+    runner: LocalCommandRunner;
+    current: () => Promise<LocalPreviewLease>;
+  };
 }): Promise<LocalBrowserDriver> {
   let directory: string | undefined;
   let directoryIdentity: { dev: number; ino: number } | undefined;
@@ -111,7 +125,11 @@ export async function startLocalBrowserDriver(input: {
     Awaited<ReturnType<typeof startLocalBrowserSupervisor>> | undefined;
   let launchAttempted = false;
   let closing: Promise<void> | undefined;
+  const previewAbort = new AbortController();
   const closeOnce = async (disposition: 'completed' | 'revoked' | 'lost') => {
+    // Closing Chrome does not cancel a Node-side Docker relay request. Revoke
+    // this driver's pending I/O before waiting for the native process receipt.
+    previewAbort.abort();
     let failed = false;
     if (disposition === 'completed' && context && input.binding.persistLogin) {
       try {
@@ -174,6 +192,47 @@ export async function startLocalBrowserDriver(input: {
     return closing;
   };
   try {
+    const preview = input.preview
+      ? LocalPreviewLeaseSchema.parse(await input.preview.current())
+      : null;
+    if (
+      preview &&
+      (input.binding.persistLogin ||
+        input.binding.grantId !== preview.target.browserGrantId ||
+        input.binding.deviceId !== preview.target.deviceId ||
+        input.binding.ownerId !== preview.target.ownerId ||
+        !runtimeContractEqual(input.binding.scope, preview.target.scope) ||
+        input.options.profileId !== preview.target.browserProfileId ||
+        !runtimeContractEqual(input.options.profile.origins, [
+          localPreviewOrigin(preview.target.endpointId),
+        ]) ||
+        input.options.profile.allowUploads ||
+        input.options.profile.allowDownloads ||
+        input.options.profile.allowHumanCredentials)
+    )
+      throw Error('LOCAL_PREVIEW_TARGET_DENIED');
+    const relay =
+      preview && input.preview
+        ? new LocalPreviewRelay(input.preview.runner)
+        : null;
+    const assertPreview = async () => {
+      if (closing || previewAbort.signal.aborted)
+        throw Error('LOCAL_PREVIEW_LEASE_LOST');
+      await input.options.assertCurrent();
+      if (!preview || !input.preview) throw Error('LOCAL_PREVIEW_LEASE_LOST');
+      const current = LocalPreviewLeaseSchema.parse(
+        await input.preview.current(),
+      );
+      if (
+        !runtimeContractEqual(current.target, preview.target) ||
+        current.endpointLeaseId !== preview.endpointLeaseId ||
+        previewAbort.signal.aborted ||
+        Date.parse(current.expiresAt) <= Date.now() ||
+        Date.parse(current.expiresAt) > Date.now() + 5000
+      )
+        throw Error('LOCAL_PREVIEW_LEASE_LOST');
+      return { expiresAt: current.expiresAt };
+    };
     const executablePath = await resolveLocalBrowserExecutable();
     // Native supervision is required. There is deliberately no unsupervised
     // Linux/Chromium fallback when this fixed Google Chrome helper is absent.
@@ -249,7 +308,17 @@ export async function startLocalBrowserDriver(input: {
       {
         ...input.options,
         authorizeUrl: (url) =>
-          localBrowserUrlAllowed(url, input.options.profile),
+          preview
+            ? localPreviewUrlAllowed(preview.target, url)
+            : localBrowserUrlAllowed(url, input.options.profile),
+        localPreviewRelay:
+          preview && relay
+            ? async (request) =>
+                relay.fetch(preview.target, request, {
+                  assertCurrent: assertPreview,
+                  signal: previewAbort.signal,
+                })
+            : undefined,
       },
       proxy.close,
     );

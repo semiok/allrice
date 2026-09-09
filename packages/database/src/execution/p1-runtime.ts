@@ -26,6 +26,7 @@ import { z } from 'zod';
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 
 type TargetRow = {
@@ -831,14 +832,11 @@ export async function registerManagedBrowserEvidenceArtifact(input: {
   }
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
-    await transaction`
-      select pg_advisory_xact_lock(
-        hashtextextended(
-          ${`${input.context.organizationId}:${input.context.workspaceId}`},
-          98
-        )
-      )
-    `;
+    await lockWorkspaceStorageQuota(
+      transaction,
+      input.context.organizationId,
+      input.context.workspaceId,
+    );
     const tasks = await transaction<{ id: string }[]>`
       select task.id
       from allrice_managed_browser_tasks task

@@ -1,6 +1,6 @@
 'use client';
 
-import type { RefObject } from 'react';
+import { useState, type RefObject } from 'react';
 import type { WorkbenchArtifact } from '@allrice/contracts';
 
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
@@ -64,6 +64,9 @@ export function ChatTranscript({
   artifacts = [],
   onOpenArtifact,
 }: ChatTranscriptProps) {
+  const [browserRevisions, setBrowserRevisions] = useState<
+    Record<string, number>
+  >({});
   return (
     <div className={chatUi.root}>
       <div className={chatUi.scroll} data-chat-scroll>
@@ -241,6 +244,7 @@ export function ChatTranscript({
                       {message.runId &&
                         hasBrowserWorkspaceEvents(traceEvents) && (
                           <BrowserWorkspacePanel
+                            refreshKey={browserRevisions[message.runId] ?? 0}
                             runId={message.runId}
                             workspaceId={workspaceId}
                             tenantHeaders={tenantHeaders}
@@ -257,6 +261,13 @@ export function ChatTranscript({
                       )}
                       {localCommandsEnabled && message.runId && (
                         <LocalCommandPanel
+                          onServiceChanged={() =>
+                            setBrowserRevisions((previous) => ({
+                              ...previous,
+                              [message.runId!]:
+                                (previous[message.runId!] ?? 0) + 1,
+                            }))
+                          }
                           runId={message.runId}
                           workspaceId={workspaceId}
                           tenantHeaders={tenantHeaders}

@@ -27,7 +27,7 @@ export const RuntimeLocalServiceExchangeResponseSchema = z
   .strict();
 export const RuntimeLocalServiceUserActionSchema = z
   .object({
-    action: z.enum(['stop', 'input']),
+    action: z.enum(['stop', 'input', 'preview']),
     input: RuntimeLocalServiceInputSchema.optional(),
   })
   .strict()

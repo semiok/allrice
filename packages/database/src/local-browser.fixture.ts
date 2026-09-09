@@ -29,11 +29,13 @@ export async function createLocalBrowserFixture(
     acknowledge?: boolean;
     origin?: string;
     persistLogin?: boolean;
+    workbench?: boolean;
   } = {},
 ) {
   const f = await createCloudExecutionFixture(db, storageRoot, {
     browserControl: true,
     localBrowser: options.frozen !== false,
+    workbench: options.workbench,
   });
   const deviceId = randomUUID(),
     targetId = randomUUID(),

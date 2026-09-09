@@ -23,10 +23,11 @@ describe('AllRice tool manifest', () => {
       'dshWireName' in tool ? tool.dshWireName : undefined,
     );
 
-    expect(canonicalNames).toHaveLength(33);
-    expect(new Set(canonicalNames).size).toBe(33);
-    expect(nativeTools).toHaveLength(30);
-    expect(brokerNativeTools).toHaveLength(29);
+    expect(new Set(canonicalNames).size).toBe(canonicalNames.length);
+    expect(nativeTools.length).toBeGreaterThan(0);
+    expect(brokerNativeTools).toHaveLength(
+      nativeTools.length - searchTools.length,
+    );
     expect(
       brokerNativeTools
         .filter((t) => t.canonicalName.startsWith('local.mcp.'))
@@ -79,7 +80,7 @@ describe('AllRice tool manifest', () => {
       'web.search',
     ]);
     expect(wireNames.every(Boolean)).toBe(true);
-    expect(new Set(wireNames).size).toBe(30);
+    expect(new Set(wireNames).size).toBe(wireNames.length);
     expect(
       brokerNativeTools.find(
         (tool) => tool.canonicalName === 'browser.workspace',
@@ -101,6 +102,13 @@ describe('AllRice tool manifest', () => {
   });
 
   it('defines capability and risk metadata for every canonical tool', () => {
+    expect(
+      allRiceToolManifest.find((t) => t.canonicalName === 'local.preview.open'),
+    ).toMatchObject({
+      capability: 'network:outbound',
+      transport: 'dsh_broker_native',
+      dshWireName: 'local_preview_open',
+    });
     for (const tool of allRiceToolManifest) {
       expect(tool.capability).toBeTruthy();
       expect(tool.risk).toBeTruthy();

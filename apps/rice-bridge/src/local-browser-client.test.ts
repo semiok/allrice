@@ -21,6 +21,63 @@ async function fixture(handler: RequestListener) {
   });
 }
 describe('P22 real HTTP authority transport', () => {
+  it('omits preview capability for ordinary claims, preserving strict P22 servers', async () => {
+    const controllerId = randomUUID();
+    const client = await fixture(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk);
+      expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({
+        kind: 'claim',
+        controllerId,
+        acceptWork: true,
+      });
+      res.end(
+        JSON.stringify({ workspace: null, lease: null, revocations: [] }),
+      );
+    });
+    expect(await client.claim(controllerId, true)).toMatchObject({
+      workspace: null,
+    });
+  });
+  it('negotiates unsupported preview only once and retries an ordinary claim, never execution', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const client = await fixture(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      requests.push(body);
+      if (Object.hasOwn(body, 'acceptPreview')) {
+        res.writeHead(400);
+        res.end('{}');
+      } else
+        res.end(
+          JSON.stringify({ workspace: null, lease: null, revocations: [] }),
+        );
+    });
+    const controllerId = randomUUID();
+    await client.claim(controllerId, true, true);
+    await client.claim(controllerId, true, true);
+    expect(requests).toEqual([
+      { kind: 'claim', controllerId, acceptWork: true, acceptPreview: true },
+      { kind: 'claim', controllerId, acceptWork: true },
+      { kind: 'claim', controllerId, acceptWork: true },
+    ]);
+  });
+  it.each([401, 403, 404, 500])(
+    'does not downgrade preview or retry after HTTP %s',
+    async (status) => {
+      let calls = 0;
+      const client = await fixture((_req, res) => {
+        calls++;
+        res.writeHead(status);
+        res.end('{}');
+      });
+      await expect(client.claim(randomUUID(), true, true)).rejects.toThrow(
+        'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+      );
+      expect(calls).toBe(1);
+    },
+  );
   it('rejects non-TLS remote authority channels and cannot redirect credentials', async () => {
     expect(
       () =>
