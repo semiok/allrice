@@ -42,6 +42,8 @@ export const runtimeGovernedActions = [
   'local.mcp.call',
   'cloud.browser.act',
   'cloud.browser.observe',
+  'local.browser.act',
+  'local.browser.observe',
 ] as const;
 
 const readActions = new Set<string>([
@@ -49,6 +51,7 @@ const readActions = new Set<string>([
   'local.fs.search',
   'local.fs.read',
   'cloud.browser.observe',
+  'local.browser.observe',
 ]);
 
 /** Pure policy calculation only. DB identity, revocation and approval checks follow. */
@@ -87,6 +90,7 @@ export function evaluateRuntimePolicy(
       'local.mcp.discover',
       'local.mcp.call',
       'cloud.browser.act',
+      'local.browser.act',
     ].includes(action) &&
     matches.some((rule) => rule.effect === 'allow')
   )

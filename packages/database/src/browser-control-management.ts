@@ -29,7 +29,7 @@ export async function listBrowserControlManagement(
       }[]
     >`
       select id,target_id,owner_id,profile,enabled,revoked_at from allrice_browser_control_grants
-      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} order by created_at desc limit 100`;
+      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and transport='cloud' order by created_at desc limit 100`;
     return {
       enabled: browserControlEnabled(),
       humanCredentialsConfigured: /^[a-f0-9]{64}$/i.test(

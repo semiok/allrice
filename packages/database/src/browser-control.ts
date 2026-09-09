@@ -18,6 +18,7 @@ import {
   type RuntimeActionApprovalSnapshot,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { browserGrantOriginDenial } from './browser-control-origin.ts';
 import {
   createManagedBrowserTask,
   startManagedBrowserTask,
@@ -28,6 +29,7 @@ import {
   browserCommandBinding,
   checkBrowserBindingAuthority,
   currentBrowserWorkspace,
+  lockBrowserWorkspaceGrant,
   readCurrentBrowserWorkspace,
   type BrowserWorkspaceRow,
 } from './browser-control-authority.ts';
@@ -72,6 +74,10 @@ export async function installBrowserControlGrant(
 ) {
   const profile = BrowserProfileSchema.parse(input.profile),
     id = randomUUID();
+  for (const origin of profile.origins) {
+    const denial = browserGrantOriginDenial(origin);
+    if (denial) throw new RuntimePolicyError(denial);
+  }
   return db.begin(async (tx) => {
     await browserIdentity(tx, ctx, true);
     const [valid] =
@@ -96,7 +102,7 @@ export async function revokeBrowserControlGrant(
     await browserIdentity(tx, ctx, true);
     const changed =
       await tx`update allrice_browser_control_grants set enabled=false,revoked_at=coalesce(revoked_at,clock_timestamp())
-      where id=${UuidSchema.parse(id)} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} returning id`;
+      where id=${UuidSchema.parse(id)} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and transport='cloud' returning id`;
     if (!changed.length)
       throw new RuntimePolicyError('browser_grant_unavailable');
     // Requested != stopped. Controller confirms physical close independently.
@@ -144,7 +150,7 @@ export async function createBrowserWorkspace(
         target_id: string;
       }[]
     >`select id,version,profile,target_id from allrice_browser_control_grants
-      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} and enabled and revoked_at is null order by created_at desc limit 1 for share`;
+      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} and transport='cloud' and enabled and revoked_at is null order by created_at desc limit 1 for share`;
     if (!g) throw new RuntimePolicyError('browser_grant_unavailable');
     const profile = BrowserProfileSchema.parse(g.profile);
     if (!profile.origins.includes(new URL(input.url).origin))
@@ -205,9 +211,12 @@ export function createBrowserOperationLedger(
     admission: createRuntimePolicyAdmission(policyOptions),
     persistLease: async ({ transaction, lease }) => {
       if (
-        !['cloud.browser.act', 'cloud.browser.observe'].includes(
-          lease.snapshot.binding.action,
-        )
+        ![
+          'cloud.browser.act',
+          'cloud.browser.observe',
+          'local.browser.act',
+          'local.browser.observe',
+        ].includes(lease.snapshot.binding.action)
       )
         throw new RuntimePolicyError('resource_adapter_not_registered');
       await transaction`update allrice_browser_operation_inputs set lease_token=${lease.leaseToken} where operation_id=${lease.snapshot.binding.attempt.operationId} and lease_token is null`;
@@ -272,25 +281,32 @@ export async function createBrowserOperation(
     },
     execution: {
       targetId: w.target_id,
-      targetKind: 'cloud_sandbox',
-      deviceId: null,
+      targetKind: w.transport === 'local' ? 'rice_bridge' : 'cloud_sandbox',
+      deviceId: w.device_id,
       grantId: w.grant_id,
       grantVersion: w.grant_version,
       scopeDigest: digest(w.profile),
-      workCopy: { id: w.profile_id, kind: 'cloud_copy' },
+      workCopy: {
+        id: w.profile_id,
+        kind: w.transport === 'local' ? 'local_copy' : 'cloud_copy',
+      },
     },
     action:
-      payload.action.type === 'observe'
-        ? 'cloud.browser.observe'
-        : 'cloud.browser.act',
+      w.transport === 'local'
+        ? payload.action.type === 'observe'
+          ? 'local.browser.observe'
+          : 'local.browser.act'
+        : payload.action.type === 'observe'
+          ? 'cloud.browser.observe'
+          : 'cloud.browser.act',
     inputDigest: digest(payload),
-    command: browserCommandBinding(payload, w.profile),
+    command: browserCommandBinding(payload, w.profile, w.transport),
     baseline: content,
     dataScope: content.map((c) => ({
       content: c,
       sourceTargetId: null,
       purpose: 'execution_input',
-      destination: 'cloud_execution',
+      destination: w.transport === 'local' ? 'local_write' : 'cloud_execution',
       authorizationId: operationId,
       authorizationVersion: 1,
     })),
@@ -305,6 +321,7 @@ export async function createBrowserOperation(
     db,
   );
   const snapshot = await ledger.createOperation({
+    ...(w.transport === 'local' ? { localBrowserPayload: payload } : {}),
     snapshot: RuntimeOperationSnapshotSchema.parse({
       contractVersion: 1,
       binding,
@@ -347,6 +364,7 @@ export async function requestBrowserControl(
   const request = BrowserControlRequestSchema.parse(raw);
   return db.begin(async (tx) => {
     await browserIdentity(tx, ctx);
+    await lockBrowserWorkspaceGrant(tx, ctx, id);
     const [w] = await tx<
       BrowserWorkspaceRow[]
     >`select * from allrice_browser_workspaces where id=${UuidSchema.parse(id)} and organization_id=${ctx.organizationId}
@@ -384,6 +402,15 @@ export async function requestBrowserControl(
         closed: 'close_pending',
       }[request.control];
     await tx`update allrice_browser_workspaces set desired_control=${request.control},control_fence=${fence},state=${state} where id=${id}`;
+    if (w.transport === 'local' && request.control === 'closed') {
+      const [unclaimed] =
+        await tx`update allrice_local_browser_workspaces set released_at=coalesce(released_at,clock_timestamp())
+        where browser_workspace_id=${id} and controller_lease_token is null returning browser_workspace_id`;
+      // Server proof that no controller was ever issued this workspace is
+      // sufficient to close an unallocated intent, not a physical stop claim.
+      if (unclaimed)
+        await tx`update allrice_browser_workspaces set state='closed',stopped_at=clock_timestamp() where id=${id}`;
+    }
     await tx`update allrice_browser_direct_inputs set envelope=null,consumed_at=coalesce(consumed_at,clock_timestamp()) where browser_workspace_id=${id}`;
     await tx`insert into allrice_browser_control_requests(workspace_id,request_id,request,resulting_fence) values(${id},${request.requestId},${tx.json(request)},${fence})`;
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
@@ -531,6 +558,9 @@ export async function consumeBrowserDirectInput(
   );
 }
 export type BrowserWorkspaceView = {
+  transport: 'cloud' | 'local';
+  localDeviceName: string | null;
+  persistLogin: boolean;
   id: string;
   runId: string;
   profileId: string;
@@ -563,7 +593,10 @@ export async function listBrowserWorkspaces(
     if (!run) throw new RuntimePolicyError('run_not_owned');
     return tx<
       BrowserWorkspaceRow[]
-    >`select * from allrice_browser_workspaces where run_id=${runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} order by created_at limit 8`;
+    >`select w.*,d.name as local_device_name,coalesce(l.persist_login,false) as persist_login from allrice_browser_workspaces w
+      left join allrice_local_browser_grants l on l.grant_id=w.grant_id and l.organization_id=w.organization_id and l.workspace_id=w.workspace_id and l.owner_id=w.owner_id
+      left join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
+      where w.run_id=${runId} and w.organization_id=${ctx.organizationId} and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id} order by w.created_at limit 8`;
   });
   const views: BrowserWorkspaceView[] = [];
   for (const w of rows) {
@@ -610,6 +643,13 @@ export async function listBrowserWorkspaces(
       });
     }
     views.push({
+      transport: w.transport,
+      localDeviceName:
+        (w as BrowserWorkspaceRow & { local_device_name: string | null })
+          .local_device_name ?? null,
+      persistLogin: Boolean(
+        (w as BrowserWorkspaceRow & { persist_login: boolean }).persist_login,
+      ),
       id: w.id,
       runId: w.run_id,
       profileId: w.profile_id,

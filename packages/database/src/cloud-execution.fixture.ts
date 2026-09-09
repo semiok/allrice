@@ -31,6 +31,7 @@ export async function createCloudExecutionFixture(
     workbench?: boolean;
     reconciliationOnly?: boolean;
     browserControl?: boolean;
+    localBrowser?: boolean;
     /** Test-only initial values: persisted once, never mutate a frozen Run. */
     dsh?: {
       provider: DshExecutionSnapshot;
@@ -87,7 +88,9 @@ export async function createCloudExecutionFixture(
     ...(options.dsh ? ['model:invoke'] : []),
     'storage:read',
     'storage:write',
-    ...(options.browserControl ? ['network:outbound'] : []),
+    ...(options.browserControl || options.localBrowser
+      ? ['network:outbound']
+      : []),
   ];
   const toolNames = options.dsh
     ? [
@@ -97,6 +100,7 @@ export async function createCloudExecutionFixture(
       ]
     : [
         ...(options.browserControl ? ['browser.workspace'] : []),
+        ...(options.localBrowser ? ['local.browser.workspace'] : []),
         ...(options.frozenTool === false ? [] : ['cloud.process.execute']),
         ...(options.workbench
           ? [
@@ -218,6 +222,18 @@ export async function createCloudExecutionFixture(
       mode: options.planOnly ? 'plan_only' : 'execute',
       rules: [
         { action: 'cloud.process.execute', effect: 'allow' },
+        ...(options.localBrowser
+          ? [
+              {
+                action: 'local.browser.act' as const,
+                effect: 'allow' as const,
+              },
+              {
+                action: 'local.browser.observe' as const,
+                effect: 'allow' as const,
+              },
+            ]
+          : []),
         ...(options.browserControl
           ? [
               {

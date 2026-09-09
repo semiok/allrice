@@ -44,7 +44,7 @@ const suite =
     : describe.skip;
 const profile = {
   version: 1 as const,
-  origins: ['https://browser.example.test'],
+  origins: ['https://example.com'],
   allowHumanCredentials: true,
 };
 async function fixture() {
@@ -311,6 +311,25 @@ suite('P21 real PostgreSQL control and exact admission', () => {
         db,
       ),
     ).rejects.toThrow();
+    for (const origin of [
+      'https://127.0.0.1',
+      'https://localhost',
+      'https://[::1]',
+      'https://host.internal',
+    ]) {
+      await expect(
+        installBrowserControlGrant(
+          f.context,
+          {
+            targetId: f.target,
+            ownerId: f.user,
+            profile: { ...profile, origins: [origin] },
+            enabled: true,
+          },
+          db,
+        ),
+      ).rejects.toThrow('browser_public_origin_required');
+    }
     const op = await createBrowserOperation(
       f.context,
       f.command,

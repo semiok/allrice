@@ -28,6 +28,8 @@ const bridgeDevicePaths = new Set([
   '/api/v1/bridge/device/revoke',
   '/api/v1/bridge/device/runtime-profile',
   '/api/v1/bridge/device/operations/next',
+  '/api/v1/bridge/browser-workspaces',
+  '/api/v1/bridge/browser-workspaces/capture',
 ]);
 
 export function isBridgeDeviceApiPath(pathname: string) {
@@ -69,6 +71,7 @@ export function proxy(request: NextRequest) {
       '/api/v1/admin/mcp',
       '/api/v1/admin/local-mcp',
       '/api/v1/admin/browser-control',
+      '/api/v1/admin/local-browser',
     ].includes(request.nextUrl.pathname);
     const tenantForbidden =
       portal.kind === 'tenant' &&

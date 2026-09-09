@@ -183,6 +183,13 @@ export const allRiceToolManifest = [
     dshWireName: 'local_fs_list',
   },
   {
+    canonicalName: 'local.browser.workspace',
+    capability: 'network:outbound',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_browser_workspace',
+  },
+  {
     canonicalName: 'local.fs.search',
     capability: 'storage:read',
     risk: 'read_only',

@@ -7,6 +7,7 @@ import type {
   RuntimeScope,
   RuntimeTaskRef,
   RuntimeUsageObservation,
+  BrowserCommand,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 
@@ -43,6 +44,8 @@ export interface CreateRuntimeOperationInput {
   reservations: RuntimeBudgetReservation[];
   /** Governed ledger payload, separate from the legacy Bridge capability set. */
   bridgePayload?: RuntimeBridgePayload;
+  /** Dedicated browser adapter; never the folder-bound Bridge operation port. */
+  localBrowserPayload?: BrowserCommand;
 }
 
 export interface RuntimeLedgerReceipt {
