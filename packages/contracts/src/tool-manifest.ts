@@ -53,6 +53,13 @@ export const allRiceToolManifest = [
     dshWireName: 'local_preview_open',
   },
   {
+    canonicalName: 'local.browser.workspace',
+    capability: 'network:outbound',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_browser_workspace',
+  },
+  {
     canonicalName: 'browser.workspace',
     capability: 'network:outbound',
     risk: 'side_effect',
@@ -188,13 +195,6 @@ export const allRiceToolManifest = [
     risk: 'read_only',
     transport: 'dsh_broker_native',
     dshWireName: 'local_fs_list',
-  },
-  {
-    canonicalName: 'local.browser.workspace',
-    capability: 'network:outbound',
-    risk: 'side_effect',
-    transport: 'dsh_broker_native',
-    dshWireName: 'local_browser_workspace',
   },
   {
     canonicalName: 'local.fs.search',
