@@ -182,7 +182,8 @@ export async function createControlledBrowserRenderer(
       }
       if (reservedLocalPreviewUrl(request.url())) {
         if (!options.localPreviewRelay) throw Error();
-        const body = request.postDataBuffer() ?? Buffer.alloc(0);
+        // Relay ownership is independent of Playwright's cached request body.
+        const body = Buffer.from(request.postDataBuffer() ?? Buffer.alloc(0));
         try {
           const result = await options.localPreviewRelay({
             url: request.url(),
