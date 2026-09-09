@@ -175,6 +175,33 @@ suite('P22 real PostgreSQL device browser authority', () => {
     });
     expect(view!.operations[0]!.snapshot.status).toBe('succeeded');
   });
+  it('rejects overlong real-renderer observations without weakening the 60 second freshness boundary', async () => {
+    const f = await fixture(),
+      b = f.browser!;
+    const obs = await b.observation(1, false);
+    await expect(
+      publishLocalBrowserObservation(
+        f.device,
+        {
+          ...b.identity!,
+          observation: {
+            ...obs,
+            expiresAt: new Date(
+              Date.parse(obs.capturedAt) + 120_000,
+            ).toISOString(),
+          },
+        },
+        db,
+      ),
+    ).rejects.toMatchObject({ code: 'browser_observation_stale' });
+    await expect(
+      publishLocalBrowserObservation(
+        f.device,
+        { ...b.identity!, observation: obs },
+        db,
+      ),
+    ).resolves.toEqual({ ok: true });
+  });
   it('no frozen tool, wrong owner or reserved preview grant is admitted', async () => {
     const f = await createLocalBrowserFixture(db, storageRoot, {
       frozen: false,

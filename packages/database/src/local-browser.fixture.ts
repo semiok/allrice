@@ -122,14 +122,15 @@ export async function createLocalBrowserFixture(
       f.storage,
       db,
     );
+    const capturedAt = new Date();
     const obs = BrowserObservationSchema.parse({
       version: 1,
       id,
       profileId: w.profile_id,
       fence,
       revision: ++revision,
-      capturedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      capturedAt: capturedAt.toISOString(),
+      expiresAt: new Date(capturedAt.getTime() + 60000).toISOString(),
       url: profile.origins[0] + '/',
       title: 'Synthetic browser',
       text: 'untrusted',

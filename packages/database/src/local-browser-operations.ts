@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   BrowserCommandSchema,
   BrowserObservationSchema,
+  browserObservationIsFresh,
   LocalBrowserOperationSchema,
   LocalBrowserStartSchema,
   RuntimeOperationSnapshotSchema,
@@ -311,10 +312,7 @@ export async function publishLocalBrowserObservation(
     if (
       observation.profileId !== w.profile_id ||
       observation.fence !== w.control_fence ||
-      Date.parse(observation.capturedAt) > w.clock.getTime() + 1000 ||
-      Date.parse(observation.expiresAt) <= w.clock.getTime() ||
-      Date.parse(observation.expiresAt) - Date.parse(observation.capturedAt) >
-        60000
+      !browserObservationIsFresh(observation, w.clock.getTime())
     )
       throw new RuntimePolicyError('browser_observation_stale');
     const [capture] =

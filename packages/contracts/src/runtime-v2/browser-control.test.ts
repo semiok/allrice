@@ -7,8 +7,48 @@ import {
   BrowserHttpRequestSchema,
   browserOriginAllowed,
   browserObservationCurrent,
+  browserObservationIsFresh,
+  browserObservationLifetimeMs,
 } from './browser-control.ts';
 describe('P21 cloud and Bridge reusable control envelope', () => {
+  it('shares the same bounded positive lifetime for renderer and cloud/local admission', () => {
+    const capturedAt = new Date(10_000).toISOString();
+    expect(browserObservationLifetimeMs).toBe(60_000);
+    for (const lifetime of [1, 60_000]) {
+      expect(
+        browserObservationIsFresh(
+          { capturedAt, expiresAt: new Date(10_000 + lifetime).toISOString() },
+          10_000,
+        ),
+      ).toBe(true);
+    }
+    for (const lifetime of [-1, 0, 60_001, 120_000]) {
+      expect(
+        browserObservationIsFresh(
+          { capturedAt, expiresAt: new Date(10_000 + lifetime).toISOString() },
+          10_000,
+        ),
+      ).toBe(false);
+    }
+    expect(
+      browserObservationIsFresh(
+        { capturedAt, expiresAt: new Date(11_000).toISOString() },
+        8_999,
+      ),
+    ).toBe(false);
+    expect(
+      browserObservationIsFresh(
+        { capturedAt, expiresAt: new Date(11_000).toISOString() },
+        11_000,
+      ),
+    ).toBe(false);
+    expect(
+      browserObservationIsFresh(
+        { capturedAt: 'bad', expiresAt: 'bad' },
+        10_000,
+      ),
+    ).toBe(false);
+  });
   it('defaults deny sensitive capabilities; exact HTTPS origin, no wildcard/subdomain/port/userinfo', () => {
     const p = BrowserProfileSchema.parse({
       version: 1,

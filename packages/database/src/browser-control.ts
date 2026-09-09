@@ -3,6 +3,7 @@ import {
   BrowserCommandSchema,
   BrowserControlRequestSchema,
   BrowserObservationSchema,
+  browserObservationIsFresh,
   BrowserProfileSchema,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
@@ -434,6 +435,8 @@ export async function acknowledgeBrowserControl(
       : null;
     if (obs && (obs.profileId !== w.profile_id || obs.fence !== fence))
       throw new RuntimePolicyError('browser_observation_changed');
+    if (obs && !browserObservationIsFresh(obs, w.clock.getTime()))
+      throw new RuntimePolicyError('browser_observation_stale');
     await tx`update allrice_browser_workspaces set state=desired_control,acknowledged_fence=control_fence,observation=${obs ? tx.json(obs) : null},last_heartbeat_at=clock_timestamp()
       where id=${id} and control_fence=${fence}`;
   });
@@ -449,6 +452,8 @@ export async function recordBrowserObservation(
       obs = BrowserObservationSchema.parse(observation);
     if (w.control_fence !== obs.fence || w.profile_id !== obs.profileId)
       throw new RuntimePolicyError('browser_control_changed');
+    if (!browserObservationIsFresh(obs, w.clock.getTime()))
+      throw new RuntimePolicyError('browser_observation_stale');
     await tx`update allrice_browser_workspaces set observation=${tx.json(obs)},last_heartbeat_at=clock_timestamp() where id=${id} and control_fence=${obs.fence}`;
   });
 }
