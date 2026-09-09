@@ -14,6 +14,10 @@ import {
   type DeviceCredentials,
 } from './config.js';
 import {
+  KeychainUnavailableError,
+  type KeychainUnavailableReason,
+} from './keychain.js';
+import {
   desktopMaximumFrameBytes,
   desktopSafeError,
   desktopSafeText,
@@ -32,6 +36,8 @@ export async function runDesktopController() {
   let config: BridgeConfig | null = null;
   let credentialStorage: DeviceCredentials['storage'] | null = null;
   let credentialFileSecure: boolean | null = null;
+  let keychainUnavailableReason: KeychainUnavailableReason | null = null;
+  let credentialCleanupPending = false;
   let runtime: BridgeRuntimeState = {
     phase: 'stopped',
     workspaceLabels: [],
@@ -90,6 +96,8 @@ export async function runDesktopController() {
     server: config ? new URL(config.server).origin : null,
     credentialStorage,
     credentialFileSecure,
+    keychainUnavailableReason,
+    credentialCleanupPending,
     connection: runtime.phase,
     workspaceLabels: config
       ? runtime.workspaceLabels.map(desktopSafeText).slice(0, 16)
@@ -127,6 +135,7 @@ export async function runDesktopController() {
         config = null;
         credentialStorage = null;
         credentialFileSecure = null;
+        keychainUnavailableReason = null;
         return;
       }
       throw Error('DESKTOP_CONFIG_INVALID');
@@ -161,9 +170,12 @@ export async function runDesktopController() {
       const credentials = await readDeviceCredentials(next.deviceId);
       credentialStorage = credentials.storage;
       credentialFileSecure = credentials.privateFileSecure ?? null;
-    } catch {
+      keychainUnavailableReason = credentials.keychainUnavailableReason ?? null;
+    } catch (error) {
       credentialStorage = null;
       credentialFileSecure = null;
+      keychainUnavailableReason =
+        error instanceof KeychainUnavailableError ? error.reason : null;
       throw Error('DESKTOP_CREDENTIAL_UNAVAILABLE');
     }
   };
@@ -248,12 +260,37 @@ export async function runDesktopController() {
       publish();
       await halt();
       // If the server is unavailable this throws; config and token remain.
-      await revoke();
+      const result = await revoke();
+      // A later device's successful cleanup says nothing about credentials
+      // retained by an earlier revocation in this Core process.
+      credentialCleanupPending ||= !result.cleanupComplete;
+      if (credentialCleanupPending) note('DESKTOP_REVOKED_CLEANUP_PENDING');
+      if (!result.configDeleted) {
+        mode = 'error';
+        errorCode = 'DESKTOP_REVOKED_CLEANUP_PENDING';
+        publish();
+        reply(request, true, {
+          serverRevoked: true,
+          cleanupComplete: false,
+          configDeleted: false,
+        });
+        return;
+      }
       config = null;
       credentialStorage = null;
       credentialFileSecure = null;
+      keychainUnavailableReason = null;
       mode = 'unpaired';
-      errorCode = null;
+      errorCode = credentialCleanupPending
+        ? 'DESKTOP_REVOKED_CLEANUP_PENDING'
+        : null;
+      publish();
+      reply(request, true, {
+        serverRevoked: true,
+        cleanupComplete: result.cleanupComplete,
+        configDeleted: true,
+      });
+      return;
     }
     publish();
     reply(request, true);
@@ -337,6 +374,8 @@ export async function runDesktopController() {
           workspaceCount: config?.grants.length ?? 0,
           credentialStorage,
           credentialFileSecure,
+          keychainUnavailableReason,
+          credentialCleanupPending,
           activeForeground: runtime.activeForeground,
           activeServices: runtime.activeServices,
           pendingReceipts: runtime.pendingReceipts,

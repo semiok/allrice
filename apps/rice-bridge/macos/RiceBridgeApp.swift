@@ -233,6 +233,18 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         }
         var text = "\(title)\n\n设备：\(label(state["deviceName"], fallback: "未配对"))\n版本：\(label(state["version"], fallback: "—")) · \(label(state["architecture"], fallback: "—"))\n本地工作区：\(workspace)\n\n前台任务：\(count("activeForeground"))\n后台任务：\(count("activeServices"))\n待回传记录：\(count("pendingReceipts"))\n结果待核实：\(count("unknownOperations"))\n\n"
         text += "\(credential)\n\n在线不等于已授权命令执行；沙箱、员工权限和网页审批仍分别控制。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
+        let keychainReasons = [
+            "interaction-not-allowed": "启动会话不允许钥匙串交互。请在 Mac 解锁后从 Finder 正常打开，再核验钥匙串权限；程序不会自动解锁或迁移凭证。",
+            "item-not-found": "未找到该设备对应的钥匙串条目。现有配对仍可能使用私有文件保存；不要因此重新配对。",
+            "timed-out": "钥匙串访问超时，已终止本次访问进程。现有配对和凭证文件会保留，请稍后检查。",
+            "unavailable": "钥匙串访问未成功。现有配对和凭证文件会保留，请检查诊断；不要删除配置或重新配对。"
+        ]
+        if let reason = state["keychainUnavailableReason"] as? String, let explanation = keychainReasons[reason] {
+            text += "\n\n最近凭证访问/保存记录：\(explanation)"
+        }
+        if state["credentialCleanupPending"] as? Bool == true {
+            text += "\n\n此前解除配对已在服务端生效，但该次操作的旧凭证尚未清理完成。这不表示之后的新配对被撤销。请保留诊断记录；钥匙串与本机文件并未确认全部删除。"
+        }
         if mode == "error", let error = state["errorCode"] { text += "\n\n诊断代码：\(safeCode(error))" }
         return text
     }
@@ -361,6 +373,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             "DESKTOP_PAIRING_CODE_INVALID": "请输入网页生成的 8 位配对码；中间横杠可带可不带。",
             "DESKTOP_SERVER_INVALID": "请填写 HTTPS 服务地址，不包含用户名、密码或额外路径。",
             "DESKTOP_CREDENTIAL_UNAVAILABLE": "本机已有配对，但凭证暂不可读。请检查 Keychain，不要重新配对或删除配置。",
+            "DESKTOP_REVOKED_CLEANUP_PENDING": "此前解除配对已在服务端生效，但旧凭证或配置尚未完全清理；不代表之后的新配对被撤销。请保留诊断记录，不要使用旧令牌重试撤销。",
             "DESKTOP_CONFIG_INVALID": "本机配置无法安全读取，请保留原文件并检查诊断。",
             "DESKTOP_STOP_UNCONFIRMED": "核心未能确认安全停止，不能显示已暂停或已完成退出。请保留配对与执行日志，检查本机沙箱和诊断后再处理。",
             "BRIDGE_ALREADY_RUNNING": "另一份 Bridge 正在使用当前配置。请先正常退出旧终端版或切回现有菜单栏应用。",
