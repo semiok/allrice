@@ -433,9 +433,10 @@ export async function createControlledBrowserRenderer(
     if (action.type === 'download') {
       if (!options.profile.allowDownloads || expected.tag !== 'a')
         throw Error('BROWSER_DOWNLOAD_DENIED');
-      const waiting = page.waitForEvent('download', { timeout: 15000 });
-      await h.click();
-      const download = await waiting;
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 15000 }),
+        h.click(),
+      ]);
       try {
         if (!(await options.authorizeUrl(download.url())))
           throw Error('BROWSER_DOWNLOAD_DENIED');

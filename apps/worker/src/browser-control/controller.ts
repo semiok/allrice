@@ -1,0 +1,623 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import {
+  makeObjectKey,
+  RuntimeOperationSnapshotSchema,
+  BrowserCommandSchema,
+  type BrowserCommand,
+  type BrowserObservation,
+  type RuntimeActionBinding,
+  type RuntimeOperationSignal,
+  type StorageObject,
+  type StoragePort,
+} from '@allrice/contracts';
+import {
+  getDatabase,
+  browserPrincipal,
+  readCurrentBrowserWorkspace,
+  acknowledgeBrowserControl,
+  recordBrowserObservation,
+  recordBrowserStopped,
+  createBrowserOperation,
+  createBrowserOperationLedger,
+  consumeBrowserDirectInput,
+  cloudStableId,
+  runtimePolicyDigest as digest,
+  registerManagedBrowserEvidenceArtifact,
+  completeManagedBrowserTask,
+  getToolBrokerFile,
+  publishBrowserObservationArtifact,
+  type BrowserWorkspaceRow,
+} from '@allrice/database';
+import {
+  startBrowserControlDriver,
+  type BrowserDriver,
+  type BrowserRequestEffect,
+} from './driver.js';
+type Database = ReturnType<typeof getDatabase>;
+type Pending = {
+  operation_id: string;
+  binding: RuntimeActionBinding;
+  payload: BrowserCommand;
+  observation: BrowserObservation | null;
+  lease_token: string | null;
+  started_at: Date | null;
+  result: unknown;
+};
+export type BrowserController = {
+  workspaceId: string;
+  jobId: string;
+  workerId: string;
+  closed: Promise<void>;
+};
+const activeControllers = new Map<string, BrowserController>();
+export function ownedBrowserController(
+  id: string,
+  jobId: string,
+  workerId: string,
+) {
+  const c = activeControllers.get(id);
+  if (!c || c.jobId !== jobId || c.workerId !== workerId)
+    throw Error('BROWSER_CONTROLLER_UNAVAILABLE');
+  return c;
+}
+const hash = (b: Buffer) =>
+  `sha256:${createHash('sha256').update(b).digest('hex')}`;
+export async function persistBrowserCapture(
+  w: BrowserWorkspaceRow,
+  storage: StoragePort,
+  bytes: Buffer,
+  kind: 'screenshot' | 'download',
+  name: string,
+  mediaType: string,
+) {
+  const objectId = randomUUID(),
+    object: StorageObject = {
+      id: objectId,
+      organizationId: w.organization_id,
+      workspaceId: w.workspace_id,
+      ownerId: w.owner_id,
+      key: makeObjectKey({
+        organizationId: w.organization_id,
+        workspaceId: w.workspace_id,
+        ownerId: w.owner_id,
+        category: 'artifacts',
+        objectId,
+      }),
+      checksum: hash(bytes),
+      mediaType,
+      sizeBytes: bytes.length,
+      retentionUntil: null,
+      deletedAt: null,
+      immutable: true,
+    };
+  await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());
+  try {
+    await registerManagedBrowserEvidenceArtifact({
+      context: w.execution_context,
+      lease: { attempt: w.job_attempt, leaseToken: w.job_lease_token },
+      taskId: w.task_id,
+      kind,
+      name,
+      object: {
+        id: object.id,
+        key: object.key,
+        checksum: object.checksum,
+        mediaType: object.mediaType,
+        sizeBytes: object.sizeBytes,
+      },
+    });
+  } catch (error) {
+    // An unknown COMMIT acknowledgment is not proof that evidence is orphaned.
+    const known =
+      await getDatabase()`select id from allrice_storage_objects where id=${object.id}`.catch(
+        () => null,
+      );
+    if (known?.length === 0)
+      await storage
+        .delete({ ...object, immutable: false })
+        .catch(() => undefined);
+    throw error;
+  }
+  return object;
+}
+/** One browser I/O controller attached to the EXISTING Run Job; no Agent/model loop. */
+export function startBrowserWorkspaceController(
+  initial: BrowserWorkspaceRow,
+  options: {
+    storage: StoragePort;
+    signal?: AbortSignal;
+    database?: Database;
+    driver?: typeof startBrowserControlDriver;
+  },
+): BrowserController {
+  if (activeControllers.has(initial.id))
+    return ownedBrowserController(
+      initial.id,
+      initial.job_id,
+      initial.worker_id,
+    );
+  const db = options.database ?? getDatabase(),
+    ctx = browserPrincipal(initial.execution_context),
+    ledger = createBrowserOperationLedger(ctx, db);
+  let driver: BrowserDriver | undefined,
+    active: Pending | null = null,
+    failedAuthority = false,
+    closing = false;
+  let networkEffect = false,
+    requestChecksPending = 0;
+  const networkWaiting = new Set<Promise<void>>();
+  const assertCurrent = async () => {
+    if (closing || failedAuthority || options.signal?.aborted)
+      throw Error('BROWSER_AUTHORITY_LOST');
+    const w = await readCurrentBrowserWorkspace(ctx, initial.id, db);
+    if (
+      w.worker_id !== initial.worker_id ||
+      w.job_lease_token !== initial.job_lease_token ||
+      w.desired_control === 'closed'
+    )
+      throw Error('BROWSER_AUTHORITY_LOST');
+    if (
+      active &&
+      (w.control_fence !== active.payload.fence ||
+        w.acknowledged_fence !== active.payload.fence ||
+        w.state !== active.payload.actor)
+    )
+      throw Error('BROWSER_CONTROL_CHANGED');
+    return w;
+  };
+  async function finish(
+    row: Pending,
+    signal: RuntimeOperationSignal,
+    output: Record<string, unknown>,
+  ) {
+    const evidence = {
+        source: 'managed_browser_control',
+        trusted: false,
+        ...output,
+      },
+      receiptId = cloudStableId(`${row.operation_id}:outcome`);
+    // Save exact receipt before ledger projection. Never retry a physical action.
+    const saved = {
+      scope: row.binding.task.scope,
+      operationId: row.operation_id,
+      leaseToken: row.lease_token!,
+      attempt: row.binding.attempt,
+      receiptId,
+      signal,
+      evidence,
+    };
+    await db`update allrice_browser_operation_inputs set result=${db.json(evidence)},receipt=${db.json(saved as never)} where operation_id=${row.operation_id} and result is null`;
+    const [prior] = await db<
+      { receipt: typeof saved }[]
+    >`select receipt from allrice_browser_operation_inputs where operation_id=${row.operation_id}`;
+    await ledger.recordReceipt(prior!.receipt);
+  }
+  const uncertain = (row: Pending, code: string) =>
+    finish(
+      row,
+      { type: 'operation.uncertain', reason: 'receipt_missing' },
+      { code, effects: 'unknown' },
+    );
+  async function outcome(
+    row: Pending,
+    output: Record<string, unknown>,
+    success = true,
+  ) {
+    const evidence = {
+      id: cloudStableId(`${row.operation_id}:evidence`),
+      recordedAt: new Date().toISOString(),
+      digest: digest(output),
+    };
+    return finish(
+      row,
+      {
+        type: 'operation.outcome',
+        result: {
+          status: success ? 'succeeded' : 'failed',
+          effects:
+            success && row.payload.action.type !== 'observe'
+              ? 'applied'
+              : 'none',
+          evidence,
+        },
+      },
+      output,
+    );
+  }
+  async function dispatch(row: Pending, wait: boolean) {
+    // Persisted dispatch/start is never recovered into another physical action.
+    if (row.lease_token || row.started_at) {
+      if (!row.result && row.lease_token)
+        await uncertain(row, 'BROWSER_NO_REPLAY');
+      return false;
+    }
+    do {
+      await assertCurrent();
+      try {
+        const lease = await ledger.dispatch({
+          scope: row.binding.task.scope,
+          operationId: row.operation_id,
+          leaseOwner: initial.worker_id,
+          leaseMs: 15000,
+        });
+        row.lease_token = lease.leaseToken;
+        const start = await ledger.startOperation({
+          scope: row.binding.task.scope,
+          operationId: row.operation_id,
+          leaseToken: lease.leaseToken,
+          attempt: row.binding.attempt,
+          receiptId: cloudStableId(`${row.operation_id}:start`),
+        });
+        if (!start.mayExecute) {
+          await uncertain(row, 'BROWSER_NO_REPLAY');
+          return false;
+        }
+        await db`update allrice_browser_operation_inputs set started_at=clock_timestamp() where operation_id=${row.operation_id} and started_at is null`;
+        return true;
+      } catch (error) {
+        if (
+          !['approval_required', 'approval_invalid_or_stale'].includes(
+            error instanceof Error ? error.message : '',
+          )
+        )
+          throw error;
+        if (!wait) return false;
+        const [a] = await db<
+          { status: string; expires: Date; revoked: Date | null }[]
+        >`select status,runtime_expires_at as expires,runtime_revoked_at as revoked from allrice_approval_requests
+          where resource_type='runtime_operation' and resource_id=${row.operation_id}`;
+        if (
+          !a ||
+          a.status === 'rejected' ||
+          a.revoked ||
+          a.expires.getTime() <= Date.now()
+        )
+          throw Error('BROWSER_APPROVAL_UNAVAILABLE');
+        await delay(200);
+      }
+    } while (Date.now() < initial.expires_at.getTime());
+    throw Error('BROWSER_DEADLINE');
+  }
+  async function requestApproval(effect: BrowserRequestEffect) {
+    if (
+      !active ||
+      active.payload.action.type === 'observe' ||
+      active.payload.action.type === 'request'
+    )
+      throw Error('BROWSER_UNOWNED_REQUEST');
+    const parent = active;
+    const created = await createBrowserOperation(
+      ctx,
+      {
+        ...parent.payload,
+        action: {
+          type: 'request',
+          parentOperationId: parent.operation_id,
+          ...effect,
+        },
+      },
+      randomUUID(),
+      db,
+      true,
+    );
+    const row: Pending = {
+      operation_id: created.snapshot.binding.attempt.operationId,
+      binding: created.snapshot.binding,
+      payload: created.payload,
+      observation: parent.observation,
+      lease_token: null,
+      started_at: null,
+      result: null,
+    };
+    let resolve!: () => void;
+    const pending = new Promise<void>((r) => {
+      resolve = r;
+    });
+    networkWaiting.add(pending);
+    try {
+      if (!(await dispatch(row, true)))
+        throw Error('BROWSER_REQUEST_NOT_AUTHORIZED');
+      let settled = false;
+      return {
+        complete: async (confirmed: boolean) => {
+          if (settled) return;
+          settled = true;
+          try {
+            if (confirmed)
+              await outcome(row, {
+                transportCompleted: true,
+                businessResult: 'inspect_page',
+              });
+            else await uncertain(row, 'BROWSER_REQUEST_UNCONFIRMED');
+          } catch {
+            failedAuthority = true;
+          } finally {
+            resolve();
+            networkWaiting.delete(pending);
+          }
+        },
+      };
+    } catch (error) {
+      resolve();
+      networkWaiting.delete(pending);
+      throw error;
+    }
+  }
+  async function observe(w: BrowserWorkspaceRow, ack = false) {
+    const capture = await driver!.observe(w.control_fence);
+    const object = await persistBrowserCapture(
+      w,
+      options.storage,
+      capture.screenshot,
+      'screenshot',
+      'browser-observation.png',
+      'image/png',
+    );
+    const observation = {
+      ...capture.observation,
+      screenshotObjectId: object.id,
+    };
+    if (ack)
+      await acknowledgeBrowserControl(
+        ctx,
+        w.id,
+        w.control_fence,
+        observation,
+        db,
+      );
+    else await recordBrowserObservation(ctx, w.id, observation, db);
+    await publishBrowserObservationArtifact(
+      w,
+      observation,
+      options.storage,
+      db,
+    );
+    return observation;
+  }
+  async function execute(row: Pending) {
+    active = row;
+    networkEffect = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let heartbeat: Promise<unknown> | undefined;
+    try {
+      if (!(await dispatch(row, false))) return;
+      timer = setInterval(() => {
+        if (heartbeat) return;
+        heartbeat = (async () => {
+          await assertCurrent();
+          await ledger.heartbeat({
+            scope: row.binding.task.scope,
+            operationId: row.operation_id,
+            leaseToken: row.lease_token!,
+            leaseMs: 15000,
+          });
+        })()
+          .catch((error) => {
+            if (!(
+              error instanceof Error &&
+              error.message === 'BROWSER_CONTROL_CHANGED'
+            ))
+              failedAuthority = true;
+          })
+          .finally(() => {
+            heartbeat = undefined;
+          });
+      }, 500);
+      const w = await assertCurrent();
+      let bytes: Buffer | undefined;
+      if (row.payload.action.type === 'sensitive_fill')
+        bytes = await consumeBrowserDirectInput(ctx, w.id, row.payload, db);
+      if (row.payload.action.type === 'upload') {
+        const file = await getToolBrokerFile(
+            initial.execution_context,
+            row.payload.action.objectId,
+          ),
+          reader = (await options.storage.get(file.object)).getReader();
+        const parts: Uint8Array[] = [];
+        let size = 0;
+        try {
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            size += part.value.length;
+            if (size > w.profile.maximumFileBytes) {
+              await reader.cancel();
+              throw Error('BROWSER_UPLOAD_TOO_LARGE');
+            }
+            parts.push(part.value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        bytes = Buffer.concat(parts);
+      }
+      const returned = await driver!
+        .perform(row.payload.action, row.observation, bytes)
+        .finally(() => bytes?.fill(0));
+      // Permit immediate page request interception to register before ending action ownership.
+      await delay(50);
+      const networkDeadline = Math.min(
+        initial.expires_at.getTime(),
+        Date.now() + 120000,
+      );
+      while (
+        (networkWaiting.size || requestChecksPending > 0) &&
+        Date.now() < networkDeadline
+      ) {
+        await assertCurrent();
+        await delay(100);
+      }
+      if (networkWaiting.size || requestChecksPending > 0)
+        throw Error('BROWSER_REQUEST_UNCONFIRMED');
+      await assertCurrent();
+      const download = returned.download
+        ? await persistBrowserCapture(
+            w,
+            options.storage,
+            returned.download.bytes,
+            'download',
+            returned.download.name,
+            returned.download.mediaType,
+          )
+        : null;
+      await outcome(row, {
+        completed: true,
+        downloadObjectId: download?.id ?? null,
+        networkRequestSent: networkEffect,
+      });
+      // Publish a new observation only AFTER the exact action's receipt is durable.
+      await observe(await assertCurrent());
+    } catch (error) {
+      if (row.lease_token)
+        await uncertain(
+          row,
+          error instanceof Error && /^BROWSER_[A-Z_]+$/.test(error.message)
+            ? error.message
+            : 'BROWSER_UNCONFIRMED',
+        ).catch(() => undefined);
+    } finally {
+      if (timer) clearInterval(timer);
+      await heartbeat?.catch(() => undefined);
+      active = null;
+    }
+  }
+  const closed = (async () => {
+    let physicallyClosed = false;
+    try {
+      driver = await (options.driver ?? startBrowserControlDriver)({
+        profileId: initial.profile_id,
+        profile: initial.profile,
+        assertCurrent: async () => {
+          await assertCurrent();
+        },
+        requestApproval,
+        requestStarted: () => {
+          requestChecksPending++;
+          let settled = false;
+          return () => {
+            if (!settled) {
+              settled = true;
+              requestChecksPending--;
+            }
+          };
+        },
+        requestSent: () => {
+          networkEffect = true;
+        },
+      });
+      await acknowledgeBrowserControl(
+        ctx,
+        initial.id,
+        initial.control_fence,
+        null,
+        db,
+      );
+      while (
+        !options.signal?.aborted &&
+        !failedAuthority &&
+        Date.now() < initial.expires_at.getTime()
+      ) {
+        const w = await assertCurrent();
+        if (w.acknowledged_fence !== w.control_fence) {
+          await observe(w, true);
+          continue;
+        }
+        if (w.state === 'paused') {
+          await delay(200);
+          continue;
+        }
+        const [row] = await db<
+          Pending[]
+        >`select i.* from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
+          where i.browser_workspace_id=${w.id} and i.result is null and i.payload->'action'->>'type'<>'request'
+          and (i.payload->>'fence')::integer=${w.control_fence} and i.payload->>'actor'=${w.state}
+          and o.snapshot->>'status' in ('ready','waiting_user','dispatched','running') order by i.created_at limit 1`;
+        if (row) {
+          row.payload = BrowserCommandSchema.parse(row.payload);
+          row.binding = RuntimeOperationSnapshotSchema.parse(
+            await ledger.readOperation(
+              {
+                organizationId: w.organization_id,
+                workspaceId: w.workspace_id,
+                projectId: null,
+              },
+              row.operation_id,
+            ),
+          ).binding;
+          await execute(row);
+        }
+        await delay(150);
+      }
+    } catch {
+      /* UI records unavailable/unknown; never log a page/request/credential. */
+    } finally {
+      closing = true;
+      try {
+        await Promise.race([
+          driver?.close(),
+          delay(10000).then(() => {
+            throw Error('BROWSER_STOP_UNCONFIRMED');
+          }),
+        ]);
+        physicallyClosed = !!driver;
+      } catch {
+        /* Do not acknowledge stop unless physical close succeeded. */
+      }
+      await recordBrowserStopped(
+        initial.id,
+        initial.worker_id,
+        initial.job_lease_token,
+        physicallyClosed,
+        db,
+      ).catch(() => undefined);
+      await completeManagedBrowserTask({
+        context: initial.execution_context,
+        lease: {
+          attempt: initial.job_attempt,
+          leaseToken: initial.job_lease_token,
+        },
+        taskId: initial.task_id,
+        status: physicallyClosed ? 'canceled' : 'failed',
+        errorCode: physicallyClosed
+          ? 'BROWSER_CONTROL_CLOSED'
+          : 'BROWSER_STOP_UNCONFIRMED',
+      }).catch(() => undefined);
+      activeControllers.delete(initial.id);
+    }
+  })();
+  const controller = {
+    workspaceId: initial.id,
+    jobId: initial.job_id,
+    workerId: initial.worker_id,
+    closed,
+  };
+  activeControllers.set(initial.id, controller);
+  return controller;
+}
+export async function waitBrowserOperationResult(
+  ctx: ReturnType<typeof browserPrincipal>,
+  workspaceId: string,
+  operationId: string,
+  db = getDatabase(),
+  signal?: AbortSignal,
+) {
+  while (!signal?.aborted) {
+    const w = await readCurrentBrowserWorkspace(ctx, workspaceId, db);
+    const [op] = await db<
+      { result: unknown; snapshot: unknown }[]
+    >`select i.result,o.snapshot from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
+      where i.operation_id=${operationId} and i.browser_workspace_id=${workspaceId}`;
+    if (!op) throw Error('BROWSER_OPERATION_UNAVAILABLE');
+    if (op.result)
+      return {
+        operationId,
+        status: RuntimeOperationSnapshotSchema.parse(op.snapshot).status,
+        result: op.result,
+        observation: w.observation,
+        untrustedExternalContent: true,
+      };
+    await delay(200);
+  }
+  throw Error('BROWSER_CANCELED');
+}

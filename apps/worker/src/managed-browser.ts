@@ -621,15 +621,29 @@ interface ManagedBrowserPinnedProxy {
 
 export async function startManagedBrowserPinnedProxy(input: {
   resolvePublicAddresses: (hostname: string) => Promise<HostnameAddress[]>;
+  /** Optional task-wide transport cap; legacy read-only callers are unchanged. */
+  maximumBytes?: number;
 }): Promise<ManagedBrowserPinnedProxy> {
+  if (
+    input.maximumBytes !== undefined &&
+    (!Number.isSafeInteger(input.maximumBytes) || input.maximumBytes < 1)
+  )
+    throw Error('BROWSER_NETWORK_BUDGET_INVALID');
   const username = randomBytes(18).toString('base64url');
   const password = randomBytes(24).toString('base64url');
   const expectedAuthorization = Buffer.from(
     `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
   );
   const activeSockets = new Set<Socket>();
+  let transferredBytes = 0;
   const trackSocket = (socket: Socket) => {
     activeSockets.add(socket);
+    if (input.maximumBytes !== undefined)
+      socket.on('data', (chunk) => {
+        transferredBytes += chunk.length;
+        if (transferredBytes > input.maximumBytes!)
+          for (const active of activeSockets) active.destroy();
+      });
     socket.once('close', () => activeSockets.delete(socket));
     return socket;
   };

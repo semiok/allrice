@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
 import { localMcpNativeTools } from './allrice-local-mcp-native-tools.mjs';
+import { browserWorkspaceNativeTools } from './allrice-browser-workspace-native-tools.mjs';
 
 import {
   boot,
@@ -38,6 +39,7 @@ const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
+  ...browserWorkspaceNativeTools,
   ...mcpNativeTools,
   ...localMcpNativeTools,
   ...cloudNativeTools,

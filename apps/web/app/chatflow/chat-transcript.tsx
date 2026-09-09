@@ -8,6 +8,8 @@ import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 import { AssistantMarkdown } from './assistant-markdown';
 import { MessageImageGallery } from './attachment-components';
 import type { Message, RunTrace, RunView } from './chatflow-types';
+import { BrowserWorkspacePanel } from './browser-workspace-panel';
+import { hasBrowserWorkspaceEvents } from '../../lib/chatflow/managed-browser-task-presenter';
 import {
   assistantDelta,
   formatTime,
@@ -236,6 +238,15 @@ export function ChatTranscript({
                           workspaceId={workspaceId}
                         />
                       ) : null}
+                      {message.runId &&
+                        hasBrowserWorkspaceEvents(traceEvents) && (
+                          <BrowserWorkspacePanel
+                            runId={message.runId}
+                            workspaceId={workspaceId}
+                            tenantHeaders={tenantHeaders}
+                            runActive={messageIsRunning}
+                          />
+                        )}
                       {message.runId && (
                         <CloudOperationPanel
                           runId={message.runId}
