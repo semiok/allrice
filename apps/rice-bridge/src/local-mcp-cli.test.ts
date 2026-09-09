@@ -47,6 +47,9 @@ function cli(args: string[], stdin = '') {
         env: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
           NODE_NO_WARNINGS: '1',
+          // CI runs tests before build. Match the source aliases used by
+          // Vitest instead of accidentally loading a developer's old dist.
+          TSX_TSCONFIG_PATH: join(project, 'tsconfig.base.json'),
           ALLRICE_BRIDGE_CONFIG_PATH: join(directory, 'config.json'),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
