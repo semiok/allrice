@@ -157,6 +157,9 @@ export function ChatSidebar({
                     <Link href="/workspace/browser">
                       <span aria-hidden="true">▣</span>云端浏览器授权
                     </Link>
+                    <Link href="/workspace/local-browser">
+                      <span aria-hidden="true">▣</span>本地浏览器授权
+                    </Link>
                   </>
                 ) : null}
                 {manifest.surfaces.includes('platform_admin') ? (

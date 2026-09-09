@@ -1,15 +1,16 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 export function hasBrowserWorkspaceEvents(events: ChatFlowEventEnvelope[]) {
+  const tools = ['browser.workspace', 'local.browser.workspace'];
   return events.some((event) =>
     event.type.startsWith('tool.')
-      ? event.payload.name === 'browser.workspace'
+      ? tools.includes(String(event.payload.name))
       : event.type === 'harness.native' &&
         [
           event.payload.label,
           event.sourceEvent?.payload.name,
           event.sourceEvent?.payload.toolName,
-        ].includes('browser.workspace'),
+        ].some((name) => tools.includes(String(name))),
   );
 }
 
