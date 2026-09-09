@@ -41,6 +41,7 @@ suite(
         release = r;
       });
       let requests = 0;
+      let clicking: Promise<unknown> | undefined;
       const driver = await startBrowserControlDriver({
         profileId: randomUUID(),
         profile: BrowserProfileSchema.parse({
@@ -96,17 +97,25 @@ suite(
         expect(secret.every((b) => b === 0)).toBe(true);
         o = await observe();
         expect(JSON.stringify(o)).not.toContain('P21-Synthetic-Password');
-        await driver.perform(
-          {
-            type: 'click',
-            elementId: o.elements.find((e) => e.tag === 'button')!.id,
-          },
-          o,
-        );
+        let clickFinished = false;
+        clicking = driver
+          .perform(
+            {
+              type: 'click',
+              elementId: o.elements.find((e) => e.tag === 'button')!.id,
+            },
+            o,
+          )
+          .finally(() => {
+            clickFinished = true;
+          });
+        void clicking.catch(() => undefined);
         for (let i = 0; i < 80 && requests === 0; i++) await delay(50);
         expect(requests).toBe(1);
+        expect(clickFinished).toBe(false);
         expect((await state()).logins).toBe(initial.logins);
         release();
+        await clicking;
         for (let i = 0; i < 100; i++) {
           await delay(100);
           o = await observe();
@@ -183,6 +192,7 @@ suite(
       } finally {
         release();
         await driver.close();
+        await clicking?.catch(() => undefined);
       }
     }, 90000);
   },
