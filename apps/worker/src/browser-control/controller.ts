@@ -71,6 +71,8 @@ export async function persistBrowserCapture(
   name: string,
   mediaType: string,
 ) {
+  if (!w.task_id) throw Error('BROWSER_CLOUD_TARGET_REQUIRED');
+  const taskId = w.task_id;
   const objectId = randomUUID(),
     object: StorageObject = {
       id: objectId,
@@ -96,7 +98,7 @@ export async function persistBrowserCapture(
     await registerManagedBrowserEvidenceArtifact({
       context: w.execution_context,
       lease: { attempt: w.job_attempt, leaseToken: w.job_lease_token },
-      taskId: w.task_id,
+      taskId,
       kind,
       name,
       object: {
@@ -131,6 +133,8 @@ export function startBrowserWorkspaceController(
     driver?: typeof startBrowserControlDriver;
   },
 ): BrowserController {
+  if (!initial.task_id) throw Error('BROWSER_CLOUD_TARGET_REQUIRED');
+  const taskId = initial.task_id;
   if (activeControllers.has(initial.id))
     return ownedBrowserController(
       initial.id,
@@ -484,6 +488,7 @@ export function startBrowserWorkspaceController(
   }
   const closed = (async () => {
     let physicallyClosed = false;
+    let terminalReason = 'BROWSER_CONTROL_CLOSED';
     try {
       driver = await (options.driver ?? startBrowserControlDriver)({
         profileId: initial.profile_id,
@@ -532,6 +537,8 @@ export function startBrowserWorkspaceController(
         >`select i.* from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
           where i.browser_workspace_id=${w.id} and i.result is null and i.payload->'action'->>'type'<>'request'
           and (i.payload->>'fence')::integer=${w.control_fence} and i.payload->>'actor'=${w.state}
+          and not exists(select 1 from allrice_approval_requests a where a.resource_type='runtime_operation' and a.resource_id=i.operation_id
+            and (a.status='rejected' or a.runtime_revoked_at is not null or a.runtime_expires_at<=clock_timestamp()))
           and o.snapshot->>'status' in ('ready','waiting_user','dispatched','running') order by i.created_at limit 1`;
         if (row) {
           row.payload = BrowserCommandSchema.parse(row.payload);
@@ -549,8 +556,13 @@ export function startBrowserWorkspaceController(
         }
         await delay(150);
       }
-    } catch {
-      /* UI records unavailable/unknown; never log a page/request/credential. */
+    } catch (error) {
+      // Stable code only: never persist a page, URL, request body or credential error.
+      terminalReason =
+        error instanceof Error &&
+        /^(?:BROWSER_[A-Z_]+|browser_[a-z_]+)$/.test(error.message)
+          ? error.message.toUpperCase()
+          : 'BROWSER_CONTROLLER_UNCONFIRMED';
     } finally {
       closing = true;
       try {
@@ -577,10 +589,10 @@ export function startBrowserWorkspaceController(
           attempt: initial.job_attempt,
           leaseToken: initial.job_lease_token,
         },
-        taskId: initial.task_id,
+        taskId,
         status: physicallyClosed ? 'canceled' : 'failed',
         errorCode: physicallyClosed
-          ? 'BROWSER_CONTROL_CLOSED'
+          ? terminalReason
           : 'BROWSER_STOP_UNCONFIRMED',
       }).catch(() => undefined);
       activeControllers.delete(initial.id);
@@ -602,21 +614,72 @@ export async function waitBrowserOperationResult(
   db = getDatabase(),
   signal?: AbortSignal,
 ) {
+  let captureDeadline: number | undefined;
   while (!signal?.aborted) {
     const w = await readCurrentBrowserWorkspace(ctx, workspaceId, db);
     const [op] = await db<
-      { result: unknown; snapshot: unknown }[]
-    >`select i.result,o.snapshot from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
+      {
+        result: unknown;
+        snapshot: unknown;
+        observation_id: string | null;
+        lease_token: string | null;
+        started_at: Date | null;
+        approval_status: string | null;
+        approval_expired: boolean;
+        approval_revoked: boolean;
+      }[]
+    >`select i.result,o.snapshot,i.payload->>'observationId' as observation_id,i.lease_token,i.started_at,
+      a.status as approval_status,a.runtime_expires_at<=clock_timestamp() as approval_expired,a.runtime_revoked_at is not null as approval_revoked
+      from allrice_browser_operation_inputs i join allrice_runtime_operations o on o.id=i.operation_id
+      left join allrice_approval_requests a on a.resource_type='runtime_operation' and a.resource_id=i.operation_id
       where i.operation_id=${operationId} and i.browser_workspace_id=${workspaceId}`;
     if (!op) throw Error('BROWSER_OPERATION_UNAVAILABLE');
-    if (op.result)
+    const snapshot = RuntimeOperationSnapshotSchema.parse(op.snapshot);
+    if (
+      !op.result &&
+      !op.lease_token &&
+      !op.started_at &&
+      snapshot.status === 'waiting_user' &&
+      (op.approval_status === 'rejected' ||
+        op.approval_expired ||
+        op.approval_revoked)
+    )
       return {
         operationId,
-        status: RuntimeOperationSnapshotSchema.parse(op.snapshot).status,
-        result: op.result,
-        observation: w.observation,
+        status: snapshot.status,
+        result: {
+          completed: false,
+          code: 'BROWSER_APPROVAL_UNAVAILABLE',
+          effects: 'none',
+        },
+        approvalStatus: op.approval_status,
+        observation: null,
+        observationRefreshRequired: true,
         untrustedExternalContent: true,
       };
+    if (op.result) {
+      const fresh =
+        w.observation && w.observation.id !== op.observation_id
+          ? w.observation
+          : null;
+      captureDeadline ??= Date.now() + 5000;
+      if (
+        snapshot.status === 'succeeded' &&
+        !fresh &&
+        Date.now() < captureDeadline
+      ) {
+        await delay(100);
+        continue;
+      }
+      return {
+        operationId,
+        status: snapshot.status,
+        result: op.result,
+        observation: fresh,
+        observationRefreshRequired: !fresh,
+        untrustedExternalContent: true,
+      };
+    }
     await delay(200);
   }
   throw Error('BROWSER_CANCELED');
