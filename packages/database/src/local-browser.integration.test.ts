@@ -128,10 +128,8 @@ suite('P22 real PostgreSQL device browser authority', () => {
                   const fragments = args[0];
                   if (
                     Array.isArray(fragments) &&
-                    fragments
-                      .join('?')
-                      .includes('select id from allrice_workspaces') &&
-                    fragments.join('?').includes('for update')
+                    fragments.join('?').includes('pg_advisory_xact_lock') &&
+                    fragments.join('?').includes(',42)')
                   ) {
                     quotaRequested();
                     return identity.then(() =>

@@ -9,6 +9,7 @@ import {
   type StoragePort,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { consumeBrowserDirectInput } from './browser-control.ts';
 import { getToolBrokerFile } from './execution/tool-broker.ts';
 import { localBrowserPrincipal } from './local-browser-grants.ts';
@@ -84,8 +85,7 @@ export async function captureLocalBrowserFile(
   let put = false;
   try {
     return await db.begin(async (tx) => {
-      // Same quota lock as existing evidence registration. Scope is server-derived.
-      await tx`select pg_advisory_xact_lock(hashtextextended(${`${w.organization_id}:${w.workspace_id}`},98))`;
+      await lockWorkspaceStorageQuota(tx, w.organization_id, w.workspace_id);
       const { workspace: fresh } = await lockLocalBrowserController(
         tx,
         device,

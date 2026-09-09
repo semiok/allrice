@@ -18,6 +18,7 @@ import type postgres from 'postgres';
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { enqueueRun } from './queue.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 
@@ -875,6 +876,11 @@ export async function registerWorkflowArtifact(input: {
 }) {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    await lockWorkspaceStorageQuota(
+      transaction,
+      input.context.organizationId,
+      input.context.workspaceId,
+    );
     const runs = await transaction<WorkflowRunRow[]>`
       select * from allrice_workflow_runs
       where organization_id = ${input.context.organizationId}
@@ -900,6 +906,47 @@ export async function registerWorkflowArtifact(input: {
         createdAt: existing[0].created_at.toISOString(),
       };
     }
+    const [stored] = await transaction<
+      {
+        organization_id: string;
+        workspace_id: string;
+        owner_id: string;
+        object_key: string;
+        checksum: string;
+        media_type: string;
+        size_bytes: number | string;
+        state: string;
+      }[]
+    >`select organization_id,workspace_id,owner_id,object_key,checksum,media_type,size_bytes,state
+      from allrice_storage_objects where id=${UuidSchema.parse(input.object.id)}`;
+    if (
+      stored &&
+      (stored.organization_id !== run.organization_id ||
+        stored.workspace_id !== run.workspace_id ||
+        stored.owner_id !== run.owner_id ||
+        stored.object_key !== input.object.key ||
+        stored.checksum !== input.object.checksum ||
+        stored.media_type !== input.object.mediaType ||
+        Number(stored.size_bytes) !== input.object.sizeBytes ||
+        stored.state !== 'ready')
+    )
+      throw new WorkflowRuntimeError('conflict');
+    const [quota] = await transaction<
+      { limit_bytes: number | string; used_bytes: number | string }[]
+    >`
+      select coalesce(q.limit_bytes,1073741824) as limit_bytes,
+        coalesce((select sum(size_bytes) from allrice_storage_objects where organization_id=${run.organization_id}
+          and workspace_id=${run.workspace_id} and state<>'deleted'),0) as used_bytes
+      from allrice_workspaces w left join allrice_storage_quotas q on q.organization_id=w.organization_id and q.workspace_id=w.id
+      where w.id=${run.workspace_id} and w.organization_id=${run.organization_id}`;
+    if (
+      !Number.isSafeInteger(input.object.sizeBytes) ||
+      input.object.sizeBytes < 0 ||
+      !quota ||
+      Number(quota.used_bytes) + (stored ? 0 : input.object.sizeBytes) >
+        Number(quota.limit_bytes)
+    )
+      throw new DataAccessError('quota_exceeded');
     await transaction`
       insert into allrice_storage_objects (
         id, organization_id, workspace_id, owner_id, object_key, category,

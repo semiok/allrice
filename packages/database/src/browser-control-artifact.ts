@@ -6,6 +6,7 @@ import type {
 } from '@allrice/contracts';
 import { BrowserObservationSchema } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   currentBrowserWorkspace,
   type BrowserWorkspaceRow,
@@ -36,11 +37,7 @@ export async function publishBrowserObservationArtifact(
   let object: StorageObject | undefined;
   try {
     return await db.begin(async (tx) => {
-      // Acquire the tenant quota lock before browserIdentity takes a SHARE lock
-      // on this row and local admission locks the browser workspace. Upgrading
-      // it afterwards deadlocks against a concurrent observer holding tenant
-      // SHARE while waiting for the browser-workspace UPDATE lock.
-      await tx`select id from allrice_workspaces where id=${w.workspace_id} and organization_id=${w.organization_id} for update`;
+      await lockWorkspaceStorageQuota(tx, w.organization_id, w.workspace_id);
       const current = await currentBrowserWorkspace(
         tx,
         browserPrincipal(w.execution_context),

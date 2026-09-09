@@ -18,6 +18,7 @@ import {
 import { z } from 'zod';
 
 import { getDatabase } from './core/client.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 
 const defaultWorkspaceQuotaBytes = 1024 * 1024 * 1024;
 
@@ -176,11 +177,11 @@ export async function createStorageMetadata(
   });
   const sql = getDatabase();
   const row = await sql.begin(async (transaction) => {
-    await transaction`
-      select pg_advisory_xact_lock(
-        hashtextextended(${`${context.organizationId}:${metadata.workspaceId}`}, 42)
-      )
-    `;
+    await lockWorkspaceStorageQuota(
+      transaction,
+      context.organizationId,
+      metadata.workspaceId,
+    );
     const workspaces = await transaction<{ id: string }[]>`
       select id from allrice_workspaces
       where organization_id = ${context.organizationId}
