@@ -240,6 +240,176 @@ suite('P22 real PostgreSQL device browser authority', () => {
     });
     expect(view!.operations[0]!.snapshot.status).toBe('succeeded');
   });
+  it.each(['upload', 'download'] as const)(
+    'orders %s I/O foreign-key locks before browser authority under a concurrent operation heartbeat',
+    async (kind) => {
+      const f = await fixture(),
+        b = f.browser!;
+      const uploaded =
+        kind === 'upload'
+          ? await f.upload(Buffer.from('synthetic-upload'), 'text/plain')
+          : null;
+      const command =
+        kind === 'upload'
+          ? {
+              ...b.command,
+              action: {
+                type: 'upload' as const,
+                elementId: 'e3',
+                objectId: uploaded!.id,
+                checksum: uploaded!.checksum,
+                fileName: 'synthetic.txt',
+              },
+            }
+          : {
+              ...b.command,
+              action: { type: 'click' as const, elementId: 'e2' },
+            };
+      const op = await createBrowserOperation(
+        f.context,
+        command,
+        randomUUID(),
+        db,
+      );
+      const operationId = op.snapshot.binding.attempt.operationId;
+      await f.approve(op);
+      const start = await startLocalBrowserOperation(
+        f.device,
+        { ...b.identity!, operationId },
+        db,
+      );
+      let preflightDone!: () => void,
+        blocked!: () => void,
+        releaseIO!: () => void;
+      const preflight = new Promise<void>((r) => {
+        preflightDone = r;
+      });
+      const atLock = new Promise<void>((r) => {
+        blocked = r;
+      });
+      const ioReady = new Promise<void>((r) => {
+        releaseIO = r;
+      });
+      let begins = 0;
+      const instrumented = new Proxy(db, {
+        get(target, key) {
+          if (key !== 'begin') return Reflect.get(target, key, target);
+          return async (
+            work: (tx: postgres.TransactionSql) => Promise<unknown>,
+          ) => {
+            if (++begins !== 2) return target.begin(work);
+            preflightDone();
+            await ioReady;
+            return target.begin((tx) =>
+              work(
+                new Proxy(tx, {
+                  apply(query, thisArg, args: unknown[]) {
+                    const fragments = args[0];
+                    const sql = Array.isArray(fragments)
+                      ? fragments.join('?')
+                      : '';
+                    // Observe real SQL, never replace results. On the old code the
+                    // INSERT takes an implicit operation KEY SHARE after browser;
+                    // on the fixed code the root gate is requested before browser.
+                    if (
+                      (sql.includes('from allrice_runtime_roots') &&
+                        sql.includes('for update')) ||
+                      sql.includes(
+                        'insert into allrice_local_browser_operation_io',
+                      ) ||
+                      sql.includes('insert into allrice_local_browser_captures')
+                    )
+                      blocked();
+                    return Reflect.apply(query, thisArg, args);
+                  },
+                }),
+              ),
+            );
+          };
+        },
+      });
+      const io =
+        kind === 'upload'
+          ? takeLocalBrowserInput(
+              f.device,
+              {
+                ...b.identity!,
+                operationId,
+                operationLeaseToken: start.operationLeaseToken!,
+                inputKind: 'upload',
+              },
+              f.storage,
+              instrumented,
+            )
+          : captureLocalBrowserFile(
+              f.device,
+              {
+                ...b.identity!,
+                kind: 'download',
+                operationId,
+                operationLeaseToken: start.operationLeaseToken!,
+                fileName: 'synthetic.txt',
+                mediaType: 'text/plain',
+              },
+              Buffer.from('synthetic-download'),
+              f.storage,
+              instrumented,
+            );
+      void io.catch(() => undefined);
+      await Promise.race([
+        preflight,
+        io.then(() => {
+          throw Error('I/O completed before publication transaction');
+        }),
+      ]);
+      const heartbeat = db.begin(async (tx) => {
+        // Exactly the ledger's root→operation locks, then its browser admission.
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${f.run} for update`;
+        await tx`select id from allrice_runtime_operations where id=${operationId} for update`;
+        releaseIO();
+        await atLock;
+        await tx`select id from allrice_browser_workspaces where id=${b.w.id} for update`;
+      });
+      const results = await Promise.allSettled([io, heartbeat]);
+      expect(
+        results.map((r) => r.status),
+        JSON.stringify(
+          results.map((r) =>
+            r.status === 'rejected'
+              ? {
+                  code: r.reason?.code,
+                  detail: r.reason?.detail,
+                  where: r.reason?.where,
+                }
+              : { status: r.status },
+          ),
+        ),
+      ).toEqual(['fulfilled', 'fulfilled']);
+      if (kind === 'upload') {
+        const bytes = (results[0] as PromiseFulfilledResult<Buffer>).value;
+        expect(bytes.toString()).toBe('synthetic-upload');
+        bytes.fill(0);
+        await expect(
+          takeLocalBrowserInput(
+            f.device,
+            {
+              ...b.identity!,
+              operationId,
+              operationLeaseToken: start.operationLeaseToken!,
+              inputKind: 'upload',
+            },
+            f.storage,
+            db,
+          ),
+        ).rejects.toThrow('browser_input_already_consumed');
+      } else
+        expect(
+          (results[0] as PromiseFulfilledResult<{ objectId: string }>).value
+            .objectId,
+        ).toBeTruthy();
+    },
+    15000,
+  );
   it('rejects overlong real-renderer observations without weakening the 60 second freshness boundary', async () => {
     const f = await fixture(),
       b = f.browser!;

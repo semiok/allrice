@@ -241,6 +241,13 @@ export async function recordLocalBrowserReceipt(
     throw new RuntimePolicyError('local_browser_not_started');
   const requestDigest = digest(input);
   const saved = await db.begin(async (tx) => {
+    // Receipt input rows participate in parent-request authority checks.
+    // Keep the same root→operation→browser→input order as those admissions.
+    await lockBrowserBindingOperations(
+      tx,
+      localBrowserPrincipal(device),
+      current.snapshot.binding,
+    );
     await lockLocalBrowserController(tx, device, input, false);
     const [row] = await tx<
       { receipt: unknown; result: { requestDigest?: string } | null }[]

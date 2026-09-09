@@ -11,6 +11,7 @@ import {
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { consumeBrowserDirectInput } from './browser-control.ts';
+import { lockBrowserBindingOperations } from './browser-control-authority.ts';
 import { getToolBrokerFile } from './execution/tool-broker.ts';
 import { localBrowserPrincipal } from './local-browser-grants.ts';
 import {
@@ -86,6 +87,15 @@ export async function captureLocalBrowserFile(
   try {
     return await db.begin(async (tx) => {
       await lockWorkspaceStorageQuota(tx, w.organization_id, w.workspace_id);
+      // The download capture's FK implicitly locks the runtime operation.
+      // Enter root→operation before browser, just as ledger admission does.
+      if (input.kind === 'download')
+        await lockBrowserBindingOperations(
+          tx,
+          localBrowserPrincipal(device),
+          (current as Awaited<ReturnType<typeof ownedLocalBrowserOperation>>)
+            .snapshot.binding,
+        );
       const { workspace: fresh } = await lockLocalBrowserController(
         tx,
         device,
@@ -194,6 +204,13 @@ export async function takeLocalBrowserInput(
     throw new RuntimePolicyError('browser_upload_denied');
   // Claim consumption before fetching plaintext; a lost response never replays it.
   await db.begin(async (tx) => {
+    // INSERT below takes operation KEY SHARE via its FK. It must not first
+    // hold browser while a concurrent heartbeat holds operation UPDATE.
+    await lockBrowserBindingOperations(
+      tx,
+      localBrowserPrincipal(device),
+      current.snapshot.binding,
+    );
     await lockLocalBrowserController(tx, device, input);
     const [claimed] =
       await tx`insert into allrice_local_browser_operation_io(operation_id,organization_id,workspace_id,browser_workspace_id,input_consumed_at)
