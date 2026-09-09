@@ -384,6 +384,11 @@ export function startBrowserWorkspaceController(
     networkEffect = false;
     let timer: ReturnType<typeof setInterval> | undefined;
     let heartbeat: Promise<unknown> | undefined;
+    const stopHeartbeat = async () => {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      await heartbeat?.catch(() => undefined);
+    };
     try {
       if (!(await dispatch(row, false))) return;
       timer = setInterval(() => {
@@ -397,12 +402,35 @@ export function startBrowserWorkspaceController(
             leaseMs: 15000,
           });
         })()
-          .catch((error) => {
-            if (!(
+          .catch(async (error) => {
+            if (
               error instanceof Error &&
               error.message === 'BROWSER_CONTROL_CHANGED'
-            ))
-              failedAuthority = true;
+            )
+              return;
+            // The fence may change between the first check and the ledger's
+            // locked check. Re-read the complete live authority before treating
+            // that exact denial as a control handover, never as permission to
+            // retry/continue the old action or as evidence of a physical stop.
+            if (
+              error instanceof Error &&
+              error.message === 'browser_control_changed'
+            ) {
+              const current = await readCurrentBrowserWorkspace(
+                ctx,
+                initial.id,
+                db,
+              ).catch(() => null);
+              if (
+                current &&
+                current.worker_id === initial.worker_id &&
+                current.job_lease_token === initial.job_lease_token &&
+                current.desired_control !== 'closed' &&
+                current.control_fence !== row.payload.fence
+              )
+                return;
+            }
+            failedAuthority = true;
           })
           .finally(() => {
             heartbeat = undefined;
@@ -465,6 +493,11 @@ export function startBrowserWorkspaceController(
             returned.download.mediaType,
           )
         : null;
+      // All native I/O has settled. Drain the old operation's lease renewal
+      // BEFORE its terminal receipt; screenshots may take longer than a tick.
+      // A terminal operation no longer owns a running lease to renew.
+      await stopHeartbeat();
+      await assertCurrent();
       await outcome(row, {
         completed: true,
         downloadObjectId: download?.id ?? null,
@@ -473,6 +506,7 @@ export function startBrowserWorkspaceController(
       // Publish a new observation only AFTER the exact action's receipt is durable.
       await observe(await assertCurrent());
     } catch (error) {
+      await stopHeartbeat();
       if (row.lease_token)
         await uncertain(
           row,
@@ -481,8 +515,7 @@ export function startBrowserWorkspaceController(
             : 'BROWSER_UNCONFIRMED',
         ).catch(() => undefined);
     } finally {
-      if (timer) clearInterval(timer);
-      await heartbeat?.catch(() => undefined);
+      await stopHeartbeat();
       active = null;
     }
   }
@@ -583,6 +616,11 @@ export function startBrowserWorkspaceController(
         physicallyClosed,
         db,
       ).catch(() => undefined);
+      await db`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+        values(${initial.organization_id},${initial.workspace_id},${initial.owner_id},'browser.controller.closed','browser_workspace',${initial.id},'recorded',${terminalReason},
+          ${db.json({ physicalStopConfirmed: physicallyClosed, workerId: initial.worker_id })})`.catch(
+        () => undefined,
+      );
       await completeManagedBrowserTask({
         context: initial.execution_context,
         lease: {
