@@ -15,4 +15,5 @@ export * from './project-diagnostics.ts';
 export * from './dependency-preparation.ts';
 export * from './artifact-review.ts';
 export * from './input-status.ts';
+export * from './browser-control.ts';
 export * from './changeset-execution.ts';
