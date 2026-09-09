@@ -48,6 +48,7 @@ import {
   takeLocalBrowserInput,
 } from './local-browser-files.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { waitBrowserOperationResult } from '../../../apps/worker/src/browser-control/controller.js';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -982,6 +983,56 @@ suite('P22 real PostgreSQL device browser authority', () => {
     await expect(
       takeLocalBrowserInput(f.device, input, f.storage, db),
     ).rejects.toThrow('browser_direct_input_unavailable');
+  });
+  it('the shared result reader accepts the exact local receipt-bound capture without a cloud link', async () => {
+    const f = await fixture(),
+      b = f.browser!;
+    const op = await createBrowserOperation(
+      f.context,
+      {
+        ...b.command,
+        observationId: null,
+        action: { type: 'navigate', url: f.profile.origins[0] + '/' },
+      },
+      randomUUID(),
+      db,
+    );
+    const operationId = op.snapshot.binding.attempt.operationId;
+    await f.approve(op);
+    const started = await startLocalBrowserOperation(
+      f.device,
+      { ...b.identity!, operationId },
+      db,
+    );
+    const observation = await b.observation(1);
+    await recordLocalBrowserReceipt(
+      f.device,
+      {
+        ...b.identity!,
+        operationId,
+        operationLeaseToken: started.operationLeaseToken!,
+        receiptId: randomUUID(),
+        status: 'succeeded',
+        networkEffect: false,
+        observationId: observation.id,
+        downloadObjectId: null,
+        errorCode: null,
+      },
+      db,
+    );
+    const result = await waitBrowserOperationResult(
+      f.context,
+      b.w.id,
+      operationId,
+      db,
+    );
+    expect(result.status).toBe('succeeded');
+    expect(result.observation?.id).toBe(observation.id);
+    expect(result.observationRefreshRequired).toBe(false);
+    const [row] =
+      await db`select result_observation_id,receipt from allrice_browser_operation_inputs where operation_id=${operationId}`;
+    expect(row!.result_observation_id).toBeNull();
+    expect(row!.receipt.evidence.observationId).toBe(observation.id);
   });
   it('download requires a running exact operation; forged capture references and receipts are rejected', async () => {
     const f = await fixture(),
