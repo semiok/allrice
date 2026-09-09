@@ -14,6 +14,7 @@ import {
 } from 'vitest';
 import { makeObjectKey } from '@allrice/contracts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import {
   createStorageMetadata,
   markStorageReady,
@@ -323,13 +324,7 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
   });
   beforeAll(async () => {
     const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-    if (
-      url.hostname !== '127.0.0.1' ||
-      url.port !== '5432' ||
-      url.username !== 'a123' ||
-      url.pathname !== '/allrice_b2'
-    )
-      throw Error('dedicated fixture DB required');
+    assertRuntimeFixtureDatabase(url);
     for (const key of [
       'ALLRICE_BROWSER_CONTROL_ENABLED',
       'ALLRICE_LOCAL_BROWSER_ENABLED',

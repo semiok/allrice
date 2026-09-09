@@ -90,7 +90,7 @@ jobs:
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Native Chrome/VM and final macOS package gates have separate physical
         # evidence; this step must not advertise those skipped gates as passed.
-        run: pnpm exec vitest run packages/database/src/local-mcp.integration.test.ts packages/database/src/experience.integration.test.ts packages/database/src/browser-control.integration.test.ts packages/database/src/local-browser.integration.test.ts packages/database/src/local-preview.integration.test.ts packages/database/src/storage-quota.integration.test.ts
+        run: pnpm exec vitest run packages/database/src/local-mcp.integration.test.ts packages/database/src/experience.integration.test.ts packages/database/src/browser-control.integration.test.ts packages/database/src/local-browser.integration.test.ts packages/database/src/local-preview.integration.test.ts packages/database/src/storage-quota.integration.test.ts packages/database/src/browser-operation-locks.integration.test.ts
       - name: Build contracts, database and Web for real Bridge startup verification
         run: pnpm --filter @allrice/web... build
       - name: Verify real Bridge WSS, PostgreSQL and production Next startup

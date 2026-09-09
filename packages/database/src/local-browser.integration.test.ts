@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import {
   browserIdentity,
   currentBrowserWorkspace,
@@ -65,13 +66,7 @@ suite('P22 real PostgreSQL device browser authority', () => {
     const source = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!source) throw Error('dedicated DB required');
     const url = new URL(source);
-    if (!(
-      url.hostname === '127.0.0.1' &&
-      url.port === '5432' &&
-      url.username === 'a123' &&
-      url.pathname === '/allrice_b2'
-    ))
-      throw Error('disposable DB only');
+    assertRuntimeFixtureDatabase(url);
     for (const key of [
       'ALLRICE_BROWSER_CONTROL_ENABLED',
       'ALLRICE_LOCAL_BROWSER_ENABLED',

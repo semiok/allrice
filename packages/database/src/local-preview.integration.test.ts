@@ -10,6 +10,7 @@ import {
   localPreviewOrigin,
 } from '@allrice/contracts';
 import { createLocalPreviewFixture } from './local-preview.fixture.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import {
   requestLocalPreviewFromUser,
   requestLocalPreviewNavigation,
@@ -76,14 +77,15 @@ async function claimed(f: Awaited<ReturnType<typeof fixture>>) {
     f.storage,
     db,
   );
+  const capturedAt = Date.now();
   const obs = BrowserObservationSchema.parse({
     version: 1,
     id: observationId,
     profileId: w.profile_id,
     fence: 1,
     revision: 1,
-    capturedAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    capturedAt: new Date(capturedAt).toISOString(),
+    expiresAt: new Date(capturedAt + 60000).toISOString(),
     url: 'about:blank',
     title: '',
     text: '',
@@ -108,13 +110,7 @@ suite('P23 real PostgreSQL service-derived preview authority', () => {
     const source = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!source) throw Error('dedicated database required');
     const url = new URL(source);
-    if (
-      url.hostname !== '127.0.0.1' ||
-      url.port !== '5432' ||
-      url.username !== 'a123' ||
-      url.pathname !== '/allrice_b2'
-    )
-      throw Error('disposable database only');
+    assertRuntimeFixtureDatabase(url);
     for (const flag of [
       'ALLRICE_LOCAL_PREVIEW_ENABLED',
       'ALLRICE_LOCAL_BROWSER_ENABLED',
