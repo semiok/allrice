@@ -1,10 +1,12 @@
 'use client';
 
 import ui from './assistant-workbench.module.css';
+import type { AssistantUnavailableReason } from './assistant-eligibility';
 
 export function AssistantModeControl({
   allowAssistants,
   eligible,
+  unavailableReason,
   busy,
   isRunning,
   steering,
@@ -12,6 +14,7 @@ export function AssistantModeControl({
 }: {
   allowAssistants: boolean;
   eligible: boolean;
+  unavailableReason?: AssistantUnavailableReason | null;
   busy: boolean;
   isRunning: boolean;
   steering: boolean;
@@ -45,7 +48,9 @@ export function AssistantModeControl({
         {steering
           ? '正在补充当前回合，此处不会更改当前任务配置。'
           : !eligible
-            ? '当前员工未开放助手能力，由 Rice 独立处理。'
+            ? unavailableReason === 'model_unsupported'
+              ? '当前模型暂不支持助手，由 Rice 独立处理。'
+              : '当前员工未开放助手能力，由 Rice 独立处理。'
             : allowAssistants
               ? 'Rice 可按任务需要安排有限助手；受既有权限与总预算约束。'
               : '本次任务只由 Rice 处理，不允许新增助手。'}

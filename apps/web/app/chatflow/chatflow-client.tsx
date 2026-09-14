@@ -16,6 +16,10 @@ import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-sta
 
 import { ChatComposer } from './chat-composer';
 import { AssistantModeControl } from './assistant-mode-control';
+import {
+  assistantEligibility,
+  assistantPreferenceForTask,
+} from './assistant-eligibility';
 import { useAssistantSession } from './use-assistant-session';
 import {
   useInteractionStatus,
@@ -372,13 +376,17 @@ export function ChatFlowClient({
       const messageAttachments = uploadResults.map(
         (result) => (result as PromiseFulfilledResult<Attachment>).value,
       );
+      const assistantPreference = assistantPreferenceForTask({
+        enabled: assistantsEnabled,
+        deliveryMode: mode,
+        eligible: assistantAvailability.eligible,
+        allowAssistants,
+      });
       const inputBody = {
         text,
         attachmentIds: messageAttachments.map((item) => item.id),
         deliveryMode: mode,
-        ...(assistantsEnabled && mode === 'follow_up' && assistantEligible
-          ? { assistantPreference: { mode: 'daily', allowAssistants } }
-          : {}),
+        ...(assistantPreference ? { assistantPreference } : {}),
         ...(mode === 'steer'
           ? {
               expectedTurnId: current!.turnId,
@@ -564,11 +572,12 @@ export function ChatFlowClient({
   const activeEmployeeProfile = workspace.employeeProfiles.find(
     (profile) => profile.assignmentId === activeEmployee?.id,
   );
-  const assistantEligible =
-    assistantsEnabled &&
-    activeEmployee?.currentVersion.manifest.capabilityBindings?.toolNames.includes(
-      'assistant.delegate',
-    ) === true;
+  const assistantAvailability = assistantEligibility({
+    enabled: assistantsEnabled,
+    sessionId: activeId,
+    sessionModels: workspace.sessionModels,
+    employee: activeEmployee,
+  });
   const isRunning = Object.values(runViews).some(
     (view) => view.status === 'running' || view.status === 'connecting',
   );
@@ -603,7 +612,8 @@ export function ChatFlowClient({
         assistantsEnabled && workbenchEnabled ? (
           <AssistantModeControl
             allowAssistants={allowAssistants}
-            eligible={assistantEligible}
+            eligible={assistantAvailability.eligible}
+            unavailableReason={assistantAvailability.unavailableReason}
             busy={busy}
             isRunning={isRunning}
             steering={isRunning && inputMode === 'steer'}
