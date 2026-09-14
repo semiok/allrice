@@ -163,7 +163,7 @@ integration(
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), 20000);
       try {
-        await adapter.execute({
+        const outcome = await adapter.execute({
           kernel: {
             schemaVersion: 1,
             harness: 'dsh',
@@ -221,6 +221,7 @@ integration(
           f,
           calls,
           reply,
+          outcome,
           childRequests,
           tree: await f.runtime.getTree(f.context, { runId: f.rootRunId }),
         };
@@ -234,10 +235,8 @@ integration(
     it.each(reads)(
       'dispatches actual child $name and preserves exact native query attribution',
       async (read) => {
-        const { f, calls, reply, childRequests, tree } = await exercise(
-          read.name,
-          read,
-        );
+        const { f, calls, reply, outcome, childRequests, tree } =
+          await exercise(read.name, read);
         const children = tree.instances.filter(
           (row) => row.parentRunId !== null,
         );
@@ -286,6 +285,25 @@ integration(
         });
         expect(tree.results[0]!.evidence).toEqual([]);
         expect(tree.budgets.every((row) => row.reserved === 0)).toBe(true);
+        expect(
+          tree.instances.find((row) => row.runId === f.rootRunId),
+        ).toMatchObject({ status: 'partial', stoppedAt: expect.any(String) });
+        expect(outcome).toMatchObject({
+          assistantStatus: 'partial',
+          usageComplete: true,
+          cacheUsageKnown: false,
+          costEstimateAvailable: false,
+        });
+        expect(outcome.answer).toMatch(/^部分结果/);
+        expect(outcome.usage).toEqual({
+          inputTokens: tree.budgets.find(
+            (row) => row.metric === 'input_tokens',
+          )!.spent,
+          cachedInputTokens: 0,
+          outputTokens: tree.budgets.find(
+            (row) => row.metric === 'output_tokens',
+          )!.spent,
+        });
       },
       45000,
     );
