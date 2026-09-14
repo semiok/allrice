@@ -264,6 +264,29 @@ async function cancelLocked(
   const rows = await tx<
     OperationRow[]
   >`select * from allrice_runtime_operations where root_run_id=${root.root_run_id} order by id for update`;
+  return cancelOperationRows(tx, rows, acceptedId);
+}
+
+/** Trusted caller already holds the shared root scheduling lock. Child
+ * cancellation never cancels its parent/siblings; in-flight actions still need
+ * actual device stop evidence, and never-dispatched actions can prove none. */
+export async function cancelRuntimeAgentOperationsTransaction(
+  tx: Tx,
+  rootRunId: string,
+  requestId: string,
+  childRunIds?: readonly string[],
+) {
+  const rows = await tx<OperationRow[]>`select * from allrice_runtime_operations
+    where root_run_id=${rootRunId} and (${childRunIds === undefined}::boolean or snapshot->>'agentInstanceId'=any(${[...(childRunIds ?? [])]}::text[]))
+    order by id for update`;
+  return cancelOperationRows(tx, rows, requestId);
+}
+
+async function cancelOperationRows(
+  tx: Tx,
+  rows: OperationRow[],
+  acceptedId: string,
+) {
   for (const row of rows) {
     if (
       !isTerminalRuntimeOperationStatus(row.snapshot.status) &&

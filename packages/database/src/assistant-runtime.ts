@@ -15,7 +15,10 @@ import {
 } from '@allrice/contracts';
 import { z } from 'zod';
 import { getDatabase } from './core/client.ts';
-import { runtimeLedgerInputDigest } from './runtime-ledger/ledger.ts';
+import {
+  runtimeLedgerInputDigest,
+  cancelRuntimeAgentOperationsTransaction,
+} from './runtime-ledger/ledger.ts';
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 
 type Tx = RuntimeLedgerTransaction;
@@ -74,7 +77,14 @@ export interface AssistantAuthorityInput {
   transaction: Tx;
   task: RuntimeTaskRef;
   tools: string[];
-  phase: 'configure' | 'delegate' | 'message' | 'model' | 'tool' | 'recover';
+  phase:
+    | 'configure'
+    | 'delegate'
+    | 'message'
+    | 'model'
+    | 'tool'
+    | 'recover'
+    | 'proposal';
 }
 interface Root {
   root_run_id: string;
@@ -158,6 +168,7 @@ export async function cancelAssistantRootTransaction(
   await tx`update allrice_runtime_roots set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_reason=coalesce(cancel_reason,${reason}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${rootRunId}`;
   await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${rootRunId}`;
   await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${rootRunId} and status='pending'`;
+  await cancelRuntimeAgentOperationsTransaction(tx, rootRunId, requestId);
 }
 
 /** Mandatory trusted authority hook resolves current grants; IDs/tools from a
@@ -537,7 +548,7 @@ export function createAssistantRuntime(
         await authorize({
           transaction: tx,
           task: taskFor(root, child),
-          tools: child.allowed_tools,
+          tools: [],
           phase: 'message',
         });
         return queue(tx, root, parent, child, input.inputId, input.text);
@@ -560,7 +571,7 @@ export function createAssistantRuntime(
         await authorize({
           transaction: tx,
           task: taskFor(root, child),
-          tools: child.allowed_tools,
+          tools: [],
           phase: 'message',
         });
         if (m.status !== 'pending')
@@ -641,6 +652,8 @@ export function createAssistantRuntime(
       amounts: Record<string, number>;
       kind: 'model' | 'tool';
       tool?: string;
+      /** Trusted proposal admission only. Does not authorize the action. */
+      proposal?: boolean;
     }) {
       uuid.parse(input.callId);
       const amounts = amountsSchema.parse(input.amounts);
@@ -658,8 +671,9 @@ export function createAssistantRuntime(
         await authorize({
           transaction: tx,
           task: taskFor(root, row),
-          tools: input.tool ? [input.tool] : row.allowed_tools,
-          phase: input.kind,
+          tools: input.tool ? [input.tool] : [],
+          phase:
+            input.kind === 'tool' && input.proposal ? 'proposal' : input.kind,
         });
         await assertLease(tx, root, input.worker);
         const dimensions = await tx<
@@ -794,7 +808,7 @@ export function createAssistantRuntime(
           if (!artifact) fail('forbidden');
         }
         const [pending] =
-          await tx`select 1 from allrice_runtime_operations where run_id=${row.run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
+          await tx`select 1 from allrice_runtime_operations where (run_id=${row.run_id} or snapshot->>'agentInstanceId'=${row.run_id}) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         const status = pending ? 'unknown' : result.status;
         const effective = pending
           ? {
@@ -958,6 +972,15 @@ export function createAssistantRuntime(
         await tx`with recursive subtree as (select run_id from allrice_assistant_instances where run_id=${child.run_id} union all select c.run_id from allrice_assistant_instances c join subtree p on c.parent_run_id=p.run_id)
           update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${input.requestId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where run_id in(select run_id from subtree)`;
         await tx`update allrice_assistant_messages set status='canceled' where status='pending' and recipient_run_id in(select run_id from allrice_assistant_instances where root_run_id=${root.root_run_id} and cancel_requested_at is not null)`;
+        const canceled = await tx<
+          { run_id: string }[]
+        >`select run_id from allrice_assistant_instances where root_run_id=${root.root_run_id} and cancel_requested_at is not null`;
+        await cancelRuntimeAgentOperationsTransaction(
+          tx,
+          root.root_run_id,
+          input.requestId,
+          canceled.map((row) => row.run_id),
+        );
         return { cancelRequested: true, stopped: false };
       });
     },
@@ -973,7 +996,7 @@ export function createAssistantRuntime(
         const row = await instance(tx, root, input.runId);
         if (!row.cancel_requested_at) fail('conflict');
         const [operation] =
-          await tx`select 1 from allrice_runtime_operations where run_id=${row.run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
+          await tx`select 1 from allrice_runtime_operations where (run_id=${row.run_id} or snapshot->>'agentInstanceId'=${row.run_id}) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         if (operation) fail('unknown');
         await tx`update allrice_assistant_instances set stopped_at=clock_timestamp(),status=case when status in ('completed','partial','failed') then status else 'canceled' end where run_id=${row.run_id}`;
         if (row.run_id !== row.root_run_id)
