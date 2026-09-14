@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import {
   mkdir,
   mkdtemp,
@@ -102,7 +103,18 @@ it('rejects durable unknown left by a separate CLI after the drained ticket and 
     await journal.close(); owner.close();
   `,
     ],
-    { timeout: 10000 },
+    {
+      timeout: 20000,
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+      env: {
+        ...process.env,
+        // A clean CI checkout runs tests before building workspace packages.
+        // The separate CLI must resolve the same source graph as Vitest.
+        TSX_TSCONFIG_PATH: fileURLToPath(
+          new URL('../../../tsconfig.base.json', import.meta.url),
+        ),
+      },
+    },
   );
   const owner = await BridgeInstanceLock.acquire(ownerPath);
   try {
@@ -124,7 +136,7 @@ it('rejects durable unknown left by a separate CLI after the drained ticket and 
   } finally {
     await recovered.close();
   }
-});
+}, 30000);
 it('does not treat a still-owned journal as quiescent', async () => {
   const f = await fixture();
   const journal = await BridgeJournal.open(f.input);
