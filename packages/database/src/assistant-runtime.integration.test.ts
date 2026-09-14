@@ -88,6 +88,143 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       }),
     ).rejects.toThrow('forbidden');
   });
+  it.each(['workspace-scoped', 'organization-wide'] as const)(
+    'allows the actual owner with active %s membership to read and cancel assistant history',
+    async (scope) => {
+      const f = await assistantFixture(fixture.db);
+      const child = (await f.delegate()).instance;
+      if (scope === 'organization-wide')
+        await fixture.db`update allrice_memberships set workspace_id=null where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+      // Empty context claims prove access comes from the current database row.
+      expect(f.context.memberships).toEqual([]);
+      const reader = createAssistantRuntime({ database: fixture.db });
+      await expect(
+        reader.getSessionTrees(f.context, { sessionId: f.task.chatSessionId }),
+      ).resolves.toMatchObject([{ rootRunId: f.task.runId }]);
+      await expect(
+        reader.getTree(f.context, { runId: f.task.runId }),
+      ).resolves.toMatchObject({ rootRunId: f.task.runId });
+      // Membership alone still cannot provide the trusted message grant.
+      await expect(
+        reader.requestMessage(f.context, {
+          runId: f.task.runId,
+          childRunId: child.runId,
+          inputId: randomUUID(),
+          text: 'No execution grant from membership alone',
+        }),
+      ).rejects.toThrow('forbidden');
+      await expect(
+        reader.cancelChild(f.context, {
+          runId: f.task.runId,
+          childRunId: child.runId,
+          requestId: randomUUID(),
+        }),
+      ).resolves.toEqual({ cancelRequested: true, stopped: false });
+      await expect(
+        reader.cancelRoot(f.context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        }),
+      ).resolves.toEqual({ cancelRequested: true, stopped: false });
+    },
+  );
+  it.each([
+    'missing',
+    'inactive',
+    'other-workspace',
+    'other-organization',
+    'other-owner',
+    'context-workspace-mismatch',
+    'context-organization-mismatch',
+  ] as const)(
+    'rejects %s despite organization-wide context claims without changing assistant state',
+    async (scenario) => {
+      const f = await assistantFixture(fixture.db);
+      const child = (await f.delegate()).instance;
+      const before = await f.runtime.getTree(f.context, {
+        runId: f.task.runId,
+      });
+      let context = f.context;
+      await fixture.db`update allrice_memberships set workspace_id=null where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+      if (scenario === 'missing')
+        await fixture.db`delete from allrice_memberships where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+      if (scenario === 'inactive')
+        await fixture.db`update allrice_memberships set active=false where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+      if (
+        scenario === 'other-workspace' ||
+        scenario === 'context-workspace-mismatch'
+      ) {
+        const workspaceId = randomUUID();
+        await fixture.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${f.context.organizationId},'unrelated','Unrelated workspace')`;
+        if (scenario === 'other-workspace')
+          await fixture.db`update allrice_memberships set workspace_id=${workspaceId} where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+        else context = { ...context, workspaceId };
+      }
+      if (
+        scenario === 'other-organization' ||
+        scenario === 'context-organization-mismatch'
+      ) {
+        const organizationId = randomUUID();
+        await fixture.db`insert into allrice_organizations(id,slug,name) values(${organizationId},${`unrelated-${organizationId}`},'Unrelated organization')`;
+        if (scenario === 'other-organization')
+          await fixture.db`update allrice_memberships set organization_id=${organizationId} where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+        else context = { ...context, organizationId };
+      }
+      if (scenario === 'other-owner') {
+        const userId = randomUUID();
+        await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values(${userId},${`${userId}@example.test`},'Other org-wide admin','not-login')`;
+        await fixture.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${f.context.organizationId},null,${userId},'admin')`;
+        context = { ...context, actor: { type: 'user', id: userId } };
+      }
+      context = {
+        ...context,
+        memberships: [
+          {
+            id: randomUUID(),
+            userId: context.actor.id,
+            organizationId: f.context.organizationId,
+            workspaceId: null,
+            role: 'admin',
+            active: true,
+          },
+        ],
+      };
+      await expect(
+        f.runtime.getSessionTrees(context, {
+          sessionId: f.task.chatSessionId,
+        }),
+      ).rejects.toThrow('not_found');
+      await expect(
+        f.runtime.getTree(context, { runId: f.task.runId }),
+      ).rejects.toThrow('not_found');
+      await expect(
+        f.runtime.requestMessage(context, {
+          runId: f.task.runId,
+          childRunId: child.runId,
+          inputId: randomUUID(),
+          text: 'Forbidden message',
+        }),
+      ).rejects.toThrow('not_found');
+      await expect(
+        f.runtime.cancelChild(context, {
+          runId: f.task.runId,
+          childRunId: child.runId,
+          requestId: randomUUID(),
+        }),
+      ).rejects.toThrow('not_found');
+      await expect(
+        f.runtime.cancelRoot(context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        }),
+      ).rejects.toThrow('not_found');
+      // Restore only the synthetic owner membership to inspect immutable state.
+      await fixture.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${f.context.organizationId},${f.context.workspaceId},${f.context.actor.id},'admin')`;
+      expect(
+        await f.runtime.getTree(f.context, { runId: f.task.runId }),
+      ).toEqual(before);
+    },
+  );
   it('rejects sibling artifacts and mismatched storage owner even in the same workspace', async () => {
     const f = await assistantFixture(fixture.db),
       a = (await f.delegate()).instance,
