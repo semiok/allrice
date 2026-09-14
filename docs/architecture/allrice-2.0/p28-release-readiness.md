@@ -22,14 +22,14 @@
 
 清单 `schema: allrice-p28-release/v1` 的字段由检查器严格定义，缺失/额外字段拒绝。`artifacts` 恰含七个 ID：
 
-| ID | 固定的真实文件及身份 |
-| --- | --- |
-| `source` | 最终候选干净源码归档；完整 Git SHA、归档 SHA-256/字节数、归档生成标识 |
-| `lockfile` | 此源码的实际 `pnpm-lock.yaml` 字节 |
-| `dsh-upstream` | 此源码的 `apps/worker/dsh/upstream.json`；固定 DSH 版本/commit/tree/archive 摘要保留在原文件 |
-| `web` | 实际部署的 Web 分发归档/镜像导出；准确 Next `BUILD_ID`，不是笼统 `pnpm build` 成功 |
-| `worker` | 实际 Worker 分发归档/镜像导出及不可变构建标识 |
-| `bridge-arm64` / `bridge-x64` | 对应最终下载包的全量字节；同一 Bridge 版本，各自构建 ID；来源 SHA 必须一致 |
+| ID                            | 固定的真实文件及身份                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `source`                      | 最终候选干净源码归档；完整 Git SHA、归档 SHA-256/字节数、归档生成标识                        |
+| `lockfile`                    | 此源码的实际 `pnpm-lock.yaml` 字节                                                           |
+| `dsh-upstream`                | 此源码的 `apps/worker/dsh/upstream.json`；固定 DSH 版本/commit/tree/archive 摘要保留在原文件 |
+| `web`                         | 实际部署的 Web 分发归档/镜像导出；准确 Next `BUILD_ID`，不是笼统 `pnpm build` 成功           |
+| `worker`                      | 实际 Worker 分发归档/镜像导出及不可变构建标识                                                |
+| `bridge-arm64` / `bridge-x64` | 对应最终下载包的全量字节；同一 Bridge 版本，各自构建 ID；来源 SHA 必须一致                   |
 
 每项格式是 `{id, sourceSha, version, buildId, file: {path, sha256, bytes}}`。所有路径相对 evidence 根；每包必须有独立路径，不能用一个文本/探针重复充当 Web、Worker、GUI 包。`source-build-package-provenance` 实测收据及其原始构建记录负责把干净 checkout → 归档 → 实际构建 → 下载字节联系起来。检查器对提供的 checkout 核对 lockfile、DSH pin 及迁移库存，**不会因此证明整个 checkout 干净或其 Git 身份**；P27 必须实查完整 SHA/dirty 状态、构建输入和打包清单。
 
@@ -72,13 +72,13 @@ node scripts/acceptance/platform/p28-release-readiness.mjs \
 node --test scripts/acceptance/platform/p28-release-readiness.test.mjs
 ```
 
-| `--gate` | 只检查的条件；不代表执行授权 |
-| --- | --- |
-| `prepare` | 版本/文件/迁移库存/关闭状态/恢复方案结构和完整性；所有未获证据继续显示 `technicalBlockers` |
-| `dev` | 上述条件 + 候选实测材料 + 独立 Dev 授权记录；仅允许最终 Dev 冒烟收据尚未发生，避免部署前要求部署后结果的循环 |
-| `rc` | 全部 47 个最终候选真实证据声明，包括最终 Dev 冒烟；不要求 Prod 批准，也不授予它 |
-| `tenant` | RC 条件 + 本版本、准确一个租户、准确 enableFlags/迁移/恢复模式的单独授权 |
-| `prod` | RC 条件 + 独立 Prod 授权 + 已批准单租户的 `tenant-canary-real-smoke` 原始收据（实际版本/flags/租户一致） |
+| `--gate`  | 只检查的条件；不代表执行授权                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------------ |
+| `prepare` | 版本/文件/迁移库存/关闭状态/恢复方案结构和完整性；所有未获证据继续显示 `technicalBlockers`                   |
+| `dev`     | 上述条件 + 候选实测材料 + 独立 Dev 授权记录；仅允许最终 Dev 冒烟收据尚未发生，避免部署前要求部署后结果的循环 |
+| `rc`      | 全部 47 个最终候选真实证据声明，包括最终 Dev 冒烟；不要求 Prod 批准，也不授予它                              |
+| `tenant`  | RC 条件 + 本版本、准确一个租户、准确 enableFlags/迁移/恢复模式的单独授权                                     |
+| `prod`    | RC 条件 + 独立 Prod 授权 + 已批准单租户的 `tenant-canary-real-smoke` 原始收据（实际版本/flags/租户一致）     |
 
 退出码 0 仅表示请求的**材料检查**成立；2 表示拒绝。JSON 同时返回 `preparationVerified`、`technicalEvidenceComplete`、blockers。即使 0，`deploymentExecuted`、`migrationExecuted`、`flagsChanged`、`authorizationGranted`、`gaDeclared` 永远为 false。P27 的人类可读技术结论和真实版本回执仍不可省略。本工具不作为旧共享 release-gate 的替代，也不自动增加 package script。
 
