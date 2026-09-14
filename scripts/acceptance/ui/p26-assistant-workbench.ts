@@ -119,6 +119,26 @@ let page: Playwright.Page | undefined,
 const pageErrors: string[] = [],
   consoleErrors: string[] = [];
 const failedResponses: { path: string; status: number }[] = [];
+let phase = 'setup';
+const networkFailures: { phase: string; path: string; error: string | null }[] =
+  [];
+const consoleErrorPhases: { phase: string; message: string }[] = [];
+const activeStreams = new Map<Playwright.Request, string>();
+const streamRequests: { phase: string; runId: string }[] = [];
+async function waitForStreamCount(runId: string, count: number) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (
+      [...activeStreams.values()].filter((id) => id === runId).length === count
+    )
+      return;
+    await delay(100);
+  }
+  assert.equal(
+    [...activeStreams.values()].filter((id) => id === runId).length,
+    count,
+    `${phase}: expected ${count} active SSE request(s) for ${runId}`,
+  );
+}
 const checks: Record<string, unknown> = {
   scope:
     'Real isolated Chrome + built Next + synthetic signed portal + PostgreSQL. No mocked API, Worker/model execution, personal browser profile, Dev or Prod writes.',
@@ -351,7 +371,27 @@ try {
   page.setDefaultTimeout(20_000);
   page.on('pageerror', (error) => pageErrors.push(error.message));
   page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text());
+    if (message.type() === 'error') {
+      consoleErrors.push(message.text());
+      consoleErrorPhases.push({ phase, message: message.text() });
+    }
+  });
+  page.on('requestfailed', (request) => {
+    activeStreams.delete(request);
+    networkFailures.push({
+      phase,
+      path: new URL(request.url()).pathname,
+      error: request.failure()?.errorText ?? null,
+    });
+  });
+  page.on('requestfinished', (request) => activeStreams.delete(request));
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    const runId = /^\/api\/v1\/runs\/([^/]+)\/events$/.exec(url.pathname)?.[1];
+    if (runId && url.searchParams.get('format') !== 'json') {
+      activeStreams.set(request, runId);
+      streamRequests.push({ phase, runId });
+    }
   });
   page.on('response', (response) => {
     if (response.status() >= 400)
@@ -360,6 +400,7 @@ try {
         status: response.status(),
       });
   });
+  phase = 'enabled-history';
   await page.goto(`${origin}/chatflow?session=${session}`);
   const panel = page.locator(`#assistants-${run}`);
   await panel.waitFor();
@@ -440,6 +481,7 @@ try {
   // catches a stale/default preference even if its disabled checkbox looks safe.
   await optOut.uncheck();
   assert.equal(await optOut.isChecked(), false);
+  phase = 'codex-queue';
   await page.getByRole('button', { name: /P26 unrelated session/ }).click();
   await panel.waitFor({ state: 'detached' });
   assert.equal(
@@ -500,13 +542,47 @@ try {
     frozenProviderUnchanged: true,
     noWorkerStarted: true,
   };
+  const stopCurrentRun = page.getByRole('button', {
+    name: '停止本轮',
+    exact: true,
+  });
+  await stopCurrentRun.waitFor();
+  await waitForStreamCount(queued.run.id, 1);
+  phase = 'return-gemini';
   await page.getByRole('button', { name: /P26 assistant history/ }).click();
   await panel.waitFor();
+  await stopCurrentRun.waitFor({ state: 'detached' });
+  await waitForStreamCount(queued.run.id, 0);
+  const requestsAfterSwitch = streamRequests.length;
+  await delay(1200);
+  assert.equal(
+    streamRequests.length,
+    requestsAfterSwitch,
+    'Completed Gemini history must not restart an old Codex SSE',
+  );
   assert.equal(
     await optOut.isDisabled(),
     false,
     'Frozen Gemini becomes available again without switching any model',
   );
+  phase = 'restore-codex-pending';
+  await page.getByRole('button', { name: /P26 unrelated session/ }).click();
+  await panel.waitFor({ state: 'detached' });
+  await stopCurrentRun.waitFor();
+  await waitForStreamCount(queued.run.id, 1);
+  phase = 'return-gemini-again';
+  await page.getByRole('button', { name: /P26 assistant history/ }).click();
+  await panel.waitFor();
+  await stopCurrentRun.waitFor({ state: 'detached' });
+  await waitForStreamCount(queued.run.id, 0);
+  checks.streamIsolation = {
+    currentCodexPendingStreamVisible: true,
+    completedGeminiDoesNotShowStop: true,
+    oldCodexStreamAbortedWithoutRestart: true,
+    returningCodexRestoresPendingStream: true,
+    leavingCodexAgainAbortsStream: true,
+  };
+  phase = 'narrow-history';
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => {
     const rail = document.querySelector('main > aside');
@@ -542,10 +618,14 @@ try {
     frozenCodexProtocolDisabled: true,
     narrowRendered: true,
   };
-  // Restart ONLY this fixture server with the rollout flag OFF; history and safe cancellation remain.
+  // Flag-OFF is a separate startup check, not an outage/reconnect acceptance.
+  // Session/SSE isolation must have passed above before ending this page normally.
+  await page.goto('about:blank');
+  phase = 'planned-server-restart';
   await stopServer();
   await startServer(false);
-  await page.reload();
+  phase = 'flag-off';
+  await page.goto(`${origin}/chatflow?session=${session}`);
   await panel.waitFor();
   assert.equal(
     await page.getByRole('combobox', { name: '下一项任务模式' }).count(),
@@ -594,6 +674,9 @@ try {
   await rm(storageRoot, { force: true, recursive: true });
   checks.pageErrors = pageErrors;
   checks.consoleErrors = consoleErrors;
+  checks.consoleErrorPhases = consoleErrorPhases;
+  checks.networkFailures = networkFailures;
+  checks.streamRequests = streamRequests;
   checks.failedResponses = failedResponses;
   checks.completedAt = new Date().toISOString();
   await writeFile(
