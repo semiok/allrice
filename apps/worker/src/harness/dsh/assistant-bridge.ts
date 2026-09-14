@@ -1,0 +1,257 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import {
+  AssistantResultSchema,
+  type RequestContext,
+  type RuntimeTaskRef,
+} from '@allrice/contracts';
+import type { AssistantRuntime, AssistantWorkerLease } from '@allrice/database';
+import type { HarnessToolCall, HarnessToolResult } from '../adapter.js';
+
+/** UUID derived from native call identity, stable across transport duplicates. */
+function stableId(value: string) {
+  const h = createHash('sha256').update(value).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+const text = z.string().trim().min(1).max(16000);
+const tools = z.array(z.string().min(1).max(120)).max(64);
+const natural = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export interface AssistantWorkerBridgeOptions {
+  runtime: AssistantRuntime;
+  task: RuntimeTaskRef;
+  context: RequestContext;
+  worker: AssistantWorkerLease;
+  wireNames: Readonly<Record<string, string>>;
+  readOnlyTools: ReadonlySet<string>;
+  onReadTool?: (
+    call: HarnessToolCall,
+    childRunId: string,
+  ) => Promise<HarnessToolResult>;
+  /** Must submit the exact proposal to P04/Broker; never grants native approval.
+   * Absent means side-effect proposals are unavailable, not automatically allowed. */
+  onProposal?: (
+    call: HarnessToolCall,
+    childRunId: string,
+  ) => Promise<HarnessToolResult>;
+}
+export function createAssistantWorkerBridge(
+  options: AssistantWorkerBridgeOptions,
+) {
+  const { runtime, task, context, worker } = options;
+  const base = { scope: task.scope, rootRunId: task.rootRunId, worker };
+  const tree = () => runtime.getTree(context, { runId: task.rootRunId });
+  async function lookup(nativeId: unknown) {
+    const nativeSessionId = z
+        .string()
+        .regex(/^[a-zA-Z0-9_.-]{1,200}$/)
+        .parse(nativeId),
+      snapshot = await tree();
+    const instance = snapshot.instances.find(
+      (i) => i.nativeSessionId === nativeSessionId,
+    );
+    if (!instance) throw Error('assistant_identity_denied');
+    return { instance, snapshot };
+  }
+  async function messageDispatch(inputId: string) {
+    const claimed = await runtime.claimMessage({ ...base, inputId });
+    const snapshot = await tree(),
+      parent = snapshot.instances.find(
+        (i) => i.runId === claimed.instance.parentRunId,
+      );
+    if (!parent) throw Error('assistant_parent_missing');
+    return {
+      dispatch: claimed.dispatch,
+      instance: claimed.instance,
+      inputId,
+      text: claimed.message.text,
+      parentNativeSessionId: parent.nativeSessionId,
+      nativeSessionId: claimed.instance.nativeSessionId,
+      maxDepth: snapshot.configuration.maxDepth,
+      wireTools: claimed.instance.allowedTools
+        .map((tool) => options.wireNames[tool])
+        .filter((tool): tool is string => !!tool),
+    };
+  }
+  const handle = async (
+    method: string,
+    p: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> => {
+    const { instance, snapshot } = await lookup(p.nativeSessionId);
+    if (method === 'checkpoint')
+      return runtime.checkpointMessage({
+        ...base,
+        inputId: z.uuid().parse(p.inputId),
+        nativeMessageId: z.string().parse(p.nativeMessageId),
+        ...(p.durableSeq === undefined
+          ? {}
+          : { durableSeq: natural.parse(p.durableSeq) }),
+        ...(p.adoptedSeq === undefined
+          ? {}
+          : { adoptedSeq: natural.parse(p.adoptedSeq) }),
+      });
+    if (method === 'model-reserve')
+      return runtime.reserveUsage({
+        ...base,
+        runId: instance.runId,
+        kind: 'model',
+        callId: z.uuid().parse(p.callId),
+        amounts: {
+          model_calls: 1,
+          input_tokens: natural.parse(p.inputTokens),
+          output_tokens: natural.parse(p.outputTokens),
+        },
+      });
+    if (method === 'model-settle') {
+      await runtime.settleUsage({
+        ...base,
+        callId: z.uuid().parse(p.callId),
+        amounts: {
+          model_calls: 1,
+          ...(p.inputTokens === undefined
+            ? {}
+            : { input_tokens: natural.parse(p.inputTokens) }),
+          ...(p.outputTokens === undefined
+            ? {}
+            : { output_tokens: natural.parse(p.outputTokens) }),
+        },
+      });
+      return { settled: true };
+    }
+    if (method === 'adopt-result') {
+      await runtime.adoptResult({
+        ...base,
+        parentRunId: instance.runId,
+        deliveryId: z.uuid().parse(p.deliveryId),
+        nativeMessageId: z.string().parse(p.nativeMessageId),
+        adoptedSeq: natural.parse(p.adoptedSeq),
+      });
+      return { adopted: true };
+    }
+    if (method === 'stopped') {
+      await runtime.confirmStopped({ ...base, runId: instance.runId });
+      return { stopped: true };
+    }
+    if (method === 'settled') {
+      const result = {
+        deliveryId: stableId(`${instance.runId}:settled`),
+        status: 'partial' as const,
+        summary: 'Native assistant settled without a verified delivery.',
+        evidence: [],
+        incomplete: [
+          `Native stop reason: ${String(p.stopReason).slice(0, 120)}`,
+        ],
+        usageComplete: false,
+      };
+      await runtime.recordResult({ ...base, runId: instance.runId, result });
+      return result;
+    }
+    const args = z.record(z.string(), z.unknown()).parse(p.arguments);
+    const callId = z.string().min(1).max(240).parse(p.callId);
+    const callUuid = stableId(`${instance.runId}:${callId}`);
+    if (method === 'tool' || method === 'proposal') {
+      const name = z.string().parse(p.name),
+        parameters = z.record(z.string(), z.unknown()).parse(args);
+      const handler =
+        method === 'proposal' ? options.onProposal : options.onReadTool;
+      if (!handler || (method === 'tool' && !options.readOnlyTools.has(name)))
+        throw Error('assistant_tool_not_available');
+      const reserved = await runtime.reserveUsage({
+        ...base,
+        runId: instance.runId,
+        kind: 'tool',
+        tool: name,
+        callId: callUuid,
+        amounts: { tool_calls: 1 },
+      });
+      if (!reserved.reserved) throw Error('assistant_tool_unknown_no_replay');
+      const result = await handler(
+        { id: callId, name, arguments: parameters },
+        instance.runId,
+      );
+      await runtime.settleUsage({
+        ...base,
+        callId: callUuid,
+        amounts: { tool_calls: 1 },
+      });
+      return { ...result };
+    }
+    if (!instance.allowedTools.includes(`assistant.${method}`))
+      throw Error('assistant_tool_not_allowed');
+    if (method === 'delegate') {
+      const { instance: child } = await runtime.provision({
+        ...base,
+        parentRunId: instance.runId,
+        delegationId: callUuid,
+        label: z.string().min(1).max(120).parse(args.label),
+        text: text.parse(args.text),
+        tools: tools.parse(args.tools),
+      });
+      const dispatch = await messageDispatch(callUuid);
+      return { ...dispatch, instance: child };
+    }
+    if (method === 'message') {
+      const childRunId = z.uuid().parse(args.childRunId);
+      if (
+        !snapshot.instances.some(
+          (i) => i.runId === childRunId && i.parentRunId === instance.runId,
+        )
+      )
+        throw Error('assistant_parent_denied');
+      await runtime.requestMessage(context, {
+        runId: task.rootRunId,
+        childRunId,
+        inputId: callUuid,
+        text: text.parse(args.text),
+      });
+      return messageDispatch(callUuid);
+    }
+    if (method === 'report') {
+      const result = AssistantResultSchema.parse({
+        ...args,
+        deliveryId: callUuid,
+        usageComplete: snapshot.budgets.every((b) => b.usageComplete),
+      });
+      await runtime.recordResult({ ...base, runId: instance.runId, result });
+      return result;
+    }
+    if (method === 'stop') {
+      const childRunId = z.uuid().parse(args.childRunId),
+        child = snapshot.instances.find(
+          (i) => i.runId === childRunId && i.parentRunId === instance.runId,
+        );
+      if (!child) throw Error('assistant_parent_denied');
+      await runtime.cancelChild(context, {
+        runId: task.rootRunId,
+        childRunId,
+        requestId: callUuid,
+      });
+      const descendants = new Set([childRunId]);
+      for (let depth = 0; depth < 3; depth++)
+        for (const i of snapshot.instances)
+          if (i.parentRunId && descendants.has(i.parentRunId))
+            descendants.add(i.runId);
+      return {
+        nativeSessionId: child.nativeSessionId,
+        instances: snapshot.instances
+          .filter((i) => descendants.has(i.runId))
+          .reverse(),
+      };
+    }
+    throw Error('assistant_method_not_allowed');
+  };
+  return {
+    handle,
+    tree,
+    messageDispatch,
+    async cancellation() {
+      const snapshot = await tree();
+      return {
+        nativeSessionId: snapshot.instances.find((i) => i.parentRunId === null)
+          ?.nativeSessionId,
+        instances: snapshot.instances
+          .filter((i) => i.cancelRequestedAt && !i.stoppedAt)
+          .reverse(),
+      };
+    },
+  };
+}
