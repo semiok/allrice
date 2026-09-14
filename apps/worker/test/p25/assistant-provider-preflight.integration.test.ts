@@ -8,9 +8,15 @@ import type * as Database from '@allrice/database';
 import type * as Router from '../../src/harness/router.js';
 import type * as Controller from '../../src/harness/dsh/assistant-controller.js';
 import type {
+  EmployeeExecutionSnapshot,
   HarnessExecutionSnapshot,
   RouteDecision,
 } from '@allrice/contracts';
+import {
+  SessionModelSnapshotSchema,
+  FrozenWorkflowBindingSchema,
+} from '@allrice/contracts';
+import type * as Workflow from '../../src/workflow-engine.js';
 import type { ClaimedJobHandlerInput } from '../../src/job-runner.js';
 import {
   afterAll,
@@ -36,6 +42,7 @@ import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
 import { HandlerError } from '../../src/errors.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
+import { assistantPriceSnapshotDigest } from '../../src/assistant-pricing-preflight.js';
 
 const state = vi.hoisted(() => ({
   database: undefined as
@@ -50,7 +57,22 @@ const state = vi.hoisted(() => ({
   bind: vi.fn(),
   spawn: vi.fn(),
   credentials: vi.fn(),
+  workflowId: null as string | null,
+  workflow: vi.fn(),
 }));
+// Internal governance helpers import this module directly. Bind it too; never
+// let a new frozen model snapshot fall through to a real application database.
+vi.mock(
+  '../../../../packages/database/src/core/client.ts',
+  async (original) => ({
+    ...(await original<Record<string, unknown>>()),
+    getDatabase: () => {
+      if (!state.database)
+        throw Error('isolated_test_database_not_initialized');
+      return state.database.db;
+    },
+  }),
+);
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   getDatabase: () => {
@@ -68,6 +90,7 @@ vi.mock('@allrice/database', async (original) => ({
   listFailedRouteDecisions: vi.fn(async () => []),
   appendJobEvent: vi.fn(async () => {}),
   releaseConversationRuntime: vi.fn(async () => {}),
+  ensureWorkflowRunForExecution: vi.fn(async () => {}),
 }));
 vi.mock('../../src/harness/router.js', async (original) => ({
   ...(await original<typeof Router>()),
@@ -86,16 +109,27 @@ vi.mock('../../src/knowledge.js', () => ({
     citations: [],
   })),
 }));
+vi.mock('../../src/conversation/checkpoint-maintenance.js', () => ({
+  finalizeEmployeeConversationContext: async () => state.runtime(),
+}));
+vi.mock('../../src/workflow-engine.js', async (original) => ({
+  ...(await original<typeof Workflow>()),
+  executeDurableWorkflow: state.workflow,
+}));
 vi.mock('../../src/routing/capability-router.js', () => ({
   decideCapabilityRoute: () => ({
-    selectedKind: 'direct',
-    selectedCandidateId: 'direct:synthetic',
+    selectedKind: state.workflowId ? 'workflow' : 'direct',
+    selectedCandidateId: state.workflowId
+      ? `workflow:${state.workflowId}`
+      : 'direct:synthetic',
     selectedKnowledgeRevisionIds: [],
     reasonCodes: ['direct_no_capability_match'],
     candidates: [
       {
-        id: 'direct:synthetic',
-        kind: 'direct',
+        id: state.workflowId
+          ? `workflow:${state.workflowId}`
+          : 'direct:synthetic',
+        kind: state.workflowId ? 'workflow' : 'direct',
         name: 'Synthetic no-provider task',
         bindingId: null,
         requiredCapabilities: ['model:invoke'],
@@ -170,6 +204,9 @@ integration(
     }, 120000);
     beforeEach(() => {
       vi.clearAllMocks();
+      vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', undefined);
+      vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', undefined);
+      state.workflowId = null;
       acquire.mockRejectedValue(lateError);
       state.credentials.mockRejectedValue(Error('test_forbids_credentials'));
       state.record.mockImplementation((decision: RouteDecision) =>
@@ -196,17 +233,125 @@ integration(
         omitted?: boolean;
         compatible?: boolean;
         legacy?: boolean;
+        price?: boolean;
+        workflow?: boolean;
       } = {},
     ) {
+      const connectionId = randomUUID(),
+        catalogId = randomUUID();
+      const model = options.compatible
+        ? `synthetic-${catalogId}`
+        : 'synthetic-never-called';
+      const endpoint = 'https://synthetic-never-contacted.example.test/v1';
+      let capturedSnapshot: EmployeeExecutionSnapshot | undefined;
+      const workflow = options.workflow
+        ? FrozenWorkflowBindingSchema.parse({
+            bindingId: randomUUID(),
+            boundBy: randomUUID(),
+            boundAt: new Date().toISOString(),
+            effective: true,
+            revision: {
+              kind: 'workflow',
+              id: randomUUID(),
+              workflowId: randomUUID(),
+              slug: 'synthetic-workflow',
+              name: 'Synthetic workflow',
+              description: 'Synthetic workflow boundary only',
+              revision: 1,
+              status: 'published',
+              checksum: `sha256:${'d'.repeat(64)}`,
+              publishedAt: new Date().toISOString(),
+              definition: {
+                schemaVersion: 1,
+                steps: [
+                  { key: 'model_step', name: 'Synthetic model', kind: 'model' },
+                ],
+              },
+            },
+          })
+        : undefined;
+      if (workflow) {
+        state.workflowId = workflow.revision.id;
+        state.workflow.mockImplementation(
+          async (
+            input: Parameters<typeof Workflow.executeDurableWorkflow>[0],
+          ) => {
+            const result = await input.executeStep({
+              step: workflow.revision.definition.steps[0]!,
+              value: { workflowInput: {}, configured: {}, dependencies: {} },
+              idempotencyKey: 'synthetic-workflow-step',
+            });
+            return { output: { model_step: result.output } };
+          },
+        );
+      }
+      if (options.compatible) {
+        await database.db`insert into allrice_model_providers(id,provider_key,name,harness,auth_mode) values(${randomUUID()},'openai-compatible','Synthetic','dsh','api_key') on conflict(provider_key) do nothing`;
+        const [provider] =
+          await database.db`select id from allrice_model_providers where provider_key='openai-compatible'`;
+        await database.db`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url) values(${connectionId},${provider!.id},'platform',${`synthetic-${connectionId}`},'deployment:synthetic-never-resolved',${endpoint})`;
+        await database.db`insert into allrice_model_catalog_entries(id,provider_id,model,display_name,reasoning_efforts,default_reasoning_effort,input_modalities,output_modalities)
+          values(${catalogId},${provider!.id},${model},'Synthetic','["low"]','low','["text"]','["text"]')`;
+      }
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
         allowedTools: ['assistant.delegate', 'assistant.report'],
+        ...(options.compatible
+          ? {
+              runtimePolicy: {
+                harness: 'dsh' as const,
+                provider: 'openai-compatible',
+                model,
+                reasoningEffort: 'low' as const,
+                timeoutMs: 300000,
+                fallbackModels: [],
+                credentialReference: 'deployment:synthetic-never-resolved',
+                baseUrl: endpoint,
+              },
+              snapshot: (
+                value: EmployeeExecutionSnapshot,
+                { sessionId }: { sessionId: string },
+              ) => {
+                capturedSnapshot = {
+                  ...value,
+                  ...(workflow && value.schemaVersion === 2
+                    ? {
+                        capabilitySnapshot: {
+                          ...value.capabilitySnapshot,
+                          workflows: [workflow],
+                        },
+                      }
+                    : {}),
+                  modelSnapshot: SessionModelSnapshotSchema.parse({
+                    schemaVersion: 1,
+                    sessionId,
+                    employeeId: value.employee.id,
+                    policyRevision: 1,
+                    connectionId,
+                    modelCatalogEntryId: catalogId,
+                    harness: 'dsh',
+                    provider: 'openai-compatible',
+                    authMode: 'api_key',
+                    model,
+                    reasoningEffort: 'low',
+                    credentialReference: 'deployment:synthetic-never-resolved',
+                    baseUrl: endpoint,
+                    fallbackPolicy: 'disabled',
+                    fallbackTargets: [],
+                    resolvedFallbacks: [],
+                    frozenAt: new Date().toISOString(),
+                  }),
+                } as EmployeeExecutionSnapshot;
+                return capturedSnapshot;
+              },
+            }
+          : {}),
       });
       const provider: HarnessExecutionSnapshot = options.legacy
         ? {
             provider: 'codex',
             authMode: 'chatgpt_subscription',
-            model: 'synthetic-never-called',
+            model,
             reasoningEffort: 'low',
             sandbox: 'workspace-write',
           }
@@ -216,15 +361,15 @@ integration(
               ? 'allrice_credential'
               : 'platform_subscription',
             route: options.compatible ? 'openai-compatible' : 'openai-codex',
-            model: 'synthetic-never-called',
+            model,
             reasoningEffort: 'low',
             credentialReference: 'deployment:synthetic-never-resolved',
-            baseUrl: options.compatible ? 'http://127.0.0.1:1/v1' : null,
+            baseUrl: options.compatible ? endpoint : null,
           };
       state.provider = provider;
       state.resolved.mockResolvedValue({
         providerSnapshot: provider,
-        executionSnapshot: f.snapshot,
+        executionSnapshot: capturedSnapshot ?? f.snapshot,
         promptSnapshot: {
           systemPrompt: 'Synthetic system',
           userRequest: 'Read synthetic input',
@@ -236,6 +381,48 @@ integration(
         skillArtifacts: [],
         grantedCapabilities: ['model:invoke'],
       });
+      if (options.price) {
+        vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'USD');
+        vi.stubEnv(
+          'ALLRICE_ASSISTANT_PRICING_JSON',
+          JSON.stringify({
+            version: 1,
+            catalogVersion: 'synthetic-only',
+            entries: [
+              {
+                id: 'synthetic',
+                target: {
+                  connectionId,
+                  catalogId,
+                  harness: 'dsh',
+                  provider: 'openai-compatible',
+                  authMode: 'api_key',
+                  model,
+                  baseUrl: endpoint,
+                  serviceTier: 'default',
+                  modality: 'text',
+                },
+                billingMode: 'token_metered',
+                currency: 'USD',
+                effectiveAt: '2020-01-01T00:00:00.000Z',
+                expiresAt: '2099-01-01T00:00:00.000Z',
+                maxInputTokens: 1000000,
+                maxOutputTokens: 1000000,
+                rates: {
+                  uncachedInputMicrounitsPerMillion: '2000000',
+                  cacheReadMicrounitsPerMillion: '500000',
+                  cacheWriteMicrounitsPerMillion: '3000000',
+                  outputMicrounitsPerMillion: '8000000',
+                },
+                source: {
+                  reference: 'synthetic-only-no-real-provider',
+                  digest: `sha256:${'a'.repeat(64)}`,
+                },
+              },
+            ],
+          }),
+        );
+      }
       state.runtime.mockResolvedValue({
         generation: 1,
         threadId: `dsh-${f.session}`,
@@ -268,7 +455,11 @@ integration(
             worker: { type: 'worker', id: f.worker.workerId },
             policySnapshot: { memberships: f.context.memberships },
           },
-          job: { ownerId: f.user, attempt: 1 },
+          job: {
+            ownerId: f.user,
+            attempt: 1,
+            timeoutAt: new Date(Date.now() + 300000).toISOString(),
+          },
         },
         isolation: { workDirectory: temporary, environment: {} },
         signal: new AbortController().signal,
@@ -391,7 +582,7 @@ integration(
     it.each([false, true])(
       'after assistant execution is entered, uncertainty cannot be relabeled free (same preflight code %s)',
       async (sameCode) => {
-        const { f, job } = await fixture({ compatible: true });
+        const { f, job } = await fixture({ compatible: true, price: true });
         const error = sameCode
           ? new HandlerError(
               rejectionCode,
@@ -450,5 +641,210 @@ integration(
         });
       },
     );
+    it.each([undefined, '{invalid-secret-payload'])(
+      'missing or invalid configured price fails before adapter with known-zero real accounting (%s)',
+      async (encoded) => {
+        const { f, job } = await fixture({ compatible: true });
+        vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', encoded);
+        vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'USD');
+        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+          code: 'ASSISTANT_PRICE_UNAVAILABLE',
+          retryable: false,
+        });
+        expect(execute).not.toHaveBeenCalled();
+        expect(acquire).not.toHaveBeenCalled();
+        expect(state.controller).not.toHaveBeenCalled();
+        noNativeAccess();
+        expect((await knownZero(f.org)).error_code).toBe(
+          'ASSISTANT_PRICE_UNAVAILABLE',
+        );
+      },
+    );
+    it('a synthetic complete whole-tree priced result persists its upper bound and leaves the next ordinary Run quota available', async () => {
+      const { f, job } = await fixture({ compatible: true, price: true });
+      // Only this success case supplies a synthetic adapter result. Native
+      // receipt production is tested separately by the real HTTP/PG suite.
+      // This case exercises actual Worker validation and both real route tables.
+      execute.mockImplementationOnce(async () => {
+        const configuration = state.controller.mock.calls.at(
+          -1,
+        )![0] as Parameters<typeof Controller.productionAssistantController>[0];
+        return {
+          answer: 'Synthetic completed tree',
+          assistantStatus: 'completed',
+          provider: 'openai-compatible',
+          model: state.provider!.model,
+          usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 30 },
+          usageComplete: true,
+          cacheUsageKnown: false,
+          costEstimateAvailable: true,
+          estimatedCostCents: 0.054,
+          costBasis: 'conservative_upper_bound',
+          actualCostKnown: false,
+          costCurrency: 'USD',
+          priceSnapshotDigest: assistantPriceSnapshotDigest(
+            configuration.priceSnapshot!,
+          ),
+        };
+      });
+      await expect(executeEmployeeRun(job)).resolves.toMatchObject({
+        estimatedCostCents: 0.054,
+        actualCostKnown: false,
+      });
+      const { row, quota } = await accounting(f.org);
+      expect(Number(row.decision_cost)).toBe(0.054);
+      expect(Number(row.ledger_cost)).toBe(0.054);
+      expect(row).toMatchObject({
+        decision_complete: true,
+        ledger_complete: true,
+        decision_cache: false,
+        ledger_cache: false,
+      });
+      expect(quota).toMatchObject({
+        usedCostCents: 0.054,
+        unknownCostRuns: 0,
+        usageComplete: true,
+        cacheUsageKnown: false,
+      });
+      expect(() => assertQuotaAvailable(quota)).not.toThrow();
+      const nextRunId = randomUUID();
+      await database.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${nextRunId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
+      const next = {
+        ...job,
+        execution: {
+          ...job.execution,
+          context: { ...job.execution.context, runId: nextRunId },
+          payload: {
+            ...job.execution.payload,
+            input: {
+              ...(job.execution.payload.input as Record<string, unknown>),
+              assistantConfiguration: { ...f.config, allowAssistants: false },
+            },
+          },
+        },
+      } as ClaimedJobHandlerInput;
+      await expect(executeEmployeeRun(next)).rejects.toBe(lateError);
+      expect(acquire).toHaveBeenCalledTimes(1); // Not rejected by unknown-cost quota.
+      noNativeAccess();
+      expect(await getOrganizationModelQuota(f.org, database.db)).toMatchObject(
+        {
+          usedRuns: 2,
+          usedCostCents: 0.054,
+          unknownCostRuns: 0,
+          usageComplete: true,
+          cacheUsageKnown: false,
+        },
+      );
+    });
+    it('rejects matching CNY config before execution instead of mixing it into the currency-less organization ledger', async () => {
+      const { f, job } = await fixture({ compatible: true, price: true });
+      const synthetic = JSON.parse(process.env.ALLRICE_ASSISTANT_PRICING_JSON!);
+      synthetic.entries[0].currency = 'CNY';
+      vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', JSON.stringify(synthetic));
+      vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'CNY');
+      await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+        code: 'ASSISTANT_PRICE_CURRENCY_UNSUPPORTED',
+        retryable: false,
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(acquire).not.toHaveBeenCalled();
+      expect(state.controller).not.toHaveBeenCalled();
+      noNativeAccess();
+      expect((await knownZero(f.org)).error_code).toBe(
+        'ASSISTANT_PRICE_CURRENCY_UNSUPPORTED',
+      );
+    });
+    it('a mismatched priced result cannot silently fall back to the ordinary missing-price zero', async () => {
+      const { f, job } = await fixture({ compatible: true, price: true });
+      execute.mockResolvedValueOnce({
+        answer: 'Synthetic unverified result',
+        assistantStatus: 'completed',
+        provider: 'openai-compatible',
+        model: state.provider!.model,
+        usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 30 },
+        usageComplete: true,
+        cacheUsageKnown: false,
+        costEstimateAvailable: true,
+        estimatedCostCents: 0,
+        costBasis: 'conservative_upper_bound',
+        actualCostKnown: false,
+        costCurrency: 'USD',
+        priceSnapshotDigest: `sha256:${'c'.repeat(64)}`,
+      });
+      await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+        code: 'ASSISTANT_PRICE_RESULT_UNVERIFIED',
+      });
+      const { row, quota } = await accounting(f.org);
+      expect(row).toMatchObject({
+        decision_cost: null,
+        ledger_cost: null,
+        decision_complete: true,
+        ledger_complete: true,
+        decision_cache: false,
+        ledger_cache: false,
+      });
+      expect(quota).toMatchObject({ usedCostCents: null, unknownCostRuns: 1 });
+      expect(() => assertQuotaAvailable(quota)).toThrow(
+        'MODEL_COST_USAGE_UNKNOWN',
+      );
+      noNativeAccess();
+    });
+    it('retains the existing assistant+workflow denial before dispatch and records known zero', async () => {
+      const { f, job } = await fixture({
+        compatible: true,
+        price: true,
+        workflow: true,
+      });
+      await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+        code: 'ASSISTANT_ROUTE_UNAVAILABLE',
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(state.workflow).not.toHaveBeenCalled();
+      noNativeAccess();
+      expect((await knownZero(f.org)).error_code).toBe(
+        'ASSISTANT_ROUTE_UNAVAILABLE',
+      );
+    });
+    it('ordinary workflow model steps keep the original estimator, even without assistant pricing configured', async () => {
+      const { f, job } = await fixture({
+        compatible: true,
+        enabled: false,
+        workflow: true,
+      });
+      vi.stubEnv(
+        'ALLRICE_MODEL_PRICING_JSON',
+        JSON.stringify({
+          [`openai-compatible:${state.provider!.model}`]: {
+            inputCentsPerMillion: 100000,
+            outputCentsPerMillion: 100000,
+          },
+        }),
+      );
+      execute.mockResolvedValueOnce({
+        answer: 'Synthetic workflow model result',
+        provider: 'openai-compatible',
+        model: state.provider!.model,
+        usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 },
+      });
+      try {
+        await expect(executeEmployeeRun(job)).resolves.toMatchObject({
+          answer: 'Synthetic workflow model result',
+        });
+        expect(state.workflow).toHaveBeenCalledTimes(1);
+        expect(execute.mock.calls[0]![0].assistants).toBeUndefined();
+        const { row, quota } = await accounting(f.org);
+        expect(Number(row.decision_cost)).toBe(1.5);
+        expect(Number(row.ledger_cost)).toBe(1.5);
+        expect(quota).toMatchObject({
+          unknownCostRuns: 0,
+          usageComplete: true,
+          usedCostCents: 1.5,
+        });
+        noNativeAccess();
+      } finally {
+        vi.stubEnv('ALLRICE_MODEL_PRICING_JSON', undefined);
+      }
+    });
   },
 );

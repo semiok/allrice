@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import {
   AssistantRunConfigurationSchema,
+  AssistantPriceSnapshotSchema,
+  DshExecutionSnapshotSchema,
   ModelRunLimitsSchema,
   allRiceToolManifest,
+  estimateAssistantUsageCost,
+  type AssistantPriceSnapshot,
+  type DshExecutionSnapshot,
   type ExecutionContext,
   type RuntimeTaskRef,
   type StoragePort,
@@ -10,6 +15,7 @@ import {
 import {
   assistantRuntimeEnabled,
   createAssistantRuntime,
+  createAssistantPricing,
   createRuntimeOperationLedger,
   createLocalCommandOperation,
   waitLocalCommandOperation,
@@ -24,6 +30,28 @@ import type { HarnessExecutionInput } from '../adapter.js';
 import { createAssistantWorkerBridge } from './assistant-bridge.js';
 import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 
+function assertPriceProvider(
+  price: AssistantPriceSnapshot,
+  provider: DshExecutionSnapshot,
+) {
+  const target = price.price.target;
+  const model =
+    provider.route === 'gemini' && provider.model === '3.8flash'
+      ? 'gemini-3.8-flash'
+      : provider.model;
+  const baseUrl =
+    provider.route === 'gemini'
+      ? 'https://generativelanguage.googleapis.com/v1beta'
+      : provider.baseUrl;
+  if (
+    provider.authMode !== 'allrice_credential' ||
+    target.provider !== provider.route ||
+    target.model !== model ||
+    target.baseUrl !== baseUrl
+  )
+    throw Error('assistant_price_provider_mismatch');
+}
+
 /** Server-owned admission and budget assembly. The browser's preference never
  * supplies authority, tool sets, native IDs, budget amounts or a worker lease. */
 export function productionAssistantController(input: {
@@ -36,6 +64,11 @@ export function productionAssistantController(input: {
   database?: ReturnType<typeof getDatabase>;
   storage?: StoragePort;
   signal?: AbortSignal;
+  /** Server-selected tariff only; no price or route selection by model/browser. */
+  priceSnapshot?: AssistantPriceSnapshot;
+  /** INTERNAL ONLY: Worker replay already matched to its persisted route
+   * decision, including any frozen fallback. Never a browser/model field. */
+  serverPricingProviderSnapshot?: DshExecutionSnapshot;
 }): HarnessExecutionInput['assistants'] {
   if (input.configuration === undefined) return undefined;
   const configuration = AssistantRunConfigurationSchema.parse(
@@ -44,10 +77,56 @@ export function productionAssistantController(input: {
   if (!configuration.allowAssistants) return undefined;
   if (!assistantRuntimeEnabled()) throw Error('assistant_runtime_disabled');
   const limits = ModelRunLimitsSchema.parse(input.runLimits ?? {});
-  // No guessed currency/pricing authority. A cost-limited route is unavailable
-  // until a frozen, authoritative price bound is supplied by that route.
-  if (limits.maxCostCents !== null)
-    throw Error('assistant_cost_bound_unavailable');
+  const priceSnapshot = input.priceSnapshot
+    ? AssistantPriceSnapshotSchema.parse(input.priceSnapshot)
+    : undefined;
+  // The existing RouteOutcome/monthly quota ledger has no currency column.
+  // It cannot safely aggregate arbitrary ISO currencies, even with valid tariffs.
+  if (priceSnapshot && priceSnapshot.price.currency !== 'USD')
+    throw Error('assistant_price_currency_unsupported');
+  const pricingProvider = input.serverPricingProviderSnapshot
+    ? DshExecutionSnapshotSchema.parse(input.serverPricingProviderSnapshot)
+    : undefined;
+  if (priceSnapshot && pricingProvider)
+    assertPriceProvider(priceSnapshot, pricingProvider);
+  const outputCapacity = Math.min(
+    limits.maxOutputTokens,
+    limits.maxTotalTokens - 1,
+  );
+  const inputCapacity = Math.min(
+    limits.maxInputTokens,
+    limits.maxTotalTokens - outputCapacity,
+  );
+  // Constrain every call to one verified tariff band BEFORE model preparation.
+  // Whole-root token capacities also provide the conservative monetary bound.
+  const priceBound = priceSnapshot
+    ? estimateAssistantUsageCost(priceSnapshot, {
+        inputTokens: inputCapacity,
+        outputTokens: outputCapacity,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        usageComplete: true,
+      })
+    : undefined;
+  // The downstream legacy ledger is numeric(14,6) cents. Refuse a tariff whose
+  // whole-root upper bound cannot be represented; never overflow or report zero.
+  if (
+    priceBound?.costPicounits !== undefined &&
+    (priceBound.costPicounits === null ||
+      BigInt(priceBound.costPicounits) > 999999999999990000n)
+  )
+    throw Error('assistant_cost_projection_out_of_range');
+  if (limits.maxCostCents !== null) {
+    if (!priceBound?.costPicounits)
+      throw Error('assistant_cost_bound_unavailable');
+    // Frozen token capacities are shared by the entire tree, never renewed per
+    // child. Their conservative price bound must fit the full monetary cap.
+    if (
+      BigInt(priceBound.costPicounits) >
+      BigInt(limits.maxCostCents) * 10000000000n
+    )
+      throw Error('assistant_cost_bound_exceeds_limit');
+  }
   const allowedTools = input.tools.map((tool) => tool.name);
   if (!allowedTools.includes('assistant.delegate'))
     throw Error('assistant_authority_missing');
@@ -125,9 +204,10 @@ export function productionAssistantController(input: {
           timeout_at: Date;
           configuration: unknown;
           project_id: string | null;
+          provider_snapshot: unknown;
         }[]
       >`
-        select r.execution_spec,r.project_id,e.employee_version_id,e.session_id,j.timeout_at,r.input->'assistantConfiguration' as configuration
+        select r.execution_spec,r.project_id,e.employee_version_id,e.session_id,e.provider_snapshot,j.timeout_at,r.input->'assistantConfiguration' as configuration
         from allrice_runs r join allrice_employee_runs e on e.run_id=r.id
         join allrice_jobs j on j.run_id=r.id and j.id=${input.worker.jobId}
         where r.id=${input.context.runId} and r.organization_id=${input.context.organizationId}
@@ -138,6 +218,19 @@ export function productionAssistantController(input: {
           runtimePolicyDigest(configuration)
       )
         throw Error('assistant_frozen_configuration_mismatch');
+      if (priceSnapshot) {
+        assertPriceProvider(
+          priceSnapshot,
+          pricingProvider ??
+            DshExecutionSnapshotSchema.parse(row.provider_snapshot),
+        );
+        // Never run across an unquoted tariff interval or silently replace the
+        // frozen price midway. The job's actual durable deadline is authoritative.
+        if (
+          Date.parse(priceSnapshot.price.expiresAt) < row.timeout_at.getTime()
+        )
+          throw Error('assistant_price_expires_before_deadline');
+      }
       const task: RuntimeTaskRef = {
         runId: input.context.runId,
         rootRunId: input.context.runId,
@@ -156,22 +249,15 @@ export function productionAssistantController(input: {
       const worker = { ...input.worker, generation };
       // Entire tree shares these immutable limits; no child receives a fresh cap.
       // Input+output capacities together never exceed the frozen total cap.
-      const output = Math.min(
-        limits.maxOutputTokens,
-        limits.maxTotalTokens - 1,
-      );
       const budgets: RuntimeBudgetLimit[] = [
         { metric: 'model_calls', unit: 'calls', capacity: 16 },
         { metric: 'tool_calls', unit: 'calls', capacity: 64 },
         {
           metric: 'input_tokens',
           unit: 'tokens',
-          capacity: Math.min(
-            limits.maxInputTokens,
-            limits.maxTotalTokens - output,
-          ),
+          capacity: inputCapacity,
         },
-        { metric: 'output_tokens', unit: 'tokens', capacity: output },
+        { metric: 'output_tokens', unit: 'tokens', capacity: outputCapacity },
       ].map((budget) => ({
         ...budget,
         currency: null,
@@ -195,6 +281,18 @@ export function productionAssistantController(input: {
         worker,
         allowedTools,
       });
+      const pricing = priceSnapshot
+        ? createAssistantPricing({ database: db })
+        : undefined;
+      const priceIdentity = {
+        scope: task.scope,
+        rootRunId: task.rootRunId,
+        worker,
+      };
+      const frozenPrice =
+        pricing && priceSnapshot
+          ? await pricing.freeze({ ...priceIdentity, snapshot: priceSnapshot })
+          : undefined;
       // Explicit finite queries only. A read_only label does not make a root-
       // owned Browser/Bridge operation cancelable as a child operation.
       const readOnlyTools = new Set([
@@ -226,6 +324,16 @@ export function productionAssistantController(input: {
         ]),
         proposalTools: new Set(['local.process.execute']),
         onRootTool: onToolCall,
+        onModelUsage:
+          pricing && frozenPrice
+            ? async (usage) => {
+                await pricing.recordUsage({
+                  ...priceIdentity,
+                  ...usage,
+                  snapshotDigest: frozenPrice.snapshotDigest,
+                });
+              }
+            : undefined,
         onReadTool: onToolCall ? (call) => onToolCall(call) : undefined,
         onProposal: async (call, childRunId) => {
           if (call.name !== 'local.process.execute')
@@ -264,12 +372,34 @@ export function productionAssistantController(input: {
       });
       return {
         ...bridge,
-        finish: () =>
-          runtime.finalizeRoot({
+        finish: async () => {
+          // The adapter joins/stops native loops first. Read receipts while the
+          // worker is still live, then let finalization verify the durable tree.
+          const costs = await pricing?.summarize(priceIdentity);
+          const outcome = await runtime.finalizeRoot({
             scope: task.scope,
             rootRunId: task.rootRunId,
             worker,
-          }),
+          });
+          if (!costs) return outcome;
+          const known =
+            outcome.usageComplete &&
+            costs.usageComplete &&
+            costs.costBasis === 'conservative_upper_bound' &&
+            costs.costCentsDecimal !== null;
+          return {
+            ...outcome,
+            costEstimateAvailable: known,
+            estimatedCostCents: known ? Number(costs.costCentsDecimal) : null,
+            costBasis: known
+              ? ('conservative_upper_bound' as const)
+              : ('unknown' as const),
+            priceSnapshotDigest: costs.snapshotDigest,
+            costCurrency: costs.currency,
+            actualCostKnown: false as const,
+            cacheUsageKnown: false,
+          };
+        },
         cancel: async () => {
           await runtime.cancelRoot(context, {
             runId: task.runId,

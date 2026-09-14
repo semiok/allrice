@@ -61,3 +61,4 @@ export * from './user-questions.ts';
 export * from './workspace.ts';
 export * from './workflows.ts';
 export * from './assistant.ts';
+export * from './assistant-pricing.ts';

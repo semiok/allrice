@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   EmployeeExecutionSnapshotSchema,
   type EmployeeExecutionSnapshot,
+  type EmployeeRuntimePolicy,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
 } from '@allrice/contracts';
@@ -34,9 +35,14 @@ export async function createAssistantAuthorityFixture(
     allowedTools?: string[];
     project?: boolean;
     nativeSessionId?: string;
-    snapshot?: (value: EmployeeExecutionSnapshot) => unknown;
+    snapshot?: (
+      value: EmployeeExecutionSnapshot,
+      context: { sessionId: string },
+    ) => unknown;
     deniedModel?: boolean;
     configure?: boolean;
+    /** Frozen at fixture creation; never rewrite an immutable published version. */
+    runtimePolicy?: EmployeeRuntimePolicy;
   } = {},
 ) {
   const selectedTools = options.allowedTools ?? [
@@ -65,7 +71,7 @@ export async function createAssistantAuthorityFixture(
     name: 'P25 authority',
     description: 'Synthetic authority fixture',
     toolNames: options.toolNames ?? selectedTools,
-    runtimePolicy: {
+    runtimePolicy: options.runtimePolicy ?? {
       harness: 'dsh',
       provider: 'openai-codex',
       model: 'synthetic-never-called',
@@ -187,7 +193,7 @@ export async function createAssistantAuthorityFixture(
     await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id)
     values(${org},${workspace},${session},${user},${base.worker.generation},${checksum},'running',${rootRunId},${base.worker.workerId})`;
     await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot)
-    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},'{}','[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot) : snapshot)))})`;
+    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},'{}','[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))})`;
     const controls =
       options.controls === undefined ? defaultControls() : options.controls;
     if (controls)

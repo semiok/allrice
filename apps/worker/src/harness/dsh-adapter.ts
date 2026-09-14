@@ -497,6 +497,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
             usageComplete: assistantOutcome.usageComplete,
             cacheUsageKnown: assistantOutcome.cacheUsageKnown,
             costEstimateAvailable: assistantOutcome.costEstimateAvailable,
+            ...(assistantOutcome.priceSnapshotDigest
+              ? {
+                  estimatedCostCents: assistantOutcome.estimatedCostCents,
+                  costBasis: assistantOutcome.costBasis,
+                  priceSnapshotDigest: assistantOutcome.priceSnapshotDigest,
+                  costCurrency: assistantOutcome.costCurrency,
+                  actualCostKnown: assistantOutcome.actualCostKnown,
+                }
+              : {}),
           }
         : {}),
       provider: snapshot.route,

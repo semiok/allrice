@@ -52,6 +52,10 @@ import {
 } from '../harness/router.js';
 import { buildAuthorizedKnowledgeContext } from '../knowledge.js';
 import { estimateModelCostCents } from '../model-cost.js';
+import {
+  preflightAssistantPricing,
+  assistantResultCostCents,
+} from '../assistant-pricing-preflight.js';
 import { decideCapabilityRoute } from '../routing/capability-router.js';
 import { nativeGovernedToolNames } from '../tool-broker/definitions.js';
 import {
@@ -593,6 +597,17 @@ export async function executeEmployeeRun({
       providerSnapshot,
       objectInput(input.assistantConfiguration).allowAssistants === true,
     );
+    const assistantPriceSnapshot = preflightAssistantPricing({
+      enabled:
+        objectInput(input.assistantConfiguration).allowAssistants === true,
+      sessionId: input.sessionId,
+      deadlineAt: execution.job.timeoutAt,
+      modelSnapshot: frozenModelSnapshot,
+      decision: routeDecision,
+      providerSnapshot,
+      hasNonTextInput:
+        kernel.imageAttachments.length > 0 || harnessImages.length > 0,
+    });
     const adapter = getHarnessRouter().resolve(routeDecision.harness);
     if (adapter.isConfigured && !adapter.isConfigured(providerSnapshot)) {
       throw new HandlerError(
@@ -690,6 +705,11 @@ export async function executeEmployeeRun({
       context: execution.context,
       worker: workflowLease,
       runLimits,
+      priceSnapshot: assistantPriceSnapshot,
+      serverPricingProviderSnapshot:
+        assistantPriceSnapshot && providerSnapshot.provider === 'dsh'
+          ? providerSnapshot
+          : undefined,
       tools,
       authorize: assertAssistantAuthority,
       storage: new LocalStorageAdapter(
@@ -1111,13 +1131,15 @@ export async function executeEmployeeRun({
     routeUsageComplete = result.usageComplete ?? true;
     routeCacheUsageKnown = result.cacheUsageKnown ?? true;
     routeCostCents =
-      result.costEstimateAvailable === false
-        ? null
-        : estimateModelCostCents({
-            provider: result.provider,
-            model: result.model,
-            ...result.usage,
-          });
+      assistants && assistantPriceSnapshot
+        ? assistantResultCostCents(assistantPriceSnapshot, result)
+        : result.costEstimateAvailable === false
+          ? null
+          : estimateModelCostCents({
+              provider: result.provider,
+              model: result.model,
+              ...result.usage,
+            });
     if (
       runLimits &&
       (result.usage.outputTokens > runLimits.maxOutputTokens ||

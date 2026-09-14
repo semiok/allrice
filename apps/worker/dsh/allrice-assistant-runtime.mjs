@@ -244,6 +244,20 @@ export function createGovernedAssistantNativeRuntime(
     const outputTokens = options.maxTokens;
     if (!Number.isSafeInteger(outputTokens) || outputTokens <= 0)
       throw Error('assistant_model_output_bound_required');
+    const requestDigest = `sha256:${createHash('sha256')
+      .update(
+        JSON.stringify({
+          provider: options.provider,
+          model: options.model,
+          reasoningEffort: options.reasoningEffort,
+          temperature: options.temperature,
+          maxTokens: outputTokens,
+          messages: options.messages,
+          system: options.system,
+          tools: options.tools,
+        }),
+      )
+      .digest('hex')}`;
     const reservation = await bridge(
       'model-dispatch',
       {
@@ -251,20 +265,7 @@ export function createGovernedAssistantNativeRuntime(
         callId,
         inputTokens,
         outputTokens,
-        requestDigest: `sha256:${createHash('sha256')
-          .update(
-            JSON.stringify({
-              provider: options.provider,
-              model: options.model,
-              reasoningEffort: options.reasoningEffort,
-              temperature: options.temperature,
-              maxTokens: outputTokens,
-              messages: options.messages,
-              system: options.system,
-              tools: options.tools,
-            }),
-          )
-          .digest('hex')}`,
+        requestDigest,
       },
       options.signal,
     );
@@ -287,20 +288,29 @@ export function createGovernedAssistantNativeRuntime(
         yield chunk;
       }
     } finally {
-      await bridge(
+      const settled = usage ? settledTokenUsage(usage, observedOutput) : {};
+      const acknowledgement = await bridge(
         'model-settle',
         {
           nativeSessionId: id,
           callId,
-          ...(usage
-            ? {
-                ...settledTokenUsage(usage, observedOutput),
-              }
-            : {}),
+          requestDigest,
+          ...settled,
         },
         signal(),
       );
-      modelAdmissions.delete(id);
+      // Native provider recovery may request another model call after a 5xx or
+      // interrupted stream. A settlement ACK only confirms that UNKNOWN was
+      // durably recorded; it does not prove the first request did not execute.
+      // Keep the admission as a no-replay tombstone until BOTH token dimensions
+      // are known. The existing agent/request guard then rejects recovery before
+      // another prepare/dispatch. Unbound ordinary chat keeps its retry policy.
+      if (
+        acknowledgement?.settled === true &&
+        settled.inputTokens !== undefined &&
+        settled.outputTokens !== undefined
+      )
+        modelAdmissions.delete(id);
     }
   });
   async function start(p) {

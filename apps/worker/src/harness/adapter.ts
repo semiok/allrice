@@ -63,6 +63,11 @@ export interface HarnessExecutionInput {
         usageComplete: boolean;
         cacheUsageKnown: boolean;
         costEstimateAvailable: boolean;
+        estimatedCostCents?: number | null;
+        costBasis?: 'conservative_upper_bound' | 'unknown';
+        priceSnapshotDigest?: string;
+        costCurrency?: string;
+        actualCostKnown?: false;
       }>;
     }>;
   };
@@ -105,6 +110,12 @@ export interface HarnessExecutionResult {
   usageComplete?: boolean;
   cacheUsageKnown?: boolean;
   costEstimateAvailable?: boolean;
+  /** Frozen-tariff upper bound, never a provider invoice or proven cash charge. */
+  estimatedCostCents?: number | null;
+  costBasis?: 'conservative_upper_bound' | 'unknown';
+  priceSnapshotDigest?: string;
+  costCurrency?: string;
+  actualCostKnown?: false;
   answer: string;
   usage: {
     inputTokens: number;
