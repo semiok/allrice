@@ -265,7 +265,7 @@ export function createAssistantRuntime(
       select r.task from allrice_runtime_roots r join allrice_runs u on u.id=r.root_run_id
       where r.root_run_id=${runId} and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId}
       and u.owner_id=${context.actor.id} and exists(select 1 from allrice_memberships m
-        where m.organization_id=r.organization_id and m.workspace_id=r.workspace_id and m.user_id=${context.actor.id} and m.active=true)`;
+        where m.organization_id=r.organization_id and (m.workspace_id is null or m.workspace_id=r.workspace_id) and m.user_id=${context.actor.id} and m.active=true)`;
     if (!row) fail('not_found');
     return lock(tx, row.task.scope, runId);
   }
@@ -309,7 +309,7 @@ export function createAssistantRuntime(
       uuid.parse(input.sessionId);
       if (context.actor.type !== 'user') fail('forbidden');
       const [session] =
-        await db`select 1 from allrice_chat_sessions s where s.id=${input.sessionId} and s.organization_id=${context.organizationId} and s.workspace_id=${context.workspaceId} and s.owner_id=${context.actor.id} and exists(select 1 from allrice_memberships m where m.organization_id=s.organization_id and m.workspace_id=s.workspace_id and m.user_id=${context.actor.id} and m.active=true)`;
+        await db`select 1 from allrice_chat_sessions s where s.id=${input.sessionId} and s.organization_id=${context.organizationId} and s.workspace_id=${context.workspaceId} and s.owner_id=${context.actor.id} and exists(select 1 from allrice_memberships m where m.organization_id=s.organization_id and (m.workspace_id is null or m.workspace_id=s.workspace_id) and m.user_id=${context.actor.id} and m.active=true)`;
       if (!session) fail('not_found');
       if (input.beforeRootRunId) uuid.parse(input.beforeRootRunId);
       const roots = await db<
