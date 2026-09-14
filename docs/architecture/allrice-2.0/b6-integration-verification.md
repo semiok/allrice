@@ -23,6 +23,18 @@ P14 独立提交 `7e8a0dfcf20d3e7d2623bb190e717f6923e50de3` 的 ARM 开发包，
 
 Intel 与 M5 当前可用 Developer ID Application 身份数量均为 0；只检查身份数量，没有读取/导出私钥。可信更新源码 trust 保持 `null`，不会访问更新服务器或安装包。正式签名、公证、可信 bootstrap、真实更新/中断恢复/回滚、最终双平台包与联合发布验收仍未完成。P14 首轮并行 journal 锁测试异常仍按其文档保留；本轮未复现不等于已确定根因。
 
+同一 ARM 包另完成 saved-opt-in 路径：不用环境变量替代既有设置，独立配置重开后实际宿主/Core 启动、视图、排他 owner 和退出均通过。报告 `/tmp/allrice-b6-m5-tUxgwI/saved-opt-in-result.json`，SHA-256 `906bf1f52c267ad252b82ac4c3e85d8150311ed52cd9e7da333e52c09c997be7`。它不证明正式签名、Keychain 迁移或可信更新。用户明确回复没有 Apple Developer 账号/Developer ID 证书；不代为注册付费账号，不拿 ad-hoc 开发包替代该门禁。
+
+## 第二轮修复与分项复验（尚非最终候选）
+
+组合源码 `0cddf61b0734a2a5d7db9bf6530a777457f0eefa` 已集成原生助手产物发布、父级采纳、缓存 Token、撤权停止和保守冷恢复接线。该轮全仓类型检查、ESLint、Prettier 均通过。完整普通测试为 **1907 passed / 7 failed / 689 skipped**；第一轮两项旧基线断言已修正并通过，7 项失败涉及 Bridge desktop ready-condition 与 update monitor health deadline。报告 `.local/b6-full-tests-0cddf61.json`，SHA-256 `3507d318e0cc3c98917fbddd9cc0328d8e20c4dbe60b164565529584ec6a6b44`。
+
+降低并发后，在组合 `3dae9f3` 对原失败的 `desktop-controller.test.ts`、`update-installer.test.ts` 完整文件复测，**47 passed / 0 failed / 1 skipped**。报告 `.local/b6-p14-timing-recheck-3dae9f3.json`，SHA-256 `7f7a64e52b21fb7dd7e8875975e0a81785c00f0c1365b59f0fa0fbfb7c5bf1c9`。机器当时同时运行其他测试和类型检查；这一复测不能单独证明负载是全部失败的根因，更不能替代最终完整回归。没有因此放宽产品超时。
+
+P14 Draft #62 的首轮 CI 在无构建产物的 checkout 上发现独立子进程缺少源码 TSX 映射；提交 `4eb2a6e66ce866aa986227e28114749bd12e178d` 为测试设置显式源码映射和有界子进程等待。独立工作树确认 `packages/contracts/dist/index.js` 不存在时，quiescence + journal **17/17** 通过，已推送 CI。P28 Draft #63 首轮 CI 通过。P25 #64 和 P26 #65 均为 Draft；P26 以 P25 分支为 base 保持独立差异，不能绕过本批门禁单独合入 main。
+
+后续读审仍在修复主任务最终状态与全树用量传播、纯查询 child 来源审计、实际 native → P04 approve/reject → receipt 证据。真实 provider smoke 仅准备脚本及预检，尚未实际调用。上述分项测试不构成它们的通过证明。
+
 ## 必须保持的解释边界
 
 助手输出文件的 hash、归属和存储完整性可以验证，但不代表模型内容或外部动作已经独立核实。UI 使用“关联工件”，输出标注 `model_proposal` / `independentlyVerified: false`。
