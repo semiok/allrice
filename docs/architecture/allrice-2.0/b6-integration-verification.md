@@ -84,6 +84,16 @@ P14 Draft #62 的首轮 CI 在无构建产物的 checkout 上发现独立子进�
 
 P25 的 CI 新增显式真实 PostgreSQL / native 合成模型步骤，避免只跑常规条件跳过。P28 增加 0095 清单/摘要、prepared 非派发证明、未知 hold 与 NULL 费用的恢复保存要求；检查器不执行迁移或恢复。main 远端与 Dev active-release 已再次核对仍为 B5 `57f3b5fd2acba034e9011231075c3e29b4503733` / `YmBpsav9R6_mfJmIob03N`，没有本批部署或启用。
 
+## 第六轮：工作台协议提示与会话串流反证
+
+组合 `cf6b7e92bd550885ed0b373943cd198e939b9c25` 新增冻结协议可用性提示，27 项定向测试通过，Web 及依赖生产构建通过，BUILD_ID `I1lGoWoMKvy0B3AEvFCIQ`。页面增加真实普通 Codex 消息入队（无 Worker），确认请求和冻结偏好均禁止助手，模型绑定不变。它仍使用隔离 schema 与合成身份，不是新真实模型调用。
+
+两次页面复验分别保存 `/tmp/allrice-p26-ui-ldKKur/evidence/checks.json`、`/tmp/allrice-p26-ui-0Dfldj/evidence/checks.json`。它们在测试主动重启私有 Web 时报告连接错误，未记为通过。追加请求阶段诊断进一步确认旧 Codex SSE 在切回 Gemini 后仍存在。
+
+新的回归断言在同一构建明确复现真实生命周期缺陷：`/tmp/allrice-p26-ui-sggygq/evidence/checks.json` 中，切回已完成 Gemini 会话后 20 秒仍显示“停止本轮”，且记录了 `return-gemini` 阶段重新请求上一会话 Run 的 SSE。本次 Page/Console 错误均为 0，失败是明确的状态串会话，不能解释成服务重启噪声。源为 `cf6b7e9` 加已记录摘要的验收脚本改动，后续脚本提交 `71e976e`；并未把它写成干净源码验收通过。
+
+修复目标是按会话与切换代次隔离历史、SSE/trace 以及迟到异步结果；离开页面不能被等同于取消服务端任务。最终修复、新构建与真实 UI 复验尚未完成，本节不预先宣称成功。五个 PR 继续保持 Draft，未改变 main/Dev/Prod 或真实租户开关。
+
 ## 结果、权限与发布边界
 
 助手输出文件的 hash、归属和存储完整性可以验证，但不代表模型内容或外部动作已经独立核实。UI 使用“关联工件”，输出标注 `model_proposal` / `independentlyVerified: false`。
