@@ -21,9 +21,11 @@ export function useSession({ setError }: UseSessionOptions) {
   const historyRequestGeneration = useRef(0);
   const historyRequest = useRef<AbortController | null>(null);
   const setActiveId = useCallback(
-    (sessionId: string | null) => {
+    (sessionId: string | null, fresh = false) => {
       // Invalidate synchronously when selected, before the next render/effect.
-      if (selection.select(sessionId)) {
+      const changed = selection.select(sessionId);
+      if (fresh && !changed) selection.invalidate();
+      if (changed || fresh) {
         historyRequestGeneration.current += 1;
         historyRequest.current?.abort();
       }
@@ -186,6 +188,7 @@ export function useSession({ setError }: UseSessionOptions) {
 
   return {
     activeId,
+    captureSelection: selection.capture,
     createSession,
     history,
     loadHistory,

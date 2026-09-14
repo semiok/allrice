@@ -14,7 +14,11 @@ export function createSessionSelection() {
     },
     capture() {
       const capturedGeneration = generation;
-      return { sessionId, current: () => generation === capturedGeneration };
+      return {
+        sessionId,
+        generation: capturedGeneration,
+        current: () => generation === capturedGeneration,
+      };
     },
   };
 }

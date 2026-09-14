@@ -20,10 +20,14 @@ import type {
   WorkspaceFile,
 } from './chatflow-types';
 import { fileToBase64, readJson } from './chatflow-utils';
+import type { createSessionActions } from './session-actions';
+import type { createSessionSelection } from './session-selection';
 
 interface UseAttachmentsOptions {
   activeId: string | null;
   busy: boolean;
+  captureSelection: ReturnType<typeof createSessionSelection>['capture'];
+  sessionActions: ReturnType<typeof createSessionActions>;
   createSession: () => Promise<string | null>;
   setBusy: Dispatch<SetStateAction<boolean>>;
   setError: Dispatch<SetStateAction<string>>;
@@ -65,6 +69,8 @@ interface UseAttachmentsResult {
 export function useAttachments({
   activeId,
   busy,
+  captureSelection,
+  sessionActions,
   createSession,
   setBusy,
   setError,
@@ -284,6 +290,7 @@ export function useAttachments({
 
   const openWorkspaceFiles = useCallback(async () => {
     if (!workspace) return;
+    const scope = captureSelection();
     try {
       const result = await readJson<{ files: WorkspaceFile[] }>(
         await fetch(`/api/v1/files?workspaceId=${workspace.workspaceId}`, {
@@ -291,12 +298,14 @@ export function useAttachments({
           headers: tenantHeaders,
         }),
       );
+      if (!scope.current()) return;
       setWorkspaceFiles(result.files);
       setFilePickerOpen(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '工作区文件加载失败');
+      if (scope.current())
+        setError(cause instanceof Error ? cause.message : '工作区文件加载失败');
     }
-  }, [setError, tenantHeaders, workspace]);
+  }, [captureSelection, setError, tenantHeaders, workspace]);
 
   const openVersionHistory = useCallback(
     async (file: WorkspaceFile) => {
@@ -307,6 +316,7 @@ export function useAttachments({
       ) {
         return;
       }
+      const scope = captureSelection();
       setFilePickerOpen(false);
       setVersionHistoryFile(file);
       setDeliverableVersions([]);
@@ -318,24 +328,30 @@ export function useAttachments({
             { cache: 'no-store', headers: tenantHeaders },
           ),
         );
+        if (!scope.current()) return;
         setDeliverableVersions(result.versions);
       } catch (cause) {
+        if (!scope.current()) return;
         setVersionHistoryFile(null);
         setError(cause instanceof Error ? cause.message : '版本历史加载失败');
       } finally {
-        setVersionHistoryLoading(false);
+        if (scope.current()) setVersionHistoryLoading(false);
       }
     },
-    [setError, tenantHeaders, workspace],
+    [captureSelection, setError, tenantHeaders, workspace],
   );
 
   const addWorkspaceFile = useCallback(
     async (file: WorkspaceFile) => {
       if (!workspace) return;
+      const action = sessionActions.begin('composer');
+      if (!action) return;
       setBusy(true);
       try {
         const sessionId = activeId ?? (await createSession());
         if (!sessionId) return;
+        if (!activeId && !action.adoptCreatedSession(sessionId)) return;
+        if (!action.current()) return;
         await readJson(
           await fetch(
             `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
@@ -346,6 +362,7 @@ export function useAttachments({
             },
           ),
         );
+        if (!action.current()) return;
         setPendingAttachments((current) => [
           ...current.filter((item) => item.id !== file.id),
           {
@@ -357,12 +374,21 @@ export function useAttachments({
         ]);
         setFilePickerOpen(false);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : '文件添加失败');
+        if (action.current())
+          setError(cause instanceof Error ? cause.message : '文件添加失败');
       } finally {
-        setBusy(false);
+        if (action.finish()) setBusy(false);
       }
     },
-    [activeId, createSession, setBusy, setError, tenantHeaders, workspace],
+    [
+      activeId,
+      createSession,
+      sessionActions,
+      setBusy,
+      setError,
+      tenantHeaders,
+      workspace,
+    ],
   );
 
   return {

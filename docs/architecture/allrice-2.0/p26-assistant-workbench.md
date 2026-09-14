@@ -48,3 +48,11 @@
 干净组合 `ef9b2550f54aa531f5ebe0a700cb1ac4bd0b1932` / BUILD_ID `Heb9HDaXDT-jlqs0VtWrD` 完成真正 Chrome + built Next + PostgreSQL 复验：旧 SSE 已取消且不重建、完成会话无停止按钮、回到 Codex 才恢复同一 pending Run；桌面/390px、历史刷新、偏好不改冻结模型与当前任务、取消真实性和 flag-OFF 历史/取消路径均通过。Page/Console/HTTP 错误为 0。收据 `/tmp/allrice-p26-ui-XR3Whe/evidence/checks.json`，SHA-256 `ee41007cf4a832bc9e1c66c715c52e897354f2cd0ff71329af8f6db84f982f49`。独立测试进程/schema/storage 已清理，原失败收据保留。
 
 本轮不是模型、Worker 配额或完整断网恢复验收，也未覆盖 composer 迟到请求修改新草稿/附件/busy 的所有副作用；不将本次修复称为全部交互均已验收。B6/P27/正式分发与真实租户启用门禁仍未完成。
+
+### 2026-09-14 本批收尾补测
+
+此前未覆盖的 composer、附件、Ask User、取消与长期断网路径已补真实 Chrome/React StrictMode 回归。Session 选择代次和请求 owner 共同阻止 A→B→A 的旧结果复活；新会话首次创建、附件成功上传等正向路径也有覆盖。离开页面不撤销已提交的后台任务。助手详情耗尽三次网络重试后，online 事件只重新读权威记录，不重放停止请求。
+
+新浏览器测试 `composer-isolation.browser.test.ts` 14/14 通过；同一夹具加载 main 原始文件的四个反例全部失败。定向单元/API 153/153，Web typecheck、lint、format 与生产 build 通过。主开发另以 built Next + 独立 PostgreSQL 运行既有页面验收，通过，收据及源码范围见 [本批收尾记录](./b6-closeout-20260914.md)。
+
+两层 UI 测试分别使用合成 loopback HTTP、合成持久历史；不读取个人 Chrome、不改服务中 Dev/Prod、不调用模型。它们补齐前端缺陷，但不单独关闭依赖 MET-139 的真实助手联验，也不启动新的三栏工作台范围。

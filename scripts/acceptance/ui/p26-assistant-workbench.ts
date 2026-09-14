@@ -215,6 +215,8 @@ try {
     'apps/web/app/chatflow/session-run-stream.ts',
     'apps/web/app/chatflow/use-session.ts',
     'apps/web/app/chatflow/session-selection.ts',
+    'apps/web/app/chatflow/session-actions.ts',
+    'apps/web/app/chatflow/use-attachments.ts',
     'apps/web/app/api/v1/runtime/assistants/route.ts',
     'packages/database/src/assistant-runtime.ts',
     'scripts/acceptance/ui/p26-assistant-workbench.ts',
