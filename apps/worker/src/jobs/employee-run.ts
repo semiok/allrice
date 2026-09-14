@@ -65,6 +65,7 @@ import {
 import { executeDurableWorkflow, WorkflowPaused } from '../workflow-engine.js';
 import { loadHarnessImages } from '../harness/prompt-images.js';
 import { productionAssistantController } from '../harness/dsh/assistant-controller.js';
+import { getAssistantFailureDiagnostics } from '../harness/dsh/assistant-diagnostics.js';
 import {
   AssistantExecutionUnresolvedError,
   assertAssistantTaskComplete,
@@ -1213,6 +1214,7 @@ export async function executeEmployeeRun({
     }
     outcome = signal.aborted ? 'interrupted' : 'error';
     if (runtime.activeTurnId) {
+      const assistantDiagnostics = getAssistantFailureDiagnostics(error);
       await appendChatFlowEvent(
         signal.aborted ? 'turn.canceled' : 'turn.failed',
         {
@@ -1220,6 +1222,9 @@ export async function executeEmployeeRun({
           threadId: runtime.threadId,
           turnId: runtime.activeTurnId,
           generation: runtime.generation,
+          ...(assistantDiagnostics?.failures.length
+            ? { assistantDiagnostics }
+            : {}),
         },
       ).catch(() => undefined);
     }

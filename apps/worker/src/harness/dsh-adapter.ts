@@ -8,6 +8,11 @@ import {
 
 import { HandlerError } from '../errors.js';
 import { AssistantExecutionUnresolvedError } from './dsh/assistant-outcome.js';
+import {
+  attachAssistantFailureDiagnostics,
+  parseAssistantFailureDiagnostics,
+  type AssistantFailureDiagnostics,
+} from './dsh/assistant-diagnostics.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import type {
   HarnessAdapter,
@@ -287,6 +292,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let prompt = initialPrompt;
     let answer = '';
     let assistantFinished = false;
+    let assistantDiagnostics: AssistantFailureDiagnostics | undefined;
+    const captureAssistantDiagnostics = async () => {
+      if (!assistant || assistantFinished || assistantDiagnostics) return;
+      try {
+        // The protocol request has its own 2s timeout and removes its pending
+        // entry. A missing/old/broken diagnostic endpoint never changes outcome.
+        assistantDiagnostics = parseAssistantFailureDiagnostics(
+          await runtime.client.assistant('diagnostics', {
+            nativeSessionId: threadId,
+          }),
+        );
+      } catch {
+        // Keep the original execution error and fail-closed accounting.
+      }
+    };
     let assistantOutcome:
       | Awaited<
           ReturnType<NonNullable<NonNullable<typeof assistant>['finish']>>
@@ -328,6 +348,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
             if (cancellationTimer) clearInterval(cancellationTimer);
             await cancellationTask;
             executionSignal.throwIfAborted();
+            // finish deliberately clears the native Run-bound maps.
+            await captureAssistantDiagnostics();
             await runtime.client.assistant('finish', {
               nativeSessionId: threadId,
             });
@@ -343,6 +365,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               throw new AssistantExecutionUnresolvedError(
                 usage,
                 assistantOutcome.usageComplete,
+                assistantDiagnostics,
               );
           }
           answer = normalizeAllRiceManagedFileLinks(
@@ -458,6 +481,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
       }
     } catch (error) {
+      // Capture before cancel/drop destroys the host, without widening root
+      // authority or reading another native session's transcript.
+      await captureAssistantDiagnostics();
+      attachAssistantFailureDiagnostics(error, assistantDiagnostics);
       try {
         if (assistant && !assistantFinished) {
           await assistant.cancel().catch(() => {});
@@ -472,11 +499,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
         await this.runtimePool.drop(threadId);
       }
       if (input.signal.aborted) {
-        throw new HandlerError(
+        const aborted = new HandlerError(
           'EXECUTION_ABORTED',
           'DSH execution was interrupted',
           false,
         );
+        attachAssistantFailureDiagnostics(aborted, assistantDiagnostics);
+        throw aborted;
       }
       throw error;
     } finally {
@@ -488,7 +517,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       this.runtimePool.touch(runtime);
       runtime.client.setRequestHandler(null);
     }
-    return {
+    const result: HarnessExecutionResult = {
       answer,
       usage,
       ...(assistantOutcome
@@ -526,6 +555,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         )
         .catch(() => null),
     };
+    // Partial outcomes return to the Worker before its completion gate throws.
+    // Preserve the same closed sidecar without adding a serializable result field.
+    attachAssistantFailureDiagnostics(result, assistantDiagnostics);
+    return result;
   }
 
   async interrupt(input: { threadId: string }) {

@@ -43,6 +43,7 @@ import { HandlerError } from '../../src/errors.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
 import { assistantPriceSnapshotDigest } from '../../src/assistant-pricing-preflight.js';
+import { AssistantExecutionUnresolvedError } from '../../src/harness/dsh/assistant-outcome.js';
 
 const state = vi.hoisted(() => ({
   database: undefined as
@@ -53,6 +54,7 @@ const state = vi.hoisted(() => ({
   runtime: vi.fn(),
   record: vi.fn(),
   complete: vi.fn(),
+  append: vi.fn(),
   controller: vi.fn(),
   bind: vi.fn(),
   spawn: vi.fn(),
@@ -88,7 +90,8 @@ vi.mock('@allrice/database', async (original) => ({
   getChangesetRun: vi.fn(async () => null),
   getCodexProviderStatus: vi.fn(async () => ({ status: 'connected' })),
   listFailedRouteDecisions: vi.fn(async () => []),
-  appendJobEvent: vi.fn(async () => {}),
+  appendJobEvent: state.append,
+  claimConversationSteer: vi.fn(async () => null),
   releaseConversationRuntime: vi.fn(async () => {}),
   ensureWorkflowRunForExecution: vi.fn(async () => {}),
 }));
@@ -207,6 +210,7 @@ integration(
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', undefined);
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', undefined);
       state.workflowId = null;
+      state.append.mockResolvedValue(undefined);
       acquire.mockRejectedValue(lateError);
       state.credentials.mockRejectedValue(Error('test_forbids_credentials'));
       state.record.mockImplementation((decision: RouteDecision) =>
@@ -639,6 +643,175 @@ integration(
           unknownCostRuns: 1,
           usageComplete: false,
         });
+      },
+    );
+    it.each([
+      { canceled: false, appendFailure: false },
+      { canceled: true, appendFailure: false },
+      { canceled: false, appendFailure: true },
+      { canceled: true, appendFailure: true },
+    ])(
+      'retains safe assistant first cause and unknown accounting (canceled $canceled, event append fails $appendFailure)',
+      async ({ canceled, appendFailure }) => {
+        const { f, job } = await fixture({ compatible: true, price: true });
+        const turnId = randomUUID();
+        const threadId = `dsh-${f.session}`;
+        state.runtime.mockResolvedValue({
+          generation: 1,
+          threadId,
+          activeTurnId: turnId,
+        });
+        const assistantDiagnostics = {
+          version: 1,
+          failures: [
+            {
+              nativeSessionId: threadId,
+              callId: randomUUID(),
+              phase: 'stream',
+              code: 'QUOTA_EXCEEDED',
+              stopKind: 'error',
+              inputUsageKnown: true,
+              outputUsageKnown: false,
+              settlementConfirmed: false,
+              settlementFailureCode: 'SETTLEMENT_FAILED',
+            },
+          ],
+          truncated: false,
+        };
+        const usage = {
+          inputTokens: 137,
+          cachedInputTokens: 11,
+          outputTokens: 23,
+        };
+        const original = new AssistantExecutionUnresolvedError(
+          usage,
+          false,
+          assistantDiagnostics,
+        );
+        const rawGetter = vi.fn(() => {
+          throw Error('synthetic_provider_error_body_must_not_be_read');
+        });
+        Object.defineProperties(original, {
+          cause: { get: rawGetter },
+          providerResponse: { get: rawGetter },
+          rawBody: { value: 'synthetic-private-provider-body' },
+        });
+        const controller = new AbortController();
+        acquire.mockImplementationOnce(async () => {
+          if (canceled) controller.abort();
+          throw original;
+        });
+        const type = canceled ? 'turn.canceled' : 'turn.failed';
+        if (appendFailure)
+          state.append.mockImplementation(
+            async (input: Parameters<typeof Database.appendJobEvent>[0]) => {
+              if (input.type === type)
+                throw Error('synthetic_terminal_event_persistence_failure');
+            },
+          );
+        await expect(
+          executeEmployeeRun({ ...job, signal: controller.signal }),
+        ).rejects.toBe(original);
+        const terminalEvents = state.append.mock.calls
+          .map(
+            ([input]) => input as Parameters<typeof Database.appendJobEvent>[0],
+          )
+          .filter((input) => input.type === type);
+        expect(terminalEvents).toEqual([
+          {
+            ...job.workflowLease,
+            type,
+            payload: {
+              source: 'dsh',
+              threadId,
+              turnId,
+              generation: 1,
+              assistantDiagnostics,
+            },
+          },
+        ]);
+        expect(rawGetter).not.toHaveBeenCalled();
+        expect(JSON.stringify(terminalEvents)).not.toContain(
+          'synthetic-private-provider-body',
+        );
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        noNativeAccess();
+        const { row, quota } = await accounting(f.org);
+        expect(row).toMatchObject({
+          decision_cost: null,
+          ledger_cost: null,
+          decision_complete: false,
+          ledger_complete: false,
+          decision_cache: false,
+          ledger_cache: false,
+          input_tokens: usage.inputTokens,
+          cached_input_tokens: usage.cachedInputTokens,
+          output_tokens: usage.outputTokens,
+          error_code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+        });
+        expect(quota).toMatchObject({
+          usedRuns: 1,
+          usedCostCents: null,
+          unknownCostRuns: 1,
+          usageComplete: false,
+          cacheUsageKnown: false,
+        });
+        expect(() => assertQuotaAvailable(quota)).toThrow(
+          'MODEL_TOKEN_USAGE_UNKNOWN',
+        );
+        expect(state.complete.mock.calls[0]![0].outcome).toMatchObject({
+          status: canceled ? 'canceled' : 'failed',
+          failureCategory: null,
+        });
+      },
+    );
+    it.each([
+      { name: 'absent', diagnostics: undefined },
+      {
+        name: 'empty',
+        diagnostics: { version: 1, failures: [], truncated: false },
+      },
+      {
+        name: 'invalid with raw body',
+        diagnostics: {
+          version: 1,
+          failures: [],
+          truncated: false,
+          rawBody: 'synthetic-private-provider-body',
+        },
+      },
+    ])(
+      'omits $name assistant diagnostics from the failure event',
+      async ({ diagnostics }) => {
+        const { f, job } = await fixture({ compatible: true, price: true });
+        const turnId = randomUUID();
+        const threadId = `dsh-${f.session}`;
+        state.runtime.mockResolvedValue({
+          generation: 1,
+          threadId,
+          activeTurnId: turnId,
+        });
+        const original = new AssistantExecutionUnresolvedError(
+          { inputTokens: 3, cachedInputTokens: 0, outputTokens: 1 },
+          false,
+          diagnostics,
+        );
+        acquire.mockRejectedValueOnce(original);
+        await expect(executeEmployeeRun(job)).rejects.toBe(original);
+        const terminalEvents = state.append.mock.calls
+          .map(
+            ([input]) => input as Parameters<typeof Database.appendJobEvent>[0],
+          )
+          .filter((input) => input.type === 'turn.failed');
+        expect(terminalEvents).toEqual([
+          {
+            ...job.workflowLease,
+            type: 'turn.failed',
+            payload: { source: 'dsh', threadId, turnId, generation: 1 },
+          },
+        ]);
+        noNativeAccess();
       },
     );
     it.each([undefined, '{invalid-secret-payload'])(
