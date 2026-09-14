@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LocalStorageAdapter } from '@allrice/storage';
+import { LocalStorageAdapter } from '../../storage/src/index.ts';
 import postgres from 'postgres';
 import {
   type RequestContext,
