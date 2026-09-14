@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  fixtureCleanupFlags,
   assertCandidate,
   assertExecutionAuthorization,
   isolatedEnvironment,
@@ -10,6 +11,32 @@ import {
 } from './p27-assistant-preflight.ts';
 const sha = 'a'.repeat(40);
 describe('P27 provider-free preflight safety', () => {
+  it('does not treat an undefined fixture after attempted initialization as successful cleanup', () => {
+    expect(fixtureCleanupFlags(false)).toEqual({
+      schemaRemoved: true,
+      fixtureStorageRemoved: true,
+      fixtureConnectionsClosed: true,
+    });
+    expect(fixtureCleanupFlags(true)).toEqual({
+      schemaRemoved: false,
+      fixtureStorageRemoved: false,
+      fixtureConnectionsClosed: false,
+    });
+    expect(
+      fixtureCleanupFlags(true, {
+        schema: `p25_${'a'.repeat(32)}`,
+        schemaRemoved: true,
+        storageRoot: null,
+        storageRemoved: false,
+        databaseClosed: true,
+        adminClosed: true,
+      }),
+    ).toEqual({
+      schemaRemoved: true,
+      fixtureStorageRemoved: false,
+      fixtureConnectionsClosed: true,
+    });
+  });
   it('requires explicit mode and a full candidate SHA', () => {
     expect(parseArguments(['--preflight', `--candidate-sha=${sha}`])).toEqual({
       mode: '--preflight',

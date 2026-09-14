@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { lstat, realpath } from 'node:fs/promises';
 import { relative, isAbsolute, join } from 'node:path';
+import type { AssistantFixtureCleanupProof } from '../../../packages/database/src/assistant-runtime.fixture.ts';
 
 export const AUTHORIZED_DEV_ROOT = '/Users/a123/allrice-dev/.local';
 export const FIXTURE_DATABASE_URL = 'postgres://a123@127.0.0.1:5432/allrice_b2';
@@ -20,6 +21,18 @@ export const RUN_LIMITS = Object.freeze({
   maxTotalTokens: 92000,
   maxCostCents: null,
 });
+export function fixtureCleanupFlags(
+  attempted: boolean,
+  proof?: AssistantFixtureCleanupProof,
+) {
+  return {
+    schemaRemoved: !attempted || proof?.schemaRemoved === true,
+    fixtureStorageRemoved: !attempted || proof?.storageRemoved === true,
+    fixtureConnectionsClosed:
+      !attempted ||
+      (proof?.databaseClosed === true && proof?.adminClosed === true),
+  };
+}
 export function requireCheck(ok: unknown, code: string): asserts ok {
   if (!ok) throw new Error(`p27_${code}`);
 }

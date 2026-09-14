@@ -13,14 +13,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Postgres from '../../../packages/database/node_modules/postgres/types/index.d.ts';
-import type { createAssistantFixtureDatabase as CreateDatabase } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import type {
+  createAssistantFixtureDatabase as CreateDatabase,
+  AssistantFixtureCleanupProof,
+} from '../../../packages/database/src/assistant-runtime.fixture.ts';
 import type { DshHarnessAdapter as Adapter } from '../../../apps/worker/src/harness/dsh-adapter.ts';
 import { observeP27Clients } from './p27-owned-clients.ts';
 import { collectP27InstalledRuntime } from './p27-installed-runtime.ts';
+import { validateP27AssistantOutcome } from './p27-assistant-outcome.ts';
 import {
   assertExecutionAuthorization,
   authorizedPlatformHome,
   FIXTURE_DATABASE_URL,
+  fixtureCleanupFlags,
   isolatedEnvironment,
   parseArguments,
   PROVIDER,
@@ -122,6 +127,9 @@ async function main() {
     report.assertions = [...assertions];
   };
   let database: Awaited<ReturnType<typeof CreateDatabase>> | undefined;
+  let fixtureInitializationAttempted = false;
+  let fixtureCleanupProof: AssistantFixtureCleanupProof | undefined;
+  let closeFixture: (() => Promise<void>) | undefined;
   let adapter: Adapter | undefined;
   let clients: ReturnType<typeof observeP27Clients> | undefined;
   let executionPromise: Promise<unknown> | undefined;
@@ -148,7 +156,11 @@ async function main() {
       await admin.end({ timeout: 5 });
     }
     const [
-      { createAssistantFixtureDatabase },
+      {
+        createAssistantFixtureDatabase,
+        AssistantFixtureInitializationError,
+        AssistantFixtureCleanupError,
+      },
       { createP27AssistantFixture },
       { DshHarnessAdapter },
       { DshProtocolClient },
@@ -172,7 +184,28 @@ async function main() {
       import('../../../packages/storage/src/index.ts'),
       import('../../../packages/database/src/artifact-review.ts'),
     ]);
-    database = await createAssistantFixtureDatabase();
+    fixtureInitializationAttempted = true;
+    try {
+      database = await createAssistantFixtureDatabase();
+    } catch (error) {
+      if (error instanceof AssistantFixtureInitializationError) {
+        fixtureCleanupProof = error.cleanup;
+        report.schema = error.cleanup.schema;
+        report.fixtureInitializationCleanup = error.cleanup;
+      }
+      throw Error('p27_fixture_initialization_failure');
+    }
+    closeFixture = async () => {
+      try {
+        fixtureCleanupProof = await database!.close();
+      } catch (error) {
+        fixtureCleanupProof =
+          error instanceof AssistantFixtureCleanupError
+            ? error.cleanup
+            : undefined;
+        throw error;
+      }
+    };
     const { db } = database;
     const [schema] = await db<
       { name: string }[]
@@ -325,6 +358,8 @@ async function main() {
     const tree = await runtime.getTree(fixture.context, {
       runId: fixture.rootRunId,
     });
+    report.harnessOutcome = validateP27AssistantOutcome(result, tree.budgets);
+    verify(true, 'adapter_authoritative_whole_tree_outcome');
     const children = tree.instances.filter(
       (child) => child.parentRunId === fixture.rootRunId,
     );
@@ -609,16 +644,14 @@ async function main() {
         if (timer) clearTimeout(timer);
       }
     }
-    let schemaRemoved = !database,
-      temporaryRemoved = false;
+    let temporaryRemoved = false;
     // Native JSONL persistence is needed for real durable adoption. It is
     // ephemeral, never copied into evidence, and removed only after host exit.
     if (nativeStopped) {
       try {
-        await database?.close();
-        schemaRemoved = true;
+        await closeFixture?.();
       } catch {
-        schemaRemoved = false;
+        /* Only the helper's explicit proof can confirm cleanup. */
       }
       try {
         await rm(temporary, { recursive: true });
@@ -629,17 +662,39 @@ async function main() {
     }
     report.cleanup = {
       nativeStopped,
-      schemaRemoved,
+      ...fixtureCleanupFlags(
+        fixtureInitializationAttempted,
+        fixtureCleanupProof,
+      ),
       temporaryRemoved,
       ownedNativeClients: clients?.snapshot().owned ?? 0,
       closedNativeClients: clients?.snapshot().closed ?? 0,
       executionSettled,
     };
-    if (!nativeStopped || !schemaRemoved || !temporaryRemoved) {
+    if (fixtureCleanupProof) report.fixtureCleanupProof = fixtureCleanupProof;
+    const fixtureFlags = fixtureCleanupFlags(
+      fixtureInitializationAttempted,
+      fixtureCleanupProof,
+    );
+    if (
+      !nativeStopped ||
+      !fixtureFlags.schemaRemoved ||
+      !fixtureFlags.fixtureStorageRemoved ||
+      !fixtureFlags.fixtureConnectionsClosed ||
+      !temporaryRemoved
+    ) {
       report.status = 'cleanup_blocked';
       process.exitCode = 1;
-      // Only a newly created private temp path, not credential/config paths.
-      report.retainedTemporary = temporary;
+      // Do not label a successfully removed directory as retained just because
+      // a separate helper schema/storage/connection remains unconfirmed.
+      if (!temporaryRemoved) report.retainedTemporary = temporary;
+      if (!fixtureFlags.schemaRemoved)
+        report.retainedSchema = report.schema ?? 'unconfirmed';
+      if (!fixtureFlags.fixtureStorageRemoved) {
+        report.fixtureStorageCleanupUnconfirmed = true;
+        if (fixtureCleanupProof?.storageRoot)
+          report.retainedFixtureStorage = fixtureCleanupProof.storageRoot;
+      }
     }
     report.finishedAt = new Date().toISOString();
     await save();
