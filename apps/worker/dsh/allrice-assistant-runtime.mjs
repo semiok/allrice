@@ -459,6 +459,19 @@ export function createGovernedAssistantNativeRuntime(
           .slice(-512),
       };
     },
+    async finish(p) {
+      const root = binding(p.nativeSessionId);
+      if (root.parentNativeSessionId) throw Error('assistant_root_required');
+      await Promise.all([...pendingWrites]);
+      // Completed business Runs may share the persistent native root Session.
+      // Retain JSONL/context, not prior Run authority or result wakeup bindings.
+      bindings.clear();
+      deliveries.clear();
+      nativeCompletions.clear();
+      checkpointChains.clear();
+      checkpointProofs.clear();
+      return { released: true };
+    },
     async flush() {
       await Promise.all([...pendingWrites]);
       return { flushed: true };

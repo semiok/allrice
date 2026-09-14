@@ -309,7 +309,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 nativeSessionId: threadId,
               })
             : null;
-          await assistant?.finish?.();
+          if (assistant) {
+            await runtime.client.assistant('finish', {
+              nativeSessionId: threadId,
+            });
+            await assistant.finish?.();
+          }
           answer = normalizeAllRiceManagedFileLinks(
             typeof joined?.answer === 'string' ? joined.answer : result.answer,
           );
