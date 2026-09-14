@@ -142,7 +142,7 @@ describe('P26 actual-state presentation (fixtures are not execution evidence)', 
     const html = render(tree);
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
-    expect(html).toContain('未附已核验工件');
+    expect(html).toContain('未附可追溯工件');
   });
   it('does not call inbox ACK durable/adopted, and shows real stop acknowledgement separately', () => {
     const tree = fixture();
