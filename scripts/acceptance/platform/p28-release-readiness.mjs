@@ -49,6 +49,8 @@ export const PRESERVED_STATE = [
   'credential-records',
   'memory-skill',
   'runtime-ledger',
+  'assistant-model-admissions',
+  'model-usage-and-unknown-cost',
   'artifacts',
 ];
 export const CLIENT_CASES = [
@@ -198,6 +200,8 @@ export const CASE_ASSERTIONS = {
     'durable-outbox',
     'cold-recovery',
     'no-duplicate-side-effects',
+    'prepared-grant-not-dispatch-proof',
+    'dispatch-ack-loss-no-model-replay',
   ],
   'assistants-partial-failure-artifact-conflict-refresh': [
     'partial-failure-visible',
@@ -214,12 +218,17 @@ export const CASE_ASSERTIONS = {
     'old-and-new-reader-compatible',
     'backfill-idempotent-resumable',
     'no-contract-in-first-release',
+    'assistant-model-admissions-expand-compatible',
+    'nullable-model-cost-readers-compatible',
   ],
   'rollback-drain-reconcile-preserve-state': [
     'drain-confirmed',
     'unknown-reconciled-no-replay',
     'state-preserved',
     'current-credential-reader-preserved',
+    'prepared-and-dispatched-model-holds-preserved',
+    'model-dispatch-identity-not-replayed',
+    'unknown-usage-and-cost-not-zeroed',
   ],
   'dev-final-sha-login-history-downloads-flags-smoke': [
     'deployed-sha-and-build-match',

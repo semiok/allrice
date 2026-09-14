@@ -505,6 +505,128 @@ test('rollback plan rejects destructive DB rollback, old credential readers, inc
   rejects(f.validate('prepare'), 'rollback-target-pin-required');
 });
 
+test('0095 model admissions are inventoried by exact candidate bytes, not a 0093/0094 ceiling', () => {
+  const f = fixture(),
+    checkout = join(f.root, 'checkout'),
+    name = '0095_assistant_model_admissions.sql';
+  for (const path of [
+    'packages/database/migrations',
+    'pnpm-lock.yaml',
+    'apps/worker/dsh/upstream.json',
+  ]) {
+    mkdirSync(dirname(join(checkout, path)), { recursive: true });
+    cpSync(join(sourceRoot, path), join(checkout, path), { recursive: true });
+  }
+  // Synthetic bytes solely in this test checkout; never a proposed SQL change.
+  const bytes = '-- SYNTHETIC PARSER FIXTURE ONLY: model admission expand\n';
+  const path = join(checkout, 'packages/database/migrations', name);
+  writeFileSync(path, bytes);
+  f.manifest.migrations.changes = f.manifest.migrations.changes.filter(
+    (migration) => migration.name !== name,
+  );
+  rejects(
+    f.validate('prepare', { sourceRoot: checkout }),
+    'migration-inventory-incomplete-or-extra',
+  );
+  f.manifest.migrations.changes.push({
+    name,
+    sha256: hash(bytes),
+    phase: 'expand',
+  });
+  assert.equal(f.validate('prepare', { sourceRoot: checkout }).passed, true);
+  writeFileSync(path, `${bytes}-- modified after the candidate was pinned\n`);
+  rejects(
+    f.validate('prepare', { sourceRoot: checkout }),
+    'migration-content-mismatch',
+  );
+});
+
+test('preparation requires explicit preservation of model admissions and unknown usage/cost', () => {
+  for (const state of [
+    'assistant-model-admissions',
+    'model-usage-and-unknown-cost',
+  ]) {
+    assert.ok(PRESERVED_STATE.includes(state));
+    const f = fixture();
+    f.manifest.rollback.preserve = f.manifest.rollback.preserve.filter(
+      (name) => name !== state,
+    );
+    rejects(f.validate('prepare'), 'preservation-scope-incomplete');
+  }
+});
+
+test('old migration/cold-recovery/rollback receipts cannot omit two-stage holds or NULL reader proof', () => {
+  for (const [caseId, assertion] of [
+    [
+      'migration-expand-backfill-compatibility',
+      'assistant-model-admissions-expand-compatible',
+    ],
+    [
+      'migration-expand-backfill-compatibility',
+      'nullable-model-cost-readers-compatible',
+    ],
+    [
+      'assistants-outbox-checkpoint-cold-recovery',
+      'prepared-grant-not-dispatch-proof',
+    ],
+    [
+      'assistants-outbox-checkpoint-cold-recovery',
+      'dispatch-ack-loss-no-model-replay',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'prepared-and-dispatched-model-holds-preserved',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'model-dispatch-identity-not-replayed',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'unknown-usage-and-cost-not-zeroed',
+    ],
+  ]) {
+    assert.ok(CASE_ASSERTIONS[caseId].includes(assertion));
+    const f = fixture(),
+      receipt = f.receipt(caseId);
+    receipt.assertions = receipt.assertions.filter(
+      (item) => item.name !== assertion,
+    );
+    f.putReceipt(receipt);
+    rejects(f.validate(), 'assertion-coverage-missing-duplicate-or-unknown');
+  }
+});
+
+test('the updated draft remains unapproved and cannot become candidate proof', () => {
+  const draft = JSON.parse(
+    readFileSync(
+      join(
+        sourceRoot,
+        'docs/architecture/allrice-2.0/p28-release-manifest.draft.json',
+      ),
+      'utf8',
+    ),
+  );
+  assert.equal(draft.sourceSha, null);
+  assert.deepEqual(draft.artifacts, []);
+  assert.deepEqual(draft.evidence, []);
+  assert.deepEqual(draft.migrations.changes, []);
+  assert.deepEqual(draft.authorizations, {
+    dev: null,
+    tenant: null,
+    prod: null,
+  });
+  assert.equal(draft.signedClientRequired, true);
+  assert.ok(Object.values(draft.flags).every((enabled) => enabled === false));
+  assert.deepEqual(
+    [...draft.rollback.preserve].sort(),
+    [...PRESERVED_STATE].sort(),
+  );
+  const f = fixture();
+  Object.assign(f.manifest, draft);
+  rejects(f.validate('prepare'), 'candidate-source-mismatch-or-b5');
+});
+
 test('Dev, tenant enablement and Prod need independent scope/version-bound authorization records', () => {
   const f = fixture();
   rejects(f.validate('dev'), 'separate-authorization-missing');

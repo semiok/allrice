@@ -34,7 +34,7 @@
   },
   "rollback": {
     "mode": "forward-fix-only",
-    "reason": "No B6-compatible rollback target has been demonstrated. Distributed credential/journal formats must remain readable; B5 is history, not an automatically safe downgrade.",
+    "reason": "No B6-compatible rollback target has been demonstrated. Credential/journal formats, nullable unknown costs and 0095 prepared/dispatched model holds must remain readable and non-replayable; B5 is history, not an automatically safe downgrade.",
     "targetSourceSha": null,
     "targetReleaseId": null,
     "targetArtifacts": [],
@@ -49,6 +49,8 @@
       "credential-records",
       "memory-skill",
       "runtime-ledger",
+      "assistant-model-admissions",
+      "model-usage-and-unknown-cost",
       "artifacts"
     ],
     "backup": "separate-authorization-required-not-taken-by-validator"
@@ -67,7 +69,12 @@
     },
     {
       "id": "migration-inventory",
-      "reason": "P25 reserves 0093_assistant_runtime.sql; final content and every B6-added migration must be enumerated and reviewed after integration. Empty changes is not a no-migration claim.",
+      "reason": "The final candidate must enumerate exact bytes for 0093_assistant_runtime.sql, 0094_model_usage_unknown_cost.sql, 0095_assistant_model_admissions.sql and every later added migration. This unapproved draft pins none of their final content; empty changes is not a no-migration claim.",
+      "owner": "P25 / P27 integration owner"
+    },
+    {
+      "id": "assistant-hold-recovery-and-accounting",
+      "reason": "Prepared/dispatched model holds and once-only dispatch identity need candidate-bound compatibility/recovery evidence. Unknown usage/cost cannot be erased or changed to zero; no authoritative pricing/reconciliation loop has been accepted, so real tenant enablement remains blocked.",
       "owner": "P25 / P27 integration owner"
     },
     {

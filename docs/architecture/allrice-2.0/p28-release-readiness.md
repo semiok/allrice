@@ -14,7 +14,7 @@
 
 外部依赖必须尽早解决：P14 需要可用 Developer ID 发布者身份、公证权限、已固定的更新元数据验证公钥，以及各一台可实际交互的 Apple Silicon / Intel Mac。两台均要从最终实际包进行 Keychain、Finder/原生 GUI、签名拒绝、任务排空、升级中断、兼容恢复测试。构建两包、ad-hoc 签名、哈希一致、模拟 Keychain 或仅一台设备不等于两平台通过。不索取/提交私钥、密码、公证令牌或真实配对凭证；缺少条件填未验证。
 
-当前草稿另缺最终集成 SHA、最终 Web/Worker/客户端构建、0093 等最终迁移清单、P27 实测收据及批准的真实发布范围。P25/P26/P14 交付与 P27 验收由对应切片负责；P28 的测试通过不替它们签字。
+当前草稿另缺最终集成 SHA、最终 Web/Worker/客户端构建、0093/0094/0095 及后续新增项的最终迁移清单、P27 实测收据及批准的真实发布范围。P25/P26/P14 交付与 P27 验收由对应切片负责；P28 的测试通过不替它们签字。当前没有正式签名包或最终真实 P27 成功证据；一次真实运行失败、隔离 PG 与合成 HTTP 协议测试都不能改写为该结论。
 
 ## 2. 固定版本与证据包
 
@@ -94,7 +94,9 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 ## 5. 迁移：expand → backfill → contract
 
-本切片不新增/运行 SQL。检查器固定 B5 原有 93 份 migration（编号至 0092）的排序文件名+内容 SHA-256 库存摘要 `ef1e7b033c925c452196271bb402706556b60f39c11b83c9573bdcdb09abe747`，修改旧迁移立即拒绝。集成后所有新增 `.sql` 必须在 `migrations.changes` 恰好列出 `{name, sha256, phase}`；目前 P25 保留 `0093_assistant_runtime.sql`，**其最终内容未在本草稿中假定**。
+本切片不新增/运行 SQL。检查器固定 B5 原有 93 份 migration（编号至 0092）的排序文件名+内容 SHA-256 库存摘要 `ef1e7b033c925c452196271bb402706556b60f39c11b83c9573bdcdb09abe747`，修改旧迁移立即拒绝。集成后所有新增 `.sql` 必须在 `migrations.changes` 恰好列出 `{name, sha256, phase}`；检查器**不把 0093/0094 当作新增清单的上限**，漏列 0095 或任何更晚文件、摘要不符均拒绝。
+
+当前需纳入候选的 expand 项包括 `0093_assistant_runtime.sql`（助手治理）、`0094_model_usage_unknown_cost.sql`（费用 NULL 与完整性标志）、`0095_assistant_model_admissions.sql`（两阶段模型准入）。**它们的最终内容与 SHA-256 未在本草稿中假定**；只能在最终 source SHA 固定后填入实际字节摘要，不能以这里的文件名取代库存核对。新增迁移不意味着已执行，也不授予迁移或启用权限。
 
 1. **Expand 准备**：记录目标 DB schema 版本、准确 SQL 摘要、锁/运行时长风险、空间影响、旧/新 Web/Worker/Bridge reader兼容性。只增加兼容结构；旧记录保持可读，不重写已发布历史，新增功能关闭。
 2. **Backfill 准备**：仅在确实必要时单列，明确租户范围、分批上限、幂等游标、暂停/恢复、失败核对及审计。不能靠时间猜测回填历史 operation/审批关系。无 backfill 也要在实际迁移收据说明为何不需要；不由空数组推断已检查。
@@ -103,11 +105,17 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 检查器验证库存与声明，不把 SQL 文件写着 `phase: expand` 当成安全证明；P27 必须查看真实 SQL 并实际验证旧/新混跑、失败中断、重复/恢复 backfill 与数据保护。本脚本不尝试用关键词扫描替代 SQL 审查。
 
+0095 的 prepared 行只是已占用输出额度，不是派发授权或“确定未执行”的回执；dispatched 标记和请求摘要/调用 ID 负责一次性派发，ACK 丢失不能重放。准备后崩溃、输入准入失败或缺少 provider 用量时，保留 admission、对应 usage 的未知维度及 root reserved；`finished_at` 也不等于全部用量已知。没有权威证据，不回填零、不删除孤立 hold、不用新 callId 消除旧执行的不确定性。
+
 ## 6. 恢复选择与演练程序（本 PR 不执行）
 
 默认 `forward-fix-only`：没有已经实测、能读取最新 schema、credential record、journal/outbox/助手 checkpoint 的旧包时，**保持兼容读取器并准备前向修复**。B5 发布历史不是安全回退证明；不得自动恢复旧 Credential reader、删新格式记录、强制重新配对或覆盖用户目录。此模式不伪造 target SHA/ZIP，也不承诺即时恢复；P27 演练应证明停止新准入、排空/核对、状态保留、当前兼容版本恢复，尚未构建的前向修复仍需新 SHA 与复验。
 
 需要 `compatible-redeploy` 时，清单必须绑定另一个完整 target SHA/release ID、其 Web/Worker/双架构实际文件/版本/build ID，并实际证明它们兼容**已写入新状态后的** schema/客户端；测试只拿空库、旧凭证或同名二进制不算。对应恢复收据额外绑定全部 target 文件摘要，不能借用另一旧版本的恢复结果。
+
+两阶段状态写入后，不能回退到只理解旧单阶段 `reserveUsage`、会重投模型请求或清除 prepared/dispatched hold 的 Worker。恢复必须保留 0095 admission 的完整关联与 0093 usage/root 预算，并在关闭新准入时保留取消、只读核对与未知展示；没有实证兼容的旧包就 forward-fix。0094 的 NULL 费用也不能改成零、恢复 NOT NULL 或由旧 quota reader 漏算；费用未知导致组织月度额度 fail-closed，包括后续单 Agent 路由。未具备权威定价/费用核对闭环，真实租户助手启用仍阻断；P27 adapter smoke 不替代完整 Worker 路由/费用/配额验收。
+
+只读 checker 的 `rollback.preserve` 现明确要求 `assistant-model-admissions` 和 `model-usage-and-unknown-cost`。迁移、冷恢复和回退收据另须包含 prepared 非派发证明、丢失 dispatch ACK 不重放、未知 hold/费用不清零与兼容 reader 的固定断言；缺少这些断言的旧收据不能沿用。断言仍须附真实原始观察，添加字段或通过合成 parser 测试不是实际恢复演练。
 
 演练与将来执行按下列阶段留证：
 
