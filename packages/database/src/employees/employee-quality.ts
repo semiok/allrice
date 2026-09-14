@@ -555,7 +555,9 @@ export async function getEmployeeQualityDashboard(
         failed: number;
         input_tokens: number | string;
         output_tokens: number | string;
-        cost_cents: number | string;
+        cost_cents: number | string | null;
+        unknown_cost_runs: number;
+        usage_complete: boolean;
       }[]
     >`
       select employee_id, harness, provider, model,
@@ -564,7 +566,10 @@ export async function getEmployeeQualityDashboard(
         count(*) filter (where status = 'failed')::integer as failed,
         coalesce(sum(input_tokens), 0)::bigint as input_tokens,
         coalesce(sum(output_tokens), 0)::bigint as output_tokens,
-        coalesce(sum(cost_cents), 0) as cost_cents
+        case when count(*) filter (where cost_cents is null) > 0
+          then null else coalesce(sum(cost_cents), 0) end as cost_cents,
+        count(*) filter (where cost_cents is null)::integer as unknown_cost_runs,
+        bool_and(usage_complete) as usage_complete
       from allrice_route_decisions
       where organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId}
@@ -612,7 +617,10 @@ export async function getEmployeeQualityDashboard(
           failed: metric.failed,
           inputTokens: Number(metric.input_tokens),
           outputTokens: Number(metric.output_tokens),
-          costCents: Number(metric.cost_cents),
+          costCents:
+            metric.cost_cents === null ? null : Number(metric.cost_cents),
+          unknownCostRuns: metric.unknown_cost_runs,
+          usageComplete: metric.usage_complete,
         })),
       feedback: feedback.find(
         (entry) => entry.employee_id === item.current_version_id,
