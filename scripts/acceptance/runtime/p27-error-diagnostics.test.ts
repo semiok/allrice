@@ -7,6 +7,32 @@ function first(error: unknown) {
   return p27ErrorDiagnostics(error).errors[0]!;
 }
 describe('P27 bounded safe error diagnostics (no provider)', () => {
+  it.each(['p27_worker_actual_route_ledger', 'p27_worker_deadline'])(
+    'keeps the exact source-defined Worker check %s',
+    (code) => expect(first(new Error(code)).code).toBe(code),
+  );
+  it('keeps fixture failure metadata but never its private cleanup payload', () => {
+    class P27WorkerFixtureError extends Error {
+      readonly code = 'P27_WORKER_CLEANUP_UNCONFIRMED';
+      readonly cleanup = { providerBody: secret };
+    }
+    const proof = first(new P27WorkerFixtureError(secret));
+    expect(proof.code).toBe('P27_WORKER_CLEANUP_UNCONFIRMED');
+    expect(JSON.stringify(proof)).not.toContain(secret);
+  });
+  it.each(['p27_worker_private_secret', 'P27_WORKER_PRIVATE_SECRET'])(
+    'does not allow arbitrary Worker prefixes: %s',
+    (code) =>
+      expect(first(Object.assign(new Error(code), { code })).code).toBeNull(),
+  );
+  it.each(['DSH_SERVER', 'DSH_QUOTA', 'DSH_TRANSPORT', 'DSH_UNKNOWN'])(
+    'keeps the exact prefixed native code %s without echoing provider text',
+    (code) => {
+      const proof = first(new HandlerError(code, secret, true));
+      expect(proof.code).toBe(code);
+      expect(JSON.stringify(proof)).not.toContain(secret);
+    },
+  );
   it('keeps actual HandlerError metadata, never its message/stack/provider payload', () => {
     const error = new HandlerError(
       'DSH_REQUEST_FAILED',
