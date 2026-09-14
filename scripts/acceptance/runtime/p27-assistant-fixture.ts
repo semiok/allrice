@@ -10,11 +10,27 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from '../../../packages/database/src/employees/employee-config.ts';
-import { PROVIDER, RUN_LIMITS } from './p27-assistant-preflight.ts';
+import {
+  runLimitsForProvider,
+  selectedProvider,
+  type P27ProviderRoute,
+} from './p27-assistant-preflight.ts';
+import { createP27GeminiPriceBinding } from './p27-assistant-pricing.ts';
 
 export async function createP27AssistantFixture(
   db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
+  providerRoute: P27ProviderRoute = 'openai-codex',
 ) {
+  const provider = selectedProvider(providerRoute);
+  const runLimits = runLimitsForProvider(providerRoute);
+  const priceBinding =
+    providerRoute === 'gemini'
+      ? createP27GeminiPriceBinding({
+          connectionId: randomUUID(),
+          catalogId: randomUUID(),
+          at: new Date().toISOString(),
+        })
+      : undefined;
   const org = randomUUID(),
     workspace = randomUUID(),
     user = randomUUID(),
@@ -46,12 +62,12 @@ export async function createP27AssistantFixture(
     toolNames: tools,
     runtimePolicy: {
       harness: 'dsh',
-      provider: PROVIDER.route,
-      model: PROVIDER.model,
-      reasoningEffort: PROVIDER.reasoningEffort,
-      timeoutMs: RUN_LIMITS.timeoutMs,
+      provider: provider.route,
+      model: provider.model,
+      reasoningEffort: provider.reasoningEffort,
+      timeoutMs: runLimits.timeoutMs,
       fallbackModels: [],
-      credentialReference: PROVIDER.credentialReference,
+      credentialReference: provider.credentialReference,
       baseUrl: null,
     },
     securityPolicy: {
@@ -123,8 +139,11 @@ export async function createP27AssistantFixture(
     kind: 'synthetic-p27-assistant-smoke',
     employeeVersionId: version,
     definitionChecksum: checksum,
-    provider: PROVIDER,
-    runLimits: RUN_LIMITS,
+    provider,
+    runLimits,
+    ...(priceBinding
+      ? { isolatedAssistantPriceSnapshot: priceBinding.snapshot }
+      : {}),
   };
   const context: RequestContext = {
     actor: { type: 'user', id: user },
@@ -200,5 +219,7 @@ export async function createP27AssistantFixture(
     assistantMessageId,
     manifest,
     checksum,
+    runLimits,
+    priceBinding,
   };
 }

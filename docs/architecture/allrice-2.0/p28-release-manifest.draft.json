@@ -50,6 +50,7 @@
       "memory-skill",
       "runtime-ledger",
       "assistant-model-admissions",
+      "assistant-price-snapshots-and-receipts",
       "model-usage-and-unknown-cost",
       "artifacts"
     ],
@@ -69,7 +70,7 @@
     },
     {
       "id": "migration-inventory",
-      "reason": "The final candidate must enumerate exact bytes for 0093_assistant_runtime.sql, 0094_model_usage_unknown_cost.sql, 0095_assistant_model_admissions.sql and every later added migration. This unapproved draft pins none of their final content; empty changes is not a no-migration claim.",
+      "reason": "The final candidate must enumerate exact bytes for 0093_assistant_runtime.sql, 0094_model_usage_unknown_cost.sql, 0095_assistant_model_admissions.sql, 0096_assistant_pricing.sql and every later added migration. This unapproved draft pins none of their final content; empty changes is not a no-migration claim.",
       "owner": "P25 / P27 integration owner"
     },
     {

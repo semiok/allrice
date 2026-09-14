@@ -96,7 +96,7 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 本切片不新增/运行 SQL。检查器固定 B5 原有 93 份 migration（编号至 0092）的排序文件名+内容 SHA-256 库存摘要 `ef1e7b033c925c452196271bb402706556b60f39c11b83c9573bdcdb09abe747`，修改旧迁移立即拒绝。集成后所有新增 `.sql` 必须在 `migrations.changes` 恰好列出 `{name, sha256, phase}`；检查器**不把 0093/0094 当作新增清单的上限**，漏列 0095 或任何更晚文件、摘要不符均拒绝。
 
-当前需纳入候选的 expand 项包括 `0093_assistant_runtime.sql`（助手治理）、`0094_model_usage_unknown_cost.sql`（费用 NULL 与完整性标志）、`0095_assistant_model_admissions.sql`（两阶段模型准入）。**它们的最终内容与 SHA-256 未在本草稿中假定**；只能在最终 source SHA 固定后填入实际字节摘要，不能以这里的文件名取代库存核对。新增迁移不意味着已执行，也不授予迁移或启用权限。
+当前需纳入候选的 expand 项包括 `0093_assistant_runtime.sql`（助手治理）、`0094_model_usage_unknown_cost.sql`（费用 NULL 与完整性标志）、`0095_assistant_model_admissions.sql`（两阶段模型准入）、`0096_assistant_pricing.sql`（不可变价格快照与逐调用费用回执）。**它们的最终内容与 SHA-256 未在本草稿中假定**；只能在最终 source SHA 固定后填入实际字节摘要，不能以这里的文件名取代库存核对。新增迁移不意味着已执行，也不授予迁移或启用权限。
 
 1. **Expand 准备**：记录目标 DB schema 版本、准确 SQL 摘要、锁/运行时长风险、空间影响、旧/新 Web/Worker/Bridge reader兼容性。只增加兼容结构；旧记录保持可读，不重写已发布历史，新增功能关闭。
 2. **Backfill 准备**：仅在确实必要时单列，明确租户范围、分批上限、幂等游标、暂停/恢复、失败核对及审计。不能靠时间猜测回填历史 operation/审批关系。无 backfill 也要在实际迁移收据说明为何不需要；不由空数组推断已检查。
@@ -115,7 +115,9 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 两阶段状态写入后，不能回退到只理解旧单阶段 `reserveUsage`、会重投模型请求或清除 prepared/dispatched hold 的 Worker。恢复必须保留 0095 admission 的完整关联与 0093 usage/root 预算，并在关闭新准入时保留取消、只读核对与未知展示；没有实证兼容的旧包就 forward-fix。0094 的 NULL 费用也不能改成零、恢复 NOT NULL 或由旧 quota reader 漏算；费用未知导致组织月度额度 fail-closed，包括后续单 Agent 路由。未具备权威定价/费用核对闭环，真实租户助手启用仍阻断；P27 adapter smoke 不替代完整 Worker 路由/费用/配额验收。
 
-只读 checker 的 `rollback.preserve` 现明确要求 `assistant-model-admissions` 和 `model-usage-and-unknown-cost`。迁移、冷恢复和回退收据另须包含 prepared 非派发证明、丢失 dispatch ACK 不重放、未知 hold/费用不清零与兼容 reader 的固定断言；缺少这些断言的旧收据不能沿用。断言仍须附真实原始观察，添加字段或通过合成 parser 测试不是实际恢复演练。
+只读 checker 的 `rollback.preserve` 现明确要求 `assistant-model-admissions`、`assistant-price-snapshots-and-receipts` 和 `model-usage-and-unknown-cost`。迁移、冷恢复和回退收据另须包含 prepared 非派发证明、丢失 dispatch ACK 不重放、未知 hold/费用不清零、冻结价格及调用回执保留与兼容 reader 的固定断言；缺少这些断言的旧收据不能沿用。真实基础助手项还要求价格/全树回执和后续 Worker 配额可用，不能只证明 adapter 返回答案。断言仍须附真实原始观察，添加字段或通过合成 parser 测试不是实际恢复演练。
+
+0096 不回填历史 unknown。价格快照只约束其明确路由、币种、有效期和 Token 价带；当前无可信缓存拆分时记录保守估算上界，不宣称供应商真实账单。恢复后必须保留这种语义和原始不可变摘要，不能用当天新价重算旧任务、丢掉子调用费用、把未知调用改为免费，或直接用旧普通聊天价格函数覆盖助手回执。缺价拒绝是在调用前的已知零消耗；派发后失去用量是 unknown，两者不能混同。
 
 演练与将来执行按下列阶段留证：
 

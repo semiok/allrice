@@ -50,6 +50,7 @@ export const PRESERVED_STATE = [
   'memory-skill',
   'runtime-ledger',
   'assistant-model-admissions',
+  'assistant-price-snapshots-and-receipts',
   'model-usage-and-unknown-cost',
   'artifacts',
 ];
@@ -185,6 +186,8 @@ export const CASE_ASSERTIONS = {
     'two-distinct-children',
     'bridge-absent',
     'results-and-artifacts-collected',
+    'frozen-price-and-whole-tree-cost-receipts',
+    'worker-follow-up-quota-available',
   ],
   'assistants-narrow-permissions-approval': [
     'permission-intersection',
@@ -220,6 +223,7 @@ export const CASE_ASSERTIONS = {
     'no-contract-in-first-release',
     'assistant-model-admissions-expand-compatible',
     'nullable-model-cost-readers-compatible',
+    'immutable-assistant-pricing-expand-compatible',
   ],
   'rollback-drain-reconcile-preserve-state': [
     'drain-confirmed',
@@ -229,6 +233,7 @@ export const CASE_ASSERTIONS = {
     'prepared-and-dispatched-model-holds-preserved',
     'model-dispatch-identity-not-replayed',
     'unknown-usage-and-cost-not-zeroed',
+    'frozen-prices-and-call-receipts-preserved',
   ],
   'dev-final-sha-login-history-downloads-flags-smoke': [
     'deployed-sha-and-build-match',

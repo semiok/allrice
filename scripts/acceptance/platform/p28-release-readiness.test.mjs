@@ -505,45 +505,49 @@ test('rollback plan rejects destructive DB rollback, old credential readers, inc
   rejects(f.validate('prepare'), 'rollback-target-pin-required');
 });
 
-test('0095 model admissions are inventoried by exact candidate bytes, not a 0093/0094 ceiling', () => {
-  const f = fixture(),
-    checkout = join(f.root, 'checkout'),
-    name = '0095_assistant_model_admissions.sql';
-  for (const path of [
-    'packages/database/migrations',
-    'pnpm-lock.yaml',
-    'apps/worker/dsh/upstream.json',
-  ]) {
-    mkdirSync(dirname(join(checkout, path)), { recursive: true });
-    cpSync(join(sourceRoot, path), join(checkout, path), { recursive: true });
-  }
-  // Synthetic bytes solely in this test checkout; never a proposed SQL change.
-  const bytes = '-- SYNTHETIC PARSER FIXTURE ONLY: model admission expand\n';
-  const path = join(checkout, 'packages/database/migrations', name);
-  writeFileSync(path, bytes);
-  f.manifest.migrations.changes = f.manifest.migrations.changes.filter(
-    (migration) => migration.name !== name,
-  );
-  rejects(
-    f.validate('prepare', { sourceRoot: checkout }),
-    'migration-inventory-incomplete-or-extra',
-  );
-  f.manifest.migrations.changes.push({
-    name,
-    sha256: hash(bytes),
-    phase: 'expand',
+for (const name of [
+  '0095_assistant_model_admissions.sql',
+  '0096_assistant_pricing.sql',
+])
+  test(`${name} is inventoried by exact candidate bytes, not a migration ceiling`, () => {
+    const f = fixture(),
+      checkout = join(f.root, 'checkout');
+    for (const path of [
+      'packages/database/migrations',
+      'pnpm-lock.yaml',
+      'apps/worker/dsh/upstream.json',
+    ]) {
+      mkdirSync(dirname(join(checkout, path)), { recursive: true });
+      cpSync(join(sourceRoot, path), join(checkout, path), { recursive: true });
+    }
+    // Synthetic bytes solely in this test checkout; never a proposed SQL change.
+    const bytes = '-- SYNTHETIC PARSER FIXTURE ONLY: model admission expand\n';
+    const path = join(checkout, 'packages/database/migrations', name);
+    writeFileSync(path, bytes);
+    f.manifest.migrations.changes = f.manifest.migrations.changes.filter(
+      (migration) => migration.name !== name,
+    );
+    rejects(
+      f.validate('prepare', { sourceRoot: checkout }),
+      'migration-inventory-incomplete-or-extra',
+    );
+    f.manifest.migrations.changes.push({
+      name,
+      sha256: hash(bytes),
+      phase: 'expand',
+    });
+    assert.equal(f.validate('prepare', { sourceRoot: checkout }).passed, true);
+    writeFileSync(path, `${bytes}-- modified after the candidate was pinned\n`);
+    rejects(
+      f.validate('prepare', { sourceRoot: checkout }),
+      'migration-content-mismatch',
+    );
   });
-  assert.equal(f.validate('prepare', { sourceRoot: checkout }).passed, true);
-  writeFileSync(path, `${bytes}-- modified after the candidate was pinned\n`);
-  rejects(
-    f.validate('prepare', { sourceRoot: checkout }),
-    'migration-content-mismatch',
-  );
-});
 
 test('preparation requires explicit preservation of model admissions and unknown usage/cost', () => {
   for (const state of [
     'assistant-model-admissions',
+    'assistant-price-snapshots-and-receipts',
     'model-usage-and-unknown-cost',
   ]) {
     assert.ok(PRESERVED_STATE.includes(state));
@@ -557,6 +561,22 @@ test('preparation requires explicit preservation of model admissions and unknown
 
 test('old migration/cold-recovery/rollback receipts cannot omit two-stage holds or NULL reader proof', () => {
   for (const [caseId, assertion] of [
+    [
+      'assistants-real-dsh-two-children-no-bridge',
+      'frozen-price-and-whole-tree-cost-receipts',
+    ],
+    [
+      'assistants-real-dsh-two-children-no-bridge',
+      'worker-follow-up-quota-available',
+    ],
+    [
+      'migration-expand-backfill-compatibility',
+      'immutable-assistant-pricing-expand-compatible',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'frozen-prices-and-call-receipts-preserved',
+    ],
     [
       'migration-expand-backfill-compatibility',
       'assistant-model-admissions-expand-compatible',
