@@ -92,25 +92,8 @@ export function InteractionStatusPanel({
       ['pending', 'unknown', 'received', 'queued'].includes(i.status),
     ).length ?? 0) + (data?.pendingActions.length ?? 0);
   return (
-    <details className={styles.history} aria-label="交互与任务记录">
-      <summary>
-        交互与任务记录{waiting ? ` · ${waiting} 项等待处理` : ''}
-      </summary>
+    <section>
       {error ? <p role="status">{error}</p> : null}
-      <p>
-        任务、执行步骤、命令进程各有独立状态；助手尚未发布。认可计划或提交意见不授予执行权限。
-      </p>
-      {data?.runtime ? (
-        <p>
-          当前配置：{data.runtime.currentVersionId?.slice(0, 8) ?? '暂无运行'}
-          ；下一次任务配置：
-          {data.runtime.nextVersionId?.slice(0, 8) ?? '未配置'}。
-          {data.runtime.currentVersionId &&
-          data.runtime.currentVersionId !== data.runtime.nextVersionId
-            ? '已发布的新配置不会改变正在执行的任务。'
-            : ''}
-        </p>
-      ) : null}
       {data?.pendingActions.length ? (
         <section aria-label="待批准动作">
           <strong>待批准动作</strong>
@@ -139,37 +122,56 @@ export function InteractionStatusPanel({
           <p>只在对应动作卡片批准，不会通过聊天或计划认可代替授权。</p>
         </section>
       ) : null}
-      <ol>
-        {data?.inputs.map((i) => (
-          <li key={i.inputId} id={`input-${i.inputId}`}>
-            <strong>
-              {labels[i.kind] ?? '输入'} · {states[i.status]}
-            </strong>
-            <small> {new Date(i.createdAt).toLocaleTimeString()}</small>
-            {i.evidence ? (
-              <small>
-                {' '}
-                · 原生日志 #{i.evidence.sequence}
-                {i.evidence.checkpoint === 'question_resolved'
-                  ? '：表单已交回工具'
-                  : '：进入步骤上下文'}
-              </small>
-            ) : null}{' '}
-            <a href={`?session=${sessionId}#message-${i.messageId}`}>
-              定位输入
-            </a>
-            {i.artifactId ? (
-              <button type="button" onClick={() => onArtifact(i.artifactId!)}>
-                审查对应版本
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      <small>
-        最近 30
-        次提交；历史对话保留完整内容。没有原生用量时显示“未知”，不按零消耗计。
-      </small>
-    </details>
+      <details className={styles.history} aria-label="交互与任务记录">
+        <summary>
+          交互与任务记录{waiting ? ` · ${waiting} 项等待处理` : ''}
+        </summary>
+        <p>
+          任务、执行步骤、助手、命令进程各有独立状态。助手分工见对应任务卡片；是否可用取决于当前授权。认可计划或提交意见不授予执行权限。
+        </p>
+        {data?.runtime ? (
+          <p>
+            当前配置：{data.runtime.currentVersionId?.slice(0, 8) ?? '暂无运行'}
+            ；下一次任务配置：
+            {data.runtime.nextVersionId?.slice(0, 8) ?? '未配置'}。
+            {data.runtime.currentVersionId &&
+            data.runtime.currentVersionId !== data.runtime.nextVersionId
+              ? '已发布的新配置不会改变正在执行的任务。'
+              : ''}
+          </p>
+        ) : null}
+        <ol>
+          {data?.inputs.map((i) => (
+            <li key={i.inputId} id={`input-${i.inputId}`}>
+              <strong>
+                {labels[i.kind] ?? '输入'} · {states[i.status]}
+              </strong>
+              <small> {new Date(i.createdAt).toLocaleTimeString()}</small>
+              {i.evidence ? (
+                <small>
+                  {' '}
+                  · 原生日志 #{i.evidence.sequence}
+                  {i.evidence.checkpoint === 'question_resolved'
+                    ? '：表单已交回工具'
+                    : '：进入步骤上下文'}
+                </small>
+              ) : null}{' '}
+              <a href={`?session=${sessionId}#message-${i.messageId}`}>
+                定位输入
+              </a>
+              {i.artifactId ? (
+                <button type="button" onClick={() => onArtifact(i.artifactId!)}>
+                  审查对应版本
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+        <small>
+          最近 30
+          次提交；历史对话保留完整内容。没有原生用量时显示“未知”，不按零消耗计。
+        </small>
+      </details>
+    </section>
   );
 }

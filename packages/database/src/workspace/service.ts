@@ -14,6 +14,8 @@ import {
   MemoryRevisionSchema,
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
+  resolveAssistantPreference,
+  defaultAssistantRunConfiguration,
   UpdateChatSessionInputSchema,
   UuidSchema,
   authorize,
@@ -37,6 +39,10 @@ import {
   getStoredFile,
 } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import {
+  assistantRuntimeEnabled,
+  AssistantRuntimeError,
+} from '../assistant-runtime.ts';
 import {
   employeeManifestChecksum,
   riceEmployeeKey,
@@ -944,6 +950,13 @@ export async function sendChatMessage(
 ) {
   const message = SendChatMessageInputSchema.parse(input);
   const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
+  const assistantPreference =
+    message.deliveryMode === 'follow_up' &&
+    !message.userQuestionAnswer &&
+    !message.reviewContinuation &&
+    !message.changesetAction
+      ? resolveAssistantPreference(message.assistantPreference, message.text)
+      : undefined;
   const conversationMessage = message.userQuestionAnswer
     ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`
     : message.text;
@@ -1020,7 +1033,8 @@ export async function sendChatMessage(
           (ChatMessageContentSchema.parse(userMessage.content).text !==
             message.text ||
             message.reviewContinuation ||
-            message.changesetAction))
+            message.changesetAction ||
+            message.assistantPreference))
       )
         throw new ArtifactReviewError('input_id_conflict');
       message.text = ChatMessageContentSchema.parse(userMessage.content).text;
@@ -1293,6 +1307,14 @@ export async function sendChatMessage(
       },
     });
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
+    if (
+      assistantPreference?.allowAssistants &&
+      (!assistantRuntimeEnabled() ||
+        !binding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
+          'assistant.delegate',
+        ))
+    )
+      throw new AssistantRuntimeError('forbidden');
     const queued = await enqueueRun(
       context,
       {
@@ -1305,6 +1327,14 @@ export async function sendChatMessage(
           sessionId: binding.sessionId,
           userMessageId: binding.userMessageId,
           assistantMessageId: binding.assistantMessageId,
+          ...(assistantPreference
+            ? {
+                assistantConfiguration: {
+                  ...defaultAssistantRunConfiguration(),
+                  allowAssistants: assistantPreference.allowAssistants,
+                },
+              }
+            : {}),
         },
         maxAttempts: 2,
         timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,

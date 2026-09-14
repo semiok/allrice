@@ -161,6 +161,43 @@ export const UpdateChatSessionInputSchema = z
     'at least one update is required',
   );
 
+// User intent, not a tool grant or a budget supplied by the browser. Effective
+// limits and employee/tenant authorization are resolved separately by the server.
+export const AssistantPreferenceSchema = z
+  .object({ mode: z.literal('daily'), allowAssistants: z.boolean() })
+  .strict();
+export type AssistantPreference = z.infer<typeof AssistantPreferenceSchema>;
+export const AssistantControlActionSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('stop_child'),
+      requestId: UuidSchema,
+      childRunId: UuidSchema,
+    })
+    .strict(),
+  z
+    .object({ action: z.literal('cancel_root'), requestId: UuidSchema })
+    .strict(),
+]);
+export type AssistantControlAction = z.infer<
+  typeof AssistantControlActionSchema
+>;
+
+export function resolveAssistantPreference(
+  preference: AssistantPreference | undefined,
+  userText: string,
+): AssistantPreference | undefined {
+  // Only an explicit leading user directive is a deterministic restriction.
+  // Quoted documents, attachments and mentions/questions are never interpreted
+  // as instructions here. This parser can only remove permission, never grant it.
+  const explicitOptOut =
+    /^(?:本次|这次)?(?:不使用助手|不要使用助手|不要用助手|不用助手)(?:[，,。.!！：:\n]|$)/u.test(
+      userText.trim(),
+    );
+  if (explicitOptOut) return { mode: 'daily', allowAssistants: false };
+  return preference;
+}
+
 export const SendChatMessageInputSchema = z
   .object({
     clientMessageId: UuidSchema,
@@ -172,9 +209,22 @@ export const SendChatMessageInputSchema = z
     userQuestionAnswer: UserQuestionAnswerSubmissionSchema.optional(),
     reviewContinuation: ReviewContinuationInputSchema.optional(),
     changesetAction: ChangesetActionInputSchema.optional(),
+    assistantPreference: AssistantPreferenceSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.assistantPreference &&
+      (value.deliveryMode !== 'follow_up' ||
+        value.userQuestionAnswer ||
+        value.reviewContinuation ||
+        value.changesetAction)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'assistant preference applies only to a new ordinary queued task',
+      });
     if (
       value.changesetAction &&
       (value.reviewContinuation ||

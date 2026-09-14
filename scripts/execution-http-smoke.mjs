@@ -36,6 +36,7 @@ const cookie = login.headers.get('set-cookie')?.split(';')[0];
 if (!cookie) throw new Error('execution smoke login did not set a session');
 const tenantHeaders = {
   cookie,
+  origin: new URL(baseUrl).origin,
   'x-allrice-organization-id': workspaceState.organizationId,
   'x-allrice-workspace-id': workspaceState.workspaceId,
 };
@@ -163,6 +164,19 @@ const cancellation = await enqueue({
   input: { value: 'must-not-complete', delayMs: 10_000 },
 });
 await waitFor(cancellation.id, ['running']);
+await request(
+  `/api/v1/runs/${cancellation.id}/cancel?workspaceId=${workspaceState.workspaceId}`,
+  {
+    method: 'POST',
+    headers: {
+      ...tenantHeaders,
+      origin: 'https://untrusted.example',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ reason: 'cross_origin_must_not_cancel' }),
+  },
+  403,
+);
 await request(
   `/api/v1/runs/${cancellation.id}/cancel?workspaceId=${workspaceState.workspaceId}`,
   {
