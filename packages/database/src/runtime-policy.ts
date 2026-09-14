@@ -374,6 +374,17 @@ async function checkBinding(
 
 export type RuntimePolicyOptions = {
   context: RuntimePolicyPrincipal;
+  /** Trusted adapter hooks, never public policy input. Root/child locks must
+   * precede controls in BOTH execution admission and approval creation. The
+   * final check runs after approval-row lock waits and writes, before commit. */
+  lockCurrentBinding?: (input: {
+    transaction: Transaction;
+    binding: RuntimeActionBinding;
+  }) => Promise<void>;
+  assertFinalBinding?: (input: {
+    transaction: Transaction;
+    binding: RuntimeActionBinding;
+  }) => Promise<void>;
   /** Server-owned adapter must resolve current command, baseline and target facts in this transaction.
    * Echoing the request binding is NOT a valid production implementation. Missing adapter fails closed.
    */
@@ -385,7 +396,7 @@ export type RuntimePolicyOptions = {
 };
 
 export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
-  return async (input: {
+  const admit = async (input: {
     transaction: Transaction;
     binding: RuntimeActionBinding;
     phase: 'create' | 'dispatch' | 'heartbeat';
@@ -497,6 +508,12 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     if (row.runtime_expires_at <= completedAt)
       throw new RuntimePolicyError('approval_invalid_or_stale');
   };
+  return async (input: Parameters<typeof admit>[0]) => {
+    await options.lockCurrentBinding?.(input);
+    const result = await admit(input);
+    await options.assertFinalBinding?.(input);
+    return result;
+  };
 }
 
 export async function requestRuntimeActionApproval(
@@ -512,6 +529,11 @@ export async function requestRuntimeActionApproval(
   )
     throw new RuntimePolicyError('approval_lifetime_invalid');
   return database.begin(async (transaction) => {
+    const requestedBinding = RuntimeActionBindingSchema.parse(bindingInput);
+    await options.lockCurrentBinding?.({
+      transaction,
+      binding: requestedBinding,
+    });
     await lockBrowserBindingOperations(
       transaction,
       options.context,
@@ -544,8 +566,10 @@ export async function requestRuntimeActionApproval(
     )
       throw new RuntimePolicyError('approval_binding_mismatch');
     const existing = existingRows[0];
-    if (existing)
+    if (existing) {
+      await options.assertFinalBinding?.({ transaction, binding });
       return RuntimeActionApprovalRequestSchema.parse(existing.runtime_request);
+    }
     const now = await clock(transaction);
     if (policyExpiresAt <= now)
       throw new RuntimePolicyError('frozen_policy_invalid');
@@ -585,6 +609,7 @@ export async function requestRuntimeActionApproval(
       throw new RuntimePolicyError('frozen_policy_invalid');
     if (Date.parse(request.expiresAt) <= completedAt.getTime())
       throw new RuntimePolicyError('approval_invalid_or_stale');
+    await options.assertFinalBinding?.({ transaction, binding });
     return request;
   }) as Promise<RuntimeActionApprovalRequest>;
 }

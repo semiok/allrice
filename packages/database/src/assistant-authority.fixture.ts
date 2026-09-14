@@ -32,6 +32,8 @@ export async function createAssistantAuthorityFixture(
     controls?: RuntimePolicyControls | null;
     toolNames?: string[];
     allowedTools?: string[];
+    project?: boolean;
+    nativeSessionId?: string;
     snapshot?: (value: EmployeeExecutionSnapshot) => unknown;
     deniedModel?: boolean;
     configure?: boolean;
@@ -42,7 +44,9 @@ export async function createAssistantAuthorityFixture(
     'assistant.report',
     'web.fetch',
   ];
-  const base = await assistantFixture(db);
+  const base = await assistantFixture(db, 12, {
+    nativeSessionId: options.nativeSessionId,
+  });
   const { organizationId: org, workspaceId: workspace } = base.task.scope;
   const user = base.context.actor.id;
   const rootRunId = base.task.rootRunId;
@@ -88,6 +92,10 @@ export async function createAssistantAuthorityFixture(
   };
   const task: RuntimeTaskRef = {
     ...base.task,
+    scope: {
+      ...base.task.scope,
+      projectId: options.project ? randomUUID() : null,
+    },
     chatSessionId: session,
     frozenConfiguration: {
       employeeVersionId: version,
@@ -152,6 +160,10 @@ export async function createAssistantAuthorityFixture(
     createdAt: now,
   });
   await db.begin(async (tx) => {
+    if (task.scope.projectId) {
+      await tx`insert into allrice_projects(id,organization_id,workspace_id,owner_id,name) values(${task.scope.projectId},${org},${workspace},${user},'Synthetic P25 project')`;
+      await tx`update allrice_runs set project_id=${task.scope.projectId} where id=${rootRunId}`;
+    }
     // Replace only the synthetic permissive fixture's root admission, before
     // any child/message/usage exists. Production configure runs below.
     await tx`delete from allrice_assistant_instances where root_run_id=${rootRunId}`;
@@ -167,8 +179,8 @@ export async function createAssistantAuthorityFixture(
     values(${version},${org},${workspace},${employee},1,'P25 authority',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
     await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignment},${org},${workspace},${employee},${version},${user},false)`;
-    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
-    values(${session},${org},${workspace},${user},'P25 authority',${assignment},${version})`;
+    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,project_id,owner_id,title,employee_assignment_id,employee_version_id)
+        values(${session},${org},${workspace},${task.scope.projectId},${user},'P25 authority',${assignment},${version})`;
     await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
     values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),
       (${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
@@ -227,6 +239,7 @@ export async function createAssistantAuthorityFixture(
     manifest,
     snapshot,
     runtime,
+    base: { ...base.base, scope: task.scope },
     configure,
     authorize,
     setControls,

@@ -140,13 +140,15 @@ export async function assertAssistantAuthority(
       version: number;
       deadline_at: Date;
       lease_expires_at: Date;
+      lease_token: string;
+      worker_lease_digest: string;
       timeout_at: Date;
     }[]
   >`
     select r.owner_id,r.project_id,r.execution_spec,r.input,rt.task as root_task,l.task as link_task,ar.configuration,
       e.execution_snapshot,e.employee_assignment_id,e.employee_version_id,e.session_id,
       r.policy_snapshot_id,p.payload as policy_payload,p.expires_at as policy_expires_at,
-      v.manifest,v.config_checksum,v.version,rt.deadline_at,j.lease_expires_at,j.timeout_at
+      v.manifest,v.config_checksum,v.version,rt.deadline_at,j.lease_expires_at,j.timeout_at,j.lease_token,ar.worker_lease_digest
     from allrice_runtime_roots rt
     join allrice_assistant_roots ar on ar.root_run_id=rt.root_run_id
     join allrice_runtime_run_links l on l.root_run_id=rt.root_run_id and l.run_id=${task.runId}
@@ -168,10 +170,13 @@ export async function assertAssistantAuthority(
       and r.owner_id=${identity.owner_id} and r.project_id is not distinct from ${task.scope.projectId}::uuid
       and r.state='running' and ar.revoked_at is null and rt.cancel_request_id is null and rt.deadline_at>clock_timestamp()
       and e.employee_version_id=${task.frozenConfiguration.employeeVersionId} and e.session_id=${task.chatSessionId}
-      and s.archived_at is null and j.status='running' and j.cancel_requested_at is null
+      and s.archived_at is null and s.project_id is not distinct from r.project_id and j.status='running' and j.cancel_requested_at is null
       and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and p.expires_at>clock_timestamp()
     for share of rt,ar,l,r,e,a,v,p,s,c,j`;
   requireAuthority(root && root.owner_id === identity.owner_id);
+  requireAuthority(
+    root.worker_lease_digest === runtimePolicyDigest(root.lease_token),
+  );
   const rootTask = RuntimeTaskRefSchema.safeParse(root.root_task),
     linkTask = RuntimeTaskRefSchema.safeParse(root.link_task);
   const configuration = AssistantRunConfigurationSchema.safeParse(
