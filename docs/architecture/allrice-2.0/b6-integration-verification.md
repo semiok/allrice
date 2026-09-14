@@ -94,6 +94,18 @@ P25 的 CI 新增显式真实 PostgreSQL / native 合成模型步骤，避免只
 
 修复目标是按会话与切换代次隔离历史、SSE/trace 以及迟到异步结果；离开页面不能被等同于取消服务端任务。最终修复、新构建与真实 UI 复验尚未完成，本节不预先宣称成功。五个 PR 继续保持 Draft，未改变 main/Dev/Prod 或真实租户开关。
 
+### 第六轮修复后复验
+
+P26 独立修复 `c1b1b9a` 在整合树为 `26eaf6e`。新增19项异步 controller/useSession 回归；后者使用 React primitives harness，不能当真实 React StrictMode 测试。主开发组合源复跑新增与既有协议/控制测试共 **46/46**，Web 及依赖构建、定向格式/ESLint 通过。未改 server 权限、控制台错误处理或模型执行策略。
+
+干净组合 `ef9b2550f54aa531f5ebe0a700cb1ac4bd0b1932`，BUILD_ID `Heb9HDaXDT-jlqs0VtWrD`，真实 Chrome + built Next + 隔离 PostgreSQL 页面复验 **通过**。SSE 请求记录只有 `codex-queue` 和 `restore-codex-pending` 两个阶段，没有切回完成 Gemini 后的旧流重建；旧 SSE 中止、停止按钮清除、回原会话恢复任务均有断言。桌面/390px、刷新、冻结偏好与模型、取消请求真实性、flag-OFF 独立启动后历史/取消路径通过，Page/Console/HTTP 错误为 0。
+
+证据目录 `/tmp/allrice-p26-ui-XR3Whe/evidence`：`checks.json` SHA-256 `ee41007cf4a832bc9e1c66c715c52e897354f2cd0ff71329af8f6db84f982f49`，`desktop.png` `90bf9aca8f28fdf5e4bd665fe472d66e9068d0cd7bd11c3d5b492640390c2d8d`，`narrow.png` `1154e92f119b81da4f66411e9cc4857928c28aa4dfc79c007da8221126243e76`。主开发实际查看窄屏截图；owned Next/Chrome、随机 schema 和存储已清理，未碰既有 Dev/Prod。此前三份失败证据仍保留。
+
+这次只证明页面与连接切换，不证明真实 provider/Worker 配额、所有断网恢复或 composer 迟到草稿/附件/busy 副作用已覆盖。P27 联合验收、Apple 正式签名、权威费用核对及实际有界助手执行仍不是完成状态。
+
+相同产品/测试源码 `ef9b255` 的整仓常规回归使用 `--maxWorkers=1`，**2022 passed / 0 failed / 747 skipped**。报告 `.local/b6-full-tests-ef9b255.json`，SHA-256 `4ee53db26b4c5e6036f6f852710f62b40c14c44ce421ae0cafabe42ee2ec3c73`；运行期间仅补写本文和 P26 文档，未改产品/测试代码。跳过项仍待各自真实环境，不计为通过，不取代前述失败的真实 provider 验收。再次只读核对 main/Dev 仍为 B5 `57f3b5fd2acba034e9011231075c3e29b4503733` / `YmBpsav9R6_mfJmIob03N`。
+
 ## 结果、权限与发布边界
 
 助手输出文件的 hash、归属和存储完整性可以验证，但不代表模型内容或外部动作已经独立核实。UI 使用“关联工件”，输出标注 `model_proposal` / `independentlyVerified: false`。
