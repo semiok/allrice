@@ -576,55 +576,81 @@ async function routeLedger(
   return row;
 }
 
-async function verifyAssistant(
+async function readWorkerFrozenPrice(
   fixture: P27WorkerFixture,
   task: P27PreparedWorkerTask,
-  result: HarnessExecutionResult,
 ) {
-  const [
-    { createAssistantRuntime },
-    { assertAssistantAuthority },
-    { createAssistantPricing },
-    { AssistantPriceSnapshotSchema },
-    { runtimePolicyDigest },
-  ] = await Promise.all([
-    import('../../../packages/database/src/assistant-runtime.ts'),
-    import('../../../packages/database/src/assistant-authority.ts'),
-    import('../../../packages/database/src/assistant-pricing.ts'),
-    import('../../../packages/contracts/src/index.ts'),
-    import('../../../packages/database/src/runtime-policy.ts'),
-  ]);
-  const { db } = fixture;
-  const tree = await createAssistantRuntime({
-    database: db,
-    authorize: assertAssistantAuthority,
-  }).getTree(fixture.context, { runId: task.runId });
-  const [frozen] = await db<
+  const [{ AssistantPriceSnapshotSchema }, { runtimePolicyDigest }] =
+    await Promise.all([
+      import('../../../packages/contracts/src/index.ts'),
+      import('../../../packages/database/src/runtime-policy.ts'),
+    ]);
+  const [frozen] = await fixture.db<
     { snapshot: unknown; snapshot_digest: string }[]
-  >`select snapshot,snapshot_digest from allrice_assistant_price_snapshots where root_run_id=${task.runId}`;
-  const snapshot = AssistantPriceSnapshotSchema.parse(frozen?.snapshot);
+  >`select p.snapshot,p.snapshot_digest from allrice_assistant_price_snapshots p
+    join allrice_runs r on r.id=p.root_run_id
+    where p.root_run_id=${task.runId} and r.organization_id=${fixture.organizationId}
+      and r.workspace_id=${fixture.workspaceId} and r.owner_id=${fixture.ownerId}`;
+  if (!frozen) return undefined;
+  const snapshot = AssistantPriceSnapshotSchema.parse(frozen.snapshot);
   check(
-    frozen &&
-      runtimePolicyDigest(snapshot) === frozen.snapshot_digest &&
+    runtimePolicyDigest(snapshot) === frozen.snapshot_digest &&
       snapshot.price.target.connectionId === fixture.connectionId &&
       snapshot.price.target.catalogId === fixture.catalogId &&
       runtimePolicyDigest(snapshot.price) ===
         runtimePolicyDigest(fixture.pricingCatalog.entries[0]),
     'worker_frozen_price_identity',
   );
-  const [authority] = await db<
+  return { snapshot, snapshot_digest: frozen.snapshot_digest };
+}
+
+/** Shared by the actual success verifier and the no-provider PG regression. */
+export async function summarizeWorkerPricing(
+  fixture: P27WorkerFixture,
+  task: P27PreparedWorkerTask,
+) {
+  const { createAssistantPricing } =
+    await import('../../../packages/database/src/assistant-pricing.ts');
+  const [authority] = await fixture.db<
     { generation: number; fence: number }[]
   >`select generation::int,fence::int from allrice_assistant_roots where root_run_id=${task.runId}`;
   check(authority, 'worker_assistant_authority');
-  const summary = await createAssistantPricing({ database: db }).summarize({
+  return createAssistantPricing({ database: fixture.db }).summarize({
     scope: {
       organizationId: fixture.organizationId,
       workspaceId: fixture.workspaceId,
       projectId: null,
     },
     rootRunId: task.runId,
-    worker: { ...task.workflowLease, ...authority },
+    worker: {
+      workerId: task.workflowLease.workerId,
+      jobId: task.workflowLease.jobId,
+      leaseToken: task.workflowLease.leaseToken,
+      generation: authority.generation,
+      fence: authority.fence,
+    },
   });
+}
+
+async function verifyAssistant(
+  fixture: P27WorkerFixture,
+  task: P27PreparedWorkerTask,
+  result: HarnessExecutionResult,
+) {
+  const [{ createAssistantRuntime }, { assertAssistantAuthority }] =
+    await Promise.all([
+      import('../../../packages/database/src/assistant-runtime.ts'),
+      import('../../../packages/database/src/assistant-authority.ts'),
+    ]);
+  const { db } = fixture;
+  const tree = await createAssistantRuntime({
+    database: db,
+    authorize: assertAssistantAuthority,
+  }).getTree(fixture.context, { runId: task.runId });
+  const frozen = await readWorkerFrozenPrice(fixture, task);
+  check(frozen, 'worker_frozen_price_missing');
+  const { snapshot } = frozen;
+  const summary = await summarizeWorkerPricing(fixture, task);
   const admissions = await db<
     P27PricedAdmission[]
   >`select call_id,run_id,request_digest,dispatched_at,finished_at from allrice_assistant_model_admissions where root_run_id=${task.runId}`;
@@ -798,7 +824,7 @@ async function verifyOrdinary(
   };
 }
 
-async function workerFailureSnapshot(
+export async function workerFailureSnapshot(
   fixture: P27WorkerFixture,
   task: P27PreparedWorkerTask,
   diagnostics?: AssistantFailureDiagnostics,
@@ -814,6 +840,9 @@ async function workerFailureSnapshot(
     await db`select run_id,metric,count(*)::int as reservations,count(*) filter(where settled_amount is null)::int as unsettled,coalesce(sum(settled_amount),0)::text as settled from allrice_assistant_usage where root_run_id=${task.runId} group by run_id,metric`;
   const routes =
     await db`select id,status,input_tokens,output_tokens,cost_cents::text,usage_complete,cache_usage_known from allrice_route_decisions where run_id=${task.runId}`;
+  // Trust the independently frozen root price, never a receipt's own claimed
+  // digest. Product Session -> native session remains the actual PG mapping.
+  const frozen = await readWorkerFrozenPrice(fixture, task);
   return {
     runId: task.runId,
     admissions: [...admissions],
@@ -824,6 +853,7 @@ async function workerFailureSnapshot(
       diagnostics,
       admissions,
       receipts,
+      snapshotDigest: frozen?.snapshot_digest,
     }),
   };
 }
