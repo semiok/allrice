@@ -47,12 +47,30 @@ P14 Draft #62 的首轮 CI 在无构建产物的 checkout 上发现独立子进�
 
 五个独立 Draft 为 P14 #62、P25 #64、P26 #65、P28 #63、P27 #66。P14 `4eb2a6e` CI run `34810478053`、P28 `7e6132e` CI run `34809777947` 通过。P25/P26 首次 CI 的旧合成提案重复和合法取消缺 Origin 已修复，跨站取消拒绝测试保留；后续最终 head 仍需 CI 复验。所有 PR 保持 Draft，main/Dev 未变。
 
-### 仍在补验的边界
+### 第三轮当时仍在补验的边界
 
 - 在途模型遇到非 membership 的 policy/employee/assignment/flag 撤权，不能只阻止下一次工具准入；需实际关闭当前流且不伪造执行停止回执。该窄修及正常完成竞争回归正在进行，上述整仓结果不含此修复。
 - 真实 provider 基础助手脚本必须断言 adapter 返回的全树用量/完成状态与数据库一致，不能只查数据库而漏掉 Worker 返回字段；部分 fixture 初始化失败也不能误报清理完成。最终候选需包含这些验收修正。
 - 助手无权威价格/费用核对闭环时费用为 NULL、cache 拆分未知，月度配额按未知拒绝放行。**真实租户助手启用仍受阻**，不能以已知 0 或放宽配额解决。direct adapter 的一次真实模型 smoke 不经过完整 Worker route/quota，因此不能证明真实租户连续调用可用。
 - Apple Developer / Developer ID 条件仍缺，正式签名、公证、可信更新回退和 P27 全部联合场景仍未验收。不能将脚本或普通开发包测试充当这些证据。
+
+## 第四轮：撤权回归、真实模型失败与预算阻断
+
+组合 `faec3b7` 纳入在途 authority 撤销停流及正常结束竞争修复。在独立 `allrice_b2` 随机 schema 中，14 文件的真实 PostgreSQL / 原生 DSH 相关测试为 **284 passed / 0 failed / 4 skipped**。报告 `.local/b6-real-pg-native-faec3b7.json`，SHA-256 `54d6f372eb4f048bd9491e66781c90389743d70888193ed96971a31a504d08ef`。模型 HTTP 为合成服务；4 项实际 VM/设备开关未开启，不能计作通过。
+
+组合 `1507ff0639d3ea2d33aa7df396b7aa8822eae6c4` 增加 P27 返回值全树核对及部分 fixture 初始化清理证明。完整普通测试 **1942 passed / 0 failed / 731 skipped**，302 个文件；报告 `.local/b6-full-tests-1507ff0.json`，SHA-256 `ed3161d8760614bb90ee90e4879cdff0a9a517fa36422842ca0ee7c691090aa6`。P27 帮助测试首次命令误把故障清理测试所需的数据库环境变量传给要求干净环境的正常 fixture 测试，得到 22 passed / 1 failed；移除两项继承的数据库变量后，该正常 fixture 测试单独 **1/1 通过**，没有放宽隔离检查。
+
+### 首次真实 provider 验收：失败，未重试
+
+在上述干净 `1507ff0` 候选上，仅执行一次授权的真实 Codex smoke。使用独立合成组织、随机 schema、独立存储与原生运行目录，经正常受限 DSH/provider 通道；不启用真实租户、不修改 Dev 部署。实际启动父级和两个助手，但约 9.8 秒后执行失败，**不算 P27 通过**。原记录只保留固定分类 `p27_external_or_runtime_failure`，不据此追认未捕获的原始异常。
+
+最终失败收据 `.local/p27-assistants-cb010a94-3d03-4b2d-bab1-0e180e75572a/03.json`，SHA-256 `b1f7ce7acc28608800a6b0986356daeb02b71d0668545f1fcaab736193b2857c`。本次拥有的原生 client 已退出、执行已收束、随机 schema/存储/连接/临时运行目录清理均有证明；未知消耗未改成零。收据不包含模型原文、思考文本或密钥。
+
+当时输出总预算为 12000，父级已花费 246，两个助手各保留 4000，因此下一次父级再申请固定 4000 会达到 12246 并被拒绝。独立真实 PG 三项测试在 `c694dfe` 精确复现该条件，包括失败时整笔不变、并发边界和未知保留不被释放；这是已证明的预算缺陷，不能据此声称已还原原失败的全部原因。
+
+固定 DSH 的请求在 `llm/stream` 前已经 prepare/freeze；不能在那里降低 `maxTokens`，也不能只降低账本保留却发送原上限。固定 `pi-ai` Codex request builder 未序列化 `maxTokens` / `max_output_tokens`，这只是当前 SDK 的已验证限制，**不是关于服务端支持范围的断言**。当前修复方向是支持的 `agent/request` 预分配、prepare 后同一 call ID 原子 dispatch，并按服务端冻结 provider 能力拒绝不可证明的助手输出边界。不得加大总预算掩盖问题、修改 node_modules、放宽配额或建立第二套循环；普通未启用助手的 Codex 聊天须保持不变。
+
+`4b364b9` 增加仅验收脚本使用的白名单错误分类器，拒绝 getter/Proxy 等动态取值，不输出原始消息/堆栈/URL/header。它不补造第一次失败丢失的信息。上述成功回归均**不覆盖尚在开发的两阶段分配和 provider 准入修复**，也不解决权威定价/费用核对与 Apple 签名门禁。
 
 ## 结果、权限与发布边界
 
