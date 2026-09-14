@@ -208,6 +208,56 @@ integration(
       ).rejects.toThrow();
     });
 
+    it('the existing StopRun job tombstone blocks new assistant calls before heartbeat propagation', async () => {
+      const f = await assistantFixture(database.db),
+        child = (await f.delegate()).instance;
+      await database.db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='Synthetic user stop' where id=${f.worker.jobId}`;
+      await expect(
+        f.runtime.reserveUsage({
+          ...f.base,
+          runId: child.runId,
+          kind: 'model',
+          callId: randomUUID(),
+          amounts: {
+            model_calls: 1,
+            tool_calls: 0,
+            input_tokens: 1,
+            output_tokens: 1,
+          },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('a native sibling identity cannot checkpoint another child input', async () => {
+      const f = await assistantFixture(database.db),
+        first = (await f.delegate()).instance,
+        secondInputId = randomUUID();
+      await f.delegate({ delegationId: secondInputId });
+      await f.runtime.claimMessage({ ...f.base, inputId: secondInputId });
+      const bridge = createAssistantWorkerBridge({
+        runtime: f.runtime,
+        task: f.task,
+        context: f.context,
+        worker: f.worker,
+        wireNames: {},
+        readOnlyTools: new Set(),
+      });
+      await expect(
+        bridge.handle('checkpoint', {
+          nativeSessionId: first.nativeSessionId,
+          inputId: secondInputId,
+          nativeMessageId: randomUUID(),
+          durableSeq: 1,
+          adoptedSeq: 2,
+        }),
+      ).rejects.toThrow();
+      expect(
+        (await bridge.tree()).messages.find(
+          (message) => message.inputId === secondInputId,
+        )?.status,
+      ).toBe('dispatching');
+    });
+
     it('actual over-budget native stream drains the root tree and prevents a late model wake', async () => {
       const f = await assistantFixture(database.db),
         hold = gate();
