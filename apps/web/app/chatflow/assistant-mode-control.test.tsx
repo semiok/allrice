@@ -37,4 +37,16 @@ describe('P26 next-task mode control', () => {
     expect(html).toContain('checked=""');
     expect(html).toContain('当前员工未开放助手能力');
   });
+  it('shows model-specific unavailability and disables the checked opt-out', () => {
+    const html = renderToStaticMarkup(
+      <AssistantModeControl
+        {...props}
+        eligible={false}
+        unavailableReason="model_unsupported"
+      />,
+    );
+    expect(html).toContain('当前模型暂不支持助手，由 Rice 独立处理。');
+    expect(html).toMatch(/type="checkbox"[^>]*disabled=""[^>]*checked=""/);
+    expect(html).not.toContain('Rice 可按任务需要安排有限助手');
+  });
 });
