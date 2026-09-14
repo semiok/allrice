@@ -197,6 +197,13 @@ export class DshProtocolClient {
     return this.request('session/recover', { sessionId });
   }
 
+  async assistant(
+    action: 'bind' | 'drain' | 'flush' | 'join' | 'inspect' | 'finish',
+    params: Record<string, unknown>,
+  ) {
+    return this.request(`allrice/assistant/${action}`, params);
+  }
+
   async closeSession(sessionId: string) {
     return this.request('session/close', { sessionId }, 10_000);
   }

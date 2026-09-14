@@ -16,7 +16,9 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import type { AssistantOperationOrigin } from './assistant-operation-authority.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
+import { cancelRuntimeAgentOperationsTransaction } from './runtime-ledger/ledger.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import {
   localCommandBinding,
@@ -50,12 +52,20 @@ export async function createLocalCommandOperation(
     context: ExecutionContext;
     arguments: unknown;
     callId: string;
+    /** Internal Worker provenance only; deliberately absent from the public
+     * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
+    assistant?: AssistantOperationOrigin;
   },
   database: Database = getDatabase(),
 ) {
   if (!localCommandFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const args = RuntimeLocalCommandToolInputSchema.parse(input.arguments);
+  if (input.assistant) {
+    UuidSchema.parse(input.assistant.runId);
+    if (args.background)
+      throw new RuntimePolicyError('assistant_authority_changed');
+  }
   if (args.background && !localServiceFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const ctx = input.context;
@@ -73,8 +83,9 @@ export async function createLocalCommandOperation(
       session_id: string;
       thread_generation: number;
       timeout_at: Date;
+      project_id: string | null;
     }[]
-  >`select r.execution_spec,r.policy_snapshot_id,p.payload,e.employee_version_id,e.session_id,c.thread_generation,j.timeout_at
+  >`select r.execution_spec,r.project_id,r.policy_snapshot_id,p.payload,e.employee_version_id,e.session_id,c.thread_generation,j.timeout_at
     from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
     join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId}
     join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
@@ -128,13 +139,15 @@ export async function createLocalCommandOperation(
       network: 'none',
     },
   });
-  const key = `local-command:${ctx.runId}:${input.callId}`;
+  const key = input.assistant
+    ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
+    : `local-command:${ctx.runId}:${input.callId}`;
   const operationId = id(key);
   const task = {
     scope: {
       organizationId: ctx.organizationId,
       workspaceId: ctx.workspaceId,
-      projectId: null,
+      projectId: input.assistant ? row.project_id : null,
     },
     runId: ctx.runId,
     rootRunId: ctx.runId,
@@ -173,9 +186,22 @@ export async function createLocalCommandOperation(
   });
   const ledger = createGovernedBridgeOperationLedger(device, {
     database,
-    initialOperation: { binding, payload },
+    initialOperation: {
+      binding,
+      payload,
+      ...(input.assistant ? { assistant: input.assistant } : {}),
+    },
   });
-  await ensureRuntimeOperationRoot(
+  if (input.assistant) {
+    // Idempotent createOperation retries return existing facts before its
+    // admission callback. Authenticate that read here too; new operations are
+    // still admitted again atomically under the ledger's root lock below.
+    await database.begin(async (transaction) => {
+      await ledger.policyOptions.lockCurrentBinding?.({ transaction, binding });
+      await ledger.policyOptions.assertFinalBinding?.({ transaction, binding });
+    });
+  }
+  const budgets = await ensureRuntimeOperationRoot(
     ledger,
     binding.task,
     row.timeout_at.toISOString(),
@@ -186,7 +212,7 @@ export async function createLocalCommandOperation(
       contractVersion: 1,
       binding,
       stepId: null,
-      agentInstanceId: null,
+      agentInstanceId: input.assistant?.runId ?? null,
       processId: null,
       cancelRequestId: null,
       idempotencyKey: id(`${key}:delivery`),
@@ -194,9 +220,15 @@ export async function createLocalCommandOperation(
       result: null,
     }),
     bridgePayload: payload,
-    reservations: [
-      { metric: 'tool_calls', accountingId: id(`${key}:meter`), amount: 1 },
-    ],
+    // All root meters participate; this operation reserves one platform tool
+    // operation and zero model usage. Native coordination is metered separately.
+    reservations: budgets.map(({ metric }) => ({
+      metric,
+      accountingId: id(
+        metric === 'tool_calls' ? `${key}:meter` : `${key}:meter:${metric}`,
+      ),
+      amount: metric === 'tool_calls' ? 1 : 0,
+    })),
   });
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
@@ -321,11 +353,38 @@ export async function waitLocalCommandOperation(
   const cancel = async () => {
     if (!canceled) {
       canceled = true;
-      await created.ledger.cancelRoot(
-        scope,
-        created.snapshot.binding.task.rootRunId,
-        randomUUID(),
-      );
+      await database.begin(async (tx) => {
+        // Resolve immutable provenance, not a caller-modified returned view.
+        const [row] = await tx<
+          { initial_snapshot: unknown }[]
+        >`select initial_snapshot from allrice_runtime_operations
+            where id=${operationId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+        const stored = RuntimeOperationSnapshotSchema.parse(
+          row?.initial_snapshot,
+        );
+        if (
+          stored.binding.task.rootRunId !==
+          created.snapshot.binding.task.rootRunId
+        )
+          throw new RuntimePolicyError('assistant_authority_changed');
+        if (!stored.agentInstanceId) {
+          await created.ledger.cancelRoot(
+            scope,
+            stored.binding.task.rootRunId,
+            randomUUID(),
+            tx,
+          );
+          return;
+        }
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${stored.binding.task.rootRunId}
+            and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for update`;
+        await cancelRuntimeAgentOperationsTransaction(
+          tx,
+          stored.binding.task.rootRunId,
+          randomUUID(),
+          [stored.agentInstanceId],
+        );
+      });
     }
   };
   while (Date.now() < Date.parse(created.deadlineAt)) {
@@ -381,8 +440,12 @@ export async function waitLocalCommandOperation(
     if (
       approval &&
       (approval.status === 'rejected' || approval.expired || approval.revoked)
-    )
+    ) {
       await cancel();
+      // Re-read the committed targeted cutoff. Never return the stale
+      // waiting_user snapshot as if it represented a post-cancel operation.
+      continue;
+    }
     if (
       canceled &&
       ['planned', 'waiting_user', 'ready', 'cancel_requested'].includes(

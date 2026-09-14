@@ -33,7 +33,10 @@ export const OrganizationModelQuotaSchema = z
     monthlyCostLimitCents: z.number().int().nonnegative().max(1_000_000_000),
     usedRuns: z.number().int().nonnegative(),
     usedTokens: z.number().int().nonnegative(),
-    usedCostCents: z.number().nonnegative(),
+    usedCostCents: z.number().nonnegative().nullable(),
+    unknownCostRuns: z.number().int().nonnegative().default(0),
+    usageComplete: z.boolean().default(true),
+    cacheUsageKnown: z.boolean().default(true),
     periodStart: TimestampSchema,
   })
   .strict();

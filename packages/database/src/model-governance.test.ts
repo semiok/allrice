@@ -18,6 +18,9 @@ const quota = {
   usedRuns: 1,
   usedTokens: 200,
   usedCostCents: 10,
+  unknownCostRuns: 0,
+  usageComplete: true,
+  cacheUsageKnown: true,
   periodStart: new Date().toISOString(),
 };
 
@@ -85,6 +88,26 @@ describe('model governance preflight', () => {
     expect(() =>
       assertProviderAvailable({ ...provider, circuitState: 'open' }),
     ).toThrow(new ModelGovernanceError('PROVIDER_CIRCUIT_OPEN'));
+  });
+
+  it('does not spend unknown cost or incomplete token usage as if it were zero', () => {
+    expect(() =>
+      assertQuotaAvailable({
+        ...quota,
+        usedCostCents: null,
+        unknownCostRuns: 1,
+      }),
+    ).toThrow(new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN'));
+    expect(() =>
+      assertQuotaAvailable({ ...quota, usedCostCents: 0, unknownCostRuns: 1 }),
+    ).toThrow(new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN'));
+    expect(() =>
+      assertQuotaAvailable({ ...quota, usageComplete: false }),
+    ).toThrow(new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN'));
+    // Missing cache breakdown does not erase a known total token count.
+    expect(() =>
+      assertQuotaAvailable({ ...quota, cacheUsageKnown: false }),
+    ).not.toThrow();
   });
 
   it('enforces request, token, concurrency and runtime at every scope', () => {

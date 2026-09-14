@@ -261,9 +261,36 @@ async function cancelLocked(
   await tx`update allrice_runtime_roots set cancel_request_id=${acceptedId},
     cancel_reason=coalesce(cancel_reason,${reason}),
     cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${root.root_run_id}`;
+  // P25 uses the same root ledger: command/Bridge overspend or deadline must
+  // cut off native admission before the Worker drains any running descendants.
+  await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${acceptedId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${root.root_run_id}`;
+  await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${root.root_run_id} and status='pending'`;
   const rows = await tx<
     OperationRow[]
   >`select * from allrice_runtime_operations where root_run_id=${root.root_run_id} order by id for update`;
+  return cancelOperationRows(tx, rows, acceptedId);
+}
+
+/** Trusted caller already holds the shared root scheduling lock. Child
+ * cancellation never cancels its parent/siblings; in-flight actions still need
+ * actual device stop evidence, and never-dispatched actions can prove none. */
+export async function cancelRuntimeAgentOperationsTransaction(
+  tx: Tx,
+  rootRunId: string,
+  requestId: string,
+  childRunIds?: readonly string[],
+) {
+  const rows = await tx<OperationRow[]>`select * from allrice_runtime_operations
+    where root_run_id=${rootRunId} and (${childRunIds === undefined}::boolean or snapshot->>'agentInstanceId'=any(${[...(childRunIds ?? [])]}::text[]))
+    order by id for update`;
+  return cancelOperationRows(tx, rows, requestId);
+}
+
+async function cancelOperationRows(
+  tx: Tx,
+  rows: OperationRow[],
+  acceptedId: string,
+) {
   for (const row of rows) {
     if (
       !isTerminalRuntimeOperationStatus(row.snapshot.status) &&
@@ -311,6 +338,47 @@ async function cancelLocked(
       };
       await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
         values(${randomUUID()},${row.id},${json(tx, payload)},'applied')`;
+      if (row.snapshot.agentInstanceId !== null) {
+        // The scheduling lock and absence of any issued lease prove that this
+        // mapped assistant operation consumed no execution budget. This is not
+        // a rule for dispatched/uncertain work or for legacy operation meters.
+        const reservations = await tx<
+          {
+            metric: string;
+            accounting_id: string;
+            amount: string;
+            unit: RuntimeUsageObservation['unit'];
+            currency: string | null;
+            source: RuntimeUsageObservation['source'];
+          }[]
+        >`select r.metric,r.accounting_id,r.amount,b.unit,b.currency,b.source from allrice_runtime_reservations r join allrice_runtime_budgets b using(root_run_id,metric) where r.operation_id=${row.id} and r.settled_amount is null for update of r`;
+        for (const reservation of reservations) {
+          const at = (await now(tx)).toISOString();
+          const observation = RuntimeUsageObservationSchema.parse({
+            contractVersion: 1,
+            observationId: randomUUID(),
+            accountingId: reservation.accounting_id,
+            task: row.snapshot.binding.task,
+            source: reservation.source,
+            accountingBoundary: {
+              kind: 'operation',
+              attempt: row.snapshot.binding.attempt,
+            },
+            aggregation: 'self_only',
+            metric: reservation.metric,
+            unit: reservation.unit,
+            currency: reservation.currency,
+            mode: 'cumulative',
+            quality: 'measured',
+            amount: 0,
+            state: 'settled',
+            window: { id: randomUUID(), startedAt: at, endedAt: at },
+            observedAt: at,
+          });
+          await tx`update allrice_runtime_reservations set settled_amount=0,observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${reservation.metric}`;
+          await tx`update allrice_runtime_budgets set reserved=reserved-${reservation.amount}::bigint where root_run_id=${row.root_run_id} and metric=${reservation.metric}`;
+        }
+      }
     }
   }
   return { requestId: acceptedId, operations: rows.map((row) => row.snapshot) };

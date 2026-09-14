@@ -19,6 +19,15 @@ describe('AllRice tool manifest', () => {
     const searchTools = allRiceToolManifest.filter(
       (tool) => tool.transport === 'dsh_search',
     );
+    const assistantTools = allRiceToolManifest.filter(
+      (tool) => tool.transport === 'dsh_assistant_native',
+    );
+    expect(assistantTools.map((tool) => tool.canonicalName)).toEqual([
+      'assistant.delegate',
+      'assistant.message',
+      'assistant.report',
+      'assistant.stop',
+    ]);
     const wireNames = nativeTools.map((tool) =>
       'dshWireName' in tool ? tool.dshWireName : undefined,
     );
@@ -26,7 +35,7 @@ describe('AllRice tool manifest', () => {
     expect(new Set(canonicalNames).size).toBe(canonicalNames.length);
     expect(nativeTools.length).toBeGreaterThan(0);
     expect(brokerNativeTools).toHaveLength(
-      nativeTools.length - searchTools.length,
+      nativeTools.length - searchTools.length - assistantTools.length,
     );
     expect(
       brokerNativeTools

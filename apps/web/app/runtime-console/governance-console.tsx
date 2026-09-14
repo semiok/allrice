@@ -50,7 +50,9 @@ interface ProviderOperation {
   averageLatencyMs: number;
   inputTokens: number;
   outputTokens: number;
-  costCents: number;
+  costCents: number | null;
+  unknownCostRuns: number;
+  usageComplete: boolean;
 }
 
 interface Quota {
@@ -59,7 +61,41 @@ interface Quota {
   monthlyCostLimitCents: number;
   usedRuns: number;
   usedTokens: number;
-  usedCostCents: number;
+  usedCostCents: number | null;
+  unknownCostRuns: number;
+  usageComplete: boolean;
+}
+
+export function GovernanceUsageSummary({
+  quota,
+}: {
+  quota: Pick<
+    Quota,
+    | 'usedRuns'
+    | 'usedTokens'
+    | 'usedCostCents'
+    | 'unknownCostRuns'
+    | 'usageComplete'
+  >;
+}) {
+  return (
+    <div className={styles.usage}>
+      <strong>{quota.usedRuns.toLocaleString()}</strong>
+      <span>次运行</span>
+      <strong>{quota.usedTokens.toLocaleString()}</strong>
+      <span>{quota.usageComplete ? 'Token' : 'Token（部分用量待核对）'}</span>
+      <strong>
+        {quota.usedCostCents === null
+          ? '费用待核对'
+          : quota.usedCostCents.toFixed(2)}
+      </strong>
+      <span>
+        {quota.usedCostCents === null
+          ? `${quota.unknownCostRuns} 次运行缺少可用费用估算；不会按 0 计入额度`
+          : '分（估算）'}
+      </span>
+    </div>
+  );
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -407,14 +443,7 @@ export function GovernanceConsole() {
             </div>
             <span>用量在每次 RouteDecision 完成后写入不可重复账本</span>
           </div>
-          <div className={styles.usage}>
-            <strong>{quota.usedRuns.toLocaleString()}</strong>
-            <span>次运行</span>
-            <strong>{quota.usedTokens.toLocaleString()}</strong>
-            <span>Token</span>
-            <strong>{quota.usedCostCents.toFixed(2)}</strong>
-            <span>分</span>
-          </div>
+          <GovernanceUsageSummary quota={quota} />
           <div className={styles.quotaForm}>
             <label>
               运行上限

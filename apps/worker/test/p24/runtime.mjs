@@ -18,6 +18,14 @@ const ctx = await boot(
 );
 await ctx.get('loader')?.await();
 const transport = new JsonRpcLineTransport(process.stdin, process.stdout);
+const governed =
+  process.env.ALLRICE_P25_TEST === 'synthetic-only'
+    ? (
+        await import('../../dsh/allrice-assistant-runtime.mjs')
+      ).createGovernedAssistantNativeRuntime(ctx, (method, params, signal) =>
+        transport.request(`p25/${method}`, params, signal),
+      )
+    : null;
 const roots = new Map();
 const observations = [];
 const content = (text) => [{ type: 'text', text }];
@@ -94,11 +102,29 @@ ctx.tools.register(
 );
 
 async function request(method, p) {
+  if (method.startsWith('p25/') && governed) {
+    const action = method.slice(4);
+    if (
+      ![
+        'bind',
+        'start',
+        'followup',
+        'drain',
+        'inspect',
+        'flush',
+        'join',
+        'finish',
+      ].includes(action)
+    )
+      throw Error('unsupported governed method');
+    return governed[action](p);
+  }
   if (method === 'ready') return { ready: true };
   if (method === 'create' || method === 'resume') {
     const agentOptions = {
       provider: 'openai-compatible',
       model: 'p24-synthetic',
+      ...(governed ? { maxTokens: 1000 } : {}),
     };
     const handle =
       method === 'resume'

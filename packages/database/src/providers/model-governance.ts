@@ -37,6 +37,8 @@ export class ModelGovernanceError extends Error {
       | 'MODEL_RUN_QUOTA_EXCEEDED'
       | 'MODEL_TOKEN_QUOTA_EXCEEDED'
       | 'MODEL_COST_QUOTA_EXCEEDED'
+      | 'MODEL_COST_USAGE_UNKNOWN'
+      | 'MODEL_TOKEN_USAGE_UNKNOWN'
       | 'PROVIDER_KILL_SWITCH'
       | 'PROVIDER_CIRCUIT_OPEN'
       | 'MODEL_REQUEST_QUOTA_EXCEEDED'
@@ -90,9 +92,11 @@ async function requirePlatformAdmin(context: RequestContext) {
   return actorId(context);
 }
 
-export async function getOrganizationModelQuota(organizationId: string) {
+export async function getOrganizationModelQuota(
+  organizationId: string,
+  sql = getDatabase(),
+) {
   const id = UuidSchema.parse(organizationId);
-  const sql = getDatabase();
   const rows = await sql<
     {
       monthly_run_limit: number | null;
@@ -100,7 +104,10 @@ export async function getOrganizationModelQuota(organizationId: string) {
       monthly_cost_limit_cents: number | string | null;
       used_runs: number | string;
       used_tokens: number | string;
-      used_cost_cents: number | string;
+      used_cost_cents: number | string | null;
+      unknown_cost_runs: number;
+      usage_complete: boolean;
+      cache_usage_known: boolean;
       period_start: Date;
     }[]
   >`
@@ -108,7 +115,11 @@ export async function getOrganizationModelQuota(organizationId: string) {
       q.monthly_cost_limit_cents,
       count(l.id)::bigint as used_runs,
       coalesce(sum(l.input_tokens + l.output_tokens), 0)::bigint as used_tokens,
-      coalesce(sum(l.cost_cents), 0) as used_cost_cents,
+      case when count(l.id) filter (where l.cost_cents is null) > 0
+        then null else coalesce(sum(l.cost_cents), 0) end as used_cost_cents,
+      count(l.id) filter (where l.cost_cents is null)::integer as unknown_cost_runs,
+      coalesce(bool_and(l.usage_complete), true) as usage_complete,
+      coalesce(bool_and(l.cache_usage_known), true) as cache_usage_known,
       date_trunc('month', now()) as period_start
     from (select ${id}::uuid as organization_id) scope
     left join allrice_organization_model_quotas q
@@ -131,7 +142,11 @@ export async function getOrganizationModelQuota(organizationId: string) {
     ),
     usedRuns: Number(row.used_runs),
     usedTokens: Number(row.used_tokens),
-    usedCostCents: Number(row.used_cost_cents),
+    usedCostCents:
+      row.used_cost_cents === null ? null : Number(row.used_cost_cents),
+    unknownCostRuns: row.unknown_cost_runs,
+    usageComplete: row.usage_complete,
+    cacheUsageKnown: row.cache_usage_known,
     periodStart: row.period_start.toISOString(),
   });
 }
@@ -195,6 +210,10 @@ export function assertQuotaAvailable(
   if (quota.usedTokens >= quota.monthlyTokenLimit) {
     throw new ModelGovernanceError('MODEL_TOKEN_QUOTA_EXCEEDED');
   }
+  if (!quota.usageComplete)
+    throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
+  if (quota.usedCostCents === null || quota.unknownCostRuns > 0)
+    throw new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN');
   if (quota.usedCostCents >= quota.monthlyCostLimitCents) {
     throw new ModelGovernanceError('MODEL_COST_QUOTA_EXCEEDED');
   }
@@ -571,7 +590,9 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
         average_latency_ms: number | string;
         input_tokens: number | string;
         output_tokens: number | string;
-        cost_cents: number | string;
+        cost_cents: number | string | null;
+        unknown_cost_runs: number;
+        usage_complete: boolean;
       }[]
     >`
       select c.id as connection_id,
@@ -584,7 +605,10 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
         coalesce(avg(extract(epoch from (d.completed_at - d.created_at)) * 1000), 0) as average_latency_ms,
         coalesce(sum(d.input_tokens), 0)::bigint as input_tokens,
         coalesce(sum(d.output_tokens), 0)::bigint as output_tokens,
-        coalesce(sum(d.cost_cents), 0) as cost_cents
+        case when count(d.id) filter (where d.cost_cents is null) > 0
+          then null else coalesce(sum(d.cost_cents), 0) end as cost_cents,
+        count(d.id) filter (where d.cost_cents is null)::integer as unknown_cost_runs,
+        coalesce(bool_and(d.usage_complete), true) as usage_complete
       from allrice_model_connections c
       left join allrice_provider_release_controls rc on rc.connection_id = c.id
       left join allrice_route_decisions d on d.model_connection_id = c.id
@@ -640,7 +664,9 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
       averageLatencyMs: Math.round(Number(item.average_latency_ms)),
       inputTokens: Number(item.input_tokens),
       outputTokens: Number(item.output_tokens),
-      costCents: Number(item.cost_cents),
+      costCents: item.cost_cents === null ? null : Number(item.cost_cents),
+      unknownCostRuns: item.unknown_cost_runs,
+      usageComplete: item.usage_complete,
     })),
     resourceLimits: resourceLimits.map((item) => ({
       scope: item.scope_type,

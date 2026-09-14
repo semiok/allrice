@@ -62,6 +62,21 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  ...(Object.fromEntries(
+    (['delegate', 'message', 'report', 'stop'] as const).map((action) => [
+      `assistant.${action}`,
+      registration('workspace', async () => {
+        throw new HandlerError(
+          'ASSISTANT_NATIVE_REQUIRED',
+          'Assistant coordination requires the governed native DSH runtime',
+          false,
+        );
+      }),
+    ]),
+  ) as Record<
+    `assistant.${'delegate' | 'message' | 'report' | 'stop'}`,
+    RiceToolHandlerRegistration
+  >),
   'local.preview.open': registration('managed_browser', runLocalPreview),
   'browser.workspace': registration('managed_browser', runBrowserWorkspace),
   'local.browser.workspace': registration(

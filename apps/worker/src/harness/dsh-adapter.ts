@@ -7,6 +7,8 @@ import {
 } from '@allrice/contracts';
 
 import { HandlerError } from '../errors.js';
+import { AssistantExecutionUnresolvedError } from './dsh/assistant-outcome.js';
+import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -88,6 +90,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+    assertAssistantProviderOutputBound(
+      input.providerSnapshot,
+      !!input.assistants,
+    );
     if (input.providerSnapshot.provider !== 'dsh') {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
     }
@@ -134,7 +140,71 @@ export class DshHarnessAdapter implements HarnessAdapter {
       nativeSkills,
     });
     this.runtimePool.touch(runtime);
-    runtime.client.setRequestHandler(dshInboundToolHandler(input));
+    const assistant = await input.assistants
+      ?.bind(threadId, generation, input.onToolCall, (nativeSessionId) =>
+        runtime.client.assistant('inspect', { nativeSessionId }),
+      )
+      .catch(async (error) => {
+        await this.runtimePool.drop(threadId);
+        throw error;
+      });
+    const ordinaryHandler = dshInboundToolHandler(input);
+    runtime.client.setRequestHandler(async (method, params) => {
+      if (method.startsWith('allrice/assistant/')) {
+        if (!assistant) throw Error('assistant_runtime_disabled');
+        return assistant.handle(
+          method.slice('allrice/assistant/'.length),
+          params,
+        );
+      }
+      return ordinaryHandler(method, params);
+    });
+    if (assistant)
+      await runtime.client.assistant('bind', {
+        nativeSessionId: threadId,
+        runId: input.assistants!.rootRunId,
+        wireTools: Object.entries(dshNativeWireNames)
+          .filter(([, canonical]) =>
+            input.tools.some((tool) => tool.name === canonical),
+          )
+          .map(([wire]) => wire),
+      });
+    let cancellationTask: Promise<unknown> | undefined;
+    const assistantFailureSignal = new AbortController();
+    const executionSignal = assistant
+      ? AbortSignal.any([input.signal, assistantFailureSignal.signal])
+      : input.signal;
+    const pollCancellation = () => {
+      if (!assistant || cancellationTask) return;
+      cancellationTask = assistant
+        .cancellation()
+        .then((request) =>
+          request.instances.length
+            ? runtime.client.assistant('drain', request)
+            : undefined,
+        )
+        .catch(async () => {
+          // Loss of read authority cannot keep an owned model stream alive.
+          // Process termination needs no new user grant; do not invent stopped receipts.
+          assistantFailureSignal.abort();
+          await this.runtimePool.drop(threadId);
+        })
+        .finally(() => {
+          cancellationTask = undefined;
+        });
+    };
+    const cancellationTimer = assistant
+      ? setInterval(pollCancellation, 250)
+      : undefined;
+    const stopAssistants = () => {
+      if (assistant)
+        cancellationTask = assistant
+          .cancel()
+          .then(() => assistant.cancellation())
+          .then((request) => runtime.client.assistant('drain', request))
+          .catch(() => this.runtimePool.drop(threadId));
+    };
+    input.signal.addEventListener('abort', stopAssistants, { once: true });
     let order = 0;
     let turnId: string | null = null;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -216,6 +286,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
       .join('\n\n');
     let prompt = initialPrompt;
     let answer = '';
+    let assistantFinished = false;
+    let assistantOutcome:
+      | Awaited<
+          ReturnType<NonNullable<NonNullable<typeof assistant>['finish']>>
+        >
+      | undefined;
     try {
       for (
         let callIndex = 0;
@@ -226,7 +302,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           runtime,
           prompt,
           images: callIndex === 0 ? (input.images ?? []) : [],
-          signal: input.signal,
+          signal: executionSignal,
           onTurn: async (nextTurnId) => {
             turnId = nextTurnId;
             await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
@@ -240,7 +316,40 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usage.outputTokens += result.usage.outputTokens;
         const toolCall = parseDshToolCall(result.answer);
         if (!toolCall) {
-          answer = normalizeAllRiceManagedFileLinks(result.answer);
+          const joined = assistant
+            ? await runtime.client.assistant('join', {
+                nativeSessionId: threadId,
+              })
+            : null;
+          if (assistant) {
+            // Native join proves all loops idle. Stop and await the active-run
+            // poll before persisting a terminal root, whose authority is no
+            // longer admissible. Finalization performs its own current check.
+            if (cancellationTimer) clearInterval(cancellationTimer);
+            await cancellationTask;
+            executionSignal.throwIfAborted();
+            await runtime.client.assistant('finish', {
+              nativeSessionId: threadId,
+            });
+            assistantOutcome = await assistant.finish?.();
+            assistantFinished = true;
+            if (!assistantOutcome)
+              throw Error('assistant_completion_proof_required');
+            Object.assign(usage, assistantOutcome.usage);
+            if (
+              !assistantOutcome.usageComplete ||
+              !['completed', 'partial'].includes(assistantOutcome.status)
+            )
+              throw new AssistantExecutionUnresolvedError(
+                usage,
+                assistantOutcome.usageComplete,
+              );
+          }
+          answer = normalizeAllRiceManagedFileLinks(
+            typeof joined?.answer === 'string' ? joined.answer : result.answer,
+          );
+          if (assistantOutcome?.status === 'partial')
+            answer = `部分结果：助手已返回可用内容，但仍有未完成事项；这不是整项任务完成确认。\n\n${answer}`;
           await emit({
             type: 'assistant.completed',
             text: answer,
@@ -292,7 +401,23 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
         });
         try {
-          const toolResult = await input.onToolCall(toolCall);
+          const assistantResult = assistant
+            ? await assistant.handle('tool', {
+                nativeSessionId: threadId,
+                callId: toolCall.id,
+                name: toolCall.name,
+                arguments: toolCall.arguments,
+              })
+            : null;
+          const toolResult = assistantResult
+            ? {
+                modelContent: String(assistantResult.modelContent),
+                summary: String(assistantResult.summary),
+                ...(typeof assistantResult.itemCount === 'number'
+                  ? { itemCount: assistantResult.itemCount }
+                  : {}),
+              }
+            : await input.onToolCall(toolCall);
           await emit({
             type: 'tool.completed',
             toolCallId: toolCall.id,
@@ -333,7 +458,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
       }
     } catch (error) {
-      await this.runtimePool.drop(threadId);
+      try {
+        if (assistant && !assistantFinished) {
+          await assistant.cancel().catch(() => {});
+          if (!assistantFailureSignal.signal.aborted) {
+            const request = await assistant.cancellation();
+            await runtime.client.assistant('drain', request);
+          }
+        }
+      } catch {
+        // Revoked membership/lease may forbid reading the tree; still stop our host.
+      } finally {
+        await this.runtimePool.drop(threadId);
+      }
       if (input.signal.aborted) {
         throw new HandlerError(
           'EXECUTION_ABORTED',
@@ -343,12 +480,25 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       throw error;
     } finally {
+      if (cancellationTimer) clearInterval(cancellationTimer);
+      input.signal.removeEventListener('abort', stopAssistants);
+      await cancellationTask?.catch(() => {});
+      if (assistant)
+        await runtime.client.assistant('flush', {}).catch(() => {});
       this.runtimePool.touch(runtime);
       runtime.client.setRequestHandler(null);
     }
     return {
       answer,
       usage,
+      ...(assistantOutcome
+        ? {
+            assistantStatus: assistantOutcome.status as 'completed' | 'partial',
+            usageComplete: assistantOutcome.usageComplete,
+            cacheUsageKnown: assistantOutcome.cacheUsageKnown,
+            costEstimateAvailable: assistantOutcome.costEstimateAvailable,
+          }
+        : {}),
       provider: snapshot.route,
       model: snapshot.model,
       threadId,
@@ -755,7 +905,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         });
     });
     const abort = () => {
-      void input.runtime.client.interrupt(input.runtime.sessionId);
+      void input.runtime.client
+        .interrupt(input.runtime.sessionId)
+        .catch(() => {});
       settle();
     };
     input.signal.addEventListener('abort', abort, { once: true });

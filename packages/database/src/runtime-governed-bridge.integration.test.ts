@@ -62,7 +62,7 @@ import { claimNextJob, cancelRun } from './execution/queue.ts';
 import { runClaimedJob } from '../../../apps/worker/src/job-runner.js';
 import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
 import { listChangesetRuns } from './changeset-service.ts';
-import { gate, p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
+import { p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
 import {
   claimConversationSteer,
   consumeConversationSteer,
@@ -621,146 +621,75 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       ).rejects.toThrow();
     },
   );
+  // P24 deliberately explored native IDs before P25 had a persistent identity
+  // map. Such IDs now fail closed: these are negative migration guards, NOT the
+  // replacement production mapped-child command/approval/receipt acceptance.
   it.each([
-    'approve',
-    'reject',
-    'cancel_before_dispatch',
-    'cancel_late_result',
+    'unmapped_native',
+    'root_as_child',
+    'same_tenant_unrelated_run',
+    'foreign_run',
   ] as const)(
-    'P24 actual native child → exact P04 approval → HTTP Bridge → durable result: %s',
+    'P24 legacy native identity cannot authorize a P25 operation: %s',
     async (scenario) => {
       const f = await fixture();
-      const directory = await mkdtemp(join(tmpdir(), 'allrice-p24-bridge-'));
-      artifactRoots.push(directory);
-      const project = join(await realpath(directory), 'project');
-      await mkdir(project);
-      const fingerprint = createHash('sha256').update(project).digest('hex');
-      await database`update allrice_bridge_folder_grants set root_fingerprint=${fingerprint} where id=${f.grant}`;
-      const [grant] =
-        await database`select runtime_generation from allrice_bridge_folder_grants where id=${f.grant}`;
+      const nativeRoot = randomUUID(),
+        nativeChild = randomUUID();
+      let agentInstanceId = nativeChild;
+      if (scenario === 'root_as_child') agentInstanceId = f.run;
+      if (scenario === 'foreign_run') agentInstanceId = (await fixture()).run;
+      if (scenario === 'same_tenant_unrelated_run') {
+        agentInstanceId = randomUUID();
+        await database`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+          values(${agentInstanceId},${f.context.organizationId},${f.context.workspaceId},${f.context.actor.id},'running','{}','{}')`;
+      }
       const op = f.operation({
         capability: 'local.fs.write',
         arguments: {
           path: 'p24.txt',
-          content: 'reviewed P24 synthetic result',
+          content: 'Must not be executed',
           expectedSha256: null,
         },
       });
-      op.input.snapshot.binding.execution.grantVersion =
-        grant!.runtime_generation;
-      op.input.snapshot.binding.execution.scopeDigest = `sha256:${fingerprint}`;
-      const nativeRoot = randomUUID(),
-        nativeChild = randomUUID();
-      op.input.snapshot.agentInstanceId = nativeChild;
-      const submitted = gate(),
-        completion = gate();
+      op.input.snapshot.agentInstanceId = agentInstanceId;
       let proposalCalls = 0;
+      let childRequestedProposal = false;
       const native = await p24Fixture(
-        async (request) =>
-          request.messages.at(-1)?.role === 'user' &&
-          JSON.stringify(request.messages.at(-1)).includes(
-            'Request the synthetic reviewed operation.',
-          )
-            ? { tool: { marker: 'exact-reviewed-proposal' } }
-            : { text: 'Result received.' },
+        async (request) => {
+          // The native parent also receives a user-like settled notification.
+          // This fixture requests one proposal from the delegated child, not a
+          // second unrelated proposal from that parent's notification turn.
+          const last = request.messages.at(-1);
+          if (
+            !childRequestedProposal &&
+            last?.role === 'user' &&
+            JSON.stringify(last.content).includes(
+              'Request the synthetic reviewed operation.',
+            )
+          ) {
+            childRequestedProposal = true;
+            return { tool: { marker: 'invalid-legacy-child' } };
+          }
+          return { text: 'Rejected operation received.' };
+        },
         async (proposal) => {
           proposalCalls++;
-          // Server-selected binding; no tenant/run/tool/path authority comes from
-          // model arguments. P25 must persist this native→platform identity map.
           expect(proposal).toMatchObject({
             childId: nativeChild,
             parentId: nativeRoot,
-            marker: 'exact-reviewed-proposal',
+            marker: 'invalid-legacy-child',
             nativeOutcome: 'rejected',
           });
-          expect((await op.factory().createOperation(op.input)).status).toBe(
-            'waiting_user',
+          await expect(op.factory().createOperation(op.input)).rejects.toThrow(
+            'unavailable',
           );
-          submitted.release();
-          await completion.promise;
-          const result = await f
-            .ledger()
-            .readOperation(
-              f.task.scope,
-              op.input.snapshot.binding.attempt.operationId,
-            );
           return {
-            status: result.status,
-            result: result.result,
+            status: 'rejected',
+            reason: 'unmapped_assistant_identity',
             approvalRequired: true,
           };
         },
       );
-      const handler = createRuntimeBridgeHttpHandler({
-        enabled: () => true,
-        authenticate: async (token) => {
-          if (token !== 'p24-synthetic-device') throw Error('unauthorized');
-          return {
-            device: f.device,
-            grants: [
-              {
-                id: f.grant,
-                deviceId: f.device.id,
-                label: 'P24 test only',
-                rootFingerprint: fingerprint,
-                createdAt: new Date().toISOString(),
-                revokedAt: null,
-              },
-            ],
-          };
-        },
-        ledgerForDevice: async () => f.ledger(),
-      });
-      const server = createServer((req, res) => {
-        void (async () => {
-          const chunks: Buffer[] = [];
-          for await (const c of req) chunks.push(Buffer.from(c));
-          const path = new URL(req.url!, 'http://localhost').pathname;
-          const response = await handler(
-            new Request(`http://localhost${path}`, {
-              method: 'POST',
-              headers: {
-                authorization: String(req.headers.authorization ?? ''),
-                'content-type': 'application/json',
-              },
-              body: Buffer.concat(chunks),
-            }),
-            path.split('/').at(-1)! as
-              'next' | 'start' | 'receipts' | 'heartbeat' | 'output',
-            path.split('/').at(-2),
-          );
-          res.statusCode = response.status;
-          res.end(await response.text());
-        })().catch(() => {
-          res.statusCode = 500;
-          res.end();
-        });
-      });
-      server.listen(0, '127.0.0.1');
-      await once(server, 'listening');
-      const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-      const journal = await BridgeJournal.open({
-        directory: join(directory, 'journal'),
-        server: origin,
-        deviceId: f.device.id,
-      });
-      const bridge = new RuntimeBridgeOperationClient({
-        config: {
-          server: origin,
-          deviceId: f.device.id,
-          deviceName: 'P24 synthetic',
-          grants: [
-            {
-              id: f.grant,
-              label: 'P24',
-              rootPath: project,
-              rootFingerprint: fingerprint,
-            },
-          ],
-        },
-        token: 'p24-synthetic-device',
-        journal,
-      });
       const c = native.launch();
       try {
         await c.call('ready');
@@ -770,118 +699,33 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           id: nativeChild,
           text: 'Request the synthetic reviewed operation.',
         });
-        await submitted.promise;
-        expect(await bridge.pollOnce()).toBe(false);
-        await expect(readFile(join(project, 'p24.txt'))).rejects.toMatchObject({
-          code: 'ENOENT',
-        });
-        const approval = await requestRuntimeActionApproval(
-          f.ledger().policyOptions,
-          op.input.snapshot.binding,
-          600_000,
-          database,
-        );
-        const response = {
-          contractVersion: 1 as const,
-          direction: 'response' as const,
-          kind: 'action_approval' as const,
-          requestId: approval.requestId,
-          version: approval.version,
-          requestDigest: approval.requestDigest,
-          task: approval.task,
-          responseId: randomUUID(),
-          respondedBy: f.context.actor.id,
-          respondedAt: new Date().toISOString(),
-          approvalId: approval.approvalId,
-          decision:
-            scenario === 'reject'
-              ? ('rejected' as const)
-              : ('approved' as const),
-        };
-        await expect(
-          decideRuntimeActionApproval(
-            f.context,
-            approval.approvalId,
-            { ...response, requestDigest: digest('tampered') },
-            database,
-          ),
-        ).rejects.toThrow();
-        await decideRuntimeActionApproval(
-          f.context,
-          approval.approvalId,
-          response,
-          database,
-        );
-        if (scenario === 'cancel_before_dispatch')
-          await f.ledger().cancelRoot(f.task.scope, f.run, randomUUID());
-        const executed = await bridge.pollOnce();
-        expect(executed).toBe(
-          scenario === 'approve' || scenario === 'cancel_late_result',
-        );
-        if (executed) {
-          expect(await readFile(join(project, 'p24.txt'), 'utf8')).toBe(
-            'reviewed P24 synthetic result',
-          );
-          expect(
-            (
-              await f
-                .ledger()
-                .readOperation(
-                  f.task.scope,
-                  op.input.snapshot.binding.attempt.operationId,
-                )
-            ).status,
-          ).toBe('succeeded');
-          expect(
-            (
-              await getRuntimeActionApproval(
-                f.context,
-                approval.approvalId,
-                database,
-              )
-            ).consumedAt,
-          ).not.toBeNull();
-        } else
-          await expect(
-            readFile(join(project, 'p24.txt')),
-          ).rejects.toMatchObject({ code: 'ENOENT' });
-        if (scenario === 'cancel_late_result') {
-          await f.ledger().cancelRoot(f.task.scope, f.run, randomUUID());
-          await c.call('drain', { id: nativeRoot });
-        }
-        completion.release();
-        const adoptedResult = () =>
-          native.requests.find((request) =>
-            request.messages.some(
-              (message) =>
-                message.role === 'tool' &&
-                JSON.stringify(message.content).includes('approvalRequired'),
-            ),
-          );
-        if (scenario !== 'cancel_late_result')
-          await expect.poll(adoptedResult, { timeout: 15_000 }).toBeDefined();
-        await c.close();
+        await expect
+          .poll(
+            () =>
+              native.requests.some((request) =>
+                request.messages.some(
+                  (message) =>
+                    message.role === 'tool' &&
+                    JSON.stringify(message.content).includes(
+                      'unmapped_assistant_identity',
+                    ),
+                ),
+              ),
+            { timeout: 15000 },
+          )
+          .toBe(true);
         expect(proposalCalls).toBe(1);
-        if (scenario === 'cancel_late_result')
-          expect(native.requests).toHaveLength(1);
-        if (scenario === 'approve')
-          expect(JSON.stringify(adoptedResult())).toContain('succeeded');
-        expect(await bridge.pollOnce()).toBe(false);
-        const second = f.operation();
-        if (scenario.startsWith('cancel')) {
-          await expect(
-            second.factory().createOperation(second.input),
-          ).rejects.toThrow('root_canceled');
-        }
+        expect(
+          await database`select id from allrice_runtime_operations where id=${op.input.snapshot.binding.attempt.operationId}`,
+        ).toHaveLength(0);
+        expect(
+          await database`select id from allrice_approval_requests where resource_id=${op.input.snapshot.binding.attempt.operationId}`,
+        ).toHaveLength(0);
       } finally {
-        completion.release();
         await native.close();
-        await journal.close();
-        server.closeAllConnections();
-        await new Promise<void>((r) => server.close(() => r()));
       }
     },
-    45_000,
+    30000,
   );
   beforeAll(async () => {
     if (!process.env.ALLRICE_TEST_DATABASE_URL)

@@ -13,6 +13,8 @@ export interface ModelRequest {
 export interface ModelReply {
   text?: string;
   tool?: { marker: string };
+  nativeTool?: { name: string; arguments: Record<string, unknown> };
+  usage?: Record<string, unknown> | null;
 }
 export interface NativeSnapshot {
   live: boolean;
@@ -42,9 +44,17 @@ export async function p24Fixture(
   ) => Promise<ModelReply> = async () => ({ text: 'Synthetic completed.' }),
   proposal: ProposalHandler = async () => ({ status: 'not_configured' }),
   writeBatchMaxDelayMs = 200,
+  extension?: {
+    p25: true;
+    callback: (
+      method: string,
+      params: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+  },
 ) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-p24-'));
   const requests: ModelRequest[] = [];
+  const abortedRequests: ModelRequest[] = [];
   const server = createServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -58,6 +68,9 @@ export async function p24Fixture(
         Buffer.concat(chunks).toString(),
       ) as ModelRequest;
       requests.push(input);
+      res.on('close', () => {
+        if (!res.writableFinished) abortedRequests.push(input);
+      });
       const result = await model(input, requests.length);
       if (res.destroyed) return;
       res.setHeader('content-type', 'text/event-stream');
@@ -67,22 +80,28 @@ export async function p24Fixture(
         created: 1,
         model: 'p24-synthetic',
       };
-      const delta = result.tool
-        ? {
-            role: 'assistant',
-            tool_calls: [
-              {
-                index: 0,
-                id: `call-${requests.length}`,
-                type: 'function',
-                function: {
-                  name: 'p24_proposal',
-                  arguments: JSON.stringify(result.tool),
+      const delta =
+        result.tool || result.nativeTool
+          ? {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call-${requests.length}`,
+                  type: 'function',
+                  function: {
+                    name: result.nativeTool?.name ?? 'p24_proposal',
+                    arguments: JSON.stringify(
+                      result.nativeTool?.arguments ?? result.tool,
+                    ),
+                  },
                 },
-              },
-            ],
-          }
-        : { role: 'assistant', content: result.text ?? 'Synthetic completed.' };
+              ],
+            }
+          : {
+              role: 'assistant',
+              content: result.text ?? 'Synthetic completed.',
+            };
       for (const data of [
         { ...common, choices: [{ index: 0, delta, finish_reason: null }] },
         {
@@ -91,10 +110,19 @@ export async function p24Fixture(
             {
               index: 0,
               delta: {},
-              finish_reason: result.tool ? 'tool_calls' : 'stop',
+              finish_reason:
+                result.tool || result.nativeTool ? 'tool_calls' : 'stop',
             },
           ],
-          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+          ...(result.usage === null
+            ? {}
+            : {
+                usage: result.usage ?? {
+                  prompt_tokens: 20,
+                  completion_tokens: 5,
+                  total_tokens: 25,
+                },
+              }),
         },
       ])
         res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -126,7 +154,10 @@ export async function p24Fixture(
       [resolve(import.meta.dirname, 'runtime.mjs')],
       {
         cwd: root,
-        env: environment,
+        env: {
+          ...environment,
+          ...(extension ? { ALLRICE_P25_TEST: 'synthetic-only' } : {}),
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
@@ -175,9 +206,11 @@ export async function p24Fixture(
       }
       if (message.method && message.id !== undefined) {
         const response =
-          message.method === 'p24/proposal'
-            ? proposal(message.params ?? {})
-            : Promise.reject(new Error('unsupported callback'));
+          extension && message.method.startsWith('p25/')
+            ? extension.callback(message.method.slice(4), message.params ?? {})
+            : message.method === 'p24/proposal'
+              ? proposal(message.params ?? {})
+              : Promise.reject(new Error('unsupported callback'));
         void response.then(
           (result) => write({ jsonrpc: '2.0', id: message.id, result }),
           (e: Error) =>
@@ -242,7 +275,9 @@ export async function p24Fixture(
   }
   return {
     root,
+    baseUrl: environment.OPENAI_COMPATIBLE_BASE_URL,
     requests,
+    abortedRequests,
     launch,
     async logs() {
       const paths = await readdir(join(root, 'sessions'), { recursive: true });

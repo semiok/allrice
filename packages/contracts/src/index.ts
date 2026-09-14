@@ -60,3 +60,4 @@ export * from './tool-manifest.ts';
 export * from './user-questions.ts';
 export * from './workspace.ts';
 export * from './workflows.ts';
+export * from './assistant.ts';
