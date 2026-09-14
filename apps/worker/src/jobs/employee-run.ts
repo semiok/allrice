@@ -722,6 +722,15 @@ export async function executeEmployeeRun({
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
     const workflowCitations: typeof knowledge.citations = [];
+    // Once a normal assistant execution starts, any generic transport, tool,
+    // revocation or lease failure is incomplete accounting until an authoritative
+    // tree outcome replaces it. Zero here is only a confirmed subtotal, not free
+    // completed execution. Workflow and legacy single-agent routes are unchanged.
+    if (assistants && routeDecision.selectedKind !== 'workflow') {
+      routeCostCents = null;
+      routeUsageComplete = false;
+      routeCacheUsageKnown = false;
+    }
     const result: HarnessExecutionResult =
       routeDecision.selectedKind === 'workflow'
         ? await (async () => {
