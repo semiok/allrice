@@ -19,11 +19,12 @@ export async function createAssistantLocalCommandFixture(
   database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
   effect: 'ask' | 'allow' = 'ask',
   project = false,
-  options: { nativeSessionId?: string } = {},
+  options: { nativeSessionId?: string; deferRuntimeRoot?: boolean } = {},
 ) {
   const f = await createAssistantAuthorityFixture(database, {
     project,
     nativeSessionId: options.nativeSessionId,
+    configure: !options.deferRuntimeRoot,
     allowedTools: [
       'assistant.delegate',
       'assistant.report',
@@ -103,16 +104,35 @@ export async function createAssistantLocalCommandFixture(
       ...policy!.payload,
     },
   });
-  const child = (
-    await f.runtime.provision({
-      ...f.base,
-      parentRunId: f.rootRunId,
-      delegationId: randomUUID(),
-      label: 'Synthetic command proposal',
-      text: 'Submit for exact approval',
-      tools: ['local.process.execute'],
-    })
-  ).instance;
+  const child = options.deferRuntimeRoot
+    ? null
+    : (
+        await f.runtime.provision({
+          ...f.base,
+          parentRunId: f.rootRunId,
+          delegationId: randomUUID(),
+          label: 'Synthetic command proposal',
+          text: 'Submit for exact approval',
+          tools: ['local.process.execute'],
+        })
+      ).instance;
+  if (options.deferRuntimeRoot) {
+    // This is setup of our fresh synthetic fixture only. No admitted assistant
+    // or operation may exist; the production controller must create the root
+    // and immutable budgets itself, rather than rewriting fixture limits.
+    await db.begin(async (tx) => {
+      const rows =
+        await tx`select 1 from allrice_assistant_instances where root_run_id=${f.rootRunId}
+        union all select 1 from allrice_assistant_messages where root_run_id=${f.rootRunId}
+        union all select 1 from allrice_assistant_usage where root_run_id=${f.rootRunId}
+        union all select 1 from allrice_runtime_operations where root_run_id=${f.rootRunId}`;
+      if (rows.length)
+        throw Error('Cannot defer an already admitted synthetic runtime');
+      await tx`delete from allrice_runtime_budgets where root_run_id=${f.rootRunId}`;
+      await tx`delete from allrice_runtime_run_links where root_run_id=${f.rootRunId}`;
+      await tx`delete from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+    });
+  }
   const args = {
     executable: '/usr/local/bin/node',
     args: ['test.mjs'],
@@ -128,13 +148,17 @@ export async function createAssistantLocalCommandFixture(
   };
   const create = (
     callId: string = randomUUID(),
-    assistant = { runId: child.runId, worker: f.worker },
+    assistant?: { runId: string; worker: typeof f.worker },
     argumentsInput: unknown = args,
-  ) =>
-    createLocalCommandOperation(
-      { context, arguments: argumentsInput, callId, assistant },
+  ) => {
+    const origin =
+      assistant ?? (child ? { runId: child.runId, worker: f.worker } : null);
+    if (!origin) throw Error('Explicit production native child required');
+    return createLocalCommandOperation(
+      { context, arguments: argumentsInput, callId, assistant: origin },
       db,
     );
+  };
   const freshLedger = () =>
     createGovernedBridgeOperationLedger(device, { database: db });
   const approve = async (request: RuntimeActionApprovalRequest) =>

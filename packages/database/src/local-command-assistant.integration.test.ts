@@ -48,10 +48,43 @@ integration(
       await fixture?.close();
     });
 
-    const proposalFixture = (
+    const proposalFixture = async (
       effect: 'ask' | 'allow' = 'ask',
       project = false,
-    ) => createAssistantLocalCommandFixture(fixture.db, effect, project);
+    ) => {
+      const f = await createAssistantLocalCommandFixture(
+        fixture.db,
+        effect,
+        project,
+      );
+      if (!f.child) throw Error('Expected configured fixture child');
+      return { ...f, child: f.child };
+    };
+
+    it('defers the synthetic ledger so production must create the first root and child', async () => {
+      const f = await createAssistantLocalCommandFixture(
+        fixture.db,
+        'ask',
+        false,
+        {
+          deferRuntimeRoot: true,
+          nativeSessionId: 'synthetic-production-root',
+        },
+      );
+      expect(f.child).toBeNull();
+      expect(
+        await f.db`select 1 from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
+      ).toHaveLength(0);
+      expect(
+        await f.db`select 1 from allrice_runtime_budgets where root_run_id=${f.rootRunId}`,
+      ).toHaveLength(0);
+      expect(
+        await f.db`select 1 from allrice_employee_runs where run_id=${f.rootRunId}`,
+      ).toHaveLength(1);
+      expect(() => f.create()).toThrow(
+        'Explicit production native child required',
+      );
+    });
     type Fixture = Awaited<ReturnType<typeof proposalFixture>>;
     type Created = Awaited<ReturnType<Fixture['create']>>;
     const dispatch = (f: Fixture, c: Created, ledger = f.freshLedger()) =>
