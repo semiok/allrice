@@ -106,6 +106,10 @@ Token 与价格对账缺一不可：
 
 ## 证据、失败诊断与清理
 
+2026-09-14 收尾补充：受控原生宿主新增根身份绑定的 `diagnostics` 只读方法；在 `finish` 清除 Run 绑定或失败后关闭宿主之前，适配器用独立 2 秒请求取得封闭结构。每次已派发模型调用最多保留一项首因，整树最多 64 项，超出明确 `truncated=true`。记录调用 ID、原生 Session ID、阶段、固定错误码/停止类型和输入/输出用量是否已知、结算 ACK 是否确认；次生结算错误不能替换首因。固定 SDK 的 `QUOTA` 显式归一化为 `QUOTA_EXCEEDED`。不读取或保存 provider 原文、URL、堆栈、模型答案或思考；getter、Proxy、额外字段和未知枚举被拒绝。
+
+Worker 用安全错误侧表传递诊断，不能改变原异常身份、错误码、重试策略或未知预算预留。旧宿主不支持该方法、超时或结构无效时只缺少诊断，不把失败改成功。P27 失败报告另把这些只读诊断与本 fixture 的实际 native/run/call/request-digest 和 admission/receipt 元数据对照；非本树或不匹配调用不会成为已验证证据。诊断是解释失败的线索，不是授权、实际计费凭据或自动重放许可。合成 loopback 的 `SERVER` 测试不证明历史真实 Google 失败也是 503。
+
 证据只写入新 `.local/p27-assistants-<UUID>/` 私有 append-only JSON：候选/源码/安装入口哈希、公开价格事实及 digest、fixture 身份、摘要/答案哈希、对象字节数、持久采纳序号、预算/价格安全汇总、断言与清理状态。不保留 raw thinking、完整模型答案、prompt payload、工具原始事件、凭据、泛化错误堆栈或原始 provider 响应。
 
 错误诊断仅保留精确白名单 code/class、布尔 retryable、400–599 HTTP status 和固定正则类别。类别是线索，不是已证根因或自动重试权限。cause 最多 5 层，每层 code/message 最多扫描 4096 字符，不调用 getter/序列化 hook、不遍历 payload；未知代码不能只凭 `DSH_`/`p27_` 前缀进入证据。

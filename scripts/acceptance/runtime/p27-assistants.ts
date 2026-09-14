@@ -22,6 +22,13 @@ import { observeP27Clients } from './p27-owned-clients.ts';
 import { collectP27InstalledRuntime } from './p27-installed-runtime.ts';
 import { validateP27AssistantOutcome } from './p27-assistant-outcome.ts';
 import { p27ErrorDiagnostics } from './p27-error-diagnostics.ts';
+import type { AssistantFailureDiagnostics } from '../../../apps/worker/src/harness/dsh/assistant-diagnostics.ts';
+import {
+  correlateP27AssistantDiagnostics,
+  retainP27AssistantDiagnostics,
+  type P27DiagnosticAdmission,
+  type P27DiagnosticReceipt,
+} from './p27-assistant-diagnostics.ts';
 import {
   assertP27PriceDate,
   P27_GEMINI_PRICE_FACTS,
@@ -55,12 +62,14 @@ const sourceFiles = [
   'apps/worker/dsh/allrice-assistant-runtime.mjs',
   'apps/worker/dsh/allrice-restricted.cordis.yml',
   'apps/worker/src/harness/dsh/assistant-controller.ts',
+  'apps/worker/src/harness/dsh/assistant-diagnostics.ts',
   'packages/database/src/assistant-output.ts',
   'apps/worker/dsh/distribution.json',
   'apps/worker/dsh/upstream.json',
   'scripts/acceptance/runtime/p27-assistant-pricing.ts',
   'scripts/acceptance/runtime/p27-assistant-fixture.ts',
   'scripts/acceptance/runtime/p27-assistant-outcome.ts',
+  'scripts/acceptance/runtime/p27-assistant-diagnostics.ts',
   'packages/contracts/src/assistant-pricing.ts',
   'packages/database/src/assistant-pricing.ts',
 ];
@@ -196,6 +205,7 @@ async function main() {
   let executionSettled = false;
   let executeCount = 0;
   let snapshotFailure: (() => Promise<void>) | undefined;
+  let failureNativeDiagnostics: AssistantFailureDiagnostics | undefined;
   try {
     report.phase = 'isolated_platform_setup';
     const environment = await prepareP27PlatformEnvironment({
@@ -299,18 +309,44 @@ async function main() {
     snapshotFailure = async () => {
       // Explicit scalar allowlist. Never select message/result payloads,
       // provider errors or lease tokens, including on failed execution.
-      const [instances, budgets, usage] = await Promise.all([
-        db`select run_id,parent_run_id,status,depth from allrice_assistant_instances where root_run_id=${fixture.rootRunId}`,
-        db`select metric,unit,currency,capacity,reserved,spent from allrice_runtime_budgets where root_run_id=${fixture.rootRunId}`,
-        db`select run_id,metric,count(*)::integer as reservations,
+      const [instances, budgets, usage, admissions, receipts] =
+        await Promise.all([
+          db`select run_id,parent_run_id,status,depth from allrice_assistant_instances where root_run_id=${fixture.rootRunId}`,
+          db`select metric,unit,currency,capacity,reserved,spent from allrice_runtime_budgets where root_run_id=${fixture.rootRunId}`,
+          db`select run_id,metric,count(*)::integer as reservations,
           count(*) filter(where settled_amount is null)::integer as unsettled,
           coalesce(sum(settled_amount),0)::text as settled_amount
           from allrice_assistant_usage where root_run_id=${fixture.rootRunId} group by run_id,metric`,
-      ]);
+          db<
+            P27DiagnosticAdmission[]
+          >`select a.call_id,a.run_id,i.native_session_id,
+          a.request_digest,a.dispatched_at is not null as dispatched,
+          a.finished_at is not null as finished
+          from allrice_assistant_model_admissions a
+          join allrice_assistant_instances i on i.run_id=a.run_id and i.root_run_id=a.root_run_id
+          where a.root_run_id=${fixture.rootRunId} order by a.prepared_at`,
+          db<
+            P27DiagnosticReceipt[]
+          >`select call_id,run_id,request_digest,snapshot_digest,
+          usage_complete,usage->>'inputTokens' is not null as input_usage_known,
+          usage->>'outputTokens' is not null as output_usage_known,
+          cache_usage_known,actual_cost_known,cost_picounits is not null as cost_known
+          from allrice_assistant_cost_receipts where root_run_id=${fixture.rootRunId} order by call_id`,
+        ]);
       report.failureSnapshot = {
         instances: [...instances],
         budgets: [...budgets],
         usage: [...usage],
+        admissions: [...admissions],
+        receipts: [...receipts],
+        nativeDiagnostics: correlateP27AssistantDiagnostics({
+          diagnostics: failureNativeDiagnostics,
+          admissions,
+          receipts,
+          snapshotDigest: fixture.priceBinding
+            ? runtimePolicyDigest(fixture.priceBinding.snapshot)
+            : undefined,
+        }),
       };
     };
     report.identity = {
@@ -430,6 +466,10 @@ async function main() {
       });
       executionPromise.catch(() => {});
       result = await Promise.race([execution, deadline]);
+      failureNativeDiagnostics = retainP27AssistantDiagnostics(
+        failureNativeDiagnostics,
+        result,
+      );
     } finally {
       if (timer) clearTimeout(timer);
       report.execute = {
@@ -729,6 +769,12 @@ async function main() {
     report.status = 'failed';
     // Only bounded, allowlisted scalar diagnostics; no raw error is persisted.
     const diagnostics = p27ErrorDiagnostics(error);
+    // A dedicated closed-schema sidecar; never inspect arbitrary error fields.
+    // It is emitted only after matching fixture-native identities below.
+    failureNativeDiagnostics = retainP27AssistantDiagnostics(
+      failureNativeDiagnostics,
+      error,
+    );
     report.failureDiagnostics = diagnostics;
     report.failureCode =
       diagnostics.errors[0]?.code ?? 'p27_external_or_runtime_failure';

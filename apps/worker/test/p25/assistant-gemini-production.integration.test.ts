@@ -12,6 +12,12 @@ import { assertAssistantAuthority } from '../../../../packages/database/src/assi
 import { getWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
+import { getAssistantFailureDiagnostics } from '../../src/harness/dsh/assistant-diagnostics.js';
+import {
+  correlateP27AssistantDiagnostics,
+  type P27DiagnosticAdmission,
+  type P27DiagnosticReceipt,
+} from '../../../../scripts/acceptance/runtime/p27-assistant-diagnostics.ts';
 import type { HarnessExecutionInput } from '../../src/harness/adapter.js';
 import { gate } from '../p24/fixture.js';
 import { syntheticAssistantPriceSnapshot } from './assistant-pricing.fixture.js';
@@ -228,6 +234,7 @@ integration(
       'priced_dynamic_output',
       'priced_missing_child_usage',
       'priced_dispatch_error',
+      'priced_child_dispatch_error',
       'priced_budget_denied',
       'priced_wrong_model',
       'priced_expiring',
@@ -270,6 +277,11 @@ integration(
             maxActive = Math.max(maxActive, active);
             await overlap.promise;
             active--;
+            if (
+              behavior === 'child_dispatch_error' &&
+              content.includes('ANALYZE_B')
+            )
+              return { status: 503 };
             return {
               usage:
                 behavior === 'missing_child_usage'
@@ -458,7 +470,22 @@ integration(
             return;
           }
           if (behavior === 'dispatch_error') {
-            await expect(execution).rejects.toThrow();
+            const error = await execution.catch((error: unknown) => error);
+            expect(error).toBeInstanceOf(Error);
+            expect(getAssistantFailureDiagnostics(error)).toMatchObject({
+              version: 1,
+              failures: [
+                {
+                  phase: 'finish',
+                  code: 'SERVER',
+                  stopKind: 'error',
+                  inputUsageKnown: false,
+                  outputUsageKnown: false,
+                  settlementConfirmed: true,
+                },
+              ],
+              truncated: false,
+            });
             expect(model.requests).toHaveLength(1);
             const rows =
               await database.db`select * from allrice_assistant_model_admissions where root_run_id=${f.rootRunId}`;
@@ -504,11 +531,89 @@ integration(
             return;
           }
           overlap.release();
-          if (behavior === 'missing_child_usage') {
-            await expect(execution).rejects.toMatchObject({
+          if (behavior === 'child_dispatch_error') {
+            const error = await execution.catch((error: unknown) => error);
+            expect(error).toMatchObject({
               code: 'ASSISTANT_EXECUTION_UNRESOLVED',
               retryable: false,
             });
+            const diagnostics = getAssistantFailureDiagnostics(error)!;
+            expect(diagnostics).toMatchObject({
+              failures: [
+                { phase: 'finish', code: 'SERVER', stopKind: 'error' },
+              ],
+              truncated: false,
+            });
+            expect(
+              model.requests.filter((request) => {
+                const content = JSON.stringify(request.contents);
+                return (
+                  !content.includes('ROOT_PRIVATE') &&
+                  content.includes('ANALYZE_B')
+                );
+              }),
+            ).toHaveLength(1);
+            const admissions = await database.db<
+              P27DiagnosticAdmission[]
+            >`select a.call_id,a.run_id,i.native_session_id,
+              a.request_digest,a.dispatched_at is not null as dispatched,a.finished_at is not null as finished
+              from allrice_assistant_model_admissions a join allrice_assistant_instances i using(run_id,root_run_id)
+              where a.root_run_id=${f.rootRunId}`;
+            const receipts = await database.db<
+              P27DiagnosticReceipt[]
+            >`select call_id,run_id,request_digest,snapshot_digest,
+              usage_complete,usage->>'inputTokens' is not null as input_usage_known,
+              usage->>'outputTokens' is not null as output_usage_known,
+              cache_usage_known,actual_cost_known,cost_picounits is not null as cost_known
+              from allrice_assistant_cost_receipts where root_run_id=${f.rootRunId}`;
+            expect(
+              correlateP27AssistantDiagnostics({
+                diagnostics,
+                admissions,
+                receipts,
+                snapshotDigest: receipts[0]!.snapshot_digest,
+              }),
+            ).toMatchObject({
+              status: 'correlated',
+              failures: [
+                {
+                  code: 'SERVER',
+                  receiptPresent: true,
+                  receiptUsageComplete: false,
+                  receiptCostKnown: false,
+                },
+              ],
+            });
+            const tree = await f.runtime.getTree(f.context, {
+              runId: f.rootRunId,
+            });
+            expect(tree.budgets.some((budget) => budget.reserved > 0)).toBe(
+              true,
+            );
+            expect(
+              tree.instances.find((instance) => instance.runId === f.rootRunId)
+                ?.status,
+            ).toBe('unknown');
+            return;
+          }
+          if (behavior === 'missing_child_usage') {
+            const error = await execution.catch((error: unknown) => error);
+            expect(error).toMatchObject({
+              code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+              retryable: false,
+            });
+            const diagnostics = getAssistantFailureDiagnostics(error)!;
+            expect(diagnostics.failures).toHaveLength(2);
+            expect(
+              diagnostics.failures.every(
+                (failure) =>
+                  failure.phase === 'usage' &&
+                  failure.code === 'USAGE_INCOMPLETE' &&
+                  !failure.inputUsageKnown &&
+                  !failure.outputUsageKnown &&
+                  failure.settlementConfirmed,
+              ),
+            ).toBe(true);
             const tree = await f.runtime.getTree(f.context, {
               runId: f.rootRunId,
             });
