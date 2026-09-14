@@ -65,6 +65,7 @@ import {
   AssistantExecutionUnresolvedError,
   assertAssistantTaskComplete,
 } from '../harness/dsh/assistant-outcome.js';
+import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
 import type { HarnessExecutionResult } from '../harness/adapter.js';
 import {
   executeRiceTool,
@@ -588,6 +589,10 @@ export async function executeEmployeeRun({
       fallbacks: fallbackSnapshots,
       reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
     });
+    assertAssistantProviderOutputBound(
+      providerSnapshot,
+      objectInput(input.assistantConfiguration).allowAssistants === true,
+    );
     const adapter = getHarnessRouter().resolve(routeDecision.harness);
     if (adapter.isConfigured && !adapter.isConfigured(providerSnapshot)) {
       throw new HandlerError(
