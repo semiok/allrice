@@ -72,6 +72,18 @@ P14 Draft #62 的首轮 CI 在无构建产物的 checkout 上发现独立子进�
 
 `4b364b9` 增加仅验收脚本使用的白名单错误分类器，拒绝 getter/Proxy 等动态取值，不输出原始消息/堆栈/URL/header。它不补造第一次失败丢失的信息。上述成功回归均**不覆盖尚在开发的两阶段分配和 provider 准入修复**，也不解决权威定价/费用核对与 Apple 签名门禁。
 
+## 第五轮：两阶段修复与新协议门禁回归
+
+组合 `8716b77e8fa872d91c634550d826a17e21f98434` 包含冻结前动态 grant / 同 call 一次性派发、0095 expand 迁移、服务端协议预检、P27 预检阻断和独立 Worker 账务反证。全仓格式、ESLint、TypeScript 与 Worker 及依赖构建通过。
+
+- 18 文件真实 PG / native 合成模型整组 **302 passed / 0 failed / 4 skipped**。包括满额与同 call 并发、跨 child/scope/generation/fence/lease、摘要不符、未知预留保持、预检已知零账务，以及既有权限/取消/输出/P04 链。报告 `.local/b6-real-pg-two-stage.json`，SHA-256 `fafc3d7393e5fbc6dc04a42d399ebdd8ea8639e4236f2300b835c22247edac2d`。4 项设备条件跳过不计通过；没有真实 provider 请求。
+- 307 文件完整常规测试 **1975 passed / 0 failed / 747 skipped**。报告 `.local/b6-full-tests-8716b77.json`，SHA-256 `5625c3092e5e279597c954644eefd9c20f74a4c48d0815c7e88fd8714896f1ea`。这些计数不含随后 P28 材料修正或前端可用性提示改动，不能当作新候选完整验收。
+- `fefffad` 的 P27 helper / dummy 测试 **46/46**，明确 roots 的脚本 TypeScript 检查为 0 diagnostics。实际 `--preflight` 返回 `eligible:false`；对同 SHA 提供执行授权但不提供 platform 路径，`--execute` 在任何凭据元数据、DB、宿主或 fixture 创建之前返回 `blocked_before_execution` / 退出 1。它验证拒绝路径，**不是第二次真实模型执行，也不是成功验收**。
+
+固定 Codex SDK 的助手输出上限仍未证明，生产只拒绝该助手路径，不关闭普通 Codex。Gemini 仅有原生 SDK 到 loopback HTTP 的输出字段与合成用量证据，不冒称真实 Google 任务或新的动态子任务全链通过。无权威费用/缓存核对的真实租户启用门禁继续保留。
+
+P25 的 CI 新增显式真实 PostgreSQL / native 合成模型步骤，避免只跑常规条件跳过。P28 增加 0095 清单/摘要、prepared 非派发证明、未知 hold 与 NULL 费用的恢复保存要求；检查器不执行迁移或恢复。main 远端与 Dev active-release 已再次核对仍为 B5 `57f3b5fd2acba034e9011231075c3e29b4503733` / `YmBpsav9R6_mfJmIob03N`，没有本批部署或启用。
+
 ## 结果、权限与发布边界
 
 助手输出文件的 hash、归属和存储完整性可以验证，但不代表模型内容或外部动作已经独立核实。UI 使用“关联工件”，输出标注 `model_proposal` / `independentlyVerified: false`。
