@@ -1,12 +1,21 @@
-/** P13 native Dev app; no Developer ID, notarization or updater claim. */
+/** Development is the default. Developer ID mode must pass every Apple gate;
+ * signing a package alone never enables the not-yet-provisioned updater. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  assertBridgeSigningAvailable,
+  bridgeSigningConfiguration,
+  signAndNotarizeBridge,
+  verifyPackagedBridge,
+} from './rice-bridge-signing.mjs';
 
 assert.equal(process.platform, 'darwin');
 assert.ok(['x64', 'arm64'].includes(process.arch));
+const signingConfig = bridgeSigningConfiguration();
+assertBridgeSigningAvailable(signingConfig);
 const targetArch = process.env.ALLRICE_BRIDGE_APP_ARCH ?? process.arch;
 assert.ok(['x64', 'arm64'].includes(targetArch));
 if (targetArch !== process.arch)
@@ -41,6 +50,24 @@ await copyFile(
   'apps/rice-bridge/macos/Info.plist',
   join(contents, 'Info.plist'),
 );
+const sourceVersion = (
+  await readFile('apps/rice-bridge/src/version.ts', 'utf8')
+).match(/bridgeVersion = '([^']+)'/)?.[1];
+assert.ok(sourceVersion, 'Bridge version is required');
+execFileSync('/usr/bin/plutil', [
+  '-replace',
+  'CFBundleShortVersionString',
+  '-string',
+  sourceVersion.split('-')[0],
+  join(contents, 'Info.plist'),
+]);
+execFileSync('/usr/bin/plutil', [
+  '-replace',
+  'CFBundleVersion',
+  '-string',
+  sourceVersion.match(/-dev\.(\d+)$/)?.[1] ?? '1',
+  join(contents, 'Info.plist'),
+]);
 const core = join(resources, 'RiceBridgeCore');
 execFileSync(process.execPath, ['scripts/build-rice-bridge-sea.mjs', core], {
   stdio: 'inherit',
@@ -91,10 +118,14 @@ execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', app], {
 execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], {
   stdio: 'inherit',
 });
-const sourceVersion = (
-  await readFile('apps/rice-bridge/src/version.ts', 'utf8')
-).match(/bridgeVersion = '([^']+)'/)?.[1];
-assert.ok(sourceVersion, 'Bridge version is required');
+const signingEvidence =
+  signingConfig.mode === 'developer-id'
+    ? signAndNotarizeBridge(signingConfig, app, output)
+    : {
+        signing: 'ad-hoc; not notarized',
+        notarization: 'not-performed',
+        teamId: null,
+      };
 const version =
   targetArch === process.arch
     ? execFileSync(core, ['--version'], { encoding: 'utf8' }).trim()
@@ -113,7 +144,9 @@ const manifest = {
   coreSha256: await digest(core),
   browserLauncherSha256: await digest(browserLauncher),
   browserRuntimeManifestSha256: await digest(`${core}.runtime/manifest.json`),
-  signing: 'ad-hoc; not notarized',
+  ...signingEvidence,
+  trustedUpdatesEnabled: false,
+  finalArchiveVerification: 'pending',
   credentialsEmbedded: false,
   sandboxDefault: 'disabled',
   browserDefault:
@@ -135,7 +168,40 @@ const zip = join(
   output,
   `RiceBridge-App-${targetArch === 'arm64' ? 'M' : 'Intel'}.zip`,
 );
-execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', app, zip]);
+if (signingConfig.mode === 'developer-id') {
+  const instructions = join(output, '使用说明.txt');
+  await writeFile(
+    instructions,
+    (await readFile(instructions, 'utf8'))
+      .replace('Rice Bridge 菜单栏 Dev 版', 'Rice Bridge 已签名候选版')
+      .replace(
+        '此包为 ad-hoc 开发签名，尚未 Apple 公证，不含自动升级；不要关闭系统安全保护。',
+        '此候选通过 Developer ID 签名与 Apple 公证；可信升级还需要预置发布者公钥、已认证的双架构元数据及实际发布授权。请从菜单检查状态，不要关闭系统安全保护。',
+      ),
+  );
+}
+execFileSync('/usr/bin/ditto', [
+  '-c',
+  '-k',
+  '--keepParent',
+  '--norsrc',
+  app,
+  zip,
+]);
+if (signingConfig.mode === 'developer-id') {
+  const verification = join(output, 'final-archive-verification');
+  await mkdir(verification, { mode: 0o700 });
+  execFileSync('/usr/bin/ditto', ['-x', '-k', zip, verification]);
+  verifyPackagedBridge(signingConfig, join(verification, 'Rice Bridge.app'));
+}
 const zipSha256 = await digest(zip);
+manifest.finalArchiveVerification =
+  signingConfig.mode === 'developer-id'
+    ? 'apple-signature-ticket-gatekeeper-verified'
+    : 'development-not-notarized';
+await writeFile(
+  join(output, 'release.json'),
+  JSON.stringify(manifest, null, 2) + '\n',
+);
 await writeFile(`${zip}.sha256`, `${zipSha256}  ${zip.split('/').at(-1)}\n`);
 console.log(JSON.stringify({ ...manifest, app, zip, zipSha256 }));

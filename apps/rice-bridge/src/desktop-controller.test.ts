@@ -321,11 +321,12 @@ async function fixture(
         {
           observation,
           phase:
-            type === 'pause' || type === 'stop'
+            type === 'pause' || type === 'stop' || type === 'drain'
               ? 'shutdown-request'
               : 'request',
           timeoutMs:
-            ledger !== false && (type === 'pause' || type === 'stop')
+            ledger !== false &&
+            (type === 'pause' || type === 'stop' || type === 'drain')
               ? shutdownWaitMs
               : ordinaryWaitMs,
         },
@@ -533,6 +534,39 @@ it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and
   expect(app.text()).not.toContain('synthetic-secret-token');
 }, 15_000);
 
+it('P14 native protocol fails closed without trust, drains acquisition without deleting pairing and resumes', async () => {
+  const f = await fixture();
+  const app = f.launch();
+  await app.waitUntil(() => f.polls() > 0);
+  expect((await app.request('updateStatus')).data).toEqual({
+    state: 'trust-unconfigured',
+    canInstall: false,
+    canRecover: false,
+  });
+  expect(
+    await app.request('installUpdate', { version: '0.6.0-dev.1' }),
+  ).toMatchObject({ ok: false, code: 'UPDATE_CHECK_REQUIRED' });
+  expect(await app.request('recoverUpdate')).toMatchObject({
+    ok: false,
+    code: 'UPDATE_RECOVERY_REQUIRED',
+  });
+  expect((await app.request('drain')).ok).toBe(true);
+  const polls = f.polls();
+  await delay(300);
+  expect(f.polls()).toBe(polls);
+  expect((await app.request('status')).data).toMatchObject({
+    mode: 'paused',
+    activeForeground: 0,
+    activeServices: 0,
+  });
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect((await app.request('resume')).ok).toBe(true);
+  await app.waitUntil(() => f.polls() > polls);
+  await app.request('stop');
+  await exited(app.child);
+  expect(app.child.exitCode).toBe(0);
+}, 15000);
+
 it.each(['browser', 'preview'])(
   'desktop %s disable is explicit, survives reopening, and preserves pairing',
   async (kind) => {
@@ -661,6 +695,52 @@ it('EOF stops the owned core and failed server revoke retains pairing with safe 
   await exited(app.child);
   expect(app.child.exitCode).toBe(0);
 }, 15_000);
+
+it.each([false, true])(
+  'P14 drain distinguishes known durable receipt from unknown execution (%s)',
+  async (unknown) => {
+    const f = await fixture(true, true);
+    const journal = await BridgeJournal.open({
+      directory: `${f.path}.operation-journal`,
+      server: f.config.server,
+      deviceId,
+    });
+    const dispatch = journalDispatch(f.root);
+    await journal.receive(dispatch);
+    if (unknown) await journal.uncertain(fixtureId(6), 'connection_lost');
+    else
+      await journal.outcome(fixtureId(6), {
+        status: 'succeeded',
+        effects: 'applied',
+        summary: 'synthetic known completed effect',
+      });
+    await journal.close();
+    const app = f.launch();
+    await app.waitUntil(() => f.receiptAttempts() > 0);
+    const response = await app.request('drain');
+    expect(response).toMatchObject(
+      unknown ? { ok: false, code: 'UPDATE_DRAIN_UNCONFIRMED' } : { ok: true },
+    );
+    expect((await app.request('status')).data).toMatchObject({
+      connection: 'stopped',
+      activeForeground: 0,
+      activeServices: 0,
+      pendingReceipts: 1,
+      unknownOperations: unknown ? 1 : 0,
+    });
+    const retained = await BridgeJournal.open({
+      directory: `${f.path}.operation-journal`,
+      server: f.config.server,
+      deviceId,
+    });
+    expect(await retained.pendingForDelivery()).toHaveLength(1);
+    await retained.close();
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    await app.request('stop');
+    await exited(app.child);
+  },
+  20000,
+);
 
 it('P13 pause and resume retain the real SQLite outbox and only redeliver its receipt', async () => {
   const f = await fixture(true, true);

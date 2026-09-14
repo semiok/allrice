@@ -301,6 +301,11 @@ export function journalDirectory(config: BridgeConfig) {
 export async function start(
   options: {
     signal?: AbortSignal;
+    /** Stop acquiring work; let already claimed foreground work finish. This
+     * is separate from pause/cancel and never aborts a running command. */
+    drainSignal?: AbortSignal;
+    /** Native update handshake: local initialization precedes acquisition. */
+    onReady?: () => Promise<void>;
     onState?: (state: BridgeRuntimeState) => void;
     onNotice?: (
       code:
@@ -313,6 +318,10 @@ export async function start(
     chooseWorkspace?: () => Promise<string>;
   } = {},
 ) {
+  // A managed candidate must not bypass interrupted-update startup gating by
+  // being invoked as `start` from a terminal instead of by the native host.
+  const updateLifecycle = await import('./desktop-update.js');
+  await updateLifecycle.assertBridgeUpdateStartup();
   let { config, token } = await credentials(await readConfig());
   const optedIn = await sandboxOptIn(config).catch(() => {
     console.warn(
@@ -495,6 +504,9 @@ export async function start(
     }
   };
   let browserTask: Promise<void> | null = null;
+  let runtimeReady = false;
+  let browserHasActiveWork = () => false;
+  let browserStopUnconfirmed = false;
   try {
     const [
       { LocalBrowserController },
@@ -536,19 +548,40 @@ export async function start(
           }
         : undefined,
       enabled: async () =>
+        runtimeReady &&
         (await browserPaired()) &&
         (await localBrowserOptIn(config).catch(() => false)),
-      onError: (code) => console.warn(code),
+      acquiring: () => runtimeReady && !options.drainSignal?.aborted,
+      onError: (code) => {
+        if (code === 'LOCAL_BROWSER_CLEANUP_PENDING')
+          browserStopUnconfirmed = true;
+        console.warn(code);
+      },
     });
-    browserTask = controller
-      .run(commandAbort.signal)
-      .catch(() => console.warn('LOCAL_BROWSER_CLEANUP_PENDING'));
+    browserHasActiveWork = () => controller.hasActiveWork;
+    browserTask = controller.run(commandAbort.signal).catch(() => {
+      browserStopUnconfirmed = true;
+      console.warn('LOCAL_BROWSER_CLEANUP_PENDING');
+    });
   } catch {
     console.warn('LOCAL_BROWSER_UNAVAILABLE');
   }
   let reconnectDelayMs = 1_000;
   try {
+    if (options.onReady) await options.onReady();
+    else await updateLifecycle.acknowledgeBridgeUpdateReadiness(options.signal);
+    runtimeReady = true;
     while (!stopping) {
+      if (options.drainSignal?.aborted) {
+        // Facts must be readable. A failed delivery alone is not failed stop;
+        // known durable receipts can remain queued across the update.
+        await updateFacts();
+        if (browserStopUnconfirmed) throw Error('UPDATE_DRAIN_UNCONFIRMED');
+        if (!state.activeServices && !browserHasActiveWork()) break;
+        // Existing services retain their own bounded leases/cancellation path.
+        await wait(250);
+        continue;
+      }
       try {
         if (Date.now() - lastHeartbeatAt >= 30_000) {
           await heartbeat();
@@ -589,6 +622,7 @@ export async function start(
               journal,
               runner: runnerAvailable ? runner : undefined,
               signal: commandAbort.signal,
+              acquiring: () => !options.drainSignal?.aborted,
               request: currentTransport()?.request,
               onActivity: (active) => {
                 state.activeForeground = active ? 1 : 0;
@@ -618,6 +652,7 @@ export async function start(
           // draining it when the opt-in operation queue is idle; the legacy
           // schema can never authorize the new process capability.
         }
+        if (options.drainSignal?.aborted) continue;
         const response = await bridgeRequest<{ command: unknown }>({
           server: config.server,
           path: '/api/v1/bridge/device/commands/next',
@@ -647,6 +682,7 @@ export async function start(
         reconnectDelayMs = 1_000;
       } catch (error) {
         if (stopping) break;
+        if (options.drainSignal?.aborted) continue;
         state.phase = 'offline';
         options.onNotice?.('CONNECTION_UNAVAILABLE');
         publish();

@@ -31,7 +31,7 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(acquiring: () => boolean = () => true) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-p22-controller-'));
   roots.push(root);
   const snapshot = journalDispatch(root).snapshot;
@@ -178,6 +178,7 @@ async function fixture() {
     profiles,
     outbox,
     enabled: async () => allowed,
+    acquiring,
     paired: async () => paired,
     startDriver,
   });
@@ -203,6 +204,51 @@ async function fixture() {
   };
 }
 describe('P22 local controller with durable outbox and strict authority port', () => {
+  it('P14 acquisition drain does not disable permissions or start a new browser', async () => {
+    const f = await fixture(() => false);
+    expect(await f.controller.pollOnce()).toBe(false);
+    expect(f.authority.claim).toHaveBeenCalledWith(
+      f.controller.controllerId,
+      false,
+      false,
+    );
+    expect(f.controller.hasActiveWork).toBe(false);
+    expect(f.startDriver).not.toHaveBeenCalled();
+  });
+  it('P14 counts an in-flight claim and preserves the resulting active browser without claiming another action', async () => {
+    let acquiring = true;
+    const f = await fixture(() => acquiring);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const claim = vi.mocked(f.authority.claim).getMockImplementation()!;
+    vi.mocked(f.authority.claim).mockImplementationOnce(async (...args) => {
+      entered();
+      await blocked;
+      return claim(...args);
+    });
+    const pending = f.controller.pollOnce();
+    try {
+      await started;
+      acquiring = false;
+      expect(f.controller.hasActiveWork).toBe(true);
+      expect(await f.controller.pollOnce()).toBe(false);
+    } finally {
+      release();
+    }
+    await pending;
+    expect(f.controller.hasActiveWork).toBe(true);
+    await f.controller.pollOnce();
+    expect(f.authority.next).not.toHaveBeenCalled();
+    expect(f.driver.close).not.toHaveBeenCalled();
+    await f.controller.stop();
+    expect(f.controller.hasActiveWork).toBe(false);
+  });
   it('startup with unconfirmed process cleanup never acknowledges a clean stop or starts another instance', async () => {
     const f = await fixture();
     f.startDriver.mockRejectedValue(Error('LOCAL_BROWSER_CLEANUP_PENDING'));

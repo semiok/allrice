@@ -25,6 +25,11 @@ import {
   type DesktopRequest,
 } from './desktop-protocol.js';
 import { bridgeVersion } from './version.js';
+import {
+  DesktopUpdater,
+  acknowledgeBridgeUpdateReadiness,
+  assertBridgeUpdateStartup,
+} from './desktop-update.js';
 import { localPreviewOptIn } from './local-preview-settings.js';
 import { localPreviewCli } from './local-preview-cli.js';
 import {
@@ -33,11 +38,17 @@ import {
 } from './local-browser-settings.js';
 
 export async function runDesktopController() {
+  const updater = new DesktopUpdater();
   const notices: { at: string; code: string }[] = [];
   let sequence = 0;
   let mode:
-    'unpaired' | 'running' | 'pausing' | 'paused' | 'stopping' | 'error' =
-    'unpaired';
+    | 'unpaired'
+    | 'running'
+    | 'pausing'
+    | 'paused'
+    | 'stopping'
+    | 'draining'
+    | 'error' = 'unpaired';
   let errorCode: string | null = null;
   let config: BridgeConfig | null = null;
   let browserEnabled = false;
@@ -57,12 +68,15 @@ export async function runDesktopController() {
   let running: Promise<void> | null = null;
   let runtimeFailed = false;
   let abort: AbortController | null = null;
+  let drain: AbortController | null = null;
   let picker: {
     id: string;
     resolve: (path: string) => void;
     reject: (error: Error) => void;
   } | null = null;
   let closing = false;
+  const lifecycle = new AbortController();
+  let initializing = true;
   let outputClosed = false;
   let buffer = Buffer.alloc(0);
   let work = Promise.resolve();
@@ -108,6 +122,7 @@ export async function runDesktopController() {
     credentialCleanupPending,
     browserEnabled,
     previewEnabled,
+    update: updater.state,
     connection: runtime.phase,
     workspaceLabels: config
       ? runtime.workspaceLabels.map(desktopSafeText).slice(0, 16)
@@ -222,9 +237,12 @@ export async function runDesktopController() {
     errorCode = null;
     runtimeFailed = false;
     abort = new AbortController();
+    drain = new AbortController();
     publish();
     running = start({
       signal: abort.signal,
+      drainSignal: drain.signal,
+      onReady: () => acknowledgeBridgeUpdateReadiness(abort?.signal),
       onState: (next) => {
         runtime = next;
         publish();
@@ -258,7 +276,59 @@ export async function runDesktopController() {
       await refresh();
       await resume();
     } else if (request.type === 'resume') await resume();
-    else if (request.type === 'pause') {
+    else if (request.type === 'updateStatus') {
+      await updater.check();
+      publish();
+      reply(request, true, updater.state);
+      return;
+    } else if (request.type === 'recoverUpdate') {
+      if (!updater.state.canRecover) throw Error('UPDATE_RECOVERY_REQUIRED');
+      if (
+        running ||
+        runtime.phase !== 'stopped' ||
+        runtime.activeForeground ||
+        runtime.activeServices ||
+        runtime.unknownOperations
+      )
+        throw Error('UPDATE_DRAIN_UNCONFIRMED');
+      const id = await updater.recoveryRequest();
+      await updater.handoff(id, true);
+      reply(request, true, { restart: true });
+      return;
+    } else if (request.type === 'drain' || request.type === 'installUpdate') {
+      // Browser controller is independent of the foreground queue. Until a
+      // cross-controller drain handshake is validated, require the user's
+      // explicit browser stop; never pretend its omission is quiescence.
+      if (browserEnabled || previewEnabled)
+        throw Error('UPDATE_DRAIN_BROWSER_ACTIVE');
+      const requestId =
+        request.type === 'installUpdate'
+          ? await updater.prepare(request.version)
+          : null;
+      cancelPicker();
+      mode = 'draining';
+      drain?.abort();
+      publish();
+      if (running) await running;
+      if (
+        runtimeFailed ||
+        runtime.phase !== 'stopped' ||
+        runtime.activeForeground ||
+        runtime.activeServices ||
+        runtime.unknownOperations
+      ) {
+        mode = 'error';
+        throw Error('UPDATE_DRAIN_UNCONFIRMED');
+      }
+      mode = config ? 'paused' : 'unpaired';
+      publish();
+      if (requestId) {
+        if (closing) throw Error('UPDATE_STOP_UNCONFIRMED');
+        await updater.handoff(requestId);
+        reply(request, true, { restart: true });
+        return;
+      }
+    } else if (request.type === 'pause') {
       mode = 'pausing';
       publish();
       await halt();
@@ -339,6 +409,7 @@ export async function runDesktopController() {
   const shutdown = (request?: DesktopRequest) => {
     if (shutdownPromise) return shutdownPromise;
     closing = true;
+    lifecycle.abort();
     mode = 'stopping';
     publish();
     cancelPicker();
@@ -433,6 +504,10 @@ export async function runDesktopController() {
         reply(request, true);
         continue;
       }
+      if (initializing) {
+        reply(request, false, undefined, 'DESKTOP_BUSY');
+        continue;
+      }
       if (queued >= 8) {
         reply(request, false, undefined, 'DESKTOP_BUSY');
         continue;
@@ -477,13 +552,19 @@ export async function runDesktopController() {
   try {
     try {
       await refresh();
+      await updater.localState();
+      await assertBridgeUpdateStartup();
       if (config) await resume();
-      else publish();
+      else {
+        await acknowledgeBridgeUpdateReadiness(lifecycle.signal);
+        publish();
+      }
     } catch (error) {
       mode = 'error';
       errorCode = desktopSafeError(error);
       publish();
     }
+    initializing = false;
     await done;
   } finally {
     process.stdin.removeListener('data', onInput);
