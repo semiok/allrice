@@ -51,7 +51,8 @@ governed 另有 4 项浏览器/VM 环境未启用而跳过。后续 proposal 夹
 每次 configure/delegate/message/model/tool/proposal 的执行准入仍由服务端重建授权；
 冷恢复只读证据导入另查当前 owner 与新 Worker lease，且不重新授予执行权。
 必须冻结 daily + allowAssistants，并显式绑定员工工具 `assistant.delegate`。
-普通发布新 employee version 不自动撤销一个合法冻结中的版本；当前停用、撤权、取消仍即时生效。
+普通发布新 employee version 不自动撤销一个合法冻结中的版本；当前停用、撤权、取消仍在每次新准入重检。
+已在途模型流的非 membership 撤权轮询尚有待修项，见下方阻断说明，不能将准入检查等同于流已停止。
 缺失 policy、未知配置、旧版不支持的 snapshot、替换 root/project、跨租户和过期 lease 默认拒绝。
 
 所有已接工具仍须同时满足冻结权限、父工具集、此次明确委派工具集与当前政策交集。
@@ -111,8 +112,9 @@ child 可报告失败/部分结果。预派发 canceled 可提供 `notExecuted:t
 - 缓存计量：固定 DSH 的 uncached input + cacheRead + cacheWrite 合计，并检查 safe integer。
   SDK 对缺失远端 usage 可能合成零；非空输入的零 input、观察到真实输出但 output 为零，
   都保留相应预留。见 `06bf13d`、`06aadb1` 的 usage 单测和 production 实际 HTTP 缺字段负例。
-- 撤权：轮询失败强制关闭已拥有的宿主，catch/finally 保证关闭；真实 HTTP 流关闭回归通过，
+- membership 撤权：轮询失败强制关闭已拥有的宿主，catch/finally 保证关闭；真实 HTTP 流关闭回归通过，
   不把宿主退出捏造成远端操作 stopped receipt。见 `06bf13d`。
+  此证据不覆盖 policy/employee/assignment/能力开关撤销后的已在途模型流，不能扩称全部撤权已闭合。
 - 结果：DB 锁内从本 child 用量推导，report 自身已知协调调用先结算；未知用量使 completed 降为 partial，
   不因兄弟预留误判。见 `06bf13d` 的真实 PG 用量测试。
 - 查询：`06bf13d` 显式纳入 web.search 并在创建 child 前拒绝未支持 Browser/Bridge 读取；
@@ -127,6 +129,11 @@ child 可报告失败/部分结果。预派发 canceled 可提供 `notExecuted:t
 - 路由账单：`d685ab3` 保存 SQL NULL 与完整性标志，quota/admin/employee reader 不把未知求和成零；
   `4c49123` 拒绝普通迟到 writer 将 NULL 改数值、false 改 true、降低已确认用量；保留首次 completedAt，不能挪动结算月份。
   首次旧 numeric writer 和精确重放兼容；未知转已知需要另有权威证据的核对流程，不由普通重放承担。
+
+仍待修的生产 P1：已在途模型的轮询目前只通过 owner/membership 重建检查，
+policy/employee/assignment/能力开关撤销还不能保证立即中断该流。
+P25 正补持有当前 root/Worker 的只读全权威轮询与各撤销维度的双 child HTTP 流负例；
+提交与证据未登记前保持 pending，不能以文档豁免启用。
 
 仍开放且阻断 tenant-enable：当前未冻结权威价格/缓存价格账，助手 `costEstimateAvailable:false`，
 费用落 NULL；组织 quota 随后会 fail-closed 阻止后续模型路由，包括单 Agent，不能把未知当免费放行。
