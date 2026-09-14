@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
 
 import {
   OrganizationModelQuotaSchema,
@@ -14,6 +15,8 @@ import {
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { isPlatformAdmin } from './model-pool.ts';
+
+type GovernanceSql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 
 const defaultMonthlyRunLimit = 10_000;
 const defaultMonthlyTokenLimit = 10_000_000;
@@ -94,7 +97,7 @@ async function requirePlatformAdmin(context: RequestContext) {
 
 export async function getOrganizationModelQuota(
   organizationId: string,
-  sql = getDatabase(),
+  sql: GovernanceSql = getDatabase(),
 ) {
   const id = UuidSchema.parse(organizationId);
   const rows = await sql<
@@ -361,13 +364,15 @@ export async function updateOrganizationModelQuota(input: {
   return getOrganizationModelQuota(input.context.organizationId);
 }
 
-async function resourceStatus(input: {
-  organizationId: string;
-  workspaceId: string;
-  scope: 'tenant' | 'user' | 'employee' | 'provider';
-  scopeId: string;
-}) {
-  const sql = getDatabase();
+async function resourceStatus(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    scope: 'tenant' | 'user' | 'employee' | 'provider';
+    scopeId: string;
+  },
+  sql: GovernanceSql = getDatabase(),
+) {
   const limitRows = await sql<
     {
       monthly_run_limit: number;
@@ -487,6 +492,49 @@ export function assertModelResourceAvailable(input: {
   }
 }
 
+/** Closed/invalid roots can outlive a crashed Worker's monthly projection.
+ * Read their durable dispatched-call holds, never a raw provider error or every
+ * positive reservation. Live bounded in-flight work and undispatched preparation
+ * remain admissible; this query neither settles holds nor acquires runtime locks.
+ */
+async function assertNoOrphanedAssistantUsage(
+  organizationId: string,
+  sql: postgres.TransactionSql,
+) {
+  const [unknown] = await sql`
+    select 1 from allrice_runtime_roots rt
+    join allrice_assistant_roots ar on ar.root_run_id=rt.root_run_id
+    join allrice_runs r on r.id=rt.root_run_id
+      and r.organization_id=rt.organization_id and r.workspace_id=rt.workspace_id
+    join allrice_assistant_model_admissions a on a.root_run_id=rt.root_run_id
+    join allrice_assistant_usage u on u.root_run_id=a.root_run_id
+      and u.run_id=a.run_id and u.call_id=a.call_id
+    left join allrice_assistant_instances main on main.run_id=rt.root_run_id
+      and main.root_run_id=rt.root_run_id
+    left join allrice_jobs j on j.id=ar.worker_job_id and j.run_id=rt.root_run_id
+      and j.organization_id=rt.organization_id and j.workspace_id=rt.workspace_id
+    where rt.organization_id=${organizationId}
+      and a.dispatched_at is not null
+      and u.metric in ('input_tokens','output_tokens')
+      and u.amount>0 and u.settled_amount is null
+      and (
+        rt.cancel_request_id is not null or rt.deadline_at<=clock_timestamp()
+        or ar.revoked_at is not null
+        or r.state not in ('queued','running','waiting_approval')
+        or main.run_id is null or main.stopped_at is not null
+        or main.status in ('completed','partial','failed','canceled','unknown')
+        or j.id is null or j.status<>'running'
+        or j.cancel_requested_at is not null or j.timeout_at<=clock_timestamp()
+        or j.lease_expires_at is null or j.lease_expires_at<=clock_timestamp()
+        or j.worker_id is distinct from ar.worker_id or j.lease_token is null
+        or ar.worker_lease_digest is distinct from
+          ('sha256:' || encode(sha256(convert_to(to_json(j.lease_token)::text,'UTF8')),'hex'))
+      )
+    limit 1
+  `;
+  if (unknown) throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
+}
+
 export async function admitModelExecution(input: {
   organizationId: string;
   workspaceId: string;
@@ -515,17 +563,28 @@ export async function admitModelExecution(input: {
   return sql.begin(async (transaction) => {
     for (const [scope, scopeId] of scopes) {
       await transaction`
-        select pg_advisory_xact_lock(hashtext(${`${scope}:${scopeId}`}))
+        select pg_advisory_xact_lock(hashtext(${`${scope}:${scopeId.toLowerCase()}`}))
       `;
     }
+    // This transaction is the new-Run admission boundary. RouteOutcome writers
+    // take the same tenant lock before their route row lock. Re-read after any
+    // wait; a previously captured UI/Worker quota is not admission authority.
+    // Already admitted live bounded Runs are not retroactively canceled here.
+    assertQuotaAvailable(
+      await getOrganizationModelQuota(values.organizationId, transaction),
+    );
+    await assertNoOrphanedAssistantUsage(values.organizationId, transaction);
     const resources = await Promise.all(
       scopes.map(([scope, scopeId]) =>
-        resourceStatus({
-          organizationId: values.organizationId,
-          workspaceId: values.workspaceId,
-          scope,
-          scopeId,
-        }),
+        resourceStatus(
+          {
+            organizationId: values.organizationId,
+            workspaceId: values.workspaceId,
+            scope,
+            scopeId,
+          },
+          transaction,
+        ),
       ),
     );
     assertModelResourceAvailable({

@@ -143,6 +143,11 @@ export async function completeRouteDecision(
 ) {
   const outcome = RouteOutcomeSchema.parse(input.outcome);
   await sql.begin(async (transaction) => {
+    // Same first lock as model admission. Never take the route row lock before
+    // this tenant fence, or an admission could miss a committing unknown ledger.
+    await transaction`
+      select pg_advisory_xact_lock(hashtext(${`tenant:${input.organizationId.toLowerCase()}`}))
+    `;
     const decisions = await transaction<
       {
         id: string;
