@@ -143,6 +143,7 @@ export function ChatFlowClient({
     streamRun,
   } = useRunStream({
     activeId,
+    history,
     loadHistory,
     loadWorkspace,
     setError,
@@ -152,7 +153,6 @@ export function ChatFlowClient({
 
   useEffect(() => {
     if (!activeId) {
-      resetRunState();
       setHistory(null);
       return;
     }
@@ -163,30 +163,10 @@ export function ChatFlowClient({
     if (history?.session.id === activeId) return;
     followTranscript.current = true;
     setAtTranscriptBottom(true);
-    resetRunState();
     loadHistory(activeId).catch((cause) =>
       setError(cause instanceof Error ? cause.message : '会话加载失败'),
     );
-  }, [activeId, history?.session.id, loadHistory, resetRunState, setHistory]);
-
-  useEffect(() => {
-    const pendingRunIds = (history?.messages ?? [])
-      .filter((message) => message.status === 'pending' && message.runId)
-      .map((message) => message.runId as string);
-    for (const runId of pendingRunIds) {
-      void streamRun(runId);
-    }
-  }, [history, streamRun]);
-
-  useEffect(() => {
-    const historicalRunIds = (history?.messages ?? [])
-      .filter((message) => message.status !== 'pending')
-      .map((message) => message.runId)
-      .filter((value): value is string => Boolean(value));
-    for (const runId of historicalRunIds) {
-      void loadRunTrace(runId);
-    }
-  }, [history, loadRunTrace]);
+  }, [activeId, history?.session.id, loadHistory, setHistory]);
 
   useEffect(() => {
     const scrollRegion = conversationScroll.current;
@@ -468,7 +448,7 @@ export function ChatFlowClient({
             }
           : current,
       );
-      void streamRun(result.run.id);
+      void streamRun(result.run.id, sessionId);
       void loadHistory(sessionId);
       void interactions.reload();
     } catch (cause) {
@@ -551,7 +531,7 @@ export function ChatFlowClient({
       }
       await loadHistory(activeId);
       void interactions.reload();
-      void streamRun(result.run.id);
+      void streamRun(result.run.id, activeId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '回答提交失败');
     } finally {
@@ -909,7 +889,7 @@ export function ChatFlowClient({
           onDirtyChange={workbench.noteDirty}
           onContinued={(runId) => {
             void loadHistory(activeId);
-            void streamRun(runId);
+            void streamRun(runId, activeId);
             void interactions.reload();
           }}
         />

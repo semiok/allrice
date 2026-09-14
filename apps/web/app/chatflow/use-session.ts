@@ -6,6 +6,7 @@ import type { SaasCapabilityManifest } from '@allrice/contracts';
 
 import type { History, Session, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
+import { createSessionSelection } from './session-selection';
 
 type UseSessionOptions = {
   setError: (message: string) => void;
@@ -14,9 +15,22 @@ type UseSessionOptions = {
 export function useSession({ setError }: UseSessionOptions) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, updateActiveId] = useState<string | null>(null);
+  const [selection] = useState(createSessionSelection);
   const [history, setHistory] = useState<History | null>(null);
   const historyRequestGeneration = useRef(0);
+  const historyRequest = useRef<AbortController | null>(null);
+  const setActiveId = useCallback(
+    (sessionId: string | null) => {
+      // Invalidate synchronously when selected, before the next render/effect.
+      if (selection.select(sessionId)) {
+        historyRequestGeneration.current += 1;
+        historyRequest.current?.abort();
+      }
+      updateActiveId(sessionId);
+    },
+    [selection],
+  );
 
   const tenantOrganizationId = workspace?.organizationId;
   const tenantWorkspaceId = workspace?.workspaceId;
@@ -32,6 +46,7 @@ export function useSession({ setError }: UseSessionOptions) {
   );
 
   const loadWorkspace = useCallback(async () => {
+    const scope = selection.capture();
     const [workspaceResult, capabilityResult] = await Promise.all([
       readJson<{ workspace: Workspace }>(
         await fetch('/api/v1/workspace', { cache: 'no-store' }),
@@ -42,7 +57,8 @@ export function useSession({ setError }: UseSessionOptions) {
     ]);
     setWorkspace(workspaceResult.workspace);
     setManifest(capabilityResult.capabilities);
-    setActiveId((current) => {
+    if (scope.current()) {
+      const current = scope.sessionId;
       const linked = new URLSearchParams(window.location.search).get('session');
       if (
         !current &&
@@ -50,43 +66,66 @@ export function useSession({ setError }: UseSessionOptions) {
         workspaceResult.workspace.sessions.some(
           (s) => s.id === linked && !s.archivedAt,
         )
-      )
-        return linked;
+      ) {
+        setActiveId(linked);
+        return;
+      }
       if (
         current &&
         workspaceResult.workspace.sessions.some(
           (session) => session.id === current && !session.archivedAt,
         )
       ) {
-        return current;
+        return;
       }
-      return (
+      setActiveId(
         workspaceResult.workspace.sessions.find(
           (session) => !session.archivedAt,
-        )?.id ?? null
+        )?.id ?? null,
       );
-    });
-  }, []);
+    }
+  }, [selection, setActiveId]);
 
   const loadHistory = useCallback(
     async (sessionId: string) => {
-      if (!tenantWorkspaceId) return;
+      const scope = selection.capture();
+      // An old POST callback must not become the newest history request.
+      if (!tenantWorkspaceId || scope.sessionId !== sessionId) return;
       const requestGeneration = ++historyRequestGeneration.current;
-      const result = await readJson<{ history: History }>(
-        await fetch(
+      historyRequest.current?.abort();
+      const controller = new AbortController();
+      historyRequest.current = controller;
+      const current = () =>
+        scope.current() &&
+        requestGeneration === historyRequestGeneration.current &&
+        !controller.signal.aborted;
+      try {
+        const response = await fetch(
           `/api/v1/sessions/${sessionId}?workspaceId=${tenantWorkspaceId}`,
-          { cache: 'no-store', headers: tenantHeaders },
-        ),
-      );
-      if (requestGeneration !== historyRequestGeneration.current) return;
-      setHistory(result.history);
+          {
+            cache: 'no-store',
+            headers: tenantHeaders,
+            signal: controller.signal,
+          },
+        );
+        if (!current()) return;
+        const result = await readJson<{ history: History }>(response);
+        if (current() && result.history.session.id === sessionId)
+          setHistory(result.history);
+      } catch (cause) {
+        if (current()) throw cause;
+      } finally {
+        if (historyRequest.current === controller)
+          historyRequest.current = null;
+      }
     },
-    [tenantHeaders, tenantWorkspaceId],
+    [selection, tenantHeaders, tenantWorkspaceId],
   );
 
   const createSession = useCallback(
     async (title: string) => {
       if (!workspace) return null;
+      const scope = selection.capture();
       const employee =
         workspace.employees.find((item) => item.isDefault) ??
         workspace.employees[0];
@@ -102,6 +141,9 @@ export function useSession({ setError }: UseSessionOptions) {
           }),
         }),
       );
+      // The server may have created it, but a late response cannot steal the
+      // user's newer selection or begin sending its draft in that Session.
+      if (!scope.current()) return null;
       // A newly-created Session already has the authoritative empty baseline.
       // Invalidate any older history response before publishing that baseline
       // so it cannot overwrite the first optimistic turn.
@@ -125,7 +167,7 @@ export function useSession({ setError }: UseSessionOptions) {
       });
       return result.session.id;
     },
-    [tenantHeaders, workspace],
+    [selection, setActiveId, tenantHeaders, workspace],
   );
 
   useEffect(() => {
@@ -133,6 +175,14 @@ export function useSession({ setError }: UseSessionOptions) {
       setError(cause instanceof Error ? cause.message : '工作区加载失败'),
     );
   }, [loadWorkspace, setError]);
+
+  useEffect(
+    () => () => {
+      selection.invalidate();
+      historyRequest.current?.abort();
+    },
+    [selection],
+  );
 
   return {
     activeId,
