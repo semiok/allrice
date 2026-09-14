@@ -29,6 +29,7 @@ import {
   fixtureCleanupFlags,
   isolatedEnvironment,
   parseArguments,
+  providerExecutionEligibility,
   PROVIDER,
   readCandidate,
   requireCheck,
@@ -60,6 +61,7 @@ async function main() {
   for (const file of sourceFiles)
     sources[file] = hash(await readFile(join(root, file)));
   const installedRuntime = await collectP27InstalledRuntime(root);
+  const providerEligibility = providerExecutionEligibility();
   if (args.mode === '--preflight') {
     process.stdout.write(
       `${JSON.stringify({
@@ -67,6 +69,7 @@ async function main() {
         candidateSha: args.sha,
         sources,
         installedRuntime,
+        providerEligibility,
         providerNotCalled: true,
         databaseNotOpened: true,
         credentialMetadataNotRead: true,
@@ -77,6 +80,20 @@ async function main() {
   // No DB import/connection, credential metadata inspection, native host or
   // filesystem mutation occurs before explicit SHA-bound execution authority.
   assertExecutionAuthorization(process.env, args.sha);
+  if (!providerEligibility.eligible) {
+    process.stdout.write(
+      `${JSON.stringify({
+        status: 'blocked_before_execution',
+        candidateSha: args.sha,
+        providerEligibility,
+        providerNotCalled: true,
+        databaseNotOpened: true,
+        credentialMetadataNotRead: true,
+      })}\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   const platformHome = await authorizedPlatformHome(
     process.env.ALLRICE_DSH_PLATFORM_HOME,
   );

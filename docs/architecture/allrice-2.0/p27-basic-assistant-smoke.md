@@ -2,6 +2,8 @@
 
 本脚本只覆盖「真实父模型 → 两个有限子助手 → 两份平台发布的不可变小报告 → 父级持久采纳及汇总 → 全树预算账本」这一条基础助手路径。脚本编写、静态检查或合成 PostgreSQL 准入测试不等于真实 provider 验收通过，更不代表 P27、B6 或 GA 完成。
 
+**当前阻断（2026-09-14）**：首次真实 Codex smoke 已在 `1507ff0` 失败，记录见 [B6 集成证据](./b6-integration-verification.md)。固定 SDK 的 Codex 请求未携带可验证的输出上限，因此本脚本的固定 Codex 助手路由目前被生产能力门禁拒绝。`--preflight` 仍可核对源码和安装清单，但必须同时报告 `providerEligibility.eligible=false`，不能将预检退出 0 当作执行许可。即使提供 SHA 绑定授权，`--execute` 也在凭据元数据、DB、原生宿主和临时文件创建之前返回 `blocked_before_execution` / 退出 1。不得以环境变量、换成普通聊天路径或移除 gate 绕过。Gemini 的独立合成 HTTP 协议证据不把本脚本静默切换为 Gemini，也不构成真实模型通过。
+
 ## 前置条件与权限
 
 必须先由根任务集成 P25 `assistant_report.output` 生产接线及数据库 publisher，完成相关负例，并固定一个包含本脚本的完整 40 位候选 SHA。只允许在该 SHA 的干净工作树运行。最终再检查一次 HEAD 和工作树；并发修改使证据失效。锁文件、原生助手实现、restricted 配置、controller 和 publisher 的源码哈希也进入报告。
@@ -55,7 +57,7 @@ env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" LANG=en_US.UTF-8 \
 
 fixture 初始化失败同样需要真实清理回执，不能因 `database` 未赋值就认为 schema 未创建。helper 对随机 schema 的 DROP 后读取 `to_regnamespace` 确认消失；关闭自己具名的 PG 连接，并独立删除/确认自己的辅助 storage 目录。未确认的 DROP、目录创建或连接关闭保持 false，P27 标记 `cleanup_blocked` 并分别指出残留/未知资源；已成功删除的目录不标作 retained。故障测试覆盖 mkdtemp 失败、迁移读取失败及真实竞争 PG 锁阻挡 DROP，均只使用本次新建资源。
 
-## 无 provider 自测
+## 无 provider 自测（初始脚本记录；后续实际结果见集成证据）
 
 ```sh
 pnpm exec vitest run --maxWorkers=1 scripts/acceptance/runtime/p27-assistant-preflight.test.ts scripts/acceptance/runtime/p27-assistant-outcome.test.ts scripts/acceptance/runtime/p27-error-diagnostics.test.ts scripts/acceptance/runtime/p27-owned-clients.test.ts

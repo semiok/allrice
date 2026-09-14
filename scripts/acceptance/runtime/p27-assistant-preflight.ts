@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { lstat, realpath } from 'node:fs/promises';
 import { relative, isAbsolute, join } from 'node:path';
 import type { AssistantFixtureCleanupProof } from '../../../packages/database/src/assistant-runtime.fixture.ts';
+import { HandlerError } from '../../../apps/worker/src/errors.ts';
+import { assertAssistantProviderOutputBound } from '../../../apps/worker/src/harness/dsh/assistant-provider.ts';
 
 export const AUTHORIZED_DEV_ROOT = '/Users/a123/allrice-dev/.local';
 export const FIXTURE_DATABASE_URL = 'postgres://a123@127.0.0.1:5432/allrice_b2';
@@ -14,6 +16,24 @@ export const PROVIDER = Object.freeze({
   credentialReference: 'deployment:codex-default',
   baseUrl: null,
 });
+/** Uses the same server-owned capability gate as production. A valid source
+ * manifest is not proof that this pinned acceptance route may execute. */
+export function providerExecutionEligibility() {
+  try {
+    assertAssistantProviderOutputBound(PROVIDER, true);
+    return { eligible: true, reason: null } as const;
+  } catch (error) {
+    if (
+      error instanceof HandlerError &&
+      error.code === 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED'
+    )
+      return {
+        eligible: false,
+        reason: 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',
+      } as const;
+    throw error;
+  }
+}
 export const RUN_LIMITS = Object.freeze({
   timeoutMs: 180000,
   maxInputTokens: 80000,

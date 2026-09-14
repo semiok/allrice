@@ -5,12 +5,19 @@ import {
   assertExecutionAuthorization,
   isolatedEnvironment,
   parseArguments,
+  providerExecutionEligibility,
   strictDescendant,
   PROVIDER,
   RUN_LIMITS,
 } from './p27-assistant-preflight.ts';
 const sha = 'a'.repeat(40);
 describe('P27 provider-free preflight safety', () => {
+  it('does not call a valid source manifest permission to run the unsupported pinned Codex assistant route', () => {
+    expect(providerExecutionEligibility()).toEqual({
+      eligible: false,
+      reason: 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',
+    });
+  });
   it('does not treat an undefined fixture after attempted initialization as successful cleanup', () => {
     expect(fixtureCleanupFlags(false)).toEqual({
       schemaRemoved: true,
