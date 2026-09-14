@@ -332,6 +332,38 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
         ?.status,
     ).toBe('unknown');
   });
+  it('a new lease on the same worker/job cannot assume the previous native incarnation', async () => {
+    const f = await assistantFixture(fixture.db);
+    const leaseToken = randomUUID();
+    await fixture.db`update allrice_jobs set lease_token=${leaseToken} where id=${f.worker.jobId}`;
+    await expect(
+      f.runtime.configureRoot({
+        task: f.task,
+        configuration: f.config,
+        nativeSessionId: f.nativeSessionId,
+        worker: { ...f.worker, leaseToken },
+        allowedTools: [
+          'read',
+          'proposal',
+          'assistant.delegate',
+          'assistant.report',
+        ],
+      }),
+    ).rejects.toThrow('conflict');
+    await expect(
+      f.delegate({ worker: { ...f.worker, leaseToken } }),
+    ).rejects.toThrow('lease_lost');
+    expect(
+      await f.runtime.quarantineExpired({
+        scope: f.task.scope,
+        rootRunId: f.task.runId,
+      }),
+    ).toMatchObject({ replay: false });
+    expect(
+      (await f.runtime.getTree(f.context, { runId: f.task.runId })).instances[0]
+        ?.status,
+    ).toBe('unknown');
+  });
   it('feature OFF blocks new execution but preserves history and cancellation', async () => {
     const f = await assistantFixture(fixture.db);
     await f.delegate();

@@ -4,6 +4,7 @@ create table allrice_assistant_roots (
   configuration jsonb not null,
   worker_job_id uuid not null references allrice_jobs(id),
   worker_id uuid not null,
+  worker_lease_digest text not null check(worker_lease_digest ~ '^sha256:[a-f0-9]{64}$'),
   generation bigint not null check (generation >= 0),
   fence bigint not null default 1 check (fence > 0),
   revoked_at timestamptz,

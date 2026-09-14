@@ -94,6 +94,7 @@ interface Root {
   configuration: AssistantRunConfiguration;
   worker_job_id: string;
   worker_id: string;
+  worker_lease_digest: string;
   generation: string;
   fence: string;
   revoked_at: Date | null;
@@ -190,7 +191,7 @@ export function createAssistantRuntime(
     uuid.parse(rootRunId);
     const [root] = await tx<
       Root[]
-    >`select r.*, a.configuration,a.worker_job_id,a.worker_id,a.generation,a.fence,a.revoked_at
+    >`select r.*, a.configuration,a.worker_job_id,a.worker_id,a.worker_lease_digest,a.generation,a.fence,a.revoked_at
       from allrice_runtime_roots r join allrice_assistant_roots a using(root_run_id)
       where r.root_run_id=${rootRunId} and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId}
       for update of r,a`;
@@ -218,6 +219,7 @@ export function createAssistantRuntime(
       !job ||
       root.worker_job_id !== lease.jobId ||
       root.worker_id !== lease.workerId ||
+      root.worker_lease_digest !== runtimeLedgerInputDigest(lease.leaseToken) ||
       Number(root.generation) !== lease.generation ||
       Number(root.fence) !== (lease.fence ?? 1) ||
       root.revoked_at
@@ -358,19 +360,21 @@ export function createAssistantRuntime(
         )
           fail('forbidden');
         const [existing] =
-          await tx`select configuration,worker_job_id,worker_id,generation from allrice_assistant_roots where root_run_id=${task.rootRunId}`;
+          await tx`select configuration,worker_job_id,worker_id,worker_lease_digest,generation from allrice_assistant_roots where root_run_id=${task.rootRunId}`;
         if (
           existing &&
           (runtimeLedgerInputDigest(existing.configuration) !==
             runtimeLedgerInputDigest(configuration) ||
             existing.worker_job_id !== input.worker.jobId ||
             existing.worker_id !== input.worker.workerId ||
+            existing.worker_lease_digest !==
+              runtimeLedgerInputDigest(input.worker.leaseToken) ||
             Number(existing.generation) !== input.worker.generation)
         )
           fail('conflict');
         if (!existing)
-          await tx`insert into allrice_assistant_roots(root_run_id,configuration,worker_job_id,worker_id,generation)
-          values(${task.rootRunId},${json(tx, configuration)},${input.worker.jobId},${input.worker.workerId},${input.worker.generation})`;
+          await tx`insert into allrice_assistant_roots(root_run_id,configuration,worker_job_id,worker_id,worker_lease_digest,generation)
+          values(${task.rootRunId},${json(tx, configuration)},${input.worker.jobId},${input.worker.workerId},${runtimeLedgerInputDigest(input.worker.leaseToken)},${input.worker.generation})`;
         const root = await lock(tx, task.scope, task.rootRunId);
         await assertLease(tx, root, input.worker, false);
         await authorize({
@@ -1009,9 +1013,15 @@ export function createAssistantRuntime(
     async quarantineExpired(input: { scope: RuntimeScope; rootRunId: string }) {
       return db.begin(async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
-        const [live] =
-          await tx`select 1 from allrice_jobs where id=${root.worker_job_id} and worker_id=${root.worker_id} and status='running' and lease_expires_at>clock_timestamp()`;
-        if (live) fail('conflict');
+        const [live] = await tx<
+          { lease_token: string }[]
+        >`select lease_token from allrice_jobs where id=${root.worker_job_id} and worker_id=${root.worker_id} and status='running' and lease_expires_at>clock_timestamp()`;
+        if (
+          live &&
+          root.worker_lease_digest ===
+            runtimeLedgerInputDigest(live.lease_token)
+        )
+          fail('conflict');
         if (!root.revoked_at)
           await tx`update allrice_assistant_roots set revoked_at=clock_timestamp(),fence=fence+1 where root_run_id=${root.root_run_id}`;
         await tx`update allrice_assistant_instances set status='unknown' where root_run_id=${root.root_run_id} and status in ('provisioning','running','waiting','cancel_requested')`;
