@@ -317,6 +317,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
               })
             : null;
           if (assistant) {
+            // Native join proves all loops idle. Stop and await the active-run
+            // poll before persisting a terminal root, whose authority is no
+            // longer admissible. Finalization performs its own current check.
+            if (cancellationTimer) clearInterval(cancellationTimer);
+            await cancellationTask;
+            executionSignal.throwIfAborted();
             await runtime.client.assistant('finish', {
               nativeSessionId: threadId,
             });
@@ -450,8 +456,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
       try {
         if (assistant && !assistantFinished) {
           await assistant.cancel().catch(() => {});
-          const request = await assistant.cancellation();
-          await runtime.client.assistant('drain', request);
+          if (!assistantFailureSignal.signal.aborted) {
+            const request = await assistant.cancellation();
+            await runtime.client.assistant('drain', request);
+          }
         }
       } catch {
         // Revoked membership/lease may forbid reading the tree; still stop our host.

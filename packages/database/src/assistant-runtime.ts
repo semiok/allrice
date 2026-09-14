@@ -480,6 +480,32 @@ export function createAssistantRuntime(
         return { instance: view(row!), created: true };
       });
     },
+    /** Read-only liveness check for an already owned native host. Re-resolve
+     * current authority even while a model stream makes no further tool calls.
+     * A committed cancellation needs no new grant to drain that host. */
+    async assertCurrentAuthority(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      worker: AssistantWorkerLease;
+    }) {
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker, false);
+        if (root.cancel_request_id) {
+          await assertLease(tx, root, input.worker, false);
+          return { cancelRequested: true };
+        }
+        await assertLease(tx, root, input.worker);
+        await authorize({
+          transaction: tx,
+          task: root.task,
+          tools: [],
+          phase: 'recover',
+        });
+        await assertLease(tx, root, input.worker);
+        return { cancelRequested: false };
+      });
+    },
     async getTree(context: RequestContext, input: { runId: string }) {
       return db.begin(async (tx) => {
         const root = await owner(tx, context, input.runId);
