@@ -653,11 +653,25 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       });
       op.input.snapshot.agentInstanceId = agentInstanceId;
       let proposalCalls = 0;
+      let childRequestedProposal = false;
       const native = await p24Fixture(
-        async (request) =>
-          request.messages.at(-1)?.role === 'user'
-            ? { tool: { marker: 'invalid-legacy-child' } }
-            : { text: 'Rejected operation received.' },
+        async (request) => {
+          // The native parent also receives a user-like settled notification.
+          // This fixture requests one proposal from the delegated child, not a
+          // second unrelated proposal from that parent's notification turn.
+          const last = request.messages.at(-1);
+          if (
+            !childRequestedProposal &&
+            last?.role === 'user' &&
+            JSON.stringify(last.content).includes(
+              'Request the synthetic reviewed operation.',
+            )
+          ) {
+            childRequestedProposal = true;
+            return { tool: { marker: 'invalid-legacy-child' } };
+          }
+          return { text: 'Rejected operation received.' };
+        },
         async (proposal) => {
           proposalCalls++;
           expect(proposal).toMatchObject({

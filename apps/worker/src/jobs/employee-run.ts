@@ -62,6 +62,11 @@ import { executeDurableWorkflow, WorkflowPaused } from '../workflow-engine.js';
 import { loadHarnessImages } from '../harness/prompt-images.js';
 import { productionAssistantController } from '../harness/dsh/assistant-controller.js';
 import {
+  AssistantExecutionUnresolvedError,
+  assertAssistantTaskComplete,
+} from '../harness/dsh/assistant-outcome.js';
+import type { HarnessExecutionResult } from '../harness/adapter.js';
+import {
   executeRiceTool,
   riceToolCapability,
   riceToolDefinitionsForCapabilities,
@@ -264,7 +269,9 @@ export async function executeEmployeeRun({
     cachedInputTokens: 0,
     outputTokens: 0,
   };
-  let routeCostCents = 0;
+  let routeCostCents: number | null = 0;
+  let routeUsageComplete = true;
+  let routeCacheUsageKnown = true;
   const loopGuard = new AgentLoopGuard();
   const guardedHarnessEvent = async (event: HarnessEvent) => {
     try {
@@ -715,7 +722,16 @@ export async function executeEmployeeRun({
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
     const workflowCitations: typeof knowledge.citations = [];
-    const result =
+    // Once a normal assistant execution starts, any generic transport, tool,
+    // revocation or lease failure is incomplete accounting until an authoritative
+    // tree outcome replaces it. Zero here is only a confirmed subtotal, not free
+    // completed execution. Workflow and legacy single-agent routes are unchanged.
+    if (assistants && routeDecision.selectedKind !== 'workflow') {
+      routeCostCents = null;
+      routeUsageComplete = false;
+      routeCacheUsageKnown = false;
+    }
+    const result: HarnessExecutionResult =
       routeDecision.selectedKind === 'workflow'
         ? await (async () => {
             if (!selectedWorkflow || !capabilitySnapshot) {
@@ -1087,18 +1103,23 @@ export async function executeEmployeeRun({
       });
     }
     routeUsage = result.usage;
-    routeCostCents = estimateModelCostCents({
-      provider: result.provider,
-      model: result.model,
-      ...result.usage,
-    });
+    routeUsageComplete = result.usageComplete ?? true;
+    routeCacheUsageKnown = result.cacheUsageKnown ?? true;
+    routeCostCents =
+      result.costEstimateAvailable === false
+        ? null
+        : estimateModelCostCents({
+            provider: result.provider,
+            model: result.model,
+            ...result.usage,
+          });
     if (
       runLimits &&
       (result.usage.outputTokens > runLimits.maxOutputTokens ||
         result.usage.inputTokens + result.usage.outputTokens >
           runLimits.maxTotalTokens ||
         (runLimits.maxCostCents !== null &&
-          routeCostCents > runLimits.maxCostCents))
+          (routeCostCents === null || routeCostCents > runLimits.maxCostCents)))
     ) {
       throw new HandlerError(
         'MODEL_OUTPUT_BUDGET_EXCEEDED',
@@ -1125,6 +1146,7 @@ export async function executeEmployeeRun({
       configChecksum,
       workflowLease,
     });
+    assertAssistantTaskComplete(result);
     await completeRouteDecision({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
@@ -1133,6 +1155,8 @@ export async function executeEmployeeRun({
         status: 'succeeded',
         ...routeUsage,
         costCents: routeCostCents,
+        usageComplete: routeUsageComplete,
+        cacheUsageKnown: routeCacheUsageKnown,
         errorCode: null,
         failureCategory: null,
         completedAt: new Date().toISOString(),
@@ -1150,6 +1174,12 @@ export async function executeEmployeeRun({
       ),
     };
   } catch (error) {
+    if (error instanceof AssistantExecutionUnresolvedError) {
+      routeUsage = error.usage;
+      routeCostCents = null;
+      routeUsageComplete = error.usageComplete;
+      routeCacheUsageKnown = false;
+    }
     if (error instanceof WorkflowPaused) {
       outcome = 'idle';
       throw error;
@@ -1178,8 +1208,12 @@ export async function executeEmployeeRun({
           status: signal.aborted ? 'canceled' : 'failed',
           ...routeUsage,
           costCents: routeCostCents,
+          usageComplete: routeUsageComplete,
+          cacheUsageKnown: routeCacheUsageKnown,
           errorCode,
-          failureCategory: classifyProviderFailure(errorCode),
+          failureCategory: errorCode.startsWith('ASSISTANT_')
+            ? null
+            : classifyProviderFailure(errorCode),
           completedAt: new Date().toISOString(),
         },
       }).catch((outcomeError: unknown) => {

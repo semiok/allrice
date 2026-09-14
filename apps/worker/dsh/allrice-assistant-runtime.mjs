@@ -4,7 +4,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 /** Pinned TokenUsage has disjoint uncached/read-cache/write-cache counts.
  * Invalid or absent required usage keeps that dimension's reservation. */
-export function settledTokenUsage(usage) {
+export function settledTokenUsage(usage, observedOutput = false) {
   const valid = (value) => Number.isSafeInteger(value) && value >= 0;
   const inputs = [
     usage.inputTokens,
@@ -13,8 +13,16 @@ export function settledTokenUsage(usage) {
   ];
   const inputTokens = inputs.reduce((sum, value) => sum + value, 0);
   return {
-    ...(inputs.every(valid) && valid(inputTokens) ? { inputTokens } : {}),
-    ...(valid(usage.outputTokens) ? { outputTokens: usage.outputTokens } : {}),
+    // The pinned provider adapter synthesizes all-zero usage when the remote
+    // omits usage. A nonempty admitted model prompt cannot cost zero input.
+    ...(inputs.every(valid) && valid(inputTokens) && inputTokens > 0
+      ? { inputTokens }
+      : {}),
+    ...(valid(usage.outputTokens) &&
+    !(observedOutput && usage.outputTokens === 0) &&
+    !(inputTokens === 0 && usage.outputTokens === 0)
+      ? { outputTokens: usage.outputTokens }
+      : {}),
   };
 }
 
@@ -208,9 +216,18 @@ export function createGovernedAssistantNativeRuntime(
     );
     if (!reservation.reserved) throw Error('assistant_model_unknown_no_replay');
     let usage;
+    let observedOutput = false;
     try {
       for await (const chunk of next()) {
         if (chunk.type === 'usage') usage = chunk.usage;
+        if (
+          chunk.type === 'text-delta' ||
+          chunk.type === 'reasoning-delta' ||
+          chunk.type === 'tool-call-delta' ||
+          chunk.type === 'block-start' ||
+          chunk.type === 'block-end'
+        )
+          observedOutput = true;
         yield chunk;
       }
     } finally {
@@ -221,7 +238,7 @@ export function createGovernedAssistantNativeRuntime(
           callId,
           ...(usage
             ? {
-                ...settledTokenUsage(usage),
+                ...settledTokenUsage(usage, observedOutput),
               }
             : {}),
         },
@@ -458,6 +475,19 @@ export function createGovernedAssistantNativeRuntime(
           )
           .slice(-512),
       };
+    },
+    async finish(p) {
+      const root = binding(p.nativeSessionId);
+      if (root.parentNativeSessionId) throw Error('assistant_root_required');
+      await Promise.all([...pendingWrites]);
+      // Completed business Runs may share the persistent native root Session.
+      // Retain JSONL/context, not prior Run authority or result wakeup bindings.
+      bindings.clear();
+      deliveries.clear();
+      nativeCompletions.clear();
+      checkpointChains.clear();
+      checkpointProofs.clear();
+      return { released: true };
     },
     async flush() {
       await Promise.all([...pendingWrites]);

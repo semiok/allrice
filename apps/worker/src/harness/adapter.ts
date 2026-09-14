@@ -53,7 +53,17 @@ export interface HarnessExecutionInput {
         instances: readonly { nativeSessionId: string }[];
       }>;
       cancel(): Promise<void>;
-      finish?(): Promise<unknown>;
+      finish?(): Promise<{
+        status: string;
+        usage: {
+          inputTokens: number;
+          cachedInputTokens: number;
+          outputTokens: number;
+        };
+        usageComplete: boolean;
+        cacheUsageKnown: boolean;
+        costEstimateAvailable: boolean;
+      }>;
     }>;
   };
   kernel: EmployeeKernelRequest;
@@ -91,6 +101,10 @@ export interface HarnessExecutionInput {
 }
 
 export interface HarnessExecutionResult {
+  assistantStatus?: 'completed' | 'partial';
+  usageComplete?: boolean;
+  cacheUsageKnown?: boolean;
+  costEstimateAvailable?: boolean;
   answer: string;
   usage: {
     inputTokens: number;

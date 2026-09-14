@@ -8,6 +8,8 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
+import type { HarnessExecutionInput } from '../../src/harness/adapter.js';
+import type { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
 import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
@@ -31,7 +33,17 @@ integration(
       await database?.close();
       vi.unstubAllEnvs();
     });
-    it.each(['completed', 'revoked'] as const)(
+    it.each([
+      'completed',
+      'revoked',
+      'revoked_policy',
+      'revoked_employee',
+      'revoked_assignment',
+      'revoked_flag',
+      'unknown_usage',
+      'unknown_output',
+      'unknown_input',
+    ] as const)(
       'the actual native parent delegates concurrent children: %s',
       async (outcome) => {
         const f = await createAssistantAuthorityFixture(database.db, {
@@ -48,6 +60,8 @@ integration(
           await tx`delete from allrice_runtime_roots where root_run_id=${f.task.runId}`;
         });
         const overlap = gate();
+        const completionReached = gate(),
+          completionReleased = gate();
         let activeChildren = 0,
           maximumActiveChildren = 0;
         const model = await p24Fixture(async (request) => {
@@ -61,12 +75,19 @@ integration(
             await overlap.promise;
             activeChildren--;
             return {
-              usage: {
-                prompt_tokens: 1000,
-                prompt_tokens_details: { cached_tokens: 900 },
-                completion_tokens: 5,
-                total_tokens: 1005,
-              },
+              usage:
+                outcome === 'unknown_usage'
+                  ? null
+                  : outcome === 'unknown_output'
+                    ? { prompt_tokens: 1000, total_tokens: 1000 }
+                    : outcome === 'unknown_input'
+                      ? { completion_tokens: 5, total_tokens: 5 }
+                      : {
+                          prompt_tokens: 1000,
+                          prompt_tokens_details: { cached_tokens: 900 },
+                          completion_tokens: 5,
+                          total_tokens: 1005,
+                        },
               nativeTool: {
                 name: 'assistant_report',
                 arguments: {
@@ -128,8 +149,16 @@ integration(
           },
           readOnlyTools: new Set(),
         });
+        let controllerOptions:
+          Parameters<typeof productionAssistantController>[0] | undefined;
+        const controller = (
+          options: Parameters<typeof productionAssistantController>[0],
+        ) => {
+          controllerOptions = options;
+          return productionAssistantController(options);
+        };
         try {
-          const execution = adapter.execute({
+          const executionInput: HarnessExecutionInput = {
             kernel: {
               schemaVersion: 1,
               harness: 'dsh',
@@ -175,7 +204,7 @@ integration(
               inputSchema: { type: 'object' },
             })),
             onEvent: async () => {},
-            assistants: productionAssistantController({
+            assistants: controller({
               configuration: f.config,
               database: database.db,
               authorize: assertAssistantAuthority,
@@ -213,12 +242,56 @@ integration(
                 },
               },
             }),
-          });
+          };
+          if (outcome === 'completed') {
+            const original = executionInput.assistants!;
+            executionInput.assistants = {
+              ...original,
+              bind: async (...args) => {
+                const bound = await original.bind(...args);
+                return {
+                  ...bound,
+                  finish: async () => {
+                    const result = await bound.finish!();
+                    completionReached.release();
+                    await completionReleased.promise;
+                    return result;
+                  },
+                };
+              },
+            };
+          }
+          const execution = adapter.execute(executionInput);
           execution.catch(() => {});
           await expect.poll(() => activeChildren, { timeout: 15000 }).toBe(2);
           expect(maximumActiveChildren).toBe(2);
-          if (outcome === 'revoked') {
-            await database.db`update allrice_memberships set active=false where id=${f.membership}`;
+          if (outcome.startsWith('revoked')) {
+            // Wait until the parent's final text model call has settled. Only
+            // the two held child requests remain; a later parent admission
+            // failure must not accidentally stand in for active-stream polling.
+            await expect
+              .poll(async () => {
+                const [row] =
+                  await database.db`select count(*) as calls from allrice_assistant_usage where run_id=${f.rootRunId} and metric='model_calls' and amount=1 and settled_amount=1`;
+                return Number(row!.calls);
+              })
+              .toBe(3);
+            if (outcome === 'revoked')
+              await database.db`update allrice_memberships set active=false where id=${f.membership}`;
+            else if (outcome === 'revoked_policy')
+              await f.setControls({
+                version: 1,
+                enabled: true,
+                mode: 'execute',
+                rules: [{ action: 'assistant.delegate', effect: 'deny' }],
+              });
+            else if (outcome === 'revoked_employee')
+              await database.db`update allrice_employees set status='archived' where id=${f.employee}`;
+            else if (outcome === 'revoked_assignment')
+              await database.db`update allrice_employee_assignments set active=false where id=${f.assignment}`;
+            else vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+            // No further native tool/model call and no user abort occurs: the
+            // two held requests must close solely from current-authority polling.
             await expect(execution).rejects.toThrow();
             await expect
               .poll(() => model.abortedRequests.length, { timeout: 10000 })
@@ -226,14 +299,83 @@ integration(
             // A dead process is not a platform receipt; uncertainty is retained.
             const rows =
               await database.db`select stopped_at from allrice_assistant_instances where root_run_id=${f.rootRunId} and depth>0`;
+            expect(rows).toHaveLength(2);
             expect(rows.every((row) => row.stopped_at === null)).toBe(true);
+            const [usage] =
+              await database.db`select count(*) as unresolved from allrice_assistant_usage where root_run_id=${f.rootRunId} and settled_amount is null`;
+            expect(Number(usage!.unresolved)).toBeGreaterThan(0);
+            expect(
+              await database.db`select 1 from allrice_assistant_results where root_run_id=${f.rootRunId}`,
+            ).toHaveLength(0);
             return;
           }
           overlap.release();
+          if (outcome === 'completed') {
+            await completionReached.promise;
+            const pool = (adapter as unknown as { runtimePool: DshRuntimePool })
+              .runtimePool;
+            const owned = pool.get(nativeSessionId);
+            expect(owned).toBeDefined();
+            // Keep the completed DB root exposed across three former polling
+            // intervals, before execute's finally. It must not be treated as a
+            // new revocation or silently lose its already-owned native host.
+            await new Promise((resolve) => setTimeout(resolve, 750));
+            expect(pool.get(nativeSessionId)).toBe(owned);
+            await expect(
+              owned!.client.assistant('inspect', { nativeSessionId }),
+            ).resolves.toHaveProperty('header');
+            completionReleased.release();
+          }
+          if (outcome.startsWith('unknown_')) {
+            await expect(execution).rejects.toMatchObject({
+              code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+              retryable: false,
+              usage: { inputTokens: expect.any(Number) },
+            });
+            const tree = await bridge.tree();
+            expect(
+              tree.instances.find((instance) => instance.parentRunId === null),
+            ).toMatchObject({
+              status: 'unknown',
+              stoppedAt: expect.any(String),
+            });
+            expect(tree.cancelRequested).toBe(false);
+            expect(
+              tree.budgets.find(
+                (budget) =>
+                  budget.metric ===
+                  (outcome === 'unknown_output'
+                    ? 'output_tokens'
+                    : 'input_tokens'),
+              )!.reserved,
+            ).toBeGreaterThan(0);
+            expect(
+              tree.results.every(
+                (result) =>
+                  !result.usageComplete && result.status === 'partial',
+              ),
+            ).toBe(true);
+            return;
+          }
           const result = await execution;
           expect(result.answer).toContain('Root final synthesis');
           const tree = await bridge.tree();
           expect(tree.instances).toHaveLength(3);
+          expect(result).toMatchObject({
+            assistantStatus: 'completed',
+            usageComplete: true,
+            cacheUsageKnown: false,
+            costEstimateAvailable: false,
+          });
+          expect(result.usage).toEqual({
+            inputTokens: tree.budgets.find(
+              (budget) => budget.metric === 'input_tokens',
+            )!.spent,
+            cachedInputTokens: 0,
+            outputTokens: tree.budgets.find(
+              (budget) => budget.metric === 'output_tokens',
+            )!.spent,
+          });
           expect(
             tree.instances.find((instance) => instance.parentRunId === null),
           ).toMatchObject({
@@ -302,10 +444,81 @@ integration(
             tree.budgets.find((budget) => budget.metric === 'input_tokens')!
               .spent,
           ).toBe(2000 + (model.requests.length - 2) * 20);
+
+          // A new real business Run on the same Session gets a distinct lease
+          // and budget root. The profile intentionally rebuilds the host when
+          // rootRunId changes, preserving only the authorized native journal.
+          const nextRunId = randomUUID(),
+            nextJobId = randomUUID(),
+            nextUserMessageId = randomUUID(),
+            nextAssistantMessageId = randomUUID();
+          const nextWorker = {
+            ...f.worker,
+            jobId: nextJobId,
+            leaseToken: randomUUID(),
+          };
+          await database.db.begin(async (tx) => {
+            await tx`update allrice_runs set state='succeeded' where id=${f.rootRunId}`;
+            await tx`update allrice_jobs set status='succeeded' where id=${f.worker.jobId}`;
+            await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input)
+              select ${nextRunId},organization_id,workspace_id,owner_id,'running',policy_snapshot_id,execution_spec,input from allrice_runs where id=${f.rootRunId}`;
+            await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+              select ${nextJobId},organization_id,workspace_id,owner_id,${nextRunId},'running',${randomUUID()},timeout_at,payload,worker_id,${nextWorker.leaseToken},clock_timestamp(),clock_timestamp(),lease_expires_at from allrice_jobs where id=${f.worker.jobId}`;
+            await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+              values(${nextUserMessageId},${f.org},${f.workspace},${f.session},${f.user},'user','{"text":"Follow-up synthesis","citations":[]}'),
+              (${nextAssistantMessageId},${f.org},${f.workspace},${f.session},${f.user},'assistant','{"text":"","citations":[]}')`;
+            await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot)
+              select ${nextRunId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,${nextUserMessageId},${nextAssistantMessageId},provider_snapshot,prompt_snapshot,native_skills,execution_snapshot from allrice_employee_runs where run_id=${f.rootRunId}`;
+            await tx`update allrice_conversation_runtimes set active_run_id=${nextRunId} where session_id=${f.session}`;
+          });
+          const next = await adapter.execute({
+            ...executionInput,
+            kernel: {
+              ...executionInput.kernel,
+              userMessageId: nextUserMessageId,
+              assistantMessageId: nextAssistantMessageId,
+              userRequest: 'ROOT_PRIVATE: follow up on the prior synthesis.',
+            },
+            assistants: productionAssistantController({
+              ...controllerOptions!,
+              worker: nextWorker,
+              context: {
+                ...controllerOptions!.context,
+                executionId: randomUUID(),
+                runId: nextRunId,
+                jobId: nextJobId,
+              },
+            }),
+          });
+          expect(next).toMatchObject({
+            assistantStatus: 'completed',
+            usageComplete: true,
+            costEstimateAvailable: false,
+            cacheUsageKnown: false,
+          });
+          expect(next.answer).toContain('Root final synthesis');
+          const nextTree = await f.runtime.getTree(f.context, {
+            runId: nextRunId,
+          });
+          expect(nextTree.instances).toHaveLength(1);
+          expect(nextTree.instances[0]).toMatchObject({
+            runId: nextRunId,
+            nativeSessionId,
+            status: 'completed',
+            stoppedAt: expect.any(String),
+          });
+          expect(nextTree.results).toHaveLength(0);
+          expect(nextTree.messages).toHaveLength(0);
+          expect(
+            nextTree.budgets.find((b) => b.metric === 'model_calls')!.spent,
+          ).toBe(1);
+          expect(await bridge.tree()).toEqual(tree);
         } finally {
           overlap.release();
+          completionReleased.release();
           await adapter.close();
           await model.close();
+          vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
         }
       },
       60000,

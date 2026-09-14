@@ -11,6 +11,24 @@ describe('pinned native disjoint token usage', () => {
       }),
     ).toEqual({ inputTokens: 1000, outputTokens: 5 });
   });
+  it('does not accept pinned provider missing-usage synthesized zeros as real token usage', () => {
+    expect(settledTokenUsage({ inputTokens: 0, outputTokens: 0 })).toEqual({});
+    expect(
+      settledTokenUsage({
+        inputTokens: 0,
+        cacheReadTokens: 10,
+        outputTokens: 0,
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 0 });
+  });
+  it('keeps zero output unknown when a text, reasoning or tool-call block was observed', () => {
+    expect(
+      settledTokenUsage({ inputTokens: 100, outputTokens: 0 }, true),
+    ).toEqual({ inputTokens: 100 });
+    expect(
+      settledTokenUsage({ inputTokens: 100, outputTokens: 0 }, false),
+    ).toEqual({ inputTokens: 100, outputTokens: 0 });
+  });
   it.each([
     undefined,
     null,
