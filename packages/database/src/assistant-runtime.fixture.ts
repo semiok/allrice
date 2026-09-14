@@ -1,6 +1,9 @@
 /** Isolated synthetic fixture; never imported by a production entrypoint. */
-import { randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LocalStorageAdapter } from '@allrice/storage';
 import postgres from 'postgres';
 import {
   type RequestContext,
@@ -9,6 +12,8 @@ import {
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
+import { employeeManifest } from './employees/employee-config.ts';
+const stores = new WeakMap<ReturnType<typeof postgres>, LocalStorageAdapter>();
 
 export async function createAssistantFixtureDatabase() {
   const value = process.env.ALLRICE_TEST_DATABASE_URL;
@@ -20,6 +25,8 @@ export async function createAssistantFixtureDatabase() {
   await admin.unsafe(`create schema "${schema}"`);
   url.searchParams.set('options', `-csearch_path=${schema},public`);
   const db = postgres(url.toString(), { max: 10, onnotice: () => {} });
+  const storageRoot = await mkdtemp(join(tmpdir(), 'allrice-p25-artifacts-'));
+  stores.set(db, new LocalStorageAdapter(storageRoot));
   try {
     const migrations = new URL('../migrations/', import.meta.url);
     await db.begin(async (tx) => {
@@ -42,6 +49,7 @@ export async function createAssistantFixtureDatabase() {
         throw Error('Invalid fixture schema');
       await admin.unsafe(`drop schema "${schema}" cascade`);
       await admin.end({ timeout: 5 });
+      await rm(storageRoot, { recursive: true, force: true });
     },
   };
 }
@@ -55,11 +63,29 @@ export async function assistantFixture(
     runId = randomUUID(),
     jobId = randomUUID(),
     workerId = randomUUID(),
-    leaseToken = randomUUID();
+    leaseToken = randomUUID(),
+    sessionId = randomUUID(),
+    employeeId = randomUUID(),
+    versionId = randomUUID(),
+    assignmentId = randomUUID();
   await db`insert into allrice_users(id,email,display_name,password_hash) values(${user},${`${user}@example.test`},'P25 fixture','not-login')`;
   await db`insert into allrice_organizations(id,slug,name) values(${org},${`p25-${org}`},'P25 fixture')`;
   await db`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'test','P25 fixture')`;
   await db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${org},${workspace},${user},'admin')`;
+  const manifest = employeeManifest({
+    key: 'p25-fixture',
+    name: 'P25 Fixture',
+    description: 'Synthetic fixture only',
+    toolNames: [
+      'assistant.delegate',
+      'assistant.report',
+      'workspace.document.read',
+    ],
+  });
+  await db`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employeeId},${org},${workspace},'p25-fixture','P25 Fixture')`;
+  await db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot) values(${versionId},${org},${workspace},${employeeId},1,'P25 Fixture',${manifest.provider.model},${manifest.systemPrompt},${db.json(manifest.capabilities)},${`sha256:${'a'.repeat(64)}`},${db.json(manifest)},${db.json(manifest.provider)})`;
+  await db`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignmentId},${org},${workspace},${employeeId},${versionId},${user})`;
+  await db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id) values(${sessionId},${org},${workspace},${user},'Synthetic assistant session',${assignmentId},${versionId})`;
   await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${runId},${org},${workspace},${user},'running','{}','{}')`;
   await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
     values(${jobId},${org},${workspace},${user},${runId},'running',${randomUUID()},clock_timestamp()+interval '10 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${workerId},${leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '10 minutes')`;
@@ -68,7 +94,7 @@ export async function assistantFixture(
     runId,
     rootRunId: runId,
     parentRunId: null,
-    chatSessionId: null,
+    chatSessionId: sessionId,
     frozenConfiguration: {
       employeeVersionId: null,
       digest: `sha256:${'a'.repeat(64)}`,
@@ -174,6 +200,33 @@ export async function assistantFixture(
     nativeSessionId,
     revoke() {
       revoked = true;
+    },
+    async artifact(childRunId: string, body = 'Synthetic checked evidence') {
+      const artifactId = randomUUID(),
+        objectId = randomUUID(),
+        key = `organizations/${org}/workspaces/${workspace}/owners/${user}/artifacts/${objectId}`;
+      const bytes = Buffer.from(body),
+        digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      const object = {
+        id: objectId,
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        key,
+        checksum: digest,
+        sizeBytes: bytes.length,
+        mediaType: 'text/plain',
+        retentionUntil: null,
+        deletedAt: null,
+        immutable: true,
+      };
+      const storage = stores.get(db);
+      if (!storage) throw Error('Isolated fixture storage required');
+      await storage.put(object, new Blob([bytes]).stream());
+      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable) values(${objectId},${org},${workspace},${user},${key},'artifacts','text/plain',${bytes.length},${digest},'ready',true)`;
+      await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format) values(${artifactId},${org},${workspace},${user},${objectId},${randomUUID()},1,${sessionId},'evidence.txt','text')`;
+      await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest) values(${artifactId},${org},${workspace},${user},${childRunId},'document',${db.json({ kind: 'tool_result', runId: childRunId, operationId: null, stepId: null })},${randomUUID()},${digest})`;
+      return { artifactId, digest };
     },
   };
 }

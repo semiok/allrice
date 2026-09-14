@@ -3,13 +3,13 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type AssistantResult } from '@allrice/contracts';
-import { createAssistantRuntime } from '../../../../../packages/database/src/assistant-runtime.ts';
+import { createAssistantRuntime } from '../../../../packages/database/src/assistant-runtime.ts';
 import {
   assistantFixture,
   createAssistantFixtureDatabase,
-} from '../../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantWorkerBridge } from './assistant-bridge.js';
-import { gate, p24Fixture } from '../../../test/p24/fixture.js';
+} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
+import { gate, p24Fixture } from '../p24/fixture.js';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'

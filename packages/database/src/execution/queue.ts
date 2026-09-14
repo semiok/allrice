@@ -46,6 +46,7 @@ import { resolveWorkspaceId } from '../workspace/service.ts';
 import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 import { prepareChangesetAction } from '../changeset-service.ts';
+import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
 
 export { queueMaintenanceAction } from '../queue/policy.ts';
 export type { MaintenanceAction } from '../queue/policy.ts';
@@ -717,6 +718,13 @@ export async function cancelRun(
   }
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
+    // Persistent tree cutoff precedes job cancellation and native drain. No root
+    // row means an unchanged legacy single-agent Run.
+    await cancelAssistantRootTransaction(
+      transaction,
+      snapshot.id,
+      randomUUID(),
+    );
     const rows = await transaction<JobRow[]>`
       select * from allrice_jobs where run_id = ${snapshot.id} for update
     `;

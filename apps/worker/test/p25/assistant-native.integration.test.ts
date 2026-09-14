@@ -3,9 +3,9 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import {
   assistantFixture,
   createAssistantFixtureDatabase,
-} from '../../../../../packages/database/src/assistant-runtime.fixture.ts';
-import { createAssistantWorkerBridge } from './assistant-bridge.js';
-import { p24Fixture, gate } from '../../../test/p24/fixture.js';
+} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
+import { p24Fixture, gate } from '../p24/fixture.js';
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential

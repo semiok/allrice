@@ -35,13 +35,12 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       'conflict',
     );
     const sibling = (await f.delegate()).instance;
-    const artifact = async (runId: string, artifactId = randomUUID()) =>
+    const artifact = async (runId: string) =>
       f.runtime.registerArtifact({
         ...f.base,
         runId,
         relativePath: 'result.md',
-        artifactId,
-        digest: `sha256:${'b'.repeat(64)}`,
+        ...(await f.artifact(runId)),
       });
     expect((await artifact(a.instance.runId)).path).not.toBe(
       (await artifact(sibling.runId)).path,
@@ -111,7 +110,12 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
           runId: i % 2 ? child.runId : f.task.runId,
           kind: 'model',
           callId: randomUUID(),
-          amounts: { model_calls: 1 },
+          amounts: {
+            model_calls: 1,
+            tool_calls: 0,
+            input_tokens: 100,
+            output_tokens: 100,
+          },
         }),
       ),
     );
@@ -123,7 +127,7 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
     await expect(f.delegate()).rejects.toThrow('budget_exhausted');
     const rows = await fixture.db<
       { call_id: string }[]
-    >`select distinct call_id from allrice_assistant_usage where root_run_id=${f.task.runId}`;
+    >`select distinct call_id from allrice_assistant_usage where root_run_id=${f.task.runId} and metric='model_calls' and settled_amount is null`;
     await f.runtime.settleUsage({
       ...f.base,
       callId: rows[0]!.call_id,
@@ -209,7 +213,12 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
         runId: c.runId,
         kind: 'model',
         callId: randomUUID(),
-        amounts: { model_calls: 1 },
+        amounts: {
+          model_calls: 1,
+          tool_calls: 0,
+          input_tokens: 100,
+          output_tokens: 100,
+        },
       }),
     ).rejects.toThrow('canceled');
     await f.runtime.reserveUsage({
@@ -217,7 +226,12 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       runId: b.runId,
       kind: 'model',
       callId: randomUUID(),
-      amounts: { model_calls: 1 },
+      amounts: {
+        model_calls: 1,
+        tool_calls: 0,
+        input_tokens: 100,
+        output_tokens: 100,
+      },
     });
     await f.runtime.confirmStopped({ ...f.base, runId: c.runId });
     expect(
@@ -262,9 +276,8 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
   });
   it('records evidence-backed delivery independently from parent adoption', async () => {
     const f = await assistantFixture(fixture.db),
-      child = (await f.delegate()).instance,
-      artifactId = randomUUID(),
-      digest = `sha256:${'c'.repeat(64)}`;
+      child = (await f.delegate()).instance;
+    const { artifactId, digest } = await f.artifact(child.runId);
     await f.runtime.registerArtifact({
       ...f.base,
       runId: child.runId,

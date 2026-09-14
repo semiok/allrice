@@ -142,6 +142,24 @@ function enabled() {
   if (!assistantRuntimeEnabled()) fail('disabled');
 }
 
+/** Same durable cutoff for user cancellation, budget exhaustion and queue API.
+ * Must lock the shared root before job/instance rows, matching model admission. */
+export async function cancelAssistantRootTransaction(
+  tx: Tx,
+  rootRunId: string,
+  requestId: string,
+  reason: 'user_request' | 'budget_exhausted' = 'user_request',
+) {
+  uuid.parse(rootRunId);
+  uuid.parse(requestId);
+  const [root] =
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${rootRunId} for update`;
+  if (!root) return;
+  await tx`update allrice_runtime_roots set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_reason=coalesce(cancel_reason,${reason}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${rootRunId}`;
+  await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${rootRunId}`;
+  await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${rootRunId} and status='pending'`;
+}
+
 /** Mandatory trusted authority hook resolves current grants; IDs/tools from a
  * model never establish authority. Browser methods additionally verify owner and
  * active membership against PostgreSQL, not RequestContext membership claims. */
@@ -183,7 +201,7 @@ export function createAssistantRuntime(
       await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
       where j.id=${lease.jobId} and j.run_id=${root.root_run_id}
       and j.worker_id=${lease.workerId} and j.lease_token=${lease.leaseToken}
-      and j.status='running' and j.lease_expires_at>clock_timestamp()
+      and j.status='running' and j.lease_expires_at>clock_timestamp() and (${admitting}::boolean=false or j.cancel_requested_at is null)
       and r.state in ('running','queued','waiting_approval') for share of j,r`;
     if (
       !job ||
@@ -437,6 +455,13 @@ export function createAssistantRuntime(
         >`insert into allrice_assistant_instances(run_id,root_run_id,parent_run_id,native_session_id,delegation_id,creation_digest,label,depth,allowed_tools,artifact_namespace,status)
           values(${runId},${root.root_run_id},${parent.run_id},${nativeId},${input.delegationId},${creationDigest},${label},${parent.depth + 1},${json(tx, tools)},${`assistant/${root.root_run_id}/${runId}/`},'provisioning') returning *`;
         await queue(tx, root, parent, row!, input.delegationId, text);
+        // Reserve launch before materializing a native child. The first model
+        // dispatch atomically transfers this hold into its exact call vector.
+        const [hold] =
+          await tx`update allrice_runtime_budgets set reserved=reserved+1 where root_run_id=${root.root_run_id} and metric='model_calls' and spent+reserved+1<=capacity returning metric`;
+        if (!hold) fail('budget_exhausted');
+        await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${input.delegationId},${runId},${root.root_run_id},'model_calls',1)`;
+        await assertLease(tx, root, input.worker);
         return { instance: view(row!), created: true };
       });
     },
@@ -578,6 +603,15 @@ export function createAssistantRuntime(
           m.native_message_id !== input.nativeMessageId
         )
           fail('conflict');
+        if (
+          (m.durable_seq !== null &&
+            input.durableSeq !== undefined &&
+            Number(m.durable_seq) !== input.durableSeq) ||
+          (m.adopted_seq !== null &&
+            input.adoptedSeq !== undefined &&
+            Number(m.adopted_seq) !== input.adoptedSeq)
+        )
+          fail('conflict');
         if (m.status === 'pending') fail('conflict');
         if (m.status === 'canceled') return messageView(m);
         const durable =
@@ -627,6 +661,23 @@ export function createAssistantRuntime(
           tools: input.tool ? [input.tool] : row.allowed_tools,
           phase: input.kind,
         });
+        await assertLease(tx, root, input.worker);
+        const dimensions = await tx<
+          { metric: string }[]
+        >`select metric from allrice_runtime_budgets where root_run_id=${root.root_run_id}`;
+        if (
+          dimensions.some(
+            ({ metric }) =>
+              amounts[metric as keyof typeof amounts] === undefined,
+          )
+        )
+          fail('budget_exhausted');
+        if (
+          input.kind === 'model' &&
+          ((amounts.input_tokens ?? 0) <= 0 ||
+            (amounts.output_tokens ?? 0) <= 0)
+        )
+          fail('budget_exhausted');
         const old = await tx<
           { run_id: string; metric: string; amount: string }[]
         >`select * from allrice_assistant_usage where call_id=${input.callId} order by metric`;
@@ -640,12 +691,19 @@ export function createAssistantRuntime(
             fail('conflict');
           return { reserved: false };
         }
+        if (input.kind === 'model' && row.parent_run_id) {
+          const [launch] =
+            await tx`update allrice_assistant_usage set settled_amount=0 where call_id=${row.delegation_id} and run_id=${row.run_id} and metric='model_calls' and settled_amount is null returning amount`;
+          if (launch)
+            await tx`update allrice_runtime_budgets set reserved=reserved-${Number(launch.amount)} where root_run_id=${root.root_run_id} and metric='model_calls'`;
+        }
         for (const [metric, amount] of Object.entries(amounts)) {
           const [b] =
             await tx`update allrice_runtime_budgets set reserved=reserved+${amount} where root_run_id=${root.root_run_id} and metric=${metric} and reserved+spent+${amount}<=capacity returning metric`;
           if (!b) fail('budget_exhausted');
           await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${input.callId},${row.run_id},${root.root_run_id},${metric},${amount})`;
         }
+        await assertLease(tx, root, input.worker);
         return { reserved: true };
       });
     },
@@ -654,6 +712,7 @@ export function createAssistantRuntime(
       rootRunId: string;
       worker: AssistantWorkerLease;
       callId: string;
+      runId?: string;
       amounts: Record<string, number>;
     }) {
       const amounts = amountsSchema.parse(input.amounts);
@@ -661,10 +720,17 @@ export function createAssistantRuntime(
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker, false);
         const rows = await tx<
-          { metric: string; amount: string; settled_amount: string | null }[]
+          {
+            run_id: string;
+            metric: string;
+            amount: string;
+            settled_amount: string | null;
+          }[]
         >`select * from allrice_assistant_usage where root_run_id=${root.root_run_id} and call_id=${input.callId} for update`;
         if (
           !rows.length ||
+          (input.runId !== undefined &&
+            rows.some((r) => r.run_id !== input.runId)) ||
           Object.keys(amounts).some(
             (metric) => !rows.some((r) => r.metric === metric),
           )
@@ -682,7 +748,12 @@ export function createAssistantRuntime(
             { spent: string; reserved: string; capacity: string }[]
           >`update allrice_runtime_budgets set reserved=reserved-${Number(row.amount)},spent=spent+${amount} where root_run_id=${root.root_run_id} and metric=${row.metric} returning spent,reserved,capacity`;
           if (Number(b!.spent) + Number(b!.reserved) > Number(b!.capacity))
-            await tx`update allrice_runtime_roots set cancel_request_id=coalesce(cancel_request_id,${randomUUID()}),cancel_reason=coalesce(cancel_reason,'budget_exhausted'),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${root.root_run_id}`;
+            await cancelAssistantRootTransaction(
+              tx,
+              root.root_run_id,
+              randomUUID(),
+              'budget_exhausted',
+            );
         }
       });
     },
@@ -705,8 +776,11 @@ export function createAssistantRuntime(
         if (old) {
           if (old.payload_digest !== digest || old.run_id !== row.run_id)
             fail('conflict');
-          return { wakeParent: false, duplicate: true };
+          return { wakeParent: false, duplicate: true, status: result.status };
         }
+        const [prior] =
+          await tx`select 1 from allrice_assistant_results where run_id=${row.run_id} limit 1`;
+        if (prior || terminal.has(row.status)) fail('conflict');
         // An explicit completion must cite platform-registered immutable evidence;
         // idle or arbitrary final text is never a successful delivery.
         if (
@@ -719,10 +793,21 @@ export function createAssistantRuntime(
             await tx`select 1 from allrice_assistant_artifacts where run_id=${row.run_id} and artifact_id=${ref.id} and digest=${ref.digest}`;
           if (!artifact) fail('forbidden');
         }
-        await tx`insert into allrice_assistant_results(delivery_id,run_id,root_run_id,payload,payload_digest) values(${result.deliveryId},${row.run_id},${root.root_run_id},${json(tx, result)},${digest})`;
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where run_id=${row.run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         const status = pending ? 'unknown' : result.status;
+        const effective = pending
+          ? {
+              ...result,
+              status: 'unknown' as const,
+              incomplete: [
+                ...result.incomplete,
+                'Execution evidence is still unresolved.',
+              ].slice(0, 32),
+              usageComplete: false,
+            }
+          : result;
+        await tx`insert into allrice_assistant_results(delivery_id,run_id,root_run_id,payload,payload_digest) values(${result.deliveryId},${row.run_id},${root.root_run_id},${json(tx, effective)},${digest})`;
         if (!row.cancel_requested_at && !terminal.has(row.status))
           await tx`update allrice_assistant_instances set status=${status},updated_at=clock_timestamp() where run_id=${row.run_id}`;
         if (!pending && !row.cancel_requested_at && result.status !== 'unknown')
@@ -732,10 +817,14 @@ export function createAssistantRuntime(
           wakeParent:
             !root.cancel_request_id &&
             !root.revoked_at &&
+            !row.cancel_requested_at &&
+            !pending &&
+            status !== 'unknown' &&
             !parent.cancel_requested_at &&
             !terminal.has(parent.status) &&
             parent.status !== 'unknown',
           duplicate: false,
+          status,
         };
       });
     },
@@ -749,6 +838,7 @@ export function createAssistantRuntime(
       adoptedSeq: number;
     }) {
       z.number().int().nonnegative().parse(input.adoptedSeq);
+      z.string().min(1).max(200).parse(input.nativeMessageId);
       return db.begin(async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker);
@@ -758,7 +848,7 @@ export function createAssistantRuntime(
             parent_message_id: string | null;
             parent_adopted_seq: string | null;
           }[]
-        >`select r.* from allrice_assistant_results r join allrice_assistant_instances i on i.run_id=r.run_id where r.delivery_id=${input.deliveryId} and r.root_run_id=${root.root_run_id} and i.parent_run_id=${input.parentRunId} for update of r`;
+        >`select r.* from allrice_assistant_results r join allrice_assistant_instances i on i.run_id=r.run_id where r.delivery_id=${input.deliveryId} and r.root_run_id=${root.root_run_id} and i.parent_run_id=${input.parentRunId} and i.cancel_requested_at is null and i.status<>'unknown' for update of r`;
         if (!result) fail('not_found');
         if (
           result.parent_message_id &&
@@ -767,6 +857,35 @@ export function createAssistantRuntime(
         )
           fail('conflict');
         await tx`update allrice_assistant_results set parent_message_id=${input.nativeMessageId},parent_adopted_seq=${input.adoptedSeq} where delivery_id=${input.deliveryId}`;
+      });
+    },
+    async resultDelivery(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      runId: string;
+      worker: AssistantWorkerLease;
+    }) {
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker, false);
+        const child = await instance(tx, root, input.runId);
+        if (!child.parent_run_id) fail('forbidden');
+        const parent = await instance(tx, root, child.parent_run_id);
+        const [delivery] = await tx<
+          { payload: AssistantResult }[]
+        >`select payload from allrice_assistant_results where run_id=${child.run_id} order by created_at desc limit 1`;
+        return {
+          result: delivery?.payload ?? null,
+          wakeParent:
+            !!delivery &&
+            !root.cancel_request_id &&
+            !child.cancel_requested_at &&
+            !parent.cancel_requested_at &&
+            !root.revoked_at &&
+            child.status !== 'unknown' &&
+            !terminal.has(parent.status) &&
+            parent.status !== 'unknown',
+        };
       });
     },
     async registerArtifact(input: {
@@ -793,6 +912,11 @@ export function createAssistantRuntime(
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker);
         const row = await active(tx, root, input.runId);
+        const [artifact] =
+          await tx`select a.version_id from allrice_workbench_artifacts a join allrice_deliverable_versions v on v.id=a.version_id join allrice_storage_objects o on o.id=v.object_id
+          where a.version_id=${input.artifactId} and a.run_id=${row.run_id} and a.organization_id=${root.task.scope.organizationId} and a.workspace_id=${root.task.scope.workspaceId}
+          and v.session_id=${root.task.chatSessionId} and o.checksum=${input.digest} and o.state='ready' and o.immutable=true and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id for share of a,v,o`;
+        if (!artifact) fail('forbidden');
         const [old] =
           await tx`select * from allrice_assistant_artifacts where run_id=${row.run_id} and relative_path=${path}`;
         if (old) {
@@ -814,9 +938,11 @@ export function createAssistantRuntime(
       uuid.parse(input.requestId);
       return db.begin(async (tx) => {
         const root = await owner(tx, context, input.runId);
-        await tx`update allrice_runtime_roots set cancel_request_id=coalesce(cancel_request_id,${input.requestId}),cancel_reason=coalesce(cancel_reason,'user_request'),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${root.root_run_id}`;
-        await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${input.requestId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${root.root_run_id}`;
-        await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${root.root_run_id} and status='pending'`;
+        await cancelAssistantRootTransaction(
+          tx,
+          root.root_run_id,
+          input.requestId,
+        );
         return { cancelRequested: true, stopped: false };
       });
     },

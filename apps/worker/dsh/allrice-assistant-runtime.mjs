@@ -25,7 +25,48 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
     if (!entry) throw Error('assistant_native_unbound');
     return entry;
   }
-  async function checkpoint(id, inputId, messageId) {
+  const guarded = new WeakSet();
+  function guardSettlement(agent) {
+    if (guarded.has(agent)) return;
+    guarded.add(agent);
+    for (const method of ['followup', 'steer', 'inject']) {
+      const original = agent[method].bind(agent);
+      agent[method] = (message, ...args) => {
+        if (message.source?.kind !== 'subagent-settled')
+          return original(message, ...args);
+        const childId = message.source.senderSessionId;
+        if (!bindings.has(childId)) throw Error('assistant_settlement_unbound');
+        // Pinned native settlement is synchronous and normally wakes its parent.
+        // Queue it ONLY after the durable result and current parent/child cutoff
+        // are checked. Admission of this notification is not parent adoption.
+        track(
+          bridge(
+            'settled',
+            { nativeSessionId: childId, stopReason: 'native_settled' },
+            signal(),
+          ).then((result) => {
+            deliveries.set(childId, result);
+            if (result.wakeParent && ctx.agents.get(agent.id) === agent)
+              original(message, ...args);
+          }),
+        );
+        return message.id;
+      };
+    }
+  }
+  ctx.on('agent/created', ({ agent }) => {
+    if (bindings.has(agent.id)) guardSettlement(agent);
+  });
+  const checkpointChains = new Map();
+  const checkpointProofs = new Map();
+  function checkpoint(id, inputId, messageId) {
+    const work = (checkpointChains.get(inputId) ?? Promise.resolve()).then(() =>
+      checkpointNow(id, inputId, messageId),
+    );
+    checkpointChains.set(inputId, work);
+    return work;
+  }
+  async function checkpointNow(id, inputId, messageId) {
     const agent = ctx.agents.get(id),
       session = agent?.session ?? ctx.sessions.get(id);
     if (!session) return;
@@ -38,17 +79,20 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
         e.type === 'agent/inbox/spliced' &&
         JSON.stringify(e.data).includes(messageId),
     );
-    await bridge(
+    const previous = checkpointProofs.get(inputId);
+    const durableSeq = previous?.durableSeq ?? (adopted ?? queued)?.seq;
+    const proof = await bridge(
       'checkpoint',
       {
         nativeSessionId: id,
         inputId,
         nativeMessageId: messageId,
-        ...(adopted || queued ? { durableSeq: (adopted ?? queued).seq } : {}),
+        ...(durableSeq === undefined ? {} : { durableSeq }),
         ...(adopted ? { adoptedSeq: adopted.seq } : {}),
       },
       signal(),
     );
+    checkpointProofs.set(inputId, proof);
   }
   async function checkpoints(id) {
     const agent = ctx.agents.get(id);
@@ -71,7 +115,7 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
     )) {
       const childId = event.data.source.senderSessionId,
         delivery = deliveries.get(childId);
-      if (delivery)
+      if (delivery?.wakeParent)
         await bridge(
           'adopt-result',
           {
@@ -269,22 +313,13 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
       );
     return { drained: true };
   }
-  ctx.on('subagent/end', (info) => {
-    if (!bindings.has(info.id) || deliveries.has(info.id)) return;
-    const promise = bridge(
-      'settled',
-      { nativeSessionId: info.id, stopReason: info.stopReason },
-      signal(),
-    ).then((result) => {
-      deliveries.set(info.id, result);
-    });
-    track(promise);
-  });
   return {
     bind(p) {
       if (bindings.has(p.nativeSessionId))
         throw Error('assistant_native_already_bound');
       bindings.set(p.nativeSessionId, { ...p, messages: new Map() });
+      const agent = ctx.agents.get(p.nativeSessionId);
+      if (agent) guardSettlement(agent);
       return { bound: true };
     },
     start,
