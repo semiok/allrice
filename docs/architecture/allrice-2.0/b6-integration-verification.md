@@ -35,7 +35,26 @@ P14 Draft #62 的首轮 CI 在无构建产物的 checkout 上发现独立子进�
 
 后续读审仍在修复主任务最终状态与全树用量传播、纯查询 child 来源审计、实际 native → P04 approve/reject → receipt 证据。真实 provider smoke 仅准备脚本及预检，尚未实际调用。上述分项测试不构成它们的通过证明。
 
-## 必须保持的解释边界
+## 第三轮常规回归与工作台复验
+
+组合 `2de712cb704a79dc96569bd817ace4ca7b06c588` 已包含未知费用/Token 的持久化、晚到回执拒绝降账、全树用量向 Worker 传播、partial 非整项成功，以及普通助手异常不写成已知零费用。该 SHA 的全仓 Prettier、ESLint、TypeScript 通过；`pnpm install --frozen-lockfile --offline` 与 `pnpm dsh:verify` 通过。没有批准依赖安装脚本，distribution 清单检查不等于所有安装字节的 SRI 证明。
+
+该 SHA 的完整普通测试以 `--maxWorkers=1` 执行，**1930 passed / 0 failed / 721 skipped**，299 个测试文件没有失败。报告 `.local/b6-full-tests-2de712c.json`，SHA-256 `e0b6e5f043cc9d350cba18181a0396f4157961872d4ee8477a9a9f09adb768ac`。跳过项需各自真实环境门禁，不能计为通过；该成功不删除前两轮失败，也不覆盖随后修改。
+
+在 `1f518cf7da955496d6660c11ce1b1ab1ec89eda6`（新增查询 partial 断言和范围文档，尚无后续撤权停流修复）完成 Web 及依赖构建，BUILD_ID `Y76yol23DZWXi_-kG5IO-`；真实独立 Chrome + Next + 随机 PG schema 工作台再次通过。桌面/窄屏、折叠警告、纯文本防注入、未发布模式禁用、下一任务偏好不改现任务、停止请求不冒充执行停止、刷新/Session 隔离、关闭助手开关后历史可读及仍可请求取消均通过，Page/Console/HTTP 错误为 0。使用合成持久历史，没有 Worker/provider 或个人浏览器数据。
+
+页面证据 `/tmp/allrice-p26-ui-Lk1axb/evidence/checks.json`（SHA-256 `34582050505d329420d9541fd187c5a5a1c879afb6e21d24f3961812c1ac1950`）、`desktop.png`（`7a87a7caca7a20e138e38a669cbd8ef3485b5f093f8cfa28f12525e6416dca96`）、`narrow.png`（`798352d43a682b673adb743a671d0a5613498c494d4661b92ac1e1c4a889ccaf`）；桌面截图由主开发实际查看。私有 Next/Chrome 已退出，随机测试 schema 清理，证据保留；这不是现有 Dev 部署。
+
+五个独立 Draft 为 P14 #62、P25 #64、P26 #65、P28 #63、P27 #66。P14 `4eb2a6e` CI run `34810478053`、P28 `7e6132e` CI run `34809777947` 通过。P25/P26 首次 CI 的旧合成提案重复和合法取消缺 Origin 已修复，跨站取消拒绝测试保留；后续最终 head 仍需 CI 复验。所有 PR 保持 Draft，main/Dev 未变。
+
+### 仍在补验的边界
+
+- 在途模型遇到非 membership 的 policy/employee/assignment/flag 撤权，不能只阻止下一次工具准入；需实际关闭当前流且不伪造执行停止回执。该窄修及正常完成竞争回归正在进行，上述整仓结果不含此修复。
+- 真实 provider 基础助手脚本必须断言 adapter 返回的全树用量/完成状态与数据库一致，不能只查数据库而漏掉 Worker 返回字段；部分 fixture 初始化失败也不能误报清理完成。最终候选需包含这些验收修正。
+- 助手无权威价格/费用核对闭环时费用为 NULL、cache 拆分未知，月度配额按未知拒绝放行。**真实租户助手启用仍受阻**，不能以已知 0 或放宽配额解决。direct adapter 的一次真实模型 smoke 不经过完整 Worker route/quota，因此不能证明真实租户连续调用可用。
+- Apple Developer / Developer ID 条件仍缺，正式签名、公证、可信更新回退和 P27 全部联合场景仍未验收。不能将脚本或普通开发包测试充当这些证据。
+
+## 结果、权限与发布边界
 
 助手输出文件的 hash、归属和存储完整性可以验证，但不代表模型内容或外部动作已经独立核实。UI 使用“关联工件”，输出标注 `model_proposal` / `independentlyVerified: false`。
 
