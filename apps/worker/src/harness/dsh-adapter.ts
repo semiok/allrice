@@ -8,6 +8,7 @@ import {
 
 import { HandlerError } from '../errors.js';
 import { AssistantExecutionUnresolvedError } from './dsh/assistant-outcome.js';
+import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -89,6 +90,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+    assertAssistantProviderOutputBound(
+      input.providerSnapshot,
+      !!input.assistants,
+    );
     if (input.providerSnapshot.provider !== 'dsh') {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
     }

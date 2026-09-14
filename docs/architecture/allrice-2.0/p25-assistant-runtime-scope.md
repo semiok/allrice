@@ -17,6 +17,7 @@ P25 把固定 DSH 原生 continuable 服务接入平台持久化身份、当前�
 - 精确原生查询审计与实际 P04 提案闭环：`76a155bc548754a86f13fca85b2c7d16f2fd0ca0`。
 - authoritative 完成状态与全树用量传递：`06aadb1c90167964c9c1c0534772dadbd07ee2b0`。
 - 在途模型流的当前授权轮询与完成竞争窄修：`ae8d323544a72133bb83f0f9bff38b68355edf56`。
+- 服务端输出协议 preflight：`1645af2`；冻结前动态输出 grant 与一次性模型 dispatch：`4c9969c`。
 - 费用未知契约、落账与读者：`d685ab3ac61950a0af22bc366f7b4d4d27f6c338`；
   迟到旧 writer 不得消除未知：`4c49123da18e7a43ea533985a04c7a0f3563597f`。
 - 独立查询测试：`f2bacaad53c5532a1746cc4010fcb914526bb6cb`，本页同次变更继续补齐 partial / 全树用量断言。
@@ -42,6 +43,13 @@ membership、policy、employee、assignment 或能力开关，验证实际断流
 以及持有 job 行锁跨过租约期限后仍拒绝。Worker/database 类型检查、Worker 依赖构建、相关文件
 ESLint/Prettier/diff 检查通过。这是该窄修的分项证据，不声明主任务最终联合验收、真实 provider 或 GA 通过。
 
+两阶段准入的 `4c9969c` 工作树实际运行 14 个文件、191 项 PG / native 回归全部通过，
+包括精确剩余额度、同 call 并发、跨身份、未知预留、原生 HTTP 实际输出参数和既有 P25 安全链。
+Worker 依赖构建、database / Worker 类型检查、相关文件 ESLint / Prettier / diff 检查通过。
+这是该 source 的受影响分项回归，不是主任务最终组合版本的验收计数。
+独立 preflight 测试来源 `23faf34`，随后在含上述两阶段代码的工作树实跑 7/7 通过：
+真实 Worker 的已知零失败写入真实 PG 双表并读取 quota；测试明确拦截 native acquire，未调用 provider。
+
 ## 支持范围与权威来源
 
 | 领域   | 已实现的有界机制                                                                                                                      | 不应推导的能力                                                                  |
@@ -50,7 +58,7 @@ ESLint/Prettier/diff 检查通过。这是该窄修的分项证据，不声明�
 | 调度   | 最大并发 4、深度 3、累计子任务 16；默认 2 / 1 / 4；原子校验父子工具交集                                                               | 跨 Worker 实时调度、无限递归、重启重置预算                                      |
 | 身份   | 每个 child 是真实 `allrice_runs`；root/parent/native Session、消息和 Worker incarnation 持久化                                        | 仅猜到 native ID、模型自报 childId 或进程内对象即获得权限                       |
 | 权限   | 冻结 employee execution snapshot + 当前 membership/assignment/employee/policy + 精确 task/project + Worker job/lease/generation/fence | 仅凭浏览器偏好、通用 storage/read 能力、prompt tool filter 或旧签名获得助手权限 |
-| 预算   | 根任务共享 model/tool/input/output 维度；先预留后结算；未知用量保留预留；原生重试重新进入模型准入                                     | 未知用量为零、成功文本等于结算完成、独立子预算或权威价格估算                    |
+| 预算   | 根任务共享 model/tool/input/output 维度；冻结前输出 grant、派发前输入预留；未知用量保留；重复派发拒绝                                 | 未知用量为零、成功文本等于结算完成、独立子预算或权威价格估算                    |
 | 消息   | 幂等 inputId、payload digest、native messageId、durableSeq、adoptedSeq 分离                                                           | ACK 等于落盘、文本提到 ID 等于采用、网络中断等于未执行                          |
 | 结果   | 持久 delivery；平台登记工件 ID/digest；pending 操作不能以模型报告变成成功；父采用另记                                                 | idle 或“完成”文本就是交付；有报告必然唤醒父任务                                 |
 | 提案   | 第一版仅有界 `local.process.execute` 经平台 P04 精确审批、Broker、执行 receipt                                                        | 原生 approval=never 被整体放宽、任意副作用工具或后台服务已获支持                |
@@ -76,6 +84,46 @@ ESLint/Prettier/diff 检查通过。这是该窄修的分项证据，不声明�
 `workspace.memory.search`、`workspace.session.search`、`web.search`。
 `browser.run`、本地 Bridge 读取等尚无 child 生命周期适配的路径，在 provision 前拒绝，
 不能因为 manifest 标记 read_only 就自动下放。
+
+## 模型输出上限、两阶段准入与协议门禁
+
+固定 SDK 在 `prepareCall` 冻结模型配置后不支持修改请求上限。
+生产助手通过现有 `agent/request` hook 返回新的配置，再由原生循环冻结并发送；
+没有修改冻结对象、安装包或新建模型循环。
+
+1. 在 root 锁内检查精确 Worker lease、当前 child 与当前授权，为新 callId 预留一次 model 调用，
+   并计算 `grant = min(requested, capacity - spent - reserved)`；无正数余额即拒绝。
+   此阶段尚不授予派发权，不挤占或缩减任何已有在途 reservation。
+2. 将实际 grant 写入原生 `maxTokens`，由固定 SDK 冻结配置。
+3. 派发前重新检查相同 root / child / lease / 当前授权，原子预留输入上界并保存冻结请求摘要。
+   callId、grant、输入和摘要必须匹配，只有首次派发返回可执行；重复调用不能据此重放模型请求。
+4. 已确认 usage 才结算。输入准入失败、授权撤销、宿主崩溃、未知 ACK 或缺少 usage，
+   均不能清除已经提交的输出 hold；`finished_at` 也不等于用量完整或已知零消耗。
+
+真实 PG 回归精确覆盖：总上限 12000、已花 246、两条 child 各预留 4000 后，
+parent 请求 4000 只获 3754；满额拒绝、并发不超额、同 call 两阶段各只有一个首次成功，
+以及改摘要、跨 child / scope / generation / fence / lease 的拒绝和预留不变。
+production native 用 `maxConcurrent=2` 挂起两个子模型请求，验证 HTTP 中的
+`max_tokens` / `max_completion_tokens` 与每条持久 grant 完全一致，不只是减少账本预留。
+
+协议门禁只看服务端实际冻结 / 重放的 provider snapshot，浏览器偏好不能自报支持。
+当前只登记 `dsh + openai-compatible`、`dsh + gemini` 两种有源码及 loopback HTTP 字段证据的协议：
+
+- Compatible 的上述 production native 测试覆盖动态 grant 到实际请求参数。
+- Gemini 独立固定 SDK / `@google/genai` HTTP 测试两项通过：alias 与 canonical flash 路线分别发送
+  `generationConfig.maxOutputTokens=3754 / 1024` 并读取合成 usage。
+  这只是协议字段证据，不证明动态助手全链、真实 Google 执行上限、真实模型任务或 tenant-enable。
+- 当前固定 Codex responses 实现没有把 `maxTokens` 写入响应请求的输出上限字段；
+  因此 **Codex 助手当前关闭**，不能通过提高根预算、客户端声明或换调用入口绕过。
+  这不等于证明 Codex 后端永远不支持该字段，也不授权修改上游安装包。
+
+`allowAssistants:true` 的不支持协议在 Worker 标记未知账务之前拒绝；adapter 另在 credentials / host
+获取之前复检，使用非重试 `ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED`。
+这是已知未发生模型调用的失败，记零用量 / 零费用且完整，不制造未知费用锁住组织；
+既有失败 Run 计数仍增加，也不能清除组织此前真实的 unknown。
+已进入助手执行后的普通异常继续保持费用未知和用量不完整，不按错误字符串伪造零账。
+未配置助手或 `allowAssistants:false` 的普通 Codex 路径不受此门禁影响。
+P27 当前 Codex 助手请求应保持明确 blocked，不静默替换 Gemini，也没有新的真实 provider 成功证据。
 
 ## 精确命令提案与锁顺序
 
@@ -162,12 +210,16 @@ P27 直接 adapter 的隔离 smoke 不等于完整 Worker 路由/费用落账/�
 | `packages/database/src/assistant-runtime.integration.test.ts`                                             | PG 身份/并发/预算/消息/取消/结果/lease 状态机                                  | 生产宿主接线和真实模型           |
 | `packages/database/src/assistant-authority.integration.test.ts`                                           | 冻结/current policy、工具、actor、版本、项目与撤权负例                         | 前端按钮或租户启用授权           |
 | `packages/database/src/assistant-current-authority.integration.test.ts`                                   | 只读实时授权、取消后无新 grant 清理、精确身份及等锁后租约过期拒绝              | 原生流停止或最终联合验收         |
+| `packages/database/src/assistant-output-budget.integration.test.ts`                                       | 固定 4000 请求在剩余 3754 时被旧全额准入拒绝、并发 / 未知预留根因证据          | 动态 grant 成功或真实 provider   |
+| `packages/database/src/assistant-model-admission.integration.test.ts`                                     | 两阶段精确 grant、满额、同 call 并发、摘要 / 身份拒绝与未知 hold               | 实际 HTTP 参数或 provider 执行   |
 | `packages/database/src/local-command-assistant.integration.test.ts`                                       | 实际 P04 + immutable child、lease、dispatch/heartbeat、并发锁序、单 child 拒绝 | 真设备命令/实际签名客户端        |
 | `packages/database/src/runtime-governed-bridge.integration.test.ts`                                       | 既有精确审批执行链及旧未映射 child 的拒绝回归                                  | 新 production native 正链        |
 | `packages/database/src/assistant-output.integration.test.ts`                                              | 根/子、storage owner、隔离工件与工件读取                                       | 真实研究产物正确性               |
 | `apps/worker/test/p25/assistant-adversarial.integration.test.ts`                                          | 独立攻击式 PG/native 复现：伪工件、重复结果、晚取消、预算/租约、实际 drain     | 完整 MET-108 A～D 验收           |
 | `apps/worker/test/p25/assistant-native.integration.test.ts`                                               | 固定原生服务、独立并发子会话、单 child/整树取消、SIGKILL/JSONL                 | UI 刷新、真实付费 Provider、灾备 |
 | `apps/worker/test/p25/assistant-production.integration.test.ts`                                           | 生产 adapter/受限宿主/controller + 实际原生服务 + 合成 SSE                     | 真实模型/真实设备联合场景        |
+| `apps/worker/test/p25/assistant-gemini-output-bound.integration.test.ts`                                  | 固定 Gemini SDK 实际 loopback HTTP 输出上限与合成 usage                        | 动态助手全链或真实 Google 验收   |
+| `apps/worker/test/p25/assistant-provider-preflight.integration.test.ts`                                   | 实际 Worker 已知零 preflight、真实 PG 双表 / quota、普通兼容与执行后 unknown   | 真实 provider 调用或租户可用性   |
 | `apps/worker/test/p25/assistant-read-native.integration.test.ts`                                          | 五类查询的真实 child dispatch/采用、精确审计、拒绝未支持委派、partial 全树用量 | 真实云端资源/外网查询或租户启用  |
 | `apps/worker/test/p25/assistant-proposal-native.integration.test.ts`                                      | 生产 native child → P04 批准/拒绝 → 合成 receipt 与 Worker partial guard       | 实际 VM/设备命令及签名客户端     |
 | `apps/worker/test/p25/assistant-usage.test.mjs`、`apps/worker/src/harness/dsh/assistant-recovery.test.ts` | 固定 token 字段映射和精确 checkpoint 提取                                      | PG 状态机与实际进程恢复          |
@@ -197,6 +249,8 @@ pnpm --filter @allrice/worker typecheck
 `0094_model_usage_unknown_cost.sql` 放宽费用列并增加完整性标志，不重写历史 numeric 值；
 产生 NULL 费用后也不能回到忽略 NULL 的旧 quota reader 或把 NULL 当零的旧 UI。
 回退须保留这些兼容读与额度保护；不通过重写未知账单为零或恢复 NOT NULL 伪装兼容。
+`0095_assistant_model_admissions.sql` 仅增加两阶段准入证据表，不改写既有 usage；
+回退仍须保留准备 / 派发 / 完成身份和未知 reservation，不能换旧全额请求路径重放已有 call。
 
 P27 负责真实任务、刷新/重开、权限和设备联合验收；P28 的
 [发布准备](./p28-release-readiness.md) 与版本固定 manifest 校验负责证据完整性，不能替代这些实际场景。

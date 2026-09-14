@@ -105,18 +105,21 @@ export function createAssistantWorkerBridge(
           : { adoptedSeq: natural.parse(p.adoptedSeq) }),
       });
     }
-    if (method === 'model-reserve')
-      return runtime.reserveUsage({
+    if (method === 'model-prepare')
+      return runtime.prepareModelUsage({
         ...base,
         runId: instance.runId,
-        kind: 'model',
         callId: z.uuid().parse(p.callId),
-        amounts: {
-          model_calls: 1,
-          tool_calls: 0,
-          input_tokens: natural.parse(p.inputTokens),
-          output_tokens: natural.parse(p.outputTokens),
-        },
+        requestedOutputTokens: natural.parse(p.outputTokens),
+      });
+    if (method === 'model-dispatch')
+      return runtime.dispatchModelUsage({
+        ...base,
+        runId: instance.runId,
+        callId: z.uuid().parse(p.callId),
+        inputTokens: natural.parse(p.inputTokens),
+        outputTokens: natural.parse(p.outputTokens),
+        requestDigest: z.string().parse(p.requestDigest),
       });
     if (method === 'model-settle') {
       await runtime.settleUsage({

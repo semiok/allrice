@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import type { DshExecutionSnapshot, HarnessEvent } from '@allrice/contracts';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HarnessExecutionInput } from './adapter.js';
+import { DshRuntimePool } from './dsh/runtime-pool.js';
+import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import {
   DshHarnessAdapter,
   normalizeAllRiceManagedFileLinks,
@@ -16,6 +18,7 @@ afterEach(async () => {
   await Promise.allSettled(
     adapters.splice(0).map((adapter) => adapter.close()),
   );
+  vi.restoreAllMocks();
 });
 
 describe('normalizeAllRiceManagedFileLinks', () => {
@@ -129,6 +132,51 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('leaves ordinary Codex on its original acquisition path and permits only verified assistant protocols', async () => {
+    const adapter = createAdapter();
+    const acquire = vi
+      .spyOn(DshRuntimePool.prototype, 'acquire')
+      .mockRejectedValueOnce(Error('legacy_acquire_reached'));
+    const input = executionInput({
+      prompt: 'legacy path',
+      provider: snapshot('openai-codex'),
+    });
+    await expect(adapter.execute(input)).rejects.toThrow(
+      'legacy_acquire_reached',
+    );
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(() =>
+      assertAssistantProviderOutputBound(input.providerSnapshot, false),
+    ).not.toThrow();
+    for (const route of ['openai-compatible', 'gemini'] as const)
+      expect(() =>
+        assertAssistantProviderOutputBound(snapshot(route), true),
+      ).not.toThrow();
+  });
+  it.each(['openai-codex', 'deepseek-official', 'unverified-route'] as const)(
+    'rejects unverified assistant output protocol %s before credentials or native acquisition',
+    async (route) => {
+      const resolve = vi.fn(async () => ({ apiKey: 'must-not-read' }));
+      const adapter = new DshHarnessAdapter({
+        credentialResolver: { resolve },
+      });
+      const bind = vi.fn();
+      const input = executionInput({
+        prompt: 'no provider call',
+        provider: snapshot(route as DshExecutionSnapshot['route']),
+      });
+      input.assistants = { rootRunId: randomUUID(), bind };
+      // At the Worker boundary this preflight runs before unknown accounting.
+      await expect(adapter.execute(input)).rejects.toMatchObject({
+        code: 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',
+        retryable: false,
+      });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(bind).not.toHaveBeenCalled();
+      expect(adapter.runtimeInventory()).toEqual([]);
+      await adapter.close();
+    },
+  );
   it('forwards ordered image attachments to the native DSH prompt', async () => {
     const adapter = createAdapter();
     const result = await adapter.execute(
