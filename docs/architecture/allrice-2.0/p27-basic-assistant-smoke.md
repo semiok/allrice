@@ -2,7 +2,7 @@
 
 本脚本只验收「真实父模型 → 两个有限子助手 → 两份平台发布的不可变小报告 → 父级持久采纳及汇总 → 全树 Token 账本、逐调用价格回执与适配器返回值对账」这一条基础助手路径。它直接使用生产 adapter/controller/数据库能力，不经过完整 Worker job 的路由与月额度流程。
 
-**当前状态（2026-09-14）**：显式 Gemini priced-native 路径已完成无 provider 自测：105 个本地测试、2 个真实隔离 PostgreSQL 测试通过。本轮尚未调用真实 Google，也没有该路径的真实模型成功收据；必须先集成、审查、固定干净候选 SHA，再单独进行获授权的真实执行。脚本存在、预检退出 0、合成协议或 PG 测试通过，均不代表 P27、B6 或 GA 完成。
+**当前状态（2026-09-14）**：显式 Gemini priced-native 路径的 105 个本地测试、2 个真实隔离 PostgreSQL 测试通过。随后在干净 `7161caad6e74ca6410ddc2539fa36ce85a07e782` 实际运行一次 Google 双助手，70.1 秒后失败：一个子助手完成，另一个 partial 且用量未知，根返回 `ASSISTANT_EXECUTION_UNRESOLVED`。资源全部确认清理，没有整场重试；真实成功验收仍未通过。详见[本轮收尾记录](./b6-closeout-20260914.md)。脚本存在、预检退出 0、合成协议或 PG 测试通过，均不代表 P27、B6 或 GA 完成。
 
 ## 保留的历史事实与默认门禁
 
@@ -130,4 +130,4 @@ pnpm exec prettier --check 'scripts/acceptance/runtime/p27-*.ts'
 
 这些结果是候选冻结前的实现验证，不是已绑定最终提交的真实 provider 成功。此前文档的初始 6/11/26 等局部测试数是历史阶段记录，本次以上面的完整 105 + 2 口径为准，不相加冒充新增实测。
 
-仍不覆盖：完整 Worker model-connection 选择/月额度路径、实际供应商账单、P27 四条真实业务任务线、M/Intel 实际 Bridge、旧 Bridge/Session 恢复、正式签名/公证安装更新、取消/断连/跨租户/撤权/恶意预览/超预算完整负例、完整 P26 前端交付及 P28 release gate。其他证据须各自绑定最终候选并独立验收；证书缺失仍是正式分发的外部条件。**本次 priced-native 基础子集不代替这些门禁，尚未真实 Google 验收。**
+仍不覆盖：完整 Worker model-connection 选择/月额度路径、实际供应商账单、P27 四条真实业务任务线、M/Intel 实际 Bridge、旧 Bridge/Session 恢复、正式签名/公证安装更新、取消/断连/跨租户/撤权/恶意预览/超预算完整负例、完整 P26 前端交付及 P28 release gate。其他证据须各自绑定最终候选并独立验收；证书缺失仍是正式分发的外部条件。**本次 priced-native 基础子集不代替这些门禁，真实 Google 尝试已执行但尚未通过。**
