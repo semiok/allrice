@@ -645,6 +645,55 @@ integration(
         });
       },
     );
+    it.each([undefined, 2])(
+      'projects the real Worker lease and preserves explicit fence %s, without native/model access',
+      async (fence) => {
+        const { f, job } = await fixture({ compatible: true, price: true });
+        // This older synthetic authority fixture pre-registers unrelated budget
+        // capacities. Remove ONLY its unused root so the actual controller owns
+        // creation/freeze, as it does for a freshly enqueued production task.
+        await database.db`delete from allrice_runtime_run_links where root_run_id=${f.rootRunId}`;
+        await database.db`delete from allrice_runtime_budgets where root_run_id=${f.rootRunId}`;
+        await database.db`delete from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+        const workflowLease = {
+          ...job.workflowLease,
+          leaseMs: 30000,
+          ...(fence === undefined ? {} : { fence }),
+        };
+        execute.mockImplementationOnce(async (input) => {
+          expect(input.assistants).toBeDefined();
+          await input.assistants!.bind(`dsh-${f.session}`, 1);
+          // Stop at the actual durable bind/freeze boundary. This is not a
+          // provider success and must not be used as paid execution evidence.
+          throw lateError;
+        });
+        const run = executeEmployeeRun({ ...job, workflowLease });
+        if (fence === undefined) await expect(run).rejects.toBe(lateError);
+        else {
+          // A caller's explicit mismatched fence must not be stripped into the
+          // default fence=1, which would incorrectly authorize this fresh root.
+          await expect(run).rejects.toMatchObject({ code: 'lease_lost' });
+        }
+        expect(state.controller.mock.calls[0]![0].worker.leaseMs).toBe(30000);
+        expect(state.controller.mock.calls[0]![0].worker.fence).toBe(fence);
+        expect(state.bind).toHaveBeenCalledTimes(1);
+        expect(acquire).not.toHaveBeenCalled();
+        expect(state.credentials).not.toHaveBeenCalled();
+        expect(state.spawn).not.toHaveBeenCalled();
+        const rows =
+          await database.db`select snapshot_digest from allrice_assistant_price_snapshots where root_run_id=${f.rootRunId}`;
+        expect(rows).toHaveLength(fence === undefined ? 1 : 0);
+        const admissions =
+          await database.db`select call_id from allrice_assistant_model_admissions where root_run_id=${f.rootRunId}`;
+        expect(admissions).toHaveLength(0);
+        expect((await accounting(f.org)).row).toMatchObject({
+          decision_cost: null,
+          ledger_cost: null,
+          decision_complete: false,
+          ledger_complete: false,
+        });
+      },
+    );
     it.each([
       { canceled: false, appendFailure: false },
       { canceled: true, appendFailure: false },

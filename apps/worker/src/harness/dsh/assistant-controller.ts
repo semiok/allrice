@@ -154,6 +154,19 @@ export function productionAssistantController(input: {
       ),
     ),
     async bind(nativeSessionId, generation, onToolCall, inspect) {
+      // The Worker queue lease also carries leaseMs (and may grow other queue
+      // fields). Project the assistant authority explicitly: never spread that
+      // envelope into strict pricing/recovery contracts or forward a stale
+      // queue-supplied generation instead of the actual bound native generation.
+      const worker: AssistantWorkerLease = {
+        workerId: input.worker.workerId,
+        jobId: input.worker.jobId,
+        leaseToken: input.worker.leaseToken,
+        generation,
+        ...(input.worker.fence === undefined
+          ? {}
+          : { fence: input.worker.fence }),
+      };
       const [prior] = await db<
         {
           worker_lease_digest: string;
@@ -190,7 +203,7 @@ export function productionAssistantController(input: {
               await runtime.recoverNativeEvidence(context, {
                 rootRunId: input.context.runId,
                 nativeSessionId: instance.nativeSessionId,
-                worker: { ...input.worker, generation },
+                worker,
                 checkpoints,
               });
           }
@@ -246,7 +259,6 @@ export function productionAssistantController(input: {
           digest: runtimePolicyDigest(row.execution_spec),
         },
       };
-      const worker = { ...input.worker, generation };
       // Entire tree shares these immutable limits; no child receives a fresh cap.
       // Input+output capacities together never exceed the frozen total cap.
       const budgets: RuntimeBudgetLimit[] = [

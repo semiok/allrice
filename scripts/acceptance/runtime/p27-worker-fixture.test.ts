@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Database from '../../../packages/database/src/index.ts';
 import type * as Router from '../../../apps/worker/src/harness/router.ts';
 import type { RouteDecision } from '../../../packages/contracts/src/index.ts';
+import { createP27GeminiPriceBinding } from './p27-assistant-pricing.ts';
 import {
   createP27WorkerFixture,
   P27WorkerFixtureError,
@@ -485,3 +486,115 @@ integration('P27 Worker fixture initialization cleanup (no provider)', () => {
     }
   }, 30000);
 });
+
+integration(
+  'P27 real Worker lease to controller pricing (no native/provider)',
+  () => {
+    it('binds the full production workflow lease without forwarding scheduling metadata to strict pricing identity', async () => {
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+      let fixture: P27WorkerFixture | undefined;
+      try {
+        fixture = await createP27WorkerFixture();
+        const task = await fixture.prepareAssistantTask(
+          'Synthetic controller bind only.',
+        );
+        const api = await import('../../../packages/database/src/index.ts');
+        const { productionAssistantController } =
+          await import('../../../apps/worker/src/harness/dsh/assistant-controller.ts');
+        const ownership = {
+          organizationId: fixture.organizationId,
+          workspaceId: fixture.workspaceId,
+          sessionId: task.sessionId,
+          runId: task.runId,
+          workerId: task.workflowLease.workerId,
+        };
+        await api.acquireConversationRuntime({
+          ...ownership,
+          ownerId: fixture.ownerId,
+          configChecksum: api.runtimePolicyDigest(
+            task.binding.executionSnapshot,
+          ),
+          compactThresholdTokens: 100000,
+        });
+        const nativeSessionId = `dsh-${task.sessionId}`;
+        const runtime = await api.bindConversationThread({
+          ...ownership,
+          threadId: nativeSessionId,
+        });
+        const snapshot = createP27GeminiPriceBinding({
+          connectionId: fixture.connectionId,
+          catalogId: fixture.catalogId,
+          at: new Date().toISOString(),
+        }).snapshot;
+        const taskInput = task.execution.payload.input;
+        if (
+          !taskInput ||
+          typeof taskInput !== 'object' ||
+          !('assistantConfiguration' in taskInput)
+        )
+          throw Error('P27_TEST_ASSISTANT_CONFIGURATION_MISSING');
+        const common = {
+          configuration: taskInput.assistantConfiguration,
+          context: task.execution.context,
+          runLimits: fixture.runLimits,
+          tools: [{ name: 'assistant.delegate' }, { name: 'assistant.report' }],
+          authorize: api.assertAssistantAuthority,
+          database: fixture.db,
+          priceSnapshot: snapshot,
+        };
+        expect(task.workflowLease.leaseMs).toBe(30000);
+        const withWorkflowLease = productionAssistantController({
+          ...common,
+          worker: task.workflowLease,
+        })!;
+        // Before the fix, this exact real-PG bind rejected leaseMs at the
+        // strict pricing boundary after root creation but before admission.
+        const bound = await withWorkflowLease.bind(
+          nativeSessionId,
+          runtime.generation,
+        );
+        expect(bound).toBeDefined();
+        const [before] = await fixture.db`select
+        (select count(*)::int from allrice_runtime_roots) as runtime_roots,
+        (select count(*)::int from allrice_assistant_roots) as assistant_roots,
+        (select count(*)::int from allrice_assistant_model_admissions) as admissions,
+        (select count(*)::int from allrice_assistant_usage) as usage,
+        (select count(*)::int from allrice_assistant_price_snapshots) as prices`;
+        expect(before).toEqual({
+          runtime_roots: 1,
+          assistant_roots: 1,
+          admissions: 0,
+          usage: 0,
+          prices: 1,
+        });
+        // The DB API remains strict; fixing the caller is not permission to
+        // accept arbitrary worker metadata or weaken its lease checks.
+        await expect(
+          api.createAssistantPricing({ database: fixture.db }).freeze({
+            scope: {
+              organizationId: fixture.organizationId,
+              workspaceId: fixture.workspaceId,
+              projectId: null,
+            },
+            rootRunId: task.runId,
+            worker: { ...task.workflowLease, generation: runtime.generation },
+            snapshot,
+          }),
+        ).rejects.toMatchObject({
+          name: 'ZodError',
+          issues: [{ code: 'unrecognized_keys', keys: ['leaseMs'], path: [] }],
+        });
+        const [after] = await fixture.db`select
+        (select count(*)::int from allrice_assistant_model_admissions) as admissions,
+        (select count(*)::int from allrice_assistant_usage) as usage,
+        (select count(*)::int from allrice_assistant_price_snapshots) as prices`;
+        expect(after).toEqual({ admissions: 0, usage: 0, prices: 1 });
+      } finally {
+        await fixture?.close();
+        vi.unstubAllEnvs();
+      }
+    }, 30000);
+  },
+);

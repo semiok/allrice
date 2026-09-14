@@ -23,6 +23,11 @@ const classes = new Set([
   'AssistantFixtureInitializationError',
   'AssistantFixtureCleanupError',
   'P27WorkerFixtureError',
+  'ZodError',
+  '$ZodError',
+  'RuntimeLedgerError',
+  'ConversationRuntimeError',
+  'ModelGovernanceError',
   'APIError',
   'APICallError',
   'AI_APICallError',
@@ -80,6 +85,13 @@ const codes = new Set([
   'HARNESS_UNSUPPORTED',
   'PROVIDER_UNAVAILABLE',
   'ASSISTANT_EXECUTION_UNRESOLVED',
+  'MODEL_TOKEN_USAGE_UNKNOWN',
+  'MODEL_COST_USAGE_UNKNOWN',
+  'scope_mismatch',
+  'idempotency_conflict',
+  'deadline_exceeded',
+  'invalid_usage',
+  'conversation_ownership_lost',
   'ASSISTANT_PARTIAL_RESULT',
   'ASSISTANT_PRICE_UNAVAILABLE',
   'ASSISTANT_PRICE_UNSUPPORTED_BILLING',
@@ -308,6 +320,44 @@ function status(value: unknown): number | null {
     : null;
 }
 
+/** Schema issues can contain raw inputs in their messages and property names.
+ * Only fixed issue kinds and the known internal transport key are retained. */
+function validationMetadata(value: unknown) {
+  if (!['ZodError', '$ZodError'].includes(errorClass(value))) return undefined;
+  const issues = data(value, 'issues');
+  if (types.isProxy(issues) || !Array.isArray(issues)) return undefined;
+  const issueCodes = new Set<string>();
+  const unexpectedKeys = new Set<string>();
+  const knownCodes = new Set([
+    'invalid_type',
+    'too_small',
+    'too_big',
+    'invalid_value',
+    'invalid_format',
+    'invalid_union',
+    'not_multiple_of',
+    'invalid_key',
+    'invalid_element',
+    'unrecognized_keys',
+    'custom',
+  ]);
+  for (let i = 0; i < Math.min(issues.length, 8); i++) {
+    const issue = data(issues, String(i));
+    const code = data(issue, 'code');
+    issueCodes.add(allowed(code, knownCodes) ? code : 'unknown');
+    const keys = data(issue, 'keys');
+    if (types.isProxy(keys) || !Array.isArray(keys)) continue;
+    for (let k = 0; k < Math.min(keys.length, 8); k++) {
+      if (data(keys, String(k)) === 'leaseMs') unexpectedKeys.add('leaseMs');
+    }
+  }
+  return {
+    issueCodes: [...issueCodes],
+    unexpectedKeys: [...unexpectedKeys],
+    truncated: issues.length > 8,
+  };
+}
+
 /** Regex categories are hints from a bounded error string, not a proven cause.
  * Only `cause` is traversed; arbitrary payload/response trees are never walked. */
 export function p27ErrorDiagnostics(error: unknown) {
@@ -354,10 +404,12 @@ export function p27ErrorDiagnostics(error: unknown) {
     );
     if (httpStatus === 401 || httpStatus === 403) matched.add('authentication');
     if (httpStatus === 429) matched.add('rate_limit');
+    const validation = validationMetadata(current);
     errors.push({
       depth,
       class: errorClass(current),
       code,
+      ...(validation ? { validation } : {}),
       retryable: typeof retryable === 'boolean' ? retryable : null,
       httpStatus,
       categories: matched.size ? [...matched] : ['unknown'],
