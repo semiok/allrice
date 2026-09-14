@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { AssistantInstanceView } from '@allrice/contracts';
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import {
   assistantFixture,
@@ -20,7 +21,7 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
     delete process.env.ALLRICE_ASSISTANTS_ENABLED;
     await database?.close();
   });
-  it('native parent delegates two independent tasks; model reservations, child Run identities and durable result adoption survive queries', async () => {
+  it('trusted host provisions two native independent children; reservations, child identities and durable parent adoption survive queries', async () => {
     const f = await assistantFixture(database.db, 20);
     const wireNames = {
       'assistant.delegate': 'assistant_delegate',
@@ -186,6 +187,90 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
       ).toBe(true);
     } finally {
       hold.release();
+      await native.close();
+    }
+  }, 60000);
+  it('canceling one actually-running native child never drains its parent or sibling', async () => {
+    const f = await assistantFixture(database.db),
+      holdA = gate(),
+      holdB = gate();
+    const bridge = createAssistantWorkerBridge({
+      runtime: f.runtime,
+      task: f.task,
+      context: f.context,
+      worker: f.worker,
+      wireNames: { read: 'p24_proposal' },
+      readOnlyTools: new Set(),
+    });
+    const native = await p24Fixture(
+      async (request) => {
+        const payload = JSON.stringify(request.messages);
+        if (!payload.includes('ROOT_PRIVATE'))
+          await (payload.includes('CHILD_A') ? holdA : holdB).promise;
+        return { text: 'Synthetic native result' };
+      },
+      undefined,
+      200,
+      { p25: true, callback: bridge.handle },
+    );
+    const client = native.launch();
+    try {
+      await client.call('ready');
+      await client.call('create', { id: f.nativeSessionId });
+      await client.call('p25/bind', { nativeSessionId: f.nativeSessionId });
+      await client.call('prompt', {
+        id: f.nativeSessionId,
+        text: 'ROOT_PRIVATE',
+      });
+      await client.call('idle', { id: f.nativeSessionId });
+      const children: AssistantInstanceView[] = [];
+      for (const label of ['A', 'B']) {
+        const delegationId = randomUUID();
+        const child = await f.delegate({
+          delegationId,
+          text: `CHILD_${label}`,
+        });
+        children.push(child.instance);
+        await client.call(
+          'p25/start',
+          await bridge.messageDispatch(delegationId),
+        );
+      }
+      await expect.poll(() => native.requests.length).toBe(3);
+      await f.runtime.cancelChild(f.context, {
+        runId: f.task.runId,
+        childRunId: children[0]!.runId,
+        requestId: randomUUID(),
+      });
+      await client.call('p25/drain', await bridge.cancellation());
+      expect((await client.snapshot(f.nativeSessionId)).live).toBe(true);
+      expect((await client.snapshot(children[1]!.nativeSessionId)).status).toBe(
+        'running',
+      );
+      expect(
+        (await bridge.tree()).instances.find((i) => i.runId === f.task.runId)
+          ?.cancelRequestedAt,
+      ).toBeNull();
+      holdA.release();
+      holdB.release();
+      await expect
+        .poll(
+          async () =>
+            (await bridge.tree()).results.some(
+              (r) =>
+                r.runId === children[1]!.runId && r.parentAdoptedSeq !== null,
+            ),
+          { timeout: 15000 },
+        )
+        .toBe(true);
+      expect(
+        (await bridge.tree()).instances.find(
+          (i) => i.runId === children[0]!.runId,
+        )?.status,
+      ).toBe('canceled');
+    } finally {
+      holdA.release();
+      holdB.release();
       await native.close();
     }
   }, 60000);

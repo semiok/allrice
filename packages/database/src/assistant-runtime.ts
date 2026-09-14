@@ -931,9 +931,12 @@ export function createAssistantRuntime(
         await assertLease(tx, root, input.worker);
         const row = await active(tx, root, input.runId);
         const [artifact] =
-          await tx`select a.version_id from allrice_workbench_artifacts a join allrice_deliverable_versions v on v.id=a.version_id join allrice_storage_objects o on o.id=v.object_id
+          await tx`select a.version_id from allrice_workbench_artifacts a join allrice_deliverable_versions v on v.id=a.version_id join allrice_storage_objects o on o.id=v.object_id join allrice_runs r on r.id=${root.root_run_id}
           where a.version_id=${input.artifactId} and a.run_id=${row.run_id} and a.organization_id=${root.task.scope.organizationId} and a.workspace_id=${root.task.scope.workspaceId}
-          and v.session_id=${root.task.chatSessionId} and o.checksum=${input.digest} and o.state='ready' and o.immutable=true and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id for share of a,v,o`;
+          and v.session_id=${root.task.chatSessionId} and a.provenance->>'runId'=${row.run_id}
+          and a.owner_id=r.owner_id and v.owner_id=r.owner_id and o.owner_id=r.owner_id
+          and v.organization_id=a.organization_id and v.workspace_id=a.workspace_id
+          and o.checksum=${input.digest} and o.state='ready' and o.immutable=true and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id for share of a,v,o,r`;
         if (!artifact) fail('forbidden');
         const [old] =
           await tx`select * from allrice_assistant_artifacts where run_id=${row.run_id} and relative_path=${path}`;

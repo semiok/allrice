@@ -28,6 +28,7 @@ import {
   assertQuotaAvailable,
   ModelGovernanceError,
   assertReviewRunCurrent,
+  assertAssistantAuthority,
 } from '@allrice/database';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
@@ -58,6 +59,7 @@ import {
 } from '../routing/provider-snapshot.js';
 import { executeDurableWorkflow, WorkflowPaused } from '../workflow-engine.js';
 import { loadHarnessImages } from '../harness/prompt-images.js';
+import { productionAssistantController } from '../harness/dsh/assistant-controller.js';
 import {
   executeRiceTool,
   riceToolCapability,
@@ -623,6 +625,10 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.localMcp
         : undefined,
+    ).filter(
+      (tool) =>
+        !tool.name.startsWith('assistant.') ||
+        objectInput(input.assistantConfiguration).allowAssistants === true,
     );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
@@ -666,6 +672,21 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.modelSnapshot?.runLimits
         : undefined;
+    const assistants = productionAssistantController({
+      configuration: input.assistantConfiguration,
+      context: execution.context,
+      worker: workflowLease,
+      runLimits,
+      tools,
+      authorize: assertAssistantAuthority,
+    });
+    if (assistants && (adapter.kind !== 'dsh' || selectedWorkflow)) {
+      throw new HandlerError(
+        'ASSISTANT_ROUTE_UNAVAILABLE',
+        'Governed assistants require an ordinary native DSH task',
+        false,
+      );
+    }
     if (runLimits) {
       const estimatedInputTokens = estimateConversationTokens(
         [
@@ -925,6 +946,7 @@ export async function executeEmployeeRun({
           })()
         : await adapter
             .execute({
+              assistants,
               kernel: routedKernel,
               nativeSkills: resolved.nativeSkills,
               storageObjects: selectedStorageObjects,

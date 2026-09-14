@@ -56,6 +56,7 @@ export async function createAssistantFixtureDatabase() {
 export async function assistantFixture(
   db: ReturnType<typeof postgres>,
   capacity = 12,
+  options: { nativeSessionId?: string } = {},
 ) {
   const org = randomUUID(),
     workspace = randomUUID(),
@@ -155,7 +156,7 @@ export async function assistantFixture(
       if (revoked) throw Error('revoked');
     },
   });
-  const nativeSessionId = randomUUID();
+  const nativeSessionId = options.nativeSessionId ?? randomUUID();
   const config = {
     ...defaultAssistantRunConfiguration(),
     allowAssistants: true,
@@ -201,17 +202,21 @@ export async function assistantFixture(
     revoke() {
       revoked = true;
     },
-    async artifact(childRunId: string, body = 'Synthetic checked evidence') {
+    async artifact(
+      childRunId: string,
+      body = 'Synthetic checked evidence',
+      artifactOwnerId = user,
+    ) {
       const artifactId = randomUUID(),
         objectId = randomUUID(),
-        key = `organizations/${org}/workspaces/${workspace}/owners/${user}/artifacts/${objectId}`;
+        key = `organizations/${org}/workspaces/${workspace}/owners/${artifactOwnerId}/artifacts/${objectId}`;
       const bytes = Buffer.from(body),
         digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
       const object = {
         id: objectId,
         organizationId: org,
         workspaceId: workspace,
-        ownerId: user,
+        ownerId: artifactOwnerId,
         key,
         checksum: digest,
         sizeBytes: bytes.length,
@@ -223,9 +228,9 @@ export async function assistantFixture(
       const storage = stores.get(db);
       if (!storage) throw Error('Isolated fixture storage required');
       await storage.put(object, new Blob([bytes]).stream());
-      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable) values(${objectId},${org},${workspace},${user},${key},'artifacts','text/plain',${bytes.length},${digest},'ready',true)`;
-      await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format) values(${artifactId},${org},${workspace},${user},${objectId},${randomUUID()},1,${sessionId},'evidence.txt','text')`;
-      await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest) values(${artifactId},${org},${workspace},${user},${childRunId},'document',${db.json({ kind: 'tool_result', runId: childRunId, operationId: null, stepId: null })},${randomUUID()},${digest})`;
+      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable) values(${objectId},${org},${workspace},${artifactOwnerId},${key},'artifacts','text/plain',${bytes.length},${digest},'ready',true)`;
+      await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format) values(${artifactId},${org},${workspace},${artifactOwnerId},${objectId},${randomUUID()},1,${sessionId},'evidence.txt','text')`;
+      await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest) values(${artifactId},${org},${workspace},${artifactOwnerId},${childRunId},'document',${db.json({ kind: 'tool_result', runId: childRunId, operationId: null, stepId: null })},${randomUUID()},${digest})`;
       return { artifactId, digest };
     },
   };

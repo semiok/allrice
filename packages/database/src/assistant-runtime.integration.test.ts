@@ -87,6 +87,35 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       }),
     ).rejects.toThrow('forbidden');
   });
+  it('rejects sibling artifacts and mismatched storage owner even in the same workspace', async () => {
+    const f = await assistantFixture(fixture.db),
+      a = (await f.delegate()).instance,
+      b = (await f.delegate()).instance;
+    const artifact = await f.artifact(a.runId);
+    await expect(
+      f.runtime.registerArtifact({
+        ...f.base,
+        runId: b.runId,
+        relativePath: 'foreign.md',
+        ...artifact,
+      }),
+    ).rejects.toThrow('forbidden');
+    const foreign = randomUUID();
+    await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values(${foreign},${`${foreign}@example.test`},'Foreign artifact owner','not-login')`;
+    const foreignArtifact = await f.artifact(
+      a.runId,
+      'Foreign-owned actual bytes',
+      foreign,
+    );
+    await expect(
+      f.runtime.registerArtifact({
+        ...f.base,
+        runId: a.runId,
+        relativePath: 'wrong-owner.md',
+        ...foreignArtifact,
+      }),
+    ).rejects.toThrow('forbidden');
+  });
   it('enforces depth, concurrent and lifetime child count atomically', async () => {
     const f = await assistantFixture(fixture.db);
     const a = (await f.delegate()).instance;

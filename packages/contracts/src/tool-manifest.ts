@@ -9,7 +9,7 @@ import type { SkillCapability } from './skills.ts';
  * tenant-scoped AllRice Tool Broker.
  */
 export type AllRiceToolTransport =
-  'envelope' | 'dsh_search' | 'dsh_broker_native';
+  'envelope' | 'dsh_search' | 'dsh_broker_native' | 'dsh_assistant_native';
 
 export type AllRiceToolRisk =
   'read_only' | 'managed_write' | 'side_effect' | 'secret_bearing';
@@ -31,6 +31,15 @@ export interface AllRiceToolManifestEntry {
  * and the Tool Broker remains the final validation and authorization boundary.
  */
 export const allRiceToolManifest = [
+  ...(['delegate', 'message', 'report', 'stop'] as const).map((action) => ({
+    canonicalName: `assistant.${action}` as const,
+    capability: 'model:invoke' as const,
+    // Internal durable coordination/result publication, never general storage
+    // access or approval to execute a delegated external side effect.
+    risk: 'managed_write' as const,
+    transport: 'dsh_assistant_native' as const,
+    dshWireName: `assistant_${action}`,
+  })),
   {
     canonicalName: 'local.mcp.discover',
     capability: 'secret:use',

@@ -51,3 +51,4 @@ export * from './local-browser-files.ts';
 export * from './local-preview.ts';
 export { localPreviewEnabled } from './local-preview-authority.ts';
 export * from './assistant-runtime.ts';
+export * from './assistant-authority.ts';

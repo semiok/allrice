@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   AssistantResultSchema,
@@ -23,6 +23,8 @@ export interface AssistantWorkerBridgeOptions {
   worker: AssistantWorkerLease;
   wireNames: Readonly<Record<string, string>>;
   readOnlyTools: ReadonlySet<string>;
+  proposalTools?: ReadonlySet<string>;
+  onRootTool?: (call: HarnessToolCall) => Promise<HarnessToolResult>;
   onReadTool?: (
     call: HarnessToolCall,
     childRunId: string,
@@ -175,15 +177,25 @@ export function createAssistantWorkerBridge(
     if (method === 'tool' || method === 'proposal') {
       const name = z.string().parse(p.name),
         parameters = z.record(z.string(), z.unknown()).parse(args);
-      const handler =
-        method === 'proposal' ? options.onProposal : options.onReadTool;
-      if (!handler || (method === 'tool' && !options.readOnlyTools.has(name)))
+      const isRoot = instance.parentRunId === null;
+      const isProposal =
+        method === 'proposal' || options.proposalTools?.has(name);
+      const handler = isRoot
+        ? options.onRootTool
+        : isProposal
+          ? options.onProposal
+          : options.onReadTool;
+      if (
+        !handler ||
+        (!isRoot && !isProposal && !options.readOnlyTools.has(name))
+      )
         throw Error('assistant_tool_not_available');
       const reserved = await runtime.reserveUsage({
         ...base,
         runId: instance.runId,
         kind: 'tool',
         tool: name,
+        ...(isProposal ? { proposal: true } : {}),
         callId: callUuid,
         amounts: {
           tool_calls: 1,

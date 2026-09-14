@@ -34,6 +34,26 @@ export interface HarnessImageInput {
 }
 
 export interface HarnessExecutionInput {
+  /** Trusted Worker port; never deserialized from model or browser input. */
+  assistants?: {
+    rootRunId: string;
+    maxOutputTokens?: number;
+    bind(
+      nativeSessionId: string,
+      generation: number,
+      onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>,
+    ): Promise<{
+      handle(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Record<string, unknown>>;
+      cancellation(): Promise<{
+        nativeSessionId?: string;
+        instances: readonly { nativeSessionId: string }[];
+      }>;
+      cancel(): Promise<void>;
+    }>;
+  };
   kernel: EmployeeKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];

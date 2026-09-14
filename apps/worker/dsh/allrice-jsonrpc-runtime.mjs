@@ -33,6 +33,7 @@ import {
 import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
+import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
@@ -814,6 +815,17 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       ? params.nativeTools.filter((name) => typeof name === 'string')
       : [];
     this.nativeTools = new Set(requestedTools);
+    if (this.assistantBridge) {
+      this.governedAssistants = createGovernedAssistantNativeRuntime(
+        this.ctx,
+        this.assistantBridge,
+        {
+          controlTools: requestedTools.filter((name) =>
+            name.startsWith('assistant.'),
+          ),
+        },
+      );
+    }
     const requestedSkills = Array.isArray(params?.nativeSkills)
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];
@@ -922,7 +934,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           },
           timeoutMs: 60_000,
           isConcurrencySafe: () => true,
-          execute: async (args) => {
+          execute: async (args, exec) => {
             if (
               !Array.isArray(args.queries) ||
               args.queries.length < 1 ||
@@ -938,6 +950,28 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             const queries = [
               ...new Set(args.queries.map((query) => query.trim())),
             ];
+            if (this.governedAssistants) {
+              const agent = this.ctx.agents.requireInitiator();
+              const responses = await Promise.all(
+                queries.map((query, index) =>
+                  this.assistantBridge(
+                    'tool',
+                    {
+                      nativeSessionId: agent.id,
+                      callId: `${exec.callId}:${index}`,
+                      name: 'web.search',
+                      arguments: { query, maxResults: 5 },
+                    },
+                    exec.signal,
+                  ),
+                ),
+              );
+              return {
+                content: responses
+                  .map((response) => response.modelContent)
+                  .join('\n\n'),
+              };
+            }
             const results = await Promise.all(
               queries.map((query) =>
                 this.searchCodex({ query, maxResults: 5 }),
@@ -1089,6 +1123,22 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             tool.canonicalName !== 'local.process.execute',
           execute: async (args, exec) => {
             tool.validateArguments?.(args);
+            const agent = this.ctx.agents.requireInitiator();
+            if (this.governedAssistants) {
+              const response = await this.assistantBridge(
+                'tool',
+                {
+                  nativeSessionId: agent.id,
+                  callId: exec.callId,
+                  name: tool.canonicalName,
+                  arguments: args,
+                },
+                exec.signal,
+              );
+              if (typeof response?.modelContent !== 'string')
+                throw Error('assistant_tool_response_invalid');
+              return { content: response.modelContent };
+            }
             const response = await this.toolBrokerRequest(
               {
                 toolCallId: exec.callId,
@@ -1419,6 +1469,15 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   }
 
   async handleRequest(method, params) {
+    if (method.startsWith('allrice/assistant/')) {
+      const action = method.slice('allrice/assistant/'.length);
+      if (
+        !this.governedAssistants ||
+        !['bind', 'drain', 'flush', 'join'].includes(action)
+      )
+        throw Error('assistant_runtime_disabled');
+      return this.governedAssistants[action](params);
+    }
     switch (method) {
       case 'session/interrupt':
         return this.interrupt(params);
@@ -1460,11 +1519,23 @@ if (!configPath || !existsSync(configPath)) {
 
 const ctx = await boot(runtimeName, resolve(configPath));
 await ctx.get('loader')?.await();
+if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1') {
+  await ctx.plugin((await import('@deepseek-ai/dsh-user-approval')).default, {
+    policy: 'never',
+  });
+  await ctx.plugin((await import('@deepseek-ai/dsh-subagent')).default);
+  await ctx.plugin(await import('@deepseek-ai/dsh-subagent-spawn-in-process'), {
+    providerName: 'spawn',
+  });
+}
 const transport = new JsonRpcLineTransport(process.stdin, process.stdout);
 const server = new AllRiceHarnessSdkJsonRpcServer(ctx, transport, {
   maxTokensAsSuccess: false,
 });
 server.installUserQuestionProvider();
+if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
+  server.assistantBridge = (method, params, signal) =>
+    transport.request(`allrice/assistant/${method}`, params, signal);
 server.toolBrokerRequest = (params, signal) =>
   transport.request('allrice/tool-call', params, signal);
 server.authorizationNotify = (notice) =>

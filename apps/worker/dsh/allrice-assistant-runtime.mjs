@@ -4,9 +4,33 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 /** Adapter for the PINNED native continuable service, never a second Agent loop.
  * Every call goes back to the owning Worker for durable identity/authority. */
-export function createGovernedAssistantNativeRuntime(ctx, bridge) {
+export function createGovernedAssistantNativeRuntime(
+  ctx,
+  bridge,
+  options = {},
+) {
   const bindings = new Map();
   const deliveries = new Map();
+  const nativeCompletions = new Map();
+  function completion(id) {
+    let resolve;
+    const promise = new Promise((done) => {
+      resolve = done;
+    });
+    const state = { promise, resolve };
+    nativeCompletions.set(id, state);
+    return state;
+  }
+  ctx.on('session/event', (session, event) => {
+    if (
+      event.type === 'user/message' &&
+      event.data.source?.kind === 'subagent-settled'
+    ) {
+      const childId = event.data.source.senderSessionId;
+      if (bindings.get(childId)?.parentNativeSessionId === session.id)
+        nativeCompletions.get(childId)?.resolve();
+    }
+  });
   const pendingWrites = new Set();
   const content = (text) => [{ type: 'text', text }];
   const signal = () => new AbortController().signal;
@@ -48,6 +72,7 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
             deliveries.set(childId, result);
             if (result.wakeParent && ctx.agents.get(agent.id) === agent)
               original(message, ...args);
+            else nativeCompletions.get(childId)?.resolve();
           }),
         );
         return message.id;
@@ -55,7 +80,16 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
     }
   }
   ctx.on('agent/created', ({ agent }) => {
-    if (bindings.has(agent.id)) guardSettlement(agent);
+    if (bindings.has(agent.id)) {
+      guardSettlement(agent);
+      const wireTools = bindings.get(agent.id).wireTools;
+      if (wireTools) agent.ctx.tools.restrict({ allow: wireTools });
+    }
+  });
+  ctx.tools.guard((exec) => {
+    const entry = bindings.get(exec.agent?.id);
+    if (entry?.wireTools && !entry.wireTools.includes(exec.name))
+      return 'assistant_tool_not_allowed';
   });
   const checkpointChains = new Map();
   const checkpointProofs = new Map();
@@ -151,11 +185,12 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
     const outputTokens = options.maxTokens;
     if (!Number.isSafeInteger(outputTokens) || outputTokens <= 0)
       throw Error('assistant_model_output_bound_required');
-    await bridge(
+    const reservation = await bridge(
       'model-reserve',
       { nativeSessionId: id, callId, inputTokens, outputTokens },
       options.signal,
     );
+    if (!reservation.reserved) throw Error('assistant_model_unknown_no_replay');
     let usage;
     try {
       for await (const chunk of next()) {
@@ -186,9 +221,12 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
       throw Error('assistant_native_duplicate_start');
     bindings.set(p.instance.nativeSessionId, {
       ...p.instance,
+      parentNativeSessionId: parent.id,
+      wireTools: p.wireTools,
       initialInputId: p.inputId,
       messages: new Map(),
     });
+    completion(p.instance.nativeSessionId);
     const accepted = await ctx.subagents.startContinuable({
       provider: 'spawn',
       label: p.instance.label,
@@ -255,62 +293,80 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
     stop: { childRunId: { type: 'string', required: true } },
   };
   for (const [action, parameters] of Object.entries(schemas))
-    ctx.tools.register(
-      defineTool({
-        name: `assistant_${action}`,
-        description:
-          action === 'delegate'
-            ? 'Delegate a bounded independent read-only task. Never request whole parent history or wider tools.'
-            : `Governed assistant ${action}; platform identity and authorization are checked.`,
-        parameters,
-        output: {
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: { content: { type: 'string', required: true } },
+    if (
+      !options.controlTools ||
+      options.controlTools.includes(`assistant.${action}`)
+    )
+      ctx.tools.register(
+        defineTool({
+          name: `assistant_${action}`,
+          description:
+            action === 'delegate'
+              ? 'Delegate a bounded independent read-only task. Never request whole parent history or wider tools.'
+              : `Governed assistant ${action}; platform identity and authorization are checked.`,
+          parameters,
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: { content: { type: 'string', required: true } },
+            },
+            render: (_args, v) => content(v.content),
           },
-          render: (_args, v) => content(v.content),
-        },
-        timeoutMs: 120000,
-        execute: async (args, exec) => {
-          const agent = ctx.agents.requireInitiator();
-          binding(agent.id);
-          const result = await bridge(
-            action,
-            { nativeSessionId: agent.id, callId: exec.callId, arguments: args },
-            exec.signal,
-          );
-          if (action === 'delegate' && result.dispatch) await start(result);
-          if (action === 'message' && result.dispatch) await followup(result);
-          if (action === 'report') {
-            deliveries.set(agent.id, result);
-            exec.concludeTurn();
-          }
-          if (action === 'stop') await drain(result);
-          return { content: JSON.stringify(result) };
-        },
-        presentCall: () => ({
-          card: 'generic',
-          kind: 'tool',
-          title: `Assistant ${action}`,
+          timeoutMs: 120000,
+          execute: async (args, exec) => {
+            const agent = ctx.agents.requireInitiator();
+            binding(agent.id);
+            const result = await bridge(
+              action,
+              {
+                nativeSessionId: agent.id,
+                callId: exec.callId,
+                arguments: args,
+              },
+              exec.signal,
+            );
+            if (action === 'delegate' && result.dispatch) await start(result);
+            if (action === 'message' && result.dispatch) await followup(result);
+            if (action === 'report') {
+              deliveries.set(agent.id, result);
+              exec.concludeTurn();
+            }
+            if (action === 'stop') await drain(result);
+            return { content: JSON.stringify(result) };
+          },
+          presentCall: () => ({
+            card: 'generic',
+            kind: 'tool',
+            title: `Assistant ${action}`,
+          }),
         }),
-      }),
-    );
+      );
   async function drain(p) {
-    const agent = ctx.agents.get(p.nativeSessionId);
-    if (agent) {
+    const canceledIds = new Set(
+      (p.instances ?? []).map((instance) => instance.runId),
+    );
+    const targets = (p.instances ?? []).filter(
+      (instance) =>
+        !instance.parentRunId || !canceledIds.has(instance.parentRunId),
+    );
+    for (const target of targets) {
+      const agent = ctx.agents.get(target.nativeSessionId);
+      if (!agent) continue;
       await ctx.subagents.drainContinuableDescendants([agent]);
       for (const message of [...agent.inbox.nextStep, ...agent.inbox.nextTurn])
         agent.inbox.remove(message.id);
       agent.cancel({ kind: 'user' }, { keepInbox: false });
       await agent.whenIdle();
     }
-    for (const child of p.instances ?? [])
+    for (const child of p.instances ?? []) {
+      nativeCompletions.get(child.nativeSessionId)?.resolve();
       await bridge(
         'stopped',
         { nativeSessionId: child.nativeSessionId },
         signal(),
       );
+    }
     return { drained: true };
   }
   return {
@@ -320,11 +376,49 @@ export function createGovernedAssistantNativeRuntime(ctx, bridge) {
       bindings.set(p.nativeSessionId, { ...p, messages: new Map() });
       const agent = ctx.agents.get(p.nativeSessionId);
       if (agent) guardSettlement(agent);
+      if (agent && p.wireTools)
+        agent.ctx.tools.restrict({ allow: p.wireTools });
       return { bound: true };
     },
     start,
     followup,
     drain,
+    async join(p) {
+      const root = live(p.nativeSessionId);
+      // Await native loops, not a second execution loop. A parent's result
+      // adoption may start a further bounded child, hence a bounded fixed point.
+      for (let pass = 0; pass < 18; pass++) {
+        const before = bindings.size;
+        await Promise.all(
+          [...bindings.keys()]
+            .filter((id) => id !== root.id)
+            .map((id) => ctx.agents.get(id)?.whenIdle()),
+        );
+        await Promise.all([...pendingWrites]);
+        await Promise.all(
+          [...nativeCompletions.values()].map((state) => state.promise),
+        );
+        await root.whenIdle();
+        await Promise.all([...pendingWrites]);
+        if (before === bindings.size) {
+          await checkpoints(root.id);
+          const last = root.session.events.findLast(
+            (event) =>
+              event.type === 'assistant/message' &&
+              event.data.message?.content?.some(
+                (block) => block.type === 'text',
+              ),
+          );
+          return {
+            answer: (last?.data.message.content ?? [])
+              .filter((block) => block.type === 'text')
+              .map((block) => block.text)
+              .join(''),
+          };
+        }
+      }
+      throw Error('assistant_native_join_bound_exceeded');
+    },
     async inspect(p) {
       const session =
         ctx.sessions.get(p.nativeSessionId) ??

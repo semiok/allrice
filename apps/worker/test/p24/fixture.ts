@@ -262,6 +262,7 @@ export async function p24Fixture(
   }
   return {
     root,
+    baseUrl: environment.OPENAI_COMPATIBLE_BASE_URL,
     requests,
     launch,
     async logs() {

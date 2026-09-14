@@ -29,6 +29,11 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
+  ...(['delegate', 'message', 'report', 'stop'] as const).map((action) => ({
+    name: `assistant.${action}` as const,
+    description: `Governed assistant ${action}. Requires explicit employee authorization and this Run's frozen opt-in; native DSH only.`,
+    inputSchema: { type: 'object', additionalProperties: true },
+  })),
   {
     name: 'local.mcp.discover',
     description:
@@ -556,6 +561,9 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (!definition.name.startsWith('assistant.') ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_ASSISTANTS_ENABLED === '1')) &&
       (!['local.mcp.discover', 'local.mcp.call'].includes(definition.name) ||
         (allowed?.has(definition.name) &&
           capabilities.includes('storage:write') &&

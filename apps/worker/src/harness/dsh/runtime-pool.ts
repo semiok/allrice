@@ -227,6 +227,9 @@ export class DshRuntimePool {
           snapshot: input.snapshot,
           runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
           systemInstructions: input.systemInstructions,
+          ...(input.input.assistants
+            ? { assistantRootRunId: input.input.assistants.rootRunId }
+            : {}),
           nativeTools: input.input.tools
             .map((tool) => tool.name)
             .filter(isDshNativeTool)
@@ -320,7 +323,12 @@ export class DshRuntimePool {
         'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',
       ].join('\n\n'),
       DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
-      DSH_MAX_OUTPUT_TOKENS: String(input.input.maxOutputTokens ?? 16_000),
+      DSH_MAX_OUTPUT_TOKENS: String(
+        input.input.assistants?.maxOutputTokens ??
+          input.input.maxOutputTokens ??
+          16_000,
+      ),
+      ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
     };
     if (input.snapshot.route === 'openai-codex') {
       // The DSH credential service resolves and refreshes the platform OAuth
@@ -371,7 +379,10 @@ export class DshRuntimePool {
         model: input.snapshot.model,
         nativeTools,
         nativeSkills: input.nativeSkills,
-        maxTokens: input.input.maxOutputTokens,
+        maxTokens:
+          input.input.assistants?.maxOutputTokens ??
+          input.input.maxOutputTokens ??
+          (input.input.assistants ? 16_000 : undefined),
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       });
       this.runtimes.set(input.threadId, runtime);
