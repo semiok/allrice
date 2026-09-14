@@ -33,10 +33,18 @@
 - 页面回归覆盖默认折叠保留警示、真实详情请求、结果纯文本安全显示、未来模式禁用、下一任务偏好不改当前 root、单助手取消请求与实际停止区分、刷新、会话切换隔离、390px 无横向溢出，以及关闭 feature flag 后历史/取消仍可用。
 - 该页面脚本明确使用合成持久历史，不能证明实际助手委派或原生结果采用；后者由 P25/P27 联合验证。输出原始截图、日志、源码/构建摘要至本次私有临时证据目录，结束后清除仅本次创建的 schema/storage。
 
-## 冻结协议及会话切换追加验收（尚未通过）
+## 冻结协议及会话切换追加验收（失败历史保留）
 
 `cf6b7e9` 的 27 项协议提示/控制单元测试与 Web 构建通过。真实页面增加从合成 Gemini 历史切到冻结 Codex、普通消息实际入队、检查请求与数据库偏好为 false、模型绑定不变、无 Worker 启动，再回到 Gemini 的路径。
 
 这条更严格的验收发现旧 pending Run 在切回已完成会话后重建 SSE，“停止本轮”错误保留。原构建 `I1lGoWoMKvy0B3AEvFCIQ` 上的新断言明确失败，收据 `/tmp/allrice-p26-ui-sggygq/evidence/checks.json` 记录 `return-gemini` 阶段仍请求旧 Codex Run。该失败不因普通单元测试或先前仅合成历史的页面验收通过而被抹去。
 
 页面脚本现要求离开会话时旧 SSE 中止且不自动重建、已完成会话不显示停止按钮、回到原会话才恢复其 pending Run。切换页面仅释放前端连接，不是取消后台任务。开关 OFF 用正常离开页面后的独立服务启动验证，不冒称断网恢复测试；最终修复还需新构建和真实页面复验。
+
+### 修复后的独立复验
+
+`c1b1b9a` 按 Session 绑定 SSE/trace controller，以切换代次和 AbortController owner 拒绝旧结果；history 的请求入口、完成与返回 Session 均核对当前选择，新建会话保留首次空基线。19 项新增 controller/useSession 异步测试通过；useSession 测试替代 React primitives，仅执行真实 hook 控制流，不是 React StrictMode/DOM 证明。与协议提示和控制测试合并后，整合分支主开发复跑 46/46，通过 Web 构建及定向格式/lint。
+
+干净组合 `ef9b2550f54aa531f5ebe0a700cb1ac4bd0b1932` / BUILD_ID `Heb9HDaXDT-jlqs0VtWrD` 完成真正 Chrome + built Next + PostgreSQL 复验：旧 SSE 已取消且不重建、完成会话无停止按钮、回到 Codex 才恢复同一 pending Run；桌面/390px、历史刷新、偏好不改冻结模型与当前任务、取消真实性和 flag-OFF 历史/取消路径均通过。Page/Console/HTTP 错误为 0。收据 `/tmp/allrice-p26-ui-XR3Whe/evidence/checks.json`，SHA-256 `ee41007cf4a832bc9e1c66c715c52e897354f2cd0ff71329af8f6db84f982f49`。独立测试进程/schema/storage 已清理，原失败收据保留。
+
+本轮不是模型、Worker 配额或完整断网恢复验收，也未覆盖 composer 迟到请求修改新草稿/附件/busy 的所有副作用；不将本次修复称为全部交互均已验收。B6/P27/正式分发与真实租户启用门禁仍未完成。
