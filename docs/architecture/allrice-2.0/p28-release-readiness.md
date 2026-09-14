@@ -69,7 +69,7 @@ node scripts/acceptance/platform/p28-release-readiness.mjs \
   --manifest-sha256 INDEPENDENTLY_REVIEWED_MANIFEST_SHA256 \
   --gate rc
 
-node --test scripts/acceptance/platform/p28-release-readiness.test.mjs
+pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 ```
 
 | `--gate`  | 只检查的条件；不代表执行授权                                                                                 |

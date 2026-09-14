@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, test } from 'node:test';
+import { afterEach, test } from 'vitest';
 import {
   ARTIFACT_IDS,
   BASELINE_SHA,
