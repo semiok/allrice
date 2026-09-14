@@ -8,9 +8,11 @@
 
 ## 1. 本切片交付与仍然受阻的内容
 
-交付：[草稿清单](p28-release-manifest.draft.json)、[只读检查器](../../../scripts/acceptance/platform/p28-release-readiness.mjs)、[检查器测试](../../../scripts/acceptance/platform/p28-release-readiness.test.mjs)及本程序。没有改应用开关、数据库、包分发、系统服务或现有共享验收入口，也没有备份数据库、扫描秘密、合并或部署。
+交付：[草稿清单](p28-release-manifest.draft.json)、[只读检查器](../../../scripts/acceptance/platform/p28-release-readiness.mjs)、[检查器测试](../../../scripts/acceptance/platform/p28-release-readiness.test.mjs)、[准备交接与 47 场景证据索引](p28-handoff-index.md)及本程序。没有改应用开关、数据库、包分发、系统服务或现有共享验收入口，也没有备份数据库、扫描秘密、合并或部署。
 
 草稿有意保留 `sourceSha: null`、空包/证据、空发布授权与真实 blockers，**运行必定拒绝**；不可把基线 SHA、虚构 SHA 或测试夹具填进去变成发布材料。准备代码本身不等待证书；已固定候选的材料检查允许 `prepare` 成立而 `technicalEvidenceComplete: false`，证书/设备缺口仍阻断 RC。
+
+MET-141 的“准备交付完成”与 checker 的 `preparationVerified` 不是同一件事：前者交付可用合同/负向测试/迁移恢复程序/交接索引，后者检查之后提交的实际候选材料。准备交付不以未来 MET-142 完整通过为条件；142 使用这些材料合同完成真实联验。不能为避免循环依赖而填假候选、放宽签名/RC 条件，也不能把草稿正确拒绝误读为准备代码未交付。具体责任、既有证据与未完成输入见交接索引。
 
 外部依赖必须尽早解决：P14 需要可用 Developer ID 发布者身份、公证权限、已固定的更新元数据验证公钥，以及各一台可实际交互的 Apple Silicon / Intel Mac。两台均要从最终实际包进行 Keychain、Finder/原生 GUI、签名拒绝、任务排空、升级中断、兼容恢复测试。构建两包、ad-hoc 签名、哈希一致、模拟 Keychain 或仅一台设备不等于两平台通过。不索取/提交私钥、密码、公证令牌或真实配对凭证；缺少条件填未验证。
 

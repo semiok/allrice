@@ -75,7 +75,7 @@
     },
     {
       "id": "assistant-hold-recovery-and-accounting",
-      "reason": "Prepared/dispatched model holds and once-only dispatch identity need candidate-bound compatibility/recovery evidence. Unknown usage/cost cannot be erased or changed to zero; no authoritative pricing/reconciliation loop has been accepted, so real tenant enablement remains blocked.",
+      "reason": "Prepared/dispatched model holds, immutable prices and once-only receipts need final-candidate compatibility/recovery and full Worker quota evidence. Isolated priced tests exist, but the recorded real Gemini native subset failed and does not prove complete reconciliation. Unknown usage/cost cannot be erased or changed to zero; real tenant enablement remains blocked.",
       "owner": "P25 / P27 integration owner"
     },
     {

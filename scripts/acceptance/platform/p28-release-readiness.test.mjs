@@ -274,13 +274,59 @@ test('preparation remains possible without certificates or real-device evidence;
   ];
   const report = f.validate('prepare');
   assert.equal(report.passed, true);
+  assert.equal(report.preparationVerified, true);
   assert.equal(report.technicalEvidenceComplete, false);
-  assert.ok(
-    report.technicalBlockers.some(
-      (x) => x.code === 'missing-required-evidence',
-    ),
+  assert.deepEqual(
+    report.technicalBlockers
+      .filter((item) => item.code === 'missing-required-evidence')
+      .map((item) => item.field)
+      .sort(),
+    [...REQUIRED_CASES].sort(),
   );
+  for (const field of [
+    'deploymentExecuted',
+    'migrationExecuted',
+    'flagsChanged',
+    'authorizationGranted',
+    'gaDeclared',
+  ])
+    assert.equal(report[field], false);
   rejects(f.validate(), 'declared-open-blocker');
+});
+
+test('preparation handoff indexes every enforced RC case and assertion without inventing release receipts', () => {
+  const text = readFileSync(
+    join(sourceRoot, 'docs/architecture/allrice-2.0/p28-handoff-index.md'),
+    'utf8',
+  );
+  const rows = [
+    ...text.matchAll(
+      /^\|\s*`([^`]+)`\s*\|\s*(P27 \/ MET-142|P14 \/ MET-138)\s*\|\s*(.*?)\s*\|$/gm,
+    ),
+  ];
+  assert.equal(rows.length, 47);
+  assert.deepEqual(
+    rows.map((row) => row[1]).sort(),
+    [...REQUIRED_CASES].sort(),
+  );
+  for (const [, caseId, owner, assertions] of rows) {
+    const isClient = caseId.startsWith('client/');
+    assert.equal(owner, isClient ? 'P14 / MET-138' : 'P27 / MET-142');
+    assert.deepEqual(
+      [...assertions.matchAll(/`([^`]+)`/g)].map((item) => item[1]).sort(),
+      [...CASE_ASSERTIONS[isClient ? caseId.split('/')[2] : caseId]].sort(),
+    );
+  }
+  assert.ok(text.includes('`tenant-canary-real-smoke`'));
+  // Every local handoff source must actually exist. These are documentation
+  // pointers only; neither the index nor parser fixtures become real evidence.
+  for (const [, path] of text.matchAll(/\]\(([^)]+)\)/g)) {
+    if (/^https?:\/\//.test(path)) continue;
+    assert.ok(
+      readFileSync(resolve(sourceRoot, 'docs/architecture/allrice-2.0', path))
+        .length > 0,
+    );
+  }
 });
 
 test('reject missing/bad trust pins before following artifact paths', () => {
