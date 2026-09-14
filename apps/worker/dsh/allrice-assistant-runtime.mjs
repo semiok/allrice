@@ -2,6 +2,22 @@
 import { randomUUID } from 'node:crypto';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+/** Pinned TokenUsage has disjoint uncached/read-cache/write-cache counts.
+ * Invalid or absent required usage keeps that dimension's reservation. */
+export function settledTokenUsage(usage) {
+  const valid = (value) => Number.isSafeInteger(value) && value >= 0;
+  const inputs = [
+    usage.inputTokens,
+    usage.cacheReadTokens === undefined ? 0 : usage.cacheReadTokens,
+    usage.cacheWriteTokens === undefined ? 0 : usage.cacheWriteTokens,
+  ];
+  const inputTokens = inputs.reduce((sum, value) => sum + value, 0);
+  return {
+    ...(inputs.every(valid) && valid(inputTokens) ? { inputTokens } : {}),
+    ...(valid(usage.outputTokens) ? { outputTokens: usage.outputTokens } : {}),
+  };
+}
+
 /** Adapter for the PINNED native continuable service, never a second Agent loop.
  * Every call goes back to the owning Worker for durable identity/authority. */
 export function createGovernedAssistantNativeRuntime(
@@ -111,7 +127,7 @@ export function createGovernedAssistantNativeRuntime(
     const queued = session.events.findLast(
       (e) =>
         e.type === 'agent/inbox/spliced' &&
-        JSON.stringify(e.data).includes(messageId),
+        e.data.inserted?.some((message) => message.id === messageId),
     );
     const previous = checkpointProofs.get(inputId);
     const durableSeq = previous?.durableSeq ?? (adopted ?? queued)?.seq;
@@ -205,8 +221,7 @@ export function createGovernedAssistantNativeRuntime(
           callId,
           ...(usage
             ? {
-                inputTokens: usage.inputTokens + (usage.cachedInputTokens ?? 0),
-                outputTokens: usage.outputTokens,
+                ...settledTokenUsage(usage),
               }
             : {}),
         },
@@ -289,6 +304,16 @@ export function createGovernedAssistantNativeRuntime(
         required: true,
       },
       incomplete: { type: 'array', items: { type: 'string' }, required: true },
+      output: {
+        type: 'object',
+        additionalProperties: false,
+        description:
+          'Optional immutable model-generated report, not independently verified external evidence; at most 128 KiB UTF-8.',
+        properties: {
+          name: { type: 'string', required: true },
+          content: { type: 'string', required: true },
+        },
+      },
     },
     stop: { childRunId: { type: 'string', required: true } },
   };
@@ -425,11 +450,13 @@ export function createGovernedAssistantNativeRuntime(
         (await ctx.sessionPersistence.load(p.nativeSessionId));
       return {
         header: session.header,
-        events: session.events.filter((e) =>
-          ['user/message', 'agent/inbox/spliced', 'approval/policy'].includes(
-            e.type,
-          ),
-        ),
+        events: session.events
+          .filter((e) =>
+            ['user/message', 'agent/inbox/spliced', 'approval/policy'].includes(
+              e.type,
+            ),
+          )
+          .slice(-512),
       };
     },
     async flush() {

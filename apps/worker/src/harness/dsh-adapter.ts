@@ -134,11 +134,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
       nativeSkills,
     });
     this.runtimePool.touch(runtime);
-    const assistant = await input.assistants?.bind(
-      threadId,
-      generation,
-      input.onToolCall,
-    );
+    const assistant = await input.assistants
+      ?.bind(threadId, generation, input.onToolCall, (nativeSessionId) =>
+        runtime.client.assistant('inspect', { nativeSessionId }),
+      )
+      .catch(async (error) => {
+        await this.runtimePool.drop(threadId);
+        throw error;
+      });
     const ordinaryHandler = dshInboundToolHandler(input);
     runtime.client.setRequestHandler(async (method, params) => {
       if (method.startsWith('allrice/assistant/')) {
@@ -161,6 +164,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
           .map(([wire]) => wire),
       });
     let cancellationTask: Promise<unknown> | undefined;
+    const assistantFailureSignal = new AbortController();
+    const executionSignal = assistant
+      ? AbortSignal.any([input.signal, assistantFailureSignal.signal])
+      : input.signal;
     const pollCancellation = () => {
       if (!assistant || cancellationTask) return;
       cancellationTask = assistant
@@ -170,8 +177,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ? runtime.client.assistant('drain', request)
             : undefined,
         )
-        .catch(() => {
-          /* lease loss is fail closed at every admission; finalizer preserves uncertainty */
+        .catch(async () => {
+          // Loss of read authority cannot keep an owned model stream alive.
+          // Process termination needs no new user grant; do not invent stopped receipts.
+          assistantFailureSignal.abort();
+          await this.runtimePool.drop(threadId);
         })
         .finally(() => {
           cancellationTask = undefined;
@@ -186,7 +196,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           .cancel()
           .then(() => assistant.cancellation())
           .then((request) => runtime.client.assistant('drain', request))
-          .catch(() => {});
+          .catch(() => this.runtimePool.drop(threadId));
     };
     input.signal.addEventListener('abort', stopAssistants, { once: true });
     let order = 0;
@@ -280,7 +290,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           runtime,
           prompt,
           images: callIndex === 0 ? (input.images ?? []) : [],
-          signal: input.signal,
+          signal: executionSignal,
           onTurn: async (nextTurnId) => {
             turnId = nextTurnId;
             await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
@@ -299,6 +309,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 nativeSessionId: threadId,
               })
             : null;
+          await assistant?.finish?.();
           answer = normalizeAllRiceManagedFileLinks(
             typeof joined?.answer === 'string' ? joined.answer : result.answer,
           );
@@ -410,13 +421,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
       }
     } catch (error) {
-      if (assistant) {
-        await assistant.cancel().catch(() => {});
-        await runtime.client
-          .assistant('drain', await assistant.cancellation())
-          .catch(() => {});
+      try {
+        if (assistant) {
+          await assistant.cancel().catch(() => {});
+          const request = await assistant.cancellation();
+          await runtime.client.assistant('drain', request);
+        }
+      } catch {
+        // Revoked membership/lease may forbid reading the tree; still stop our host.
+      } finally {
+        await this.runtimePool.drop(threadId);
       }
-      await this.runtimePool.drop(threadId);
       if (input.signal.aborted) {
         throw new HandlerError(
           'EXECUTION_ABORTED',
@@ -843,7 +858,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         });
     });
     const abort = () => {
-      void input.runtime.client.interrupt(input.runtime.sessionId);
+      void input.runtime.client
+        .interrupt(input.runtime.sessionId)
+        .catch(() => {});
       settle();
     };
     input.signal.addEventListener('abort', abort, { once: true });

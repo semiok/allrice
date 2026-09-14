@@ -198,7 +198,7 @@ export class DshProtocolClient {
   }
 
   async assistant(
-    action: 'bind' | 'drain' | 'flush' | 'join',
+    action: 'bind' | 'drain' | 'flush' | 'join' | 'inspect',
     params: Record<string, unknown>,
   ) {
     return this.request(`allrice/assistant/${action}`, params);

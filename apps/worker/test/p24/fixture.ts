@@ -14,6 +14,7 @@ export interface ModelReply {
   text?: string;
   tool?: { marker: string };
   nativeTool?: { name: string; arguments: Record<string, unknown> };
+  usage?: Record<string, unknown>;
 }
 export interface NativeSnapshot {
   live: boolean;
@@ -53,6 +54,7 @@ export async function p24Fixture(
 ) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-p24-'));
   const requests: ModelRequest[] = [];
+  const abortedRequests: ModelRequest[] = [];
   const server = createServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -66,6 +68,9 @@ export async function p24Fixture(
         Buffer.concat(chunks).toString(),
       ) as ModelRequest;
       requests.push(input);
+      res.on('close', () => {
+        if (!res.writableFinished) abortedRequests.push(input);
+      });
       const result = await model(input, requests.length);
       if (res.destroyed) return;
       res.setHeader('content-type', 'text/event-stream');
@@ -109,7 +114,11 @@ export async function p24Fixture(
                 result.tool || result.nativeTool ? 'tool_calls' : 'stop',
             },
           ],
-          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+          usage: result.usage ?? {
+            prompt_tokens: 20,
+            completion_tokens: 5,
+            total_tokens: 25,
+          },
         },
       ])
         res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -264,6 +273,7 @@ export async function p24Fixture(
     root,
     baseUrl: environment.OPENAI_COMPATIBLE_BASE_URL,
     requests,
+    abortedRequests,
     launch,
     async logs() {
       const paths = await readdir(join(root, 'sessions'), { recursive: true });

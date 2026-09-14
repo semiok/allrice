@@ -5,11 +5,15 @@ import {
   allRiceToolManifest,
   type ExecutionContext,
   type RuntimeTaskRef,
+  type StoragePort,
 } from '@allrice/contracts';
 import {
   assistantRuntimeEnabled,
   createAssistantRuntime,
   createRuntimeOperationLedger,
+  createLocalCommandOperation,
+  waitLocalCommandOperation,
+  publishAssistantOutput,
   getDatabase,
   runtimePolicyDigest,
   type AssistantAuthorityInput,
@@ -18,6 +22,7 @@ import {
 } from '@allrice/database';
 import type { HarnessExecutionInput } from '../adapter.js';
 import { createAssistantWorkerBridge } from './assistant-bridge.js';
+import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 
 /** Server-owned admission and budget assembly. The browser's preference never
  * supplies authority, tool sets, native IDs, budget amounts or a worker lease. */
@@ -29,6 +34,8 @@ export function productionAssistantController(input: {
   tools: readonly { name: string }[];
   authorize: (input: AssistantAuthorityInput) => Promise<void>;
   database?: ReturnType<typeof getDatabase>;
+  storage?: StoragePort;
+  signal?: AbortSignal;
 }): HarnessExecutionInput['assistants'] {
   if (input.configuration === undefined) return undefined;
   const configuration = AssistantRunConfigurationSchema.parse(
@@ -67,7 +74,49 @@ export function productionAssistantController(input: {
           (configuration.maxConcurrent + 1),
       ),
     ),
-    async bind(nativeSessionId, generation, onToolCall) {
+    async bind(nativeSessionId, generation, onToolCall, inspect) {
+      const [prior] = await db<
+        {
+          worker_lease_digest: string;
+          generation: number;
+          task: RuntimeTaskRef;
+        }[]
+      >`select a.worker_lease_digest,a.generation,r.task from allrice_assistant_roots a join allrice_runtime_roots r using(root_run_id) join allrice_runs run on run.id=r.root_run_id where a.root_run_id=${input.context.runId} and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId} and run.owner_id=${context.actor.id}`;
+      if (
+        prior &&
+        (prior.worker_lease_digest !==
+          runtimePolicyDigest(input.worker.leaseToken) ||
+          Number(prior.generation) !== generation)
+      ) {
+        await runtime.quarantineExpired({
+          scope: prior.task.scope,
+          rootRunId: input.context.runId,
+        });
+        const tree = await runtime.getTree(context, {
+          runId: input.context.runId,
+        });
+        if (inspect)
+          for (const instance of tree.instances) {
+            const evidence = await inspect(instance.nativeSessionId).catch(
+              () => null,
+            );
+            if (!evidence) continue; // No journal is uncertainty, never proof of non-execution.
+            const checkpoints = assistantNativeCheckpointEvidence(
+              evidence,
+              tree.messages.filter(
+                (message) => message.childRunId === instance.runId,
+              ),
+            );
+            if (checkpoints.length)
+              await runtime.recoverNativeEvidence(context, {
+                rootRunId: input.context.runId,
+                nativeSessionId: instance.nativeSessionId,
+                worker: { ...input.worker, generation },
+                checkpoints,
+              });
+          }
+        throw Error('assistant_recovery_required_no_replay');
+      }
       const [row] = await db<
         {
           execution_spec: unknown;
@@ -146,15 +195,15 @@ export function productionAssistantController(input: {
         worker,
         allowedTools,
       });
-      const readOnlyTools = new Set(
-        allRiceToolManifest
-          .filter(
-            (tool) =>
-              tool.risk === 'read_only' &&
-              tool.transport === 'dsh_broker_native',
-          )
-          .map((tool) => tool.canonicalName),
-      );
+      // Explicit finite queries only. A read_only label does not make a root-
+      // owned Browser/Bridge operation cancelable as a child operation.
+      const readOnlyTools = new Set([
+        'workspace.skill.read',
+        'workspace.document.read',
+        'workspace.memory.search',
+        'workspace.session.search',
+        'web.search',
+      ]);
       const wireNames = Object.fromEntries(
         allRiceToolManifest.flatMap((tool) =>
           'dshWireName' in tool ? [[tool.canonicalName, tool.dshWireName]] : [],
@@ -167,12 +216,60 @@ export function productionAssistantController(input: {
         context,
         wireNames,
         readOnlyTools,
+        supportedChildTools: new Set([
+          ...readOnlyTools,
+          'assistant.delegate',
+          'assistant.message',
+          'assistant.report',
+          'assistant.stop',
+          'local.process.execute',
+        ]),
         proposalTools: new Set(['local.process.execute']),
         onRootTool: onToolCall,
         onReadTool: onToolCall ? (call) => onToolCall(call) : undefined,
+        onProposal: async (call, childRunId) => {
+          if (call.name !== 'local.process.execute')
+            throw Error('assistant_proposal_unavailable');
+          const created = await createLocalCommandOperation(
+            {
+              context: input.context,
+              callId: call.id,
+              arguments: call.arguments,
+              assistant: { runId: childRunId, worker },
+            },
+            db,
+          );
+          const result = await waitLocalCommandOperation(
+            created,
+            input.signal,
+            db,
+          );
+          return {
+            modelContent: JSON.stringify(result),
+            summary: `Governed assistant command: ${result.status}`,
+          };
+        },
+        onPublishOutput: input.storage
+          ? ({ childRunId, deliveryId, output }) =>
+              publishAssistantOutput(
+                {
+                  context: input.context,
+                  assistant: { runId: childRunId, worker },
+                  deliveryId,
+                  output,
+                },
+                { database: db, storage: input.storage! },
+              )
+          : undefined,
       });
       return {
         ...bridge,
+        finish: () =>
+          runtime.finalizeRoot({
+            scope: task.scope,
+            rootRunId: task.rootRunId,
+            worker,
+          }),
         cancel: async () => {
           await runtime.cancelRoot(context, {
             runId: task.runId,

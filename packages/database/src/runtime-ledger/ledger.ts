@@ -261,6 +261,10 @@ async function cancelLocked(
   await tx`update allrice_runtime_roots set cancel_request_id=${acceptedId},
     cancel_reason=coalesce(cancel_reason,${reason}),
     cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${root.root_run_id}`;
+  // P25 uses the same root ledger: command/Bridge overspend or deadline must
+  // cut off native admission before the Worker drains any running descendants.
+  await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${acceptedId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${root.root_run_id}`;
+  await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${root.root_run_id} and status='pending'`;
   const rows = await tx<
     OperationRow[]
   >`select * from allrice_runtime_operations where root_run_id=${root.root_run_id} order by id for update`;

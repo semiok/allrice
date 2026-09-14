@@ -327,6 +327,13 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
     ).toMatchObject({ wakeParent: true });
     const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
     expect(tree.results[0]?.parentAdoptedSeq).toBeNull();
+    expect(tree.results[0]).toMatchObject({
+      status: 'partial',
+      usageComplete: false,
+    });
+    expect(tree.results[0]!.incomplete.join(' ')).toContain(
+      'usage remains unresolved',
+    );
     await f.runtime.adoptResult({
       ...f.base,
       parentRunId: f.task.runId,
@@ -338,6 +345,69 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       (await f.runtime.getTree(f.context, { runId: f.task.runId })).results[0]
         ?.parentAdoptedSeq,
     ).toBe(12);
+  });
+  it('generic command ledger root cutoff also tombstones the native tree before drain', async () => {
+    const f = await assistantFixture(fixture.db);
+    await f.delegate();
+    await f.ledger.cancelRoot(f.task.scope, f.task.runId, randomUUID());
+    const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
+    expect(tree.cancelRequested).toBe(true);
+    expect(
+      tree.instances.every(
+        (instance) =>
+          instance.cancelRequestedAt !== null && instance.stoppedAt === null,
+      ),
+    ).toBe(true);
+    expect(
+      tree.messages.every((message) => message.status === 'canceled'),
+    ).toBe(true);
+  });
+  it('derives delivery usage inside the child ledger, never from a sibling or caller flag', async () => {
+    const f = await assistantFixture(fixture.db);
+    const delegationId = randomUUID();
+    const child = (await f.delegate({ delegationId })).instance;
+    await f.delegate({ delegationId: randomUUID() }); // sibling retains its startup reservation
+    const callId = randomUUID();
+    await f.runtime.reserveUsage({
+      ...f.base,
+      runId: child.runId,
+      callId,
+      kind: 'model',
+      amounts: {
+        model_calls: 1,
+        tool_calls: 0,
+        input_tokens: 100,
+        output_tokens: 10,
+      },
+    });
+    await f.runtime.settleUsage({
+      ...f.base,
+      runId: child.runId,
+      callId,
+      amounts: {
+        model_calls: 1,
+        tool_calls: 0,
+        input_tokens: 20,
+        output_tokens: 5,
+      },
+    });
+    await f.runtime.recordResult({
+      ...f.base,
+      runId: child.runId,
+      result: {
+        deliveryId: randomUUID(),
+        status: 'partial',
+        summary: 'Known usage for this child',
+        evidence: [],
+        incomplete: [],
+        usageComplete: false,
+      },
+    });
+    const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
+    expect(tree.results[0]!.usageComplete).toBe(true);
+    expect(tree.budgets.find((b) => b.metric === 'model_calls')!.reserved).toBe(
+      1,
+    );
   });
   it('fences old worker after lease loss and does not replay possibly executed work', async () => {
     const f = await assistantFixture(fixture.db),

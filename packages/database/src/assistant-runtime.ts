@@ -508,6 +508,9 @@ export function createAssistantRuntime(
             spent: string;
           }[]
         >`select metric,unit,currency,capacity,reserved,spent from allrice_runtime_budgets where root_run_id=${root.root_run_id} order by metric`;
+        const unresolved = await tx<
+          { metric: string }[]
+        >`select metric from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null union select metric from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null`;
         return {
           rootRunId: root.root_run_id,
           configuration: root.configuration,
@@ -531,9 +534,54 @@ export function createAssistantRuntime(
             capacity: Number(b.capacity),
             reserved: Number(b.reserved),
             spent: Number(b.spent),
-            usageComplete: Number(b.reserved) === 0,
+            usageComplete: !unresolved.some((item) => item.metric === b.metric),
           })),
         };
+      });
+    },
+    /** Trusted Worker calls only after actual native join/idle and durable flush.
+     * Logical completion never converts unknown usage or external effects into success. */
+    async finalizeRoot(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      worker: AssistantWorkerLease;
+    }) {
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker);
+        const main = await instance(tx, root, root.root_run_id);
+        if (terminal.has(main.status)) return { status: main.status };
+        await authorize({
+          transaction: tx,
+          task: root.task,
+          tools: [],
+          phase: 'recover',
+        });
+        const children = await tx<
+          Instance[]
+        >`select * from allrice_assistant_instances where root_run_id=${root.root_run_id} and depth>0 for update`;
+        const [unsettled] =
+          await tx`select 1 from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null union all select 1 from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null limit 1`;
+        const [pending] =
+          await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
+        const [unadopted] =
+          await tx`select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id where i.root_run_id=${root.root_run_id} and i.depth>0 and (r.delivery_id is null or r.parent_adopted_seq is null) limit 1`;
+        const [undelivered] =
+          await tx`select 1 from allrice_assistant_messages where root_run_id=${root.root_run_id} and status not in ('adopted','canceled') limit 1`;
+        const status =
+          unsettled ||
+          pending ||
+          unadopted ||
+          undelivered ||
+          children.some((child) => !terminal.has(child.status))
+            ? 'unknown'
+            : children.some((child) => child.status !== 'completed')
+              ? 'partial'
+              : 'completed';
+        await assertLease(tx, root, input.worker);
+        await tx`update allrice_assistant_instances set status=${status},stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where run_id=${root.root_run_id}`;
+        await tx`update allrice_assistant_instances set stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where root_run_id=${root.root_run_id} and depth>0 and status in ('completed','partial','failed','canceled','unknown')`;
+        return { status };
       });
     },
     async requestMessage(
@@ -790,11 +838,15 @@ export function createAssistantRuntime(
         const row = await instance(tx, root, input.runId);
         if (!row.parent_run_id) fail('forbidden');
         const [old] =
-          await tx`select payload_digest,run_id from allrice_assistant_results where delivery_id=${result.deliveryId}`;
+          await tx`select payload_digest,run_id,payload from allrice_assistant_results where delivery_id=${result.deliveryId}`;
         if (old) {
           if (old.payload_digest !== digest || old.run_id !== row.run_id)
             fail('conflict');
-          return { wakeParent: false, duplicate: true, status: result.status };
+          return {
+            wakeParent: false,
+            duplicate: true,
+            status: AssistantResultSchema.parse(old.payload).status,
+          };
         }
         const [prior] =
           await tx`select 1 from allrice_assistant_results where run_id=${row.run_id} limit 1`;
@@ -813,23 +865,33 @@ export function createAssistantRuntime(
         }
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where (run_id=${row.run_id} or snapshot->>'agentInstanceId'=${row.run_id}) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
-        const status = pending ? 'unknown' : result.status;
-        const effective = pending
-          ? {
-              ...result,
-              status: 'unknown' as const,
-              incomplete: [
-                ...result.incomplete,
-                'Execution evidence is still unresolved.',
-              ].slice(0, 32),
-              usageComplete: false,
-            }
-          : result;
+        const [unsettled] =
+          await tx`select 1 from allrice_assistant_usage where run_id=${row.run_id} and settled_amount is null union all select 1 from allrice_runtime_reservations u join allrice_runtime_operations o on o.id=u.operation_id where o.root_run_id=${root.root_run_id} and o.initial_snapshot->>'agentInstanceId'=${row.run_id} and u.settled_amount is null limit 1`;
+        const usageComplete = !pending && !unsettled;
+        const status = pending
+          ? 'unknown'
+          : result.status === 'completed' && !usageComplete
+            ? 'partial'
+            : result.status;
+        const effective = {
+          ...result,
+          status,
+          usageComplete,
+          incomplete: [
+            ...result.incomplete,
+            ...(pending ? ['Execution evidence is still unresolved.'] : []),
+            ...(unsettled
+              ? [
+                  'Assistant usage remains unresolved; reserved budget has not been released.',
+                ]
+              : []),
+          ].slice(0, 32),
+        };
         await tx`insert into allrice_assistant_results(delivery_id,run_id,root_run_id,payload,payload_digest) values(${result.deliveryId},${row.run_id},${root.root_run_id},${json(tx, effective)},${digest})`;
         if (!row.cancel_requested_at && !terminal.has(row.status))
           await tx`update allrice_assistant_instances set status=${status},updated_at=clock_timestamp() where run_id=${row.run_id}`;
-        if (!pending && !row.cancel_requested_at && result.status !== 'unknown')
-          await tx`update allrice_runs set state=${result.status === 'completed' ? 'succeeded' : result.status === 'canceled' ? 'canceled' : 'failed'},updated_at=clock_timestamp() where id=${row.run_id}`;
+        if (!pending && !row.cancel_requested_at && status !== 'unknown')
+          await tx`update allrice_runs set state=${status === 'completed' ? 'succeeded' : status === 'canceled' ? 'canceled' : 'failed'},updated_at=clock_timestamp() where id=${row.run_id}`;
         const parent = await instance(tx, root, row.parent_run_id);
         return {
           wakeParent:
@@ -1030,6 +1092,72 @@ export function createAssistantRuntime(
         await tx`update allrice_assistant_instances set status='unknown' where root_run_id=${root.root_run_id} and status in ('provisioning','running','waiting','cancel_requested')`;
         await tx`update allrice_assistant_messages set status='unknown' where root_run_id=${root.root_run_id} and status in ('dispatching','accepted')`;
         return { replay: false, requiresReconciliation: true };
+      });
+    },
+    /** A replacement Worker may import exact read-only native journal receipts
+     * after revocation. This never reopens execution, sends an inbox message,
+     * releases unknown usage reservations, accepts a result or wakes a parent. */
+    async recoverNativeEvidence(
+      context: RequestContext,
+      input: {
+        rootRunId: string;
+        nativeSessionId: string;
+        worker: AssistantWorkerLease;
+        checkpoints: {
+          inputId: string;
+          nativeMessageId: string;
+          durableSeq: number;
+          adoptedSeq?: number;
+        }[];
+      },
+    ) {
+      const checkpoints = z
+        .array(
+          z
+            .object({
+              inputId: uuid,
+              nativeMessageId: z.string().min(1).max(200),
+              durableSeq: z.number().int().nonnegative(),
+              adoptedSeq: z.number().int().nonnegative().optional(),
+            })
+            .strict(),
+        )
+        .max(64)
+        .parse(input.checkpoints);
+      return db.begin(async (tx) => {
+        const root = await owner(tx, context, input.rootRunId);
+        if (!root.revoked_at) fail('conflict');
+        const [job] =
+          await tx`select id from allrice_jobs where id=${input.worker.jobId} and run_id=${root.root_run_id}
+          and worker_id=${input.worker.workerId} and lease_token=${input.worker.leaseToken} and status='running' and lease_expires_at>clock_timestamp() for share`;
+        if (!job) fail('lease_lost');
+        const [recipient] = await tx<
+          Instance[]
+        >`select * from allrice_assistant_instances where root_run_id=${root.root_run_id} and native_session_id=${input.nativeSessionId}`;
+        if (!recipient) fail('not_found');
+        for (const proof of checkpoints) {
+          const [message] = await tx<
+            Message[]
+          >`select * from allrice_assistant_messages where input_id=${proof.inputId} and root_run_id=${root.root_run_id} and recipient_run_id=${recipient.run_id} for update`;
+          // Unknown ACKs have no authenticated native MessageId and stay unknown.
+          if (
+            !message ||
+            !message.native_message_id ||
+            message.native_message_id !== proof.nativeMessageId ||
+            message.status === 'pending' ||
+            message.status === 'canceled'
+          )
+            fail('conflict');
+          if (
+            (message.durable_seq !== null &&
+              Number(message.durable_seq) !== proof.durableSeq) ||
+            (message.adopted_seq !== null &&
+              Number(message.adopted_seq) !== proof.adoptedSeq)
+          )
+            fail('conflict');
+          await tx`update allrice_assistant_messages set durable_seq=${proof.durableSeq},adopted_seq=${proof.adoptedSeq ?? null},status=${proof.adoptedSeq === undefined ? 'durable' : 'adopted'} where input_id=${proof.inputId}`;
+        }
+        return { recovered: checkpoints.length, replay: false as const };
       });
     },
   };

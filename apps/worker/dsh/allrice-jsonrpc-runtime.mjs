@@ -1473,7 +1473,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       const action = method.slice('allrice/assistant/'.length);
       if (
         !this.governedAssistants ||
-        !['bind', 'drain', 'flush', 'join'].includes(action)
+        !['bind', 'drain', 'flush', 'join', 'inspect'].includes(action)
       )
         throw Error('assistant_runtime_disabled');
       return this.governedAssistants[action](params);

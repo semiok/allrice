@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
   modelProviderRuntimeSupported,
@@ -679,6 +680,10 @@ export async function executeEmployeeRun({
       runLimits,
       tools,
       authorize: assertAssistantAuthority,
+      storage: new LocalStorageAdapter(
+        process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      ),
+      signal,
     });
     if (assistants && (adapter.kind !== 'dsh' || selectedWorkflow)) {
       throw new HandlerError(

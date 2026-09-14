@@ -23,7 +23,13 @@ export interface AssistantWorkerBridgeOptions {
   worker: AssistantWorkerLease;
   wireNames: Readonly<Record<string, string>>;
   readOnlyTools: ReadonlySet<string>;
+  supportedChildTools?: ReadonlySet<string>;
   proposalTools?: ReadonlySet<string>;
+  onPublishOutput?: (input: {
+    childRunId: string;
+    deliveryId: string;
+    output: { name: string; content: string };
+  }) => Promise<{ artifactId: string; digest: string; relativePath: string }>;
   onRootTool?: (call: HarnessToolCall) => Promise<HarnessToolResult>;
   onReadTool?: (
     call: HarnessToolCall,
@@ -239,13 +245,19 @@ export function createAssistantWorkerBridge(
     });
     try {
       if (method === 'delegate') {
+        const selectedTools = tools.parse(args.tools);
+        if (
+          options.supportedChildTools &&
+          selectedTools.some((tool) => !options.supportedChildTools!.has(tool))
+        )
+          throw Error('assistant_child_tool_not_supported');
         const { instance: child } = await runtime.provision({
           ...base,
           parentRunId: instance.runId,
           delegationId: callUuid,
           label: z.string().min(1).max(120).parse(args.label),
           text: text.parse(args.text),
-          tools: tools.parse(args.tools),
+          tools: selectedTools,
         });
         const dispatch = await messageDispatch(callUuid);
         return { ...dispatch, instance: child };
@@ -267,20 +279,63 @@ export function createAssistantWorkerBridge(
         return messageDispatch(callUuid);
       }
       if (method === 'report') {
+        const { output, ...report } = args;
         const result = AssistantResultSchema.parse({
-          ...args,
+          ...report,
           deliveryId: callUuid,
-          usageComplete: snapshot.budgets.every((b) => b.usageComplete),
+          usageComplete: false, // The database derives this from this child's settled calls.
+        });
+        if (output !== undefined) {
+          if (!options.onPublishOutput)
+            throw Error('assistant_output_unavailable');
+          const published = await options.onPublishOutput({
+            childRunId: instance.runId,
+            deliveryId: callUuid,
+            output: z
+              .object({
+                name: z.string().min(1).max(80),
+                content: z.string().min(1).max(131072),
+              })
+              .strict()
+              .parse(output),
+          });
+          await runtime.registerArtifact({
+            ...base,
+            runId: instance.runId,
+            artifactId: published.artifactId,
+            digest: published.digest,
+            relativePath: published.relativePath,
+          });
+          result.evidence.push({
+            id: published.artifactId,
+            digest: published.digest,
+          });
+        }
+        // This bounded coordination call is already known to have happened;
+        // settle it before the database derives the child's truthful usage state.
+        await runtime.settleUsage({
+          ...base,
+          runId: instance.runId,
+          callId: meteringId,
+          amounts: {
+            tool_calls: 1,
+            model_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+          },
         });
         const recorded = await runtime.recordResult({
           ...base,
           runId: instance.runId,
           result,
         });
+        const delivery = await runtime.resultDelivery({
+          ...base,
+          runId: instance.runId,
+        });
         return {
-          ...result,
-          status: recorded.status,
-          wakeParent: recorded.wakeParent,
+          ...delivery.result,
+          wakeParent: recorded.wakeParent && delivery.wakeParent,
         };
       }
       if (method === 'stop') {

@@ -48,7 +48,7 @@ describe('AllRice restricted DSH profile', () => {
     expect(profile).toContain('thresholdChars: 8192');
   });
 
-  it('keeps P24 native delegation probes out of the production profile and runtime entrypoint', async () => {
+  it('pins governed P25 services while keeping native delegation absent from the default profile', async () => {
     const pkg = JSON.parse(
       await readFile(
         resolve(import.meta.dirname, '../../package.json'),
@@ -63,8 +63,8 @@ describe('AllRice restricted DSH profile', () => {
       '@deepseek-ai/dsh-subagent-spawn-in-process',
       '@deepseek-ai/dsh-user-approval',
     ]) {
-      expect(pkg.dependencies[name]).toBeUndefined();
-      expect(pkg.devDependencies[name]).toBe('0.1.1-rc.2');
+      expect(pkg.dependencies[name]).toBe('0.1.1-rc.2');
+      expect(pkg.devDependencies[name]).toBeUndefined();
     }
     const production = await readFile(
       resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
@@ -73,5 +73,15 @@ describe('AllRice restricted DSH profile', () => {
     expect(production).not.toContain('p24_proposal');
     expect(production).not.toContain('poc.cordis.yml');
     expect(production).not.toContain('startContinuable');
+    expect(production).toContain(
+      "if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')",
+    );
+    expect(production).toContain("policy: 'never'");
+    const profile = await readFile(
+      resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
+      'utf8',
+    );
+    expect(profile).not.toContain('dsh-subagent');
+    expect(profile).not.toContain('dsh-user-approval');
   });
 });

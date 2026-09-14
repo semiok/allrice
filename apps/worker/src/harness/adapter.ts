@@ -42,6 +42,7 @@ export interface HarnessExecutionInput {
       nativeSessionId: string,
       generation: number,
       onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>,
+      inspect?: (nativeSessionId: string) => Promise<Record<string, unknown>>,
     ): Promise<{
       handle(
         method: string,
@@ -52,6 +53,7 @@ export interface HarnessExecutionInput {
         instances: readonly { nativeSessionId: string }[];
       }>;
       cancel(): Promise<void>;
+      finish?(): Promise<unknown>;
     }>;
   };
   kernel: EmployeeKernelRequest;

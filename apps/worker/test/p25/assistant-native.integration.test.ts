@@ -6,6 +6,7 @@ import {
   createAssistantFixtureDatabase,
 } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
+import { assistantNativeCheckpointEvidence } from '../../src/harness/dsh/assistant-recovery.js';
 import { p24Fixture, gate } from '../p24/fixture.js';
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -271,6 +272,96 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
     } finally {
       holdA.release();
       holdB.release();
+      await native.close();
+    }
+  }, 60000);
+  it('SIGKILL cold recovery reads actual JSONL and adopts only known receipts without replaying uncertain work', async () => {
+    const f = await assistantFixture(database.db),
+      hold = gate();
+    const bridge = createAssistantWorkerBridge({
+      runtime: f.runtime,
+      task: f.task,
+      context: f.context,
+      worker: f.worker,
+      wireNames: { read: 'p24_proposal' },
+      readOnlyTools: new Set(),
+    });
+    const native = await p24Fixture(
+      async () => {
+        await hold.promise;
+        return { text: 'Late uncertain model response' };
+      },
+      undefined,
+      200,
+      {
+        p25: true,
+        callback: async (method, params) => {
+          // Simulate the durable checkpoint response being lost after native flush;
+          // the accepted native MessageId remains known to the platform.
+          if (method === 'checkpoint')
+            return bridge.handle(method, {
+              nativeSessionId: params.nativeSessionId,
+              inputId: params.inputId,
+              nativeMessageId: params.nativeMessageId,
+            });
+          return bridge.handle(method, params);
+        },
+      },
+    );
+    const client = native.launch();
+    try {
+      await client.call('ready');
+      await client.call('create', { id: f.nativeSessionId });
+      await client.call('p25/bind', { nativeSessionId: f.nativeSessionId });
+      const delegationId = randomUUID(),
+        child = (await f.delegate({ delegationId })).instance;
+      await client.call(
+        'p25/start',
+        await bridge.messageDispatch(delegationId),
+      );
+      await expect.poll(() => native.requests.length).toBe(1);
+      expect((await bridge.tree()).messages[0]?.status).toBe('accepted');
+      await client.crash();
+      const leaseToken = randomUUID(),
+        replacement = { ...f.worker, leaseToken };
+      await database.db`update allrice_jobs set lease_token=${leaseToken} where id=${f.worker.jobId}`;
+      await f.runtime.quarantineExpired({
+        scope: f.task.scope,
+        rootRunId: f.task.runId,
+      });
+      const cold = native.launch();
+      await cold.call('ready');
+      const inspection = await cold.call('p25/inspect', {
+        nativeSessionId: child.nativeSessionId,
+      });
+      const tree = await bridge.tree(),
+        checkpoints = assistantNativeCheckpointEvidence(
+          inspection,
+          tree.messages,
+        );
+      expect(checkpoints[0]?.adoptedSeq).toBeTypeOf('number');
+      expect(
+        await f.runtime.recoverNativeEvidence(f.context, {
+          rootRunId: f.task.runId,
+          nativeSessionId: child.nativeSessionId,
+          worker: replacement,
+          checkpoints,
+        }),
+      ).toMatchObject({ replay: false, recovered: 1 });
+      expect((await bridge.tree()).messages[0]?.status).toBe('adopted');
+      expect(
+        (await bridge.tree()).instances.every((i) => i.status === 'unknown'),
+      ).toBe(true);
+      expect(native.requests).toHaveLength(1);
+      expect(
+        (await bridge.tree()).budgets.find((b) => b.metric === 'model_calls')!
+          .reserved,
+      ).toBe(1);
+      await expect(f.delegate({ worker: replacement })).rejects.toThrow(
+        'lease_lost',
+      );
+    } finally {
+      hold.release();
       await native.close();
     }
   }, 60000);
