@@ -1,0 +1,7 @@
+# Probe-only native host. No Agent, LLM router, session, tool or login workflow.
+# The caller uses Node's permission model to deny ALL filesystem writes.
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+  config:
+    path: !!js process.env.DSH_CREDENTIALS_PATH
+    watch: false

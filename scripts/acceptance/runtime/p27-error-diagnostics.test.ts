@@ -41,6 +41,20 @@ describe('P27 bounded safe error diagnostics (no provider)', () => {
     'keeps the exact source-defined Worker check %s',
     (code) => expect(first(new Error(code)).code).toBe(code),
   );
+  it.each([
+    'p27_codex_worker_one_execution_authorization_required',
+    'p27_codex_worker_actual_route_ledger',
+    'p27_worker_exact_one_execution',
+    'P27_CODEX_WORKER_CLEANUP_UNCONFIRMED',
+  ])('retains exact ordinary Codex diagnostic %s', (code) => {
+    expect(first(new Error(code)).code).toBe(code);
+  });
+  it.each([
+    'p27_codex_worker_private_secret',
+    'P27_CODEX_WORKER_PRIVATE_SECRET',
+  ])('still rejects untrusted Codex-prefixed code %s', (code) =>
+    expect(first(Object.assign(new Error(code), { code })).code).toBeNull(),
+  );
   it('keeps fixture failure metadata but never its private cleanup payload', () => {
     class P27WorkerFixtureError extends Error {
       readonly code = 'P27_WORKER_CLEANUP_UNCONFIRMED';
