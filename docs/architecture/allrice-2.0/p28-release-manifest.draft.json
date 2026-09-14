@@ -1,0 +1,64 @@
+{
+  "schema": "allrice-p28-release/v1",
+  "releaseId": "B6-DRAFT-NOT-A-RELEASE",
+  "sourceSha": null,
+  "baselineSha": "57f3b5fd2acba034e9011231075c3e29b4503733",
+  "createdAt": "2026-09-14T00:00:00.000Z",
+  "artifacts": [],
+  "flags": {
+    "ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED": false,
+    "ALLRICE_RUNTIME_POLICY_ENABLED": false,
+    "ALLRICE_LOCAL_COMMAND_ENABLED": false,
+    "ALLRICE_CHANGESET_ENABLED": false,
+    "ALLRICE_LOCAL_SERVICE_ENABLED": false,
+    "ALLRICE_BRIDGE_WSS_ENABLED": false,
+    "ALLRICE_CLOUD_RUNNER_ENABLED": false,
+    "ALLRICE_CLOUD_MCP_ENABLED": false,
+    "ALLRICE_LOCAL_MCP_ENABLED": false,
+    "ALLRICE_EXPERIENCE_REVIEW_ENABLED": false,
+    "ALLRICE_BROWSER_CONTROL_ENABLED": false,
+    "ALLRICE_LOCAL_BROWSER_ENABLED": false,
+    "ALLRICE_LOCAL_PREVIEW_ENABLED": false,
+    "ALLRICE_ASSISTANTS_ENABLED": false
+  },
+  "signedClientRequired": true,
+  "clientPublisher": {
+    "teamId": null,
+    "bundleId": null,
+    "updateKeySha256": null
+  },
+  "migrations": {
+    "changes": [],
+    "contractDeferred": true,
+    "backfillPolicy": "idempotent-bounded-resumable-separate-approval"
+  },
+  "rollback": {
+    "mode": "forward-fix-only",
+    "reason": "No B6-compatible rollback target has been demonstrated. Distributed credential/journal formats must remain readable; B5 is history, not an automatically safe downgrade.",
+    "targetSourceSha": null,
+    "targetReleaseId": null,
+    "targetArtifacts": [],
+    "database": "no-down-migration",
+    "credentials": "current-or-newer-reader-no-repair",
+    "drain": "reconcile-unknown-never-blind-replay",
+    "preserve": ["sessions", "pairings", "workspace-grants", "journal-outbox", "credential-records", "memory-skill", "runtime-ledger", "artifacts"],
+    "backup": "separate-authorization-required-not-taken-by-validator"
+  },
+  "evidence": [],
+  "blockers": [
+    {"id": "final-source-builds", "reason": "Final B6 source SHA, clean archive, Web BUILD_ID, Worker build and exact arm64/x64 packages are not fixed by this preparation slice.", "owner": "P27 integration owner"},
+    {"id": "publisher-and-devices", "reason": "Developer ID, notarization and authenticated update identity plus actual arm64/x64 package lifecycle evidence must be supplied; no certificates or credentials are discovered by this validator.", "owner": "P14 / release owner"},
+    {"id": "migration-inventory", "reason": "P25 reserves 0093_assistant_runtime.sql; final content and every B6-added migration must be enumerated and reviewed after integration. Empty changes is not a no-migration claim.", "owner": "P25 / P27 integration owner"},
+    {"id": "joint-evidence", "reason": "No final-candidate P27 four-line, client, compatibility, governance, migration/recovery or Dev evidence is included here.", "owner": "P27 integration owner"},
+    {"id": "release-authority", "reason": "Preparation neither records a new Dev/tenant/Prod approval nor executes deployment, flags, migrations or backups.", "owner": "release owner"}
+  ],
+  "unsupported": [
+    {"scope": "Boost/Teamwork/Handoff/development-collaboration", "reason": "S8 enhancements; not supplied by basic assistants and not silently enabled.", "followup": "execution-master S8 / MET-108 E-F-G"},
+    {"scope": "arbitrary-PTY-host-shell-and-host-ports", "reason": "No arbitrary host execution or public tunnel is authorized.", "followup": "MET-106 separate scoped design"},
+    {"scope": "preview-WebSocket-HMR", "reason": "B5 P23 does not claim WebSocket/HMR compatibility.", "followup": "P23 limitation; separate scoped follow-up"},
+    {"scope": "arbitrary-third-party-sites-and-MCP-servers", "reason": "Representative controlled cases are not universal compatibility evidence.", "followup": "per-integration acceptance"},
+    {"scope": "automatic-destructive-database-downgrade", "reason": "No down migration or restoration over live production data is an application rollback.", "followup": "separately authorized recovery incident plan"},
+    {"scope": "evidence-authenticity-from-hashes-alone", "reason": "A checksum detects changed bytes relative to an independently trusted pin, not whether tests happened or who approved.", "followup": "P27 original-observation and provenance review"}
+  ],
+  "authorizations": {"dev": null, "tenant": null, "prod": null}
+}
