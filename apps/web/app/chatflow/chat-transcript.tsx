@@ -2,6 +2,7 @@
 
 import { useState, type RefObject } from 'react';
 import type { WorkbenchArtifact } from '@allrice/contracts';
+import type { AssistantTreeView } from '@allrice/database';
 
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
@@ -28,11 +29,14 @@ import { LocalCommandPanel } from './local-command-panel';
 import { LocalMcpPanel } from './local-mcp-panel';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
+import { AssistantRunPanel } from './assistant-run-panel';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
+  assistantTrees?: Record<string, AssistantTreeView>;
+  onAssistantChanged?: () => void;
   messages: Message[];
   recoverableRunView?: RunView;
   runTraces: Record<string, RunTrace>;
@@ -51,6 +55,8 @@ export function ChatTranscript({
   atBottom,
   localCommandsEnabled = false,
   localMcpEnabled = false,
+  assistantTrees = {},
+  onAssistantChanged,
   messages,
   recoverableRunView,
   runTraces,
@@ -76,7 +82,8 @@ export function ChatTranscript({
               (message) =>
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
-                message.content.text.length > 0,
+                message.content.text.length > 0 ||
+                !!(message.runId && assistantTrees[message.runId]),
             )
             .map((message) => {
               const messageRun = message.runId
@@ -239,6 +246,19 @@ export function ChatTranscript({
                           runId={message.runId}
                           tenantHeaders={tenantHeaders}
                           workspaceId={workspaceId}
+                        />
+                      ) : null}
+                      {message.runId &&
+                      assistantTrees[message.runId] &&
+                      onAssistantChanged &&
+                      onOpenArtifact ? (
+                        <AssistantRunPanel
+                          key={`${workspaceId}/${message.runId}`}
+                          tree={assistantTrees[message.runId]!}
+                          workspaceId={workspaceId}
+                          headers={tenantHeaders}
+                          onArtifact={onOpenArtifact}
+                          onChanged={onAssistantChanged}
                         />
                       ) : null}
                       {message.runId &&

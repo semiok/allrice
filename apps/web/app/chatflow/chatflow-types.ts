@@ -31,6 +31,7 @@ export interface EmployeeVersion {
       model?: string;
     };
     provider?: { provider: string };
+    capabilityBindings?: { toolNames: string[] };
   };
 }
 

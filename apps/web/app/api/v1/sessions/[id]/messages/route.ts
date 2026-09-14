@@ -3,6 +3,7 @@ import {
   sendChatMessage,
   ArtifactReviewError,
   QueueError,
+  AssistantRuntimeError,
 } from '@allrice/database';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 
@@ -51,6 +52,17 @@ export async function POST(
       headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
+    if (error instanceof AssistantRuntimeError)
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message:
+              '当前任务未获准使用助手。请关闭助手选项，或联系管理员检查员工权限。',
+          },
+        },
+        { status: 403, headers: { 'Cache-Control': 'private, no-store' } },
+      );
     if (error instanceof ArtifactReviewError || error instanceof QueueError) {
       const messages: Record<string, string> = {
         input_turn_changed:

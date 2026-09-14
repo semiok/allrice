@@ -1,6 +1,6 @@
 'use client';
 
-import type { MutableRefObject, RefObject } from 'react';
+import type { MutableRefObject, RefObject, ReactNode } from 'react';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 
@@ -17,6 +17,7 @@ import styles from './dsh-saas.module.css';
 interface ChatComposerProps {
   attachmentMenuOpen: boolean;
   busy: boolean;
+  assistantModeControl?: ReactNode;
   composerInput: RefObject<HTMLTextAreaElement | null>;
   composing: MutableRefObject<boolean>;
   draft: string;
@@ -50,6 +51,7 @@ interface ChatComposerProps {
 export function ChatComposer({
   attachmentMenuOpen,
   busy,
+  assistantModeControl,
   composerInput,
   composing,
   draft,
@@ -88,6 +90,7 @@ export function ChatComposer({
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
       {error ? <div className={inputUi.notice}>{error}</div> : null}
       <div className={inputUi.card}>
+        {assistantModeControl}
         {isRunning && onInputModeChange ? (
           <label className={inputUi.notice}>
             发送方式：

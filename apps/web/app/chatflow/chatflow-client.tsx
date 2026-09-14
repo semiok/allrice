@@ -15,6 +15,8 @@ import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
 
 import { ChatComposer } from './chat-composer';
+import { AssistantModeControl } from './assistant-mode-control';
+import { useAssistantSession } from './use-assistant-session';
 import {
   useInteractionStatus,
   InteractionStatusPanel,
@@ -55,13 +57,16 @@ export function ChatFlowClient({
   localCommandsEnabled = false,
   localMcpEnabled = false,
   experienceEnabled = false,
+  assistantsEnabled = false,
 }: {
   workbenchEnabled?: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
   experienceEnabled?: boolean;
+  assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [allowAssistants, setAllowAssistants] = useState(true);
   const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
     'follow_up',
   );
@@ -298,6 +303,18 @@ export function ChatFlowClient({
     workspace?.workspaceId,
     tenantHeaders,
   );
+  const assistants = useAssistantSession({
+    enabled: workbenchEnabled,
+    sessionId: activeId,
+    workspaceId: workspace?.workspaceId,
+    headers: tenantHeaders,
+    runRevision: Object.values(runViews)
+      .map((view) => `${view.runId}:${view.status}`)
+      .join(','),
+    hasRunningRun: Object.values(runViews).some(
+      (view) => view.status === 'running' || view.status === 'connecting',
+    ),
+  });
   useEffect(() => setInputMode('follow_up'), [activeId]);
   useEffect(() => {
     const hash = window.location.hash.slice(1);
@@ -359,6 +376,9 @@ export function ChatFlowClient({
         text,
         attachmentIds: messageAttachments.map((item) => item.id),
         deliveryMode: mode,
+        ...(assistantsEnabled && mode === 'follow_up' && assistantEligible
+          ? { assistantPreference: { mode: 'daily', allowAssistants } }
+          : {}),
         ...(mode === 'steer'
           ? {
               expectedTurnId: current!.turnId,
@@ -544,6 +564,11 @@ export function ChatFlowClient({
   const activeEmployeeProfile = workspace.employeeProfiles.find(
     (profile) => profile.assignmentId === activeEmployee?.id,
   );
+  const assistantEligible =
+    assistantsEnabled &&
+    activeEmployee?.currentVersion.manifest.capabilityBindings?.toolNames.includes(
+      'assistant.delegate',
+    ) === true;
   const isRunning = Object.values(runViews).some(
     (view) => view.status === 'running' || view.status === 'connecting',
   );
@@ -574,6 +599,18 @@ export function ChatFlowClient({
     <ChatComposer
       attachmentMenuOpen={attachmentMenuOpen}
       busy={busy}
+      assistantModeControl={
+        assistantsEnabled && workbenchEnabled ? (
+          <AssistantModeControl
+            allowAssistants={allowAssistants}
+            eligible={assistantEligible}
+            busy={busy}
+            isRunning={isRunning}
+            steering={isRunning && inputMode === 'steer'}
+            onChange={setAllowAssistants}
+          />
+        ) : undefined
+      }
       composerInput={composerInput}
       composing={composing}
       draft={draft}
@@ -784,10 +821,28 @@ export function ChatFlowClient({
                     }}
                   />
                 ) : null}
+                {workbenchEnabled && assistants.error ? (
+                  <p role="status">
+                    {assistants.error}{' '}
+                    <button type="button" onClick={assistants.reload}>
+                      重试助手记录
+                    </button>
+                  </p>
+                ) : null}
+                {workbenchEnabled && assistants.hasMore ? (
+                  <button
+                    type="button"
+                    onClick={() => void assistants.loadMore()}
+                  >
+                    加载更早的助手任务记录
+                  </button>
+                ) : null}
                 <ChatTranscript
                   atBottom={atTranscriptBottom}
                   localCommandsEnabled={localCommandsEnabled}
                   localMcpEnabled={localMcpEnabled}
+                  assistantTrees={assistants.trees}
+                  onAssistantChanged={assistants.reload}
                   messages={history?.messages ?? []}
                   onLoadRunTrace={loadRunTrace}
                   onRecoverRun={recoverRun}
