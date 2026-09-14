@@ -14,7 +14,7 @@ export interface ModelReply {
   text?: string;
   tool?: { marker: string };
   nativeTool?: { name: string; arguments: Record<string, unknown> };
-  usage?: Record<string, unknown>;
+  usage?: Record<string, unknown> | null;
 }
 export interface NativeSnapshot {
   live: boolean;
@@ -114,11 +114,15 @@ export async function p24Fixture(
                 result.tool || result.nativeTool ? 'tool_calls' : 'stop',
             },
           ],
-          usage: result.usage ?? {
-            prompt_tokens: 20,
-            completion_tokens: 5,
-            total_tokens: 25,
-          },
+          ...(result.usage === null
+            ? {}
+            : {
+                usage: result.usage ?? {
+                  prompt_tokens: 20,
+                  completion_tokens: 5,
+                  total_tokens: 25,
+                },
+              }),
         },
       ])
         res.write(`data: ${JSON.stringify(data)}\n\n`);

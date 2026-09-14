@@ -66,6 +66,12 @@ create table allrice_assistant_usage (
   metric text not null,
   amount bigint not null check (amount >= 0),
   settled_amount bigint check (settled_amount >= 0),
+  native_call_id text check (length(native_call_id) between 1 and 240),
+  tool_name text,
+  arguments_digest text check (arguments_digest ~ '^sha256:[0-9a-f]{64}$'),
+  result_digest text check (result_digest ~ '^sha256:[0-9a-f]{64}$'),
+  check ((native_call_id is null) = (arguments_digest is null)),
+  check (native_call_id is null or tool_name is not null),
   created_at timestamptz not null default now(),
   primary key (call_id, metric),
   foreign key (root_run_id, metric) references allrice_runtime_budgets(root_run_id, metric)

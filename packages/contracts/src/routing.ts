@@ -117,10 +117,13 @@ export const RouteOutcomeSchema = z
     inputTokens: z.number().int().nonnegative(),
     cachedInputTokens: z.number().int().nonnegative(),
     outputTokens: z.number().int().nonnegative(),
-    costCents: z.number().nonnegative(),
+    // null means no authoritative estimate, not a zero-cost execution.
+    costCents: z.number().nonnegative().nullable(),
+    cacheUsageKnown: z.boolean().default(true),
+    usageComplete: z.boolean().default(true),
     errorCode: z.string().trim().min(1).max(160).nullable(),
     failureCategory: ProviderFailureCategorySchema.nullable().default(null),
     completedAt: TimestampSchema,
   })
   .strict();
-export type RouteOutcome = z.infer<typeof RouteOutcomeSchema>;
+export type RouteOutcome = z.input<typeof RouteOutcomeSchema>;

@@ -5,6 +5,7 @@ import {
   createAssistantFixtureDatabase,
 } from './assistant-runtime.fixture.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -360,6 +361,78 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
     ).toBe(true);
     expect(
       tree.messages.every((message) => message.status === 'canceled'),
+    ).toBe(true);
+  });
+  it('binds a real child tool audit to immutable native call, arguments and returned result digests', async () => {
+    const f = await assistantFixture(fixture.db),
+      child = (await f.delegate()).instance;
+    const call = {
+      ...f.base,
+      runId: child.runId,
+      callId: randomUUID(),
+      kind: 'tool' as const,
+      tool: 'read',
+      nativeCall: {
+        id: 'native-call-1',
+        argumentsDigest: runtimePolicyDigest({
+          query: 'synthetic bounded query',
+        }),
+      },
+      amounts: {
+        tool_calls: 1,
+        model_calls: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    };
+    await f.runtime.reserveUsage(call);
+    await expect(
+      f.runtime.reserveUsage({
+        ...call,
+        nativeCall: { ...call.nativeCall, id: 'different-call' },
+      }),
+    ).rejects.toThrow('conflict');
+    await expect(
+      f.runtime.reserveUsage({
+        ...call,
+        nativeCall: {
+          ...call.nativeCall,
+          argumentsDigest: runtimePolicyDigest({ query: 'changed' }),
+        },
+      }),
+    ).rejects.toThrow('conflict');
+    const resultDigest = runtimePolicyDigest({
+      modelContent: 'synthetic returned value',
+      summary: 'one result',
+    });
+    await f.runtime.settleUsage({
+      ...f.base,
+      runId: child.runId,
+      callId: call.callId,
+      amounts: call.amounts,
+      resultDigest,
+    });
+    await expect(
+      f.runtime.settleUsage({
+        ...f.base,
+        runId: child.runId,
+        callId: call.callId,
+        amounts: call.amounts,
+        resultDigest: runtimePolicyDigest('changed'),
+      }),
+    ).rejects.toThrow('conflict');
+    const rows =
+      await fixture.db`select run_id,tool_name,native_call_id,arguments_digest,result_digest from allrice_assistant_usage where call_id=${call.callId}`;
+    expect(rows).toHaveLength(4);
+    expect(
+      rows.every(
+        (row) =>
+          row.run_id === child.runId &&
+          row.tool_name === 'read' &&
+          row.native_call_id === 'native-call-1' &&
+          row.arguments_digest === call.nativeCall.argumentsDigest &&
+          row.result_digest === resultDigest,
+      ),
     ).toBe(true);
   });
   it('derives delivery usage inside the child ledger, never from a sibling or caller flag', async () => {

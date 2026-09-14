@@ -122,6 +122,13 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
         tree.budgets.find((b) => b.metric === 'model_calls')!.spent,
       ).toBeGreaterThanOrEqual(4);
       expect(tree.results.every((r) => r.status === 'partial')).toBe(true);
+      // A later business Run can bind the same persistent root Session without
+      // carrying a prior Run's native authority maps or child wakeups forward.
+      await client.call('p25/join', { nativeSessionId: f.nativeSessionId });
+      await client.call('p25/finish', { nativeSessionId: f.nativeSessionId });
+      await expect(
+        client.call('p25/bind', { nativeSessionId: f.nativeSessionId }),
+      ).resolves.toMatchObject({ bound: true });
       for (const child of children) {
         const proof = await client.call<{
           events: { type: string; data: { policy?: string } }[];

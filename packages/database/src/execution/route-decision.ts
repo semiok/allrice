@@ -65,9 +65,11 @@ function mapDecision(row: RouteDecisionRow) {
   });
 }
 
-export async function recordRouteDecision(input: RouteDecision) {
+export async function recordRouteDecision(
+  input: RouteDecision,
+  sql = getDatabase(),
+) {
   const decision = RouteDecisionSchema.parse(input);
-  const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const inserted = await transaction<{ id: string }[]>`
       insert into allrice_route_decisions (
@@ -131,22 +133,34 @@ export async function recordRouteDecision(input: RouteDecision) {
   });
 }
 
-export async function completeRouteDecision(input: {
-  organizationId: string;
-  workspaceId: string;
-  outcome: RouteOutcome;
-}) {
+export async function completeRouteDecision(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    outcome: RouteOutcome;
+  },
+  sql = getDatabase(),
+) {
   const outcome = RouteOutcomeSchema.parse(input.outcome);
-  const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const decisions = await transaction<
       {
         id: string;
         model_connection_id: string | null;
         model_catalog_entry_id: string | null;
+        status: string;
+        input_tokens: number;
+        cached_input_tokens: number;
+        output_tokens: number;
+        cost_cents: string | number | null;
+        usage_complete: boolean;
+        cache_usage_known: boolean;
+        completed_at: Date | null;
       }[]
     >`
-      select id, model_connection_id, model_catalog_entry_id
+      select id, model_connection_id, model_catalog_entry_id, status,
+        input_tokens, cached_input_tokens, output_tokens, cost_cents,
+        usage_complete, cache_usage_known, completed_at
       from allrice_route_decisions
       where id = ${outcome.decisionId}
         and organization_id = ${input.organizationId}
@@ -155,13 +169,34 @@ export async function completeRouteDecision(input: {
     `;
     const decision = decisions[0];
     if (!decision) throw new Error('route decision outcome was not accepted');
+    // An ordinary late/legacy writer cannot reconcile unknown accounting, lower
+    // confirmed usage, or move the accounting month. Reconciliation needs its
+    // own evidence/authority flow; this port only accepts replay or conservative
+    // degradation of a completed receipt.
+    if (
+      decision.status !== 'pending' &&
+      (decision.status !== outcome.status ||
+        outcome.inputTokens < decision.input_tokens ||
+        outcome.cachedInputTokens < decision.cached_input_tokens ||
+        outcome.outputTokens < decision.output_tokens ||
+        (!decision.usage_complete && outcome.usageComplete) ||
+        (!decision.cache_usage_known && outcome.cacheUsageKnown) ||
+        (decision.cost_cents === null && outcome.costCents !== null) ||
+        (decision.cost_cents !== null &&
+          outcome.costCents !== null &&
+          outcome.costCents < Number(decision.cost_cents)))
+    )
+      throw new Error('route decision outcome conflict');
+    const completedAt = decision.completed_at ?? new Date(outcome.completedAt);
     const rows = await transaction<{ id: string }[]>`
       update allrice_route_decisions set
         status = ${outcome.status}, input_tokens = ${outcome.inputTokens},
         cached_input_tokens = ${outcome.cachedInputTokens},
         output_tokens = ${outcome.outputTokens}, cost_cents = ${outcome.costCents},
+        cache_usage_known = ${outcome.cacheUsageKnown},
+        usage_complete = ${outcome.usageComplete},
         error_code = ${outcome.errorCode},
-        completed_at = ${new Date(outcome.completedAt)}
+        completed_at = ${completedAt}
       where id = ${outcome.decisionId}
         and organization_id = ${input.organizationId}
         and workspace_id = ${input.workspaceId}
@@ -173,19 +208,22 @@ export async function completeRouteDecision(input: {
       insert into allrice_model_usage_ledger (
         id, organization_id, workspace_id, route_decision_id, connection_id,
         model_catalog_entry_id, status, input_tokens, cached_input_tokens,
-        output_tokens, cost_cents, occurred_at
+        output_tokens, cost_cents, cache_usage_known, usage_complete, occurred_at
       ) values (
         ${randomUUID()}, ${input.organizationId}, ${input.workspaceId},
         ${decision.id}, ${decision.model_connection_id},
         ${decision.model_catalog_entry_id}, ${outcome.status},
         ${outcome.inputTokens}, ${outcome.cachedInputTokens},
         ${outcome.outputTokens}, ${outcome.costCents},
-        ${new Date(outcome.completedAt)}
+        ${outcome.cacheUsageKnown}, ${outcome.usageComplete},
+        ${completedAt}
       ) on conflict (route_decision_id) do update set
         status = excluded.status, input_tokens = excluded.input_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
         output_tokens = excluded.output_tokens,
         cost_cents = excluded.cost_cents,
+        cache_usage_known = excluded.cache_usage_known,
+        usage_complete = excluded.usage_complete,
         occurred_at = excluded.occurred_at
     `;
     if (!decision.model_connection_id) return;

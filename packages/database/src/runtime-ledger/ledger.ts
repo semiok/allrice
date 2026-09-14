@@ -338,6 +338,47 @@ async function cancelOperationRows(
       };
       await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
         values(${randomUUID()},${row.id},${json(tx, payload)},'applied')`;
+      if (row.snapshot.agentInstanceId !== null) {
+        // The scheduling lock and absence of any issued lease prove that this
+        // mapped assistant operation consumed no execution budget. This is not
+        // a rule for dispatched/uncertain work or for legacy operation meters.
+        const reservations = await tx<
+          {
+            metric: string;
+            accounting_id: string;
+            amount: string;
+            unit: RuntimeUsageObservation['unit'];
+            currency: string | null;
+            source: RuntimeUsageObservation['source'];
+          }[]
+        >`select r.metric,r.accounting_id,r.amount,b.unit,b.currency,b.source from allrice_runtime_reservations r join allrice_runtime_budgets b using(root_run_id,metric) where r.operation_id=${row.id} and r.settled_amount is null for update of r`;
+        for (const reservation of reservations) {
+          const at = (await now(tx)).toISOString();
+          const observation = RuntimeUsageObservationSchema.parse({
+            contractVersion: 1,
+            observationId: randomUUID(),
+            accountingId: reservation.accounting_id,
+            task: row.snapshot.binding.task,
+            source: reservation.source,
+            accountingBoundary: {
+              kind: 'operation',
+              attempt: row.snapshot.binding.attempt,
+            },
+            aggregation: 'self_only',
+            metric: reservation.metric,
+            unit: reservation.unit,
+            currency: reservation.currency,
+            mode: 'cumulative',
+            quality: 'measured',
+            amount: 0,
+            state: 'settled',
+            window: { id: randomUUID(), startedAt: at, endedAt: at },
+            observedAt: at,
+          });
+          await tx`update allrice_runtime_reservations set settled_amount=0,observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${reservation.metric}`;
+          await tx`update allrice_runtime_budgets set reserved=reserved-${reservation.amount}::bigint where root_run_id=${row.root_run_id} and metric=${reservation.metric}`;
+        }
+      }
     }
   }
   return { requestId: acceptedId, operations: rows.map((row) => row.snapshot) };

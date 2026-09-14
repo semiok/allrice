@@ -6,6 +6,7 @@ import {
   type RuntimeTaskRef,
 } from '@allrice/contracts';
 import type { AssistantRuntime, AssistantWorkerLease } from '@allrice/database';
+import { runtimePolicyDigest } from '@allrice/database';
 import type { HarnessToolCall, HarnessToolResult } from '../adapter.js';
 
 /** UUID derived from native call identity, stable across transport duplicates. */
@@ -201,6 +202,10 @@ export function createAssistantWorkerBridge(
         runId: instance.runId,
         kind: 'tool',
         tool: name,
+        nativeCall: {
+          id: callId,
+          argumentsDigest: runtimePolicyDigest(parameters),
+        },
         ...(isProposal ? { proposal: true } : {}),
         callId: callUuid,
         amounts: {
@@ -218,6 +223,8 @@ export function createAssistantWorkerBridge(
       await runtime.settleUsage({
         ...base,
         callId: callUuid,
+        runId: instance.runId,
+        resultDigest: runtimePolicyDigest(result),
         amounts: {
           tool_calls: 1,
           model_calls: 0,
@@ -381,6 +388,9 @@ export function createAssistantWorkerBridge(
     tree,
     messageDispatch,
     async cancellation() {
+      // Admission-only checks cannot stop a provider stream after its grant is
+      // revoked. Failure makes the adapter close only this already-owned host.
+      await runtime.assertCurrentAuthority(base);
       const snapshot = await tree();
       return {
         nativeSessionId: snapshot.instances.find((i) => i.parentRunId === null)

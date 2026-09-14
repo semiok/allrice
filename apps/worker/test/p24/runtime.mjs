@@ -105,9 +105,16 @@ async function request(method, p) {
   if (method.startsWith('p25/') && governed) {
     const action = method.slice(4);
     if (
-      !['bind', 'start', 'followup', 'drain', 'inspect', 'flush'].includes(
-        action,
-      )
+      ![
+        'bind',
+        'start',
+        'followup',
+        'drain',
+        'inspect',
+        'flush',
+        'join',
+        'finish',
+      ].includes(action)
     )
       throw Error('unsupported governed method');
     return governed[action](p);
