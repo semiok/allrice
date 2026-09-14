@@ -1,6 +1,6 @@
 /** Isolated synthetic fixture; never imported by a production entrypoint. */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, readdir, mkdtemp, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalStorageAdapter } from '../../storage/src/index.ts';
@@ -15,19 +15,120 @@ import { createAssistantRuntime } from './assistant-runtime.ts';
 import { employeeManifest } from './employees/employee-config.ts';
 const stores = new WeakMap<ReturnType<typeof postgres>, LocalStorageAdapter>();
 
+export interface AssistantFixtureCleanupProof {
+  schema: string;
+  schemaRemoved: boolean;
+  storageRoot: string | null;
+  storageRemoved: boolean;
+  databaseClosed: boolean;
+  adminClosed: boolean;
+}
+export class AssistantFixtureInitializationError extends Error {
+  constructor(
+    readonly cleanup: AssistantFixtureCleanupProof,
+    cause: unknown,
+  ) {
+    super('assistant_fixture_initialization_failed', { cause });
+  }
+}
+export class AssistantFixtureCleanupError extends Error {
+  constructor(readonly cleanup: AssistantFixtureCleanupProof) {
+    super('assistant_fixture_cleanup_unconfirmed');
+  }
+}
+
 export async function createAssistantFixtureDatabase() {
   const value = process.env.ALLRICE_TEST_DATABASE_URL;
   if (!value) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
   const url = new URL(value);
   assertRuntimeFixtureDatabase(url);
-  const admin = postgres(url.toString(), { max: 1, onnotice: () => {} });
   const schema = `p25_${randomUUID().replaceAll('-', '')}`;
-  await admin.unsafe(`create schema "${schema}"`);
-  url.searchParams.set('options', `-csearch_path=${schema},public`);
-  const db = postgres(url.toString(), { max: 10, onnotice: () => {} });
-  const storageRoot = await mkdtemp(join(tmpdir(), 'allrice-p25-artifacts-'));
-  stores.set(db, new LocalStorageAdapter(storageRoot));
+  let admin: ReturnType<typeof postgres> | undefined;
+  let db: ReturnType<typeof postgres> | undefined;
+  let storageRoot: string | undefined;
+  let storageAttempted = false;
+  let disposal: Promise<AssistantFixtureCleanupProof> | undefined;
+  const dispose = () =>
+    (disposal ??= (async () => {
+      const proof: AssistantFixtureCleanupProof = {
+        schema,
+        schemaRemoved: false,
+        storageRoot: storageRoot ?? null,
+        storageRemoved: !storageAttempted,
+        databaseClosed: !db,
+        adminClosed: !admin,
+      };
+      try {
+        await db?.end({ timeout: 5 });
+        proof.databaseClosed = true;
+      } catch {
+        /* Unconfirmed, not closed. */
+      }
+      if (admin && /^p25_[a-f0-9]{32}$/.test(schema)) {
+        try {
+          // The generated UUID is owned by this call, including an ambiguous
+          // CREATE acknowledgement. Never target another schema or search_path.
+          await admin.unsafe(`drop schema if exists "${schema}" cascade`);
+          const [row] = await admin<
+            { absent: boolean }[]
+          >`select to_regnamespace(${schema}) is null as absent`;
+          proof.schemaRemoved = row?.absent === true;
+        } catch {
+          /* Failed DROP/confirmation is an explicit unknown cleanup. */
+        }
+      }
+      try {
+        await admin?.end({ timeout: 5 });
+        proof.adminClosed = true;
+      } catch {
+        /* Retain uncertainty. */
+      }
+      if (storageRoot && proof.databaseClosed) {
+        try {
+          await rm(storageRoot, { recursive: true, force: true });
+          proof.storageRemoved = await lstat(storageRoot).then(
+            () => false,
+            (error: unknown) => {
+              if (
+                error &&
+                typeof error === 'object' &&
+                'code' in error &&
+                error.code === 'ENOENT'
+              )
+                return true;
+              throw error;
+            },
+          );
+        } catch {
+          proof.storageRemoved = false;
+        }
+      }
+      // A failed mkdtemp with no returned path is not proof of filesystem absence.
+      if (db && proof.databaseClosed) stores.delete(db);
+      return proof;
+    })());
   try {
+    admin = postgres(url.toString(), {
+      max: 1,
+      onnotice: () => {},
+      connect_timeout: 5,
+      connection: {
+        application_name: schema,
+        lock_timeout: 5000,
+        statement_timeout: 5000,
+      },
+    });
+    await admin.unsafe(`create schema "${schema}"`);
+    url.searchParams.set('options', `-csearch_path=${schema},public`);
+    db = postgres(url.toString(), {
+      max: 10,
+      onnotice: () => {},
+      connect_timeout: 5,
+      connection: { application_name: schema },
+    });
+    storageAttempted = true;
+    storageRoot = await mkdtemp(join(tmpdir(), 'allrice-p25-artifacts-'));
+    stores.set(db, new LocalStorageAdapter(storageRoot));
     const migrations = new URL('../migrations/', import.meta.url);
     await db.begin(async (tx) => {
       for (const file of (await readdir(migrations))
@@ -35,23 +136,23 @@ export async function createAssistantFixtureDatabase() {
         .sort())
         await tx.unsafe(await readFile(new URL(file, migrations), 'utf8'));
     });
+    return {
+      db,
+      async close() {
+        const proof = await dispose();
+        if (
+          !proof.schemaRemoved ||
+          !proof.storageRemoved ||
+          !proof.databaseClosed ||
+          !proof.adminClosed
+        )
+          throw new AssistantFixtureCleanupError(proof);
+        return proof;
+      },
+    };
   } catch (error) {
-    await db.end();
-    await admin.unsafe(`drop schema "${schema}" cascade`);
-    await admin.end();
-    throw error;
+    throw new AssistantFixtureInitializationError(await dispose(), error);
   }
-  return {
-    db,
-    async close() {
-      await db.end({ timeout: 5 });
-      if (!/^p25_[a-f0-9]{32}$/.test(schema))
-        throw Error('Invalid fixture schema');
-      await admin.unsafe(`drop schema "${schema}" cascade`);
-      await admin.end({ timeout: 5 });
-      await rm(storageRoot, { recursive: true, force: true });
-    },
-  };
 }
 export async function assistantFixture(
   db: ReturnType<typeof postgres>,
