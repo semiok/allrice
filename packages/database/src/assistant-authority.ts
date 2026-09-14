@@ -19,6 +19,7 @@ const phases = new Set([
   'model',
   'tool',
   'recover',
+  'proposal',
 ]);
 const toolsSchema = z
   .array(z.string().regex(/^[a-zA-Z0-9_.-]{1,120}$/))
@@ -85,12 +86,23 @@ export async function assertAssistantAuthority(
     delegationRules.some((rule) => rule.effect === 'allow') &&
       delegationRules.every((rule) => rule.effect === 'allow'),
   );
-  // Delegation is explicitly allowlisted; a selected tool's hard deny/ask is
-  // never erased by that broad coordinator grant. Tool-specific execution still
-  // goes through its own resource adapter / exact approval after this hook.
+  // Only the implemented local-command proposal path may advertise/submit an
+  // ask-bound tool. Registration is not action permission: normal tool calls
+  // still deny ask, and the proposal must pass its exact P04 command approval.
+  if (input.phase === 'proposal')
+    requireAuthority(
+      tools.length === 1 && tools[0] === 'local.process.execute',
+    );
   requireAuthority(
     !controls.data.rules.some(
-      (rule) => tools.includes(rule.action) && rule.effect !== 'allow',
+      (rule) =>
+        tools.includes(rule.action) &&
+        rule.effect !== 'allow' &&
+        !(
+          rule.action === 'local.process.execute' &&
+          rule.effect === 'ask' &&
+          ['configure', 'delegate', 'proposal'].includes(input.phase)
+        ),
     ),
   );
 
