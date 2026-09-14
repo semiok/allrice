@@ -35,6 +35,7 @@ integration(
     });
     it.each([
       'completed',
+      'dynamic_output',
       'revoked',
       'revoked_policy',
       'revoked_employee',
@@ -52,6 +53,10 @@ integration(
         });
         const productSessionId = f.session,
           nativeSessionId = `dsh-${productSessionId}`;
+        if (outcome === 'dynamic_output') {
+          f.config.maxConcurrent = 2;
+          await database.db`update allrice_runs set input=jsonb_set(input,'{assistantConfiguration}',${database.db.json(f.config)}) where id=${f.rootRunId}`;
+        }
         // Remove only this new synthetic fixture's empty permissive ledger. The
         // production controller must create the actual frozen root/budgets below.
         await database.db.begin(async (tx) => {
@@ -108,6 +113,15 @@ integration(
           }
           if (!serialized.includes('ANALYZE_A'))
             return {
+              ...(outcome === 'dynamic_output'
+                ? {
+                    usage: {
+                      prompt_tokens: 20,
+                      completion_tokens: 123,
+                      total_tokens: 143,
+                    },
+                  }
+                : {}),
               nativeTool: {
                 name: 'assistant_delegate',
                 arguments: {
@@ -119,6 +133,15 @@ integration(
             };
           if (!serialized.includes('ANALYZE_B'))
             return {
+              ...(outcome === 'dynamic_output'
+                ? {
+                    usage: {
+                      prompt_tokens: 20,
+                      completion_tokens: 123,
+                      total_tokens: 143,
+                    },
+                  }
+                : {}),
               nativeTool: {
                 name: 'assistant_delegate',
                 arguments: {
@@ -214,7 +237,9 @@ integration(
                 { name: 'assistant.delegate' },
                 { name: 'assistant.report' },
               ],
-              runLimits: { maxOutputTokens: 5000 },
+              runLimits: {
+                maxOutputTokens: outcome === 'dynamic_output' ? 12000 : 5000,
+              },
               context: {
                 executionId: randomUUID(),
                 runId: f.task.runId,
@@ -309,6 +334,16 @@ integration(
             ).toHaveLength(0);
             return;
           }
+          if (outcome === 'dynamic_output')
+            await expect
+              .poll(
+                () =>
+                  model.requests.filter((request) =>
+                    JSON.stringify(request.messages).includes('ROOT_PRIVATE'),
+                  ).length,
+                { timeout: 10000 },
+              )
+              .toBe(3);
           overlap.release();
           if (outcome === 'completed') {
             await completionReached.promise;
@@ -444,6 +479,46 @@ integration(
             tree.budgets.find((budget) => budget.metric === 'input_tokens')!
               .spent,
           ).toBe(2000 + (model.requests.length - 2) * 20);
+          if (outcome === 'dynamic_output') {
+            expect(tree.configuration.maxConcurrent).toBe(2);
+            const admissions =
+              await database.db`select a.*,i.label from allrice_assistant_model_admissions a join allrice_assistant_instances i on i.run_id=a.run_id where a.root_run_id=${f.rootRunId} order by a.prepared_at`;
+            expect(admissions).toHaveLength(model.requests.length);
+            expect(
+              admissions.some((a) => Number(a.granted_output_tokens) < 4000),
+            ).toBe(true);
+            for (const runId of [...new Set(admissions.map((a) => a.run_id))]) {
+              const calls = admissions.filter((a) => a.run_id === runId);
+              const requests = model.requests.filter((request) => {
+                const content = JSON.stringify(request.messages);
+                return runId === f.rootRunId
+                  ? content.includes('ROOT_PRIVATE')
+                  : !content.includes('ROOT_PRIVATE') &&
+                      content.includes(`ANALYZE_${calls[0]!.label}`);
+              });
+              expect(
+                requests.map((request) => {
+                  const wire = request as unknown as {
+                    max_tokens?: number;
+                    max_completion_tokens?: number;
+                  };
+                  return wire.max_tokens ?? wire.max_completion_tokens;
+                }),
+              ).toEqual(calls.map((a) => Number(a.granted_output_tokens)));
+              expect(
+                calls.every(
+                  (a) =>
+                    a.dispatched_at &&
+                    a.finished_at &&
+                    Number(a.granted_output_tokens) <=
+                      Number(a.requested_output_tokens),
+                ),
+              ).toBe(true);
+            }
+            expect(
+              tree.budgets.find((b) => b.metric === 'output_tokens'),
+            ).toMatchObject({ capacity: 12000, reserved: 0 });
+          }
 
           // A new real business Run on the same Session gets a distinct lease
           // and budget root. The profile intentionally rebuilds the host when

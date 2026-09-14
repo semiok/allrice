@@ -744,6 +744,172 @@ export function createAssistantRuntime(
         return messageView(updated!);
       });
     },
+    /** Before native prepareCall freezes maxTokens: reserve a bounded output
+     * grant and call identity, not dispatch authority. Unknown preparation never
+     * disappears merely because the native host failed before sending input. */
+    async prepareModelUsage(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      runId: string;
+      worker: AssistantWorkerLease;
+      callId: string;
+      requestedOutputTokens: number;
+    }) {
+      uuid.parse(input.callId);
+      z.number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER)
+        .parse(input.requestedOutputTokens);
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker);
+        const row = await active(tx, root, input.runId);
+        await authorize({
+          transaction: tx,
+          task: taskFor(root, row),
+          tools: [],
+          phase: 'model',
+        });
+        await assertLease(tx, root, input.worker);
+        const [old] =
+          await tx`select * from allrice_assistant_model_admissions where call_id=${input.callId}`;
+        if (old) {
+          if (
+            old.root_run_id !== root.root_run_id ||
+            old.run_id !== row.run_id ||
+            Number(old.requested_output_tokens) !== input.requestedOutputTokens
+          )
+            fail('conflict');
+          return {
+            prepared: false,
+            outputTokens: Number(old.granted_output_tokens),
+          };
+        }
+        const [used] =
+          await tx`select 1 from allrice_assistant_usage where call_id=${input.callId} limit 1`;
+        if (used) fail('conflict');
+        const budgets = await tx<
+          {
+            metric: string;
+            capacity: string;
+            reserved: string;
+            spent: string;
+          }[]
+        >`select metric,capacity,reserved,spent from allrice_runtime_budgets where root_run_id=${root.root_run_id}`;
+        if (
+          budgets.length !== 4 ||
+          budgets.some(
+            (b) =>
+              ![
+                'model_calls',
+                'tool_calls',
+                'input_tokens',
+                'output_tokens',
+              ].includes(b.metric),
+          )
+        )
+          fail('budget_exhausted');
+        const output = budgets.find((b) => b.metric === 'output_tokens')!;
+        const outputTokens = Math.min(
+          input.requestedOutputTokens,
+          Number(output.capacity) -
+            Number(output.spent) -
+            Number(output.reserved),
+        );
+        if (!Number.isSafeInteger(outputTokens) || outputTokens <= 0)
+          fail('budget_exhausted');
+        if (row.parent_run_id) {
+          const [launch] =
+            await tx`update allrice_assistant_usage set settled_amount=0 where call_id=${row.delegation_id} and run_id=${row.run_id} and metric='model_calls' and settled_amount is null returning amount`;
+          if (launch)
+            await tx`update allrice_runtime_budgets set reserved=reserved-${Number(launch.amount)} where root_run_id=${root.root_run_id} and metric='model_calls'`;
+        }
+        const amounts = {
+          model_calls: 1,
+          tool_calls: 0,
+          input_tokens: 0,
+          output_tokens: outputTokens,
+        };
+        for (const [metric, amount] of Object.entries(amounts)) {
+          const [budget] =
+            await tx`update allrice_runtime_budgets set reserved=reserved+${amount} where root_run_id=${root.root_run_id} and metric=${metric} and reserved+spent+${amount}<=capacity returning metric`;
+          if (!budget) fail('budget_exhausted');
+          await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${input.callId},${row.run_id},${root.root_run_id},${metric},${amount})`;
+        }
+        await tx`insert into allrice_assistant_model_admissions(call_id,run_id,root_run_id,requested_output_tokens,granted_output_tokens) values(${input.callId},${row.run_id},${root.root_run_id},${input.requestedOutputTokens},${outputTokens})`;
+        await assertLease(tx, root, input.worker);
+        return { prepared: true, outputTokens };
+      });
+    },
+    /** The frozen native request consumes its exact preparation once. Input
+     * reservation and dispatch marking are atomic; failure retains the output
+     * hold and never permits a model call or silently retries that identity. */
+    async dispatchModelUsage(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      runId: string;
+      worker: AssistantWorkerLease;
+      callId: string;
+      inputTokens: number;
+      outputTokens: number;
+      requestDigest: string;
+    }) {
+      uuid.parse(input.callId);
+      z.number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER)
+        .parse(input.inputTokens);
+      z.number()
+        .int()
+        .positive()
+        .max(Number.MAX_SAFE_INTEGER)
+        .parse(input.outputTokens);
+      z.string()
+        .regex(/^sha256:[0-9a-f]{64}$/)
+        .parse(input.requestDigest);
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker);
+        const row = await active(tx, root, input.runId);
+        await authorize({
+          transaction: tx,
+          task: taskFor(root, row),
+          tools: [],
+          phase: 'model',
+        });
+        await assertLease(tx, root, input.worker);
+        const [admission] =
+          await tx`select * from allrice_assistant_model_admissions where call_id=${input.callId} for update`;
+        if (
+          !admission ||
+          admission.root_run_id !== root.root_run_id ||
+          admission.run_id !== row.run_id ||
+          Number(admission.granted_output_tokens) !== input.outputTokens
+        )
+          fail('conflict');
+        if (admission.dispatched_at) {
+          if (
+            admission.request_digest !== input.requestDigest ||
+            Number(admission.input_tokens) !== input.inputTokens
+          )
+            fail('conflict');
+          return { reserved: false, outputTokens: input.outputTokens };
+        }
+        const [hold] =
+          await tx`select amount,settled_amount from allrice_assistant_usage where call_id=${input.callId} and metric='input_tokens' for update`;
+        if (!hold || Number(hold.amount) !== 0 || hold.settled_amount !== null)
+          fail('conflict');
+        const [budget] =
+          await tx`update allrice_runtime_budgets set reserved=reserved+${input.inputTokens} where root_run_id=${root.root_run_id} and metric='input_tokens' and reserved+spent+${input.inputTokens}<=capacity returning metric`;
+        if (!budget) fail('budget_exhausted');
+        await tx`update allrice_assistant_usage set amount=${input.inputTokens} where call_id=${input.callId} and metric='input_tokens'`;
+        await tx`update allrice_assistant_model_admissions set input_tokens=${input.inputTokens},request_digest=${input.requestDigest},dispatched_at=clock_timestamp() where call_id=${input.callId}`;
+        await assertLease(tx, root, input.worker);
+        return { reserved: true, outputTokens: input.outputTokens };
+      });
+    },
     async reserveUsage(input: {
       scope: RuntimeScope;
       rootRunId: string;
@@ -861,6 +1027,13 @@ export function createAssistantRuntime(
       return db.begin(async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker, false);
+        const [admission] =
+          await tx`select dispatched_at from allrice_assistant_model_admissions where call_id=${input.callId}`;
+        if (
+          admission &&
+          (!admission.dispatched_at || amounts.model_calls !== 1)
+        )
+          fail('conflict');
         const rows = await tx<
           {
             run_id: string;
@@ -908,6 +1081,8 @@ export function createAssistantRuntime(
         }
         if (input.resultDigest)
           await tx`update allrice_assistant_usage set result_digest=${input.resultDigest} where call_id=${input.callId}`;
+        if (admission)
+          await tx`update allrice_assistant_model_admissions set finished_at=coalesce(finished_at,clock_timestamp()) where call_id=${input.callId}`;
       });
     },
     async recordResult(input: {
