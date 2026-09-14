@@ -18,6 +18,7 @@ import {
 import { getDatabase } from './core/client.ts';
 import type { AssistantOperationOrigin } from './assistant-operation-authority.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
+import { cancelRuntimeAgentOperationsTransaction } from './runtime-ledger/ledger.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import {
   localCommandBinding,
@@ -352,11 +353,38 @@ export async function waitLocalCommandOperation(
   const cancel = async () => {
     if (!canceled) {
       canceled = true;
-      await created.ledger.cancelRoot(
-        scope,
-        created.snapshot.binding.task.rootRunId,
-        randomUUID(),
-      );
+      await database.begin(async (tx) => {
+        // Resolve immutable provenance, not a caller-modified returned view.
+        const [row] = await tx<
+          { initial_snapshot: unknown }[]
+        >`select initial_snapshot from allrice_runtime_operations
+            where id=${operationId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+        const stored = RuntimeOperationSnapshotSchema.parse(
+          row?.initial_snapshot,
+        );
+        if (
+          stored.binding.task.rootRunId !==
+          created.snapshot.binding.task.rootRunId
+        )
+          throw new RuntimePolicyError('assistant_authority_changed');
+        if (!stored.agentInstanceId) {
+          await created.ledger.cancelRoot(
+            scope,
+            stored.binding.task.rootRunId,
+            randomUUID(),
+            tx,
+          );
+          return;
+        }
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${stored.binding.task.rootRunId}
+            and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for update`;
+        await cancelRuntimeAgentOperationsTransaction(
+          tx,
+          stored.binding.task.rootRunId,
+          randomUUID(),
+          [stored.agentInstanceId],
+        );
+      });
     }
   };
   while (Date.now() < Date.parse(created.deadlineAt)) {
@@ -412,8 +440,12 @@ export async function waitLocalCommandOperation(
     if (
       approval &&
       (approval.status === 'rejected' || approval.expired || approval.revoked)
-    )
+    ) {
       await cancel();
+      // Re-read the committed targeted cutoff. Never return the stale
+      // waiting_user snapshot as if it represented a post-cancel operation.
+      continue;
+    }
     if (
       canceled &&
       ['planned', 'waiting_user', 'ready', 'cancel_requested'].includes(

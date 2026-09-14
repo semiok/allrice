@@ -6,9 +6,13 @@ import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import { assertAssistantAuthority } from './assistant-authority.ts';
-import { createLocalCommandOperation } from './local-command-service.ts';
+import {
+  createLocalCommandOperation,
+  waitLocalCommandOperation,
+} from './local-command-service.ts';
 import {
   requestRuntimeActionApproval,
+  decideRuntimeActionApproval,
   setRuntimePolicyControls,
 } from './runtime-policy.ts';
 
@@ -163,6 +167,72 @@ integration(
         ]).size,
       ).toBe(3);
       expect(root.snapshot.agentInstanceId).toBeNull();
+    });
+
+    it('a rejected child proposal cancels only its own pending operations, preserving Rice and siblings', async () => {
+      const f = await proposalFixture(),
+        rejected = await f.create();
+      const sibling = (
+        await f.runtime.provision({
+          ...f.base,
+          parentRunId: f.rootRunId,
+          delegationId: randomUUID(),
+          label: 'Sibling survives',
+          text: 'Synthetic',
+          tools: ['local.process.execute'],
+        })
+      ).instance;
+      const siblingOperation = await f.create('sibling', {
+        runId: sibling.runId,
+        worker: f.worker,
+      });
+      const request = await f.approvalFor(
+        rejected.snapshot.binding.attempt.operationId,
+      );
+      await decideRuntimeActionApproval(
+        f.requestContext,
+        request.approvalId,
+        {
+          contractVersion: 1,
+          direction: 'response',
+          kind: 'action_approval',
+          requestId: request.requestId,
+          version: request.version,
+          requestDigest: request.requestDigest,
+          task: request.task,
+          responseId: randomUUID(),
+          respondedBy: f.user,
+          respondedAt: new Date().toISOString(),
+          approvalId: request.approvalId,
+          decision: 'rejected',
+        },
+        f.db,
+      );
+      const result = await waitLocalCommandOperation(rejected, undefined, f.db);
+      expect(result).toMatchObject({
+        status: 'canceled',
+        evidence: { output: { notExecuted: true } },
+      });
+      const [root] =
+        await f.db`select cancel_request_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+      expect(root!.cancel_request_id).toBeNull();
+      const tree = await f.runtime.getTree(f.requestContext, {
+        runId: f.rootRunId,
+      });
+      expect(tree.instances.every((i) => i.cancelRequestedAt === null)).toBe(
+        true,
+      );
+      expect(
+        (
+          await f
+            .freshLedger()
+            .readOperation(
+              f.task.scope,
+              siblingOperation.snapshot.binding.attempt.operationId,
+            )
+        ).status,
+      ).toBe('waiting_user');
+      await expect(f.authorize('model', [])).resolves.toBeUndefined();
     });
 
     it('rejects fake children, root-as-child, foreign child and narrowed tool scope before creating operations', async () => {
