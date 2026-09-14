@@ -31,7 +31,13 @@ integration(
       await database?.close();
       vi.unstubAllEnvs();
     });
-    it.each(['completed', 'revoked'] as const)(
+    it.each([
+      'completed',
+      'revoked',
+      'unknown_usage',
+      'unknown_output',
+      'unknown_input',
+    ] as const)(
       'the actual native parent delegates concurrent children: %s',
       async (outcome) => {
         const f = await createAssistantAuthorityFixture(database.db, {
@@ -61,12 +67,19 @@ integration(
             await overlap.promise;
             activeChildren--;
             return {
-              usage: {
-                prompt_tokens: 1000,
-                prompt_tokens_details: { cached_tokens: 900 },
-                completion_tokens: 5,
-                total_tokens: 1005,
-              },
+              usage:
+                outcome === 'unknown_usage'
+                  ? null
+                  : outcome === 'unknown_output'
+                    ? { prompt_tokens: 1000, total_tokens: 1000 }
+                    : outcome === 'unknown_input'
+                      ? { completion_tokens: 5, total_tokens: 5 }
+                      : {
+                          prompt_tokens: 1000,
+                          prompt_tokens_details: { cached_tokens: 900 },
+                          completion_tokens: 5,
+                          total_tokens: 1005,
+                        },
               nativeTool: {
                 name: 'assistant_report',
                 arguments: {
@@ -230,10 +243,56 @@ integration(
             return;
           }
           overlap.release();
+          if (outcome.startsWith('unknown_')) {
+            await expect(execution).rejects.toMatchObject({
+              code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+              retryable: false,
+              usage: { inputTokens: expect.any(Number) },
+            });
+            const tree = await bridge.tree();
+            expect(
+              tree.instances.find((instance) => instance.parentRunId === null),
+            ).toMatchObject({
+              status: 'unknown',
+              stoppedAt: expect.any(String),
+            });
+            expect(tree.cancelRequested).toBe(false);
+            expect(
+              tree.budgets.find(
+                (budget) =>
+                  budget.metric ===
+                  (outcome === 'unknown_output'
+                    ? 'output_tokens'
+                    : 'input_tokens'),
+              )!.reserved,
+            ).toBeGreaterThan(0);
+            expect(
+              tree.results.every(
+                (result) =>
+                  !result.usageComplete && result.status === 'partial',
+              ),
+            ).toBe(true);
+            return;
+          }
           const result = await execution;
           expect(result.answer).toContain('Root final synthesis');
           const tree = await bridge.tree();
           expect(tree.instances).toHaveLength(3);
+          expect(result).toMatchObject({
+            assistantStatus: 'completed',
+            usageComplete: true,
+            cacheUsageKnown: false,
+            costEstimateAvailable: false,
+          });
+          expect(result.usage).toEqual({
+            inputTokens: tree.budgets.find(
+              (budget) => budget.metric === 'input_tokens',
+            )!.spent,
+            cachedInputTokens: 0,
+            outputTokens: tree.budgets.find(
+              (budget) => budget.metric === 'output_tokens',
+            )!.spent,
+          });
           expect(
             tree.instances.find((instance) => instance.parentRunId === null),
           ).toMatchObject({

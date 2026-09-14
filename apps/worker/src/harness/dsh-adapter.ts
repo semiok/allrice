@@ -7,6 +7,7 @@ import {
 } from '@allrice/contracts';
 
 import { HandlerError } from '../errors.js';
+import { AssistantExecutionUnresolvedError } from './dsh/assistant-outcome.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -280,6 +281,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
       .join('\n\n');
     let prompt = initialPrompt;
     let answer = '';
+    let assistantFinished = false;
+    let assistantOutcome:
+      | Awaited<
+          ReturnType<NonNullable<NonNullable<typeof assistant>['finish']>>
+        >
+      | undefined;
     try {
       for (
         let callIndex = 0;
@@ -313,11 +320,25 @@ export class DshHarnessAdapter implements HarnessAdapter {
             await runtime.client.assistant('finish', {
               nativeSessionId: threadId,
             });
-            await assistant.finish?.();
+            assistantOutcome = await assistant.finish?.();
+            assistantFinished = true;
+            if (!assistantOutcome)
+              throw Error('assistant_completion_proof_required');
+            Object.assign(usage, assistantOutcome.usage);
+            if (
+              !assistantOutcome.usageComplete ||
+              !['completed', 'partial'].includes(assistantOutcome.status)
+            )
+              throw new AssistantExecutionUnresolvedError(
+                usage,
+                assistantOutcome.usageComplete,
+              );
           }
           answer = normalizeAllRiceManagedFileLinks(
             typeof joined?.answer === 'string' ? joined.answer : result.answer,
           );
+          if (assistantOutcome?.status === 'partial')
+            answer = `部分结果：助手已返回可用内容，但仍有未完成事项；这不是整项任务完成确认。\n\n${answer}`;
           await emit({
             type: 'assistant.completed',
             text: answer,
@@ -427,7 +448,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
     } catch (error) {
       try {
-        if (assistant) {
+        if (assistant && !assistantFinished) {
           await assistant.cancel().catch(() => {});
           const request = await assistant.cancellation();
           await runtime.client.assistant('drain', request);
@@ -457,6 +478,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
     return {
       answer,
       usage,
+      ...(assistantOutcome
+        ? {
+            assistantStatus: assistantOutcome.status as 'completed' | 'partial',
+            usageComplete: assistantOutcome.usageComplete,
+            cacheUsageKnown: assistantOutcome.cacheUsageKnown,
+            costEstimateAvailable: assistantOutcome.costEstimateAvailable,
+          }
+        : {}),
       provider: snapshot.route,
       model: snapshot.model,
       threadId,

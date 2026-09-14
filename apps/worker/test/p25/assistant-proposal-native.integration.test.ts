@@ -12,6 +12,7 @@ import {
 } from '../../../../packages/database/src/runtime-policy.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
+import { assertAssistantTaskComplete } from '../../src/harness/dsh/assistant-outcome.js';
 import { riceToolDefinitions } from '../../src/tool-broker/definitions.js';
 import { p24Fixture } from '../p24/fixture.js';
 const integration =
@@ -284,7 +285,19 @@ integration(
           }
           await expect(execution).resolves.toMatchObject({
             answer: expect.stringContaining('Root synthesis'),
+            assistantStatus: 'partial',
+            costEstimateAvailable: false,
+            usageComplete: true,
           });
+          // Exactly the completion guard used by executeEmployeeRun after saving
+          // a partial answer: the queue must not report ordinary task success.
+          const awaitedResult = await execution;
+          expect(() => assertAssistantTaskComplete(awaitedResult)).toThrow(
+            expect.objectContaining({
+              code: 'ASSISTANT_PARTIAL_RESULT',
+              retryable: false,
+            }),
+          );
           const final = await f.runtime.getTree(f.requestContext, {
             runId: f.rootRunId,
           });

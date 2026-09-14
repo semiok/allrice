@@ -550,7 +550,29 @@ export function createAssistantRuntime(
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker);
         const main = await instance(tx, root, root.root_run_id);
-        if (terminal.has(main.status)) return { status: main.status };
+        const summary = async (
+          status: AssistantStatus,
+          usageComplete: boolean,
+        ) => {
+          const budgets = await tx<
+            { metric: string; spent: string }[]
+          >`select metric,spent from allrice_runtime_budgets where root_run_id=${root.root_run_id}`;
+          return {
+            status,
+            usageComplete,
+            costEstimateAvailable: false as const,
+            cacheUsageKnown: false as const,
+            usage: {
+              inputTokens: Number(
+                budgets.find((b) => b.metric === 'input_tokens')?.spent ?? 0,
+              ),
+              cachedInputTokens: 0,
+              outputTokens: Number(
+                budgets.find((b) => b.metric === 'output_tokens')?.spent ?? 0,
+              ),
+            },
+          };
+        };
         await authorize({
           transaction: tx,
           task: root.task,
@@ -562,6 +584,7 @@ export function createAssistantRuntime(
         >`select * from allrice_assistant_instances where root_run_id=${root.root_run_id} and depth>0 for update`;
         const [unsettled] =
           await tx`select 1 from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null union all select 1 from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null limit 1`;
+        if (terminal.has(main.status)) return summary(main.status, !unsettled);
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         const [unadopted] =
@@ -581,7 +604,7 @@ export function createAssistantRuntime(
         await assertLease(tx, root, input.worker);
         await tx`update allrice_assistant_instances set status=${status},stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where run_id=${root.root_run_id}`;
         await tx`update allrice_assistant_instances set stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where root_run_id=${root.root_run_id} and depth>0 and status in ('completed','partial','failed','canceled','unknown')`;
-        return { status };
+        return summary(status, !unsettled);
       });
     },
     async requestMessage(
