@@ -216,6 +216,54 @@ async function createFixture(
 }
 
 describe('HTTP device journal adapter', () => {
+  it('P14 drains new acquisition but finishes a claimed foreground operation and its durable receipt', async () => {
+    const f = await createFixture();
+    let acquiring = true;
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let claims = 0;
+    const execute = vi.fn(
+      async (...args: Parameters<typeof executeLocalCommand>) => {
+        started();
+        await blocked;
+        return executeLocalCommand(...args);
+      },
+    );
+    const client = new RuntimeBridgeOperationClient({
+      config: f.config,
+      token: 'fixture-device-token',
+      journal: f.journal,
+      acquiring: () => acquiring,
+      execute,
+      request: (input) => {
+        if (input.path.endsWith('/next')) claims++;
+        return bridgeRequest(input);
+      },
+    });
+    const running = client.pollOnce();
+    try {
+      await entered;
+      acquiring = false;
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      release();
+    }
+    expect(await running).toBe(true);
+    expect(await client.pollOnce()).toBe(false);
+    expect(claims).toBe(1);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(f.accepted[0]?.signal).toMatchObject({
+      type: 'operation.outcome',
+      result: { status: 'succeeded' },
+    });
+    expect(await f.journal.pendingForDelivery()).toHaveLength(0);
+  });
   it.each(['before_start', 'after_start_ack'])(
     'P13 pause %s persists stopped evidence without executing',
     async (moment) => {

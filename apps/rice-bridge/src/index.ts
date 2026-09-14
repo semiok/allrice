@@ -17,6 +17,15 @@ async function main() {
   const command = requestedCommand ?? 'launch';
   if (command === '--version' || command === 'version')
     return console.info(bridgeVersion);
+  if (command === 'update-helper') {
+    if (args.length !== 3 || !['install', 'recover'].includes(args[1]!))
+      throw Error('UPDATE_REQUEST_INVALID');
+    return (await import('./desktop-update.js')).runBridgeUpdateHelper(
+      args[0]!,
+      args[1] === 'recover',
+      args[2]!,
+    );
+  }
   if (command === 'status') return status();
   if (command === 'local-mcp' && args.length === 1 && args[0] === 'status')
     return (await import('./local-mcp-settings.js')).localMcpSettingsCli(args);

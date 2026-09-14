@@ -50,6 +50,11 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             environment[key] = ProcessInfo.processInfo.environment[key]
         }
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--update-health-id=") }) {
+            let id = String(argument.dropFirst("--update-health-id=".count))
+            guard id.range(of: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", options: .regularExpression) != nil else { throw NSError(domain: "Bridge", code: 3) }
+            environment["ALLRICE_BRIDGE_UPDATE_HEALTH_ID"] = id
+        }
         // A deliberately explicit acceptance mode for synthetic identities only.
         // Normal app launch never imports pairing secrets or feature flags.
         if CommandLine.arguments.contains("--acceptance") {
@@ -177,6 +182,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         case "unpaired": return "尚未配对"
         case "paused": return "已暂停 · 本地任务已停止"
         case "pausing": return "正在暂停并停止本地任务…"
+        case "draining": return "正在等待已领取任务结束 · 不再领取新任务"
         case "stopping": return "正在安全退出…"
         case "error": return "需要检查"
         default:
@@ -195,7 +201,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         add(menu, "查看状态…", #selector(showStatus))
         menu.addItem(.separator())
         let paired = state["deviceId"] as? String != nil
-        let busy = ["pausing", "stopping"].contains(state["mode"] as? String ?? "")
+        let busy = ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
         add(menu, "配对设备…", #selector(pairDevice), enabled: !paired && !busy)
         add(menu, "选择工作区…", #selector(selectWorkspace), enabled: paired && !busy)
         add(menu, state["browserEnabled"] as? Bool == true ? "关闭独立浏览器…" : "启用独立浏览器…", #selector(toggleBrowser), enabled: paired && !busy)
@@ -205,6 +211,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         } else { add(menu, "暂停并停止本地任务", #selector(pause), enabled: paired && !busy) }
         menu.addItem(.separator())
         add(menu, "诊断与日志…", #selector(diagnostics))
+        add(menu, "检查可信更新…", #selector(updateStatus))
+        add(menu, "等待任务结束并暂停…", #selector(drainTasks), enabled: paired && !busy)
         add(menu, "撤销设备配对…", #selector(revokeDevice), enabled: paired && !busy)
         menu.addItem(.separator())
         add(menu, "退出 Rice Bridge", #selector(quit), enabled: !quitting)
@@ -236,6 +244,9 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         var text = "\(title)\n\n设备：\(label(state["deviceName"], fallback: "未配对"))\n版本：\(label(state["version"], fallback: "—")) · \(label(state["architecture"], fallback: "—"))\n本地工作区：\(workspace)\n\n前台任务：\(count("activeForeground"))\n后台任务：\(count("activeServices"))\n待回传记录：\(count("pendingReceipts"))\n结果待核实：\(count("unknownOperations"))\n\n"
         text += "\(credential)\n\n在线不等于已授权命令执行；沙箱、员工权限和网页审批仍分别控制。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
         text += "\n\n独立浏览器：\(state["browserEnabled"] as? Bool == true ? "本机已允许，仍需网页授权与审批" : "本机未启用")。使用 Chromium 自身沙箱，不是命令的 Linux VM，不读取个人 Chrome。"
+        let update = state["update"] as? [String: Any]
+        let updateLabels = ["not-checked": "尚未检查", "trust-unconfigured": "发布者尚未配置，请等待管理员提供受信构建", "checking": "正在检查", "available": "发现已认证的新版本，请从菜单确认", "downloading": "正在下载并验证", "waiting-for-drain": "正在等待任务结束", "restarting": "正在正常退出并交接更新", "recovery-required": "上次更新未完成，请从检查可信更新菜单恢复", "rolled-back": "已恢复旧版本，请等待修正版", "no-newer-release": "暂无更高版本"]
+        text += "\n\n可信更新：\(updateLabels[update?["state"] as? String ?? ""] ?? "尚未检查")。更新不迁移或删除凭证；必须通过发布者认证与 Apple 检查。"
         let keychainReasons = [
             "interaction-not-allowed": "启动会话不允许钥匙串交互。请在 Mac 解锁后从 Finder 正常打开，再核验钥匙串权限；程序不会自动解锁或迁移凭证。",
             "item-not-found": "未找到该设备对应的钥匙串条目。现有配对仍可能使用私有文件保存；不要因此重新配对。",
@@ -318,6 +329,44 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func selectWorkspace() { chooseFolder(pickerId: nil) }
+
+    @objc private func updateStatus() {
+        send("updateStatus") { response in
+            guard response["ok"] as? Bool == true else { self.showError(self.safeCode(response["code"])); return }
+            let alert = NSAlert()
+            let data = response["data"] as? [String: Any]
+            let available = data?["canInstall"] as? Bool == true
+            let recover = data?["canRecover"] as? Bool == true
+            alert.messageText = available ? "发现可信更新 \(self.label(data?["version"], fallback: ""))" : (recover ? "上次更新尚未完成" : "可信更新")
+            if available {
+                alert.informativeText = "更新至用户 Applications/AllRice Bridge 专用目录。将停止领取任务并等待已有任务结束，正常退出后验证与安装，再重新打开；启动失败会恢复旧版本。不会删除或迁移现有配对、凭证、工作区和执行日志。独立浏览器与预览需先明确关闭。"
+                alert.addButton(withTitle: "更新并重新打开"); alert.addButton(withTitle: "稍后")
+            } else if recover {
+                alert.informativeText = "候选尚未确认健康，不会领取新任务。恢复会保留失败包与日志，并重新打开之前的兼容版本；不会重新配对或更改凭证。"
+                alert.addButton(withTitle: "恢复上次版本"); alert.addButton(withTitle: "稍后")
+            } else {
+                alert.informativeText = data?["state"] as? String == "trust-unconfigured"
+                    ? "此构建尚未配置受信发布者。请等待管理员提供已签名、公证并验证的正式更新；不要关闭 Gatekeeper，也不要删除配对、凭证或执行日志。现有应用继续可用。"
+                    : (data?["state"] as? String == "rolled-back" ? "上次候选未通过启动健康确认，已回退并保留失败包和日志。当前没有更高版本的已认证更新；配对与凭证未迁移。请向管理员报告并等待修正版。" : "没有更高版本的已认证更新。此检查不改变当前应用、配对或权限。")
+                alert.addButton(withTitle: "知道了")
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn && (available || recover) {
+                self.send(recover ? "recoverUpdate" : "installUpdate", fields: recover ? [:] : ["version": data?["version"] as? String ?? ""]) { result in
+                    if result["ok"] as? Bool == true, (result["data"] as? [String: Any])?["restart"] as? Bool == true { NSApp.terminate(nil) }
+                    else { self.showError(self.safeCode(result["code"])) }
+                }
+            }
+        }
+    }
+
+    @objc private func drainTasks() {
+        let alert = NSAlert()
+        alert.messageText = "等待任务结束后暂停连接？"
+        alert.informativeText = "停止领取新任务，等待已领取任务和后台服务自然结束，不强制取消。若独立浏览器或预览已启用，请先明确关闭它们。等待期间仍可安全退出；退出会走原有停止流程。"
+        alert.addButton(withTitle: "等待结束并暂停"); alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn { action("drain") }
+    }
     @objc private func togglePreview() {
         let enabled = state["previewEnabled"] as? Bool != true
         let alert = NSAlert()
@@ -399,11 +448,20 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             "DESKTOP_REVOKED_CLEANUP_PENDING": "此前解除配对已在服务端生效，但旧凭证或配置尚未完全清理；不代表之后的新配对被撤销。请保留诊断记录，不要使用旧令牌重试撤销。",
             "DESKTOP_CONFIG_INVALID": "本机配置无法安全读取，请保留原文件并检查诊断。",
             "DESKTOP_STOP_UNCONFIRMED": "核心未能确认安全停止，不能显示已暂停或已完成退出。请保留配对与执行日志，检查本机沙箱和诊断后再处理。",
+            "UPDATE_DRAIN_BROWSER_ACTIVE": "请先从菜单明确关闭独立浏览器和项目预览，再重新检查更新。更新不会代替你强制停止浏览器任务。",
+            "UPDATE_DRAIN_UNCONFIRMED": "仍有活跃任务、未知执行或无法安全读取的日志，尚不能更新。请检查任务与诊断并等待停止确认；不要清空执行日志或强制覆盖应用。",
+            "UPDATE_TRUST_UNCONFIGURED": "此构建尚未配置受信发布者。请等待管理员提供经过签名与公证的构建；不要粘贴来历不明的公钥或关闭系统保护。",
+            "UPDATE_CHECK_REQUIRED": "请重新从菜单检查可信更新，再确认显示的精确版本。",
+            "UPDATE_RECOVERY_REQUIRED": "上次更新尚未完成。请从检查可信更新菜单查看恢复状态，保留原安装目录、失败包与执行日志。",
+            "UPDATE_APPLE_VERIFICATION_FAILED": "Apple 发布者签名、公证票据或系统检查未通过，候选未获准安装。请向管理员报告诊断代码，不要关闭 Gatekeeper 或移除隔离标记。",
+            "UPDATE_STORAGE_REVIEW": "已保留多次更新下载和恢复证据。请让管理员先检查专用安装目录；应用不会自动删除失败包或回退版本。",
+            "UPDATE_NATIVE_APP_REQUIRED": "可信更新需要管理员提供的原生签名 App，不能从源码、环境注入凭证或任意命令包启动。现有配对不需要删除。",
             "BRIDGE_ALREADY_RUNNING": "另一份 Bridge 正在使用当前配置。请先正常退出旧终端版或切回现有菜单栏应用。",
             "BRIDGE_WORKSPACE_CONTAINS_STATE": "请选择具体项目目录，不要选择包含 Bridge 配对或执行日志的上级目录。",
             "DESKTOP_ALREADY_PAIRED": "这台设备已经配对；如需更换租户，请先正常撤销当前配对。"
         ]
-        alert.informativeText = "\(explanations[code] ?? "请确认网络和配对码有效；服务器未确认的操作不会显示成功。")\n\n诊断代码：\(code)\n原配对和执行证据不会通过重试或清缓存自动删除。"
+        let fallback = code.hasPrefix("UPDATE_") ? "可信更新未完成或尚不能确认。请保留原应用、配对、失败包与日志，向管理员提供诊断代码；不要重新配对、强制覆盖应用或关闭系统安全保护。" : "请确认网络和配对码有效；服务器未确认的操作不会显示成功。"
+        alert.informativeText = "\(explanations[code] ?? fallback)\n\n诊断代码：\(code)\n原配对和执行证据不会通过重试或清缓存自动删除。"
         alert.runModal()
     }
     @objc private func quit() { NSApp.terminate(nil) }

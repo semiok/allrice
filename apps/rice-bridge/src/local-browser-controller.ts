@@ -52,6 +52,10 @@ export class LocalBrowserController {
   private active: Active | null = null;
   private stopping = false;
   private heartbeatBusy = false;
+  private polling = false;
+  get hasActiveWork() {
+    return this.polling || this.active !== null;
+  }
   constructor(
     private readonly input: {
       deviceId: string;
@@ -59,6 +63,7 @@ export class LocalBrowserController {
       profiles: LocalBrowserProfiles;
       outbox: LocalBrowserOutbox;
       enabled: () => Promise<boolean>;
+      acquiring?: () => boolean;
       paired: () => Promise<boolean>;
       preview?: { enabled: () => Promise<boolean>; runner: LocalCommandRunner };
       startDriver?: typeof startLocalBrowserDriver;
@@ -595,7 +600,9 @@ export class LocalBrowserController {
     if (this.stopping) return false;
     if (!this.active) {
       const enabled =
-        (await this.input.enabled()) && (await this.input.paired());
+        this.input.acquiring?.() !== false &&
+        (await this.input.enabled()) &&
+        (await this.input.paired());
       const sentAt = Date.now();
       const claim = await this.input.authority.claim(
         this.controllerId,
@@ -627,6 +634,7 @@ export class LocalBrowserController {
       return true;
     }
     if (!['agent', 'human'].includes(active.workspace.state)) return false;
+    if (this.input.acquiring?.() === false) return false;
     const operation = await this.input.authority.next({
       kind: 'next',
       ...this.owned(active),
@@ -637,16 +645,22 @@ export class LocalBrowserController {
   }
   async pollOnce() {
     if (this.stopping) return false;
-    if (!(await this.input.paired())) {
-      await this.retirePairing();
-      return false;
-    }
+    if (this.polling) return false;
+    this.polling = true;
     try {
-      return await this.pollCurrent();
-    } catch (error) {
-      if (error instanceof LocalBrowserTransportError && error.status === 401)
+      if (!(await this.input.paired())) {
         await this.retirePairing();
-      throw error;
+        return false;
+      }
+      try {
+        return await this.pollCurrent();
+      } catch (error) {
+        if (error instanceof LocalBrowserTransportError && error.status === 401)
+          await this.retirePairing();
+        throw error;
+      }
+    } finally {
+      this.polling = false;
     }
   }
   async run(signal: AbortSignal) {

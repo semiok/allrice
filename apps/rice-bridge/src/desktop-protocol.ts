@@ -5,7 +5,18 @@ const hasControl = (value: string) =>
       character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
   );
 export type DesktopRequest = { v: 1; id: string } & (
-  | { type: 'status' | 'pause' | 'resume' | 'diagnostics' | 'stop' }
+  | {
+      type:
+        | 'status'
+        | 'pause'
+        | 'resume'
+        | 'diagnostics'
+        | 'stop'
+        | 'updateStatus'
+        | 'drain'
+        | 'recoverUpdate';
+    }
+  | { type: 'installUpdate'; version: string }
   | { type: 'pair'; server: string; code: string }
   | { type: 'workspace'; path: string }
   | { type: 'picker'; pickerId: string; path: string | null }
@@ -34,6 +45,10 @@ export function parseDesktopRequest(bytes: string): DesktopRequest {
     resume: [],
     diagnostics: [],
     stop: [],
+    updateStatus: [],
+    drain: [],
+    recoverUpdate: [],
+    installUpdate: ['version'],
     pair: ['server', 'code'],
     workspace: ['path'],
     picker: ['pickerId', 'path'],
@@ -42,6 +57,13 @@ export function parseDesktopRequest(bytes: string): DesktopRequest {
     preview: ['enabled'],
   };
   if (!Object.hasOwn(keys, row.type)) throw Error('DESKTOP_REQUEST_INVALID');
+  if (
+    row.type === 'installUpdate' &&
+    (typeof row.version !== 'string' ||
+      !/^\d+\.\d+\.\d+(?:-dev\.\d+)?$/.test(row.version) ||
+      row.version.length > 80)
+  )
+    throw Error('DESKTOP_REQUEST_INVALID');
   if (
     ['browser', 'preview'].includes(row.type) &&
     typeof row.enabled !== 'boolean'
@@ -125,6 +147,37 @@ export function desktopSafeError(error: unknown) {
     'DESKTOP_REVOKE_MISMATCH',
     'DESKTOP_PICKER_CANCELED',
     'DESKTOP_STOP_UNCONFIRMED',
+    'UPDATE_DRAIN_BROWSER_ACTIVE',
+    'UPDATE_DRAIN_UNCONFIRMED',
+    'UPDATE_TRUST_UNCONFIGURED',
+    'UPDATE_CHECK_REQUIRED',
+    'UPDATE_RECOVERY_REQUIRED',
+    'UPDATE_HEALTH_MISMATCH',
+    'UPDATE_HEALTH_TIMEOUT',
+    'UPDATE_HEALTH_UNCONFIRMED',
+    'UPDATE_REQUEST_CONSUMED',
+    'UPDATE_STOP_UNCONFIRMED',
+    'UPDATE_INSTALL_FAILED',
+    'UPDATE_HELPER_START_FAILED',
+    'UPDATE_STORAGE_REVIEW',
+    'UPDATE_NATIVE_APP_REQUIRED',
+    'UPDATE_INSTALL_PATH_UNSAFE',
+    'UPDATE_STATE_UNSAFE',
+    'UPDATE_METADATA_INVALID',
+    'UPDATE_METADATA_LIMIT',
+    'UPDATE_METADATA_EXPIRED',
+    'UPDATE_SIGNATURE_INVALID',
+    'UPDATE_PACKAGE_SIGNATURE_INVALID',
+    'UPDATE_PACKAGE_INTEGRITY',
+    'UPDATE_PUBLISHER_UNKNOWN',
+    'UPDATE_PUBLISHER_MISMATCH',
+    'UPDATE_OS_INCOMPATIBLE',
+    'UPDATE_FORMAT_INCOMPATIBLE',
+    'UPDATE_ARCHITECTURE_INVALID',
+    'UPDATE_ORIGIN_INVALID',
+    'UPDATE_DOWNLOAD_LIMIT',
+    'UPDATE_DOWNLOAD_FAILED',
+    'UPDATE_APPLE_VERIFICATION_FAILED',
     'JOURNAL_IDENTITY_MISMATCH',
     'JOURNAL_NAMESPACE_INVALID',
     'BRIDGE_WORKSPACE_CONTAINS_STATE',

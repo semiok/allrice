@@ -45,6 +45,7 @@ export class RuntimeBridgeOperationClient {
       execute?: typeof executeLocalCommand;
       request?: typeof bridgeRequest;
       onActivity?: (active: boolean) => void;
+      acquiring?: () => boolean;
     },
   ) {
     input.journal.assertIdentity(input.config.server, input.config.deviceId);
@@ -139,6 +140,7 @@ export class RuntimeBridgeOperationClient {
     // A failed/full outbox prevents acquiring more work, providing backpressure.
     if (!(await this.flush())) return false;
     if (this.input.signal?.aborted) return false;
+    if (this.input.acquiring?.() === false) return false;
     const response = await this.request<{ dispatch: unknown }>({
       server: this.input.config.server,
       path: `${runtimeBridgeOperationPath}/next`,
