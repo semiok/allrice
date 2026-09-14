@@ -47,7 +47,9 @@ env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" LANG=en_US.UTF-8 \
 
 适配器的公开返回值也必须与 PG 全树账本逐项相等，不能只验证数据库而漏掉父级返回值少算子用量的回归：`assistantStatus=completed`、`usageComplete=true`、输入/输出总量等于对应 budget spent。当前全树接口的 `cacheUsageKnown=false`、`costEstimateAvailable=false` 必须明确保留；缓存数值 0 只是带未知标记的占位，不是已确认的缓存用量，也不推出零成本。这些安全字段及数字进入报告，不保留完整答案。
 
-证据仅写入新建 `.local/p27-assistants-<UUID>/` 的私有 append-only JSON：候选及源码哈希、标识、摘要/答案哈希、对象字节数、断言、持久采纳序号、预算与用量、清理状态。绝不记录 raw thinking、模型完整答案、prompt payload、工具原始事件、凭据或泛化 error stack。错误仅保留固定断言代码；provider 原始错误不进入报告。
+证据仅写入新建 `.local/p27-assistants-<UUID>/` 的私有 append-only JSON：候选及源码哈希、标识、摘要/答案哈希、对象字节数、断言、持久采纳序号、预算与用量、清理状态。绝不记录 raw thinking、模型完整答案、prompt payload、工具原始事件、凭据或泛化 error stack。错误仅保留下面定义的白名单标量；provider 原始错误不进入报告。
+
+失败诊断另外保留精确白名单 error code/class、布尔 retryable、400–599 HTTP status 及固定正则匹配的类别（认证、限流、模型不可用、严格工具 schema、previous-response/state、native authority、预算等）。类别只是线索，不能作为已证根因或自动重试授权。cause 最多 5 层，每层 code/message 只扫描前 4096 字符；不调用 getter/序列化 hook，不遍历 payload，不写入任何原文、堆栈、响应正文、headers 或凭据。超长或未知代码不能凭 `DSH_` / `p27_` 前缀进入报告。
 
 生产 JSONL native session 为证明真正 durable adoption 会在独立私有临时 runtime 目录短暂存在；其中可能包含模型原生内容，不能冒充零落盘。这些内容不被复制到证据，在确认本脚本启动的 host 已退出后，删除仅本次私有 runtime/work/storage 和随机 schema。报告中的 artifact ID/hash 证明本次实际 reopen/readback；清理后不能再下载该临时对象。若 host 停止或 schema 清理不确认，则标记 `cleanup_blocked` 并保留新建私有目录供人工诊断，不能宣称全部清理，更不能宽泛 kill/rm。
 
@@ -56,7 +58,7 @@ fixture 初始化失败同样需要真实清理回执，不能因 `database` 未
 ## 无 provider 自测
 
 ```sh
-pnpm exec vitest run --maxWorkers=1 scripts/acceptance/runtime/p27-assistant-preflight.test.ts scripts/acceptance/runtime/p27-assistant-outcome.test.ts scripts/acceptance/runtime/p27-owned-clients.test.ts
+pnpm exec vitest run --maxWorkers=1 scripts/acceptance/runtime/p27-assistant-preflight.test.ts scripts/acceptance/runtime/p27-assistant-outcome.test.ts scripts/acceptance/runtime/p27-error-diagnostics.test.ts scripts/acceptance/runtime/p27-owned-clients.test.ts
 env -u DATABASE_URL -u ALLRICE_TEST_DATABASE_URL ALLRICE_RUN_P27_FIXTURE_TEST=1 \
   pnpm exec vitest run --maxWorkers=1 scripts/acceptance/runtime/p27-assistant-fixture.test.ts
 env -u DATABASE_URL ALLRICE_RUN_DB_INTEGRATION=1 \
@@ -67,5 +69,7 @@ env -u DATABASE_URL ALLRICE_RUN_DB_INTEGRATION=1 \
 第二条仅在含 P25 接线的源码环境运行：合成随机 PG schema、真实 controller/authority 准入、真实零使用预算初始化；不启动 native host，不解析凭据，不调用模型。它不是 provider smoke 的替代。
 
 本次自测：6 个 preflight、11 个 whole-tree outcome 和 2 个真实 dummy 子进程停止测试通过；dummy 不回应 initialize 的场景证明不能把空 pool inventory 当作 host 已退出，必须由 initialize 入场登记全部 owned client、等待 execute settle 和真实 close 事件，再清理。正常合成 PG 准入 1/1、真实 PG 故障清理 3/3 通过；database 与脚本 TypeScript 检查均为 0 diagnostics，ESLint 通过。未执行 `--execute`，没有真实 provider 成功收据。
+
+安全诊断增补：26 个纯测试覆盖所有分类、精确代码拒绝、HTTP/boolean 类型、长载荷、嵌套/循环 cause、getter/toJSON/live Proxy 零调用；与 preflight/outcome 合并 43/43 通过，未调用 provider。
 
 仍未由本脚本覆盖：P27 四条真实业务任务线、M/Intel 实际 Bridge、旧 Bridge/Session 恢复、正式 Developer ID 签名/公证安装更新、取消/断连/跨租户/撤权/恶意预览/超预算负例、完整 P26 前端交付和 P28 release gate。已有其他证据需各自绑定同一最终候选并独立验收；证书缺失仍是正式分发验收的外部阻断项。

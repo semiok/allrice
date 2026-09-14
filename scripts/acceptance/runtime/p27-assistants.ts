@@ -21,6 +21,7 @@ import type { DshHarnessAdapter as Adapter } from '../../../apps/worker/src/harn
 import { observeP27Clients } from './p27-owned-clients.ts';
 import { collectP27InstalledRuntime } from './p27-installed-runtime.ts';
 import { validateP27AssistantOutcome } from './p27-assistant-outcome.ts';
+import { p27ErrorDiagnostics } from './p27-error-diagnostics.ts';
 import {
   assertExecutionAuthorization,
   authorizedPlatformHome,
@@ -590,12 +591,11 @@ async function main() {
     report.status = 'passed_basic_assistants_only';
   } catch (error) {
     report.status = 'failed';
-    // Error strings may contain provider payloads or DB arguments. Retain only
-    // our fixed assertion code, never a generic error message/stack/actual value.
+    // Only bounded, allowlisted scalar diagnostics; no raw error is persisted.
+    const diagnostics = p27ErrorDiagnostics(error);
+    report.failureDiagnostics = diagnostics;
     report.failureCode =
-      error instanceof Error && /^p27_[a-z_]+$/.test(error.message)
-        ? error.message
-        : 'p27_external_or_runtime_failure';
+      diagnostics.errors[0]?.code ?? 'p27_external_or_runtime_failure';
     process.exitCode = 1;
   } finally {
     let nativeStopped = !adapter;
