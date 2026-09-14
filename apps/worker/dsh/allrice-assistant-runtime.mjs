@@ -1,5 +1,5 @@
 /* global AbortController, Buffer */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 /** Pinned TokenUsage has disjoint uncached/read-cache/write-cache counts.
@@ -186,6 +186,38 @@ export function createGovernedAssistantNativeRuntime(
         );
     }
   }
+  const modelAdmissions = new Map();
+  // Supported native proposal seam: return a new config BEFORE prepareCall
+  // freezes maxTokens. Never mutate the prepared llm/stream request.
+  ctx.on('agent/request', async ({ agent, signal }, next) => {
+    const config = await next();
+    if (!bindings.has(agent.id)) return config;
+    if (modelAdmissions.has(agent.id))
+      throw Error('assistant_model_unknown_no_replay');
+    const requested = config.maxTokens;
+    if (!Number.isSafeInteger(requested) || requested <= 0)
+      throw Error('assistant_model_output_bound_required');
+    await Promise.all([...pendingWrites]);
+    await checkpoints(agent.id);
+    const callId = randomUUID();
+    const prepared = await bridge(
+      'model-prepare',
+      { nativeSessionId: agent.id, callId, outputTokens: requested },
+      signal,
+    );
+    if (!prepared.prepared) throw Error('assistant_model_unknown_no_replay');
+    if (
+      !Number.isSafeInteger(prepared.outputTokens) ||
+      prepared.outputTokens <= 0 ||
+      prepared.outputTokens > requested
+    )
+      throw Error('assistant_model_output_grant_invalid');
+    modelAdmissions.set(agent.id, {
+      callId,
+      outputTokens: prepared.outputTokens,
+    });
+    return { ...config, maxTokens: prepared.outputTokens };
+  });
   ctx.on('llm/stream', async function* (options, next) {
     const id = options.sessionId;
     if (!bindings.has(id)) {
@@ -197,7 +229,10 @@ export function createGovernedAssistantNativeRuntime(
     }
     await Promise.all([...pendingWrites]);
     await checkpoints(id);
-    const callId = randomUUID();
+    const admission = modelAdmissions.get(id);
+    if (!admission || options.maxTokens !== admission.outputTokens)
+      throw Error('assistant_model_preparation_required');
+    const { callId } = admission;
     const inputTokens = Buffer.byteLength(
       JSON.stringify({
         messages: options.messages,
@@ -210,11 +245,32 @@ export function createGovernedAssistantNativeRuntime(
     if (!Number.isSafeInteger(outputTokens) || outputTokens <= 0)
       throw Error('assistant_model_output_bound_required');
     const reservation = await bridge(
-      'model-reserve',
-      { nativeSessionId: id, callId, inputTokens, outputTokens },
+      'model-dispatch',
+      {
+        nativeSessionId: id,
+        callId,
+        inputTokens,
+        outputTokens,
+        requestDigest: `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify({
+              provider: options.provider,
+              model: options.model,
+              reasoningEffort: options.reasoningEffort,
+              temperature: options.temperature,
+              maxTokens: outputTokens,
+              messages: options.messages,
+              system: options.system,
+              tools: options.tools,
+            }),
+          )
+          .digest('hex')}`,
+      },
       options.signal,
     );
     if (!reservation.reserved) throw Error('assistant_model_unknown_no_replay');
+    if (reservation.outputTokens !== outputTokens)
+      throw Error('assistant_model_output_grant_invalid');
     let usage;
     let observedOutput = false;
     try {
@@ -244,6 +300,7 @@ export function createGovernedAssistantNativeRuntime(
         },
         signal(),
       );
+      modelAdmissions.delete(id);
     }
   });
   async function start(p) {
@@ -487,6 +544,7 @@ export function createGovernedAssistantNativeRuntime(
       nativeCompletions.clear();
       checkpointChains.clear();
       checkpointProofs.clear();
+      modelAdmissions.clear();
       return { released: true };
     },
     async flush() {
