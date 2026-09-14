@@ -1,5 +1,3 @@
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import {
   chmod,
   link,
@@ -13,12 +11,12 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { BridgeJournal } from './journal.js';
 import { fixtureId, journalDispatch } from './journal-fixtures.js';
+import { journalOwnerFixture } from './journal-owner-fixture.js';
 
 const temporaries: string[] = [];
 const journals: BridgeJournal[] = [];
@@ -45,6 +43,56 @@ async function openJournal(input: Parameters<typeof BridgeJournal.open>[0]) {
   const journal = await BridgeJournal.open(input);
   journals.push(journal);
   return journal;
+}
+
+async function expectLiveOwnerLocked(
+  owner: ReturnType<typeof journalOwnerFixture>,
+  input: Parameters<typeof BridgeJournal.open>[0],
+) {
+  const before = owner.evidence();
+  let contender: BridgeJournal | undefined;
+  let rejectedWithLock = false;
+  try {
+    contender = await BridgeJournal.open(input);
+  } catch (error) {
+    rejectedWithLock = error instanceof Error && /locked/.test(error.message);
+  } finally {
+    // An unexpected acquisition must not leak a live DB handle into cleanup.
+    await contender?.close();
+  }
+  const after = owner.evidence();
+  // Keep the acquisition evidence even if the owner exits between the open
+  // attempt and the acknowledgement; that is the historical blind spot.
+  const acknowledgement = await owner.command('probe').catch(() => null);
+  expect(
+    {
+      acquired: !!contender,
+      rejectedWithLock,
+      beforeState: before.state,
+      beforeExit: before.exitCode,
+      beforeSignal: before.signalCode,
+      afterState: after.state,
+      afterExit: after.exitCode,
+      afterSignal: after.signalCode,
+      acknowledgedState: acknowledgement?.state ?? 'unavailable',
+    },
+    JSON.stringify({
+      before,
+      after,
+      afterProbe: owner.evidence(),
+      acknowledgement,
+    }),
+  ).toEqual({
+    acquired: false,
+    rejectedWithLock: true,
+    beforeState: 'held',
+    beforeExit: null,
+    beforeSignal: null,
+    afterState: 'held',
+    afterExit: null,
+    afterSignal: null,
+    acknowledgedState: 'held',
+  });
 }
 
 describe('durable Bridge journal (real SQLite/filesystem)', () => {
@@ -160,53 +208,20 @@ describe('durable Bridge journal (real SQLite/filesystem)', () => {
     'retains exclusive OS lock across commits and SIGKILL: %s',
     async (stage) => {
       const { input, dispatch, root } = await fixture();
-      const moduleUrl = new URL('./journal.ts', import.meta.url).href;
-      const child = spawn(
-        process.execPath,
-        [
-          '--import',
-          'tsx',
-          '--input-type=module',
-          '-e',
-          `
-      const { BridgeJournal } = await import(${JSON.stringify(moduleUrl)});
-      const { writeFile } = await import('node:fs/promises');
-      const journal = await BridgeJournal.open(${JSON.stringify(input)});
-      await journal.receive(${JSON.stringify(dispatch)});
-      await journal.begin(${JSON.stringify(fixtureId(6))});
-      await writeFile(${JSON.stringify(join(root, 'effect.txt'))}, 'effect happened');
-      ${stage === 'result_committed' ? `await journal.outcome(${JSON.stringify(fixtureId(6))}, { status: 'succeeded', effects: 'applied', summary: 'result committed' });` : ''}
-      process.stdout.write('committed-and-effected\\n');
-      setInterval(() => {}, 1000);
-    `,
-        ],
-        {
-          cwd: fileURLToPath(new URL('../../../', import.meta.url)),
-          env: {
-            ...process.env,
-            TSX_TSCONFIG_PATH: fileURLToPath(
-              new URL('../../../tsconfig.base.json', import.meta.url),
-            ),
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        },
-      );
-      let stderr = '';
-      child.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+      const owner = journalOwnerFixture({
+        journal: input,
+        dispatch,
+        effect: join(root, 'effect.txt'),
+        stage: stage as 'effect_without_result' | 'result_committed',
       });
       try {
-        await new Promise<void>((resolve, reject) => {
-          child.stdout.once('data', () => resolve());
-          child.once('exit', (code) =>
-            reject(new Error(`child exited ${code}: ${stderr}`)),
-          );
-        });
+        expect((await owner.command('start')).state).toBe('held');
         // The child has COMMITTED its executing marker, not left it uncommitted.
-        await expect(BridgeJournal.open(input)).rejects.toThrow(/locked/);
-        const exited = once(child, 'exit');
-        child.kill('SIGKILL');
-        await exited;
+        await expectLiveOwnerLocked(owner, input);
+        // GC does not release a journal retained by a live owner's command loop.
+        expect((await owner.command('gc')).state).toBe('held');
+        await expectLiveOwnerLocked(owner, input);
+        await owner.kill();
         const recovered = await openJournal(input);
         expect(await readFile(join(root, 'effect.txt'), 'utf8')).toBe(
           'effect happened',
@@ -227,11 +242,72 @@ describe('durable Bridge journal (real SQLite/filesystem)', () => {
           'JOURNAL_EXECUTION_ALREADY_CLAIMED',
         );
       } finally {
-        if (child.exitCode === null && child.signalCode === null) {
-          const exited = once(child, 'exit');
-          child.kill('SIGKILL');
-          await exited;
-        }
+        await owner.kill();
+      }
+    },
+    20_000,
+  );
+
+  it('distinguishes stdout noise and a live released process from a journal owner', async () => {
+    const { input, dispatch, root } = await fixture();
+    const owner = journalOwnerFixture({
+      journal: input,
+      dispatch,
+      effect: join(root, 'effect.txt'),
+      stage: 'result_committed',
+    });
+    try {
+      expect((await owner.command('probe')).state).toBe('booting');
+      // The child emitted stdout but has not opened the journal. Waiting for
+      // arbitrary stdout, as the historical test did, cannot prove ownership.
+      await expect.poll(() => owner.evidence().stdoutBytes).toBeGreaterThan(0);
+      await (await openJournal(input)).close();
+      expect((await owner.command('start')).state).toBe('held');
+      await expectLiveOwnerLocked(owner, input);
+      expect((await owner.command('release')).state).toBe('released');
+      expect(owner.evidence()).toMatchObject({
+        exitCode: null,
+        signalCode: null,
+        connected: true,
+      });
+      await (await openJournal(input)).close();
+      expect((await owner.command('probe')).state).toBe('released');
+    } finally {
+      await owner.kill();
+    }
+  }, 20_000);
+
+  it.skipIf(process.platform === 'win32')(
+    'detects a live owner losing its OS lock after injected same-inode fd close',
+    async () => {
+      const { input, dispatch, root } = await fixture();
+      const owner = journalOwnerFixture({
+        journal: input,
+        dispatch,
+        effect: join(root, 'effect.txt'),
+        stage: 'result_committed',
+      });
+      try {
+        expect((await owner.command('start')).state).toBe('held');
+        await expectLiveOwnerLocked(owner, input);
+        await owner.command('drop-os-lock-for-control');
+        // This deliberately injected SQLite/POSIX misuse must fail the exact
+        // same assertion used above, even with a live, responsive owner.
+        await expect(expectLiveOwnerLocked(owner, input)).rejects.toMatchObject(
+          {
+            actual: expect.objectContaining({
+              acquired: true,
+              rejectedWithLock: false,
+              beforeState: 'held',
+              beforeExit: null,
+              afterState: 'held',
+              afterExit: null,
+              acknowledgedState: 'held',
+            }),
+          },
+        );
+      } finally {
+        await owner.kill();
       }
     },
     20_000,

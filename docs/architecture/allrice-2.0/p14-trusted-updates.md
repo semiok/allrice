@@ -81,6 +81,31 @@
 - 最新候选位于 `.local/p14-app-intel-handoff` / `.local/p14-app-arm-handoff`。Intel ZIP SHA-256 `3c9ebf8b3719081303c09c737cfdc22f555ef99fedeb79c8f39e394211be3d71`（41,852,842 bytes）；M ZIP `b539b461be1bacc97ef92418cd352b3ce1b10eb205089ea1b30a3020620a4a6f`（40,632,906 bytes），两个最终 ZIP 都通过实际预检。最新 Intel 原生烟测 synthetic root 为 `/private/var/folders/30/v63hjxmj0slbppng0p3fc5t40000gp/T/allrice-p13-core-pvGV68`，`native-status-view.png` 保留；这些只供本地审核，不是允许用户安装的正式更新源。
 - 首次默认 Homebrew Node 构建因缺 SEA sentinel 失败，保留 `.local/p14-app-intel`，改用上述已验证官方 Node 后成功。真实系统 ditto ZIP 初次预检暴露有限 Unix extra field `0x5855`，只加入该时间戳/UID-GID字段兼容并用真实 ZIP 回归，没有放宽路径或符号链接限制。
 - 实现中修复了已知完成回执上传 503 时错误把 drain 标为失败的问题，以及测试读取 child marker 存在但 bytes 尚未写完的时序问题；分别有实际 HTTP/SQLite drain 与 exact-content child 检查复核。
-- 并行全量曾出现两个非新增用例失败：desktop preview fixture 连接状态 deadline；既有 `journal.test.ts` 的 result_committed 子进程用例一次预期 owner locked 却取得 journal。报告 `.local/p14-bridge-verified-tests.json` 保留。二者串行复核 **31 passed / 1 skipped**；另以 exact stdout sentinel、抢锁前后 childAlive 检查重复原 result_committed 流程 **12/12** 都拒绝 competing open。强制 GC 对照也未复现。原失败没有记录 child 当时的完整生命周期，**根因尚未确定，不能因此宣称已排除 owner 锁漏洞或将其标为已修复**；没有修改既有 journal 实现或弱化该断言。需在联合回归持续观察并在启用正式 updater 前闭合。
+- 并行全量曾出现两个非新增用例失败：desktop preview fixture 连接状态 deadline；既有 `journal.test.ts` 的 result_committed 子进程用例一次预期 owner locked 却取得 journal。报告 `.local/p14-bridge-verified-tests.json` 保留。二者串行复核 **31 passed / 1 skipped**；另以 exact stdout sentinel、抢锁前后 childAlive 检查重复原 result_committed 流程 **12/12** 都拒绝 competing open。强制 GC 对照也未复现。原失败没有记录 child 当时的完整生命周期，**根因尚未确定，不能因此宣称已排除 owner 锁漏洞或将其标为已修复**；当时没有修改既有 journal 实现或弱化该断言。后续有界复核与风险处置见下，不用后来的通过覆盖此失败。
+
+## 非签名锁异常复核（2026-09-14，基线 `35f6266`）
+
+保留原报告 `/Users/a123/allrice-b6-p14/.local/p14-bridge-verified-tests.json`，SHA-256 `8f2caf45dcf8d702cef48ac906ecbf0730bdc968f9404394abee41feed28a523`。原报告是 **540 passed / 2 failed**，journal 失败用例耗时 2792 ms，明确记录 competing `BridgeJournal.open` 成功；没有抢锁前后 PID/退出信号或 owner 阶段证据，无法据此追认子进程存活、未就绪、GC 或真实 OS 锁失效中的哪一种原因。原文件未改写。
+
+本轮只改测试及本文，没有修改 production journal/owner 实现：
+
+- 子进程就绪改为独立 IPC、精确 request ID 和已完成阶段确认，stdout 不再是持锁证据。锁断言记录抢锁前后 PID、退出码/信号、阶段、输出字节数、Node/SQLite/架构，并要求子进程继续通过原 journal API 响应；不输出子进程原文、配置或凭据。意外取得的 contender 在断言失败前关闭，避免失败自身遗留句柄。原 SIGKILL 后 pending/unknown、去重和不重放断言保留。
+- fixture 的存活命令闭包明确持有 journal，模拟 Core 的实际强引用；GC 前后均检查锁。这是改进 owner 生命周期证据，不宣称证明原未引用 interval 写法的历史 GC 行为。
+- 独立对照验证：子进程已输出 stdout 但尚未 open，以及子进程已主动 close 但 PID 仍活着，都可以合法取得 journal，不能仅用“有 stdout / PID 活着”推断互斥失效。
+- 另在私有 fixture **故意**于 owner 持锁期间打开并关闭同一 SQLite inode 的另一个原始 fd；POSIX 下实际产生锁丢失，增强后的同一断言准确捕获 `acquired=true`、前后 `held/live` 且 owner 仍响应。它是诊断负控，**不是正常产品路径，也不是原失败的已证根因**。[SQLite 官方说明此类同进程 fd close 会取消锁](https://sqlite.org/howtocorrupt.html)。该负控在 Windows 显式跳过，不能外推 Windows 结果。
+
+只读源码复核未找到正常持有期间 raw open/close 同一 journal inode 的路径：`BridgeJournal.open` 在 SQLite open **之前**完成私有文件 raw fd 检查，且同进程 guard 在 raw open **之前**拒绝第二句柄；持有期 inode 检查与更新 quiescence 检查使用 `lstat`。这不是对任意同 UID 进程、重复模块/线程环境或未来新增调用的安全证明。
+
+本轮环境为 Darwin x64、Node `v22.23.2`、SQLite `3.53.4`；所有测试为随机私有目录、合成凭据及必要的 loopback fixture，没有启动已安装 App、接触真实配对/Keychain、改 flags 或部署：
+
+- 改动前原用例：`pnpm exec vitest run apps/rice-bridge/src/journal.test.ts -t 'retains exclusive OS lock' --maxWorkers=1`，**2 passed / 9 skipped**。
+- 增强后 journal 单文件：`pnpm exec vitest run apps/rice-bridge/src/journal.test.ts --maxWorkers=1`，**13 passed**，4.20 秒。
+- 小范围真实 SQLite/子进程并发：`pnpm exec vitest run apps/rice-bridge/src/journal.test.ts apps/rice-bridge/src/update-quiescence.test.ts apps/rice-bridge/src/instance-lock.test.ts --maxWorkers=2`，**21 passed**，4.59 秒。
+- 原失败涉及的两个文件定向并发：`pnpm exec vitest run apps/rice-bridge/src/journal.test.ts apps/rice-bridge/src/desktop-controller.test.ts --maxWorkers=2 -t 'retains exclusive OS lock|disable is explicit, survives reopening, and preserves pairing|distinguishes stdout noise|detects a live owner'`，**6 passed / 28 skipped**，6.74 秒；28 条仅为本次名称筛选未运行，不能计入通过。这里的 desktop 是源码测试子进程和独立 loopback server，不是已安装 Bridge。
+- 最后一处诊断补充确保 IPC probe 失败也不丢弃此前的 competing open 结果；之后上述三文件双 worker 再验 **21 passed**，4.48 秒。改动文件 Prettier、ESLint，以及 Bridge `tsc --noEmit`、`git diff --check` 通过。各轮重叠测试不相加冒称一次全量验收。
+
+工程判断：**当前 production 锁未复现失败，未发现需猜测性修复的真实 raw fd 路径；本轮补齐了失败诊断与负控，历史事件保留为“未复现、归因不明”的风险记录。** 可将本次非签名诊断工作交回发布负责人作最终决策，不要求证明已销毁历史现场才能无限期前进，也不声称历史锁漏洞已修复。以下任一新证据应 reopen 并先停止相应 updater 验收：未注入故障时增强断言记录活跃 `held` owner 仍被 competing open 取得；发现持锁期间真实同 inode raw fd close/别名或额外 SQLite 副本路径；发生双 owner 实际执行、日志损坏或重复执行证据。没有触发这些条件的普通重跑通过不是删除原失败的理由。
+
+此结论不替代 MET-142 的最终固定包双机安装/更新/故障回退验收，也不更改 Developer ID、公证和受信更新源门禁；未将测试诊断收口写成 GA 或双机验收完成。
 
 官方依据：[Apple 公证](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)、[notarytool/stapler 工作流](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)、[Apple JIT entitlement](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.cs.allow-jit)、[Node 22 SEA](https://nodejs.org/download/release/latest-jod/docs/api/single-executable-applications.html)。采用这些机制不自动证明本候选已通过真实签名和双架构验收。
