@@ -15,6 +15,9 @@ import {
 
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { getCodexProviderStatus, recordCodexProviderStatus } from './status.ts';
+// Pure normalization/admission only: never construct or start the broker/client.
+import { codexQuotaObservation } from '../../../../apps/worker/src/codex-auth-broker.ts';
+import { assertSubscriptionQuotaNotExhausted } from '../../../../apps/worker/src/subscription-quota-admission.ts';
 
 const state = vi.hoisted(() => ({
   database: undefined as
@@ -215,6 +218,55 @@ integration('Codex quota status write ordering (isolated PG)', () => {
     expect((await getCodexProviderStatus()).quota).toEqual(exhausted);
     await recordCodexProviderStatus(status(4, quota(6, 20)));
     expect((await getCodexProviderStatus()).quota).toEqual(quota(6, 20));
+  });
+
+  it('broker transport/schema failures remain error observations and cannot clear unreset exhaustion or admission', async () => {
+    const now = Date.now();
+    const at = (seconds: number) =>
+      new Date(now + seconds * 1000).toISOString();
+    const exhausted = quota(2, 100);
+    exhausted.checkedAt = at(-20);
+    exhausted.buckets[0]!.windows[0].resetsAt = Math.floor(now / 1000) + 3600;
+    await recordCodexProviderStatus({
+      ...status(1, exhausted),
+      checkedAt: at(-21),
+    });
+
+    // RPC catch returns null; malformed RPC data fails the snapshot schema.
+    for (const [index, raw] of [null, { status: 'available' }].entries()) {
+      const observation = codexQuotaObservation(raw, true);
+      expect(observation).toMatchObject({
+        status: 'error',
+        accountFingerprint: null,
+        detailCode: 'codex_quota_protocol_unavailable',
+        buckets: [],
+      });
+      const startedAt = at(-10 + index);
+      await recordCodexProviderStatus({
+        ...status(3, observation),
+        checkedAt: startedAt,
+      });
+      const persisted = await getCodexProviderStatus();
+      expect(persisted.quota).toEqual(exhausted);
+      expect(persisted.quota?.checkedAt).toBe(at(-20));
+      expect(persisted.checkedAt).toBe(startedAt);
+      expect(() =>
+        assertSubscriptionQuotaNotExhausted(persisted.quota, now),
+      ).toThrow(
+        expect.objectContaining({
+          code: 'CODEX_SUBSCRIPTION_QUOTA_EXHAUSTED',
+        }),
+      );
+    }
+
+    // The newer failed probe also fences a delayed older available result.
+    await recordCodexProviderStatus({
+      ...status(2, { ...quota(5, 20), checkedAt: at(1) }),
+      checkedAt: at(-15),
+    });
+    const persisted = await getCodexProviderStatus();
+    expect(persisted.quota).toEqual(exhausted);
+    expect(persisted.checkedAt).toBe(at(-9));
   });
 
   it('unknown identity or available data for only another bucket cannot erase the exhausted window', async () => {

@@ -43,20 +43,25 @@ const eligibility = (
   });
 
 describe('P26 assistant availability follows the server Session model (display only)', () => {
-  it('keeps frozen Codex unavailable even after the current employee changes to Gemini', () => {
-    expect(eligibility('gemini', frozen('openai-codex'))).toEqual({
-      eligible: false,
-      unavailableReason: 'model_unsupported',
-    });
-  });
+  it.each(['gemini', 'unknown'])(
+    'keeps frozen subscription Codex available after the current default changes to %s',
+    (provider) => {
+      expect(eligibility(provider, frozen('openai-codex'))).toEqual({
+        eligible: true,
+        unavailableReason: null,
+      });
+    },
+  );
   it('keeps frozen Gemini available even after the current default changes to Codex', () => {
     expect(eligibility('openai-codex', frozen('gemini')).eligible).toBe(true);
   });
   it('does not replace an unknown frozen provider with a supported default', () => {
     expect(eligibility('gemini', frozen('unknown')).eligible).toBe(false);
     expect(eligibility('gemini', frozen('')).eligible).toBe(false);
+    expect(eligibility('openai-codex', frozen('codex')).eligible).toBe(false);
+    expect(eligibility('openai-codex', frozen('unknown')).eligible).toBe(false);
   });
-  it.each(['gemini', 'google', 'openai-compatible'])(
+  it.each(['gemini', 'google', 'openai-compatible', 'openai-codex'])(
     'offers only the verified display protocol %s',
     (provider) => {
       expect(eligibility('unknown', frozen(provider)).eligible).toBe(true);
@@ -65,7 +70,9 @@ describe('P26 assistant availability follows the server Session model (display o
   );
   it.each([
     'codex',
-    'openai-codex',
+    'OpenAI-Codex',
+    ' openai-codex',
+    'openai-codex ',
     'deepseek',
     'deepseek-official',
     'unknown',
@@ -87,37 +94,43 @@ describe('P26 assistant availability follows the server Session model (display o
     ).toBe(true);
     expect(
       eligibility('openai-codex', frozen('gemini', 'other')).eligible,
+    ).toBe(true);
+    expect(
+      eligibility('unknown', frozen('openai-codex', 'other')).eligible,
     ).toBe(false);
   });
-  it('still requires the rollout flag and employee delegation tool', () => {
-    expect(
-      assistantEligibility({
-        enabled: false,
-        sessionId: 'active',
-        sessionModels: frozen('gemini'),
-        employee: employee('gemini'),
-      }).eligible,
-    ).toBe(false);
-    expect(
-      assistantEligibility({
-        enabled: true,
-        sessionId: 'active',
-        sessionModels: frozen('gemini'),
-        employee: employee('gemini', []),
-      }),
-    ).toEqual({ eligible: false, unavailableReason: 'employee_not_enabled' });
-    expect(
-      assistantEligibility({
-        enabled: true,
-        sessionId: 'active',
-        sessionModels: frozen('gemini'),
-      }).eligible,
-    ).toBe(false);
-  });
+  it.each(['gemini', 'openai-codex'])(
+    '%s still requires the rollout flag and employee delegation tool',
+    (provider) => {
+      expect(
+        assistantEligibility({
+          enabled: false,
+          sessionId: 'active',
+          sessionModels: frozen(provider),
+          employee: employee(provider),
+        }),
+      ).toEqual({ eligible: false, unavailableReason: 'feature_disabled' });
+      expect(
+        assistantEligibility({
+          enabled: true,
+          sessionId: 'active',
+          sessionModels: frozen(provider),
+          employee: employee(provider, []),
+        }),
+      ).toEqual({ eligible: false, unavailableReason: 'employee_not_enabled' });
+      expect(
+        assistantEligibility({
+          enabled: true,
+          sessionId: 'active',
+          sessionModels: frozen(provider),
+        }).eligible,
+      ).toBe(false);
+    },
+  );
 });
 
 describe('P26 submitted next-task assistant preference', () => {
-  it('clamps the default allow=true to false for Codex, without changing any model', () => {
+  it('allows subscription Codex preference without changing the frozen model', () => {
     const snapshot = frozen('openai-codex');
     const before = JSON.stringify(snapshot);
     const available = eligibility('gemini', snapshot);
@@ -127,27 +140,39 @@ describe('P26 submitted next-task assistant preference', () => {
       eligible: available.eligible,
       allowAssistants: true,
     });
-    expect(preference).toEqual({ mode: 'daily', allowAssistants: false });
-    expect(JSON.stringify({ assistantPreference: preference })).not.toContain(
-      '"allowAssistants":true',
-    );
+    expect(preference).toEqual({ mode: 'daily', allowAssistants: true });
     expect(JSON.stringify(snapshot)).toBe(before);
   });
-  it.each([true, false])(
-    'preserves a Gemini user preference %s',
-    (allowAssistants) => {
+  it.each([
+    ['gemini', true],
+    ['gemini', false],
+    ['openai-codex', true],
+    ['openai-codex', false],
+  ] as const)(
+    'preserves the %s user preference %s, including explicit opt-out',
+    (provider, allowAssistants) => {
       expect(
         assistantPreferenceForTask({
           enabled: true,
           deliveryMode: 'follow_up',
-          eligible: eligibility('codex', frozen('gemini')).eligible,
+          eligible: eligibility('unknown', frozen(provider)).eligible,
           allowAssistants,
         }),
       ).toEqual({ mode: 'daily', allowAssistants });
     },
   );
+  it('clamps allow=true for an unknown frozen model despite a Codex default', () => {
+    expect(
+      assistantPreferenceForTask({
+        enabled: true,
+        deliveryMode: 'follow_up',
+        eligible: eligibility('openai-codex', frozen('unknown')).eligible,
+        allowAssistants: true,
+      }),
+    ).toEqual({ mode: 'daily', allowAssistants: false });
+  });
   it('does not reuse a supported model preference after switching to an unsupported model', () => {
-    for (const provider of ['openai-codex', 'deepseek-official', 'unknown']) {
+    for (const provider of ['codex', 'deepseek-official', 'unknown']) {
       expect(
         assistantPreferenceForTask({
           enabled: true,

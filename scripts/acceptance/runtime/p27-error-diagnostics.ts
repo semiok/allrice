@@ -24,6 +24,7 @@ const classes = new Set([
   'AssistantFixtureCleanupError',
   'P27WorkerFixtureError',
   'P27CodexWorkerFixtureError',
+  'P27CodexJsonError',
   'ZodError',
   '$ZodError',
   'RuntimeLedgerError',
@@ -45,6 +46,10 @@ const classes = new Set([
 // Fixed source-defined codes, not a permissive character/prefix regex. Native
 // runtime error codes can originate in a provider and are otherwise untrusted.
 const codes = new Set([
+  'P27_CODEX_JSON_ARTIFACT_ENVELOPE_INVALID',
+  'P27_CODEX_JSON_CHILD_REPORT_INVALID',
+  'P27_CODEX_JSON_PARENT_ANSWER_INVALID',
+  'P27_CODEX_JSON_ORDINARY_ANSWER_INVALID',
   'DSH_CREDENTIAL_FILE_INSECURE',
   'DSH_CREDENTIAL_FILE_UNAVAILABLE',
   'DSH_CREDENTIAL_DIRECTORY_INVALID',

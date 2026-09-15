@@ -6,6 +6,11 @@ import type {
   P27PreparedCodexWorkerTask,
 } from './p27-codex-worker-fixture.ts';
 import { checkCodexAssistants as check } from './p27-codex-assistants-preflight.ts';
+import {
+  parseP27CodexJson,
+  type P27CodexJsonObservation,
+  type P27CodexJsonObserver,
+} from './p27-codex-json.ts';
 
 export type CodexFixtureIdentity = Pick<
   P27CodexWorkerFixture,
@@ -322,6 +327,7 @@ export async function verifyCodexAssistantExecution(
   fixture: CodexFixtureIdentity,
   task: P27PreparedCodexWorkerTask,
   result: HarnessExecutionResult,
+  observe?: P27CodexJsonObserver,
 ) {
   const evidence = await readCodexSubscriptionEvidence(fixture, task);
   const accounting = verifyCodexSubscriptionResult(result, evidence, true);
@@ -331,54 +337,21 @@ export async function verifyCodexAssistantExecution(
       result.usage.outputTokens === totals.output_tokens,
     'whole_tree_usage',
   );
-  const [{ LocalStorageAdapter }, { getWorkbenchArtifact, readArtifactBytes }] =
-    await Promise.all([
-      import('../../../packages/storage/src/index.ts'),
-      import('../../../packages/database/src/artifact-review.ts'),
-    ]);
-  const storage = new LocalStorageAdapter(process.env.ALLRICE_STORAGE_ROOT!);
-  const artifacts: { id: string; digest: string; case: string }[] = [];
-  for (const item of tree.results) {
-    const ref = item.evidence[0]!;
-    const artifact = await getWorkbenchArtifact(
-      fixture.context,
-      task.sessionId,
-      ref.id,
-      fixture.db,
+  const parseDiagnostics: P27CodexJsonObservation[] = [];
+  const record: P27CodexJsonObserver = (entry) => {
+    parseDiagnostics.push(entry);
+    observe?.(entry);
+  };
+  const artifacts = [];
+  for (const item of tree.results)
+    artifacts.push(
+      await verifyCodexAssistantArtifact(fixture, task, item, record),
     );
-    const bytes = await readArtifactBytes(storage, artifact.object, 140000);
-    check(
-      artifact.object.immutable &&
-        artifact.object.checksum === ref.digest &&
-        hash(bytes) === ref.digest &&
-        artifact.object.organizationId === fixture.organizationId &&
-        artifact.object.workspaceId === fixture.workspaceId &&
-        artifact.object.ownerId === fixture.ownerId &&
-        artifact.version.sessionId === task.sessionId &&
-        artifact.provenance.runId === item.runId,
-      'artifacts_unverified',
-    );
-    const content = JSON.parse(Buffer.from(bytes).toString('utf8'));
-    check(
-      content.kind === 'assistant_generated' &&
-        content.rootRunId === task.runId &&
-        content.childRunId === item.runId &&
-        content.deliveryId === item.deliveryId,
-      'artifacts_unverified',
-    );
-    const value = JSON.parse(content.content);
-    check(
-      value.case === 'A'
-        ? value.totalCents === 875 && value.rows === 2
-        : value.case === 'B' &&
-            value.invoiceCents === 1900 &&
-            value.paidCents === 1300 &&
-            value.outstandingCents === 600,
-      'child_arithmetic',
-    );
-    artifacts.push({ id: ref.id, digest: ref.digest, case: value.case });
-  }
-  const answer = JSON.parse(result.answer);
+  const { value: answer } = parseP27CodexJson(
+    result.answer,
+    'parent_answer',
+    record,
+  );
   check(
     new Set(artifacts.map((item) => item.case)).size === 2 &&
       answer.salesTotalCents === 875 &&
@@ -392,7 +365,96 @@ export async function verifyCodexAssistantExecution(
     budgets: tree.budgets,
     admissions,
     artifacts,
+    parseDiagnostics,
     answerDigest: hash(result.answer),
     wholeWorkerProjectionVerified: true,
+  };
+}
+
+/** The same production publication/read/ownership boundary as the live smoke;
+ * independently callable with synthetic PG artifacts, without any model. */
+export async function verifyCodexAssistantArtifact(
+  fixture: Pick<CodexFixtureIdentity, 'db' | 'context'> & {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+  },
+  task: { runId: string; sessionId: string },
+  item: {
+    runId: string;
+    deliveryId: string;
+    evidence: { id: string; digest: string }[];
+  },
+  observe?: P27CodexJsonObserver,
+) {
+  const [{ LocalStorageAdapter }, { getWorkbenchArtifact, readArtifactBytes }] =
+    await Promise.all([
+      import('../../../packages/storage/src/index.ts'),
+      import('../../../packages/database/src/artifact-review.ts'),
+    ]);
+  const storage = new LocalStorageAdapter(process.env.ALLRICE_STORAGE_ROOT!);
+  check(item.evidence.length === 1, 'artifacts_unverified');
+  const ref = item.evidence[0]!;
+  const parseDiagnostics: P27CodexJsonObservation[] = [];
+  const record: P27CodexJsonObserver = (entry) => {
+    const correlated = Object.freeze({
+      ...entry,
+      artifactId: ref.id,
+      childRunId: item.runId,
+      deliveryId: item.deliveryId,
+    });
+    parseDiagnostics.push(correlated);
+    observe?.(correlated);
+  };
+  const artifact = await getWorkbenchArtifact(
+    fixture.context,
+    task.sessionId,
+    ref.id,
+    fixture.db,
+  );
+  const bytes = await readArtifactBytes(storage, artifact.object, 140000);
+  check(
+    artifact.object.immutable &&
+      artifact.object.checksum === ref.digest &&
+      hash(bytes) === ref.digest &&
+      artifact.object.organizationId === fixture.organizationId &&
+      artifact.object.workspaceId === fixture.workspaceId &&
+      artifact.object.ownerId === fixture.ownerId &&
+      artifact.version.sessionId === task.sessionId &&
+      artifact.provenance.runId === item.runId &&
+      artifact.provenance.stepId === item.deliveryId,
+    'artifacts_unverified',
+  );
+  const { value: content } = parseP27CodexJson(
+    Buffer.from(bytes).toString('utf8'),
+    'artifact_envelope',
+    record,
+  );
+  check(
+    content.version === 1 &&
+      content.kind === 'assistant_generated' &&
+      content.independentlyVerified === false &&
+      typeof content.name === 'string' &&
+      content.name.length > 0 &&
+      content.rootRunId === task.runId &&
+      content.childRunId === item.runId &&
+      content.deliveryId === item.deliveryId,
+    'artifacts_unverified',
+  );
+  const { value } = parseP27CodexJson(content.content, 'child_report', record);
+  check(
+    value.case === 'A'
+      ? value.totalCents === 875 && value.rows === 2
+      : value.case === 'B' &&
+          value.invoiceCents === 1900 &&
+          value.paidCents === 1300 &&
+          value.outstandingCents === 600,
+    'child_arithmetic',
+  );
+  return {
+    id: ref.id,
+    digest: ref.digest,
+    case: value.case as 'A' | 'B',
+    parseDiagnostics,
   };
 }

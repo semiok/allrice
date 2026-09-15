@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
+  lstat,
   readFile,
   realpath,
   rm,
@@ -15,6 +16,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { HarnessExecutionResult } from '../../../apps/worker/src/harness/adapter.ts';
+import {
+  parseP27CodexJson,
+  type P27CodexJsonObservation,
+  type P27CodexJsonObserver,
+} from './p27-codex-json.ts';
 import type {
   P27PreparedCodexAssistantsTask,
   P27CodexAssistantsFixture,
@@ -72,13 +78,20 @@ const sourceFiles = [
   'apps/worker/dsh/allrice-assistant-runtime.mjs',
   'apps/worker/dsh/allrice-restricted.cordis.yml',
   'packages/database/src/assistant-pricing.ts',
+  'packages/database/src/assistant-output.ts',
+  'packages/database/src/artifact-review.ts',
   'packages/database/src/execution/queue.ts',
   'packages/database/src/providers/model-governance.ts',
+  'scripts/acceptance/ui/p28-codex-session-ui.ts',
+  'scripts/acceptance/ui/p28-codex-session-ui.test.ts',
   ...[
     'codex-assistants-smoke',
     'codex-assistants-fixture',
     'codex-assistants-preflight',
     'codex-assistants-verification',
+    'codex-json',
+    'codex-json.test',
+    'codex-assistants-artifact.test',
     'codex-worker-preflight',
     'worker-preflight',
     'assistant-preflight',
@@ -107,11 +120,25 @@ export async function mainP27CodexAssistants(
     ),
   );
   const installedRuntime = await collectP27InstalledRuntime(root);
+  // Refuse before any model execution when the real-history UI prerequisites
+  // are absent. No GUI process or personal Chrome profile is opened here.
+  const chromeExecutable =
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const chromeStat = await lstat(chromeExecutable);
+  checkCodexAssistants(
+    chromeStat.isFile() && (chromeStat.mode & 0o111) !== 0,
+    'ui_unverified',
+  );
+  const uiBuildId = (
+    await readFile(join(root, 'apps/web/.next/BUILD_ID'), 'utf8')
+  ).trim();
+  checkCodexAssistants(uiBuildId.length > 0, 'ui_unverified');
   const report: Record<string, unknown> = {
     version: 1,
     candidateSha: args.sha,
     sources,
     installedRuntime,
+    uiBuildId,
     status: 'preflight_only',
     provider: 'openai-codex',
     model: 'gpt-5.6-luna',
@@ -185,6 +212,11 @@ export async function mainP27CodexAssistants(
     log: console.log,
   };
   let suppressedLogs = 0;
+  let uiResourcesClosed = true;
+  const completedUiTasks: {
+    assistant?: { runId: string; sessionId: string };
+    ordinary?: { runId: string; sessionId: string };
+  } = {};
   // Worker failure logs can contain upstream text. Retain counts, never bytes.
   console.error =
     console.warn =
@@ -346,9 +378,28 @@ export async function mainP27CodexAssistants(
         'worker_model_not_invoked',
       );
       report.providerInvocation = 'confirmed_by_worker_result';
+      const parsing: P27CodexJsonObservation[] = [];
+      report.jsonParsing = parsing;
+      const observeJson: P27CodexJsonObserver = (entry) => {
+        report.phase = `json_${entry.stage}`;
+        if (parsing.length < 8) parsing.push(entry);
+      };
       const proof = assistants
-        ? await verifyCodexAssistantExecution(fixture!, task, result)
-        : await verifyCodexOrdinarySubscription(fixture!, task, result);
+        ? await verifyCodexAssistantExecution(
+            fixture!,
+            task,
+            result,
+            observeJson,
+          )
+        : await verifyCodexOrdinarySubscription(
+            fixture!,
+            task,
+            result,
+            observeJson,
+          );
+      report.phase = assistants
+        ? 'assistant_completion_verify'
+        : 'ordinary_completion_verify';
       check((await heartbeat.stop()).healthy, 'worker_lease_lost');
       await api.completeJob({ ...lease, result });
       const [terminal] = await db<
@@ -380,6 +431,7 @@ export async function mainP27CodexAssistants(
       );
       report[assistants ? 'assistant' : 'ordinary'] = {
         runId: task.runId,
+        sessionId: task.sessionId,
         ...proof,
         quota: {
           usedRuns: quota.usedRuns,
@@ -392,6 +444,10 @@ export async function mainP27CodexAssistants(
           cacheUsageKnown: quota.cacheUsageKnown,
         },
       };
+      completedUiTasks[assistants ? 'assistant' : 'ordinary'] = {
+        runId: task.runId,
+        sessionId: task.sessionId,
+      };
       activeTask = undefined;
       return task.runId;
     }
@@ -402,6 +458,33 @@ export async function mainP27CodexAssistants(
       },
     });
     checkCodexAssistants(executeCount === 2, 'execution_count');
+    checkCodexAssistants(
+      completedUiTasks.assistant && completedUiTasks.ordinary,
+      'ui_unverified',
+    );
+    report.phase = 'real_history_browser_verify';
+    await save();
+    const { verifyCodexWorkerSessionsInChrome } =
+      await import('../ui/p28-codex-session-ui.ts');
+    uiResourcesClosed = false;
+    const ui = await verifyCodexWorkerSessionsInChrome({
+      fixture,
+      assistant: completedUiTasks.assistant,
+      ordinary: completedUiTasks.ordinary,
+      storageRoot: process.env.ALLRICE_STORAGE_ROOT!,
+      evidenceDirectory,
+      chromeExecutable,
+    });
+    report.ui = ui;
+    uiResourcesClosed = Object.values(ui.cleanup).every(Boolean);
+    await save();
+    checkCodexAssistants(
+      ui.passed &&
+        uiResourcesClosed &&
+        ui.buildId === uiBuildId &&
+        ui.sourceHead === args.sha,
+      'ui_unverified',
+    );
     readCandidate(root, args.sha);
     check(
       JSON.stringify(await collectP27InstalledRuntime(root)) ===
@@ -453,7 +536,12 @@ export async function mainP27CodexAssistants(
     }
     let resourcesClosed =
       !fixtureAttempted || !!fixture || fixtureCleanupVerified;
-    if (nativeStopped && executionSettled && leasesStopped) {
+    if (
+      nativeStopped &&
+      executionSettled &&
+      leasesStopped &&
+      uiResourcesClosed
+    ) {
       for (const release of releases) {
         try {
           await boundedP27Wait(release(), 5000);
@@ -528,6 +616,7 @@ export async function mainP27CodexAssistants(
       nativeStopped,
       executionSettled,
       leasesStopped,
+      uiResourcesClosed,
       resourcesClosed,
       clients: clients?.snapshot() ?? null,
     };
@@ -553,13 +642,12 @@ async function verifyCodexOrdinarySubscription(
   fixture: P27CodexAssistantsFixture,
   task: P27PreparedCodexAssistantsTask,
   result: HarnessExecutionResult,
+  observe?: P27CodexJsonObserver,
 ) {
   const evidence = await readCodexSubscriptionEvidence(fixture, task);
   const accounting = verifyCodexSubscriptionResult(result, evidence, false);
-  checkCodexAssistants(
-    JSON.parse(result.answer).sum === 579,
-    'ordinary_result',
-  );
+  const parsed = parseP27CodexJson(result.answer, 'ordinary_answer', observe);
+  checkCodexAssistants(parsed.value.sum === 579, 'ordinary_result');
   const [roots] = await fixture.db<{ count: number }[]>`
     select count(*)::int as count from allrice_assistant_roots where root_run_id=${task.runId}`;
   checkCodexAssistants(roots?.count === 0, 'ordinary_result');
@@ -567,6 +655,7 @@ async function verifyCodexOrdinarySubscription(
     accounting,
     ledger: evidence.row,
     answerDigest: hash(result.answer),
+    parseDiagnostics: [parsed.observation],
     noAssistantRoot: true,
   };
 }

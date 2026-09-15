@@ -23,6 +23,11 @@ import { observeP27Clients } from './p27-owned-clients.ts';
 import { collectP27InstalledRuntime } from './p27-installed-runtime.ts';
 import { p27ErrorDiagnostics } from './p27-error-diagnostics.ts';
 import {
+  parseP27CodexJson,
+  codexJsonDiagnostics,
+  type P27CodexJsonObserver,
+} from './p27-codex-json.ts';
+import {
   prepareP27PlatformEnvironment,
   readCandidate,
   requireCheck,
@@ -65,6 +70,9 @@ const sourceFiles = [
     'codex-worker-smoke',
     'codex-worker-fixture',
     'codex-worker-preflight',
+    'codex-json',
+    'codex-json.test',
+    'codex-assistants-artifact.test',
     'worker-preflight',
     'assistant-preflight',
     'assistant-diagnostics',
@@ -296,7 +304,16 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
         'worker_model_not_invoked',
       );
       report.providerInvocation = 'confirmed_by_worker_result';
-      const proof = await verifyCodexOrdinary(fixture!, task, result);
+      const proof = await verifyCodexOrdinary(
+        fixture!,
+        task,
+        result,
+        (entry) => {
+          report.phase = `json_${entry.stage}`;
+          report.jsonParsing = [entry];
+        },
+      );
+      report.phase = 'ordinary_completion_verify';
       check((await heartbeat.stop()).healthy, 'worker_lease_lost');
       await api.completeJob({ ...lease, result });
       const [terminal] = await db<
@@ -355,7 +372,12 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
       }
     }
     report.status = 'failed';
-    report.error = p27ErrorDiagnostics(error);
+    report.error = {
+      ...p27ErrorDiagnostics(error),
+      ...(codexJsonDiagnostics(error)
+        ? { jsonParsing: codexJsonDiagnostics(error) }
+        : {}),
+    };
   } finally {
     abort?.abort();
     // Never renew a lease forever when native close or execution stalls.
@@ -487,12 +509,14 @@ export async function verifyCodexOrdinary(
   fixture: P27CodexWorkerFixture,
   task: P27PreparedCodexWorkerTask,
   result: HarnessExecutionResult,
+  observe?: P27CodexJsonObserver,
 ) {
+  const parsed = parseP27CodexJson(result.answer, 'ordinary_answer', observe);
   check(
     result.assistantStatus === undefined &&
       result.provider === 'openai-codex' &&
       result.model === 'gpt-5.6-luna' &&
-      JSON.parse(result.answer).sum === 579,
+      parsed.value.sum === 579,
     'codex_worker_ordinary_result',
   );
   const [counts] = await fixture.db<
@@ -585,6 +609,7 @@ export async function verifyCodexOrdinary(
     ledger: row,
     observedUsage: result.usage,
     answerDigest: hash(result.answer),
+    parseDiagnostics: [parsed.observation],
     legacyEstimatorObservedCents: legacyEstimate,
     configuredTariffAbsent: !process.env.ALLRICE_MODEL_PRICING_JSON,
     accountingCorrectnessProven: false,

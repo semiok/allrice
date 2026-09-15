@@ -7,7 +7,8 @@ export type AssistantUnavailableReason =
 /** Display hint only, never authority. A frozen server Session model wins over
  * an employee's subsequently changed default. Only an unfrozen Session uses
  * that default; unknown providers remain unavailable. The Worker still checks
- * its actual server-owned provider protocol and current permissions. */
+ * its actual server-owned provider protocol, subscription snapshot and current
+ * permissions; offering Codex here is not subscription admission authority. */
 export function assistantEligibility(input: {
   enabled: boolean;
   sessionId?: string | null;
@@ -27,7 +28,11 @@ export function assistantEligibility(input: {
     : input.employee?.currentVersion.manifest.runtimePolicy?.provider;
   // Legacy google is normalized only for this display; no request route changes.
   const displayProvider = provider === 'google' ? 'gemini' : provider;
-  if (displayProvider !== 'gemini' && displayProvider !== 'openai-compatible')
+  if (
+    displayProvider !== 'gemini' &&
+    displayProvider !== 'openai-compatible' &&
+    displayProvider !== 'openai-codex'
+  )
     return { eligible: false, unavailableReason: 'model_unsupported' };
   if (
     !input.employee?.currentVersion.manifest.capabilityBindings?.toolNames.includes(

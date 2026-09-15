@@ -1,8 +1,9 @@
 .card {
   padding: 18px;
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--line, #34363b);
   border-radius: 12px;
-  background: var(--surface, #fff);
+  background: #232529;
+  color: var(--ink, #f2f3f4);
 }
 
 .card h3,
@@ -13,7 +14,7 @@
 .explanation,
 .checked,
 .windows small {
-  color: var(--muted, #64748b);
+  color: var(--muted, #8f939b);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -35,12 +36,12 @@
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid #404349;
   border-radius: 8px;
 }
 
 .exhausted {
-  color: #b42318;
+  color: #f08a8a;
 }
 
 .checked {

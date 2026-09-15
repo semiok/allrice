@@ -282,7 +282,8 @@ try {
     values(${otherSession},${org},${workspace},${user},'P26 unrelated session',${employee.id},${employee.employeeVersionId})`;
   // Synthetic frozen Session models, not executable model approvals. Keep the
   // current employee/default untouched: history's Gemini protocol should win,
-  // while the other Session's Codex protocol must disable the next-task toggle.
+  // while the other Session's Codex subscription route also offers assistants.
+  // These are display/request checks; Worker subscription admission is separate.
   const models = await db<
     {
       provider_key: string;
@@ -483,8 +484,8 @@ try {
     path: join(evidenceRoot, 'desktop.png'),
     fullPage: true,
   });
-  // Restore allow=true before changing Sessions, so the Codex request assertion
-  // catches a stale/default preference even if its disabled checkbox looks safe.
+  // Restore allow=true before changing Sessions, then verify the exact frozen
+  // Codex subscription route offers the preference without starting a Worker.
   await optOut.uncheck();
   assert.equal(await optOut.isChecked(), false);
   phase = 'codex-queue';
@@ -492,13 +493,22 @@ try {
   await panel.waitFor({ state: 'detached' });
   assert.equal(
     await optOut.isDisabled(),
-    true,
-    'Frozen Codex cannot offer assistants',
+    false,
+    'Frozen subscription Codex must offer the assistant preference',
   );
+  assert.equal(await optOut.isChecked(), false);
+  await page
+    .getByText('Rice 可按任务需要安排有限助手；受既有权限与总预算约束。', {
+      exact: true,
+    })
+    .waitFor();
+  await optOut.check();
   assert.equal(await optOut.isChecked(), true);
   await page
-    .getByText('当前模型暂不支持助手，由 Rice 独立处理。', { exact: true })
+    .getByText('本次任务只由 Rice 处理，不允许新增助手。', { exact: true })
     .waitFor();
+  await optOut.uncheck();
+  assert.equal(await optOut.isChecked(), false);
   const codexMessage = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname ===
@@ -515,7 +525,7 @@ try {
     queuedResponse.request().postDataJSON().assistantPreference,
     {
       mode: 'daily',
-      allowAssistants: false,
+      allowAssistants: true,
     },
   );
   const queued = await queuedResponse.json();
@@ -528,7 +538,7 @@ try {
   assert.ok(queuedBinding);
   assert.equal(
     queuedBinding.input.assistantConfiguration.allowAssistants,
-    false,
+    true,
   );
   assert.equal(queuedBinding.provider_snapshot.route, 'openai-codex');
   assert.equal(
@@ -543,8 +553,9 @@ try {
   assert.equal(queuedBinding.worker_id, null);
   checks.codexQueueOnly = {
     runId: queued.run.id,
-    requestAllowsAssistants: false,
-    frozenAllowsAssistants: false,
+    requestAllowsAssistants: true,
+    frozenAllowsAssistants: true,
+    explicitOptOutAvailable: true,
     frozenProviderUnchanged: true,
     noWorkerStarted: true,
   };
@@ -621,7 +632,7 @@ try {
     refreshRetainsState: true,
     sessionIsolation: true,
     frozenGeminiProtocolEligible: true,
-    frozenCodexProtocolDisabled: true,
+    frozenCodexSubscriptionEligible: true,
     narrowRendered: true,
   };
   // Flag-OFF is a separate startup check, not an outage/reconnect acceptance.

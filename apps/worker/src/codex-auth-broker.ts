@@ -96,6 +96,23 @@ export function parseDshAuthorizationChallenge(notification: DshNotification) {
     : null;
 }
 
+/** A transport/schema failure is an observation error, never an account clear.
+ * Otherwise an RPC timeout could erase a previously known exhausted window. */
+export function codexQuotaObservation(raw: unknown, configured: boolean) {
+  if (!configured) return null;
+  const parsed = CodexSubscriptionQuotaSnapshotSchema.safeParse(raw);
+  return parsed.success
+    ? parsed.data
+    : CodexSubscriptionQuotaSnapshotSchema.parse({
+        source: 'codex_app_server',
+        status: 'error',
+        checkedAt: new Date().toISOString(),
+        accountFingerprint: null,
+        detailCode: 'codex_quota_protocol_unavailable',
+        buckets: [],
+      });
+}
+
 export async function probeDshCodexProvider(
   executionRoot: string,
 ): Promise<CodexProviderStatus> {
@@ -112,7 +129,6 @@ export async function probeDshCodexProvider(
       status.configured === true
         ? await client.providerQuota().catch(() => null)
         : null;
-    const quota = CodexSubscriptionQuotaSnapshotSchema.safeParse(rawQuota);
     return {
       provider: 'codex',
       authMode: 'chatgpt_subscription',
@@ -123,7 +139,7 @@ export async function probeDshCodexProvider(
           ? 'dsh_openai_codex_provider_ready'
           : 'dsh_openai_codex_authorization_required',
       checkedAt,
-      quota: quota.success ? quota.data : null,
+      quota: codexQuotaObservation(rawQuota, status.configured === true),
     };
   } catch {
     return {
