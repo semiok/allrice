@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   AssistantResultSchema,
+  type AssistantPricedUsage,
   type RequestContext,
   type RuntimeTaskRef,
 } from '@allrice/contracts';
@@ -36,6 +37,16 @@ export interface AssistantWorkerBridgeOptions {
     call: HarnessToolCall,
     childRunId: string,
   ) => Promise<HarnessToolResult>;
+  /** Pricing evidence only, after durable token settlement. A rejected receipt
+   * must not ACK the model call or release the native no-replay guard. */
+  onModelUsage?: (input: {
+    runId: string;
+    callId: string;
+    requestDigest: string;
+    usage: AssistantPricedUsage;
+  }) => Promise<void>;
+  /** Server-owned observation check before each new model preparation/dispatch. */
+  beforeModelDispatch?: () => Promise<void>;
   /** Must submit the exact proposal to P04/Broker; never grants native approval.
    * Absent means side-effect proposals are unavailable, not automatically allowed. */
   onProposal?: (
@@ -105,14 +116,17 @@ export function createAssistantWorkerBridge(
           : { adoptedSeq: natural.parse(p.adoptedSeq) }),
       });
     }
-    if (method === 'model-prepare')
+    if (method === 'model-prepare') {
+      await options.beforeModelDispatch?.();
       return runtime.prepareModelUsage({
         ...base,
         runId: instance.runId,
         callId: z.uuid().parse(p.callId),
         requestedOutputTokens: natural.parse(p.outputTokens),
       });
-    if (method === 'model-dispatch')
+    }
+    if (method === 'model-dispatch') {
+      await options.beforeModelDispatch?.();
       return runtime.dispatchModelUsage({
         ...base,
         runId: instance.runId,
@@ -121,22 +135,43 @@ export function createAssistantWorkerBridge(
         outputTokens: natural.parse(p.outputTokens),
         requestDigest: z.string().parse(p.requestDigest),
       });
+    }
     if (method === 'model-settle') {
+      const callId = z.uuid().parse(p.callId);
+      const inputTokens =
+        p.inputTokens === undefined ? null : natural.parse(p.inputTokens);
+      const outputTokens =
+        p.outputTokens === undefined ? null : natural.parse(p.outputTokens);
+      const requestDigest = options.onModelUsage
+        ? z
+            .string()
+            .regex(/^sha256:[a-f0-9]{64}$/)
+            .parse(p.requestDigest)
+        : undefined;
       await runtime.settleUsage({
         ...base,
         runId: instance.runId,
-        callId: z.uuid().parse(p.callId),
+        callId,
         amounts: {
           model_calls: 1,
           tool_calls: 0,
-          ...(p.inputTokens === undefined
-            ? {}
-            : { input_tokens: natural.parse(p.inputTokens) }),
-          ...(p.outputTokens === undefined
-            ? {}
-            : { output_tokens: natural.parse(p.outputTokens) }),
+          ...(inputTokens === null ? {} : { input_tokens: inputTokens }),
+          ...(outputTokens === null ? {} : { output_tokens: outputTokens }),
         },
       });
+      if (options.onModelUsage)
+        await options.onModelUsage({
+          runId: instance.runId,
+          callId,
+          requestDigest: requestDigest!,
+          usage: {
+            inputTokens,
+            outputTokens,
+            cacheReadTokens: null,
+            cacheWriteTokens: null,
+            usageComplete: inputTokens !== null && outputTokens !== null,
+          },
+        });
       return { settled: true };
     }
     if (method === 'adopt-result') {

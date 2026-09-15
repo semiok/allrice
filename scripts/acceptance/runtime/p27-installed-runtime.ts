@@ -19,6 +19,7 @@ const specifiers = [
   ...names,
   '@earendil-works/pi-ai',
   '@earendil-works/pi-ai/providers/openai-codex',
+  '@earendil-works/pi-ai/providers/google',
 ];
 const hash = (value: Uint8Array | string) =>
   `sha256:${createHash('sha256').update(value).digest('hex')}`;

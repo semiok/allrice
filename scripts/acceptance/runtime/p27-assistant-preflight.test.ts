@@ -6,6 +6,7 @@ import {
   isolatedEnvironment,
   parseArguments,
   providerExecutionEligibility,
+  selectedProvider,
   strictDescendant,
   PROVIDER,
   RUN_LIMITS,
@@ -48,6 +49,7 @@ describe('P27 provider-free preflight safety', () => {
     expect(parseArguments(['--preflight', `--candidate-sha=${sha}`])).toEqual({
       mode: '--preflight',
       sha,
+      providerRoute: 'openai-codex',
     });
     for (const args of [
       [],
@@ -55,8 +57,81 @@ describe('P27 provider-free preflight safety', () => {
       ['--execute', '--candidate-sha=main'],
       ['--execute', `--candidate-sha=${sha}`, '--retry'],
       ['--execute', '--preflight'],
+      ['--execute', `--candidate-sha=${sha}`, '--provider=unknown'],
+      [
+        '--execute',
+        `--candidate-sha=${sha}`,
+        '--provider=gemini',
+        '--provider=gemini',
+      ],
+      ['--execute', '--execute', `--candidate-sha=${sha}`],
+      ['--execute', `--candidate-sha=${sha}`, `--candidate-sha=${sha}`],
     ])
       expect(() => parseArguments(args)).toThrow('p27_arguments');
+  });
+  it('requires explicit Gemini selection and provider-bound authorization, never falls back from Codex', () => {
+    expect(
+      parseArguments([
+        '--execute',
+        `--candidate-sha=${sha}`,
+        '--provider=gemini',
+      ]),
+    ).toEqual({ mode: '--execute', sha, providerRoute: 'gemini' });
+    expect(
+      providerExecutionEligibility(selectedProvider('gemini')).eligible,
+    ).toBe(true);
+    expect(providerExecutionEligibility().eligible).toBe(false);
+    const env = {
+      ALLRICE_B6_P27_PROVIDER_AUTHORIZED: '1',
+      ALLRICE_B6_P27_AUTHORIZED_SHA: sha,
+    };
+    expect(() => assertExecutionAuthorization(env, sha, 'gemini')).toThrow(
+      'provider_route_not_authorized',
+    );
+    expect(() =>
+      assertExecutionAuthorization(
+        { ...env, ALLRICE_B6_P27_AUTHORIZED_PROVIDER: 'openai-codex' },
+        sha,
+        'gemini',
+      ),
+    ).toThrow('provider_route_not_authorized');
+    expect(() =>
+      assertExecutionAuthorization(
+        { ...env, ALLRICE_B6_P27_AUTHORIZED_PROVIDER: 'gemini' },
+        sha,
+        'openai-codex',
+      ),
+    ).toThrow('provider_route_not_authorized');
+    expect(() =>
+      assertExecutionAuthorization(
+        { ...env, ALLRICE_B6_P27_AUTHORIZED_PROVIDER: 'gemini' },
+        sha,
+        'gemini',
+      ),
+    ).not.toThrow();
+  });
+  it('only passes the prevalidated Gemini file and enables Gemini in the isolated child environment', () => {
+    const env = {
+      ALLRICE_DSH_CREDENTIALS_JSON: 'not-forwarded',
+      ALLRICE_DSH_CREDENTIALS_FILE: '/unselected',
+      GEMINI_API_KEY: 'not-forwarded',
+    };
+    expect(() =>
+      isolatedEnvironment(env, '/dev/allowed', { providerRoute: 'gemini' }),
+    ).toThrow('gemini_credential_file_required');
+    const child = isolatedEnvironment(env, '/dev/allowed', {
+      providerRoute: 'gemini',
+      credentialFile: '/dev/allowed/selected.json',
+    });
+    expect(child.ALLRICE_GEMINI_API_ENABLED).toBe('1');
+    expect(child.ALLRICE_DSH_CREDENTIALS_FILE).toBe(
+      '/dev/allowed/selected.json',
+    );
+    expect(child).not.toHaveProperty('ALLRICE_DSH_CREDENTIALS_JSON');
+    expect(child).not.toHaveProperty('GEMINI_API_KEY');
+    expect(isolatedEnvironment(env, '/dev/allowed')).not.toHaveProperty(
+      'ALLRICE_DSH_CREDENTIALS_FILE',
+    );
   });
   it('refuses mismatching or dirty candidates including untracked files', () => {
     expect(() => assertCandidate(sha, 'b'.repeat(40), '')).toThrow(

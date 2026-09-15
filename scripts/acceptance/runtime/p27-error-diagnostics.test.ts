@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HandlerError } from '../../../apps/worker/src/errors.ts';
 import { p27ErrorDiagnostics } from './p27-error-diagnostics.ts';
 
@@ -7,6 +7,76 @@ function first(error: unknown) {
   return p27ErrorDiagnostics(error).errors[0]!;
 }
 describe('P27 bounded safe error diagnostics (no provider)', () => {
+  it('retains bounded schema classifications, not inputs or arbitrary property names', () => {
+    class ZodError extends Error {
+      issues = [
+        {
+          code: 'unrecognized_keys',
+          keys: ['leaseMs', secret],
+          message: secret,
+          input: secret,
+        },
+      ];
+    }
+    const proof = first(new ZodError(secret));
+    expect(proof.class).toBe('ZodError');
+    expect(proof.validation).toEqual({
+      issueCodes: ['unrecognized_keys'],
+      unexpectedKeys: ['leaseMs'],
+      truncated: false,
+    });
+    expect(JSON.stringify(proof)).not.toContain(secret);
+  });
+  it('does not invoke validation issue or key getters', () => {
+    const read = vi.fn(() => {
+      throw Error(secret);
+    });
+    class ZodError extends Error {
+      issues = [Object.defineProperty({}, 'code', { get: read })];
+    }
+    first(new ZodError(secret));
+    expect(read).not.toHaveBeenCalled();
+  });
+  it.each(['p27_worker_actual_route_ledger', 'p27_worker_deadline'])(
+    'keeps the exact source-defined Worker check %s',
+    (code) => expect(first(new Error(code)).code).toBe(code),
+  );
+  it.each([
+    'p27_codex_worker_one_execution_authorization_required',
+    'p27_codex_worker_actual_route_ledger',
+    'p27_worker_exact_one_execution',
+    'P27_CODEX_WORKER_CLEANUP_UNCONFIRMED',
+  ])('retains exact ordinary Codex diagnostic %s', (code) => {
+    expect(first(new Error(code)).code).toBe(code);
+  });
+  it.each([
+    'p27_codex_worker_private_secret',
+    'P27_CODEX_WORKER_PRIVATE_SECRET',
+  ])('still rejects untrusted Codex-prefixed code %s', (code) =>
+    expect(first(Object.assign(new Error(code), { code })).code).toBeNull(),
+  );
+  it('keeps fixture failure metadata but never its private cleanup payload', () => {
+    class P27WorkerFixtureError extends Error {
+      readonly code = 'P27_WORKER_CLEANUP_UNCONFIRMED';
+      readonly cleanup = { providerBody: secret };
+    }
+    const proof = first(new P27WorkerFixtureError(secret));
+    expect(proof.code).toBe('P27_WORKER_CLEANUP_UNCONFIRMED');
+    expect(JSON.stringify(proof)).not.toContain(secret);
+  });
+  it.each(['p27_worker_private_secret', 'P27_WORKER_PRIVATE_SECRET'])(
+    'does not allow arbitrary Worker prefixes: %s',
+    (code) =>
+      expect(first(Object.assign(new Error(code), { code })).code).toBeNull(),
+  );
+  it.each(['DSH_SERVER', 'DSH_QUOTA', 'DSH_TRANSPORT', 'DSH_UNKNOWN'])(
+    'keeps the exact prefixed native code %s without echoing provider text',
+    (code) => {
+      const proof = first(new HandlerError(code, secret, true));
+      expect(proof.code).toBe(code);
+      expect(JSON.stringify(proof)).not.toContain(secret);
+    },
+  );
   it('keeps actual HandlerError metadata, never its message/stack/provider payload', () => {
     const error = new HandlerError(
       'DSH_REQUEST_FAILED',

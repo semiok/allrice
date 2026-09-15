@@ -34,7 +34,7 @@
   },
   "rollback": {
     "mode": "forward-fix-only",
-    "reason": "No B6-compatible rollback target has been demonstrated. Credential/journal formats, nullable unknown costs and 0095 prepared/dispatched model holds must remain readable and non-replayable; B5 is history, not an automatically safe downgrade.",
+    "reason": "No B6-compatible rollback target has been demonstrated. Credential/journal formats, nullable unknown costs, 0095 prepared/dispatched model holds, 0097 immutable subscription proof/N/A semantics and 0098 account-bound quota freshness must remain safe; B5 is history, not an automatically safe downgrade.",
     "targetSourceSha": null,
     "targetReleaseId": null,
     "targetArtifacts": [],
@@ -50,6 +50,9 @@
       "memory-skill",
       "runtime-ledger",
       "assistant-model-admissions",
+      "assistant-price-snapshots-and-receipts",
+      "route-subscription-snapshots",
+      "codex-subscription-quota-metadata",
       "model-usage-and-unknown-cost",
       "artifacts"
     ],
@@ -69,12 +72,12 @@
     },
     {
       "id": "migration-inventory",
-      "reason": "The final candidate must enumerate exact bytes for 0093_assistant_runtime.sql, 0094_model_usage_unknown_cost.sql, 0095_assistant_model_admissions.sql and every later added migration. This unapproved draft pins none of their final content; empty changes is not a no-migration claim.",
+      "reason": "The final candidate must enumerate exact bytes for 0093_assistant_runtime.sql, 0094_model_usage_unknown_cost.sql, 0095_assistant_model_admissions.sql, 0096_assistant_pricing.sql, 0097_route_subscription_snapshots.sql, 0098_codex_subscription_quota.sql and every later added migration. Subscription proof/NULL semantics and account-bound quota compatibility/rollback still require actual evidence. This unapproved draft pins none of their final content; empty changes is not a no-migration claim.",
       "owner": "P25 / P27 integration owner"
     },
     {
       "id": "assistant-hold-recovery-and-accounting",
-      "reason": "Prepared/dispatched model holds and once-only dispatch identity need candidate-bound compatibility/recovery evidence. Unknown usage/cost cannot be erased or changed to zero; no authoritative pricing/reconciliation loop has been accepted, so real tenant enablement remains blocked.",
+      "reason": "Prepared/dispatched model holds need final-candidate recovery and full Worker quota evidence. API runs require immutable prices/cost receipts; explicit V2 subscription evidence instead requires immutable route proof, complete actual tree tokens and matching NULL/N/A route/result/ledger, never a fake API price. The historical Gemini subset failed; no final subscription/RC/rollback evidence is supplied by this draft. Unknown tokens and historical unknown cost cannot be erased or zeroed; real tenant enablement remains blocked.",
       "owner": "P25 / P27 integration owner"
     },
     {

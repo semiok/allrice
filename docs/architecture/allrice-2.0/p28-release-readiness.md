@@ -8,9 +8,11 @@
 
 ## 1. 本切片交付与仍然受阻的内容
 
-交付：[草稿清单](p28-release-manifest.draft.json)、[只读检查器](../../../scripts/acceptance/platform/p28-release-readiness.mjs)、[检查器测试](../../../scripts/acceptance/platform/p28-release-readiness.test.mjs)及本程序。没有改应用开关、数据库、包分发、系统服务或现有共享验收入口，也没有备份数据库、扫描秘密、合并或部署。
+交付：[草稿清单](p28-release-manifest.draft.json)、[只读检查器](../../../scripts/acceptance/platform/p28-release-readiness.mjs)、[检查器测试](../../../scripts/acceptance/platform/p28-release-readiness.test.mjs)、[准备交接与 47 场景证据索引](p28-handoff-index.md)及本程序。没有改应用开关、数据库、包分发、系统服务或现有共享验收入口，也没有备份数据库、扫描秘密、合并或部署。
 
 草稿有意保留 `sourceSha: null`、空包/证据、空发布授权与真实 blockers，**运行必定拒绝**；不可把基线 SHA、虚构 SHA 或测试夹具填进去变成发布材料。准备代码本身不等待证书；已固定候选的材料检查允许 `prepare` 成立而 `technicalEvidenceComplete: false`，证书/设备缺口仍阻断 RC。
+
+MET-141 的“准备交付完成”与 checker 的 `preparationVerified` 不是同一件事：前者交付可用合同/负向测试/迁移恢复程序/交接索引，后者检查之后提交的实际候选材料。准备交付不以未来 MET-142 完整通过为条件；142 使用这些材料合同完成真实联验。不能为避免循环依赖而填假候选、放宽签名/RC 条件，也不能把草稿正确拒绝误读为准备代码未交付。具体责任、既有证据与未完成输入见交接索引。
 
 外部依赖必须尽早解决：P14 需要可用 Developer ID 发布者身份、公证权限、已固定的更新元数据验证公钥，以及各一台可实际交互的 Apple Silicon / Intel Mac。两台均要从最终实际包进行 Keychain、Finder/原生 GUI、签名拒绝、任务排空、升级中断、兼容恢复测试。构建两包、ad-hoc 签名、哈希一致、模拟 Keychain 或仅一台设备不等于两平台通过。不索取/提交私钥、密码、公证令牌或真实配对凭证；缺少条件填未验证。
 
@@ -49,6 +51,17 @@ device（客户端为 {id, architecture, osVersion, physical:true}；其余 null
 ```
 
 `REQUIRED_CASES` 和 `CASE_ASSERTIONS` 是可执行的固定覆盖清单：四条任务线、工作台/预览/治理/旧版本/迁移恢复/最终 Dev，以及 11 个客户端场景 × 两架构，共 47 个场景；本地命令/Changeset/进程树取消/隔离也须在两台实际设备分别验证。各场景固定子断言不可删除、重复、改名或加入未知成功项；每个 expected/observed 必须对应归一化的真实 runner 观察。签名/更新场景另必须匹配实际发布者和验证公钥。所有非客户端联合收据绑定七份候选产物，客户端绑定 source 与对应 ZIP；兼容重部署的恢复收据额外绑定全部 `rollback/<id>` 目标摘要。不同构建不能借用另一构建的“通过”。
+
+### 双助手收据的显式计费分支
+
+`assistants-real-dsh-two-children-no-bridge` 的共通断言之外还必须符合 `ASSISTANT_BILLING_ASSERTIONS` 的一个明确分支。原 `allrice-p27-evidence/v1` 保持 API 合同，仍必须有 `frozen-price-and-whole-tree-cost-receipts`；不能把订阅 N/A 填成价格回执。仅此 case 可改用 `allrice-p27-evidence/v2`，原 envelope 字段全部保留，另加严格 `billing`：
+
+- API：`{"mode":"token_metered"}`，仍要求原冻结价格及全树费用回执断言，不允许额外 subscription proof 字段。
+- 订阅：`{"mode":"subscription","proof":{"path":"...","sha256":"...","bytes":123}}`。必须有五项断言：`immutable-subscription-route-proof-verified`、`whole-tree-actual-tokens-and-admissions-settled`、`subscription-result-route-ledger-na-digest-match`、`subscription-no-api-price-or-cost-receipts`、`subscription-unknown-token-follow-up-denied`；不得混入 API 价格成功断言。未知模式、缺 proof、缺断言均拒绝。
+
+订阅 proof 是专用 evidence 根中经过独立来源审查的脱敏 JSON，schema 为 `allrice-p27-subscription-accounting/v1`；精确字段与关系见 [只读 proof 校验器](../../../scripts/acceptance/platform/p28-subscription-evidence.mjs)。它绑定 `sourceSha/runId`、原始冻结 `snapshot/snapshotDigest`、实际 `route/ledger/result`、`tree` 和逐调用 `admissions`，并明确 `priceSnapshotCount=0/costReceiptCount=0`。snapshot 用生产同一 codepoint-sorted canonical JSON 算 SHA-256；route 身份须匹配 snapshot 和收据租户/Run，result 的 digest 须相同；route/ledger/result 的现金为 NULL/N/A、用量完整、缓存未知且真实输入/输出一致。完成的整树恰有 root 与两个子 Run，无未结 usage；唯一 callId 均 dispatched/finished、三者均有真实输入/输出，合计精确等于树和路由，不能从 adoption 重复计量。
+
+这份 proof 必须从实际 Worker、native admission 与隔离 DB 原始观察投影，不得从 expected 生成 observed。UUID 使用 PostgreSQL 导出的规范小写形式，避免大小写别名制造重复调用或假第二子 Run；冻结时间使用合法 UTC 毫秒 ISO 格式且不晚于观察时间。校验器拒绝字段遗漏、错误摘要、身份漂移、未知/重复用量和把 N/A 改零；**它不能认证数据库真实发生或阻止人为一致伪造整套材料**，可信来源审查和原始附件仍必要。余额未知不能声称可用，也不要求为收据新增一次真实余额/模型调用。新增 v2/parser 合成测试不等于真实订阅助手成功，更不等于完整 RC 或 rollback 已完成。
 
 不要写“列出 expected 并回显为 observed”的产品包装脚本。仅可以从**已执行的真实测试结果**生成 receipt，并附原始日志、运行/审批/副作用标识、实际文件/退出码或截图；保留失败报告与修复前记录，修复后重跑固定候选。实际助手场景必须在隔离范围观察到助手开关开启，最终主 Dev 冒烟必须观察到默认关闭；开关配置不是运行成功证据。
 
@@ -96,7 +109,7 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 本切片不新增/运行 SQL。检查器固定 B5 原有 93 份 migration（编号至 0092）的排序文件名+内容 SHA-256 库存摘要 `ef1e7b033c925c452196271bb402706556b60f39c11b83c9573bdcdb09abe747`，修改旧迁移立即拒绝。集成后所有新增 `.sql` 必须在 `migrations.changes` 恰好列出 `{name, sha256, phase}`；检查器**不把 0093/0094 当作新增清单的上限**，漏列 0095 或任何更晚文件、摘要不符均拒绝。
 
-当前需纳入候选的 expand 项包括 `0093_assistant_runtime.sql`（助手治理）、`0094_model_usage_unknown_cost.sql`（费用 NULL 与完整性标志）、`0095_assistant_model_admissions.sql`（两阶段模型准入）。**它们的最终内容与 SHA-256 未在本草稿中假定**；只能在最终 source SHA 固定后填入实际字节摘要，不能以这里的文件名取代库存核对。新增迁移不意味着已执行，也不授予迁移或启用权限。
+当前需纳入候选的 expand 项包括 `0093_assistant_runtime.sql`（助手治理）、`0094_model_usage_unknown_cost.sql`（费用 NULL 与完整性标志）、`0095_assistant_model_admissions.sql`（两阶段模型准入）、`0096_assistant_pricing.sql`（不可变价格快照与逐调用费用回执）、`0097_route_subscription_snapshots.sql`（不可变订阅路由证明）、`0098_codex_subscription_quota.sql`（可空的脱敏订阅额度缓存）。**它们的最终内容与 SHA-256 未在本草稿中假定**；只能在最终 source SHA 固定后填入实际字节摘要，不能以这里的文件名取代库存核对。新增迁移不意味着已执行，也不授予迁移或启用权限。
 
 1. **Expand 准备**：记录目标 DB schema 版本、准确 SQL 摘要、锁/运行时长风险、空间影响、旧/新 Web/Worker/Bridge reader兼容性。只增加兼容结构；旧记录保持可读，不重写已发布历史，新增功能关闭。
 2. **Backfill 准备**：仅在确实必要时单列，明确租户范围、分批上限、幂等游标、暂停/恢复、失败核对及审计。不能靠时间猜测回填历史 operation/审批关系。无 backfill 也要在实际迁移收据说明为何不需要；不由空数组推断已检查。
@@ -107,6 +120,10 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 0095 的 prepared 行只是已占用输出额度，不是派发授权或“确定未执行”的回执；dispatched 标记和请求摘要/调用 ID 负责一次性派发，ACK 丢失不能重放。准备后崩溃、输入准入失败或缺少 provider 用量时，保留 admission、对应 usage 的未知维度及 root reserved；`finished_at` 也不等于全部用量已知。没有权威证据，不回填零、不删除孤立 hold、不用新 callId 消除旧执行的不确定性。
 
+0097 只为新执行、经服务端校验的冻结路由保存订阅身份及摘要；它不是 API 价格、供应商账单或余额证明。没有该 proof 的历史 NULL 费用继续是 unknown，不补造 proof、不追认 N/A、不回填零。已验证订阅的 `billingMode=subscription` / `costBasis=not_applicable` / `estimatedCostCents=null` 只省略现金计价；真实调用数、Token、整树预留与未知 Token 阻断仍须保留。旧 reader 即使把新订阅 NULL 保守显示为 unknown，也不能显示为免费或写回现金值；这只是安全降级，不等于完整功能兼容。
+
+0098 只增加 nullable JSONB 元数据，现有行的 NULL 表示从未测量，不表示可用或耗尽。兼容测试要覆盖 NULL、新/旧 reader、未知窗口、账户指纹与测量时效、较旧结果不得覆盖较新结果；不把百分比换算成 Token/货币余额。失效或换账户的缓存必须降为 unknown，不能沿用旧账户额度或自动刷新真实授权。上述测试必须有实际隔离观察，不能只凭 SQL 为 expand 或字段存在判定通过。
+
 ## 6. 恢复选择与演练程序（本 PR 不执行）
 
 默认 `forward-fix-only`：没有已经实测、能读取最新 schema、credential record、journal/outbox/助手 checkpoint 的旧包时，**保持兼容读取器并准备前向修复**。B5 发布历史不是安全回退证明；不得自动恢复旧 Credential reader、删新格式记录、强制重新配对或覆盖用户目录。此模式不伪造 target SHA/ZIP，也不承诺即时恢复；P27 演练应证明停止新准入、排空/核对、状态保留、当前兼容版本恢复，尚未构建的前向修复仍需新 SHA 与复验。
@@ -115,7 +132,13 @@ pnpm exec vitest run scripts/acceptance/platform/p28-release-readiness.test.mjs
 
 两阶段状态写入后，不能回退到只理解旧单阶段 `reserveUsage`、会重投模型请求或清除 prepared/dispatched hold 的 Worker。恢复必须保留 0095 admission 的完整关联与 0093 usage/root 预算，并在关闭新准入时保留取消、只读核对与未知展示；没有实证兼容的旧包就 forward-fix。0094 的 NULL 费用也不能改成零、恢复 NOT NULL 或由旧 quota reader 漏算；费用未知导致组织月度额度 fail-closed，包括后续单 Agent 路由。未具备权威定价/费用核对闭环，真实租户助手启用仍阻断；P27 adapter smoke 不替代完整 Worker 路由/费用/配额验收。
 
-只读 checker 的 `rollback.preserve` 现明确要求 `assistant-model-admissions` 和 `model-usage-and-unknown-cost`。迁移、冷恢复和回退收据另须包含 prepared 非派发证明、丢失 dispatch ACK 不重放、未知 hold/费用不清零与兼容 reader 的固定断言；缺少这些断言的旧收据不能沿用。断言仍须附真实原始观察，添加字段或通过合成 parser 测试不是实际恢复演练。
+只读 checker 的 `rollback.preserve` 现明确要求 `assistant-model-admissions`、`assistant-price-snapshots-and-receipts` 和 `model-usage-and-unknown-cost`。迁移、冷恢复和回退收据另须包含 prepared 非派发证明、丢失 dispatch ACK 不重放、未知 hold/费用不清零、冻结价格及调用回执保留与兼容 reader 的固定断言；缺少这些断言的旧收据不能沿用。真实基础助手项还要求其明确计费分支的完整全树证据（API 价格/费用回执，或 v2 订阅 proof + 真实 Token + N/A 账本）及后续 Worker 配额可用，不能只证明 adapter 返回答案。断言仍须附真实原始观察，添加字段或通过合成 parser 测试不是实际恢复演练。
+
+0096 不回填历史 unknown。价格快照只约束其明确路由、币种、有效期和 Token 价带；当前无可信缓存拆分时记录保守估算上界，不宣称供应商真实账单。恢复后必须保留这种语义和原始不可变摘要，不能用当天新价重算旧任务、丢掉子调用费用、把未知调用改为免费，或直接用旧普通聊天价格函数覆盖助手回执。缺价拒绝是在调用前的已知零消耗；派发后失去用量是 unknown，两者不能混同。
+
+0097/0098 的新增恢复合同要求 `rollback.preserve` 包含 `route-subscription-snapshots` 和 `codex-subscription-quota-metadata`，保留不可变 proof、原始 digest 与脱敏缓存的账户/时间信息。不能让旧 Worker 给已有订阅 proof 的路线套 API 价、把 NULL 写成 0，或解除未知 Token / 未结 admission。额度缓存不是金融账本：允许按账户变化/时效规则失效为 unknown，但不能“恢复”为已知有余额、移除已知耗尽约束，或通过历史缓存发起授权刷新。未经这种读写实测的旧版本仍不可选择 compatible-redeploy，应维持 forward-fix-only。
+
+检查器现追加迁移断言 `immutable-subscription-proof-expand-compatible`、`historical-null-cost-not-reclassified`、`nullable-subscription-quota-readers-compatible`，以及恢复断言 `subscription-proof-and-na-semantics-preserved`、`subscription-unknown-tokens-not-released`、`subscription-quota-account-freshness-preserved`。缺少其中任一项的旧收据拒绝沿用。**本次仅补合同、文档和合成检查器负例；没有执行真实迁移/旧版本混跑/rollback 演练，不能把这些新增断言记为实测通过。**
 
 演练与将来执行按下列阶段留证：
 

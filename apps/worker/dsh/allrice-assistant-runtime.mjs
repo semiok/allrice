@@ -1,6 +1,48 @@
 /* global AbortController, Buffer */
 import { createHash, randomUUID } from 'node:crypto';
+import { types } from 'node:util';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+
+// Provider failures may arrive as finish chunks, not thrown exceptions. Keep
+// only source-defined codes; never persist provider text, URLs or raw thoughts.
+const diagnosticCodes = new Set([
+  'AUTH',
+  'QUOTA_EXCEEDED',
+  'RATE_LIMIT',
+  'INVALID_REQUEST',
+  'SERVER',
+  'TIMEOUT',
+  'TRANSPORT',
+  'PI_AI_ERROR',
+  'CONTEXT_WINDOW_EXCEEDED',
+  'EMPTY_RESPONSE',
+  'ABORTED',
+  'STREAM_CLOSED',
+  'UNKNOWN',
+  'MAX_TOKENS',
+  'USAGE_INCOMPLETE',
+  'SETTLEMENT_REJECTED',
+  'SETTLEMENT_FAILED',
+]);
+const stopKinds = new Set([
+  'error',
+  'aborted',
+  'max-tokens',
+  'stop',
+  'tool-calls',
+  'unknown',
+]);
+function ownData(value, key) {
+  if (!value || typeof value !== 'object' || types.isProxy(value)) return;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+function failureCode(value) {
+  const code = ownData(value, 'code');
+  // The pinned dsh-llm QUOTA_EXCEEDED_CODE constant's wire value is QUOTA.
+  if (code === 'QUOTA') return 'QUOTA_EXCEEDED';
+  return diagnosticCodes.has(code) ? code : 'UNKNOWN';
+}
 
 /** Pinned TokenUsage has disjoint uncached/read-cache/write-cache counts.
  * Invalid or absent required usage keeps that dimension's reservation. */
@@ -36,6 +78,45 @@ export function createGovernedAssistantNativeRuntime(
   const bindings = new Map();
   const deliveries = new Map();
   const nativeCompletions = new Map();
+  const failures = new Map();
+  let failuresTruncated = false;
+  function failure(id, callId, phase, code, stopKind) {
+    if (failures.has(callId)) return failures.get(callId);
+    if (failures.size >= 64) {
+      failuresTruncated = true;
+      return;
+    }
+    const entry = {
+      nativeSessionId: id,
+      callId,
+      phase,
+      code,
+      stopKind,
+      inputUsageKnown: false,
+      outputUsageKnown: false,
+      settlementConfirmed: false,
+    };
+    failures.set(callId, entry);
+    return entry;
+  }
+  function diagnostics(p) {
+    const root = binding(p.nativeSessionId);
+    if (root.parentNativeSessionId) throw Error('assistant_root_required');
+    const owned = (id) => {
+      for (let depth = 0; depth < 64 && bindings.has(id); depth++) {
+        if (id === p.nativeSessionId) return true;
+        id = bindings.get(id).parentNativeSessionId;
+      }
+      return false;
+    };
+    return {
+      version: 1,
+      failures: [...failures.values()]
+        .filter((entry) => owned(entry.nativeSessionId))
+        .map((entry) => ({ ...entry })),
+      truncated: failuresTruncated,
+    };
+  }
   function completion(id) {
     let resolve;
     const promise = new Promise((done) => {
@@ -244,6 +325,20 @@ export function createGovernedAssistantNativeRuntime(
     const outputTokens = options.maxTokens;
     if (!Number.isSafeInteger(outputTokens) || outputTokens <= 0)
       throw Error('assistant_model_output_bound_required');
+    const requestDigest = `sha256:${createHash('sha256')
+      .update(
+        JSON.stringify({
+          provider: options.provider,
+          model: options.model,
+          reasoningEffort: options.reasoningEffort,
+          temperature: options.temperature,
+          maxTokens: outputTokens,
+          messages: options.messages,
+          system: options.system,
+          tools: options.tools,
+        }),
+      )
+      .digest('hex')}`;
     const reservation = await bridge(
       'model-dispatch',
       {
@@ -251,20 +346,7 @@ export function createGovernedAssistantNativeRuntime(
         callId,
         inputTokens,
         outputTokens,
-        requestDigest: `sha256:${createHash('sha256')
-          .update(
-            JSON.stringify({
-              provider: options.provider,
-              model: options.model,
-              reasoningEffort: options.reasoningEffort,
-              temperature: options.temperature,
-              maxTokens: outputTokens,
-              messages: options.messages,
-              system: options.system,
-              tools: options.tools,
-            }),
-          )
-          .digest('hex')}`,
+        requestDigest,
       },
       options.signal,
     );
@@ -273,9 +355,26 @@ export function createGovernedAssistantNativeRuntime(
       throw Error('assistant_model_output_grant_invalid');
     let usage;
     let observedOutput = false;
+    let stopKind = 'unknown';
+    let settlementThrew = false;
+    let settlementError;
     try {
       for await (const chunk of next()) {
         if (chunk.type === 'usage') usage = chunk.usage;
+        if (chunk.type === 'finish') {
+          const kind = ownData(chunk.reason, 'kind');
+          stopKind = stopKinds.has(kind) ? kind : 'unknown';
+          if (['error', 'aborted', 'max-tokens'].includes(stopKind))
+            failure(
+              id,
+              callId,
+              'finish',
+              stopKind === 'max-tokens'
+                ? 'MAX_TOKENS'
+                : failureCode(ownData(chunk.reason, 'failure')),
+              stopKind,
+            );
+        }
         if (
           chunk.type === 'text-delta' ||
           chunk.type === 'reasoning-delta' ||
@@ -286,22 +385,73 @@ export function createGovernedAssistantNativeRuntime(
           observedOutput = true;
         yield chunk;
       }
+    } catch (error) {
+      failure(id, callId, 'stream', failureCode(error), stopKind);
+      throw error;
     } finally {
-      await bridge(
-        'model-settle',
-        {
-          nativeSessionId: id,
+      const settled = usage ? settledTokenUsage(usage, observedOutput) : {};
+      if (
+        settled.inputTokens === undefined ||
+        settled.outputTokens === undefined
+      )
+        failure(id, callId, 'usage', 'USAGE_INCOMPLETE', stopKind);
+      let acknowledgement;
+      try {
+        acknowledgement = await bridge(
+          'model-settle',
+          {
+            nativeSessionId: id,
+            callId,
+            requestDigest,
+            ...settled,
+          },
+          signal(),
+        );
+        if (acknowledgement?.settled !== true) {
+          const entry = failure(
+            id,
+            callId,
+            'settlement',
+            'SETTLEMENT_REJECTED',
+            stopKind,
+          );
+          if (entry) entry.settlementFailureCode = 'SETTLEMENT_REJECTED';
+        }
+      } catch (error) {
+        const entry = failure(
+          id,
           callId,
-          ...(usage
-            ? {
-                ...settledTokenUsage(usage, observedOutput),
-              }
-            : {}),
-        },
-        signal(),
-      );
-      modelAdmissions.delete(id);
+          'settlement',
+          'SETTLEMENT_FAILED',
+          stopKind,
+        );
+        if (entry) entry.settlementFailureCode = 'SETTLEMENT_FAILED';
+        // A secondary ACK failure must not replace the first stream exception.
+        // Its own failure stays visible and the admission remains unreplayable.
+        settlementThrew = true;
+        settlementError = error;
+      } finally {
+        const entry = failures.get(callId);
+        if (entry) {
+          entry.inputUsageKnown = settled.inputTokens !== undefined;
+          entry.outputUsageKnown = settled.outputTokens !== undefined;
+          entry.settlementConfirmed = acknowledgement?.settled === true;
+        }
+      }
+      // Native provider recovery may request another model call after a 5xx or
+      // interrupted stream. A settlement ACK only confirms that UNKNOWN was
+      // durably recorded; it does not prove the first request did not execute.
+      // Keep the admission as a no-replay tombstone until BOTH token dimensions
+      // are known. The existing agent/request guard then rejects recovery before
+      // another prepare/dispatch. Unbound ordinary chat keeps its retry policy.
+      if (
+        acknowledgement?.settled === true &&
+        settled.inputTokens !== undefined &&
+        settled.outputTokens !== undefined
+      )
+        modelAdmissions.delete(id);
     }
+    if (settlementThrew) throw settlementError;
   });
   async function start(p) {
     const parent = live(p.parentNativeSessionId);
@@ -482,6 +632,7 @@ export function createGovernedAssistantNativeRuntime(
     start,
     followup,
     drain,
+    diagnostics,
     async join(p) {
       const root = live(p.nativeSessionId);
       // Await native loops, not a second execution loop. A parent's result
@@ -545,6 +696,8 @@ export function createGovernedAssistantNativeRuntime(
       checkpointChains.clear();
       checkpointProofs.clear();
       modelAdmissions.clear();
+      failures.clear();
+      failuresTruncated = false;
       return { released: true };
     },
     async flush() {

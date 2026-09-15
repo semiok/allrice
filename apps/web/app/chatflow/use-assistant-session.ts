@@ -34,6 +34,12 @@ export function useAssistantSession({
   const generation = useRef(0);
   const currentScope = useRef(scope);
   currentScope.current = scope;
+  useEffect(() => {
+    if (!enabled || !sessionId || !workspaceId) return;
+    const reconnect = () => setRevision((value) => value + 1);
+    window.addEventListener('online', reconnect);
+    return () => window.removeEventListener('online', reconnect);
+  }, [enabled, sessionId, workspaceId, scope]);
   const load = useCallback(
     async (signal: AbortSignal, cursor?: string) => {
       if (!enabled || !sessionId || !workspaceId) return null;

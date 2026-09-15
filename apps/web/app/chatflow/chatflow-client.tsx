@@ -51,6 +51,7 @@ import { useBridge } from './use-bridge';
 import { projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
+import { createSessionActions } from './session-actions';
 import {
   UserQuestionComposer,
   userQuestionAnswerText,
@@ -100,6 +101,7 @@ export function ChatFlowClient({
 
   const {
     activeId,
+    captureSelection,
     createSession,
     history,
     loadHistory,
@@ -110,6 +112,20 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const [sessionActions] = useState(() =>
+    createSessionActions(captureSelection),
+  );
+  const selectSession = useCallback(
+    (sessionId: string | null) => {
+      if (sessionId !== null && captureSelection().sessionId === sessionId)
+        return;
+      setActiveId(sessionId, sessionId === null);
+      setBusy(false);
+      setQuestionBusy(false);
+      setError('');
+    },
+    [captureSelection, setActiveId],
+  );
 
   const workbench = useArtifactWorkbench({
     enabled: workbenchEnabled,
@@ -254,6 +270,8 @@ export function ChatFlowClient({
   } = useAttachments({
     activeId,
     busy,
+    captureSelection,
+    sessionActions,
     createSession: () => createSession(draft),
     setBusy,
     setError,
@@ -324,6 +342,8 @@ export function ChatFlowClient({
   async function sendMessage() {
     const text = draft.trim();
     if (!workspace || !text || busy) return;
+    const action = sessionActions.begin('composer');
+    if (!action) return;
     const draftAttachments = [...pendingAttachments];
     let clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
@@ -335,6 +355,8 @@ export function ChatFlowClient({
     try {
       const sessionId = activeId ?? (await createSession(draft));
       if (!sessionId) return;
+      if (!activeId && !action.adoptCreatedSession(sessionId)) return;
+      if (!action.current()) return;
       const mode = workbenchEnabled ? inputMode : 'auto';
       const current = interactions.data?.runtime;
       if (mode === 'steer' && (!current?.turnId || current.state !== 'running'))
@@ -344,6 +366,7 @@ export function ChatFlowClient({
           persistPendingAttachment(attachment, sessionId),
         ),
       );
+      if (!action.current()) return;
       const failedUpload = uploadResults.find(
         (result): result is PromiseRejectedResult =>
           result.status === 'rejected',
@@ -378,6 +401,7 @@ export function ChatFlowClient({
         `${workspace.organizationId}/${sessionId}`,
         inputBody,
       );
+      if (!action.current()) return;
       clientMessageId = retry.id;
       setDraft('');
       const createdAt = new Date().toISOString();
@@ -428,6 +452,7 @@ export function ChatFlowClient({
         ),
       );
       retry.confirmed();
+      if (!action.current()) return;
       clearPendingAttachments();
       const assistantRunId =
         result.delivery === 'immediate' ? result.run.id : result.fallbackRunId;
@@ -452,6 +477,7 @@ export function ChatFlowClient({
       void loadHistory(sessionId);
       void interactions.reload();
     } catch (cause) {
+      if (!action.current()) return;
       setHistory((current) =>
         current
           ? {
@@ -467,7 +493,7 @@ export function ChatFlowClient({
       setDraft(text);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
     } finally {
-      setBusy(false);
+      if (action.finish()) setBusy(false);
     }
   }
 
@@ -479,22 +505,28 @@ export function ChatFlowClient({
         (view) => view?.status === 'running' || view?.status === 'connecting',
       );
     if (!workspace || !targetRun) return;
-    await readJson(
-      await fetch(
-        `/api/v1/runs/${targetRun.runId}/cancel?workspaceId=${workspace.workspaceId}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...tenantHeaders },
-          body: JSON.stringify({ reason: 'user_requested' }),
-        },
-      ),
-    ).catch((cause) =>
-      setError(cause instanceof Error ? cause.message : '停止失败'),
-    );
+    const scope = captureSelection();
+    try {
+      await readJson(
+        await fetch(
+          `/api/v1/runs/${targetRun.runId}/cancel?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({ reason: 'user_requested' }),
+          },
+        ),
+      );
+    } catch (cause) {
+      if (scope.current())
+        setError(cause instanceof Error ? cause.message : '停止失败');
+    }
   }
 
   async function answerUserQuestion(answer: UserQuestionAnswerSubmission) {
     if (!workspace || !activeId || !pendingUserQuestion || questionBusy) return;
+    const action = sessionActions.begin('question');
+    if (!action) return;
     setQuestionBusy(true);
     setError('');
     try {
@@ -510,6 +542,7 @@ export function ChatFlowClient({
         `${workspace.organizationId}/${activeId}`,
         answerBody,
       );
+      if (!action.current()) return;
       const result = await readJson<{
         run: { id: string };
         delivery: 'immediate' | 'steer_pending' | 'follow_up';
@@ -529,13 +562,17 @@ export function ChatFlowClient({
       if (result.delivery !== 'steer_pending') {
         throw new Error('这个确认请求已经失效，请在聊天框中重新告诉 Rice。');
       }
+      retry.confirmed();
+      if (!action.current()) return;
       await loadHistory(activeId);
+      if (!action.current()) return;
       void interactions.reload();
       void streamRun(result.run.id, activeId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '回答提交失败');
+      if (action.current())
+        setError(cause instanceof Error ? cause.message : '回答提交失败');
     } finally {
-      setQuestionBusy(false);
+      if (action.finish()) setQuestionBusy(false);
     }
   }
 
@@ -698,7 +735,7 @@ export function ChatFlowClient({
         onNewSession={() => {
           if (!workbench.confirmNavigation()) return;
           resetRunState();
-          setActiveId(null);
+          selectSession(null);
           setHistory(null);
           setDraft('');
           clearPendingAttachments();
@@ -707,7 +744,7 @@ export function ChatFlowClient({
         onSelectSession={(sessionId) => {
           if (sessionId !== activeId && !workbench.confirmNavigation()) return;
           if (sessionId !== activeId) clearPendingAttachments();
-          setActiveId(sessionId);
+          selectSession(sessionId);
         }}
         sessions={sessions}
         workspace={workspace}
@@ -735,7 +772,7 @@ export function ChatFlowClient({
                         onClick={() => {
                           if (!workbench.confirmNavigation()) return;
                           resetRunState();
-                          setActiveId(null);
+                          selectSession(null);
                           setHistory(null);
                         }}
                         type="button"

@@ -24,10 +24,27 @@ export function AssistantRunPanel({
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const requests = useRef(new Map<string, string>());
+  const lifetime = useRef(0);
   const scope = `${workspaceId}/${tree.rootRunId}/${JSON.stringify(headers)}`;
   const currentScope = useRef(scope);
   currentScope.current = scope;
   const endpoint = `/api/v1/runtime/assistants?workspaceId=${encodeURIComponent(workspaceId)}&runId=${encodeURIComponent(tree.rootRunId)}`;
+
+  useEffect(() => {
+    lifetime.current++;
+    return () => {
+      lifetime.current++;
+    };
+  }, [scope]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    // A long outage can exhaust the bounded retry loop. Reconnect re-reads
+    // authority; it never replays a stop request or fabricates an ACK.
+    const reconnect = () => setRevision((value) => value + 1);
+    window.addEventListener('online', reconnect);
+    return () => window.removeEventListener('online', reconnect);
+  }, [expanded, scope]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -67,6 +84,9 @@ export function AssistantRunPanel({
 
   async function stop(childRunId?: string) {
     if (busy) return;
+    const requestLifetime = lifetime.current;
+    const current = () =>
+      currentScope.current === scope && lifetime.current === requestLifetime;
     const requestKey = `${scope}/${childRunId ?? 'root'}`;
     let requestId = requests.current.get(requestKey);
     if (!requestId) {
@@ -87,15 +107,15 @@ export function AssistantRunPanel({
       });
       if (!response.ok) throw new Error('停止请求未确认，请刷新状态后重试。');
       // Acceptance never changes the display to stopped. Re-read actual state.
-      if (currentScope.current === scope) {
+      if (current()) {
         setRevision((item) => item + 1);
         onChanged();
       }
     } catch (cause) {
-      if (currentScope.current === scope)
+      if (current())
         setError(cause instanceof Error ? cause.message : '停止请求未确认');
     } finally {
-      if (currentScope.current === scope) setBusy(false);
+      if (current()) setBusy(false);
     }
   }
   const current =

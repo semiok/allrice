@@ -37,7 +37,14 @@ export class AssistantFixtureCleanupError extends Error {
   }
 }
 
-export async function createAssistantFixtureDatabase() {
+export async function createAssistantFixtureDatabase(
+  options: { throughMigration?: '0096_assistant_pricing.sql' } = {},
+) {
+  if (
+    options.throughMigration !== undefined &&
+    options.throughMigration !== '0096_assistant_pricing.sql'
+  )
+    throw Error('Unsupported isolated migration checkpoint');
   const value = process.env.ALLRICE_TEST_DATABASE_URL;
   if (!value) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
   const url = new URL(value);
@@ -119,7 +126,10 @@ export async function createAssistantFixtureDatabase() {
       },
     });
     await admin.unsafe(`create schema "${schema}"`);
-    url.searchParams.set('options', `-csearch_path=${schema},public`);
+    // An incremental checkpoint must not borrow tables introduced by later
+    // migrations from a fully migrated public schema (as CI db:setup has).
+    const searchPath = options.throughMigration ? schema : `${schema},public`;
+    url.searchParams.set('options', `-csearch_path=${searchPath}`);
     db = postgres(url.toString(), {
       max: 10,
       onnotice: () => {},
@@ -131,10 +141,20 @@ export async function createAssistantFixtureDatabase() {
     stores.set(db, new LocalStorageAdapter(storageRoot));
     const migrations = new URL('../migrations/', import.meta.url);
     await db.begin(async (tx) => {
-      for (const file of (await readdir(migrations))
+      // Historical bootstrap SQL uses extension types/operators installed in
+      // public. This transaction-local path expires before the checkpoint pool
+      // is returned; subsequent migration/runtime readers remain own-only.
+      if (options.throughMigration)
+        await tx`select set_config('search_path', ${`${schema},public`}, true)`;
+      const files = (await readdir(migrations))
         .filter((f) => f.endsWith('.sql'))
-        .sort())
+        .sort();
+      if (options.throughMigration && !files.includes(options.throughMigration))
+        throw Error('Isolated migration checkpoint missing');
+      for (const file of files) {
+        if (options.throughMigration && file > options.throughMigration) break;
         await tx.unsafe(await readFile(new URL(file, migrations), 'utf8'));
+      }
     });
     return {
       db,

@@ -117,7 +117,8 @@ export const RouteOutcomeSchema = z
     inputTokens: z.number().int().nonnegative(),
     cachedInputTokens: z.number().int().nonnegative(),
     outputTokens: z.number().int().nonnegative(),
-    // null means no authoritative estimate, not a zero-cost execution.
+    // NULL is not zero/free: only a separately persisted, server-verified route
+    // subscription proof makes it monetary N/A. Without that proof it is unknown.
     costCents: z.number().nonnegative().nullable(),
     cacheUsageKnown: z.boolean().default(true),
     usageComplete: z.boolean().default(true),

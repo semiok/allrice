@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
 import { localMcpNativeTools } from './allrice-local-mcp-native-tools.mjs';
 import { browserWorkspaceNativeTools } from './allrice-browser-workspace-native-tools.mjs';
+import { readCodexSubscriptionQuota } from './allrice-codex-subscription-quota.mjs';
 
 import {
   boot,
@@ -1376,6 +1377,40 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     };
   }
 
+  async providerQuota() {
+    // No model, account refresh, desktop auth lookup or private HTTP endpoint.
+    // The same credential service/key used for DSH model execution owns access.
+    const unavailable = (detailCode) => ({
+      source: 'codex_app_server',
+      status: 'unknown',
+      checkedAt: new Date().toISOString(),
+      accountFingerprint: null,
+      detailCode,
+      buckets: [],
+    });
+    const command = process.env.ALLRICE_CODEX_QUOTA_COMMAND;
+    if (!command) return unavailable('codex_quota_not_configured');
+    try {
+      const record = await this.ctx.credentials.readRecord(codexCredentialKey);
+      const grant = record?.kind === 'grant' ? record.payload : undefined;
+      if (!grant || grant.type !== 'oauth')
+        return unavailable('codex_quota_authorization_required');
+      return await readCodexSubscriptionQuota({
+        command,
+        accessToken: grant.access,
+        chatgptAccountId: grant.accountId,
+        expiresAt: grant.expires,
+        egressEnvironment: {
+          HTTP_PROXY: process.env.HTTP_PROXY,
+          HTTPS_PROXY: process.env.HTTPS_PROXY,
+          NO_PROXY: process.env.NO_PROXY,
+        },
+      });
+    } catch {
+      return unavailable('codex_quota_read_failed');
+    }
+  }
+
   async authorizeCodex() {
     return this.ctx.authorization.begin({
       key: codexCredentialKey,
@@ -1473,9 +1508,15 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       const action = method.slice('allrice/assistant/'.length);
       if (
         !this.governedAssistants ||
-        !['bind', 'drain', 'flush', 'join', 'inspect', 'finish'].includes(
-          action,
-        )
+        ![
+          'bind',
+          'drain',
+          'flush',
+          'join',
+          'inspect',
+          'finish',
+          'diagnostics',
+        ].includes(action)
       )
         throw Error('assistant_runtime_disabled');
       return this.governedAssistants[action](params);
@@ -1495,6 +1536,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         return this.closeSession(params);
       case 'provider/status':
         return this.providerStatus();
+      case 'provider/quota':
+        return this.providerQuota();
       case 'provider/authorize-codex':
         return this.authorizeCodex();
       case 'provider/cancel-codex':

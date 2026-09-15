@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
 
 import {
   OrganizationModelQuotaSchema,
@@ -14,6 +15,8 @@ import {
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { isPlatformAdmin } from './model-pool.ts';
+
+type GovernanceSql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 
 const defaultMonthlyRunLimit = 10_000;
 const defaultMonthlyTokenLimit = 10_000_000;
@@ -94,7 +97,7 @@ async function requirePlatformAdmin(context: RequestContext) {
 
 export async function getOrganizationModelQuota(
   organizationId: string,
-  sql = getDatabase(),
+  sql: GovernanceSql = getDatabase(),
 ) {
   const id = UuidSchema.parse(organizationId);
   const rows = await sql<
@@ -106,6 +109,7 @@ export async function getOrganizationModelQuota(
       used_tokens: number | string;
       used_cost_cents: number | string | null;
       unknown_cost_runs: number;
+      subscription_runs: number;
       usage_complete: boolean;
       cache_usage_known: boolean;
       period_start: Date;
@@ -115,9 +119,10 @@ export async function getOrganizationModelQuota(
       q.monthly_cost_limit_cents,
       count(l.id)::bigint as used_runs,
       coalesce(sum(l.input_tokens + l.output_tokens), 0)::bigint as used_tokens,
-      case when count(l.id) filter (where l.cost_cents is null) > 0
+      case when count(l.id) filter (where l.cost_cents is null and s.route_decision_id is null) > 0
         then null else coalesce(sum(l.cost_cents), 0) end as used_cost_cents,
-      count(l.id) filter (where l.cost_cents is null)::integer as unknown_cost_runs,
+      count(l.id) filter (where l.cost_cents is null and s.route_decision_id is null)::integer as unknown_cost_runs,
+      count(l.id) filter (where s.route_decision_id is not null)::integer as subscription_runs,
       coalesce(bool_and(l.usage_complete), true) as usage_complete,
       coalesce(bool_and(l.cache_usage_known), true) as cache_usage_known,
       date_trunc('month', now()) as period_start
@@ -127,6 +132,7 @@ export async function getOrganizationModelQuota(
     left join allrice_model_usage_ledger l
       on l.organization_id = scope.organization_id
       and l.occurred_at >= date_trunc('month', now())
+    left join allrice_route_subscription_snapshots s on s.route_decision_id=l.route_decision_id
     group by q.monthly_run_limit, q.monthly_token_limit,
       q.monthly_cost_limit_cents
   `;
@@ -145,6 +151,7 @@ export async function getOrganizationModelQuota(
     usedCostCents:
       row.used_cost_cents === null ? null : Number(row.used_cost_cents),
     unknownCostRuns: row.unknown_cost_runs,
+    subscriptionRuns: row.subscription_runs,
     usageComplete: row.usage_complete,
     cacheUsageKnown: row.cache_usage_known,
     periodStart: row.period_start.toISOString(),
@@ -202,7 +209,11 @@ export async function getModelGovernanceSnapshot(input: {
 }
 
 export function assertQuotaAvailable(
-  quota: Awaited<ReturnType<typeof getOrganizationModelQuota>>,
+  quota: Omit<
+    Awaited<ReturnType<typeof getOrganizationModelQuota>>,
+    'subscriptionRuns'
+  >,
+  billingMode: 'token_metered' | 'subscription' = 'token_metered',
 ) {
   if (quota.usedRuns >= quota.monthlyRunLimit) {
     throw new ModelGovernanceError('MODEL_RUN_QUOTA_EXCEEDED');
@@ -212,6 +223,9 @@ export function assertQuotaAvailable(
   }
   if (!quota.usageComplete)
     throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
+  // Only the caller's verified subscription route can omit cash admission.
+  // Token/run/lease/orphan checks apply regardless of how the provider is paid.
+  if (billingMode === 'subscription') return;
   if (quota.usedCostCents === null || quota.unknownCostRuns > 0)
     throw new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN');
   if (quota.usedCostCents >= quota.monthlyCostLimitCents) {
@@ -361,13 +375,15 @@ export async function updateOrganizationModelQuota(input: {
   return getOrganizationModelQuota(input.context.organizationId);
 }
 
-async function resourceStatus(input: {
-  organizationId: string;
-  workspaceId: string;
-  scope: 'tenant' | 'user' | 'employee' | 'provider';
-  scopeId: string;
-}) {
-  const sql = getDatabase();
+async function resourceStatus(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    scope: 'tenant' | 'user' | 'employee' | 'provider';
+    scopeId: string;
+  },
+  sql: GovernanceSql = getDatabase(),
+) {
   const limitRows = await sql<
     {
       monthly_run_limit: number;
@@ -487,6 +503,49 @@ export function assertModelResourceAvailable(input: {
   }
 }
 
+/** Closed/invalid roots can outlive a crashed Worker's monthly projection.
+ * Read their durable dispatched-call holds, never a raw provider error or every
+ * positive reservation. Live bounded in-flight work and undispatched preparation
+ * remain admissible; this query neither settles holds nor acquires runtime locks.
+ */
+async function assertNoOrphanedAssistantUsage(
+  organizationId: string,
+  sql: postgres.TransactionSql,
+) {
+  const [unknown] = await sql`
+    select 1 from allrice_runtime_roots rt
+    join allrice_assistant_roots ar on ar.root_run_id=rt.root_run_id
+    join allrice_runs r on r.id=rt.root_run_id
+      and r.organization_id=rt.organization_id and r.workspace_id=rt.workspace_id
+    join allrice_assistant_model_admissions a on a.root_run_id=rt.root_run_id
+    join allrice_assistant_usage u on u.root_run_id=a.root_run_id
+      and u.run_id=a.run_id and u.call_id=a.call_id
+    left join allrice_assistant_instances main on main.run_id=rt.root_run_id
+      and main.root_run_id=rt.root_run_id
+    left join allrice_jobs j on j.id=ar.worker_job_id and j.run_id=rt.root_run_id
+      and j.organization_id=rt.organization_id and j.workspace_id=rt.workspace_id
+    where rt.organization_id=${organizationId}
+      and a.dispatched_at is not null
+      and u.metric in ('input_tokens','output_tokens')
+      and u.amount>0 and u.settled_amount is null
+      and (
+        rt.cancel_request_id is not null or rt.deadline_at<=clock_timestamp()
+        or ar.revoked_at is not null
+        or r.state not in ('queued','running','waiting_approval')
+        or main.run_id is null or main.stopped_at is not null
+        or main.status in ('completed','partial','failed','canceled','unknown')
+        or j.id is null or j.status<>'running'
+        or j.cancel_requested_at is not null or j.timeout_at<=clock_timestamp()
+        or j.lease_expires_at is null or j.lease_expires_at<=clock_timestamp()
+        or j.worker_id is distinct from ar.worker_id or j.lease_token is null
+        or ar.worker_lease_digest is distinct from
+          ('sha256:' || encode(sha256(convert_to(to_json(j.lease_token)::text,'UTF8')),'hex'))
+      )
+    limit 1
+  `;
+  if (unknown) throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
+}
+
 export async function admitModelExecution(input: {
   organizationId: string;
   workspaceId: string;
@@ -515,17 +574,37 @@ export async function admitModelExecution(input: {
   return sql.begin(async (transaction) => {
     for (const [scope, scopeId] of scopes) {
       await transaction`
-        select pg_advisory_xact_lock(hashtext(${`${scope}:${scopeId}`}))
+        select pg_advisory_xact_lock(hashtext(${`${scope}:${scopeId.toLowerCase()}`}))
       `;
     }
+    // This transaction is the new-Run admission boundary. RouteOutcome writers
+    // take the same tenant lock before their route row lock. Re-read after any
+    // wait; a previously captured UI/Worker quota is not admission authority.
+    // Already admitted live bounded Runs are not retroactively canceled here.
+    // Derive from the actual selected server connection, never request input.
+    // Missing/unsupported identities get no exemption; frozen-route validation
+    // still runs before Worker dispatch and durable subscription settlement.
+    const [billing] = await transaction<{ subscription: boolean }[]>`
+      select p.auth_mode='chatgpt_subscription' and p.provider_key in ('codex','openai-codex')
+        and c.base_url is null and c.credential_reference is not null as subscription
+      from allrice_model_connections c join allrice_model_providers p on p.id=c.provider_id
+      where c.id=${values.connectionId} and (c.scope='platform' or c.organization_id=${values.organizationId})`;
+    assertQuotaAvailable(
+      await getOrganizationModelQuota(values.organizationId, transaction),
+      billing?.subscription === true ? 'subscription' : 'token_metered',
+    );
+    await assertNoOrphanedAssistantUsage(values.organizationId, transaction);
     const resources = await Promise.all(
       scopes.map(([scope, scopeId]) =>
-        resourceStatus({
-          organizationId: values.organizationId,
-          workspaceId: values.workspaceId,
-          scope,
-          scopeId,
-        }),
+        resourceStatus(
+          {
+            organizationId: values.organizationId,
+            workspaceId: values.workspaceId,
+            scope,
+            scopeId,
+          },
+          transaction,
+        ),
       ),
     );
     assertModelResourceAvailable({
@@ -592,6 +671,7 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
         output_tokens: number | string;
         cost_cents: number | string | null;
         unknown_cost_runs: number;
+        subscription_runs: number;
         usage_complete: boolean;
       }[]
     >`
@@ -605,14 +685,16 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
         coalesce(avg(extract(epoch from (d.completed_at - d.created_at)) * 1000), 0) as average_latency_ms,
         coalesce(sum(d.input_tokens), 0)::bigint as input_tokens,
         coalesce(sum(d.output_tokens), 0)::bigint as output_tokens,
-        case when count(d.id) filter (where d.cost_cents is null) > 0
+        case when count(d.id) filter (where d.cost_cents is null and s.route_decision_id is null) > 0
           then null else coalesce(sum(d.cost_cents), 0) end as cost_cents,
-        count(d.id) filter (where d.cost_cents is null)::integer as unknown_cost_runs,
+        count(d.id) filter (where d.cost_cents is null and s.route_decision_id is null)::integer as unknown_cost_runs,
+        count(d.id) filter (where s.route_decision_id is not null)::integer as subscription_runs,
         coalesce(bool_and(d.usage_complete), true) as usage_complete
       from allrice_model_connections c
       left join allrice_provider_release_controls rc on rc.connection_id = c.id
       left join allrice_route_decisions d on d.model_connection_id = c.id
         and d.created_at >= now() - interval '30 days'
+      left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
       where c.scope = 'platform'
       group by c.id, rc.release_stage, rc.production_approved,
         rc.allowlisted_organization_ids
@@ -666,6 +748,7 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
       outputTokens: Number(item.output_tokens),
       costCents: item.cost_cents === null ? null : Number(item.cost_cents),
       unknownCostRuns: item.unknown_cost_runs,
+      subscriptionRuns: item.subscription_runs,
       usageComplete: item.usage_complete,
     })),
     resourceLimits: resourceLimits.map((item) => ({

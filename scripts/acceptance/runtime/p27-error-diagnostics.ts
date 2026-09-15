@@ -18,9 +18,18 @@ const classes = new Set([
   'TimeoutError',
   'HandlerError',
   'AssistantRuntimeError',
+  'AssistantPricingError',
   'AssistantExecutionUnresolvedError',
   'AssistantFixtureInitializationError',
   'AssistantFixtureCleanupError',
+  'P27WorkerFixtureError',
+  'P27CodexWorkerFixtureError',
+  'P27CodexJsonError',
+  'ZodError',
+  '$ZodError',
+  'RuntimeLedgerError',
+  'ConversationRuntimeError',
+  'ModelGovernanceError',
   'APIError',
   'APICallError',
   'AI_APICallError',
@@ -37,6 +46,10 @@ const classes = new Set([
 // Fixed source-defined codes, not a permissive character/prefix regex. Native
 // runtime error codes can originate in a provider and are otherwise untrusted.
 const codes = new Set([
+  'P27_CODEX_JSON_ARTIFACT_ENVELOPE_INVALID',
+  'P27_CODEX_JSON_CHILD_REPORT_INVALID',
+  'P27_CODEX_JSON_PARENT_ANSWER_INVALID',
+  'P27_CODEX_JSON_ORDINARY_ANSWER_INVALID',
   'DSH_CREDENTIAL_FILE_INSECURE',
   'DSH_CREDENTIAL_FILE_UNAVAILABLE',
   'DSH_CREDENTIAL_DIRECTORY_INVALID',
@@ -54,6 +67,22 @@ const codes = new Set([
   'DSH_REQUEST_FAILED',
   'DSH_INBOUND_REQUEST_DENIED',
   'DSH_TURN_FAILED',
+  // runOnce prefixes these pinned native provider codes. This remains an exact
+  // allowlist, not permission to copy arbitrary DSH_ strings or error bodies.
+  'DSH_AUTH',
+  'DSH_QUOTA',
+  'DSH_RATE_LIMIT',
+  'DSH_INVALID_REQUEST',
+  'DSH_SERVER',
+  'DSH_TIMEOUT',
+  'DSH_TRANSPORT',
+  'DSH_PI_AI_ERROR',
+  'DSH_CONTEXT_WINDOW_EXCEEDED',
+  'DSH_EMPTY_RESPONSE',
+  'DSH_ABORTED',
+  'DSH_STREAM_CLOSED',
+  'DSH_INVALID_CREDENTIAL',
+  'DSH_UNKNOWN',
   'DSH_TOOL_LIMIT_EXCEEDED',
   'DSH_TOOL_ENVELOPE_INVALID',
   'DSH_NATIVE_TOOL_INVALID',
@@ -62,7 +91,18 @@ const codes = new Set([
   'HARNESS_UNSUPPORTED',
   'PROVIDER_UNAVAILABLE',
   'ASSISTANT_EXECUTION_UNRESOLVED',
+  'MODEL_TOKEN_USAGE_UNKNOWN',
+  'MODEL_COST_USAGE_UNKNOWN',
+  'scope_mismatch',
+  'idempotency_conflict',
+  'deadline_exceeded',
+  'invalid_usage',
+  'conversation_ownership_lost',
   'ASSISTANT_PARTIAL_RESULT',
+  'ASSISTANT_PRICE_UNAVAILABLE',
+  'ASSISTANT_PRICE_UNSUPPORTED_BILLING',
+  'ASSISTANT_PRICE_AMBIGUOUS',
+  'ASSISTANT_PRICE_USAGE_OUT_OF_BAND',
   'disabled',
   'forbidden',
   'conflict',
@@ -86,6 +126,7 @@ const codes = new Set([
   'p27_adapter_assistant_status',
   'p27_adapter_authoritative_whole_tree_outcome',
   'p27_adapter_provider_route',
+  'p27_adapter_priced_accounting',
   'p27_adapter_unknown_accounting_flags',
   'p27_adapter_usage_incomplete',
   'p27_adapter_whole_tree_usage',
@@ -122,6 +163,18 @@ const codes = new Set([
   'p27_production_assistant_controller_enabled',
   'p27_production_root_call_caps',
   'p27_provider_not_authorized',
+  'p27_provider_route_not_authorized',
+  'p27_gemini_credential_file_required',
+  'p27_gemini_credential_metadata_denied',
+  'p27_gemini_existing_platform_home_denied',
+  'p27_price_manifest_expired_or_not_effective',
+  'p27_price_bound_exceeds_limit',
+  'p27_priced_call_receipt_count',
+  'p27_priced_receipt_identity',
+  'p27_priced_cache_remains_unknown',
+  'p27_priced_receipt_amount',
+  'p27_priced_receipts_match_settled_tokens',
+  'p27_priced_summary_matches_receipts',
   'p27_random_isolated_schema',
   'p27_real_model_usage_for_parent_and_each_child',
   'p27_real_native_tool_registry',
@@ -129,6 +182,89 @@ const codes = new Set([
   'p27_same_basename_independent_immutable_objects',
   'p27_stopping',
   'p27_worker_lock_importer_missing',
+  'p27_worker_explicit_gemini_required',
+  'p27_worker_two_execution_authorization_required',
+  'p27_worker_ambient_database_denied',
+  'p27_worker_deadline',
+  'p27_worker_source_alias_required',
+  'p27_worker_provider_bound_unavailable',
+  'p27_worker_execution_count',
+  'p27_worker_execution_aborted',
+  'p27_worker_model_not_invoked',
+  'p27_worker_lease_lost',
+  'p27_worker_terminal_success',
+  'p27_worker_followup_quota_known',
+  'p27_worker_quota_matches_ledger',
+  'p27_worker_exact_two_executions',
+  'p27_worker_exact_one_execution',
+  'p27_worker_one_run_recorded',
+  'p27_codex_worker_explicit_provider_required',
+  'p27_codex_worker_one_execution_authorization_required',
+  'p27_codex_worker_ambient_database_denied',
+  'p27_codex_worker_home_denied',
+  'p27_codex_worker_already_attempted',
+  'p27_codex_worker_unexpected_tool_events',
+  'p27_codex_worker_ordinary_result',
+  'p27_codex_worker_exact_one_ordinary_task',
+  'p27_codex_worker_actual_route_ledger',
+  'p27_codex_worker_observed_tokens',
+  'p27_codex_worker_legacy_projection_observed',
+  'P27_CODEX_WORKER_SMOKE_FAILED',
+  'P27_CODEX_WORKER_FIXTURE_ALREADY_OWNED',
+  'P27_CODEX_WORKER_AMBIENT_DATABASE',
+  'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
+  'P27_CODEX_WORKER_FIXTURE_FLAGS_REQUIRED',
+  'P27_CODEX_WORKER_CLEANUP_UNCONFIRMED',
+  'P27_CODEX_WORKER_SCHEMA_INVALID',
+  'P27_CODEX_WORKER_GLOBAL_DATABASE_MISMATCH',
+  'P27_CODEX_WORKER_RELATION_SCOPE',
+  'P27_CODEX_WORKER_CATALOG_MISSING',
+  'P27_CODEX_WORKER_FIXTURE_NOT_IDLE',
+  'P27_CODEX_WORKER_DATABASE_CHANGED',
+  'P27_CODEX_WORKER_PROMPT_INVALID',
+  'P27_CODEX_WORKER_FROZEN_MODEL_MISMATCH',
+  'P27_CODEX_WORKER_UNEXPECTED_QUEUE',
+  'P27_CODEX_WORKER_CLAIM_MISMATCH',
+  'P27_CODEX_WORKER_START_MISMATCH',
+  'P27_CODEX_WORKER_ALREADY_ATTEMPTED',
+  'P27_CODEX_WORKER_INITIALIZATION_FAILED',
+  'p27_worker_installed_runtime_unchanged',
+  'p27_worker_actual_route_ledger',
+  'p27_worker_result_actual_provider',
+  'p27_worker_frozen_price_identity',
+  'p27_worker_assistant_authority',
+  'p27_worker_whole_tree_result',
+  'p27_worker_children_and_adoption',
+  'p27_worker_child_artifact_identity',
+  'p27_worker_artifact_provenance',
+  'p27_worker_child_arithmetic',
+  'p27_worker_parent_arithmetic',
+  'p27_worker_root_projection_matches_receipts',
+  'p27_worker_ordinary_result',
+  'p27_worker_ordinary_no_assistant_root',
+  'p27_worker_ordinary_legacy_estimate',
+  'P27_WORKER_SMOKE_FAILED',
+  'P27_WORKER_FIXTURE_ALREADY_OWNED',
+  'P27_WORKER_AMBIENT_DATABASE',
+  'P27_WORKER_DATABASE_NOT_AUTHORIZED',
+  'P27_WORKER_FIXTURE_FLAGS_REQUIRED',
+  'P27_WORKER_CLEANUP_UNCONFIRMED',
+  'P27_WORKER_SCHEMA_INVALID',
+  'P27_WORKER_GLOBAL_DATABASE_MISMATCH',
+  'P27_WORKER_RELATION_SCOPE',
+  'P27_WORKER_GEMINI_CATALOG_MISSING',
+  'P27_WORKER_FIXTURE_NOT_IDLE',
+  'P27_WORKER_DATABASE_CHANGED',
+  'P27_WORKER_PROMPT_INVALID',
+  'P27_WORKER_FROZEN_MODEL_MISMATCH',
+  'P27_WORKER_UNEXPECTED_QUEUE',
+  'P27_WORKER_CLAIM_MISMATCH',
+  'P27_WORKER_START_MISMATCH',
+  'P27_WORKER_FIRST_ALREADY_ATTEMPTED',
+  'P27_WORKER_ORDINARY_NOT_IDLE',
+  'P27_WORKER_FIRST_RUN_MISMATCH',
+  'P27_WORKER_FIRST_NOT_VERIFIED',
+  'P27_WORKER_INITIALIZATION_FAILED',
 ]);
 const categories = [
   [
@@ -222,6 +358,44 @@ function status(value: unknown): number | null {
     : null;
 }
 
+/** Schema issues can contain raw inputs in their messages and property names.
+ * Only fixed issue kinds and the known internal transport key are retained. */
+function validationMetadata(value: unknown) {
+  if (!['ZodError', '$ZodError'].includes(errorClass(value))) return undefined;
+  const issues = data(value, 'issues');
+  if (types.isProxy(issues) || !Array.isArray(issues)) return undefined;
+  const issueCodes = new Set<string>();
+  const unexpectedKeys = new Set<string>();
+  const knownCodes = new Set([
+    'invalid_type',
+    'too_small',
+    'too_big',
+    'invalid_value',
+    'invalid_format',
+    'invalid_union',
+    'not_multiple_of',
+    'invalid_key',
+    'invalid_element',
+    'unrecognized_keys',
+    'custom',
+  ]);
+  for (let i = 0; i < Math.min(issues.length, 8); i++) {
+    const issue = data(issues, String(i));
+    const code = data(issue, 'code');
+    issueCodes.add(allowed(code, knownCodes) ? code : 'unknown');
+    const keys = data(issue, 'keys');
+    if (types.isProxy(keys) || !Array.isArray(keys)) continue;
+    for (let k = 0; k < Math.min(keys.length, 8); k++) {
+      if (data(keys, String(k)) === 'leaseMs') unexpectedKeys.add('leaseMs');
+    }
+  }
+  return {
+    issueCodes: [...issueCodes],
+    unexpectedKeys: [...unexpectedKeys],
+    truncated: issues.length > 8,
+  };
+}
+
 /** Regex categories are hints from a bounded error string, not a proven cause.
  * Only `cause` is traversed; arbitrary payload/response trees are never walked. */
 export function p27ErrorDiagnostics(error: unknown) {
@@ -268,10 +442,12 @@ export function p27ErrorDiagnostics(error: unknown) {
     );
     if (httpStatus === 401 || httpStatus === 403) matched.add('authentication');
     if (httpStatus === 429) matched.add('rate_limit');
+    const validation = validationMetadata(current);
     errors.push({
       depth,
       class: errorClass(current),
       code,
+      ...(validation ? { validation } : {}),
       retryable: typeof retryable === 'boolean' ? retryable : null,
       httpStatus,
       categories: matched.size ? [...matched] : ['unknown'],

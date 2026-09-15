@@ -7,6 +7,7 @@ import type {
   StorageObject,
   ImageMediaType,
   RuntimeNativeInputProof,
+  AssistantSubscriptionSnapshot,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -37,6 +38,8 @@ export interface HarnessExecutionInput {
   /** Trusted Worker port; never deserialized from model or browser input. */
   assistants?: {
     rootRunId: string;
+    /** Trusted controller proof; never populated from browser/model preferences. */
+    subscriptionSnapshot?: AssistantSubscriptionSnapshot;
     maxOutputTokens?: number;
     bind(
       nativeSessionId: string,
@@ -63,6 +66,13 @@ export interface HarnessExecutionInput {
         usageComplete: boolean;
         cacheUsageKnown: boolean;
         costEstimateAvailable: boolean;
+        estimatedCostCents?: number | null;
+        billingMode?: 'subscription';
+        costBasis?: 'conservative_upper_bound' | 'unknown' | 'not_applicable';
+        subscriptionSnapshotDigest?: string;
+        priceSnapshotDigest?: string;
+        costCurrency?: string;
+        actualCostKnown?: false;
       }>;
     }>;
   };
@@ -105,6 +115,14 @@ export interface HarnessExecutionResult {
   usageComplete?: boolean;
   cacheUsageKnown?: boolean;
   costEstimateAvailable?: boolean;
+  /** Frozen-tariff upper bound, never a provider invoice or proven cash charge. */
+  estimatedCostCents?: number | null;
+  billingMode?: 'subscription';
+  costBasis?: 'conservative_upper_bound' | 'unknown' | 'not_applicable';
+  subscriptionSnapshotDigest?: string;
+  priceSnapshotDigest?: string;
+  costCurrency?: string;
+  actualCostKnown?: false;
   answer: string;
   usage: {
     inputTokens: number;

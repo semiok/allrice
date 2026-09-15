@@ -4,8 +4,11 @@
 
 ## 用户意图与生效边界
 
+2026-09-15：部分失败、真实 UI 取消请求→native 停止确认、同 Session 后继任务与跨 Session 工件隔离已补齐本地验收。
+固定候选、截图、失败历史及未发布边界见 [139 → 140 → 142 收尾记录](./b6-subscription-closeout-20260915.md)。
+
 - 日常模式使用已有 Rice 主会话与工件工作台，不新增助手聊天产品。
-- 只有已开放功能、员工明确拥有委派能力且冻结模型协议支持有界输出时，下一任务可选择有限助手。当前 Codex 固定 SDK 不满足助手输出上限证明，展示禁用说明并将该任务偏好明确收紧为 `allowAssistants:false`；普通 Codex 聊天保留，不自动切换模型。客户端提示不是授权，实际 Worker 仍独立校验。Boost / Teamwork 不开放，预告必须禁用并解释原因。
+- 只有已开放功能、员工明确拥有委派能力且冻结模型满足相应准入时，下一任务可选择有限助手。2026-09-15 的精确 `openai-codex` 订阅路线采用服务端冻结身份、N/A 计量和订阅适用的有界控制，不再因缺少 API 输出参数而一律禁用；未知路线仍拒绝，普通 Codex 聊天保留，不自动切换模型。客户端提示不是授权，实际 Worker 仍独立校验。Boost / Teamwork 不开放，预告必须禁用并解释原因。
 - `assistantPreference` 只表达 `daily` 和是否允许助手，不接收客户端预算、工具或权限。服务端生成有界配置；Worker 再校验冻结能力与当前授权。
 - 输入框只配置下一项普通任务，不改变活动 Run、审批、审查反馈或问题回答。旧客户端不带该字段，仍走原单 Agent 路径。
 - “本次不使用助手”被保存成该任务的硬约束。根用户文本开头明确独立的“不使用助手”等指令也能收紧此约束；附件、引用、历史及模型输出不参与解析。自然语言不能自行提高权限或开启尚未发布的模式。
@@ -35,6 +38,9 @@
 
 ## 冻结协议及会话切换追加验收（失败历史保留）
 
+下文为 2026-09-14 旧候选；其中 Codex 助手禁用断言已由 2026-09-15 订阅准入与用户 opt-out 回归替代，
+不改变当时的失败/修复事实。真实订阅助手正向链见 [订阅验收记录](./p27-codex-first-acceptance.md)。
+
 `cf6b7e9` 的 27 项协议提示/控制单元测试与 Web 构建通过。真实页面增加从合成 Gemini 历史切到冻结 Codex、普通消息实际入队、检查请求与数据库偏好为 false、模型绑定不变、无 Worker 启动，再回到 Gemini 的路径。
 
 这条更严格的验收发现旧 pending Run 在切回已完成会话后重建 SSE，“停止本轮”错误保留。原构建 `I1lGoWoMKvy0B3AEvFCIQ` 上的新断言明确失败，收据 `/tmp/allrice-p26-ui-sggygq/evidence/checks.json` 记录 `return-gemini` 阶段仍请求旧 Codex Run。该失败不因普通单元测试或先前仅合成历史的页面验收通过而被抹去。
@@ -48,3 +54,11 @@
 干净组合 `ef9b2550f54aa531f5ebe0a700cb1ac4bd0b1932` / BUILD_ID `Heb9HDaXDT-jlqs0VtWrD` 完成真正 Chrome + built Next + PostgreSQL 复验：旧 SSE 已取消且不重建、完成会话无停止按钮、回到 Codex 才恢复同一 pending Run；桌面/390px、历史刷新、偏好不改冻结模型与当前任务、取消真实性和 flag-OFF 历史/取消路径均通过。Page/Console/HTTP 错误为 0。收据 `/tmp/allrice-p26-ui-XR3Whe/evidence/checks.json`，SHA-256 `ee41007cf4a832bc9e1c66c715c52e897354f2cd0ff71329af8f6db84f982f49`。独立测试进程/schema/storage 已清理，原失败收据保留。
 
 本轮不是模型、Worker 配额或完整断网恢复验收，也未覆盖 composer 迟到请求修改新草稿/附件/busy 的所有副作用；不将本次修复称为全部交互均已验收。B6/P27/正式分发与真实租户启用门禁仍未完成。
+
+### 2026-09-14 本批收尾补测
+
+此前未覆盖的 composer、附件、Ask User、取消与长期断网路径已补真实 Chrome/React StrictMode 回归。Session 选择代次和请求 owner 共同阻止 A→B→A 的旧结果复活；新会话首次创建、附件成功上传等正向路径也有覆盖。离开页面不撤销已提交的后台任务。助手详情耗尽三次网络重试后，online 事件只重新读权威记录，不重放停止请求。
+
+新浏览器测试 `composer-isolation.browser.test.ts` 14/14 通过；同一夹具加载 main 原始文件的四个反例全部失败。定向单元/API 153/153，Web typecheck、lint、format 与生产 build 通过。主开发另以 built Next + 独立 PostgreSQL 运行既有页面验收，通过，收据及源码范围见 [本批收尾记录](./b6-closeout-20260914.md)。
+
+两层 UI 测试分别使用合成 loopback HTTP、合成持久历史；不读取个人 Chrome、不改服务中 Dev/Prod、不调用模型。它们补齐前端缺陷，但不单独关闭依赖 MET-139 的真实助手联验，也不启动新的三栏工作台范围。

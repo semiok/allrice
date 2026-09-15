@@ -11,11 +11,22 @@ import {
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validSubscriptionEvidence } from './p28-subscription-evidence.mjs';
 
 export const BASELINE_SHA = '57f3b5fd2acba034e9011231075c3e29b4503733';
 export const BASELINE_MIGRATIONS_SHA256 =
   'ef1e7b033c925c452196271bb402706556b60f39c11b83c9573bdcdb09abe747';
 export const MAX_EVIDENCE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const ASSISTANT_BILLING_ASSERTIONS = {
+  token_metered: ['frozen-price-and-whole-tree-cost-receipts'],
+  subscription: [
+    'immutable-subscription-route-proof-verified',
+    'whole-tree-actual-tokens-and-admissions-settled',
+    'subscription-result-route-ledger-na-digest-match',
+    'subscription-no-api-price-or-cost-receipts',
+    'subscription-unknown-token-follow-up-denied',
+  ],
+};
 export const FLAGS = [
   'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
   'ALLRICE_RUNTIME_POLICY_ENABLED',
@@ -50,6 +61,9 @@ export const PRESERVED_STATE = [
   'memory-skill',
   'runtime-ledger',
   'assistant-model-admissions',
+  'assistant-price-snapshots-and-receipts',
+  'route-subscription-snapshots',
+  'codex-subscription-quota-metadata',
   'model-usage-and-unknown-cost',
   'artifacts',
 ];
@@ -185,6 +199,7 @@ export const CASE_ASSERTIONS = {
     'two-distinct-children',
     'bridge-absent',
     'results-and-artifacts-collected',
+    'worker-follow-up-quota-available',
   ],
   'assistants-narrow-permissions-approval': [
     'permission-intersection',
@@ -220,6 +235,10 @@ export const CASE_ASSERTIONS = {
     'no-contract-in-first-release',
     'assistant-model-admissions-expand-compatible',
     'nullable-model-cost-readers-compatible',
+    'immutable-assistant-pricing-expand-compatible',
+    'immutable-subscription-proof-expand-compatible',
+    'historical-null-cost-not-reclassified',
+    'nullable-subscription-quota-readers-compatible',
   ],
   'rollback-drain-reconcile-preserve-state': [
     'drain-confirmed',
@@ -229,6 +248,10 @@ export const CASE_ASSERTIONS = {
     'prepared-and-dispatched-model-holds-preserved',
     'model-dispatch-identity-not-replayed',
     'unknown-usage-and-cost-not-zeroed',
+    'frozen-prices-and-call-receipts-preserved',
+    'subscription-proof-and-na-semantics-preserved',
+    'subscription-unknown-tokens-not-released',
+    'subscription-quota-account-freshness-preserved',
   ],
   'dev-final-sha-login-history-downloads-flags-smoke': [
     'deployed-sha-and-build-match',
@@ -748,6 +771,9 @@ export function validateRelease({
       pin(entry.file, `${field}.file`);
       try {
         const receipt = parseJson(readSafe(evidenceRoot, entry.file.path));
+        const billingAware = receipt?.schema === 'allrice-p27-evidence/v2';
+        const billingCase =
+          entry.caseId === 'assistants-real-dsh-two-children-no-bridge';
         if (
           !keys(
             receipt,
@@ -767,13 +793,15 @@ export function validateRelease({
               'assertions',
               'attachments',
               'device',
+              ...(billingAware ? ['billing'] : []),
             ],
             `${field}.receipt`,
             technical,
           )
         )
           continue;
-        require(receipt.schema === 'allrice-p27-evidence/v1' &&
+        require((receipt.schema === 'allrice-p27-evidence/v1' ||
+          (billingAware && billingCase)) &&
           receipt.caseId ===
             entry.caseId, 'evidence-schema-or-case-mismatch', field, technical);
         require(receipt.sourceSha ===
@@ -849,6 +877,37 @@ export function validateRelease({
         const expectedAssertions = Object.fromEntries(
           (CASE_ASSERTIONS[caseName] ?? []).map((name) => [name, true]),
         );
+        if (billingCase) {
+          // V1 retains its exact API pricing requirement. Only explicit V2 can
+          // choose subscription, with a separate pinned accounting proof.
+          const mode = billingAware ? receipt.billing?.mode : 'token_metered';
+          require(Object.hasOwn(
+            ASSISTANT_BILLING_ASSERTIONS,
+            mode ?? '',
+          ), 'assistant-billing-mode-required', field, technical);
+          if (
+            billingAware &&
+            keys(
+              receipt.billing,
+              mode === 'subscription' ? ['mode', 'proof'] : ['mode'],
+              `${field}.billing`,
+              technical,
+            ) &&
+            mode === 'subscription'
+          ) {
+            pin(receipt.billing.proof, `${field}.billing.proof`);
+            try {
+              require(validSubscriptionEvidence(
+                parseJson(readSafe(evidenceRoot, receipt.billing.proof.path)),
+                receipt,
+              ), 'subscription-accounting-proof-invalid', field, technical);
+            } catch {
+              add(technical, 'subscription-accounting-proof-invalid', field);
+            }
+          }
+          for (const name of ASSISTANT_BILLING_ASSERTIONS[mode] ?? [])
+            expectedAssertions[name] = true;
+        }
         if (caseName === 'developer-id-signature-notarization') {
           expectedAssertions['publisher-team-id'] =
             manifest.clientPublisher?.teamId;

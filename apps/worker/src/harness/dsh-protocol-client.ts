@@ -198,10 +198,21 @@ export class DshProtocolClient {
   }
 
   async assistant(
-    action: 'bind' | 'drain' | 'flush' | 'join' | 'inspect' | 'finish',
+    action:
+      | 'bind'
+      | 'drain'
+      | 'flush'
+      | 'join'
+      | 'inspect'
+      | 'finish'
+      | 'diagnostics',
     params: Record<string, unknown>,
   ) {
-    return this.request(`allrice/assistant/${action}`, params);
+    return this.request(
+      `allrice/assistant/${action}`,
+      params,
+      action === 'diagnostics' ? 2_000 : undefined,
+    );
   }
 
   async closeSession(sessionId: string) {
@@ -210,6 +221,10 @@ export class DshProtocolClient {
 
   async providerStatus() {
     return this.request('provider/status', undefined, 10_000);
+  }
+
+  async providerQuota() {
+    return this.request('provider/quota', undefined, 25_000);
   }
 
   async authorizeCodex() {
