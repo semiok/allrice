@@ -186,62 +186,48 @@ async function loadCase(name: string, quota: unknown) {
   return card;
 }
 async function observeContrast(card: Playwright.Locator) {
-  const observations = await card.evaluate((element) => {
-    const rgba = (color: string) => {
+  // This fixed browser-only body deliberately remains a string: tsx's
+  // keepNames transform injects Node-side __name helpers into nested callbacks.
+  // No DOM/user text is interpolated or executed, and no Node object crosses.
+  const readContrast = new Function(
+    'element',
+    String.raw`
+    const rgba = (color) => {
       const parts = color.match(/[\d.]+/g)?.map(Number);
       if (!parts || (parts.length !== 3 && parts.length !== 4))
         throw Error('UI_CONTRAST_UNSUPPORTED_COLOR');
-      return [parts[0]!, parts[1]!, parts[2]!, parts[3] ?? 1];
+      return [parts[0], parts[1], parts[2], parts[3] ?? 1];
     };
-    const composite = (foreground: number[], background: number[]) =>
-      foreground
-        .slice(0, 3)
-        .map(
-          (channel, index) =>
-            channel * foreground[3]! +
-            background[index]! * (1 - foreground[3]!),
-        );
-    const luminance = (channels: number[]) => {
+    const composite = (foreground, background) => foreground.slice(0, 3).map(
+      (channel, index) => channel * foreground[3] + background[index] * (1 - foreground[3])
+    );
+    const luminance = (channels) => {
       const linear = channels.map((channel) => {
         const value = channel / 255;
-        return value <= 0.04045
-          ? value / 12.92
-          : ((value + 0.055) / 1.055) ** 2.4;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
       });
-      return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
+      return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
     };
-    return [
-      ...element.querySelectorAll('h3,h4,p,li span,li strong,li small'),
-    ].map((node) => {
-      const ancestors: Element[] = [];
-      for (
-        let current: Element | null = node;
-        current;
-        current = current.parentElement
-      )
-        ancestors.push(current);
-      const background = ancestors
-        .reverse()
-        .reduce(
-          (previous, ancestor) =>
-            composite(
-              rgba(getComputedStyle(ancestor).backgroundColor),
-              previous,
-            ),
-          [255, 255, 255],
-        );
+    return [...element.querySelectorAll('h3,h4,p,li span,li strong,li small')].map((node) => {
+      const ancestors = [];
+      for (let current = node; current; current = current.parentElement) ancestors.push(current);
+      const background = ancestors.reverse().reduce(
+        (previous, ancestor) => composite(rgba(getComputedStyle(ancestor).backgroundColor), previous),
+        [255, 255, 255]
+      );
       const color = getComputedStyle(node).color;
       const foreground = composite(rgba(color), background);
-      const a = luminance(foreground),
-        b = luminance(background);
+      const a = luminance(foreground), b = luminance(background);
       return {
-        text: node.textContent?.trim().slice(0, 160) ?? '',
-        color,
-        background,
-        ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+        text: node.textContent?.trim().slice(0, 160) ?? '', color, background,
+        ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
       };
     });
-  });
+  `,
+  ) as (
+    element: SVGElement | HTMLElement,
+  ) => { text: string; color: string; background: number[]; ratio: number }[];
+  const observations = await card.evaluate(readContrast);
   contrast.push(...observations.map((value) => ({ phase, ...value })));
 }
 function measured(usedPercent = 70, minutes = 10_080) {
