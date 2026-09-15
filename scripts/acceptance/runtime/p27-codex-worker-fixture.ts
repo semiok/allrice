@@ -7,7 +7,9 @@ import type {
 } from '../../../packages/database/src/assistant-runtime.fixture.ts';
 import { P27_CODEX_ORDINARY_LIMITS as runLimits } from './p27-codex-worker-preflight.ts';
 
-const fixtureDatabaseUrl = 'postgres://a123@127.0.0.1:5432/allrice_b2';
+const localFixtureDatabaseUrl = 'postgres://a123@127.0.0.1:5432/allrice_b2';
+const ciFixtureDatabaseUrl =
+  'postgres://allrice:allrice@127.0.0.1:54329/allrice';
 let owned = false;
 
 export interface P27CodexWorkerFixtureCleanup {
@@ -32,12 +34,29 @@ function requireFixture(ok: unknown, code: string): asserts ok {
 /** Must precede dynamic import of employee-run/router in a fresh smoke process.
  * The caller owns native processes, heartbeat and execution. Close only AFTER
  * those are confirmed stopped; this helper owns both PG pools and its schema. */
-export async function createP27CodexWorkerFixture() {
+export async function createP27CodexWorkerFixture(
+  options: {
+    throughMigration?: '0096_assistant_pricing.sql';
+    /** Synthetic SQL tests only. Live model drivers retain the default local pin. */
+    allowCiDatabase?: boolean;
+  } = {},
+) {
+  requireFixture(
+    options.throughMigration === undefined ||
+      options.throughMigration === '0096_assistant_pricing.sql',
+    'P27_CODEX_WORKER_MIGRATION_CHECKPOINT_INVALID',
+  );
   requireFixture(!owned, 'P27_CODEX_WORKER_FIXTURE_ALREADY_OWNED');
   requireFixture(
     !process.env.DATABASE_URL,
     'P27_CODEX_WORKER_AMBIENT_DATABASE',
   );
+  const fixtureDatabaseUrl =
+    options.allowCiDatabase === true &&
+    process.env.ALLRICE_TEST_DATABASE_URL === ciFixtureDatabaseUrl
+      ? ciFixtureDatabaseUrl
+      : localFixtureDatabaseUrl;
+  const expectedDatabase = new URL(fixtureDatabaseUrl).pathname.slice(1);
   requireFixture(
     process.env.ALLRICE_TEST_DATABASE_URL === fixtureDatabaseUrl,
     'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
@@ -115,7 +134,9 @@ export async function createP27CodexWorkerFixture() {
       await import('../../../packages/database/src/assistant-runtime.fixture.ts');
     initializationAttempted = true;
     try {
-      fixture = await createAssistantFixtureDatabase();
+      fixture = await createAssistantFixtureDatabase({
+        throughMigration: options.throughMigration,
+      });
     } catch (error) {
       if (error instanceof AssistantFixtureInitializationError)
         initializationCleanup = error.cleanup;
@@ -125,7 +146,7 @@ export async function createP27CodexWorkerFixture() {
     const [scope] = await db<{ schema: string; database: string }[]>`
       select current_schema() as schema, current_database() as database`;
     requireFixture(
-      scope?.database === 'allrice_b2' &&
+      scope?.database === expectedDatabase &&
         /^p25_[a-f0-9]{32}$/.test(scope.schema),
       'P27_CODEX_WORKER_SCHEMA_INVALID',
     );
@@ -143,7 +164,8 @@ export async function createP27CodexWorkerFixture() {
     >`
       select current_schema() as schema, current_database() as database`;
     requireFixture(
-      globalScope?.schema === schema && globalScope.database === 'allrice_b2',
+      globalScope?.schema === schema &&
+        globalScope.database === expectedDatabase,
       'P27_CODEX_WORKER_GLOBAL_DATABASE_MISMATCH',
     );
     globalOwned = true;

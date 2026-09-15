@@ -1,8 +1,19 @@
 # P25：基础助手的实现范围、恢复策略与验收地图
 
-MET-108 A～D / B6 / S6。最后审阅日期：2026-09-14。
+MET-108 A～D / B6 / S6。最后审阅日期：2026-09-15。
 本页是实现与独立安全读审的范围说明，不是 P25、P27、B6 或 GA 的通过证明。
 不授权部署、迁移、租户启用、签名发包或生产变更。
+
+## 2026-09-15 订阅范围校正
+
+当前只验收 Codex 订阅。严格冻结的服务端订阅身份与 0097 路由证明允许使用订阅 N/A 计量，
+不再把 API 单价或订阅请求支持 `max_output_tokens` 当作助手前提；真实 Token、调用/工具次数、
+并发/深度、租约、当前授权、取消及未知结果不重放保护保留。Token 是本地软阈值，不宣称供应商硬上限。
+0098 额度快照来自同一 AllRice 授权账号，只读、共享、按实际窗口显示；未知/过期不等于零或无限。
+真实双助手→另一普通 Session→同源页面已在 `68571d4` 通过，详见
+[Codex 订阅验收证据](./p27-codex-first-acceptance.md)。本节替代下文旧阶段“Codex 助手关闭”的现状表述，
+不回写旧失败结果，不将旧 API 专属输出参数/费用要求套给订阅；旧 API 代码与历史证据保留。
+本轮仍补受控 native 失败/取消/恢复和增量迁移验收，尚不是整个 P27/RC 或已发布声明。
 
 ## 状态与证据边界
 
@@ -85,7 +96,7 @@ Worker 依赖构建、database / Worker 类型检查、相关文件 ESLint / Pre
 `browser.run`、本地 Bridge 读取等尚无 child 生命周期适配的路径，在 provision 前拒绝，
 不能因为 manifest 标记 read_only 就自动下放。
 
-## 模型输出上限、两阶段准入与协议门禁
+## 模型输出上限、两阶段准入与协议门禁（2026-09-14 历史 API 路径）
 
 固定 SDK 在 `prepareCall` 冻结模型配置后不支持修改请求上限。
 生产助手通过现有 `agent/request` hook 返回新的配置，再由原生循环冻结并发送；
@@ -107,14 +118,14 @@ production native 用 `maxConcurrent=2` 挂起两个子模型请求，验证 HTT
 `max_tokens` / `max_completion_tokens` 与每条持久 grant 完全一致，不只是减少账本预留。
 
 协议门禁只看服务端实际冻结 / 重放的 provider snapshot，浏览器偏好不能自报支持。
-当前只登记 `dsh + openai-compatible`、`dsh + gemini` 两种有源码及 loopback HTTP 字段证据的协议：
+该阶段只登记 `dsh + openai-compatible`、`dsh + gemini` 两种有源码及 loopback HTTP 字段证据的协议：
 
 - Compatible 的上述 production native 测试覆盖动态 grant 到实际请求参数。
 - Gemini 独立固定 SDK / `@google/genai` HTTP 测试两项通过：alias 与 canonical flash 路线分别发送
   `generationConfig.maxOutputTokens=3754 / 1024` 并读取合成 usage。
   这只是协议字段证据，不证明动态助手全链、真实 Google 执行上限、真实模型任务或 tenant-enable。
 - 当前固定 Codex responses 实现没有把 `maxTokens` 写入响应请求的输出上限字段；
-  因此 **Codex 助手当前关闭**，不能通过提高根预算、客户端声明或换调用入口绕过。
+  因此该历史版本关闭了 Codex 助手；2026-09-15 改为文首的严格订阅适用门禁，不是提高根预算或客户端声明绕过。
   这不等于证明 Codex 后端永远不支持该字段，也不授权修改上游安装包。
 
 `allowAssistants:true` 的不支持协议在 Worker 标记未知账务之前拒绝；adapter 另在 credentials / host
@@ -123,7 +134,7 @@ production native 用 `maxConcurrent=2` 挂起两个子模型请求，验证 HTT
 既有失败 Run 计数仍增加，也不能清除组织此前真实的 unknown。
 已进入助手执行后的普通异常继续保持费用未知和用量不完整，不按错误字符串伪造零账。
 未配置助手或 `allowAssistants:false` 的普通 Codex 路径不受此门禁影响。
-P27 当前 Codex 助手请求应保持明确 blocked，不静默替换 Gemini，也没有新的真实 provider 成功证据。
+该历史 P27 候选将 Codex 助手请求明确 blocked，未静默替换 Gemini；后续真实订阅成功证据见文首，不改变旧候选结论。
 
 ## 精确命令提案与锁顺序
 

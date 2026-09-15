@@ -43,6 +43,9 @@ export async function readCodexSubscriptionEvidence(
   const rows = await fixture.db<
     {
       id: string;
+      organization_id: string;
+      workspace_id: string;
+      run_id: string;
       provider: string;
       model: string;
       status: string;
@@ -64,21 +67,28 @@ export async function readCodexSubscriptionEvidence(
       ledger_complete: boolean;
       ledger_cache_known: boolean;
       ledger_status: string;
+      ledger_route_decision_id: string;
+      ledger_organization_id: string;
+      ledger_workspace_id: string;
       snapshot: unknown;
       snapshot_digest: string;
     }[]
   >`
-    select d.id,d.provider,d.model,d.harness,d.status,d.employee_id,
+    select d.id,d.organization_id,d.workspace_id,d.run_id,
+      d.provider,d.model,d.harness,d.status,d.employee_id,
       d.model_connection_id,d.model_catalog_entry_id,d.model_policy_revision,
       d.input_tokens,d.output_tokens,d.cached_input_tokens,d.cost_cents::text as cost,
       d.usage_complete,d.cache_usage_known,
       l.input_tokens as ledger_input,l.output_tokens as ledger_output,
       l.cached_input_tokens as ledger_cached,l.cost_cents::text as ledger_cost,
       l.usage_complete as ledger_complete,l.cache_usage_known as ledger_cache_known,
-      l.status as ledger_status,s.snapshot,s.snapshot_digest
+      l.status as ledger_status,l.route_decision_id as ledger_route_decision_id,
+      l.organization_id as ledger_organization_id,l.workspace_id as ledger_workspace_id,
+      s.snapshot,s.snapshot_digest
     from allrice_route_decisions d
     join allrice_model_usage_ledger l on l.route_decision_id=d.id
       and l.organization_id=d.organization_id
+      and l.workspace_id=d.workspace_id
       and l.connection_id=d.model_connection_id
       and l.model_catalog_entry_id=d.model_catalog_entry_id
     join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
@@ -139,7 +149,13 @@ export async function readCodexSubscriptionEvidence(
     prices?.prices === 0 && prices.receipts === 0 && prices.routes === 1,
     'subscription_price_rows',
   );
-  return { row, snapshot, snapshotDigest: row.snapshot_digest };
+  return {
+    row,
+    snapshot,
+    snapshotDigest: row.snapshot_digest,
+    priceSnapshotCount: prices.prices,
+    costReceiptCount: prices.receipts,
+  };
 }
 
 export function verifyCodexSubscriptionResult(
@@ -188,6 +204,120 @@ export function verifyCodexSubscriptionResult(
     cacheUsageKnown: result.cacheUsageKnown,
     actualCostKnown: result.actualCostKnown,
   };
+}
+
+type CodexAdmissionTotals = {
+  runIds: string[];
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+const uuid = (value: string) =>
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+    value,
+  );
+
+/** Read actual per-dispatch settlement before fixture cleanup. Admission input
+ * and granted output are reservations, not observed usage. No request bodies,
+ * prompts, native transcripts, credentials or inferred token counts are read. */
+export async function readCodexAssistantAdmissions(
+  fixture: {
+    db: CodexFixtureIdentity['db'];
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+  },
+  task: { runId: string },
+  expected: CodexAdmissionTotals,
+) {
+  check(
+    expected.runIds.length === 3 &&
+      expected.runIds.every(uuid) &&
+      new Set(expected.runIds).size === 3 &&
+      expected.runIds.includes(task.runId) &&
+      Number.isSafeInteger(expected.modelCalls) &&
+      expected.modelCalls >= 3 &&
+      Number.isSafeInteger(expected.inputTokens) &&
+      expected.inputTokens > 0 &&
+      Number.isSafeInteger(expected.outputTokens) &&
+      expected.outputTokens > 0,
+    'model_admissions_unverified',
+  );
+  const rows = await fixture.db<
+    {
+      call_id: string;
+      run_id: string;
+      request_digest: string | null;
+      dispatched: boolean;
+      finished: boolean;
+      identity_matches: boolean;
+      model_calls: string | null;
+      input_tokens: string | null;
+      output_tokens: string | null;
+    }[]
+  >`select a.call_id,a.run_id,a.request_digest,
+      a.dispatched_at is not null as dispatched,a.finished_at is not null as finished,
+      exists (select 1 from allrice_assistant_instances i
+        join allrice_runs r on r.id=i.root_run_id
+        where i.run_id=a.run_id and i.root_run_id=a.root_run_id
+          and r.organization_id=${fixture.organizationId}
+          and r.workspace_id=${fixture.workspaceId} and r.owner_id=${fixture.ownerId}
+      ) as identity_matches,
+      calls.settled_amount::text as model_calls,
+      input.settled_amount::text as input_tokens,
+      output.settled_amount::text as output_tokens
+    from allrice_assistant_model_admissions a
+    left join allrice_assistant_usage calls on calls.call_id=a.call_id
+      and calls.run_id=a.run_id and calls.root_run_id=a.root_run_id and calls.metric='model_calls'
+    left join allrice_assistant_usage input on input.call_id=a.call_id
+      and input.run_id=a.run_id and input.root_run_id=a.root_run_id and input.metric='input_tokens'
+    left join allrice_assistant_usage output on output.call_id=a.call_id
+      and output.run_id=a.run_id and output.root_run_id=a.root_run_id and output.metric='output_tokens'
+    where a.root_run_id=${task.runId} order by a.call_id`;
+  const actualTokens = (value: string | null) =>
+    value !== null &&
+    /^[1-9][0-9]*$/.test(value) &&
+    Number.isSafeInteger(Number(value));
+  check(
+    rows.length === expected.modelCalls &&
+      new Set(rows.map((row) => row.call_id)).size === rows.length &&
+      rows.every(
+        (row) =>
+          uuid(row.call_id) &&
+          expected.runIds.includes(row.run_id) &&
+          row.identity_matches &&
+          row.dispatched &&
+          row.finished &&
+          typeof row.request_digest === 'string' &&
+          /^sha256:[a-f0-9]{64}$/.test(row.request_digest) &&
+          row.model_calls === '1' &&
+          actualTokens(row.input_tokens) &&
+          actualTokens(row.output_tokens),
+      ) &&
+      expected.runIds.every((runId) =>
+        rows.some((row) => row.run_id === runId),
+      ),
+    'model_admissions_unverified',
+  );
+  const admissions = rows.map((row) => ({
+    call_id: row.call_id,
+    run_id: row.run_id,
+    dispatched: row.dispatched,
+    finished: row.finished,
+    request_digest: row.request_digest!,
+    input_tokens: Number(row.input_tokens),
+    output_tokens: Number(row.output_tokens),
+  }));
+  const input = admissions.reduce((sum, row) => sum + row.input_tokens, 0);
+  const output = admissions.reduce((sum, row) => sum + row.output_tokens, 0);
+  check(
+    Number.isSafeInteger(input) &&
+      Number.isSafeInteger(output) &&
+      input === expected.inputTokens &&
+      output === expected.outputTokens,
+    'whole_tree_usage',
+  );
+  return admissions;
 }
 
 async function verifiedTree(
@@ -244,7 +374,14 @@ async function verifiedTree(
   >`select run_id,metric,amount,settled_amount from allrice_assistant_usage
     where root_run_id=${task.runId}`;
   check(
-    usage.length > 0 && usage.every((row) => row.settled_amount !== null),
+    usage.length > 0 &&
+      usage.every(
+        (row) =>
+          row.settled_amount !== null &&
+          Number.isSafeInteger(Number(row.settled_amount)) &&
+          Number(row.settled_amount) >= 0 &&
+          tree.instances.some((instance) => instance.runId === row.run_id),
+      ),
     'first_usage_unverified',
   );
   const totals = Object.fromEntries(
@@ -262,6 +399,7 @@ async function verifiedTree(
           budget.currency === null &&
           budget.reserved === 0 &&
           budget.usageComplete &&
+          Number.isSafeInteger(totals[budget.metric]) &&
           totals[budget.metric] === budget.spent,
       ) &&
       tree.instances.every((instance) =>
@@ -278,25 +416,113 @@ async function verifiedTree(
   );
   // Soft token caps may be exceeded by a final provider response. Actual observed
   // usage must remain complete; do not rewrite an overrun as zero/unknown.
-  const admissions = await fixture.db<
-    {
-      call_id: string;
-      run_id: string;
-      dispatched: boolean;
-      finished: boolean;
-    }[]
-  >`select call_id,run_id,dispatched_at is not null as dispatched,
-    finished_at is not null as finished from allrice_assistant_model_admissions
-    where root_run_id=${task.runId}`;
-  check(
-    admissions.length === totals.model_calls &&
-      admissions.every((row) => row.dispatched && row.finished) &&
-      tree.instances.every((instance) =>
-        admissions.some((row) => row.run_id === instance.runId),
-      ),
-    'model_admissions_unverified',
-  );
-  return { tree, totals, admissions: [...admissions] };
+  const [unsettled] = await fixture.db<{ count: number }[]>`
+    select ((select count(*) from allrice_assistant_usage
+      where root_run_id=${task.runId} and settled_amount is null) +
+      (select count(*) from allrice_runtime_reservations
+      where root_run_id=${task.runId} and settled_amount is null))::int as count`;
+  check(unsettled?.count === 0, 'first_usage_unverified');
+  const admissions = await readCodexAssistantAdmissions(fixture, task, {
+    runIds: tree.instances.map((item) => item.runId),
+    modelCalls: totals.model_calls!,
+    inputTokens: totals.input_tokens!,
+    outputTokens: totals.output_tokens!,
+  });
+  return { tree, totals, admissions, unsettledUsageCount: unsettled.count };
+}
+
+/** Normalization of already checked observations, not a signed release receipt
+ * or authentication of their provenance. Never use this to backfill old reports. */
+export function codexSubscriptionAccountingProof(
+  sourceSha: string,
+  result: HarnessExecutionResult,
+  evidence: Awaited<ReturnType<typeof readCodexSubscriptionEvidence>>,
+  observed: Pick<
+    Awaited<ReturnType<typeof verifiedTree>>,
+    'totals' | 'admissions' | 'unsettledUsageCount'
+  > & { tree: { instances: { runId: string; status: string }[] } },
+) {
+  check(/^[a-f0-9]{40}$/.test(sourceSha), 'subscription_identity');
+  const { row, snapshot } = evidence;
+  return {
+    schema: 'allrice-p27-subscription-accounting/v1',
+    sourceSha,
+    runId: row.run_id,
+    snapshot,
+    snapshotDigest: evidence.snapshotDigest,
+    route: {
+      id: row.id,
+      organizationId: row.organization_id,
+      workspaceId: row.workspace_id,
+      runId: row.run_id,
+      sessionId: snapshot.sessionId,
+      employeeId: row.employee_id,
+      connectionId: row.model_connection_id,
+      modelCatalogEntryId: row.model_catalog_entry_id,
+      policyRevision: row.model_policy_revision,
+      harness: row.harness,
+      provider: row.provider,
+      model: row.model,
+      status: row.status,
+      subscriptionSnapshotDigest: row.snapshot_digest,
+      costCents: row.cost,
+      usageComplete: row.usage_complete,
+      cacheUsageKnown: row.cache_usage_known,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+    },
+    ledger: {
+      routeDecisionId: row.ledger_route_decision_id,
+      organizationId: row.ledger_organization_id,
+      workspaceId: row.ledger_workspace_id,
+      // The ledger has no run column; the immutable route FK supplies this ID.
+      runId: row.run_id,
+      status: row.ledger_status,
+      costCents: row.ledger_cost,
+      usageComplete: row.ledger_complete,
+      cacheUsageKnown: row.ledger_cache_known,
+      inputTokens: row.ledger_input,
+      outputTokens: row.ledger_output,
+    },
+    result: {
+      provider: result.provider,
+      model: result.model,
+      assistantStatus: result.assistantStatus,
+      billingMode: result.billingMode,
+      costBasis: result.costBasis,
+      estimatedCostCents: result.estimatedCostCents,
+      subscriptionSnapshotDigest: result.subscriptionSnapshotDigest,
+      costEstimateAvailable: result.costEstimateAvailable,
+      actualCostKnown: result.actualCostKnown,
+      usageComplete: result.usageComplete,
+      cacheUsageKnown: result.cacheUsageKnown,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+    },
+    tree: {
+      status: observed.tree.instances.every(
+        (item) => item.status === 'completed',
+      )
+        ? 'completed'
+        : 'unknown',
+      runIds: observed.tree.instances.map((item) => item.runId),
+      modelCalls: observed.totals.model_calls,
+      inputTokens: observed.totals.input_tokens,
+      outputTokens: observed.totals.output_tokens,
+      unsettledUsageCount: observed.unsettledUsageCount,
+    },
+    admissions: observed.admissions.map((row) => ({
+      callId: row.call_id,
+      runId: row.run_id,
+      requestDigest: row.request_digest,
+      dispatched: row.dispatched,
+      finished: row.finished,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+    })),
+    priceSnapshotCount: evidence.priceSnapshotCount,
+    costReceiptCount: evidence.costReceiptCount,
+  };
 }
 
 /** Used again by fixture before it even prepares a follow-up ordinary job. */
@@ -328,10 +554,12 @@ export async function verifyCodexAssistantExecution(
   task: P27PreparedCodexWorkerTask,
   result: HarnessExecutionResult,
   observe?: P27CodexJsonObserver,
+  exportOptions?: { sourceSha: string },
 ) {
   const evidence = await readCodexSubscriptionEvidence(fixture, task);
   const accounting = verifyCodexSubscriptionResult(result, evidence, true);
-  const { tree, totals, admissions } = await verifiedTree(fixture, task);
+  const observed = await verifiedTree(fixture, task);
+  const { tree, totals, admissions } = observed;
   check(
     result.usage.inputTokens === totals.input_tokens &&
       result.usage.outputTokens === totals.output_tokens,
@@ -364,6 +592,16 @@ export async function verifyCodexAssistantExecution(
     ledger: evidence.row,
     budgets: tree.budgets,
     admissions,
+    ...(exportOptions
+      ? {
+          subscriptionAccountingProof: codexSubscriptionAccountingProof(
+            exportOptions.sourceSha,
+            result,
+            evidence,
+            observed,
+          ),
+        }
+      : {}),
     artifacts,
     parseDiagnostics,
     answerDigest: hash(result.answer),

@@ -89,6 +89,7 @@ const sourceFiles = [
     'codex-assistants-fixture',
     'codex-assistants-preflight',
     'codex-assistants-verification',
+    'codex-assistants-verification.test',
     'codex-json',
     'codex-json.test',
     'codex-assistants-artifact.test',
@@ -390,6 +391,7 @@ export async function mainP27CodexAssistants(
             task,
             result,
             observeJson,
+            { sourceSha: args.sha },
           )
         : await verifyCodexOrdinarySubscription(
             fixture!,

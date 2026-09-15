@@ -21,6 +21,26 @@ integration(
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+      // A rejected checkpoint owns no pools/schema and must not poison the
+      // subsequent normal fixture's process-local ownership fence.
+      await expect(
+        createP27CodexWorkerFixture({
+          throughMigration: '0095_assistant_model_admissions.sql' as never,
+        }),
+      ).rejects.toMatchObject({
+        code: 'P27_CODEX_WORKER_MIGRATION_CHECKPOINT_INVALID',
+      });
+      expect(process.env.DATABASE_URL).toBeUndefined();
+      const dedicatedDatabase = process.env.ALLRICE_TEST_DATABASE_URL;
+      vi.stubEnv(
+        'ALLRICE_TEST_DATABASE_URL',
+        'postgres://allrice:allrice@127.0.0.1:54329/allrice',
+      );
+      // Merely inheriting CI's URL cannot redirect a live/default driver.
+      await expect(createP27CodexWorkerFixture()).rejects.toMatchObject({
+        code: 'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
+      });
+      vi.stubEnv('ALLRICE_TEST_DATABASE_URL', dedicatedDatabase);
       vi.stubEnv('DATABASE_URL', 'postgres://forbidden.invalid/prod');
       await expect(createP27CodexWorkerFixture()).rejects.toMatchObject({
         code: 'P27_CODEX_WORKER_AMBIENT_DATABASE',

@@ -37,7 +37,14 @@ export class AssistantFixtureCleanupError extends Error {
   }
 }
 
-export async function createAssistantFixtureDatabase() {
+export async function createAssistantFixtureDatabase(
+  options: { throughMigration?: '0096_assistant_pricing.sql' } = {},
+) {
+  if (
+    options.throughMigration !== undefined &&
+    options.throughMigration !== '0096_assistant_pricing.sql'
+  )
+    throw Error('Unsupported isolated migration checkpoint');
   const value = process.env.ALLRICE_TEST_DATABASE_URL;
   if (!value) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
   const url = new URL(value);
@@ -131,10 +138,15 @@ export async function createAssistantFixtureDatabase() {
     stores.set(db, new LocalStorageAdapter(storageRoot));
     const migrations = new URL('../migrations/', import.meta.url);
     await db.begin(async (tx) => {
-      for (const file of (await readdir(migrations))
+      const files = (await readdir(migrations))
         .filter((f) => f.endsWith('.sql'))
-        .sort())
+        .sort();
+      if (options.throughMigration && !files.includes(options.throughMigration))
+        throw Error('Isolated migration checkpoint missing');
+      for (const file of files) {
+        if (options.throughMigration && file > options.throughMigration) break;
         await tx.unsafe(await readFile(new URL(file, migrations), 'utf8'));
+      }
     });
     return {
       db,
