@@ -152,7 +152,10 @@ export async function createP27CodexWorkerFixture(
     );
     const schema = scope.schema;
     const url = new URL(fixtureDatabaseUrl);
-    url.searchParams.set('options', `-csearch_path=${schema},public`);
+    url.searchParams.set(
+      'options',
+      `-csearch_path=${options.throughMigration ? schema : `${schema},public`}`,
+    );
     databaseUrl = url.toString();
     process.env.DATABASE_URL = databaseUrl;
     const client =

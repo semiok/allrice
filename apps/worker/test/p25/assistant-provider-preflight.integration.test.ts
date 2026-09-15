@@ -17,6 +17,7 @@ import {
   SessionModelSnapshotSchema,
   ResolvedModelTargetSchema,
   FrozenWorkflowBindingSchema,
+  resolveAssistantSubscriptionSnapshot,
 } from '@allrice/contracts';
 import type * as Workflow from '../../src/workflow-engine.js';
 import type { ClaimedJobHandlerInput } from '../../src/job-runner.js';
@@ -36,6 +37,7 @@ import {
   recordRouteDecision as recordActual,
   completeRouteDecision as completeActual,
 } from '../../../../packages/database/src/execution/route-decision.ts';
+import { freezeRouteSubscriptionSnapshot } from '../../../../packages/database/src/execution/route-subscription.ts';
 import {
   getOrganizationModelQuota,
   assertQuotaAvailable,
@@ -839,6 +841,79 @@ integration(
         });
       },
     );
+    it('records a rejected replay of an already frozen subscription as N/A with unknown historical tokens, not cash zero', async () => {
+      const { f, job, modelSnapshot } = await fixture({
+        compatible: true,
+        subscriptionFallback: true,
+        subscriptionFallbackModel: `synthetic-subscription-${randomUUID()}`,
+        enabled: false,
+      });
+      const prior = await priorApiReceipt(f, modelSnapshot!, false);
+      state.record.mockImplementation(async (proposed: RouteDecision) => {
+        const stored = await recordActual(proposed, database.db);
+        const snapshot = resolveAssistantSubscriptionSnapshot({
+          sessionId: f.session,
+          modelSnapshot,
+          decision: stored,
+          providerSnapshot: state.provider!,
+        })!;
+        // Emulate interruption after the original freeze, before any receipt.
+        expect(
+          await freezeRouteSubscriptionSnapshot(
+            {
+              organizationId: f.org,
+              workspaceId: f.workspace,
+              decisionId: stored.id,
+              snapshot,
+            },
+            database.db,
+          ),
+        ).toMatchObject({ frozen: true });
+        return recordActual(proposed, database.db);
+      });
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+          code: 'MODEL_TOKEN_USAGE_UNKNOWN',
+          retryable: false,
+        });
+        expect(errors).not.toHaveBeenCalled();
+      } finally {
+        errors.mockRestore();
+      }
+      expect(execute).not.toHaveBeenCalled();
+      expect(acquire).not.toHaveBeenCalled();
+      noNativeAccess();
+      expect(state.complete).toHaveBeenCalledTimes(1);
+      expect(state.complete.mock.calls[0]![0]).toMatchObject({
+        undispatched: { subscriptionSnapshotCreated: false },
+      });
+      expect(await prior.read()).toEqual(prior.before);
+      const [row] = await database.db`
+        select d.status,d.error_code,d.cost_cents as route_cost,l.cost_cents,
+          l.usage_complete,l.cache_usage_known,l.input_tokens,l.output_tokens
+        from allrice_route_decisions d join allrice_model_usage_ledger l on l.route_decision_id=d.id
+        where d.run_id=${f.rootRunId}`;
+      expect(row).toEqual({
+        status: 'failed',
+        error_code: 'MODEL_TOKEN_USAGE_UNKNOWN',
+        route_cost: null,
+        cost_cents: null,
+        usage_complete: false,
+        cache_usage_known: false,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      expect(await getOrganizationModelQuota(f.org, database.db)).toMatchObject(
+        {
+          usedRuns: 2,
+          usedTokens: 20,
+          unknownCostRuns: 1,
+          subscriptionRuns: 1,
+          usageComplete: false,
+        },
+      );
+    });
     it.each([
       { mode: 'kill_switch', code: 'PROVIDER_KILL_SWITCH' },
       { mode: 'release_disabled', code: 'PROVIDER_NOT_RELEASED' },

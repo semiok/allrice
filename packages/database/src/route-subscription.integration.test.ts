@@ -54,7 +54,9 @@ integration(
       }
     }
     async function prepare() {
-      const fixture = await createP27CodexWorkerFixture();
+      const fixture = await createP27CodexWorkerFixture({
+        allowCiDatabase: true,
+      });
       try {
         const task = await fixture.prepareOrdinaryTask(
           'Synthetic, no model execution.',
@@ -278,6 +280,150 @@ integration(
           'MODEL_TOKEN_USAGE_UNKNOWN',
         );
         await expect(f.complete()).rejects.toThrow('outcome conflict');
+      }));
+    const refusal = (f: Awaited<ReturnType<typeof prepare>>, fresh = false) =>
+      completeRouteDecision(
+        {
+          organizationId: f.fixture.organizationId,
+          workspaceId: f.fixture.workspaceId,
+          undispatched: { subscriptionSnapshotCreated: fresh },
+          outcome: {
+            ...f.outcome,
+            status: 'failed',
+            inputTokens: 0,
+            outputTokens: 0,
+            costCents: 0,
+            usageComplete: true,
+            cacheUsageKnown: true,
+            errorCode: 'MODEL_TOKEN_USAGE_UNKNOWN',
+          },
+        },
+        f.fixture.db,
+      );
+    const saved = (f: Awaited<ReturnType<typeof prepare>>) => f.fixture.db`
+      select to_jsonb(d) as decision,to_jsonb(l) as ledger
+      from allrice_route_decisions d
+      left join allrice_model_usage_ledger l on l.route_decision_id=d.id
+      where d.id=${f.decision.id}`;
+    it.each([false, true])(
+      "refusal preserves N/A while only this attempt's new proof certifies no prior dispatch (fresh %s)",
+      (fresh) =>
+        scenario(async (f) => {
+          const created = await freezeRouteSubscriptionSnapshot(
+            f.identity,
+            f.fixture.db,
+          );
+          const recovered = await freezeRouteSubscriptionSnapshot(
+            f.identity,
+            f.fixture.db,
+          );
+          await refusal(f, fresh ? created.frozen : recovered.frozen);
+          const [row] = await saved(f);
+          for (const value of [row!.decision, row!.ledger])
+            expect(value).toMatchObject({
+              status: 'failed',
+              cost_cents: null,
+              input_tokens: 0,
+              output_tokens: 0,
+              usage_complete: fresh,
+              cache_usage_known: false,
+            });
+          expect(row!.decision).toMatchObject({
+            error_code: 'MODEL_TOKEN_USAGE_UNKNOWN',
+          });
+          const quota = await getOrganizationModelQuota(
+            f.fixture.organizationId,
+            f.fixture.db,
+          );
+          expect(quota).toMatchObject({
+            subscriptionRuns: 1,
+            unknownCostRuns: 0,
+            usageComplete: fresh,
+          });
+          if (fresh)
+            expect(() =>
+              assertQuotaAvailable(quota, 'subscription'),
+            ).not.toThrow();
+          else
+            expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
+              'MODEL_TOKEN_USAGE_UNKNOWN',
+            );
+        }),
+    );
+    it.each([true, false])(
+      'an undispatched refusal atomically preserves an existing whole receipt (known %s)',
+      (usageComplete) =>
+        scenario(async (f) => {
+          await freezeRouteSubscriptionSnapshot(f.identity, f.fixture.db);
+          await f.complete({ ...f.outcome, usageComplete });
+          const before = await saved(f);
+          await Promise.all([refusal(f), refusal(f)]);
+          expect(await saved(f)).toEqual(before);
+        }),
+    );
+    it('rechecks the receipt after a real tenant-lock wait and preserves a concurrent writer', () =>
+      scenario(async (f) => {
+        await freezeRouteSubscriptionSnapshot(f.identity, f.fixture.db);
+        const key = `tenant:${f.fixture.organizationId}`;
+        const locks = async (granted: boolean) => {
+          const [row] = await f.fixture
+            .db`select count(*)::int as count from pg_locks
+            where locktype='advisory' and objsubid=1 and granted=${granted}
+              and classid::bigint=((hashtext(${key})::bigint >> 32) & 4294967295)
+              and objid::bigint=(hashtext(${key})::bigint & 4294967295)`;
+          return row!.count;
+        };
+        let release!: () => void, ready!: () => void;
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const locked = new Promise<void>((resolve) => {
+          ready = resolve;
+        });
+        const blocker = f.fixture.db.begin(async (tx) => {
+          await tx`select id from allrice_route_decisions where id=${f.decision.id} for update`;
+          ready();
+          await released;
+        });
+        await locked;
+        let writer: Promise<void> | undefined,
+          rejected: Promise<void> | undefined;
+        try {
+          writer = f.complete();
+          void writer.catch(() => {});
+          await expect.poll(() => locks(true), { timeout: 3000 }).toBe(1);
+          rejected = refusal(f);
+          void rejected.catch(() => {});
+          await expect.poll(() => locks(false), { timeout: 3000 }).toBe(1);
+          release();
+          await blocker;
+          await writer;
+          await rejected;
+          const [row] = await saved(f);
+          expect(row!.decision).toMatchObject({
+            status: 'succeeded',
+            error_code: null,
+            input_tokens: 10,
+            output_tokens: 2,
+            cost_cents: null,
+            usage_complete: true,
+          });
+          expect(row!.ledger).toMatchObject({
+            status: 'succeeded',
+            input_tokens: 10,
+            output_tokens: 2,
+            cost_cents: null,
+            usage_complete: true,
+          });
+          const before = await saved(f);
+          await refusal(f);
+          expect(await saved(f)).toEqual(before);
+        } finally {
+          release();
+          await blocker;
+          await writer?.catch(() => {});
+          await rejected?.catch(() => {});
+        }
       }));
     it('rejects forged snapshot, provider auth mode, cross-scope proof and corrupt replay', () =>
       scenario(async (f) => {

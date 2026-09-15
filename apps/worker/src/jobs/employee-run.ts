@@ -283,6 +283,8 @@ export async function executeEmployeeRun({
   let routeCostCents: number | null = 0;
   let routeUsageComplete = true;
   let routeCacheUsageKnown = true;
+  let routeExecutionStarted = false;
+  let subscriptionSnapshotCreated = false;
   const loopGuard = new AgentLoopGuard();
   const guardedHarnessEvent = async (event: HarnessEvent) => {
     try {
@@ -646,12 +648,13 @@ export async function executeEmployeeRun({
       }
     }
     if (subscriptionSnapshot) {
-      await freezeRouteSubscriptionSnapshot({
+      const frozen = await freezeRouteSubscriptionSnapshot({
         organizationId: execution.context.organizationId,
         workspaceId: execution.context.workspaceId!,
         decisionId: routeDecision.id,
         snapshot: subscriptionSnapshot,
       });
+      subscriptionSnapshotCreated = frozen.frozen;
       routeCostCents = null;
     }
     const adapter = getHarnessRouter().resolve(routeDecision.harness);
@@ -807,6 +810,7 @@ export async function executeEmployeeRun({
       routeUsageComplete = false;
       routeCacheUsageKnown = false;
     }
+    routeExecutionStarted = true;
     const result: HarnessExecutionResult =
       routeDecision.selectedKind === 'workflow'
         ? await (async () => {
@@ -1327,6 +1331,9 @@ export async function executeEmployeeRun({
       await completeRouteDecision({
         organizationId: execution.context.organizationId,
         workspaceId: execution.context.workspaceId!,
+        ...(!routeExecutionStarted
+          ? { undispatched: { subscriptionSnapshotCreated } }
+          : {}),
         outcome: {
           decisionId: decision.id,
           status: signal.aborted ? 'canceled' : 'failed',

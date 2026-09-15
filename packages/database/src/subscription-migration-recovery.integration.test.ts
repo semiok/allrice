@@ -2,12 +2,20 @@
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
  * Legacy SQL projections prove column compatibility, NOT old binary safety.
- * Four ordered stages of ONE migration journey: run this entire file without
- * name filtering or shuffle. They are not four independent migrations.
+ * Five ordered stages of ONE migration journey: run this entire file without
+ * name filtering or shuffle. They are not five independent migrations.
  */
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   RouteDecisionSchema,
   resolveAssistantSubscriptionSnapshot,
@@ -32,6 +40,7 @@ import {
   recordCodexProviderStatus,
 } from './providers/status.ts';
 import { assertSubscriptionQuotaNotExhausted } from '../../../apps/worker/src/subscription-quota-admission.ts';
+import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -46,6 +55,10 @@ integration('subscription incremental migration and cold SQL readers', () => {
     ReturnType<typeof resolveAssistantSubscriptionSnapshot>
   >;
   let history: unknown;
+  let shadow: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  let shadowSchema: string;
+  let shadowBefore: unknown;
+  let publicBefore: unknown;
   const historicId = randomUUID();
   const migration = (name: string) =>
     readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
@@ -71,15 +84,61 @@ integration('subscription incremental migration and cold SQL readers', () => {
     await closeDatabase();
     const fresh = getDatabase();
     expect(fresh).not.toBe(old);
-    const [scope] = await fresh`select current_schema() as schema`;
+    const [scope] = await fresh`select current_schema() as schema,
+      current_schemas(false) as search_path`;
     expect(scope!.schema).toBe(fixture.schema);
+    expect(scope!.search_path).toEqual([fixture.schema]);
     return fresh;
+  }
+
+  // Only server-side row hashes and relation/column identity leave PostgreSQL.
+  // public is observed, never seeded, changed or dropped. The owned shadow
+  // supplies deterministic real 0098 tables even on an otherwise empty local DB.
+  async function fallbackFingerprint(schema: string) {
+    if (schema !== 'public' && !/^p25_[a-f0-9]{32}$/.test(schema))
+      throw Error('Unexpected fallback schema');
+    const result = [];
+    for (const table of [
+      'allrice_route_subscription_snapshots',
+      'allrice_provider_status',
+      'allrice_route_decisions',
+      'allrice_model_usage_ledger',
+    ]) {
+      const [relation] = await shadow.db`select c.oid::text as oid,
+        (select jsonb_agg(jsonb_build_array(a.attname, a.atttypid, a.attnotnull)
+          order by a.attnum) from pg_attribute a
+          where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped) as columns
+        from pg_class c join pg_namespace n on n.oid=c.relnamespace
+        where n.nspname=${schema} and c.relname=${table}
+          and c.relkind in ('r','p')`;
+      const rows = relation
+        ? await shadow.db.unsafe(`select count(*)::int as count,
+            encode(sha256(convert_to(coalesce(string_agg(row_hash, '' order by row_hash), ''), 'UTF8')), 'hex') as digest
+            from (select encode(sha256(convert_to(to_jsonb(t)::text, 'UTF8')), 'hex') as row_hash
+              from "${schema}"."${table}" t) rows`)
+        : [];
+      result.push({ table, relation: relation ?? null, rows: [...rows] });
+    }
+    return result;
   }
 
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    expect(process.env.DATABASE_URL).toBeUndefined();
+    shadow = await createAssistantFixtureDatabase();
+    const [shadowScope] = await shadow.db`select current_schema() as schema`;
+    shadowSchema = shadowScope!.schema;
+    await shadow.db`insert into allrice_provider_status
+      (provider,auth_mode,status,detail_code,checked_at,subscription_quota)
+      values('codex','chatgpt_subscription','connected',
+        'synthetic-ci-fallback-sentinel',now(),'{"sentinel":"must-not-change"}')
+      on conflict(provider) do update set status=excluded.status,
+        detail_code=excluded.detail_code,checked_at=excluded.checked_at,
+        subscription_quota=excluded.subscription_quota`;
+    shadowBefore = await fallbackFingerprint(shadowSchema);
+    publicBefore = await fallbackFingerprint('public');
     fixture = await createP27CodexWorkerFixture({
       throughMigration: '0096_assistant_pricing.sql',
       allowCiDatabase: true,
@@ -176,15 +235,58 @@ integration('subscription incremental migration and cold SQL readers', () => {
           },
         });
     } finally {
-      vi.unstubAllEnvs();
+      try {
+        if (shadow)
+          expect(await shadow.close()).toMatchObject({
+            schemaRemoved: true,
+            storageRemoved: true,
+            databaseClosed: true,
+            adminClosed: true,
+          });
+      } finally {
+        vi.unstubAllEnvs();
+      }
     }
   }, 30_000);
+
+  afterEach(async () => {
+    if (shadowBefore)
+      expect(await fallbackFingerprint(shadowSchema)).toEqual(shadowBefore);
+    if (publicBefore)
+      expect(await fallbackFingerprint('public')).toEqual(publicBefore);
+  });
+
+  it('reproduces fully migrated fallback visibility without borrowing or mutating its tables', async () => {
+    await fixture.db.begin(async (tx) => {
+      // Read-only recreation of the old path bug, using only an owned shadow
+      // instead of adding any table or sentinel to the real public schema.
+      await tx`set transaction read only`;
+      await tx`select set_config('search_path', ${`${fixture.schema},${shadowSchema},public`}, true)`;
+      const [leak] = await tx`select current_schema() as schema,
+        to_regclass('allrice_route_subscription_snapshots')::oid =
+          to_regclass(${`${shadowSchema}.allrice_route_subscription_snapshots`})::oid as fallback_visible,
+        to_regclass(${`${fixture.schema}.allrice_route_subscription_snapshots`}) is null as owned_absent`;
+      expect(leak).toEqual({
+        schema: fixture.schema,
+        fallback_visible: true,
+        owned_absent: true,
+      });
+    });
+    for (const db of [fixture.db, getDatabase()]) {
+      const [scope] = await db`select current_schemas(false) as search_path,
+        to_regclass('allrice_route_subscription_snapshots') is null as proof_absent`;
+      expect(scope).toEqual({
+        search_path: [fixture.schema],
+        proof_absent: true,
+      });
+    }
+  });
 
   it('rolls back an interrupted expand transaction, then applies both SQL files without rewriting history', async () => {
     const { db } = fixture;
     const assertOldSchema = async () => {
       const [row] = await db`select
-        to_regclass('allrice_route_subscription_snapshots') is null as proof_absent,
+        to_regclass(${`${fixture.schema}.allrice_route_subscription_snapshots`}) is null as proof_absent,
         not exists(select 1 from information_schema.columns
           where table_schema=${fixture.schema} and table_name='allrice_provider_status'
           and column_name='subscription_quota') as quota_absent`;

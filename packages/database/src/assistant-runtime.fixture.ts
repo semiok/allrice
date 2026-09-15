@@ -126,7 +126,10 @@ export async function createAssistantFixtureDatabase(
       },
     });
     await admin.unsafe(`create schema "${schema}"`);
-    url.searchParams.set('options', `-csearch_path=${schema},public`);
+    // An incremental checkpoint must not borrow tables introduced by later
+    // migrations from a fully migrated public schema (as CI db:setup has).
+    const searchPath = options.throughMigration ? schema : `${schema},public`;
+    url.searchParams.set('options', `-csearch_path=${searchPath}`);
     db = postgres(url.toString(), {
       max: 10,
       onnotice: () => {},
@@ -138,6 +141,11 @@ export async function createAssistantFixtureDatabase(
     stores.set(db, new LocalStorageAdapter(storageRoot));
     const migrations = new URL('../migrations/', import.meta.url);
     await db.begin(async (tx) => {
+      // Historical bootstrap SQL uses extension types/operators installed in
+      // public. This transaction-local path expires before the checkpoint pool
+      // is returned; subsequent migration/runtime readers remain own-only.
+      if (options.throughMigration)
+        await tx`select set_config('search_path', ${`${schema},public`}, true)`;
       const files = (await readdir(migrations))
         .filter((f) => f.endsWith('.sql'))
         .sort();
