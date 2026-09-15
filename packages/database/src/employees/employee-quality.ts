@@ -557,6 +557,7 @@ export async function getEmployeeQualityDashboard(
         output_tokens: number | string;
         cost_cents: number | string | null;
         unknown_cost_runs: number;
+        subscription_runs: number;
         usage_complete: boolean;
       }[]
     >`
@@ -566,11 +567,13 @@ export async function getEmployeeQualityDashboard(
         count(*) filter (where status = 'failed')::integer as failed,
         coalesce(sum(input_tokens), 0)::bigint as input_tokens,
         coalesce(sum(output_tokens), 0)::bigint as output_tokens,
-        case when count(*) filter (where cost_cents is null) > 0
+        case when count(*) filter (where cost_cents is null and s.route_decision_id is null) > 0
           then null else coalesce(sum(cost_cents), 0) end as cost_cents,
-        count(*) filter (where cost_cents is null)::integer as unknown_cost_runs,
+        count(*) filter (where cost_cents is null and s.route_decision_id is null)::integer as unknown_cost_runs,
+        count(*) filter (where s.route_decision_id is not null)::integer as subscription_runs,
         bool_and(usage_complete) as usage_complete
-      from allrice_route_decisions
+      from allrice_route_decisions d
+      left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
       where organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId}
         and created_at >= now() - interval '30 days'
@@ -620,6 +623,7 @@ export async function getEmployeeQualityDashboard(
           costCents:
             metric.cost_cents === null ? null : Number(metric.cost_cents),
           unknownCostRuns: metric.unknown_cost_runs,
+          subscriptionRuns: metric.subscription_runs,
           usageComplete: metric.usage_complete,
         })),
       feedback: feedback.find(

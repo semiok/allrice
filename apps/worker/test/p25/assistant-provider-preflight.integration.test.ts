@@ -14,6 +14,7 @@ import type {
 } from '@allrice/contracts';
 import {
   SessionModelSnapshotSchema,
+  ResolvedModelTargetSchema,
   FrozenWorkflowBindingSchema,
 } from '@allrice/contracts';
 import type * as Workflow from '../../src/workflow-engine.js';
@@ -185,7 +186,7 @@ integration(
     let adapter: DshHarnessAdapter;
     let acquire: MockInstance<DshRuntimePool['acquire']>;
     let execute: MockInstance<DshHarnessAdapter['execute']>;
-    const rejectionCode = 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED';
+    const rejectionCode = 'ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED';
     const lateError = Error('synthetic_uncertain_adapter_failure');
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -239,6 +240,7 @@ integration(
         legacy?: boolean;
         price?: boolean;
         workflow?: boolean;
+        subscriptionFallback?: boolean;
       } = {},
     ) {
       const connectionId = randomUUID(),
@@ -247,6 +249,19 @@ integration(
         ? `synthetic-${catalogId}`
         : 'synthetic-never-called';
       const endpoint = 'https://synthetic-never-contacted.example.test/v1';
+      const subscriptionFallback = options.subscriptionFallback
+        ? ResolvedModelTargetSchema.parse({
+            connectionId: randomUUID(),
+            modelCatalogEntryId: randomUUID(),
+            harness: 'dsh',
+            provider: 'openai-codex',
+            authMode: 'chatgpt_subscription',
+            model: 'synthetic-subscription-fallback',
+            reasoningEffort: 'low',
+            credentialReference: 'deployment:synthetic-subscription-fallback',
+            baseUrl: null,
+          })
+        : undefined;
       let capturedSnapshot: EmployeeExecutionSnapshot | undefined;
       const workflow = options.workflow
         ? FrozenWorkflowBindingSchema.parse({
@@ -297,6 +312,15 @@ integration(
         await database.db`insert into allrice_model_catalog_entries(id,provider_id,model,display_name,reasoning_efforts,default_reasoning_effort,input_modalities,output_modalities)
           values(${catalogId},${provider!.id},${model},'Synthetic','["low"]','low','["text"]','["text"]')`;
       }
+      if (subscriptionFallback) {
+        const [provider] =
+          await database.db`select id from allrice_model_providers where provider_key='codex' and auth_mode='chatgpt_subscription'`;
+        expect(provider).toBeDefined();
+        await database.db`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url)
+          values(${subscriptionFallback.connectionId},${provider!.id},'platform',${`synthetic-${subscriptionFallback.connectionId}`},${subscriptionFallback.credentialReference},null)`;
+        await database.db`insert into allrice_model_catalog_entries(id,provider_id,model,display_name,reasoning_efforts,default_reasoning_effort,input_modalities,output_modalities)
+          values(${subscriptionFallback.modelCatalogEntryId},${provider!.id},${subscriptionFallback.model},'Synthetic subscription fallback','["low"]','low','["text"]','["text"]')`;
+      }
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
         allowedTools: ['assistant.delegate', 'assistant.report'],
@@ -340,9 +364,23 @@ integration(
                     reasoningEffort: 'low',
                     credentialReference: 'deployment:synthetic-never-resolved',
                     baseUrl: endpoint,
-                    fallbackPolicy: 'disabled',
-                    fallbackTargets: [],
-                    resolvedFallbacks: [],
+                    fallbackPolicy: subscriptionFallback
+                      ? 'explicit'
+                      : 'disabled',
+                    fallbackTargets: subscriptionFallback
+                      ? [
+                          {
+                            connectionId: subscriptionFallback.connectionId,
+                            modelCatalogEntryId:
+                              subscriptionFallback.modelCatalogEntryId,
+                            reasoningEffort:
+                              subscriptionFallback.reasoningEffort,
+                          },
+                        ]
+                      : [],
+                    resolvedFallbacks: subscriptionFallback
+                      ? [subscriptionFallback]
+                      : [],
                     frozenAt: new Date().toISOString(),
                   }),
                 } as EmployeeExecutionSnapshot;
@@ -370,7 +408,17 @@ integration(
             credentialReference: 'deployment:synthetic-never-resolved',
             baseUrl: options.compatible ? endpoint : null,
           };
-      state.provider = provider;
+      state.provider = subscriptionFallback
+        ? {
+            provider: 'dsh',
+            route: 'openai-codex',
+            authMode: 'platform_subscription',
+            model: subscriptionFallback.model,
+            reasoningEffort: subscriptionFallback.reasoningEffort,
+            credentialReference: subscriptionFallback.credentialReference!,
+            baseUrl: null,
+          }
+        : provider;
       state.resolved.mockResolvedValue({
         providerSnapshot: provider,
         executionSnapshot: capturedSnapshot ?? f.snapshot,
@@ -537,7 +585,7 @@ integration(
       expect(adapter.runtimeInventory()).toEqual([]);
     }
     it.each([false, true])(
-      'refuses Codex assistants before execution (legacy snapshot %s), preserving real known-zero quota',
+      'refuses unverified Codex assistants before execution (legacy snapshot %s), preserving real known-zero quota',
       async (legacy) => {
         const { f, job } = await fixture({ legacy });
         await expect(executeEmployeeRun(job)).rejects.toMatchObject({
@@ -571,14 +619,14 @@ integration(
       expect((await knownZero(f.org)).provider).toBe('openai-codex');
     });
     it.each([false, true])(
-      'ordinary Codex still enters the original adapter acquisition path (configuration omitted %s)',
+      'ordinary Codex without a frozen identity is refused before acquisition (configuration omitted %s)',
       async (omitted) => {
         const { f, job } = await fixture({ enabled: false, omitted });
-        await expect(executeEmployeeRun(job)).rejects.toBe(lateError);
-        expect(adapter.isConfigured(state.provider!)).toBe(true);
-        expect(execute).toHaveBeenCalledTimes(1);
-        expect(execute.mock.calls[0]![0].assistants).toBeUndefined();
-        expect(acquire).toHaveBeenCalledTimes(1);
+        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+          code: rejectionCode,
+        });
+        expect(execute).not.toHaveBeenCalled();
+        expect(acquire).not.toHaveBeenCalled();
         noNativeAccess();
         await knownZero(f.org);
       },
@@ -645,6 +693,78 @@ integration(
         });
       },
     );
+    it('binds a strict Codex subscription fallback using the selected provider, not its API primary', async () => {
+      const { f, job } = await fixture({
+        compatible: true,
+        subscriptionFallback: true,
+      });
+      // This fixture's unused root has unrelated capacities; let the actual
+      // controller create its own durable root, just as a newly queued task does.
+      await database.db`delete from allrice_runtime_run_links where root_run_id=${f.rootRunId}`;
+      await database.db`delete from allrice_runtime_budgets where root_run_id=${f.rootRunId}`;
+      await database.db`delete from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+      execute.mockImplementationOnce(async (input) => {
+        expect(input.providerSnapshot).toMatchObject({
+          route: 'openai-codex',
+          model: 'synthetic-subscription-fallback',
+        });
+        expect(input.assistants?.subscriptionSnapshot).toMatchObject({
+          provider: 'openai-codex',
+          model: 'synthetic-subscription-fallback',
+        });
+        await input.assistants!.bind(`dsh-${f.session}`, 1);
+        // A successful bind is not model execution or evidence of known usage.
+        throw lateError;
+      });
+      await expect(executeEmployeeRun(job)).rejects.toBe(lateError);
+      const controller = state.controller.mock.calls[0]![0] as Parameters<
+        typeof Controller.productionAssistantController
+      >[0];
+      expect(controller.priceSnapshot).toBeUndefined();
+      expect(controller.serverPricingProviderSnapshot).toMatchObject({
+        provider: 'dsh',
+        route: 'openai-codex',
+        authMode: 'platform_subscription',
+        model: 'synthetic-subscription-fallback',
+        credentialReference: 'deployment:synthetic-subscription-fallback',
+        baseUrl: null,
+      });
+      const [proof] = await database.db`
+        select s.snapshot,d.model_connection_id,e.provider_snapshot
+        from allrice_route_subscription_snapshots s
+        join allrice_route_decisions d on d.id=s.route_decision_id
+        join allrice_employee_runs e on e.run_id=d.run_id
+        where d.run_id=${f.rootRunId}`;
+      expect(proof?.provider_snapshot).toMatchObject({
+        route: 'openai-compatible',
+        authMode: 'allrice_credential',
+      });
+      expect(proof?.snapshot).toMatchObject({
+        connectionId: proof?.model_connection_id,
+        provider: 'openai-codex',
+        authMode: 'chatgpt_subscription',
+        model: 'synthetic-subscription-fallback',
+      });
+      const prices =
+        await database.db`select 1 from allrice_assistant_price_snapshots where root_run_id=${f.rootRunId}`;
+      expect(prices).toHaveLength(0);
+      expect(state.bind).toHaveBeenCalledTimes(1);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(state.credentials).not.toHaveBeenCalled();
+      expect(state.spawn).not.toHaveBeenCalled();
+      const { row, quota } = await accounting(f.org);
+      expect(row).toMatchObject({
+        decision_cost: null,
+        ledger_cost: null,
+        decision_complete: false,
+        ledger_complete: false,
+      });
+      expect(quota).toMatchObject({
+        subscriptionRuns: 1,
+        unknownCostRuns: 0,
+        usageComplete: false,
+      });
+    });
     it.each([undefined, 2])(
       'projects the real Worker lease and preserves explicit fence %s, without native/model access',
       async (fence) => {

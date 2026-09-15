@@ -5,7 +5,9 @@ import {
   canonicalRuntimeBridgeJson,
   estimateAssistantUsageCost,
   selectAssistantPriceSnapshot,
+  resolveAssistantSubscriptionSnapshot,
   type AssistantPriceSnapshot,
+  type AssistantSubscriptionSnapshot,
   type HarnessExecutionSnapshot,
   type RouteDecision,
   type SessionModelSnapshot,
@@ -28,6 +30,42 @@ export function assistantPriceSnapshotDigest(snapshot: AssistantPriceSnapshot) {
   return `sha256:${createHash('sha256').update(canonicalRuntimeBridgeJson(snapshot)).digest('hex')}`;
 }
 
+export function assistantSubscriptionSnapshotDigest(
+  snapshot: AssistantSubscriptionSnapshot,
+) {
+  return `sha256:${createHash('sha256').update(canonicalRuntimeBridgeJson(snapshot)).digest('hex')}`;
+}
+
+/** A native result cannot declare itself subscription/free. Bind all assistant
+ * result metadata to the trusted preflight proof, while missing tokens remain
+ * incomplete in the separate usage projection. Ordinary results are projected
+ * from that same frozen identity by the Worker, not by a price estimator. */
+export function assertAssistantSubscriptionResult(
+  snapshot: AssistantSubscriptionSnapshot,
+  result: HarnessExecutionResult,
+) {
+  if (
+    result.provider !== snapshot.provider ||
+    result.model !== snapshot.model ||
+    result.billingMode !== 'subscription' ||
+    result.costBasis !== 'not_applicable' ||
+    result.estimatedCostCents !== null ||
+    result.costEstimateAvailable !== false ||
+    result.actualCostKnown !== false ||
+    typeof result.usageComplete !== 'boolean' ||
+    result.cacheUsageKnown !== false ||
+    result.costCurrency !== undefined ||
+    result.priceSnapshotDigest !== undefined ||
+    result.subscriptionSnapshotDigest !==
+      assistantSubscriptionSnapshotDigest(snapshot)
+  )
+    throw new HandlerError(
+      'ASSISTANT_SUBSCRIPTION_RESULT_UNVERIFIED',
+      '订阅用量结果与冻结身份不一致。',
+      false,
+    );
+}
+
 /** Only deployment-owned configuration and the server's frozen replay route.
  * No default tariff, implicit currency, request-provided prices or API key read.
  */
@@ -43,6 +81,7 @@ export function preflightAssistantPricing(input: {
 }): AssistantPriceSnapshot | undefined {
   if (!input.enabled) return undefined;
   if (input.hasNonTextInput) deny('ASSISTANT_PRICE_TEXT_ONLY');
+  if (preflightAssistantSubscription(input)) return undefined;
   const parsed = SessionModelSnapshotSchema.safeParse(input.modelSnapshot);
   if (!parsed.success) deny('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
   const frozen = parsed.data;
@@ -135,6 +174,18 @@ export function preflightAssistantPricing(input: {
         ? error.code
         : 'ASSISTANT_PRICE_UNAVAILABLE',
     );
+  }
+}
+
+/** Shared by assistant and ordinary Worker execution. A missing/invalid frozen
+ * Codex identity is not permission to fall back to the legacy cash estimator. */
+export function preflightAssistantSubscription(
+  input: Parameters<typeof resolveAssistantSubscriptionSnapshot>[0],
+) {
+  try {
+    return resolveAssistantSubscriptionSnapshot(input);
+  } catch {
+    deny('ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED');
   }
 }
 

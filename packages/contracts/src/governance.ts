@@ -33,8 +33,11 @@ export const OrganizationModelQuotaSchema = z
     monthlyCostLimitCents: z.number().int().nonnegative().max(1_000_000_000),
     usedRuns: z.number().int().nonnegative(),
     usedTokens: z.number().int().nonnegative(),
+    // API/legacy monetary subtotal. An empty subtotal is not a subscription price.
     usedCostCents: z.number().nonnegative().nullable(),
     unknownCostRuns: z.number().int().nonnegative().default(0),
+    // NULL monetary values with new, durable subscription proofs, not API unknown.
+    subscriptionRuns: z.number().int().nonnegative().default(0),
     usageComplete: z.boolean().default(true),
     cacheUsageKnown: z.boolean().default(true),
     periodStart: TimestampSchema,

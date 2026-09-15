@@ -223,6 +223,10 @@ export class DshProtocolClient {
     return this.request('provider/status', undefined, 10_000);
   }
 
+  async providerQuota() {
+    return this.request('provider/quota', undefined, 25_000);
+  }
+
   async authorizeCodex() {
     return this.request('provider/authorize-codex', undefined, 20 * 60_000);
   }

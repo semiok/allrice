@@ -120,6 +120,40 @@ integration(
       return { f, children, request, tree, usage };
     }
 
+    it('records actual output above a soft subscription reservation and cancels without erasing unknown sibling usage', async () => {
+      const { f, children, tree, usage } = await layout();
+      const child = children[0]!;
+      await f.runtime.settleUsage({
+        ...f.base,
+        runId: child.runId,
+        callId: child.callId,
+        amounts: { ...child.amounts, output_tokens: 13000 },
+      });
+      expect((await tree()).cancelRequested).toBe(true);
+      expect(
+        (await tree()).budgets.find((b) => b.metric === 'output_tokens'),
+      ).toMatchObject({ spent: 13246, reserved: 4000, usageComplete: false });
+      expect(
+        (await usage()).find(
+          (r) => r.call_id === child.callId && r.metric === 'output_tokens',
+        ),
+      ).toMatchObject({ settled_amount: '13000' });
+      expect(
+        (await usage()).find(
+          (r) =>
+            r.call_id === children[1]!.callId && r.metric === 'output_tokens',
+        ),
+      ).toMatchObject({ settled_amount: null });
+      await expect(
+        f.runtime.prepareModelUsage({
+          ...f.base,
+          runId: f.rootRunId,
+          callId: randomUUID(),
+          requestedOutputTokens: 1,
+        }),
+      ).rejects.toThrow('canceled');
+    });
+
     it('rejects parent 4000 with only 3754 free and rolls back every dimension without touching child reservations', async () => {
       const { f, request, tree, usage } = await layout();
       const before = { tree: await tree(), usage: await usage() };

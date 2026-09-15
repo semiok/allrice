@@ -22,11 +22,11 @@ import {
   getModelGovernanceSnapshot,
   listFailedRouteDecisions,
   recordRouteDecision,
+  freezeRouteSubscriptionSnapshot,
   recordToolBrokerAudit,
   ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
-  assertQuotaAvailable,
   ModelGovernanceError,
   assertReviewRunCurrent,
   assertAssistantAuthority,
@@ -52,9 +52,13 @@ import {
 } from '../harness/router.js';
 import { buildAuthorizedKnowledgeContext } from '../knowledge.js';
 import { estimateModelCostCents } from '../model-cost.js';
+import { assertSubscriptionQuotaNotExhausted } from '../subscription-quota-admission.js';
 import {
   preflightAssistantPricing,
   assistantResultCostCents,
+  preflightAssistantSubscription,
+  assertAssistantSubscriptionResult,
+  assistantSubscriptionSnapshotDigest,
 } from '../assistant-pricing-preflight.js';
 import { decideCapabilityRoute } from '../routing/capability-router.js';
 import { nativeGovernedToolNames } from '../tool-broker/definitions.js';
@@ -384,22 +388,9 @@ export async function executeEmployeeRun({
           ],
         })
       : null;
-    if (governance) {
-      try {
-        assertQuotaAvailable(governance.quota);
-      } catch (error) {
-        if (error instanceof ModelGovernanceError) {
-          throw new HandlerError(
-            error.code,
-            error.scope
-              ? `The ${error.scope} model resource limit has been reached`
-              : 'The organization model quota has been reached',
-            false,
-          );
-        }
-        throw error;
-      }
-    }
+    // Quota admission is performed below under the tenant lock for the actually
+    // selected connection, including fallback. A primary's cash limit cannot
+    // preempt selection of a subscription route; Token/run checks remain there.
     const failedRoutes = await listFailedRouteDecisions({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
@@ -594,9 +585,18 @@ export async function executeEmployeeRun({
       fallbacks: fallbackSnapshots,
       reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
     });
+    const subscriptionSnapshot = preflightAssistantSubscription({
+      sessionId: input.sessionId,
+      modelSnapshot: frozenModelSnapshot,
+      decision: routeDecision,
+      providerSnapshot,
+    });
+    if (subscriptionSnapshot)
+      assertSubscriptionQuotaNotExhausted(codexStatus.quota);
     assertAssistantProviderOutputBound(
       providerSnapshot,
       objectInput(input.assistantConfiguration).allowAssistants === true,
+      subscriptionSnapshot,
     );
     const assistantPriceSnapshot = preflightAssistantPricing({
       enabled:
@@ -609,6 +609,15 @@ export async function executeEmployeeRun({
       hasNonTextInput:
         kernel.imageAttachments.length > 0 || harnessImages.length > 0,
     });
+    if (subscriptionSnapshot) {
+      await freezeRouteSubscriptionSnapshot({
+        organizationId: execution.context.organizationId,
+        workspaceId: execution.context.workspaceId!,
+        decisionId: routeDecision.id,
+        snapshot: subscriptionSnapshot,
+      });
+      routeCostCents = null;
+    }
     const adapter = getHarnessRouter().resolve(routeDecision.harness);
     if (adapter.isConfigured && !adapter.isConfigured(providerSnapshot)) {
       throw new HandlerError(
@@ -707,8 +716,10 @@ export async function executeEmployeeRun({
       worker: workflowLease,
       runLimits,
       priceSnapshot: assistantPriceSnapshot,
+      subscriptionSnapshot,
       serverPricingProviderSnapshot:
-        assistantPriceSnapshot && providerSnapshot.provider === 'dsh'
+        (assistantPriceSnapshot || subscriptionSnapshot) &&
+        providerSnapshot.provider === 'dsh'
           ? providerSnapshot
           : undefined,
       tools,
@@ -748,11 +759,14 @@ export async function executeEmployeeRun({
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
     const workflowCitations: typeof knowledge.citations = [];
-    // Once a normal assistant execution starts, any generic transport, tool,
+    // Once a normal assistant or subscription execution starts, any transport, tool,
     // revocation or lease failure is incomplete accounting until an authoritative
     // tree outcome replaces it. Zero here is only a confirmed subtotal, not free
-    // completed execution. Workflow and legacy single-agent routes are unchanged.
-    if (assistants && routeDecision.selectedKind !== 'workflow') {
+    // completed execution. Legacy API single-agent routes are unchanged.
+    if (
+      subscriptionSnapshot ||
+      (assistants && routeDecision.selectedKind !== 'workflow')
+    ) {
       routeCostCents = null;
       routeUsageComplete = false;
       routeCacheUsageKnown = false;
@@ -1129,10 +1143,51 @@ export async function executeEmployeeRun({
       });
     }
     routeUsage = result.usage;
-    routeUsageComplete = result.usageComplete ?? true;
-    routeCacheUsageKnown = result.cacheUsageKnown ?? true;
-    routeCostCents =
-      assistants && assistantPriceSnapshot
+    // Keep subscription accounting incomplete until identity-bound receipts
+    // are verified. A forged/mismatched result cannot unblock the next Run.
+    routeUsageComplete = subscriptionSnapshot
+      ? false
+      : (result.usageComplete ?? true);
+    routeCacheUsageKnown = subscriptionSnapshot
+      ? false
+      : (result.cacheUsageKnown ?? true);
+    if (subscriptionSnapshot) {
+      if (assistants)
+        assertAssistantSubscriptionResult(subscriptionSnapshot, result);
+      else {
+        if (
+          result.provider !== subscriptionSnapshot.provider ||
+          result.model !== subscriptionSnapshot.model ||
+          result.costCurrency !== undefined ||
+          result.priceSnapshotDigest !== undefined ||
+          (result.estimatedCostCents !== undefined &&
+            result.estimatedCostCents !== null)
+        )
+          throw new HandlerError(
+            'ASSISTANT_SUBSCRIPTION_RESULT_UNVERIFIED',
+            '订阅返回模型与冻结身份不一致。',
+            false,
+          );
+        // Ordinary provider adapters do not price subscriptions. Project trusted
+        // identity explicitly; never run the legacy missing-price=zero estimator.
+        Object.assign(result, {
+          billingMode: 'subscription',
+          costBasis: 'not_applicable',
+          estimatedCostCents: null,
+          costEstimateAvailable: false,
+          actualCostKnown: false,
+          usageComplete: result.usageComplete ?? false,
+          cacheUsageKnown: result.cacheUsageKnown ?? false,
+          subscriptionSnapshotDigest:
+            assistantSubscriptionSnapshotDigest(subscriptionSnapshot),
+        });
+      }
+      routeUsageComplete = result.usageComplete ?? false;
+      routeCacheUsageKnown = result.cacheUsageKnown ?? false;
+    }
+    routeCostCents = subscriptionSnapshot
+      ? null
+      : assistants && assistantPriceSnapshot
         ? assistantResultCostCents(assistantPriceSnapshot, result)
         : result.costEstimateAvailable === false
           ? null
@@ -1146,7 +1201,8 @@ export async function executeEmployeeRun({
       (result.usage.outputTokens > runLimits.maxOutputTokens ||
         result.usage.inputTokens + result.usage.outputTokens >
           runLimits.maxTotalTokens ||
-        (runLimits.maxCostCents !== null &&
+        (!subscriptionSnapshot &&
+          runLimits.maxCostCents !== null &&
           (routeCostCents === null || routeCostCents > runLimits.maxCostCents)))
     ) {
       throw new HandlerError(

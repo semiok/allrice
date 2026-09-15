@@ -10,6 +10,9 @@ import {
   assistantPriceSnapshotDigest,
   assistantResultCostCents,
   preflightAssistantPricing,
+  preflightAssistantSubscription,
+  assistantSubscriptionSnapshotDigest,
+  assertAssistantSubscriptionResult,
 } from './assistant-pricing-preflight.js';
 
 function fixture() {
@@ -101,6 +104,95 @@ function fixture() {
   };
 }
 afterEach(() => vi.unstubAllEnvs());
+function subscriptionFixture() {
+  const input = fixture();
+  input.modelSnapshot = {
+    ...input.modelSnapshot,
+    provider: 'openai-codex',
+    authMode: 'chatgpt_subscription',
+    model: 'synthetic-codex',
+  };
+  input.decision = {
+    ...input.decision,
+    provider: 'openai-codex',
+    model: 'synthetic-codex',
+  };
+  input.providerSnapshot = {
+    ...input.providerSnapshot,
+    provider: 'dsh',
+    route: 'openai-codex',
+    authMode: 'platform_subscription',
+    model: 'synthetic-codex',
+  };
+  return input;
+}
+describe('Worker subscription preflight and exact result binding', () => {
+  it('returns a subscription proof without parsing unavailable/malicious API tariffs', () => {
+    const input = subscriptionFixture();
+    vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', 'never-parse-me');
+    vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', undefined);
+    expect(preflightAssistantPricing(input)).toBeUndefined();
+    const snapshot = preflightAssistantSubscription(input)!;
+    expect(snapshot.billingMode).toBe('subscription');
+    expect(assistantSubscriptionSnapshotDigest(snapshot)).toBe(
+      runtimeLedgerInputDigest(snapshot),
+    );
+  });
+  it('does not turn an unverified Codex route into missing-price exemption', () => {
+    const input = subscriptionFixture();
+    expect(() =>
+      preflightAssistantPricing({ ...input, modelSnapshot: undefined }),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED',
+      }),
+    );
+    expect(() =>
+      preflightAssistantPricing({
+        ...input,
+        modelSnapshot: { ...input.modelSnapshot, authMode: 'api_key' },
+      }),
+    ).toThrow();
+  });
+  it('rejects forged digest, money, currency and model claims while token completeness remains independent', () => {
+    const snapshot = preflightAssistantSubscription(subscriptionFixture())!;
+    const result = {
+      answer: 'synthetic',
+      provider: snapshot.provider,
+      model: snapshot.model,
+      assistantStatus: 'completed' as const,
+      usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2 },
+      usageComplete: true,
+      cacheUsageKnown: false,
+      billingMode: 'subscription' as const,
+      costBasis: 'not_applicable' as const,
+      estimatedCostCents: null,
+      costEstimateAvailable: false,
+      actualCostKnown: false as const,
+      subscriptionSnapshotDigest: assistantSubscriptionSnapshotDigest(snapshot),
+    };
+    expect(() =>
+      assertAssistantSubscriptionResult(snapshot, result),
+    ).not.toThrow();
+    expect(() =>
+      assertAssistantSubscriptionResult(snapshot, {
+        ...result,
+        usageComplete: false,
+      }),
+    ).not.toThrow();
+    for (const changed of [
+      { subscriptionSnapshotDigest: `sha256:${'0'.repeat(64)}` },
+      { estimatedCostCents: 0 },
+      { costCurrency: 'USD' },
+      { model: 'wrong' },
+      { priceSnapshotDigest: assistantSubscriptionSnapshotDigest(snapshot) },
+      { costEstimateAvailable: true },
+    ])
+      expect(() =>
+        assertAssistantSubscriptionResult(snapshot, { ...result, ...changed }),
+      ).toThrow('订阅用量结果与冻结身份不一致');
+  });
+});
 describe('Worker assistant pricing preflight — synthetic configuration only', () => {
   it('pins frozen route IDs, canonical Gemini model and actual Google endpoint before execution', () => {
     const input = fixture(),

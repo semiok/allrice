@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillBundleSchema } from './skill-bundle.ts';
+import { CodexSubscriptionQuotaSnapshotSchema } from './codex-subscription-quota.ts';
 
 export const SkillCapabilitySchema = z.enum([
   'network:outbound',
@@ -80,6 +81,7 @@ export const CodexProviderStatusSchema = z
     cliVersion: z.string().max(120).nullable(),
     detailCode: z.string().max(120).nullable(),
     checkedAt: TimestampSchema.nullable(),
+    quota: CodexSubscriptionQuotaSnapshotSchema.nullable().optional(),
   })
   .strict();
 export type CodexProviderStatus = z.infer<typeof CodexProviderStatusSchema>;

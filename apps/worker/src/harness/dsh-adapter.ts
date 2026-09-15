@@ -14,6 +14,7 @@ import {
   type AssistantFailureDiagnostics,
 } from './dsh/assistant-diagnostics.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
+import { projectNativeUsage } from './dsh/native-usage.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -22,7 +23,6 @@ import type {
 import type { DshNotification } from './dsh-protocol-client.js';
 import {
   nativeEventView,
-  positiveInteger,
   record,
   shortText,
   sourceMetadata,
@@ -98,6 +98,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     assertAssistantProviderOutputBound(
       input.providerSnapshot,
       !!input.assistants,
+      input.assistants?.subscriptionSnapshot,
     );
     if (input.providerSnapshot.provider !== 'dsh') {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
@@ -213,6 +214,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let order = 0;
     let turnId: string | null = null;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+    let usageComplete = true;
+    let cacheUsageKnown = true;
     const emit = async (event: HarnessEventPayload) => {
       const sourceEventType =
         event.type === 'assistant.delta'
@@ -323,6 +326,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           prompt,
           images: callIndex === 0 ? (input.images ?? []) : [],
           signal: executionSignal,
+          subscription: snapshot.route === 'openai-codex',
           onTurn: async (nextTurnId) => {
             turnId = nextTurnId;
             await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
@@ -334,6 +338,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;
         usage.outputTokens += result.usage.outputTokens;
+        usageComplete &&= result.usageComplete;
+        cacheUsageKnown &&= result.cacheUsageKnown;
         const toolCall = parseDshToolCall(result.answer);
         if (!toolCall) {
           const joined = assistant
@@ -520,12 +526,24 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const result: HarnessExecutionResult = {
       answer,
       usage,
+      usageComplete,
+      cacheUsageKnown,
       ...(assistantOutcome
         ? {
             assistantStatus: assistantOutcome.status as 'completed' | 'partial',
             usageComplete: assistantOutcome.usageComplete,
             cacheUsageKnown: assistantOutcome.cacheUsageKnown,
             costEstimateAvailable: assistantOutcome.costEstimateAvailable,
+            ...(assistantOutcome.billingMode === 'subscription'
+              ? {
+                  billingMode: assistantOutcome.billingMode,
+                  costBasis: assistantOutcome.costBasis,
+                  estimatedCostCents: assistantOutcome.estimatedCostCents,
+                  subscriptionSnapshotDigest:
+                    assistantOutcome.subscriptionSnapshotDigest,
+                  actualCostKnown: assistantOutcome.actualCostKnown,
+                }
+              : {}),
             ...(assistantOutcome.priceSnapshotDigest
               ? {
                   estimatedCostCents: assistantOutcome.estimatedCostCents,
@@ -617,6 +635,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     prompt: string;
     images: HarnessExecutionInput['images'];
     signal: AbortSignal;
+    subscription: boolean;
     onTurn(turnId: string): Promise<void>;
     onDelta(text: string, source: DshSourceMetadata): Promise<void>;
     onNative(event: HarnessEventPayload): Promise<void>;
@@ -636,6 +655,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
     let completionSource: DshSourceMetadata | undefined;
     let usageSource: DshSourceMetadata | undefined;
+    let usageComplete = true;
+    let cacheUsageKnown = true;
+    let messageReceipts = 0;
+    let observedModelOutput = false;
     const activeReasoningBlocks = new Set<number>();
     const activeNativeTools = new Map<
       string,
@@ -846,6 +869,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       if (event.type === 'assistant/chunk') {
         const chunk = record(data.chunk);
+        if (
+          (chunk?.type === 'text-delta' || chunk?.type === 'reasoning-delta') &&
+          typeof chunk.text === 'string' &&
+          chunk.text.length > 0
+        )
+          observedModelOutput = true;
         const chunkIndex =
           typeof chunk?.index === 'number' ? chunk.index : undefined;
         const block = record(chunk?.block);
@@ -916,10 +945,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
           const visible = visibleModelText(final);
           if (visible.ready) answer = visible.text;
         }
-        const eventUsage = record(data.usage);
-        usage.inputTokens += positiveInteger(eventUsage?.inputTokens);
-        usage.cachedInputTokens += positiveInteger(eventUsage?.cacheReadTokens);
-        usage.outputTokens += positiveInteger(eventUsage?.outputTokens);
+        const receipt = projectNativeUsage(
+          data.usage,
+          observedModelOutput ||
+            (Array.isArray(message?.content) && message.content.length > 0),
+          input.subscription,
+        );
+        messageReceipts++;
+        usage.inputTokens += receipt.inputTokens;
+        usage.cachedInputTokens += receipt.cachedInputTokens;
+        usage.outputTokens += receipt.outputTokens;
+        usageComplete &&= receipt.usageComplete;
+        cacheUsageKnown &&= receipt.cacheUsageKnown;
         usageSource = source;
       }
       if (event.type === 'turn/end') {
@@ -978,7 +1015,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
           sourcePayload: { text: deltaBuffer },
         });
       }
-      return { answer, usage, completionSource, usageSource };
+      return {
+        answer,
+        usage,
+        completionSource,
+        usageSource,
+        usageComplete:
+          messageReceipts > 0 &&
+          usageComplete &&
+          Object.values(usage).every(Number.isSafeInteger),
+        cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
+      };
     } finally {
       unsubscribe();
       input.signal.removeEventListener('abort', abort);

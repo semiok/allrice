@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'vitest';
 import {
   ARTIFACT_IDS,
+  ASSISTANT_BILLING_ASSERTIONS,
   BASELINE_SHA,
   CANARY_CASE,
   CASE_ASSERTIONS,
@@ -125,6 +126,14 @@ function fixture() {
       expected: true,
       observed: true,
     }));
+    if (short === 'assistants-real-dsh-two-children-no-bridge')
+      assertions.push(
+        ...ASSISTANT_BILLING_ASSERTIONS.token_metered.map((name) => ({
+          name,
+          expected: true,
+          observed: true,
+        })),
+      );
     if (short === 'developer-id-signature-notarization') {
       assertions.push({
         name: 'publisher-team-id',
@@ -242,6 +251,292 @@ function rejects(report, code) {
   );
 }
 
+function subscriptionFixture() {
+  const f = fixture();
+  const receipt = f.receipt('assistants-real-dsh-two-children-no-bridge');
+  const id = (n) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, '0')}`;
+  receipt.schema = 'allrice-p27-evidence/v2';
+  receipt.runId = id(1);
+  receipt.tenantId = id(2);
+  receipt.assertions = [
+    ...CASE_ASSERTIONS[receipt.caseId],
+    ...ASSISTANT_BILLING_ASSERTIONS.subscription,
+  ].map((name) => ({ name, expected: true, observed: true }));
+  const snapshot = {
+    version: 1,
+    billingMode: 'subscription',
+    harness: 'dsh',
+    provider: 'openai-codex',
+    authMode: 'chatgpt_subscription',
+    sessionId: id(3),
+    employeeId: id(4),
+    connectionId: id(5),
+    modelCatalogEntryId: id(6),
+    policyRevision: 1,
+    model: 'gpt-5.6-luna',
+    credentialReference: 'deployment:test-only-no-secret',
+    baseUrl: null,
+    frozenAt: '2026-09-14T10:00:00.000Z',
+  };
+  const snapshotDigest = `sha256:${hash(JSON.stringify(snapshot, Object.keys(snapshot).sort()))}`;
+  const route = {
+    id: id(7),
+    organizationId: receipt.tenantId,
+    workspaceId: id(8),
+    runId: receipt.runId,
+    ...Object.fromEntries(
+      [
+        'sessionId',
+        'employeeId',
+        'connectionId',
+        'modelCatalogEntryId',
+        'policyRevision',
+        'harness',
+        'provider',
+        'model',
+      ].map((k) => [k, snapshot[k]]),
+    ),
+    status: 'succeeded',
+    subscriptionSnapshotDigest: snapshotDigest,
+    costCents: null,
+    usageComplete: true,
+    cacheUsageKnown: false,
+    inputTokens: 30,
+    outputTokens: 15,
+  };
+  const proof = {
+    schema: 'allrice-p27-subscription-accounting/v1',
+    sourceSha: SOURCE,
+    runId: receipt.runId,
+    snapshot,
+    snapshotDigest,
+    route,
+    ledger: {
+      routeDecisionId: route.id,
+      ...Object.fromEntries(
+        [
+          'organizationId',
+          'workspaceId',
+          'runId',
+          'status',
+          'costCents',
+          'usageComplete',
+          'cacheUsageKnown',
+          'inputTokens',
+          'outputTokens',
+        ].map((k) => [k, route[k]]),
+      ),
+    },
+    result: {
+      provider: snapshot.provider,
+      model: snapshot.model,
+      assistantStatus: 'completed',
+      billingMode: 'subscription',
+      costBasis: 'not_applicable',
+      estimatedCostCents: null,
+      subscriptionSnapshotDigest: snapshotDigest,
+      costEstimateAvailable: false,
+      actualCostKnown: false,
+      usageComplete: true,
+      cacheUsageKnown: false,
+      inputTokens: 30,
+      outputTokens: 15,
+    },
+    tree: {
+      status: 'completed',
+      runIds: [receipt.runId, id(9), id(10)],
+      modelCalls: 3,
+      inputTokens: 30,
+      outputTokens: 15,
+      unsettledUsageCount: 0,
+    },
+    admissions: [receipt.runId, id(9), id(10)].map((runId, i) => ({
+      callId: id(20 + i),
+      runId,
+      requestDigest: `sha256:${String(i).repeat(64)}`,
+      dispatched: true,
+      finished: true,
+      inputTokens: 10,
+      outputTokens: 5,
+    })),
+    priceSnapshotCount: 0,
+    costReceiptCount: 0,
+  };
+  function put() {
+    receipt.billing = {
+      mode: 'subscription',
+      proof: f.write(
+        'observations/subscription-accounting.json',
+        JSON.stringify(proof),
+      ),
+    };
+    f.putReceipt(receipt);
+  }
+  put();
+  return { ...f, receipt, proof, put };
+}
+
+test('billing-aware V2 accepts explicit API pricing and verified subscription N/A without fake price assertions', () => {
+  const api = fixture();
+  const receipt = api.receipt('assistants-real-dsh-two-children-no-bridge');
+  receipt.schema = 'allrice-p27-evidence/v2';
+  receipt.billing = { mode: 'token_metered' };
+  api.putReceipt(receipt);
+  assert.equal(api.validate().passed, true);
+  const subscription = subscriptionFixture();
+  assert.equal(subscription.validate().passed, true);
+  assert.ok(
+    !subscription.receipt.assertions.some(
+      (a) => a.name === 'frozen-price-and-whole-tree-cost-receipts',
+    ),
+  );
+});
+
+test('V1 cannot silently become subscription and V2 API still requires real pricing assertions', () => {
+  const subscription = subscriptionFixture();
+  subscription.receipt.schema = 'allrice-p27-evidence/v1';
+  delete subscription.receipt.billing;
+  subscription.putReceipt(subscription.receipt);
+  rejects(
+    subscription.validate(),
+    'assertion-coverage-missing-duplicate-or-unknown',
+  );
+  const f = fixture(),
+    receipt = f.receipt('assistants-real-dsh-two-children-no-bridge');
+  receipt.schema = 'allrice-p27-evidence/v2';
+  receipt.billing = { mode: 'token_metered' };
+  receipt.assertions = receipt.assertions.filter(
+    (a) => a.name !== 'frozen-price-and-whole-tree-cost-receipts',
+  );
+  f.putReceipt(receipt);
+  rejects(f.validate(), 'assertion-coverage-missing-duplicate-or-unknown');
+});
+
+test('subscription discriminator never substitutes for a pinned accounting proof or fixed assertions', () => {
+  for (const mode of [
+    'missing_proof',
+    'unknown_mode',
+    'bad_pin',
+    'api_assertion',
+    ...ASSISTANT_BILLING_ASSERTIONS.subscription,
+  ]) {
+    const f = subscriptionFixture();
+    if (mode === 'missing_proof') delete f.receipt.billing.proof;
+    else if (mode === 'unknown_mode') f.receipt.billing.mode = 'free';
+    else if (mode === 'bad_pin')
+      f.receipt.billing.proof.sha256 = '0'.repeat(64);
+    else if (mode === 'api_assertion')
+      f.receipt.assertions.push({
+        name: 'frozen-price-and-whole-tree-cost-receipts',
+        expected: true,
+        observed: true,
+      });
+    else
+      f.receipt.assertions = f.receipt.assertions.filter(
+        (a) => a.name !== mode,
+      );
+    f.putReceipt(f.receipt);
+    assert.equal(f.validate().passed, false, mode);
+  }
+});
+
+test('subscription proof rejects forged identity, N/A, token totals, unknown and duplicate/adopted usage', () => {
+  for (const change of [
+    (p) => {
+      delete p.snapshot;
+    },
+    (p) => {
+      p.snapshot.credentialReference = 'deployment:forged';
+    },
+    (p) => {
+      p.snapshotDigest = `sha256:${'0'.repeat(64)}`;
+    },
+    (p) => {
+      p.route.runId = p.route.id;
+    },
+    (p) => {
+      p.route.organizationId = p.route.id;
+    },
+    (p) => {
+      p.result.subscriptionSnapshotDigest = `sha256:${'0'.repeat(64)}`;
+    },
+    (p) => {
+      p.result.estimatedCostCents = 0;
+    },
+    (p) => {
+      p.result.billingMode = 'token_metered';
+    },
+    (p) => {
+      p.result.costCurrency = 'USD';
+    },
+    (p) => {
+      p.ledger.costCents = 0;
+    },
+    (p) => {
+      p.ledger.usageComplete = false;
+    },
+    (p) => {
+      p.ledger.inputTokens += 1;
+    },
+    (p) => {
+      p.tree.unsettledUsageCount = 1;
+    },
+    (p) => {
+      p.admissions[0].finished = false;
+    },
+    (p) => {
+      p.admissions[0].dispatched = false;
+    },
+    (p) => {
+      delete p.admissions[0].outputTokens;
+    },
+    (p) => {
+      p.admissions[0].inputTokens += 1;
+    },
+    (p) => {
+      p.admissions[1].callId = p.admissions[0].callId;
+    },
+    (p) => {
+      p.admissions[1].callId = p.admissions[0].callId.toUpperCase();
+    },
+    (p) => {
+      p.tree.runIds[2] = p.tree.runIds[1].toUpperCase();
+      p.admissions[2].runId = p.tree.runIds[2];
+    },
+    (p) => {
+      p.admissions[1].runId = p.admissions[0].runId;
+    },
+    (p) => {
+      p.priceSnapshotCount = 1;
+    },
+    (p) => {
+      p.costReceiptCount = 1;
+    },
+  ]) {
+    const f = subscriptionFixture();
+    change(f.proof);
+    f.put(); // Re-pinning forged bytes is insufficient: inner identity/totals still must match.
+    rejects(f.validate(), 'subscription-accounting-proof-invalid');
+  }
+});
+
+test('re-signing a noncanonical or impossible subscription freeze time cannot satisfy V2', () => {
+  for (const value of [
+    '2026-09-14',
+    '2026-02-31T00:00:00.000Z',
+    '2026-09-15T00:00:00.000Z',
+  ]) {
+    const f = subscriptionFixture();
+    f.proof.snapshot.frozenAt = value;
+    const next = `sha256:${hash(JSON.stringify(f.proof.snapshot, Object.keys(f.proof.snapshot).sort()))}`;
+    f.proof.snapshotDigest = next;
+    f.proof.route.subscriptionSnapshotDigest = next;
+    f.proof.result.subscriptionSnapshotDigest = next;
+    f.put();
+    rejects(f.validate(), 'subscription-accounting-proof-invalid');
+  }
+});
+
 test('synthetic fixture tests metadata completeness only and never grants or executes release', () => {
   const f = fixture(),
     report = f.validate();
@@ -318,6 +613,9 @@ test('preparation handoff indexes every enforced RC case and assertion without i
     );
   }
   assert.ok(text.includes('`tenant-canary-real-smoke`'));
+  for (const branch of Object.values(ASSISTANT_BILLING_ASSERTIONS))
+    for (const assertion of branch)
+      assert.ok(text.includes(`\`${assertion}\``));
   // Every local handoff source must actually exist. These are documentation
   // pointers only; neither the index nor parser fixtures become real evidence.
   for (const [, path] of text.matchAll(/\]\(([^)]+)\)/g)) {
@@ -554,6 +852,8 @@ test('rollback plan rejects destructive DB rollback, old credential readers, inc
 for (const name of [
   '0095_assistant_model_admissions.sql',
   '0096_assistant_pricing.sql',
+  '0097_route_subscription_snapshots.sql',
+  '0098_codex_subscription_quota.sql',
 ])
   test(`${name} is inventoried by exact candidate bytes, not a migration ceiling`, () => {
     const f = fixture(),
@@ -594,6 +894,8 @@ test('preparation requires explicit preservation of model admissions and unknown
   for (const state of [
     'assistant-model-admissions',
     'assistant-price-snapshots-and-receipts',
+    'route-subscription-snapshots',
+    'codex-subscription-quota-metadata',
     'model-usage-and-unknown-cost',
   ]) {
     assert.ok(PRESERVED_STATE.includes(state));
@@ -607,6 +909,30 @@ test('preparation requires explicit preservation of model admissions and unknown
 
 test('old migration/cold-recovery/rollback receipts cannot omit two-stage holds or NULL reader proof', () => {
   for (const [caseId, assertion] of [
+    [
+      'migration-expand-backfill-compatibility',
+      'immutable-subscription-proof-expand-compatible',
+    ],
+    [
+      'migration-expand-backfill-compatibility',
+      'historical-null-cost-not-reclassified',
+    ],
+    [
+      'migration-expand-backfill-compatibility',
+      'nullable-subscription-quota-readers-compatible',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'subscription-proof-and-na-semantics-preserved',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'subscription-unknown-tokens-not-released',
+    ],
+    [
+      'rollback-drain-reconcile-preserve-state',
+      'subscription-quota-account-freshness-preserved',
+    ],
     [
       'assistants-real-dsh-two-children-no-bridge',
       'frozen-price-and-whole-tree-cost-receipts',
@@ -652,7 +978,11 @@ test('old migration/cold-recovery/rollback receipts cannot omit two-stage holds 
       'unknown-usage-and-cost-not-zeroed',
     ],
   ]) {
-    assert.ok(CASE_ASSERTIONS[caseId].includes(assertion));
+    assert.ok(
+      CASE_ASSERTIONS[caseId].includes(assertion) ||
+        (caseId === 'assistants-real-dsh-two-children-no-bridge' &&
+          ASSISTANT_BILLING_ASSERTIONS.token_metered.includes(assertion)),
+    );
     const f = fixture(),
       receipt = f.receipt(caseId);
     receipt.assertions = receipt.assertions.filter(

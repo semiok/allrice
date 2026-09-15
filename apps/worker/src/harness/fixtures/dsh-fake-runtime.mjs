@@ -26,7 +26,7 @@ function event(sessionId, type, data) {
   });
 }
 
-function assistant(sessionId, turn, text) {
+function assistant(sessionId, turn, text, usageMode = '') {
   const midpoint = Math.max(1, Math.floor(text.length / 2));
   for (const delta of [text.slice(0, midpoint), text.slice(midpoint)]) {
     if (!delta) continue;
@@ -42,10 +42,37 @@ function assistant(sessionId, turn, text) {
     message: {
       id: `assistant-${seq}`,
       role: 'assistant',
-      content: [{ type: 'text', text }],
+      content:
+        usageMode === 'usage-zero-after-delta' ? [] : [{ type: 'text', text }],
       source: { kind: 'model', provider: initializedProvider, model: 'fake' },
     },
-    usage: { inputTokens: 11, cacheReadTokens: 3, outputTokens: 5 },
+    ...(usageMode === 'usage-missing'
+      ? {}
+      : {
+          usage:
+            usageMode === 'usage-synthetic-zero'
+              ? {
+                  inputTokens: 0,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                  outputTokens: 0,
+                }
+              : usageMode === 'usage-complete'
+                ? {
+                    inputTokens: 11,
+                    cacheReadTokens: 3,
+                    cacheWriteTokens: 2,
+                    outputTokens: 5,
+                  }
+                : usageMode === 'usage-zero-after-delta'
+                  ? {
+                      inputTokens: 11,
+                      cacheReadTokens: 0,
+                      cacheWriteTokens: 0,
+                      outputTokens: 0,
+                    }
+                  : { inputTokens: 11, cacheReadTokens: 3, outputTokens: 5 },
+        }),
   });
   event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
 }
@@ -359,6 +386,22 @@ lines.on('line', (line) => {
   } else {
     text = `turn-${turn}`;
   }
-  assistant(sessionId, turn, text);
+  const multiReceipts = prompt.includes('multi-receipts');
+  if (multiReceipts)
+    assistant(
+      sessionId,
+      turn,
+      text,
+      prompt.includes('missing-then') ? 'usage-missing' : 'usage-complete',
+    );
+  const usageMode = multiReceipts
+    ? 'usage-complete'
+    : [
+        'usage-missing',
+        'usage-synthetic-zero',
+        'usage-complete',
+        'usage-zero-after-delta',
+      ].find((mode) => prompt.includes(mode));
+  assistant(sessionId, turn, text, usageMode);
   notify('session.status', { sessionId, status: 'idle' });
 });

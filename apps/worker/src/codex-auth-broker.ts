@@ -5,6 +5,7 @@ import type {
   CodexProviderStatus,
   ProviderAuthorizationFlow,
 } from '@allrice/contracts';
+import { CodexSubscriptionQuotaSnapshotSchema } from '@allrice/contracts';
 import {
   claimCodexAuthorizationFlow,
   codexAuthorizationFlowState,
@@ -32,6 +33,9 @@ function runtimeEnvironment(root: string) {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
     ...dshEgressEnvironment(),
+    ...(process.env.ALLRICE_CODEX_QUOTA_COMMAND
+      ? { ALLRICE_CODEX_QUOTA_COMMAND: process.env.ALLRICE_CODEX_QUOTA_COMMAND }
+      : {}),
     DSH_CORDIS_CONFIG: resolve(
       process.env.ALLRICE_DSH_CORDIS_CONFIG ??
         resolve(import.meta.dirname, '../dsh/allrice-restricted.cordis.yml'),
@@ -102,6 +106,13 @@ export async function probeDshCodexProvider(
       resolve(executionRoot, 'provider-probe'),
     );
     const status = await client.providerStatus();
+    // Optional official account-RPC adapter. Failure to read allowance is not
+    // evidence of either exhausted quota or disconnected model credentials.
+    const rawQuota =
+      status.configured === true
+        ? await client.providerQuota().catch(() => null)
+        : null;
+    const quota = CodexSubscriptionQuotaSnapshotSchema.safeParse(rawQuota);
     return {
       provider: 'codex',
       authMode: 'chatgpt_subscription',
@@ -112,6 +123,7 @@ export async function probeDshCodexProvider(
           ? 'dsh_openai_codex_provider_ready'
           : 'dsh_openai_codex_authorization_required',
       checkedAt,
+      quota: quota.success ? quota.data : null,
     };
   } catch {
     return {

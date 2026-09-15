@@ -45,6 +45,8 @@ export interface AssistantWorkerBridgeOptions {
     requestDigest: string;
     usage: AssistantPricedUsage;
   }) => Promise<void>;
+  /** Server-owned observation check before each new model preparation/dispatch. */
+  beforeModelDispatch?: () => Promise<void>;
   /** Must submit the exact proposal to P04/Broker; never grants native approval.
    * Absent means side-effect proposals are unavailable, not automatically allowed. */
   onProposal?: (
@@ -114,14 +116,17 @@ export function createAssistantWorkerBridge(
           : { adoptedSeq: natural.parse(p.adoptedSeq) }),
       });
     }
-    if (method === 'model-prepare')
+    if (method === 'model-prepare') {
+      await options.beforeModelDispatch?.();
       return runtime.prepareModelUsage({
         ...base,
         runId: instance.runId,
         callId: z.uuid().parse(p.callId),
         requestedOutputTokens: natural.parse(p.outputTokens),
       });
-    if (method === 'model-dispatch')
+    }
+    if (method === 'model-dispatch') {
+      await options.beforeModelDispatch?.();
       return runtime.dispatchModelUsage({
         ...base,
         runId: instance.runId,
@@ -130,6 +135,7 @@ export function createAssistantWorkerBridge(
         outputTokens: natural.parse(p.outputTokens),
         requestDigest: z.string().parse(p.requestDigest),
       });
+    }
     if (method === 'model-settle') {
       const callId = z.uuid().parse(p.callId);
       const inputTokens =

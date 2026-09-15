@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import type { DshExecutionSnapshot, HarnessEvent } from '@allrice/contracts';
@@ -19,6 +21,7 @@ afterEach(async () => {
     adapters.splice(0).map((adapter) => adapter.close()),
   );
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('normalizeAllRiceManagedFileLinks', () => {
@@ -132,6 +135,54 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it.each([
+    ['usage-complete', true, true, 16, 5],
+    ['usage-missing', false, false, 0, 0],
+    ['usage-synthetic-zero', false, false, 0, 0],
+    ['usage-zero-after-delta', false, false, 11, 0],
+    ['multi-receipts-complete', true, true, 32, 10],
+    ['multi-receipts-missing-then-complete', false, false, 16, 5],
+    ['ordinary-missing-cache-write', true, false, 14, 5],
+  ] as const)(
+    'projects ordinary subscription receipt %s without inventing usage',
+    async (
+      prompt,
+      usageComplete,
+      cacheUsageKnown,
+      inputTokens,
+      outputTokens,
+    ) => {
+      const adapter = createAdapter();
+      const testPlatform = await mkdtemp(
+        resolve(tmpdir(), 'allrice-fake-codex-'),
+      );
+      await writeFile(resolve(testPlatform, '.credentials.yaml'), '{}', {
+        mode: 0o600,
+      });
+      vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', testPlatform);
+      try {
+        const result = await adapter.execute(
+          executionInput({
+            prompt,
+            provider: {
+              ...snapshot('openai-codex'),
+              authMode: 'platform_subscription',
+              credentialReference: 'deployment:codex-default',
+            },
+          }),
+        );
+        expect(result.answer).toBe('turn-1');
+        expect(result).toMatchObject({
+          usageComplete,
+          cacheUsageKnown,
+          usage: { inputTokens, outputTokens },
+        });
+      } finally {
+        await adapter.close();
+        await rm(testPlatform, { recursive: true, force: true });
+      }
+    },
+  );
   it('leaves ordinary Codex on its original acquisition path and permits only verified assistant protocols', async () => {
     const adapter = createAdapter();
     const acquire = vi

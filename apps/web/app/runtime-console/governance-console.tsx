@@ -3,7 +3,11 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import type { SaasCapabilityManifest } from '@allrice/contracts';
+import type {
+  SaasCapabilityManifest,
+  CodexSubscriptionQuotaSnapshot,
+} from '@allrice/contracts';
+import { CodexSubscriptionQuota } from './codex-subscription-quota';
 
 import styles from './governance-console.module.css';
 
@@ -52,6 +56,7 @@ interface ProviderOperation {
   outputTokens: number;
   costCents: number | null;
   unknownCostRuns: number;
+  subscriptionRuns?: number;
   usageComplete: boolean;
 }
 
@@ -63,6 +68,7 @@ interface Quota {
   usedTokens: number;
   usedCostCents: number | null;
   unknownCostRuns: number;
+  subscriptionRuns?: number;
   usageComplete: boolean;
 }
 
@@ -76,8 +82,13 @@ export function GovernanceUsageSummary({
     | 'usedCostCents'
     | 'unknownCostRuns'
     | 'usageComplete'
+    | 'subscriptionRuns'
   >;
 }) {
+  const subscriptionOnly =
+    quota.usedRuns > 0 &&
+    quota.subscriptionRuns === quota.usedRuns &&
+    quota.unknownCostRuns === 0;
   return (
     <div className={styles.usage}>
       <strong>{quota.usedRuns.toLocaleString()}</strong>
@@ -85,14 +96,20 @@ export function GovernanceUsageSummary({
       <strong>{quota.usedTokens.toLocaleString()}</strong>
       <span>{quota.usageComplete ? 'Token' : 'Token（部分用量待核对）'}</span>
       <strong>
-        {quota.usedCostCents === null
-          ? '费用待核对'
-          : quota.usedCostCents.toFixed(2)}
+        {subscriptionOnly
+          ? '订阅用量'
+          : quota.usedCostCents === null
+            ? '费用待核对'
+            : quota.usedCostCents.toFixed(2)}
       </strong>
       <span>
-        {quota.usedCostCents === null
-          ? `${quota.unknownCostRuns} 次运行缺少可用费用估算；不会按 0 计入额度`
-          : '分（估算）'}
+        {subscriptionOnly
+          ? '不适用按次 API 费用；订阅额度另行展示'
+          : quota.usedCostCents === null
+            ? `${quota.unknownCostRuns} 次运行缺少可用费用估算；不会按 0 计入额度`
+            : (quota.subscriptionRuns ?? 0) > 0
+              ? '分（API 估算，不含订阅运行）'
+              : '分（估算）'}
       </span>
     </div>
   );
@@ -129,6 +146,8 @@ export function GovernanceConsole() {
     null,
   );
   const [codexStatus, setCodexStatus] = useState('unknown');
+  const [codexQuota, setCodexQuota] =
+    useState<CodexSubscriptionQuotaSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -152,7 +171,10 @@ export function GovernanceConsole() {
         };
       }>(await fetch('/api/v1/admin/model-governance', { cache: 'no-store' })),
       readJson<{
-        provider: { status: string };
+        provider: {
+          status: string;
+          quota?: CodexSubscriptionQuotaSnapshot | null;
+        };
         authorization: Authorization | null;
       }>(await fetch('/api/v1/admin/providers/codex', { cache: 'no-store' })),
     ]);
@@ -163,6 +185,7 @@ export function GovernanceConsole() {
     setProviderOperations(governanceResult.governance.operations);
     setAuthorization(codexResult.authorization);
     setCodexStatus(codexResult.provider.status);
+    setCodexQuota(codexResult.provider.quota ?? null);
   }, []);
 
   useEffect(() => {
@@ -357,6 +380,7 @@ export function GovernanceConsole() {
                   </dl>
                   {provider?.key === 'codex' ? (
                     <div className={styles.codexAuth}>
+                      <CodexSubscriptionQuota quota={codexQuota} />
                       {authorization?.state === 'awaiting_user' &&
                       authorization.userCode &&
                       authorization.verificationUri ? (
@@ -439,7 +463,7 @@ export function GovernanceConsole() {
           <div className={styles.sectionHeading}>
             <div>
               <p>租户治理</p>
-              <h2>本月额度</h2>
+              <h2>平台内部月度限制</h2>
             </div>
             <span>用量在每次 RouteDecision 完成后写入不可重复账本</span>
           </div>
@@ -474,7 +498,7 @@ export function GovernanceConsole() {
               />
             </label>
             <label>
-              成本上限（分）
+              API 成本上限（分，订阅不适用）
               <input
                 min={0}
                 type="number"

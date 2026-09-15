@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import {
   AssistantRunConfigurationSchema,
   AssistantPriceSnapshotSchema,
+  AssistantSubscriptionSnapshotSchema,
   DshExecutionSnapshotSchema,
   ModelRunLimitsSchema,
   allRiceToolManifest,
   estimateAssistantUsageCost,
   type AssistantPriceSnapshot,
+  type AssistantSubscriptionSnapshot,
   type DshExecutionSnapshot,
   type ExecutionContext,
   type RuntimeTaskRef,
@@ -22,6 +24,7 @@ import {
   publishAssistantOutput,
   getDatabase,
   runtimePolicyDigest,
+  verifyRouteSubscriptionSnapshot,
   type AssistantAuthorityInput,
   type AssistantWorkerLease,
   type RuntimeBudgetLimit,
@@ -29,6 +32,8 @@ import {
 import type { HarnessExecutionInput } from '../adapter.js';
 import { createAssistantWorkerBridge } from './assistant-bridge.js';
 import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
+import { assertAssistantProviderOutputBound } from './assistant-provider.js';
+import { assertSubscriptionQuotaNotExhausted } from '../../subscription-quota-admission.js';
 
 function assertPriceProvider(
   price: AssistantPriceSnapshot,
@@ -66,6 +71,8 @@ export function productionAssistantController(input: {
   signal?: AbortSignal;
   /** Server-selected tariff only; no price or route selection by model/browser. */
   priceSnapshot?: AssistantPriceSnapshot;
+  /** Exact server-frozen subscription identity, never an API price substitute. */
+  subscriptionSnapshot?: AssistantSubscriptionSnapshot;
   /** INTERNAL ONLY: Worker replay already matched to its persisted route
    * decision, including any frozen fallback. Never a browser/model field. */
   serverPricingProviderSnapshot?: DshExecutionSnapshot;
@@ -80,6 +87,11 @@ export function productionAssistantController(input: {
   const priceSnapshot = input.priceSnapshot
     ? AssistantPriceSnapshotSchema.parse(input.priceSnapshot)
     : undefined;
+  const subscriptionSnapshot = input.subscriptionSnapshot
+    ? AssistantSubscriptionSnapshotSchema.parse(input.subscriptionSnapshot)
+    : undefined;
+  if (subscriptionSnapshot && priceSnapshot)
+    throw Error('assistant_billing_mode_conflict');
   // The existing RouteOutcome/monthly quota ledger has no currency column.
   // It cannot safely aggregate arbitrary ISO currencies, even with valid tariffs.
   if (priceSnapshot && priceSnapshot.price.currency !== 'USD')
@@ -116,7 +128,7 @@ export function productionAssistantController(input: {
       BigInt(priceBound.costPicounits) > 999999999999990000n)
   )
     throw Error('assistant_cost_projection_out_of_range');
-  if (limits.maxCostCents !== null) {
+  if (limits.maxCostCents !== null && !subscriptionSnapshot) {
     if (!priceBound?.costPicounits)
       throw Error('assistant_cost_bound_unavailable');
     // Frozen token capacities are shared by the entire tree, never renewed per
@@ -146,6 +158,7 @@ export function productionAssistantController(input: {
   };
   return {
     rootRunId: input.context.runId,
+    ...(subscriptionSnapshot ? { subscriptionSnapshot } : {}),
     maxOutputTokens: Math.max(
       1,
       Math.floor(
@@ -244,6 +257,29 @@ export function productionAssistantController(input: {
         )
           throw Error('assistant_price_expires_before_deadline');
       }
+      let subscriptionSnapshotDigest: string | undefined;
+      if (subscriptionSnapshot) {
+        if (subscriptionSnapshot.sessionId !== row.session_id)
+          throw Error('assistant_subscription_session_mismatch');
+        assertAssistantProviderOutputBound(
+          pricingProvider ??
+            DshExecutionSnapshotSchema.parse(row.provider_snapshot),
+          true,
+          subscriptionSnapshot,
+        );
+        // Persisted route proof is authoritative: an in-memory marker alone
+        // must never unlock subscription admission or label unknown money N/A.
+        const proof = await verifyRouteSubscriptionSnapshot(
+          {
+            organizationId: context.organizationId,
+            workspaceId: context.workspaceId!,
+            runId: input.context.runId,
+            snapshot: subscriptionSnapshot,
+          },
+          db,
+        );
+        subscriptionSnapshotDigest = proof.snapshotDigest;
+      }
       const task: RuntimeTaskRef = {
         runId: input.context.runId,
         rootRunId: input.context.runId,
@@ -259,8 +295,9 @@ export function productionAssistantController(input: {
           digest: runtimePolicyDigest(row.execution_spec),
         },
       };
-      // Entire tree shares these immutable limits; no child receives a fresh cap.
-      // Input+output capacities together never exceed the frozen total cap.
+      // Entire tree shares these immutable admission limits. For subscriptions,
+      // token capacities are observed thresholds, not remote output guarantees:
+      // actual overage is durably recorded by settleUsage and cancels the root.
       const budgets: RuntimeBudgetLimit[] = [
         { metric: 'model_calls', unit: 'calls', capacity: 16 },
         { metric: 'tool_calls', unit: 'calls', capacity: 64 },
@@ -273,7 +310,12 @@ export function productionAssistantController(input: {
       ].map((budget) => ({
         ...budget,
         currency: null,
-        source: { kind: 'worker', sourceId: 'assistant-v1' },
+        source: {
+          kind: 'worker',
+          sourceId: subscriptionSnapshot
+            ? 'assistant-subscription-v1'
+            : 'assistant-v1',
+        },
       })) as RuntimeBudgetLimit[];
       const ledger = createRuntimeOperationLedger({
         database: db,
@@ -326,6 +368,13 @@ export function productionAssistantController(input: {
         context,
         wireNames,
         readOnlyTools,
+        beforeModelDispatch: subscriptionSnapshot
+          ? async () => {
+              const [status] = await db<{ subscription_quota: unknown }[]>`
+                select subscription_quota from allrice_provider_status where provider='codex'`;
+              assertSubscriptionQuotaNotExhausted(status?.subscription_quota);
+            }
+          : undefined,
         supportedChildTools: new Set([
           ...readOnlyTools,
           'assistant.delegate',
@@ -393,6 +442,16 @@ export function productionAssistantController(input: {
             rootRunId: task.rootRunId,
             worker,
           });
+          if (subscriptionSnapshotDigest)
+            return {
+              ...outcome,
+              billingMode: 'subscription' as const,
+              costBasis: 'not_applicable' as const,
+              costEstimateAvailable: false,
+              estimatedCostCents: null,
+              subscriptionSnapshotDigest,
+              actualCostKnown: false as const,
+            };
           if (!costs) return outcome;
           const known =
             outcome.usageComplete &&

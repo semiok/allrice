@@ -161,11 +161,13 @@ export async function completeRouteDecision(
         usage_complete: boolean;
         cache_usage_known: boolean;
         completed_at: Date | null;
+        subscription: boolean;
       }[]
     >`
       select id, model_connection_id, model_catalog_entry_id, status,
         input_tokens, cached_input_tokens, output_tokens, cost_cents,
-        usage_complete, cache_usage_known, completed_at
+        usage_complete, cache_usage_known, completed_at,
+        exists(select 1 from allrice_route_subscription_snapshots s where s.route_decision_id=allrice_route_decisions.id) as subscription
       from allrice_route_decisions
       where id = ${outcome.decisionId}
         and organization_id = ${input.organizationId}
@@ -174,6 +176,10 @@ export async function completeRouteDecision(
     `;
     const decision = decisions[0];
     if (!decision) throw new Error('route decision outcome was not accepted');
+    // A subscription proof means monetary cost is not applicable, never zero
+    // or a token-priced cash charge. No proof leaves existing unknown rules intact.
+    if (decision.subscription && outcome.costCents !== null)
+      throw new Error('subscription route cannot record a monetary charge');
     // An ordinary late/legacy writer cannot reconcile unknown accounting, lower
     // confirmed usage, or move the accounting month. Reconciliation needs its
     // own evidence/authority flow; this port only accepts replay or conservative
