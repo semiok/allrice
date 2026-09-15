@@ -1,5 +1,14 @@
 /** Isolated real PG preparation only; never invokes Worker/model/native hosts. */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   createP27CodexWorkerFixture,
   type P27CodexWorkerFixture,
@@ -11,6 +20,83 @@ const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+
+describe.sequential(
+  'Codex fixture database authorization (zero database I/O)',
+  () => {
+    const local = 'postgres://a123@127.0.0.1:5432/allrice_b2';
+    const ci = 'postgres://allrice:allrice@127.0.0.1:54329/allrice';
+    beforeEach(() => {
+      vi.stubEnv('DATABASE_URL', undefined);
+      vi.stubEnv('ALLRICE_TEST_DATABASE_URL', local);
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
+      // A valid URL must stop here, before ownership, pools, schema or imports.
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each([undefined, false])(
+      'does not authorize CI through the environment when opt-in is %s',
+      async (allowCiDatabase) => {
+        vi.stubEnv('ALLRICE_TEST_DATABASE_URL', ci);
+        await expect(
+          createP27CodexWorkerFixture({ allowCiDatabase }),
+        ).rejects.toMatchObject({
+          code: 'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
+        });
+      },
+    );
+    it.each([
+      { url: local, allowCiDatabase: undefined },
+      { url: local, allowCiDatabase: true },
+      { url: ci, allowCiDatabase: true },
+    ])(
+      'accepts only an authorized URL before the no-I/O safety stop: $url',
+      async ({ url, allowCiDatabase }) => {
+        vi.stubEnv('ALLRICE_TEST_DATABASE_URL', url);
+        await expect(
+          createP27CodexWorkerFixture({ allowCiDatabase }),
+        ).rejects.toMatchObject({
+          code: 'P27_CODEX_WORKER_FIXTURE_FLAGS_REQUIRED',
+        });
+        expect(process.env.DATABASE_URL).toBeUndefined();
+      },
+    );
+    it.each([
+      'postgres://test-only@dev.invalid:5432/allrice',
+      'postgres://test-only@prod.invalid:5432/allrice',
+      'postgres://a123@127.0.0.1:5432/allrice_dev',
+      'postgres://a123@127.0.0.1:5432/allrice_prod',
+      'postgres://allrice:allrice@localhost:54329/allrice',
+      'postgres://allrice:allrice@127.0.0.1:54329/arbitrary',
+      `${ci}?options=-csearch_path%3Dpublic`,
+      `${local}?application_name=not-the-exact-whitelist`,
+    ])(
+      'rejects non-whitelisted URLs even with explicit test opt-in: %s',
+      async (url) => {
+        vi.stubEnv('ALLRICE_TEST_DATABASE_URL', url);
+        await expect(
+          createP27CodexWorkerFixture({ allowCiDatabase: true }),
+        ).rejects.toMatchObject({
+          code: 'P27_CODEX_WORKER_DATABASE_NOT_AUTHORIZED',
+        });
+        expect(process.env.DATABASE_URL).toBeUndefined();
+      },
+    );
+    it('cannot override an ambient deployment database with test opt-in', async () => {
+      vi.stubEnv('ALLRICE_TEST_DATABASE_URL', ci);
+      vi.stubEnv(
+        'DATABASE_URL',
+        'postgres://test-only@prod.invalid:5432/allrice',
+      );
+      await expect(
+        createP27CodexWorkerFixture({ allowCiDatabase: true }),
+      ).rejects.toMatchObject({
+        code: 'P27_CODEX_WORKER_AMBIENT_DATABASE',
+      });
+    });
+  },
+);
 
 integration(
   'ordinary Codex fixture preparation without model execution',
@@ -46,7 +132,7 @@ integration(
         code: 'P27_CODEX_WORKER_AMBIENT_DATABASE',
       });
       vi.stubEnv('DATABASE_URL', undefined);
-      fixture = await createP27CodexWorkerFixture();
+      fixture = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     }, 30000);
     afterAll(async () => {
       if (fixture) {
@@ -68,14 +154,16 @@ integration(
       vi.unstubAllEnvs();
     }, 20000);
 
-    it('pins both pools to a generated allrice_b2 schema without work or pricing', async () => {
+    it('pins both pools to an explicitly authorized test database and random schema without work or pricing', async () => {
       const { getDatabase } =
         await import('../../../packages/database/src/index.ts');
       const [identity] =
         await getDatabase()`select current_schema() as schema,current_database() as database`;
       expect(identity).toEqual({
         schema: fixture.schema,
-        database: 'allrice_b2',
+        database: new URL(
+          process.env.ALLRICE_TEST_DATABASE_URL!,
+        ).pathname.slice(1),
       });
       expect(fixture.schema).toMatch(/^p25_[a-f0-9]{32}$/);
       const [counts] = await fixture.db`select

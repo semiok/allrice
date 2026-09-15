@@ -10,6 +10,7 @@ import type * as Controller from '../../src/harness/dsh/assistant-controller.js'
 import type {
   EmployeeExecutionSnapshot,
   HarnessExecutionSnapshot,
+  ResolvedModelTarget,
   RouteDecision,
 } from '@allrice/contracts';
 import {
@@ -38,6 +39,7 @@ import {
 import {
   getOrganizationModelQuota,
   assertQuotaAvailable,
+  admitModelExecution as admitActual,
 } from '../../../../packages/database/src/providers/model-governance.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
 import { HandlerError } from '../../src/errors.js';
@@ -55,6 +57,7 @@ const state = vi.hoisted(() => ({
   runtime: vi.fn(),
   record: vi.fn(),
   complete: vi.fn(),
+  admit: vi.fn(),
   append: vi.fn(),
   controller: vi.fn(),
   bind: vi.fn(),
@@ -86,6 +89,7 @@ vi.mock('@allrice/database', async (original) => ({
   acquireConversationRuntime: state.runtime,
   recordRouteDecision: state.record,
   completeRouteDecision: state.complete,
+  admitModelExecution: state.admit,
   assertReviewRunCurrent: vi.fn(async () => {}),
   getLatestContextCheckpoint: vi.fn(async () => null),
   getChangesetRun: vi.fn(async () => null),
@@ -214,6 +218,7 @@ integration(
       state.append.mockResolvedValue(undefined);
       acquire.mockRejectedValue(lateError);
       state.credentials.mockRejectedValue(Error('test_forbids_credentials'));
+      state.admit.mockImplementation(admitActual);
       state.record.mockImplementation((decision: RouteDecision) =>
         recordActual(decision, database.db),
       );
@@ -241,6 +246,7 @@ integration(
         price?: boolean;
         workflow?: boolean;
         subscriptionFallback?: boolean;
+        subscriptionFallbackModel?: string;
       } = {},
     ) {
       const connectionId = randomUUID(),
@@ -256,7 +262,9 @@ integration(
             harness: 'dsh',
             provider: 'openai-codex',
             authMode: 'chatgpt_subscription',
-            model: 'synthetic-subscription-fallback',
+            model:
+              options.subscriptionFallbackModel ??
+              'synthetic-subscription-fallback',
             reasoningEffort: 'low',
             credentialReference: 'deployment:synthetic-subscription-fallback',
             baseUrl: null,
@@ -518,7 +526,91 @@ integration(
         onHarnessEvent: async () => {},
         workflowLease: f.worker,
       } as unknown as ClaimedJobHandlerInput;
-      return { f, job };
+      return {
+        f,
+        job,
+        primaryProvider: provider,
+        modelSnapshot:
+          capturedSnapshot?.schemaVersion === 2
+            ? capturedSnapshot.modelSnapshot
+            : undefined,
+        subscriptionFallback,
+      };
+    }
+    async function priorApiReceipt(
+      f: Awaited<ReturnType<typeof fixture>>['f'],
+      target: ResolvedModelTarget,
+      usageComplete: boolean,
+    ) {
+      const runId = randomUUID();
+      await database.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${runId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
+      const decision = await recordActual(
+        {
+          schemaVersion: 1,
+          id: randomUUID(),
+          runId,
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          actorId: f.user,
+          employeeId: f.employee,
+          inputChecksum: `sha256:${'a'.repeat(64)}`,
+          candidates: [
+            {
+              id: 'direct:synthetic',
+              kind: 'direct',
+              name: 'Synthetic prior API receipt',
+              bindingId: null,
+              requiredCapabilities: ['model:invoke'],
+              risk: 'low',
+              requiresApproval: false,
+              authorized: true,
+              exclusionReason: null,
+              score: 1,
+            },
+          ],
+          selectedKind: 'direct',
+          selectedCandidateId: 'direct:synthetic',
+          harness: target.harness,
+          provider: target.provider,
+          model: target.model,
+          modelConnectionId: target.connectionId,
+          modelCatalogEntryId: target.modelCatalogEntryId,
+          modelPolicyRevision: 1,
+          fallbackFromDecisionId: null,
+          fallbackCondition: null,
+          generation: 1,
+          attempt: 1,
+          reasonCodes: ['direct_no_capability_match'],
+          createdAt: new Date().toISOString(),
+        },
+        database.db,
+      );
+      await completeActual(
+        {
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          outcome: {
+            decisionId: decision.id,
+            status: 'failed',
+            inputTokens: 17,
+            cachedInputTokens: 0,
+            outputTokens: 3,
+            costCents: null,
+            usageComplete,
+            cacheUsageKnown: false,
+            errorCode: 'SYNTHETIC_PRIOR_API_FAILURE',
+            failureCategory: null,
+            completedAt: new Date().toISOString(),
+          },
+        },
+        database.db,
+      );
+      const read = () => database.db`
+        select row_to_json(d) as decision,row_to_json(l) as ledger
+        from allrice_route_decisions d join allrice_model_usage_ledger l on l.route_decision_id=d.id
+        where d.id=${decision.id}`;
+      return { read, before: await read() };
     }
     async function accounting(org: string) {
       const rows = await database.db<
@@ -618,6 +710,193 @@ integration(
       noNativeAccess();
       expect((await knownZero(f.org)).provider).toBe('openai-codex');
     });
+    it.each([
+      { persisted: 'api', usageComplete: true },
+      { persisted: 'subscription', usageComplete: true },
+      { persisted: 'api', usageComplete: false },
+      { persisted: 'subscription', usageComplete: false },
+    ] as const)(
+      'admits the actual persisted $persisted connection once on same-attempt replay (prior API tokens known: $usageComplete)',
+      async ({ persisted, usageComplete }) => {
+        const { f, job, modelSnapshot, subscriptionFallback, primaryProvider } =
+          await fixture({
+            compatible: true,
+            subscriptionFallback: true,
+            subscriptionFallbackModel: `synthetic-subscription-${randomUUID()}`,
+            enabled: false,
+          });
+        const target =
+          persisted === 'api' ? modelSnapshot! : subscriptionFallback!;
+        const prior = await priorApiReceipt(f, modelSnapshot!, usageComplete);
+        // Router selection intentionally differs from the durable run+attempt.
+        // The real PostgreSQL ON CONFLICT path, not a fabricated returned row,
+        // must preserve the already selected target.
+        if (persisted === 'subscription') state.provider = primaryProvider;
+        const persistedId = randomUUID();
+        state.record.mockImplementation(async (proposed: RouteDecision) => {
+          expect(proposed.modelConnectionId).not.toBe(target.connectionId);
+          await recordActual(
+            {
+              ...proposed,
+              id: persistedId,
+              harness: target.harness,
+              provider: target.provider,
+              model: target.model,
+              modelConnectionId: target.connectionId,
+              modelCatalogEntryId: target.modelCatalogEntryId,
+            },
+            database.db,
+          );
+          return recordActual(proposed, database.db);
+        });
+        const succeeds = persisted === 'subscription' && usageComplete;
+        if (succeeds)
+          execute.mockImplementationOnce(async (input) => {
+            expect(input.assistants).toBeUndefined();
+            expect(input.providerSnapshot).toMatchObject({
+              provider: 'dsh',
+              route: target.provider,
+              model: target.model,
+              credentialReference: target.credentialReference,
+              baseUrl: target.baseUrl,
+            });
+            return {
+              answer: 'Synthetic ordinary replay result',
+              provider: target.provider,
+              model: target.model,
+              usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
+              usageComplete: true,
+              cacheUsageKnown: false,
+            };
+          });
+        const pending = executeEmployeeRun(job);
+        if (succeeds)
+          await expect(pending).resolves.toMatchObject({
+            billingMode: 'subscription',
+            costBasis: 'not_applicable',
+            estimatedCostCents: null,
+            subscriptionSnapshotDigest: expect.stringMatching(/^sha256:/),
+            usageComplete: true,
+            usage: { inputTokens: 10, outputTokens: 3 },
+          });
+        else
+          await expect(pending).rejects.toMatchObject({
+            code: usageComplete
+              ? 'MODEL_COST_USAGE_UNKNOWN'
+              : 'MODEL_TOKEN_USAGE_UNKNOWN',
+            retryable: false,
+          });
+        expect(state.record).toHaveBeenCalledTimes(1);
+        expect(state.admit).toHaveBeenCalledExactlyOnceWith({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          userId: f.user,
+          employeeId: f.employee,
+          connectionId: target.connectionId,
+          requestedTokens: modelSnapshot!.runLimits.maxTotalTokens,
+          requestedRuntimeMs: modelSnapshot!.runLimits.timeoutMs,
+        });
+        expect(execute).toHaveBeenCalledTimes(succeeds ? 1 : 0);
+        expect(acquire).not.toHaveBeenCalled();
+        noNativeAccess();
+        expect(await prior.read()).toEqual(prior.before);
+        const [row] = await database.db`
+          select d.status,d.error_code,d.model_connection_id,l.input_tokens,l.output_tokens,
+            l.cost_cents,l.usage_complete,s.snapshot_digest
+          from allrice_route_decisions d
+          join allrice_model_usage_ledger l on l.route_decision_id=d.id
+          left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
+          where d.run_id=${f.rootRunId}`;
+        expect(row).toMatchObject({
+          status: succeeds ? 'succeeded' : 'failed',
+          error_code: succeeds
+            ? null
+            : usageComplete
+              ? 'MODEL_COST_USAGE_UNKNOWN'
+              : 'MODEL_TOKEN_USAGE_UNKNOWN',
+          model_connection_id: target.connectionId,
+          input_tokens: succeeds ? 10 : 0,
+          output_tokens: succeeds ? 3 : 0,
+          usage_complete: true,
+          snapshot_digest: succeeds ? expect.stringMatching(/^sha256:/) : null,
+        });
+        if (succeeds) expect(row!.cost_cents).toBeNull();
+        else {
+          // Existing pre-dispatch failure semantics: this newly recorded route
+          // is one failed attempt with known zero usage, never another unknown.
+          expect(row!.cost_cents).not.toBeNull();
+          expect(Number(row!.cost_cents)).toBe(0);
+        }
+        expect(
+          await getOrganizationModelQuota(f.org, database.db),
+        ).toMatchObject({
+          usedRuns: 2,
+          usedTokens: succeeds ? 33 : 20,
+          usedCostCents: null,
+          unknownCostRuns: 1,
+          subscriptionRuns: succeeds ? 1 : 0,
+          usageComplete,
+        });
+      },
+    );
+    it.each([
+      { mode: 'kill_switch', code: 'PROVIDER_KILL_SWITCH' },
+      { mode: 'release_disabled', code: 'PROVIDER_NOT_RELEASED' },
+      { mode: 'wrong_connection', code: 'ROUTE_REPLAY_INVALID' },
+    ] as const)(
+      'refuses persisted API replay for $mode even when the current subscription selection is eligible',
+      async ({ mode, code }) => {
+        const { f, job, modelSnapshot, subscriptionFallback } = await fixture({
+          compatible: true,
+          subscriptionFallback: true,
+          subscriptionFallbackModel: `synthetic-subscription-${randomUUID()}`,
+          enabled: false,
+        });
+        if (mode === 'kill_switch')
+          await database.db`insert into allrice_provider_circuit_breakers(connection_id,kill_switch)
+            values(${modelSnapshot!.connectionId},true)`;
+        if (mode === 'release_disabled')
+          await database.db`insert into allrice_provider_release_controls(connection_id,release_stage)
+            values(${modelSnapshot!.connectionId},'disabled')`;
+        state.record.mockImplementation(async (proposed: RouteDecision) => {
+          await recordActual(
+            {
+              ...proposed,
+              id: randomUUID(),
+              harness: modelSnapshot!.harness,
+              provider: modelSnapshot!.provider,
+              model: modelSnapshot!.model,
+              modelConnectionId:
+                mode === 'wrong_connection'
+                  ? subscriptionFallback!.connectionId
+                  : modelSnapshot!.connectionId,
+              modelCatalogEntryId: modelSnapshot!.modelCatalogEntryId,
+            },
+            database.db,
+          );
+          return recordActual(proposed, database.db);
+        });
+        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+          code,
+          retryable: false,
+        });
+        expect(execute).not.toHaveBeenCalled();
+        expect(acquire).not.toHaveBeenCalled();
+        noNativeAccess();
+        expect(state.admit).toHaveBeenCalledTimes(
+          mode === 'release_disabled' ? 1 : 0,
+        );
+        if (mode === 'release_disabled')
+          expect(state.admit.mock.calls[0]![0]).toMatchObject({
+            connectionId: modelSnapshot!.connectionId,
+          });
+        const row = await knownZero(f.org);
+        expect(row).toMatchObject({
+          provider: 'openai-compatible',
+          error_code: code,
+        });
+      },
+    );
     it.each([false, true])(
       'ordinary Codex without a frozen identity is refused before acquisition (configuration omitted %s)',
       async (omitted) => {

@@ -14,6 +14,7 @@ import {
   ConversationRuntimeError,
   acquireConversationRuntime,
   admitModelExecution,
+  assertProviderAvailable,
   appendJobEvent,
   completeRouteDecision,
   estimateConversationTokens,
@@ -462,34 +463,6 @@ export async function executeEmployeeRun({
         harnessRouteKey(providerSnapshotForModelTarget(target)) ===
         harnessRouteKey(selectedHarness.providerSnapshot),
     );
-    if (frozenModelSnapshot) {
-      try {
-        // Resource limits and release controls belong to the route that will
-        // actually execute. Charging the frozen primary here would make a
-        // successful fallback consume the wrong Provider budget.
-        await admitModelExecution({
-          organizationId: execution.context.organizationId,
-          workspaceId: execution.context.workspaceId!,
-          userId: executionSnapshot.tenantContext.actorId,
-          employeeId: executionSnapshot.employee.id,
-          connectionId:
-            selectedFallback?.connectionId ?? frozenModelSnapshot.connectionId,
-          requestedTokens: frozenModelSnapshot.runLimits.maxTotalTokens,
-          requestedRuntimeMs: frozenModelSnapshot.runLimits.timeoutMs,
-        });
-      } catch (error) {
-        if (error instanceof ModelGovernanceError) {
-          throw new HandlerError(
-            error.code,
-            error.scope
-              ? `The ${error.scope} model resource limit has been reached`
-              : 'The organization model quota has been reached',
-            false,
-          );
-        }
-        throw error;
-      }
-    }
     const fallbackCondition =
       previousFallback?.condition ??
       (selectedHarness.reasonCode === 'fallback_provider_selected' &&
@@ -579,12 +552,33 @@ export async function executeEmployeeRun({
       fallbackFromDecisionId: routeDecision.fallbackFromDecisionId,
       fallbackCondition: routeDecision.fallbackCondition,
     });
-    const providerSnapshot = replayProviderSnapshot({
-      decision: routeDecision,
-      original: resolved.providerSnapshot,
-      fallbacks: fallbackSnapshots,
-      reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
-    });
+    // run+attempt may already have a different immutable decision than today's
+    // router selection. Recover both credentials and admission identity from
+    // that exact frozen target, including same-model/different-connection cases.
+    const frozenRouteTargets = frozenModelSnapshot
+      ? [
+          frozenModelSnapshot,
+          ...(frozenModelSnapshot.fallbackPolicy === 'explicit'
+            ? frozenModelSnapshot.resolvedFallbacks
+            : []),
+        ].filter(
+          (target) =>
+            target.connectionId === routeDecision!.modelConnectionId &&
+            target.modelCatalogEntryId === routeDecision!.modelCatalogEntryId &&
+            target.harness === routeDecision!.harness &&
+            target.provider === routeDecision!.provider &&
+            target.model === routeDecision!.model,
+        )
+      : [];
+    const providerSnapshot =
+      frozenRouteTargets.length === 1
+        ? providerSnapshotForModelTarget(frozenRouteTargets[0]!)
+        : replayProviderSnapshot({
+            decision: routeDecision,
+            original: resolved.providerSnapshot,
+            fallbacks: fallbackSnapshots,
+            reasoningEffort: executionSnapshot.runtimePolicy.reasoningEffort,
+          });
     const subscriptionSnapshot = preflightAssistantSubscription({
       sessionId: input.sessionId,
       modelSnapshot: frozenModelSnapshot,
@@ -609,6 +603,48 @@ export async function executeEmployeeRun({
       hasNonTextInput:
         kernel.imageAttachments.length > 0 || harnessImages.length > 0,
     });
+    if (frozenModelSnapshot) {
+      if (
+        frozenRouteTargets.length !== 1 ||
+        routeDecision.modelPolicyRevision !== frozenModelSnapshot.policyRevision
+      )
+        throw new HandlerError(
+          'ROUTE_REPLAY_INVALID',
+          'Stored route does not identify an authorized frozen model target',
+          false,
+        );
+      try {
+        const actualGovernance = governance?.providers.find(
+          (provider) =>
+            provider.connectionId === routeDecision!.modelConnectionId,
+        );
+        if (actualGovernance) assertProviderAvailable(actualGovernance);
+        // This is the sole resource/quota admission. A newly selected Codex
+        // fallback must never exempt a persisted API route from unknown cash.
+        await admitModelExecution({
+          organizationId: execution.context.organizationId,
+          workspaceId: execution.context.workspaceId!,
+          userId: executionSnapshot.tenantContext.actorId,
+          employeeId: executionSnapshot.employee.id,
+          connectionId: frozenRouteTargets[0]!.connectionId,
+          requestedTokens: frozenModelSnapshot.runLimits.maxTotalTokens,
+          requestedRuntimeMs: frozenModelSnapshot.runLimits.timeoutMs,
+        });
+      } catch (error) {
+        // No dispatch occurred. The existing pre-dispatch failure path records
+        // this persisted attempt as failed with zero actual tokens, not unknown
+        // usage. The previously stored receipts that caused denial stay intact.
+        if (error instanceof ModelGovernanceError)
+          throw new HandlerError(
+            error.code,
+            error.scope
+              ? `The ${error.scope} model resource limit has been reached`
+              : 'The organization model quota has been reached',
+            false,
+          );
+        throw error;
+      }
+    }
     if (subscriptionSnapshot) {
       await freezeRouteSubscriptionSnapshot({
         organizationId: execution.context.organizationId,

@@ -68,7 +68,11 @@ integration(
         const temporary = await mkdtemp(
           join(tmpdir(), 'allrice-subscription-worker-test-'),
         );
-        const fixture = await createP27CodexWorkerFixture();
+        // Explicit test-only opt-in; the fixture still accepts only its exact
+        // local/CI database URLs. Live Codex smoke callers retain the local pin.
+        const fixture = await createP27CodexWorkerFixture({
+          allowCiDatabase: true,
+        });
         let cleanup: (() => Promise<void>) | undefined;
         try {
           vi.stubEnv('ALLRICE_STORAGE_ROOT', join(temporary, 'storage'));
