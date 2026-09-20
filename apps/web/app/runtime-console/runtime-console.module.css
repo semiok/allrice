@@ -1060,6 +1060,24 @@
   border-radius: 12px;
   background: #17181b;
 }
+.turnUsage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2b2d31;
+  color: #a4a8af;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.turnUsage strong {
+  color: #e5e7eb;
+}
+.turnUsage small {
+  font-size: 10px;
+  color: #8b9099;
+}
 .turnHeader {
   min-height: 48px;
   padding: 0 14px;

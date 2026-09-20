@@ -1,4 +1,4 @@
-import { UuidSchema } from '@allrice/contracts';
+import { UuidSchema, type RuntimeRunUsage } from '@allrice/contracts';
 import type postgres from 'postgres';
 import { z } from 'zod';
 import { cancelUnadoptedSteers } from './conversation-input.ts';
@@ -560,6 +560,60 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
     where employee_run.session_id = ${sessionId}
     order by employee_run.created_at, event.sequence nulls first
   `;
+  // Aggregate once per route receipt, independently of the many timeline events.
+  // Include all attempts, but never sum child ledgers into an already settled
+  // root receipt. Scope each join to the same organization/workspace/Run.
+  const usageRows = await sql<
+    {
+      run_id: string;
+      attempts: number;
+      receipts: number;
+      input_tokens: string | null;
+      output_tokens: string | null;
+      cached_input_tokens: string | null;
+      usage_complete: boolean;
+      cache_usage_known: boolean;
+    }[]
+  >`
+    select er.run_id, count(d.id)::int as attempts, count(l.id)::int as receipts,
+      sum(l.input_tokens)::bigint as input_tokens,
+      sum(l.output_tokens)::bigint as output_tokens,
+      sum(l.cached_input_tokens)::bigint as cached_input_tokens,
+      bool_and(l.id is not null and l.usage_complete) as usage_complete,
+      bool_and(l.id is not null and l.cache_usage_known) as cache_usage_known
+    from allrice_employee_runs er
+    left join allrice_route_decisions d on d.run_id=er.run_id
+      and d.organization_id=er.organization_id and d.workspace_id=er.workspace_id
+    left join allrice_model_usage_ledger l on l.route_decision_id=d.id
+      and l.organization_id=er.organization_id and l.workspace_id=er.workspace_id
+    where er.session_id=${sessionId}
+    group by er.run_id
+  `;
+  const usageByRun = new Map<string, RuntimeRunUsage>(
+    usageRows.map((row) => {
+      const inputTokens = row.receipts ? Number(row.input_tokens) : null;
+      const outputTokens = row.receipts ? Number(row.output_tokens) : null;
+      return [
+        row.run_id,
+        {
+          inputTokens,
+          outputTokens,
+          totalTokens:
+            inputTokens === null || outputTokens === null
+              ? null
+              : inputTokens + outputTokens,
+          cachedInputTokens:
+            row.receipts && row.cache_usage_known
+              ? Number(row.cached_input_tokens)
+              : null,
+          usageComplete: row.receipts > 0 && row.usage_complete,
+          cacheUsageKnown: row.receipts > 0 && row.cache_usage_known,
+          attemptCount: row.attempts,
+          receiptCount: row.receipts,
+        },
+      ];
+    }),
+  );
   const turns = new Map<
     string,
     {
@@ -576,6 +630,7 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
         occurredAt: string | null;
       };
       events: NonNullable<ReturnType<typeof mapDshRuntimeEvent>>[];
+      usage: RuntimeRunUsage | null;
     }
   >();
   for (const row of rows) {
@@ -600,6 +655,14 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
           ),
         },
         events: [],
+        usage: usageByRun.has(row.run_id)
+          ? {
+              ...usageByRun.get(row.run_id)!,
+              usageComplete:
+                usageByRun.get(row.run_id)!.usageComplete &&
+                ['succeeded', 'failed', 'canceled'].includes(row.run_state),
+            }
+          : null,
       };
       turns.set(row.run_id, turn);
     }

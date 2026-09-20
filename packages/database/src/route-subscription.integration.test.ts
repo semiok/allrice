@@ -23,8 +23,9 @@ import {
   checkCompletedModelBudget,
   modelAdmissionTokenEstimate,
 } from '../../../apps/worker/src/model-result-budget.ts';
-import { completeJob } from './execution/queue.ts';
+import { completeJob, appendJobEvent } from './execution/queue.ts';
 import { getChatSessionHistory } from './workspace/service.ts';
+import { listDshRuntimeEventTimeline } from './conversation/conversation-runtime.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -319,6 +320,88 @@ integration(
         });
         expect(f.task.binding.executionSnapshot.modelSnapshot).toEqual(
           snapshotBefore,
+        );
+      }));
+    it('projects durable per-Run receipts once across events and attempts, with missing/cache-unknown states', () =>
+      scenario(async (f) => {
+        const current = async () =>
+          (await listDshRuntimeEventTimeline(f.task.sessionId)).turns.find(
+            (t) => t.run.id === f.task.runId,
+          )!.usage!;
+        expect(await current()).toMatchObject({
+          totalTokens: null,
+          cachedInputTokens: null,
+          usageComplete: false,
+          receiptCount: 0,
+          attemptCount: 1,
+        });
+        await freezeRouteSubscriptionSnapshot(f.identity, f.fixture.db);
+        await f.complete({
+          ...f.outcome,
+          inputTokens: 203744,
+          cachedInputTokens: 173568,
+          outputTokens: 4677,
+          cacheUsageKnown: true,
+        });
+        // Several timeline events must not multiply a single ledger receipt.
+        for (let index = 0; index < 3; index++)
+          await appendJobEvent({
+            ...f.task.workflowLease,
+            type: 'usage.updated',
+            payload: { inputTokens: 203744, outputTokens: 4677 },
+          });
+        expect(await current()).toMatchObject({
+          totalTokens: 208421,
+          usageComplete: false,
+        });
+        await completeJob({
+          ...f.task.workflowLease,
+          result: { answer: '完整答案' },
+        });
+        expect(await current()).toEqual({
+          totalTokens: 208421,
+          inputTokens: 203744,
+          outputTokens: 4677,
+          cachedInputTokens: 173568,
+          usageComplete: true,
+          cacheUsageKnown: true,
+          attemptCount: 1,
+          receiptCount: 1,
+        });
+        const retry = { ...f.decision, id: randomUUID(), attempt: 2 };
+        await recordRouteDecision(retry, f.fixture.db);
+        expect(await current()).toMatchObject({
+          totalTokens: 208421,
+          usageComplete: false,
+          cachedInputTokens: null,
+          attemptCount: 2,
+          receiptCount: 1,
+        });
+        await freezeRouteSubscriptionSnapshot(
+          { ...f.identity, decisionId: retry.id },
+          f.fixture.db,
+        );
+        await f.complete({
+          ...f.outcome,
+          decisionId: retry.id,
+          inputTokens: 1000,
+          outputTokens: 12,
+          cachedInputTokens: 0,
+          usageComplete: false,
+          cacheUsageKnown: false,
+        });
+        expect(await current()).toEqual({
+          totalTokens: 209433,
+          inputTokens: 204744,
+          outputTokens: 4689,
+          cachedInputTokens: null,
+          usageComplete: false,
+          cacheUsageKnown: false,
+          attemptCount: 2,
+          receiptCount: 2,
+        });
+        expect((await listDshRuntimeEventTimeline(randomUUID())).turns).toEqual(
+          [],
         );
       }));
     it('cannot retroactively reinterpret historical subscription NULL as N/A', () =>

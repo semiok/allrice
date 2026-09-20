@@ -29,6 +29,12 @@ No migration rewrites employee policies or immutable Session snapshots: their ol
 
 Regression covers both 49fe3f09's exact counts and a synthetic 1.5M-input/32k-output complete result, unchanged raw receipts, old default snapshots, monthly admission without a fixed cumulative hold, successful real-PostgreSQL settlement and subsequent monthly exhaustion, incomplete receipts and retained assistant/root protections. No intentionally inflated live model task is needed to test these arithmetic boundaries.
 
+## Per-Run usage in the Runtime Console
+
+The existing durable model-usage ledger records input, cached input and output per route attempt. The admin Session timeline now projects these receipts per Run, across all attempts, without adding a second accounting ledger or rewriting historical records. Totals are `input + output`; cache is a subset of input and is never added again. Queries aggregate separately from timeline events and join organization/workspace/Run identities so that repeated events do not multiply usage. Root receipts are not summed again with child ledgers.
+
+Each Run shows total/confirmed Token usage, cached input, input including cache, output and attempt count. No receipt is displayed as unavailable, not zero. Missing or incomplete attempt receipts make the aggregate incomplete; unknown cache remains null. A running Run is explicitly provisional even if earlier attempts have settled. Historical Runs display their existing receipts immediately. Statistics are observations, not a subscription-allowance estimate or a renewed budget warning.
+
 ## Tool result budget
 
 - Central Broker policy covers large research results and selected read-only workspace data, not approvals, commands, changesets or Skill instructions.
