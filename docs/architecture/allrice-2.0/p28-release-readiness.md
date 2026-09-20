@@ -1,5 +1,7 @@
 # P28 / MET-141：发布候选、迁移与兼容恢复准备
 
+当前范围补充（MET-148）：无 Apple Developer 账号阶段的内部产品验收见 [P27 内部验收合同](p27-internal-readiness.md)，使用独立 schema / checker，不能晋升正式发布结果。本页及原 `prepare / dev / rc / tenant / prod` 门禁保持不变；MET-143 后仍须以最终签名包完成正式分发与双机复验。
+
 2026-09-14。状态：**可审查的准备切片，不是 B6 / RC / GA 验收通过，不是发布授权。**
 
 依据：[MET-105 §7](https://linear.app/metasnowsky/issue/MET-105)、[MET-106-C](https://linear.app/metasnowsky/issue/MET-106)、[MET-107](https://linear.app/metasnowsky/issue/MET-107)、[MET-108](https://linear.app/metasnowsky/issue/MET-108) 与唯一[执行总表 v1.27 P27/P28](https://linear.app/metasnowsky/document/allrice-20-执行总表阶段依赖pr-与验收门禁-df09b0b1e681)。本页不建立第二份排期；P28 准备先供 P27 / MET-142 联验。Codex 自主设计、自审、自测；Gemini 不作为研发门禁。
