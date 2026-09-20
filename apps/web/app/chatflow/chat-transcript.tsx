@@ -1,7 +1,10 @@
 'use client';
 
 import { useState, type RefObject } from 'react';
-import type { WorkbenchArtifact } from '@allrice/contracts';
+import {
+  modelGovernanceFailureText,
+  type WorkbenchArtifact,
+} from '@allrice/contracts';
 import type { AssistantTreeView } from '@allrice/database';
 
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
@@ -311,7 +314,12 @@ export function ChatTranscript({
                           className={`${assistantUi.body} ${styles.assistantCopy}`}
                         >
                           <AssistantMarkdown
-                            text={streamedText || message.content.text}
+                            text={
+                              (message.status === 'failed'
+                                ? modelGovernanceFailureText(message.errorCode)
+                                : null) ??
+                              (streamedText || message.content.text)
+                            }
                           />
                         </div>
                       )}

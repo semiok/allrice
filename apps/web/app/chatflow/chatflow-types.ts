@@ -78,6 +78,7 @@ export interface Message {
       | { type: 'changeset_request'; action: ChangesetActionInput };
   };
   status: 'pending' | 'completed' | 'failed';
+  errorCode?: string | null;
   runId: string | null;
   createdAt: string;
   attachments?: Attachment[];

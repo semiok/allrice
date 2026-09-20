@@ -105,6 +105,7 @@ export const ChatMessageSchema = z
     role: z.enum(['user', 'assistant', 'system', 'tool']),
     content: ChatMessageContentSchema,
     status: z.enum(['pending', 'completed', 'failed']),
+    errorCode: z.string().max(160).nullable().optional(),
     clientMessageId: UuidSchema.nullable(),
     replyToId: UuidSchema.nullable(),
     runId: UuidSchema.nullable(),

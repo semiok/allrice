@@ -12,6 +12,7 @@ import {
   UuidSchema,
   authorize,
   authorizeExecution,
+  modelGovernanceFailureText,
   type ExecutionContext,
   type EmployeeExecutionSnapshot,
   type Job,
@@ -892,12 +893,13 @@ async function transitionTerminal(
         ) === index,
     );
     const failureText =
-      input.code === 'SKILL_ARTIFACT_MISSING'
+      modelGovernanceFailureText(input.code) ??
+      (input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'
         : input.code === 'SKILL_ARTIFACT_MISMATCH' ||
             input.code === 'SKILL_ARTIFACT_INVALID'
           ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件校验失败。请重新安装或刷新该 Skill 后重试。'
-          : 'Rice 暂时无法完成这次请求，请稍后重试。';
+          : 'Rice 暂时无法完成这次请求，请稍后重试。');
     const text =
       input.runStatus === 'succeeded' && typeof result.answer === 'string'
         ? result.answer

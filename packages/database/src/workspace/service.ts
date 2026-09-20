@@ -117,6 +117,7 @@ interface MessageRow {
   role: ChatMessage['role'];
   content: unknown;
   status: ChatMessage['status'];
+  error_code?: string | null;
   client_message_id: string | null;
   reply_to_id: string | null;
   created_at: Date;
@@ -660,6 +661,7 @@ function mapMessage(
     role: row.role,
     content,
     status: row.status,
+    errorCode: row.error_code ?? null,
     clientMessageId: row.client_message_id,
     replyToId: row.reply_to_id,
     runId: row.run_id ?? null,

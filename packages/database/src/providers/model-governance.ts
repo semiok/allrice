@@ -15,6 +15,10 @@ import {
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { isPlatformAdmin } from './model-pool.ts';
+import {
+  usageBudgetReviewMatches,
+  listUnknownSubscriptionUsage,
+} from './usage-budget-review.ts';
 
 type GovernanceSql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 
@@ -111,6 +115,9 @@ export async function getOrganizationModelQuota(
       unknown_cost_runs: number;
       subscription_runs: number;
       usage_complete: boolean;
+      reserved_token_budget: number | string;
+      unknown_usage_runs: number;
+      subscription_budget_admission_complete: boolean;
       cache_usage_known: boolean;
       period_start: Date;
     }[]
@@ -124,6 +131,10 @@ export async function getOrganizationModelQuota(
       count(l.id) filter (where l.cost_cents is null and s.route_decision_id is null)::integer as unknown_cost_runs,
       count(l.id) filter (where s.route_decision_id is not null)::integer as subscription_runs,
       coalesce(bool_and(l.usage_complete), true) as usage_complete,
+      coalesce(sum(b.reserved_tokens), 0)::bigint as reserved_token_budget,
+      count(l.id) filter (where not l.usage_complete)::integer as unknown_usage_runs,
+      coalesce(bool_and(l.usage_complete or (${usageBudgetReviewMatches(sql)})), true)
+        as subscription_budget_admission_complete,
       coalesce(bool_and(l.cache_usage_known), true) as cache_usage_known,
       date_trunc('month', now()) as period_start
     from (select ${id}::uuid as organization_id) scope
@@ -133,6 +144,7 @@ export async function getOrganizationModelQuota(
       on l.organization_id = scope.organization_id
       and l.occurred_at >= date_trunc('month', now())
     left join allrice_route_subscription_snapshots s on s.route_decision_id=l.route_decision_id
+    left join allrice_subscription_usage_budget_reviews b on b.route_decision_id=l.route_decision_id
     group by q.monthly_run_limit, q.monthly_token_limit,
       q.monthly_cost_limit_cents
   `;
@@ -153,6 +165,10 @@ export async function getOrganizationModelQuota(
     unknownCostRuns: row.unknown_cost_runs,
     subscriptionRuns: row.subscription_runs,
     usageComplete: row.usage_complete,
+    reservedTokenBudget: Number(row.reserved_token_budget),
+    unknownUsageRuns: row.unknown_usage_runs,
+    subscriptionBudgetAdmissionComplete:
+      row.subscription_budget_admission_complete,
     cacheUsageKnown: row.cache_usage_known,
     periodStart: row.period_start.toISOString(),
   });
@@ -211,20 +227,40 @@ export async function getModelGovernanceSnapshot(input: {
 export function assertQuotaAvailable(
   quota: Omit<
     Awaited<ReturnType<typeof getOrganizationModelQuota>>,
-    'subscriptionRuns'
-  >,
+    | 'subscriptionRuns'
+    | 'reservedTokenBudget'
+    | 'unknownUsageRuns'
+    | 'subscriptionBudgetAdmissionComplete'
+  > & {
+    reservedTokenBudget?: number;
+    subscriptionBudgetAdmissionComplete?: boolean;
+  },
   billingMode: 'token_metered' | 'subscription' = 'token_metered',
+  requestedTokens = 0,
 ) {
   if (quota.usedRuns >= quota.monthlyRunLimit) {
     throw new ModelGovernanceError('MODEL_RUN_QUOTA_EXCEEDED');
   }
-  if (quota.usedTokens >= quota.monthlyTokenLimit) {
+  if (
+    quota.usedTokens + (quota.reservedTokenBudget ?? 0) >=
+      quota.monthlyTokenLimit ||
+    quota.usedTokens + (quota.reservedTokenBudget ?? 0) + requestedTokens >
+      quota.monthlyTokenLimit
+  ) {
     throw new ModelGovernanceError('MODEL_TOKEN_QUOTA_EXCEEDED');
   }
-  if (!quota.usageComplete)
+  if (
+    !quota.usageComplete &&
+    !(
+      billingMode === 'subscription' &&
+      quota.subscriptionBudgetAdmissionComplete === true
+    )
+  )
     throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
   // Only the caller's verified subscription route can omit cash admission.
-  // Token/run/lease/orphan checks apply regardless of how the provider is paid.
+  // Only separately approved terminal subscription exceptions allow unknown
+  // usage. Their organization budget holds are additional to known tokens;
+  // actual usage stays incomplete. Orphan/lease/resource checks still apply.
   if (billingMode === 'subscription') return;
   if (quota.usedCostCents === null || quota.unknownCostRuns > 0)
     throw new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN');
@@ -592,6 +628,7 @@ export async function admitModelExecution(input: {
     assertQuotaAvailable(
       await getOrganizationModelQuota(values.organizationId, transaction),
       billing?.subscription === true ? 'subscription' : 'token_metered',
+      values.requestedTokens,
     );
     await assertNoOrphanedAssistantUsage(values.organizationId, transaction);
     const resources = await Promise.all(
@@ -656,6 +693,7 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
     organizationId: context.organizationId,
     connectionIds: connections.map((row) => row.id),
   });
+  const unknownUsage = await listUnknownSubscriptionUsage(context);
   const [operations, resourceLimits, incidents] = await Promise.all([
     sql<
       {
@@ -735,6 +773,7 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
   ]);
   return {
     ...snapshot,
+    unknownUsage,
     operations: operations.map((item) => ({
       connectionId: item.connection_id,
       releaseStage: item.release_stage,

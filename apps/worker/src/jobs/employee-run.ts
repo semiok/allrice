@@ -641,7 +641,11 @@ export async function executeEmployeeRun({
             error.code,
             error.scope
               ? `The ${error.scope} model resource limit has been reached`
-              : 'The organization model quota has been reached',
+              : error.code === 'MODEL_TOKEN_USAGE_UNKNOWN'
+                ? 'Historical model Token usage is unresolved; administrator reconciliation or explicit budget review is required'
+                : error.code === 'MODEL_COST_USAGE_UNKNOWN'
+                  ? 'Historical model API cost is unresolved; administrator reconciliation is required'
+                  : 'The organization model quota has been reached',
             false,
           );
         throw error;
