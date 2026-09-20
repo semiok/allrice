@@ -335,16 +335,21 @@ suite(
           (e) => e.label === 'Save',
         );
         expect(button).toBeDefined();
-        await value.driver.perform(
-          { type: 'click', elementId: button!.id },
-          view.observation,
-        );
+        // The production click waits for its intercepted form navigation.
+        // Observe approval while it is pending; consume either outcome now.
+        const click = value.driver
+          .perform({ type: 'click', elementId: button!.id }, view.observation)
+          .then(
+            () => true,
+            () => false,
+          );
         await expect.poll(() => value.effects.length).toBe(1);
         expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
           0,
         );
         expect(value.receipts).toEqual([]);
         approve();
+        expect(await click).toBe(true);
         await expect
           .poll(
             async () =>
@@ -382,6 +387,8 @@ suite(
         );
         const { observation } = await value.driver.observe(1),
           button = observation.elements.find((e) => e.label === 'Save')!;
+        // A completed DOM click is not an approved network write. Chromium
+        // can finish the click after its intercepted navigation is refused.
         await value.driver.perform(
           { type: 'click', elementId: button.id },
           observation,
@@ -449,13 +456,20 @@ suite(
           null,
         );
         const { observation } = await value.driver.observe(1);
-        await value.driver.perform(
-          {
-            type: 'click',
-            elementId: observation.elements.find((e) => e.label === 'Save')!.id,
-          },
-          observation,
-        );
+        // Closing must interrupt the pending navigation, not wait for approval.
+        const click = value.driver
+          .perform(
+            {
+              type: 'click',
+              elementId: observation.elements.find((e) => e.label === 'Save')!
+                .id,
+            },
+            observation,
+          )
+          .then(
+            () => true,
+            () => false,
+          );
         await expect.poll(() => value.effects.length).toBe(1);
         const before = JSON.parse(
           (await get('/status')).body.toString(),
@@ -464,6 +478,10 @@ suite(
         await value.driver.close('lost');
         expect(Date.now() - began).toBeLessThan(8000);
         approve();
+        // Closing may resolve or reject the DOM click depending on Chromium's
+        // navigation timing. The security contract is no late POST and a
+        // negative approval receipt, asserted below, not the click outcome.
+        await click;
         await new Promise((resolve) => setTimeout(resolve, 150));
         expect(JSON.parse((await get('/status')).body.toString()).writes).toBe(
           before,
