@@ -9,13 +9,25 @@ Run `094238ea-e262-4636-a02a-b311a71808dd` produced a complete 1,797-character f
 ## Decisions
 
 - Keep actual input/output/cache counts intact. Cumulative multi-call usage is not the instantaneous context size. Non-cached input is not an official subscription-quota meter.
-- After a verified ordinary subscription task completes with a nonempty answer and complete usage, a post-flight internal Token-budget overrun becomes a persisted `budgetWarning`, not an exception. The result, final message and `run.succeeded` event carry the warning. Existing monthly admission, timeout, loop detection, per-call output limits and provider errors remain in force. This post-flight threshold is **not a hard upper bound on actual aggregate usage**.
+- Initial rollout: after a verified ordinary subscription task completed with a nonempty answer and complete usage, a post-flight internal Token-budget overrun became a persisted `budgetWarning`, not an exception. Subsequent follow-ups below first hid successful warnings, then removed the ordinary subscription cumulative threshold itself. Historical persisted warnings remain compatible. Existing monthly admission, timeout, loop detection, adapter output settings and provider errors remain in force.
 - Unknown receipts, partial answers, unverified identity, API monetary limits and governed assistant/root settlements are not softened. Report distinct total-Token/output-Token/API-cost error codes where a refusal still applies.
 - Historical answer recovery is a read-only history projection for the allowlisted Token-budget failure codes only: same tenant, owner, Session, Run and final job attempt, an `assistant.text.completed` followed by a matching `turn.completed`, and complete subscription-proven usage. Historical Run state and usage ledger remain unchanged. No model rerun and no raw reasoning extraction.
 
 ## Follow-up: normal completion is not a tenant warning
 
 After successful Run `49fe3f09-44aa-4986-941b-bb9f1ef3585c`, the user chose to observe real tasks before tuning budgets. Completed messages no longer show the internal Token-budget warning, including already persisted successful messages. Backend warning metadata, cache-inclusive raw receipts, current thresholds, monthly admission, timeout/loop/concurrency safeguards and real failure presentation remain unchanged. Historical failed messages with a verified recovered answer retain their explanation. No cache subtraction, quota increase, database rewrite or new model call is needed for this UI correction.
+
+## Follow-up: observe cumulative usage for ordinary subscription tasks
+
+The next worker revision removes the arbitrary cumulative Token ceiling for server-verified ordinary Codex subscription tasks (no governed assistants and no durable workflow). Neither cumulative input + output nor cumulative output is compared with legacy `maxTotalTokens` / `maxOutputTokens` at completion. It does not substitute a 1M cap or subtract cache from receipts. Complete usage, a nonempty final answer and a non-partial outcome remain required; incomplete receipts, partial outcomes and empty responses have their own real failure codes.
+
+Monthly admission uses an estimate of the prepared initial input plus one call's configured output allowance, not the legacy fixed whole-task amount. This is a forecast, not an atomic whole-task reservation or a guarantee against monthly overshoot. Actual multi-call/cache-inclusive usage continues to settle into the ledger; an exhausted month still denies subsequent tasks. Existing unknown-usage review holds, organization/resource limits, concurrency, provider release gates and official quota observations remain in force.
+
+Initial input checks and adapter output settings remain. Do not claim that every Codex provider version proves a hard wire-level output cap. Worker deadlines, cancellation and loop guards are unchanged. API, workflow and governed assistant/root limits retain their previous behavior.
+
+No migration rewrites employee policies or immutable Session snapshots: their old numeric fields are retained for compatibility and for other execution scopes, but are not used as cumulative limits for ordinary verified subscriptions. Rollback can therefore use the prior release. Existing historical warning/failed-run records remain intact.
+
+Regression covers both 49fe3f09's exact counts and a synthetic 1.5M-input/32k-output complete result, unchanged raw receipts, old default snapshots, monthly admission without a fixed cumulative hold, successful real-PostgreSQL settlement and subsequent monthly exhaustion, incomplete receipts and retained assistant/root protections. No intentionally inflated live model task is needed to test these arithmetic boundaries.
 
 ## Tool result budget
 

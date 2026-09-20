@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { checkCompletedModelBudget } from './model-result-budget.js';
+import {
+  assertInitialModelInputBudget,
+  checkCompletedModelBudget,
+  modelAdmissionTokenEstimate,
+} from './model-result-budget.js';
+import { ModelRunLimitsSchema } from '@allrice/contracts';
 import type { HarnessExecutionResult } from './harness/adapter.js';
 
 describe('MET-150 completed subscription budget accounting', () => {
@@ -27,15 +32,71 @@ describe('MET-150 completed subscription budget accounting', () => {
     governedAssistants: false,
     costCents: null,
   };
-  it('keeps a complete answer and real cache-inclusive usage; distinguishes total from output', () => {
+  it('observes complete ordinary subscription usage without a cumulative ceiling or receipt rewrite', () => {
     const before = structuredClone(result);
-    expect(checkCompletedModelBudget(input)).toMatchObject({
-      code: 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED',
-      inputTokens: 478_964,
-      cachedInputTokens: 377_856,
-      outputTokens: 10_210,
-    });
+    expect(checkCompletedModelBudget(input)).toBeUndefined();
     expect(result).toEqual(before);
+  });
+  it.each([
+    { inputTokens: 203_744, cachedInputTokens: 173_568, outputTokens: 4_677 },
+    { inputTokens: 1_500_000, cachedInputTokens: 0, outputTokens: 32_000 },
+  ])(
+    'does not replace the old threshold with 1M or a cumulative output ceiling: %j',
+    (usage) => {
+      expect(
+        checkCompletedModelBudget({ ...input, result: { ...result, usage } }),
+      ).toBeUndefined();
+    },
+  );
+  it('uses current input plus a single-call output allowance at admission, not a frozen cumulative default', () => {
+    const limits = ModelRunLimitsSchema.parse({});
+    const before = structuredClone(limits);
+    expect(
+      modelAdmissionTokenEstimate({
+        ...input,
+        limits,
+        estimatedInputTokens: 2_000,
+      }),
+    ).toBe(18_000);
+    expect(
+      modelAdmissionTokenEstimate({
+        ...input,
+        limits: { ...limits, maxTotalTokens: 1_000_000 },
+        estimatedInputTokens: 2_000,
+      }),
+    ).toBe(18_000);
+    expect(limits).toEqual(before);
+  });
+  it.each([
+    { verifiedSubscription: false },
+    { governedAssistants: true },
+    { workflow: true },
+  ])('keeps admission/root limits for non-ordinary routes: %j', (scope) => {
+    expect(
+      modelAdmissionTokenEstimate({
+        ...input,
+        ...scope,
+        estimatedInputTokens: 2_000,
+      }),
+    ).toBe(136_000);
+  });
+  it('retains the initial input limit and rejects invalid estimates', () => {
+    expect(() =>
+      assertInitialModelInputBudget({
+        ...input,
+        estimatedInputTokens: 120_000,
+      }),
+    ).not.toThrow();
+    for (const estimatedInputTokens of [120_001, -1, NaN, Infinity]) {
+      expect(() =>
+        assertInitialModelInputBudget({ ...input, estimatedInputTokens }),
+      ).toThrow();
+    }
+    for (const estimatedInputTokens of [-1, NaN, Infinity]) {
+      expect(() =>
+        modelAdmissionTokenEstimate({ ...input, estimatedInputTokens }),
+      ).toThrow();
+    }
   });
   it('does not warn for within-budget completed work', () => {
     expect(
@@ -52,24 +113,44 @@ describe('MET-150 completed subscription budget accounting', () => {
       }),
     ).toBeUndefined();
   });
-  it.each([
-    { verifiedSubscription: false },
-    { governedAssistants: true },
-    { result: { ...result, usageComplete: false } },
-    { result: { ...result, answer: '  ' } },
-    { result: { ...result, assistantStatus: 'partial' as const } },
-  ])(
-    'never softens unverified, unknown, partial or governed assistant outcomes: %j',
+  it.each([{ verifiedSubscription: false }, { governedAssistants: true }])(
+    'never softens unverified or governed assistant outcomes: %j',
     (patch) => {
       expect(() => checkCompletedModelBudget({ ...input, ...patch })).toThrow(
         'Frozen model run budget',
       );
     },
   );
+  it.each([
+    {
+      result: { ...result, usageComplete: false },
+      code: 'MODEL_TOKEN_USAGE_UNKNOWN',
+    },
+    {
+      result: { ...result, usageComplete: undefined },
+      code: 'MODEL_TOKEN_USAGE_UNKNOWN',
+    },
+    { result: { ...result, answer: '  ' }, code: 'EMPTY_RESPONSE' },
+    {
+      result: { ...result, assistantStatus: 'partial' as const },
+      code: 'ASSISTANT_PARTIAL_RESULT',
+    },
+  ])(
+    'preserves actual incomplete failures without mislabeling them as token limits: $code',
+    ({ result, code }) => {
+      try {
+        checkCompletedModelBudget({ ...input, result });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toMatchObject({ code });
+      }
+    },
+  );
   it('separates output and API money limits', () => {
     expect(
       checkCompletedModelBudget({
         ...input,
+        workflow: true,
         result: { ...result, usage: { ...result.usage, outputTokens: 16_001 } },
       }),
     ).toMatchObject({ code: 'MODEL_OUTPUT_BUDGET_EXCEEDED' });

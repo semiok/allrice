@@ -19,6 +19,12 @@ import {
   assertQuotaAvailable,
   admitModelExecution,
 } from './providers/model-governance.ts';
+import {
+  checkCompletedModelBudget,
+  modelAdmissionTokenEstimate,
+} from '../../../apps/worker/src/model-result-budget.ts';
+import { completeJob } from './execution/queue.ts';
+import { getChatSessionHistory } from './workspace/service.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -234,6 +240,86 @@ integration(
             requestedRuntimeMs: 1000,
           }),
         ).resolves.toBeDefined();
+      }));
+    it('admits a small first call without a legacy total hold, settles all multi-call usage, and still denies an exhausted month', () =>
+      scenario(async (f) => {
+        const limits =
+          f.task.binding.executionSnapshot.modelSnapshot!.runLimits;
+        const snapshotBefore = structuredClone(
+          f.task.binding.executionSnapshot.modelSnapshot,
+        );
+        const scope = { verifiedSubscription: true, governedAssistants: false };
+        await freezeRouteSubscriptionSnapshot(f.identity, f.fixture.db);
+        await f.fixture
+          .db`insert into allrice_organization_model_quotas(organization_id,monthly_token_limit) values(${f.fixture.organizationId},1000)`;
+        const admission = {
+          organizationId: f.fixture.organizationId,
+          workspaceId: f.fixture.workspaceId,
+          userId: f.fixture.ownerId,
+          employeeId: f.fixture.employeeId,
+          connectionId: f.fixture.connectionId,
+          requestedRuntimeMs: 1000,
+          requestedTokens: modelAdmissionTokenEstimate({
+            ...scope,
+            limits,
+            estimatedInputTokens: 100,
+          }),
+        };
+        expect(admission.requestedTokens).toBe(612);
+        await expect(
+          admitModelExecution({
+            ...admission,
+            requestedTokens: limits.maxTotalTokens,
+          }),
+        ).rejects.toMatchObject({ code: 'MODEL_TOKEN_QUOTA_EXCEEDED' });
+        await expect(admitModelExecution(admission)).resolves.toBeDefined();
+        const usage = {
+          inputTokens: 203744,
+          cachedInputTokens: 173568,
+          outputTokens: 4677,
+        };
+        const result = {
+          provider: 'openai-codex',
+          model: f.snapshot.model,
+          answer: '完整答案',
+          usageComplete: true,
+          usage,
+        };
+        expect(
+          checkCompletedModelBudget({
+            ...scope,
+            limits,
+            result,
+            costCents: null,
+          }),
+        ).toBeUndefined();
+        await f.complete({ ...f.outcome, ...usage, cacheUsageKnown: true });
+        await completeJob({ ...f.task.workflowLease, result });
+        const history = await getChatSessionHistory(
+          f.fixture.context,
+          f.fixture.workspaceId,
+          f.task.sessionId,
+        );
+        const message = history.messages.find((m) => m.runId === f.task.runId)!;
+        expect(message.status).toBe('completed');
+        expect(message.content.text).toBe('完整答案');
+        expect(message.content.budgetWarning).toBeUndefined();
+        expect(
+          await getOrganizationModelQuota(
+            f.fixture.organizationId,
+            f.fixture.db,
+          ),
+        ).toMatchObject({
+          usedTokens: 208421,
+          usageComplete: true,
+          cacheUsageKnown: true,
+        });
+        await expect(admitModelExecution(admission)).rejects.toMatchObject({
+          code: 'MODEL_TOKEN_QUOTA_EXCEEDED',
+        });
+        expect(f.task.binding.executionSnapshot.modelSnapshot).toEqual(
+          snapshotBefore,
+        );
       }));
     it('cannot retroactively reinterpret historical subscription NULL as N/A', () =>
       scenario(async (f) => {
