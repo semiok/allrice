@@ -125,6 +125,19 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
       // A later business Run can bind the same persistent root Session without
       // carrying a prior Run's native authority maps or child wakeups forward.
       await client.call('p25/join', { nativeSessionId: f.nativeSessionId });
+      // Durable adoption alone is not enough: both governed summaries must
+      // survive the actual native notice -> provider request conversion.
+      expect(
+        native.requests.some((request) => {
+          const visible = JSON.stringify(request.messages);
+          return (
+            visible.includes('ROOT_PRIVATE') &&
+            visible.includes('A: synthetic 2+3=5 checked') &&
+            visible.includes('B: synthetic 4+6=10 checked') &&
+            visible.includes('awaiting parent verification')
+          );
+        }),
+      ).toBe(true);
       await client.call('p25/finish', { nativeSessionId: f.nativeSessionId });
       await expect(
         client.call('p25/bind', { nativeSessionId: f.nativeSessionId }),

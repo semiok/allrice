@@ -28,6 +28,16 @@ across 7 files. Prettier, ESLint and diff checks passed. The tests include two
 children, exact adoption, duplicate notices, revoked authority, malformed and
 maximum-size reports, and exclusion of synthetic nonpublic closing content.
 
+The follow-up isolated PostgreSQL/native regressions also passed: 24 database
+runtime cases and 20 native/adversarial lifecycle cases covering two-child
+adoption, root and child cancellation, cold JSONL recovery, and unknown-work
+no replay. Only randomized schemas in the dedicated test database and private
+native state directories are used; model replies come from loopback fixtures.
+The native fixture no longer overrides the operating-system HOME: its explicit
+DSH home, credentials, sessions and disabled workspace/skill configuration keep
+test state private. A native integration assertion checks both child summaries
+actually reach one parent provider request, not merely the adoption ledger.
+
 This is a deterministic delivery fix, not evidence that a real provider's final
 answer has already been retested. Existing real-run failures remain failures;
 candidate-specific live acceptance and the external release gate remain separate.

@@ -137,7 +137,6 @@ export async function p24Fixture(
   const address = server.address() as { port: number };
   const environment = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
-    HOME: root,
     ALLRICE_P24_TEST: 'synthetic-only',
     DSH_CWD: root,
     DSH_HOME: root,
