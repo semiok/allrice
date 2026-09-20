@@ -1,0 +1,34 @@
+{
+  "schema": "allrice-p27-internal-readiness/v1",
+  "acceptanceId": "MET-148-DRAFT-NOT-AN-ACCEPTANCE",
+  "sourceSha": null,
+  "createdAt": "2026-09-20T00:00:00.000Z",
+  "preparation": {
+    "path": null,
+    "sha256": null,
+    "bytes": null
+  },
+  "evidence": [],
+  "blockers": [
+    {
+      "id": "actual-candidate-preparation",
+      "reason": "No independently reviewed final source SHA, seven actual artifacts or original hash-pinned P28 preparation manifest is supplied. Preparation must satisfy the unchanged prepare gate, retain signedClientRequired=true, and contain no evidence, blockers, unsupported items or authorizations; never synthesize or rewrite a passing manifest.",
+      "owner": "MET-142 integration owner"
+    },
+    {
+      "id": "real-internal-evidence",
+      "reason": "The 45 real internal receipts, actual Web approval/Bridge execution/result-and-refresh-recovery loop, non-signing safety, migration/accounting/recovery and final Dev observations are not supplied. No mock or parser fixture counts as passed product evidence.",
+      "owner": "MET-138 / MET-142"
+    },
+    {
+      "id": "two-physical-client-lifecycles",
+      "reason": "Actual native arm64 and x64 device observations of the development packages, GUI/Keychain/restart/revocation/drain/interruption/state recovery and local execution isolation are still required. Developer ID postponement does not exempt these product checks or allow bypassing OS security.",
+      "owner": "MET-138 / MET-142"
+    },
+    {
+      "id": "codex-subscription-accounting",
+      "reason": "Current user acceptance uses Codex subscription only and needs the pinned immutable subscription proof, complete actual tree tokens, matching NULL/N/A accounting, no API price or cost receipts, and unknown-token blocking. No actual model calls or proof are supplied by this draft; token_metered parser compatibility authorizes no API calls.",
+      "owner": "MET-142 integration owner"
+    }
+  ]
+}
