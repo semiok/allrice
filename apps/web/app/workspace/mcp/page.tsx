@@ -8,7 +8,9 @@ import { LocalMcpSettings } from '../../runtime-console/local-mcp-settings';
 
 export const dynamic = 'force-dynamic';
 
-export default async function WorkspaceMcpPage() {
+export default async function WorkspaceMcpPage({
+  searchParams,
+}: { searchParams?: Promise<{ workspaceId?: string }> } = {}) {
   const requestHeaders = await headers();
   const context = await getRequestContext(
     new Request('http://localhost/workspace/mcp', { headers: requestHeaders }),
@@ -19,7 +21,10 @@ export default async function WorkspaceMcpPage() {
   // or writing workspace state merely by visiting the settings page.
   let workspaceId: string;
   try {
-    workspaceId = await resolveWorkspaceId(context);
+    const requested = (await searchParams)?.workspaceId;
+    workspaceId = requested
+      ? await resolveWorkspaceId(context, requested)
+      : await resolveWorkspaceId(context);
   } catch (error) {
     if (
       !(error instanceof DataAccessError) ||

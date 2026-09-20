@@ -1,0 +1,140 @@
+import type {
+  WorkspaceCapability,
+  WorkspaceCapabilityId,
+} from '@allrice/contracts';
+
+export const capabilityLabels: Record<
+  WorkspaceCapabilityId,
+  { title: string; description: string; prompt?: string }
+> = {
+  report: {
+    title: '报告与文件交付',
+    description:
+      '云端生成可审查、下载和追溯版本的报告、表格或文件。无需 Bridge。',
+    prompt:
+      '请围绕【填写研究主题或文件要求】完成研究。区分已核实事实与推断，注明来源和数据日期；使用已有 workspace.export.create 发布 Markdown 报告工件，发布成功后给出摘要与文件入口，失败则明确说明。不要把聊天草稿当作已交付文件。',
+  },
+  local_files: {
+    title: '本地文件读取',
+    description: '读取你明确选择的本地工作区；离线不会自动上传或交给云端代办。',
+    prompt:
+      '请只读检查我已授权的本地工作区，先列出文件和项目概况，不修改文件，不上传本地材料。',
+  },
+  changeset: {
+    title: '文件修改与 Diff 审查',
+    description: '先展示 Changeset 与 Diff，批准精确文件版本后才落盘。',
+    prompt:
+      '请针对【填写需要修改的文件与目标】生成 Changeset 和 Diff 供我审查；在获得这一次文件修改的明确批准前，不应用修改。发现版本冲突时停止并重新核对。',
+  },
+  local_command: {
+    title: '本地沙箱命令',
+    description:
+      '在 Bridge 的独立 Linux 副本中验证项目，不是宿主机任意 Shell。',
+    prompt:
+      '请在已授权的 Bridge 沙箱副本中检查【填写项目与测试目标】，先提出精确命令、输入文件版本和执行范围供我审批，再执行并交付退出码与输出。不要操作宿主 Shell。',
+  },
+  cloud_command: {
+    title: '云端沙箱计算',
+    description: '在已配置的云端隔离环境处理数据，无需本地设备在线。',
+    prompt:
+      '请在已授权的云端沙箱中完成【填写数据处理任务】，明确输入文件、脚本和输出文件，等待这一次执行批准后计算并交付结果。不要隐式上传本地文件。',
+  },
+  cloud_browser: {
+    title: '云端浏览器工作区',
+    description:
+      '专属云端浏览器、逐次审批、证据与人工接管，不使用个人 Cookie。',
+    prompt:
+      '请使用已授权的云端浏览器访问【填写目标 URL】，核查【填写目标】，记录 URL、时间和证据并交付工件。涉及提交或修改时等待精确审批；需要登录时交给我人工接管。',
+  },
+  local_browser: {
+    title: '本地独立浏览器',
+    description:
+      '使用 Bridge 上单独授权的浏览器，不要求选择文件夹，不控制日常 Chrome。',
+    prompt:
+      '请使用已授权 Bridge 上的独立浏览器核查【填写 URL 与目标】，不要使用个人 Chrome。涉及提交或修改时等待精确审批；设备离线时停止等待，不转交云端。',
+  },
+  cloud_mcp: {
+    title: '云端 MCP 连接器',
+    description: '连接器发现、工具许可与员工绑定均需就绪，实际调用仍逐次审批。',
+    prompt:
+      '请通过已授权的云端 MCP 连接器完成【填写业务任务】。先核对连接和工具范围，实际调用等待精确审批；结果未知时不要盲目重复提交。',
+  },
+  local_mcp: {
+    title: '本地 MCP 工具',
+    description: '在固定设备和目录副本的沙箱内运行已授权 MCP 服务。',
+    prompt:
+      '请使用已授权的本地 MCP 工具完成【填写业务任务】，固定当前 Bridge、目录和版本，逐次请求审批；不要安装未知服务或迁移到云端。',
+  },
+  assistants: {
+    title: '日常并行助手',
+    description:
+      '由 Rice 按任务需要安排有限助手，受父任务权限、并发与根预算约束。',
+    prompt:
+      '请完成【填写可拆分的任务】。如适合并行且我已允许助手，请安排有限助手并在本任务中汇总结果；不可扩大权限或预算。',
+  },
+  boost: {
+    title: 'Boost · 深入攻关',
+    description: '规划能力（MET-145），尚未开放；不是当前日常助手的别名。',
+  },
+  teamwork: {
+    title: 'Teamwork · 团队任务',
+    description: '规划能力（MET-146），尚未开放；不会通过此入口启动团队模式。',
+  },
+};
+export const capabilityStateLabels = {
+  ready: '可用',
+  needs_configuration: '需要配置',
+  needs_authorization: '需要授权',
+  device_offline: '设备离线',
+  not_released: '暂未开放',
+  unknown: '状态未知',
+};
+export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
+  {
+    ready: '已核对当前配置；发起任务时仍会复查权限、环境与额度。',
+    release_disabled: '当前部署尚未开放此能力；请联系平台管理员核对发布范围。',
+    planned: '此能力仍在后续规划中，当前不可执行。',
+    employee_missing:
+      '当前没有可核验的员工配置，请租户管理员检查员工分配或发布版本。',
+    employee_policy:
+      '当前员工版本未许可所需工具或明确禁止相关权限，请租户管理员核对员工策略。',
+    policy_missing:
+      '工作区缺少有效执行策略，请租户管理员与平台管理员核对策略配置。',
+    policy_denied:
+      '当前策略未允许此操作，或处于停用/仅计划状态；页面不能解除限制。',
+    read_only: '当前角色不能发起执行，请向当前租户管理员申请权限。',
+    provider_unsupported:
+      '当前会话模型协议尚不支持此助手路径；请租户管理员核对模型配置。',
+    bridge_missing: '尚未配对你自己的 Bridge，点击打开下载与配对指引。',
+    bridge_offline:
+      '没有在线的已配对设备；请启动 Bridge 后刷新，不自动转为云端执行。',
+    folder_missing: 'Bridge 在线，但尚未选择并授权文件工作区。',
+    runner_missing:
+      'Bridge 在线不代表沙箱就绪；尚未收到匹配当前平台的有效 Runner 报告。',
+    target_missing: '尚未配置对应执行环境，请由平台管理员准备隔离运行环境。',
+    target_unavailable: '所需执行目标不可用，请恢复对应环境后刷新。',
+    grant_missing:
+      '环境存在，但当前用户尚无有效授权，请租户管理员配置授权范围。',
+    connection_missing:
+      '尚未配置可用连接器；需添加连接、发现工具、授权工具并绑定员工版本。',
+    connection_unverified:
+      '连接发现未完成、失败或本地环境不匹配；请在连接设置核对并重新发现。',
+    connection_grant_missing:
+      '连接已发现，但缺少工具许可或当前员工版本的绑定。',
+    invalid_configuration:
+      '配置无法通过校验；请联系管理员核对，不会按可用处理。',
+  };
+export function capabilitySettingsHref(
+  action: WorkspaceCapability['action'],
+  workspaceId: string,
+) {
+  const path =
+    action === 'mcp_settings'
+      ? '/workspace/mcp'
+      : action === 'browser_settings'
+        ? '/workspace/browser'
+        : action === 'local_browser_settings'
+          ? '/workspace/local-browser'
+          : null;
+  return path ? `${path}?workspaceId=${encodeURIComponent(workspaceId)}` : null;
+}

@@ -2,6 +2,7 @@ export * from './core/client.ts';
 export * from './identity.ts';
 export * from './data.ts';
 export * from './workspace.ts';
+export * from './workspace-readiness.ts';
 export * from './experience.ts';
 export * from './bridge.ts';
 export * from './bridge-connections.ts';
