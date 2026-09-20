@@ -24,6 +24,7 @@ import { collectP27InstalledRuntime } from './p27-installed-runtime.ts';
 import { p27ErrorDiagnostics } from './p27-error-diagnostics.ts';
 import {
   parseP27CodexJson,
+  syntheticCodexFinalAnswer,
   codexJsonDiagnostics,
   type P27CodexJsonObserver,
 } from './p27-codex-json.ts';
@@ -47,14 +48,24 @@ import {
   P27_CODEX_ORDINARY_LIMITS,
   P27_CODEX_ORDINARY_PROMPT,
 } from './p27-codex-worker-preflight.ts';
+import {
+  readCodexSubscriptionEvidence,
+  verifyCodexSubscriptionResult,
+} from './p27-codex-assistants-verification.ts';
 
 const root = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 const hash = (value: string | Uint8Array) =>
   `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const check: typeof requireCheck = requireCheck;
-const sourceFiles = [
+export const P27_CODEX_ORDINARY_SOURCE_FILES = [
   'pnpm-lock.yaml',
   'tsconfig.base.json',
+  'packages/contracts/src/assistant-subscription.ts',
+  'packages/contracts/src/models.ts',
+  'packages/contracts/src/skills.ts',
+  'packages/database/src/runtime-policy.ts',
+  'packages/database/src/execution/route-subscription.ts',
+  'packages/database/migrations/0097_route_subscription_snapshots.sql',
   'apps/worker/src/jobs/employee-run.ts',
   'apps/worker/src/model-cost.ts',
   'apps/worker/src/assistant-pricing-preflight.ts',
@@ -70,6 +81,11 @@ const sourceFiles = [
     'codex-worker-smoke',
     'codex-worker-fixture',
     'codex-worker-preflight',
+    'codex-worker-preflight.test',
+    'codex-assistants-verification',
+    'codex-assistants-verification.test',
+    'codex-evidence-stages.test',
+    'codex-assistants-preflight',
     'codex-json',
     'codex-json.test',
     'codex-assistants-artifact.test',
@@ -91,7 +107,7 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
   );
   const sources = Object.fromEntries(
     await Promise.all(
-      sourceFiles.map(async (file) => [
+      P27_CODEX_ORDINARY_SOURCE_FILES.map(async (file) => [
         file,
         hash(await readFile(join(root, file))),
       ]),
@@ -108,6 +124,7 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
     model: 'gpt-5.6-luna',
     authMode: 'chatgpt_subscription',
     allowAssistants: false,
+    scope: 'independent-ordinary-only-not-assistant-followup-or-ui',
     tools: [],
     fallbackPolicy: 'disabled',
     maxAttempts: 1,
@@ -124,7 +141,7 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
     excluded: [
       'assistant_acceptance',
       'wire_hard_output_cap',
-      'subscription_billing_correctness',
+      'assistant_to_ordinary_same_fixture_continuity',
       'provider_invoice',
       'provider_internal_attempt_bound',
       'bridge_and_signed_release',
@@ -304,6 +321,7 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
         'worker_model_not_invoked',
       );
       report.providerInvocation = 'confirmed_by_worker_result';
+      report.finalAnswer = syntheticCodexFinalAnswer(result.answer);
       const proof = await verifyCodexOrdinary(
         fixture!,
         task,
@@ -326,7 +344,14 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
       const quota = await api.getOrganizationModelQuota(
         fixture!.organizationId,
       );
-      check(quota.usedRuns === 1, 'worker_one_run_recorded');
+      check(
+        quota.usedRuns === 1 &&
+          quota.subscriptionRuns === 1 &&
+          quota.unknownCostRuns === 0 &&
+          quota.usageComplete,
+        'worker_one_run_recorded',
+      );
+      api.assertQuotaAvailable(quota, 'subscription');
       const [ledgerTotal] = await db<
         { cost: string; tokens: string }[]
       >`select sum(cost_cents)::text as cost,sum(input_tokens+output_tokens)::text as tokens from allrice_model_usage_ledger where organization_id=${fixture!.organizationId}`;
@@ -343,6 +368,8 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
           usedTokens: quota.usedTokens,
           usedCostCents: quota.usedCostCents,
           unknownCostRuns: quota.unknownCostRuns,
+          subscriptionRuns: quota.subscriptionRuns,
+          usedCostCentsMeaning: 'metered_cost_subtotal_not_subscription_cost',
           usageComplete: quota.usageComplete,
           cacheUsageKnown: quota.cacheUsageKnown,
         },
@@ -504,7 +531,8 @@ export async function mainP27CodexWorker(argsInput = process.argv.slice(2)) {
   }
 }
 
-/** Verify operational execution and report legacy accounting without assigning a subscription price. */
+/** Standalone ordinary execution uses the same frozen N/A identity and usage
+ * validator as the two-task smoke, never the obsolete zero-price estimator. */
 export async function verifyCodexOrdinary(
   fixture: P27CodexWorkerFixture,
   task: P27PreparedCodexWorkerTask,
@@ -594,25 +622,16 @@ export async function verifyCodexOrdinary(
       result.usage.outputTokens > 0,
     'codex_worker_observed_tokens',
   );
-  const { estimateModelCostCents } =
-    await import('../../../apps/worker/src/model-cost.ts');
-  const legacyEstimate = estimateModelCostCents({
-    provider: result.provider,
-    model: result.model,
-    ...result.usage,
-  });
-  check(
-    row.cost !== null && Number(row.cost) === Number(legacyEstimate.toFixed(6)),
-    'codex_worker_legacy_projection_observed',
-  );
+  const evidence = await readCodexSubscriptionEvidence(fixture, task);
+  const accounting = verifyCodexSubscriptionResult(result, evidence, false);
   return {
-    ledger: row,
+    ledger: evidence.row,
+    accounting,
+    subscriptionSnapshot: evidence.snapshot,
     observedUsage: result.usage,
     answerDigest: hash(result.answer),
     parseDiagnostics: [parsed.observation],
-    legacyEstimatorObservedCents: legacyEstimate,
-    configuredTariffAbsent: !process.env.ALLRICE_MODEL_PRICING_JSON,
-    accountingCorrectnessProven: false,
+    subscriptionIdentityAndUsageVerified: true,
     actualSubscriptionCostKnown: false,
     costCaveat: P27_CODEX_COST_CAVEAT,
   };

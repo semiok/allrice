@@ -549,7 +549,9 @@ export async function verifyCodexAssistantTerminal(
   return { evidence, tree, totals };
 }
 
-export async function verifyCodexAssistantExecution(
+/** Platform-only evidence; all permission, adoption, artifact and accounting
+ * assertions must pass before any caller can persist a partial success. */
+export async function collectCodexAssistantEvidence(
   fixture: CodexFixtureIdentity,
   task: P27PreparedCodexWorkerTask,
   result: HarnessExecutionResult,
@@ -575,21 +577,14 @@ export async function verifyCodexAssistantExecution(
     artifacts.push(
       await verifyCodexAssistantArtifact(fixture, task, item, record),
     );
-  const { value: answer } = parseP27CodexJson(
-    result.answer,
-    'parent_answer',
-    record,
-  );
   check(
-    new Set(artifacts.map((item) => item.case)).size === 2 &&
-      answer.salesTotalCents === 875 &&
-      answer.outstandingCents === 600 &&
-      answer.reports === 2,
-    'parent_arithmetic',
+    new Set(artifacts.map((item) => item.case)).size === 2,
+    'artifacts_unverified',
   );
   return {
     accounting,
     ledger: evidence.row,
+    tree,
     budgets: tree.budgets,
     admissions,
     ...(exportOptions
@@ -604,9 +599,48 @@ export async function verifyCodexAssistantExecution(
       : {}),
     artifacts,
     parseDiagnostics,
-    answerDigest: hash(result.answer),
     wholeWorkerProjectionVerified: true,
   };
+}
+
+export async function verifyCodexAssistantExecution(
+  fixture: CodexFixtureIdentity,
+  task: P27PreparedCodexWorkerTask,
+  result: HarnessExecutionResult,
+  observe?: P27CodexJsonObserver,
+  exportOptions?: {
+    sourceSha: string;
+    onPlatformVerified?: (
+      proof: Awaited<ReturnType<typeof collectCodexAssistantEvidence>>,
+    ) => Promise<void>;
+  },
+) {
+  const proof = await collectCodexAssistantEvidence(
+    fixture,
+    task,
+    result,
+    observe,
+    exportOptions,
+  );
+  // Complete the evidence write before a business-answer failure enters cleanup.
+  // An export failure remains a failed acceptance, never a fabricated proof.
+  await exportOptions?.onPlatformVerified?.(proof);
+  const parseDiagnostics = [...proof.parseDiagnostics];
+  const { value: answer } = parseP27CodexJson(
+    result.answer,
+    'parent_answer',
+    (entry) => {
+      parseDiagnostics.push(entry);
+      observe?.(entry);
+    },
+  );
+  check(
+    answer.salesTotalCents === 875 &&
+      answer.outstandingCents === 600 &&
+      answer.reports === 2,
+    'parent_arithmetic',
+  );
+  return { ...proof, parseDiagnostics, answerDigest: hash(result.answer) };
 }
 
 /** The same production publication/read/ownership boundary as the live smoke;

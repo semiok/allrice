@@ -55,6 +55,45 @@ export function codexJsonDiagnostics(error: unknown) {
     : null;
 }
 
+/** Opt-in for the fixed synthetic arithmetic smoke's user-visible final answer
+ * only, never reasoning, events, provider errors, credentials or logs.
+ * General JSON/error diagnostics remain content-free. */
+export function syntheticCodexFinalAnswer(input: unknown) {
+  const text = typeof input === 'string' ? input : null;
+  const bytes = text === null ? null : Buffer.byteLength(text, 'utf8');
+  const sensitive =
+    text !== null &&
+    (/(?:bearer|authorization|password|secret|token|api[_-]?key|sk-|-----BEGIN|https?:\/\/|eyJ[A-Za-z0-9_-]+\.|<\/?(?:think|analysis|reasoning)\b|[\u202a-\u202e\u2066-\u2069])/i.test(
+      text,
+    ) ||
+      [...text].some(
+        (character) =>
+          character.charCodeAt(0) < 32 && !'\t\r\n'.includes(character),
+      ));
+  // Omit rather than truncate: never present partial JSON or a secret prefix
+  // as the complete business answer.
+  const omitted =
+    text === null
+      ? 'missing'
+      : sensitive
+        ? 'sensitive'
+        : bytes! > 512
+          ? 'too_large'
+          : null;
+  return {
+    scope: 'synthetic-user-visible-final-answer-only' as const,
+    length: text?.length ?? null,
+    bytes,
+    digest:
+      text === null
+        ? null
+        : `sha256:${createHash('sha256').update(text).digest('hex')}`,
+    text: omitted ? null : text,
+    omitted,
+    maximumBytes: 512,
+  };
+}
+
 function duplicateKeys(source: string) {
   // Run only after JSON.parse has established valid grammar. Count decoded
   // object keys so escaped aliases cannot silently use last-key-wins.

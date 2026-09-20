@@ -6,6 +6,14 @@
 142 完整 RC/发布矩阵仍未完成。见 [本次收尾证据与剩余门禁](b6-subscription-closeout-20260915.md)。
 下文 11:28 真实模型结果的源码、Token 和原始报告保持不变，没有用新脚本倒填旧证明。
 
+## 2026-09-20：验收分项留证与独立普通场景（脚本修正，非新实测）
+
+双助手脚本在权限、两份不同报告的不可变工件/来源、父级持久采纳、全树用量与订阅双账本全部验证后，先保存 `assistantPlatform` 和实际观察到的 `subscriptionAccountingProof`，再严格验证父级最终 JSON 与 875 / 600 / 2 汇总。父回答错误仍使整次收据失败，不执行后续 ordinary/UI；平台分项通过不等于业务汇总、Worker 最终成功、ordinary 或 UI 已通过。保存失败也不能升级为成功。旧失败收据和已经清理的数据库不据此补造证明。
+
+仅固定合成算术任务的 `result.answer` 可记录有限 user-visible 诊断：长度、SHA-256 和最多 512 UTF-8 字节的完整最终文本；敏感样式、控制字符、超长文本整段省略，不截断、不保存 reasoning、native 事件或 provider error 原文。通用 JSON/error 诊断仍不含原文。
+
+既有 `scripts/acceptance/runtime/p27-codex-worker-smoke.ts` 是独立普通任务入口，无须重跑双助手。它固定 `allowAssistants=false`、空工具、exactly one job/run、无助手根、禁 fallback/重试，保留 8k 输入 / 512 输出 / 90 秒应用限制及清理门禁。授权键改为 `ALLRICE_B6_P27_CODEX_WORKER_SUBSCRIPTION_ONLY=1`，其余授权 SHA、exact-one 与软限制确认保持原样；旧 `LEGACY_COST_ACK` 不能代替它。验证复用冻结订阅身份、完整 Token 和金额 N/A 的严格检查，不再要求旧零估价器。独立收据明确排除“同一夹具双助手后续连续性”及 UI，不能与先前失败拼成整链成功。以上改动及纯测试没有再次调用模型、数据库或改动候选运行时代码。
+
 ## 2026-09-15：订阅主链联验通过（尚未部署）
 
 本轮已开始运行代码开发，不再仅调整口径。当前候选增加严格冻结的订阅身份与不可变 `0097_route_subscription_snapshots` 证明：仅经服务端校验的路由才使用金额 N/A；历史 NULL 不被追认，未知 Token 继续阻断。普通任务和助手均接入订阅准入，实际用量由原生回执投影，不因回答成功而补造完整用量。

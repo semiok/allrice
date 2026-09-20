@@ -18,7 +18,7 @@ export const P27_CODEX_ORDINARY_LIMITS = Object.freeze({
 export const P27_CODEX_LIMIT_CAVEAT =
   'Timeout and token limits are application controls; pinned Codex does not prove a wire-enforced maxTokens cap. There is no application-level retry; SDK/provider-internal retries are not a hard constraint of this smoke. One Worker execution is not a claim of one model request. No hard spend or subscription allowance bound is claimed.';
 export const P27_CODEX_COST_CAVEAT =
-  'The unchanged ordinary Worker legacy estimator returns zero when no model price is configured. A zero ledger value is not proof of free subscription usage, zero actual cost, or correct subscription accounting.';
+  'Frozen Codex subscription identity requires N/A monetary accounting and complete observed tokens. A zero metered-cost subtotal is not proof of free subscription usage or zero actual cost.';
 
 export function parseP27CodexWorkerArguments(args: string[]) {
   const parsed = parseArguments(args);
@@ -38,7 +38,7 @@ export function authorizeP27CodexWorker(env: NodeJS.ProcessEnv, sha: string) {
       env.ALLRICE_B6_P27_CODEX_WORKER_AUTHORIZED_SHA === sha &&
       env.ALLRICE_B6_P27_CODEX_WORKER_MAX_EXECUTIONS === '1' &&
       env.ALLRICE_B6_P27_CODEX_WORKER_SOFT_LIMIT_ACK === '1' &&
-      env.ALLRICE_B6_P27_CODEX_WORKER_LEGACY_COST_ACK === '1',
+      env.ALLRICE_B6_P27_CODEX_WORKER_SUBSCRIPTION_ONLY === '1',
     'codex_worker_one_execution_authorization_required',
   );
   requireCheck(

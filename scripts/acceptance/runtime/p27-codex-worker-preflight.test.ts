@@ -14,7 +14,7 @@ const authorized = () => ({
   ALLRICE_B6_P27_CODEX_WORKER_AUTHORIZED_SHA: sha,
   ALLRICE_B6_P27_CODEX_WORKER_MAX_EXECUTIONS: '1',
   ALLRICE_B6_P27_CODEX_WORKER_SOFT_LIMIT_ACK: '1',
-  ALLRICE_B6_P27_CODEX_WORKER_LEGACY_COST_ACK: '1',
+  ALLRICE_B6_P27_CODEX_WORKER_SUBSCRIPTION_ONLY: '1',
 });
 describe('ordinary-only Codex Worker authorization', () => {
   it('requires explicit Codex selection, including in preflight', () => {
@@ -73,6 +73,18 @@ describe('ordinary-only Codex Worker authorization', () => {
     expect(P27_CODEX_ORDINARY_LIMITS.maxCostCents).toBeNull();
     expect(P27_CODEX_LIMIT_CAVEAT).toContain('does not prove');
     expect(P27_CODEX_COST_CAVEAT).toContain('not proof');
+  });
+  it('does not accept the obsolete zero-price acknowledgement', () => {
+    expect(() =>
+      authorizeP27CodexWorker(
+        {
+          ...authorized(),
+          ALLRICE_B6_P27_CODEX_WORKER_SUBSCRIPTION_ONLY: undefined,
+          ALLRICE_B6_P27_CODEX_WORKER_LEGACY_COST_ACK: '1',
+        },
+        sha,
+      ),
+    ).toThrow();
   });
   it.each([false, true])(
     'never repeats even after failure=%s',
