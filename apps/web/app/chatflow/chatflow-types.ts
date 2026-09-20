@@ -49,6 +49,8 @@ export interface EmployeeProfile extends EmployeeProfileDetailsData {
 }
 
 export interface Workspace {
+  /** Authenticated viewer only; used to isolate local UI preferences. */
+  viewerId?: string | null;
   organizationId: string;
   workspaceId: string;
   employees: Employee[];

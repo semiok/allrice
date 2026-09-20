@@ -39,6 +39,21 @@ main.shell {
   min-width: 0;
 }
 
+.sidebarBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 38;
+  background: #0005;
+}
+.sidebarOverlay .sidebar {
+  display: flex;
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 39;
+  width: min(280px, 85vw);
+  box-shadow: 10px 0 40px #0003;
+}
+
 .allRiceMark,
 .railMark,
 .accountAvatar {

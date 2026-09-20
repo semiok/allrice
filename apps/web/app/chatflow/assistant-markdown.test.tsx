@@ -4,6 +4,20 @@ import { describe, expect, it } from 'vitest';
 import { AssistantMarkdown } from './assistant-markdown';
 
 describe('AssistantMarkdown', () => {
+  it('does not fetch remote images or execute unsafe links in static workbench documents', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMarkdown
+        allowRemoteImages={false}
+        text={
+          '![tracker](https://example.com/private.png)\n\n[unsafe](javascript:alert(1))\n\n<iframe src="https://example.com"></iframe>'
+        }
+      />,
+    );
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<iframe');
+    expect(html).not.toContain('href="javascript:');
+    expect(html).toContain('[图片：tracker]');
+  });
   it('renders GFM formatting and safe external links', () => {
     const html = renderToStaticMarkup(
       <AssistantMarkdown text="**来源**：[Bitcoin](https://example.com/btc)" />,

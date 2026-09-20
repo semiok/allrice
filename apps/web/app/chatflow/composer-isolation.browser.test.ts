@@ -197,7 +197,9 @@ suite(
         headless: true,
         executablePath:
           process.env.ALLRICE_TEST_CHROME_EXECUTABLE ??
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          (process.platform === 'darwin'
+            ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            : chromium.executablePath()),
       });
     }, 60_000);
     afterAll(async () => {
@@ -425,6 +427,9 @@ suite(
       try {
         await page.goto(`${origin}/?session=${A}`);
         await page.getByRole('button', { name: /^Session B/ }).waitFor();
+        // Sidebar readiness precedes History: uploading into the temporary
+        // empty-state composer can race its replacement by the active composer.
+        await page.getByText('Existing A', { exact: true }).waitFor();
       } catch (cause) {
         const diagnostic = {
           errors,

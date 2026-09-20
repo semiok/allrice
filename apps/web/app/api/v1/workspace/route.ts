@@ -25,7 +25,16 @@ export async function GET(request: Request) {
           (membership.workspaceId === null ||
             membership.workspaceId === workspace.workspaceId),
       );
-    return Response.json({ workspace: { ...workspace, canAdminister } });
+    return Response.json(
+      {
+        workspace: {
+          ...workspace,
+          canAdminister,
+          viewerId: context.actor.type === 'user' ? context.actor.id : null,
+        },
+      },
+      { headers: { 'cache-control': 'private, no-store' } },
+    );
   } catch (error) {
     return storageErrorResponse(error);
   }

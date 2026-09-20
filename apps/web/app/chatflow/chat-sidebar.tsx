@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useRef } from 'react';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
 
@@ -15,6 +16,7 @@ interface ChatSidebarProps {
   activeEmployeeProfileName?: string;
   activeId: string | null;
   collapsed: boolean;
+  overlay?: boolean;
   manifest: SaasCapabilityManifest;
   sessions: Session[];
   workspace: Workspace;
@@ -29,6 +31,7 @@ export function ChatSidebar({
   activeEmployeeProfileName,
   activeId,
   collapsed,
+  overlay = false,
   manifest,
   sessions,
   workspace,
@@ -38,9 +41,62 @@ export function ChatSidebar({
   onSelectSession,
 }: ChatSidebarProps) {
   const employeeDetailsAvailable = Boolean(activeEmployeeProfileName);
+  const sidebar = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!overlay) return;
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    sidebar.current?.focus();
+    return () => {
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [overlay]);
 
   return (
-    <aside className={frameUi.sidebarCol}>
+    <aside
+      ref={sidebar}
+      tabIndex={overlay ? -1 : undefined}
+      role={overlay ? 'dialog' : undefined}
+      aria-label={overlay ? '任务与历史' : undefined}
+      aria-modal={overlay ? true : undefined}
+      className={`${frameUi.sidebarCol} ${overlay ? styles.sidebarOverlay : ''}`}
+      onKeyDown={(event) => {
+        if (!overlay) return;
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          onCollapsedChange(true);
+        }
+        if (event.key === 'Tab') {
+          const nodes = [
+            ...sidebar.current!.querySelectorAll<HTMLElement>(
+              'button:not([disabled]),a[href]',
+            ),
+          ].filter((n) => n.getClientRects().length);
+          const first = nodes[0],
+            last = nodes.at(-1);
+          if (
+            event.shiftKey &&
+            (document.activeElement === first ||
+              document.activeElement === sidebar.current)
+          ) {
+            event.preventDefault();
+            last?.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+          }
+        }
+      }}
+    >
+      {overlay ? (
+        <div
+          className={styles.sidebarBackdrop}
+          aria-hidden="true"
+          onClick={() => onCollapsedChange(true)}
+        />
+      ) : null}
       <div
         className={`${sidebarUi.root} ${
           collapsed ? sidebarUi.collapsed : styles.sidebar

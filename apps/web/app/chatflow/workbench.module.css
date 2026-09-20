@@ -243,6 +243,46 @@
   font-size: 12px;
   white-space: nowrap;
 }
+.notice {
+  padding: 8px;
+  border: 1px solid #3474e533;
+  border-radius: 6px;
+  background: #3474e508;
+}
+.document,
+.messagePreview {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.document {
+  font-size: 14px;
+  line-height: 1.75;
+}
+.document table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  max-width: 100%;
+}
+.document h1 {
+  font-size: 24px;
+  line-height: 1.4;
+}
+.document h2 {
+  font-size: 20px;
+  line-height: 1.5;
+}
+.document th,
+.document td {
+  border: 1px solid var(--dsw-alias-border-l2, #ddd);
+  padding: 6px 10px;
+}
+.document pre {
+  overflow-x: auto;
+  padding: 10px;
+  background: #3474e508;
+  border-radius: 6px;
+}
 .backdrop {
   position: fixed;
   inset: 0;

@@ -31,6 +31,8 @@ import {
 import styles from './workbench.module.css';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { readJson } from './chatflow-utils';
+import { AssistantMarkdown } from './assistant-markdown';
+import type { Message } from './chatflow-types';
 
 const RichDiff = lazy(() =>
   import('./cline-adapter/tool-file-diff').then((m) => ({
@@ -55,7 +57,7 @@ class DiffBoundary extends Component<
 }
 type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
-  sessionId: string;
+  sessionId: string | null;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   artifacts: WorkbenchArtifact[];
@@ -64,6 +66,8 @@ type Props = {
   listError: string;
   listLoading: boolean;
   narrow: boolean;
+  messagePreview?: Message | null;
+  noticeId?: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
@@ -91,13 +95,17 @@ export function ArtifactWorkbench(props: Props) {
       props.onClose();
   }, [props.onClose]);
   useEffect(() => {
+    // The persistent desktop panel must never take the composer's focus.
+    if (!props.narrow) return;
     previousFocus.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
     panel.current?.focus();
-    return () => previousFocus.current?.focus();
-  }, []);
+    return () => {
+      if (previousFocus.current?.isConnected) previousFocus.current.focus();
+    };
+  }, [props.narrow]);
   useEffect(() => {
     const unload = (e: BeforeUnloadEvent) => {
       if (dirty.current) {
@@ -108,7 +116,7 @@ export function ArtifactWorkbench(props: Props) {
     window.addEventListener('beforeunload', unload);
     return () => window.removeEventListener('beforeunload', unload);
   }, []);
-  const artifactId = props.selectedId ?? props.artifacts[0]?.id ?? null;
+  const artifactId = props.selectedId;
   function select(id: string) {
     if (
       !dirty.current ||
@@ -122,6 +130,7 @@ export function ArtifactWorkbench(props: Props) {
         <div className={styles.backdrop} onClick={close} aria-hidden="true" />
       ) : null}
       <aside
+        id="artifact-workbench"
         ref={panel}
         tabIndex={-1}
         className={`${styles.panel} ${props.narrow ? styles.drawer : ''}`}
@@ -162,11 +171,19 @@ export function ArtifactWorkbench(props: Props) {
           </button>
         </header>
         <div className={styles.body}>
+          {props.noticeId && props.noticeId !== artifactId ? (
+            <p className={styles.notice} role="status">
+              新工件已就绪。
+              <button type="button" onClick={() => select(props.noticeId!)}>
+                查看新工件
+              </button>
+            </p>
+          ) : null}
           <div className={styles.row}>
             <label htmlFor="workbench-artifacts">工件版本</label>
             <button
               type="button"
-              disabled={props.listLoading}
+              disabled={props.listLoading || !props.sessionId}
               onClick={() => void props.onReload()}
             >
               刷新列表
@@ -177,7 +194,26 @@ export function ArtifactWorkbench(props: Props) {
               {props.listError}
             </p>
           ) : null}
-          {artifactId ? (
+          {props.messagePreview ? (
+            <section aria-label="消息预览" className={styles.messagePreview}>
+              <h3>消息预览</h3>
+              <p className={styles.muted}>
+                这是会话回复，非已发布工件；没有工件版本或落盘证明。
+              </p>
+              <p className={styles.muted}>
+                Run {props.messagePreview.runId?.slice(0, 8) ?? '未关联'} · 只读
+              </p>
+              <SafeDocument text={props.messagePreview.content.text} />
+              {props.artifacts[0] ? (
+                <button
+                  type="button"
+                  onClick={() => select(props.artifacts[0]!.id)}
+                >
+                  返回工件
+                </button>
+              ) : null}
+            </section>
+          ) : artifactId && props.sessionId ? (
             <>
               <select
                 id="workbench-artifacts"
@@ -220,12 +256,25 @@ export function ArtifactWorkbench(props: Props) {
             <p className={styles.muted}>
               {props.listLoading
                 ? '正在加载工件…'
-                : '这个会话还没有工件。Rice 交付的文件与计划会显示在这里。'}
+                : props.sessionId
+                  ? '这个会话还没有工件。Rice 交付的报告、文件、修改提案与浏览器证据会显示在这里。'
+                  : '开始或选择一项工作，交付物将在这里展示。这里不会自动执行命令或批准修改。'}
             </p>
           )}
         </div>
       </aside>
     </>
+  );
+}
+
+/** Bounded safe Markdown; large documents retain the existing paged-text path. */
+function SafeDocument({ text }: { text: string }) {
+  return text.length <= 80_000 && text.split('\n').length <= 1500 ? (
+    <div className={styles.document}>
+      <AssistantMarkdown text={text} allowRemoteImages={false} />
+    </div>
+  ) : (
+    <TextPage text={text} label="正文（分页只读）" />
   );
 }
 
@@ -874,15 +923,31 @@ function ArtifactReview({
               />
             </details>
           ) : bodyText !== null ? (
-            <TextPage
-              text={bodyText}
-              label="工件正文（只读文本）"
-              onLine={
-                supportsLines
-                  ? (line) => useLines('after', line, line)
-                  : undefined
-              }
-            />
+            <>
+              {preview?.kind === 'text' &&
+              preview.mediaType === 'text/markdown' ? (
+                <SafeDocument text={bodyText} />
+              ) : null}
+              <details
+                open={
+                  !(
+                    preview?.kind === 'text' &&
+                    preview.mediaType === 'text/markdown'
+                  )
+                }
+              >
+                <summary>原文与行级审查（分页）</summary>
+                <TextPage
+                  text={bodyText}
+                  label="工件正文（只读文本）"
+                  onLine={
+                    supportsLines
+                      ? (line) => useLines('after', line, line)
+                      : undefined
+                  }
+                />
+              </details>
+            </>
           ) : preview?.kind === 'image' ? (
             <div className={styles.preview}>
               {/* Static raster only; no remote URL, SVG or HTML insertion. */}
