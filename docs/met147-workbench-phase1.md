@@ -27,3 +27,4 @@
 - `pnpm build`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm dsh:verify` 通过。
 - 回退为撤销本 PR 的代码提交，无数据库迁移；忽略/删除当前用户本地 `allrice:workbench-layout:v1:*` 布尔偏好即可恢复初始布局。原有 `ALLRICE_WORKBENCH_ENABLED` 发布门禁不变；本 PR 不修改 Dev/Prod 环境变量。
 - PR 采用 MET-150 `codex/met150-chat-budget-results` 为前置分支，让差异只包含 UX01-A。不能直接将旧 main 覆盖当前 Dev；待前置修复合并后再调整本 PR 的合并基线。此记录不代表已合并、已部署或 MET-147 整单完成。
+- 首轮远端全量 CI 发现两份历史订阅测试仍沿用 MET-150 之前的预期（订阅 admission 固定 136k、缺失用量允许返回）。本 PR 附带测试预期校正，明确区分普通订阅初次调用估算与 API 冻结预算，继续验证未知用量拒绝和账本不完整标记；不修改任何运行时预算代码。隔离 PostgreSQL 上两套回归 37 项通过；该测试债务同时记回 MET-150。

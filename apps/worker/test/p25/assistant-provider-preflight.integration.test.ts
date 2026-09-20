@@ -795,7 +795,14 @@ integration(
           userId: f.user,
           employeeId: f.employee,
           connectionId: target.connectionId,
-          requestedTokens: modelSnapshot!.runLimits.maxTotalTokens,
+          // MET-150: ordinary verified subscriptions admit an initial-call
+          // estimate, not the removed cumulative 136k task ceiling. This
+          // fixture's synthetic kernel estimates 10 input tokens; a persisted
+          // API route must still use its frozen total budget on replay.
+          requestedTokens:
+            persisted === 'subscription'
+              ? 10 + modelSnapshot!.runLimits.maxOutputTokens
+              : modelSnapshot!.runLimits.maxTotalTokens,
           requestedRuntimeMs: modelSnapshot!.runLimits.timeoutMs,
         });
         expect(execute).toHaveBeenCalledTimes(succeeds ? 1 : 0);
