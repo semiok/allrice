@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { HarnessExecutionResult } from '../../../apps/worker/src/harness/adapter.ts';
 import {
   parseP27CodexJson,
+  syntheticCodexFinalAnswer,
   type P27CodexJsonObservation,
   type P27CodexJsonObserver,
 } from './p27-codex-json.ts';
@@ -67,6 +68,9 @@ const sourceFiles = [
   'pnpm-lock.yaml',
   'tsconfig.base.json',
   'packages/contracts/src/assistant-subscription.ts',
+  'packages/contracts/src/models.ts',
+  'packages/contracts/src/skills.ts',
+  'packages/database/src/runtime-policy.ts',
   'packages/database/src/execution/route-subscription.ts',
   'packages/database/migrations/0097_route_subscription_snapshots.sql',
   'apps/worker/src/jobs/employee-run.ts',
@@ -90,6 +94,7 @@ const sourceFiles = [
     'codex-assistants-preflight',
     'codex-assistants-verification',
     'codex-assistants-verification.test',
+    'codex-evidence-stages.test',
     'codex-json',
     'codex-json.test',
     'codex-assistants-artifact.test',
@@ -379,6 +384,8 @@ export async function mainP27CodexAssistants(
         'worker_model_not_invoked',
       );
       report.providerInvocation = 'confirmed_by_worker_result';
+      report[assistants ? 'assistantFinalAnswer' : 'ordinaryFinalAnswer'] =
+        syntheticCodexFinalAnswer(result.answer);
       const parsing: P27CodexJsonObservation[] = [];
       report.jsonParsing = parsing;
       const observeJson: P27CodexJsonObserver = (entry) => {
@@ -391,7 +398,19 @@ export async function mainP27CodexAssistants(
             task,
             result,
             observeJson,
-            { sourceSha: args.sha },
+            {
+              sourceSha: args.sha,
+              onPlatformVerified: async (proof) => {
+                report.assistantPlatform = {
+                  status: 'passed',
+                  scope: 'platform-only-not-parent-answer-ordinary-or-ui',
+                  observedAt: new Date().toISOString(),
+                  runId: task.runId,
+                  ...proof,
+                };
+                await save();
+              },
+            },
           )
         : await verifyCodexOrdinarySubscription(
             fixture!,

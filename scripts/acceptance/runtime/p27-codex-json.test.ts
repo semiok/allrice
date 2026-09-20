@@ -5,6 +5,7 @@ import {
   codexJsonDiagnostics,
   parseP27CodexJson,
   P27CodexJsonError,
+  syntheticCodexFinalAnswer,
   type P27CodexJsonStage,
 } from './p27-codex-json.ts';
 
@@ -125,5 +126,49 @@ describe('bounded acceptance JSON frames, no model or credentials', () => {
         'child_report',
       ).value.rows,
     ).toEqual([{ key: 1 }, { key: 2 }]);
+  });
+});
+
+describe('opt-in fixed synthetic final-answer diagnostic', () => {
+  it.each([
+    '已完成。',
+    '{"salesTotalCents":875,"outstandingCents":600,"reports":2}',
+  ])('retains only a bounded user-visible final answer %#', (text) => {
+    expect(syntheticCodexFinalAnswer(text)).toMatchObject({
+      scope: 'synthetic-user-visible-final-answer-only',
+      text,
+      length: text.length,
+      bytes: Buffer.byteLength(text),
+      omitted: null,
+      digest: `sha256:${createHash('sha256').update(text).digest('hex')}`,
+    });
+  });
+  it.each([
+    'Bearer credential',
+    'token=private',
+    'sk-private',
+    'https://private.invalid',
+    '<analysis>private</analysis>',
+    'done\u202eprivate',
+    'done\u0000private',
+  ])('omits sensitive or non-display input %# entirely', (text) => {
+    const observation = syntheticCodexFinalAnswer(text);
+    expect(observation).toMatchObject({ text: null, omitted: 'sensitive' });
+    expect(JSON.stringify(observation)).not.toContain('private');
+  });
+  it('bounds UTF-8 bytes without truncation or reading arbitrary objects', () => {
+    expect(syntheticCodexFinalAnswer('中'.repeat(171))).toMatchObject({
+      text: null,
+      bytes: 513,
+      omitted: 'too_large',
+    });
+    expect(syntheticCodexFinalAnswer('x'.repeat(512)).text).toHaveLength(512);
+    expect(
+      syntheticCodexFinalAnswer({
+        toString: () => {
+          throw Error('must not read');
+        },
+      }),
+    ).toMatchObject({ text: null, digest: null, omitted: 'missing' });
   });
 });
