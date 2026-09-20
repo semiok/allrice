@@ -324,7 +324,8 @@ export function ChatTranscript({
                           />
                         </div>
                       )}
-                      {message.content.budgetWarning ? (
+                      {message.content.budgetWarning &&
+                      message.status === 'failed' ? (
                         <small role="status">
                           答案已保留。本次任务超过平台内部预期 Token
                           预算；真实用量已记录，这不代表 Codex 周额度耗尽。

@@ -41,7 +41,7 @@ describe('historical transcript capability gating', () => {
   afterEach(() => vi.clearAllMocks());
 
   it.each(['failed', 'completed'] as const)(
-    'shows the answer and budget warning without generic failure (%s)',
+    'keeps the answer and only explains a recovered historical failure (%s)',
     (status) => {
       const html = render(false, [
         {
@@ -56,8 +56,45 @@ describe('historical transcript capability gating', () => {
         },
       ]);
       expect(html).toContain('Preserved complete answer');
-      expect(html).toContain('答案已保留');
+      if (status === 'failed') {
+        expect(html).toContain('答案已保留');
+      } else {
+        expect(html).not.toContain('答案已保留');
+        expect(html).not.toContain('超过平台内部预期');
+        expect(html).not.toContain('周额度');
+      }
       expect(html).not.toContain('这次没有完成');
+    },
+  );
+
+  it('does not warn for either kind of completed internal budget overrun', () => {
+    for (const budgetWarning of [
+      'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED',
+      'MODEL_OUTPUT_BUDGET_EXCEEDED',
+    ] as const) {
+      const html = render(false, [
+        {
+          ...messages[0]!,
+          content: { text: 'Normal completed answer', budgetWarning },
+        },
+      ]);
+      expect(html).toContain('Normal completed answer');
+      expect(html).not.toContain('超过平台内部预期');
+      expect(html).not.toContain('这次没有完成');
+    }
+  });
+
+  it.each(['MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED', 'TIMEOUT', 'RATE_LIMITED'])(
+    'keeps real failures visible: %s',
+    (errorCode) => {
+      const html = render(false, [
+        {
+          ...messages[0]!,
+          status: 'failed',
+          errorCode,
+        },
+      ]);
+      expect(html).toContain('这次没有完成');
     },
   );
 
