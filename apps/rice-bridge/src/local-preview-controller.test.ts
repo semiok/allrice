@@ -208,6 +208,7 @@ describe('P23 preview opt-in and exact target controller authority', () => {
       f.controller.controllerId,
       true,
       false,
+      expect.any(AbortSignal),
     );
     expect(f.startDriver).not.toHaveBeenCalled();
   });
@@ -218,6 +219,7 @@ describe('P23 preview opt-in and exact target controller authority', () => {
       f.controller.controllerId,
       true,
       true,
+      expect.any(AbortSignal),
     );
     expect(f.startDriver).toHaveBeenCalledOnce();
     expect(f.input().leaseExpiresAt()).toBe(
@@ -244,6 +246,7 @@ describe('P23 preview opt-in and exact target controller authority', () => {
       f.controller.controllerId,
       true,
       false,
+      expect.any(AbortSignal),
     );
     expect(f.startDriver).toHaveBeenCalledOnce();
   });

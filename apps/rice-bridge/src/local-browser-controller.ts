@@ -53,6 +53,10 @@ export class LocalBrowserController {
   private stopping = false;
   private heartbeatBusy = false;
   private polling = false;
+  // Acquisition/outbox delivery may be waiting on HTTP even with no active
+  // browser. Stop must cancel that I/O, not merely flip the next-loop guard.
+  // Cleanup ACKs deliberately do not share this signal.
+  private readonly pollAbort = new AbortController();
   get hasActiveWork() {
     return this.polling || this.active !== null;
   }
@@ -162,9 +166,14 @@ export class LocalBrowserController {
       throw lost();
     return lease;
   }
-  private async flush() {
+  private async flush(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     for (const receipt of await this.input.outbox.pending()) {
-      await this.input.authority.acknowledge({ kind: 'receipt', ...receipt });
+      signal?.throwIfAborted();
+      await this.input.authority.acknowledge(
+        { kind: 'receipt', ...receipt },
+        signal,
+      );
       await this.input.outbox.acknowledge(receipt);
     }
   }
@@ -596,27 +605,41 @@ export class LocalBrowserController {
     }
   }
   private async pollCurrent() {
-    await this.flush();
+    await this.flush(this.pollAbort.signal);
     if (this.stopping) return false;
     if (!this.active) {
       const enabled =
         this.input.acquiring?.() !== false &&
         (await this.input.enabled()) &&
+        !this.stopping &&
         (await this.input.paired());
+      if (this.stopping) return false;
+      const acceptPreview =
+        enabled && !!this.input.preview && (await this.input.preview.enabled());
+      if (this.stopping) return false;
       const sentAt = Date.now();
       const claim = await this.input.authority.claim(
         this.controllerId,
         enabled,
-        enabled && !!this.input.preview && (await this.input.preview.enabled()),
+        acceptPreview,
+        this.pollAbort.signal,
       );
-      for (const revocation of claim.revocations) await this.revoke(revocation);
+      // A transport can complete concurrently with abort. A late lease never
+      // authorizes starting a driver after the user requested stop.
+      if (this.stopping) return false;
+      for (const revocation of claim.revocations) {
+        if (this.stopping) return false;
+        await this.revoke(revocation);
+      }
+      if (this.stopping) return false;
       if (claim.workspace && claim.lease) {
         if (!enabled) throw lost();
         await this.begin(claim.workspace, claim.lease, sentAt);
       }
     }
     const active = this.active;
-    if (!active || active.closing || !active.driver) return false;
+    if (this.stopping || !active || active.closing || !active.driver)
+      return false;
     if (
       active.workspace.fence !== active.workspace.acknowledgedFence ||
       active.workspace.state === 'starting'
@@ -635,11 +658,11 @@ export class LocalBrowserController {
     }
     if (!['agent', 'human'].includes(active.workspace.state)) return false;
     if (this.input.acquiring?.() === false) return false;
-    const operation = await this.input.authority.next({
-      kind: 'next',
-      ...this.owned(active),
-    });
-    if (!operation) return false;
+    const operation = await this.input.authority.next(
+      { kind: 'next', ...this.owned(active) },
+      this.pollAbort.signal,
+    );
+    if (this.stopping || !operation) return false;
     await this.execute(active, operation);
     return true;
   }
@@ -648,7 +671,9 @@ export class LocalBrowserController {
     if (this.polling) return false;
     this.polling = true;
     try {
-      if (!(await this.input.paired())) {
+      const paired = await this.input.paired();
+      if (this.stopping) return false;
+      if (!paired) {
         await this.retirePairing();
         return false;
       }
@@ -686,7 +711,7 @@ export class LocalBrowserController {
           if (this.active) this.input.onError?.('LOCAL_BROWSER_UNAVAILABLE');
           backoff = Math.min(5000, backoff * 2);
         }
-        if (!signal.aborted) await sleep(backoff);
+        if (!signal.aborted && !this.stopping) await sleep(backoff);
       }
     } finally {
       clearInterval(watchdog);
@@ -697,6 +722,7 @@ export class LocalBrowserController {
   }
   async stop() {
     this.stopping = true;
+    this.pollAbort.abort();
     if (this.active) await this.stopActive(this.active);
   }
 }

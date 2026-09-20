@@ -29,11 +29,15 @@ export interface LocalBrowserAuthority {
     controllerId: string,
     acceptWork: boolean,
     acceptPreview?: boolean,
+    signal?: AbortSignal,
   ) => Promise<LocalBrowserClaim>;
   heartbeat: (
     request: RequestOf<'heartbeat'>,
   ) => Promise<ReturnType<typeof LocalBrowserHeartbeatSchema.parse>>;
-  next: (request: RequestOf<'next'>) => Promise<LocalBrowserOperation | null>;
+  next: (
+    request: RequestOf<'next'>,
+    signal?: AbortSignal,
+  ) => Promise<LocalBrowserOperation | null>;
   start: (
     request: RequestOf<'start'>,
   ) => Promise<ReturnType<typeof LocalBrowserStartSchema.parse>>;
@@ -46,6 +50,7 @@ export interface LocalBrowserAuthority {
       | 'revoke_ack'
       | 'request_complete'
     >,
+    signal?: AbortSignal,
   ) => Promise<void>;
   requestPermission: (
     request: RequestOf<'request_approval' | 'request_status'>,
@@ -100,6 +105,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
     body: string | Buffer,
     headers: Record<string, string>,
     maximum: number,
+    signal?: AbortSignal,
   ) {
     let status = 0;
     try {
@@ -108,7 +114,9 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
         redirect: 'error',
         headers: { authorization: `Bearer ${this.input.token}`, ...headers },
         body: typeof body === 'string' ? body : new Uint8Array(body),
-        signal: AbortSignal.timeout(2500),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(2500)])
+          : AbortSignal.timeout(2500),
       });
       status = response.status;
       if (!response.ok) {
@@ -120,7 +128,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
       throw new LocalBrowserTransportError(status);
     }
   }
-  private async json(request: LocalBrowserHttpRequest) {
+  private async json(request: LocalBrowserHttpRequest, signal?: AbortSignal) {
     try {
       const validated = LocalBrowserHttpRequestSchema.parse(request);
       const wire =
@@ -136,6 +144,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
         JSON.stringify(wire),
         { 'content-type': 'application/json' },
         256 * 1024,
+        signal,
       );
       return JSON.parse(
         new TextDecoder('utf8', { fatal: true }).decode(response),
@@ -149,21 +158,21 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
     controllerId: string,
     acceptWork: boolean,
     acceptPreview = false,
+    signal?: AbortSignal,
   ) {
     const preview = acceptPreview && !this.previewUnsupported;
     try {
       return LocalBrowserClaimSchema.parse(
-        await this.json({
-          kind: 'claim',
-          controllerId,
-          acceptWork,
-          acceptPreview: preview,
-        }),
+        await this.json(
+          { kind: 'claim', controllerId, acceptWork, acceptPreview: preview },
+          signal,
+        ),
       );
     } catch (error) {
       // Strict P22 servers reject the new optional capability before admission.
       // Fall back only to an ordinary claim; never execute a preview elsewhere.
       if (
+        signal?.aborted ||
         !preview ||
         !(error instanceof LocalBrowserTransportError) ||
         error.status !== 400
@@ -171,20 +180,19 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
         throw error;
       this.previewUnsupported = true;
       return LocalBrowserClaimSchema.parse(
-        await this.json({
-          kind: 'claim',
-          controllerId,
-          acceptWork,
-          acceptPreview: false,
-        }),
+        await this.json(
+          { kind: 'claim', controllerId, acceptWork, acceptPreview: false },
+          signal,
+        ),
       );
     }
   }
   async heartbeat(request: RequestOf<'heartbeat'>) {
     return LocalBrowserHeartbeatSchema.parse(await this.json(request));
   }
-  async next(request: RequestOf<'next'>) {
-    return LocalBrowserNextSchema.parse(await this.json(request)).operation;
+  async next(request: RequestOf<'next'>, signal?: AbortSignal) {
+    return LocalBrowserNextSchema.parse(await this.json(request, signal))
+      .operation;
   }
   async start(request: RequestOf<'start'>) {
     return LocalBrowserStartSchema.parse(await this.json(request));
@@ -203,8 +211,9 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
       | 'revoke_ack'
       | 'request_complete'
     >,
+    signal?: AbortSignal,
   ) {
-    const value = await this.json(request);
+    const value = await this.json(request, signal);
     if (
       !value ||
       typeof value !== 'object' ||
