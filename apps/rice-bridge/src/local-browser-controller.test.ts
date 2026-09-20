@@ -204,6 +204,178 @@ async function fixture(acquiring: () => boolean = () => true) {
   };
 }
 describe('P22 local controller with durable outbox and strict authority port', () => {
+  it('cancels a pending idle claim through the transport and actually joins the poll on stop', async () => {
+    const f = await fixture();
+    f.disable();
+    const shutdown = new AbortController();
+    let started!: () => void;
+    const claimStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let observedSignal: AbortSignal | undefined;
+    let releaseFixture!: () => void;
+    vi.mocked(f.authority.claim).mockImplementation(
+      async (_id, _work, _preview, signal) => {
+        observedSignal = signal;
+        started();
+        return new Promise((_resolve, reject) => {
+          releaseFixture = () => reject(Error('SYNTHETIC_FIXTURE_CLEANUP'));
+          signal?.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    const running = f.controller.run(shutdown.signal);
+    try {
+      await claimStarted;
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(f.controller.hasActiveWork).toBe(true);
+      shutdown.abort();
+      await running;
+      expect(observedSignal?.aborted).toBe(true);
+      expect(f.controller.hasActiveWork).toBe(false);
+      expect(f.startDriver).not.toHaveBeenCalled();
+      expect(f.authority.start).not.toHaveBeenCalled();
+    } finally {
+      shutdown.abort();
+      releaseFixture();
+      await running;
+    }
+  });
+  it('fences a valid late claim without pretending a non-cooperating poll already stopped', async () => {
+    const f = await fixture();
+    const originalClaim = vi.mocked(f.authority.claim).getMockImplementation()!;
+    const shutdown = new AbortController();
+    let started!: () => void, release!: () => void;
+    const claimStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(f.authority.claim).mockImplementation(async (...args) => {
+      started();
+      await gate;
+      return originalClaim(...args);
+    });
+    let settled = false;
+    const running = f.controller.run(shutdown.signal).finally(() => {
+      settled = true;
+    });
+    try {
+      await claimStarted;
+      shutdown.abort();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      await running;
+      expect(f.controller.hasActiveWork).toBe(false);
+      expect(f.startDriver).not.toHaveBeenCalled();
+      expect(f.authority.start).not.toHaveBeenCalled();
+    } finally {
+      shutdown.abort();
+      release();
+      await running;
+    }
+  });
+  it('canceled idle outbox delivery retains the original durable receipt', async () => {
+    const f = await fixture();
+    f.disable();
+    const receipt: LocalBrowserReceipt = {
+      workspaceId: f.workspace.id,
+      controllerLeaseToken: randomUUID(),
+      operationId: randomUUID(),
+      operationLeaseToken: randomUUID(),
+      receiptId: randomUUID(),
+      status: 'unknown',
+      networkEffect: false,
+      observationId: null,
+      downloadObjectId: null,
+      errorCode: 'LOCAL_BROWSER_IO_UNKNOWN',
+    };
+    await f.outbox.prepare(receipt);
+    const shutdown = new AbortController();
+    let started!: () => void;
+    const deliveryStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let deliverySignal: AbortSignal | undefined;
+    let releaseFixture!: () => void;
+    vi.mocked(f.authority.acknowledge).mockImplementation(
+      async (_request, signal) => {
+        deliverySignal = signal;
+        started();
+        return new Promise((_resolve, reject) => {
+          releaseFixture = () => reject(Error('SYNTHETIC_FIXTURE_CLEANUP'));
+          signal?.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    const running = f.controller.run(shutdown.signal);
+    try {
+      await deliveryStarted;
+      expect(deliverySignal).toBeInstanceOf(AbortSignal);
+      shutdown.abort();
+      await running;
+      expect(await f.outbox.pending()).toEqual([receipt]);
+      expect(f.authority.claim).not.toHaveBeenCalled();
+    } finally {
+      shutdown.abort();
+      releaseFixture();
+      await running;
+    }
+  });
+  it('keeps stopped cleanup ACK independent of the canceled acquisition signal', async () => {
+    const f = await fixture();
+    await f.controller.pollOnce();
+    vi.mocked(f.authority.acknowledge).mockClear();
+    await f.controller.stop();
+    expect(f.driver.close).toHaveBeenCalledWith('lost');
+    expect(f.authority.acknowledge).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'stopped', confirmed: true }),
+    );
+  });
+  it('aborts pending next while still confirming actual driver close with a cleanup ACK', async () => {
+    const f = await fixture();
+    await f.controller.pollOnce();
+    const shutdown = new AbortController();
+    let started!: () => void;
+    const nextStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let nextSignal: AbortSignal | undefined;
+    let releaseFixture!: () => void;
+    vi.mocked(f.authority.next).mockImplementation(async (_request, signal) => {
+      nextSignal = signal;
+      started();
+      return new Promise((_resolve, reject) => {
+        releaseFixture = () => reject(Error('SYNTHETIC_FIXTURE_CLEANUP'));
+        signal?.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    });
+    const running = f.controller.run(shutdown.signal);
+    try {
+      await nextStarted;
+      expect(nextSignal).toBeInstanceOf(AbortSignal);
+      shutdown.abort();
+      await running;
+      expect(f.driver.close).toHaveBeenCalledExactlyOnceWith('lost');
+      expect(f.authority.start).not.toHaveBeenCalled();
+      expect(f.authority.acknowledge).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'stopped', confirmed: true }),
+      );
+      expect(f.controller.hasActiveWork).toBe(false);
+    } finally {
+      shutdown.abort();
+      releaseFixture();
+      await running;
+    }
+  });
   it('P14 acquisition drain does not disable permissions or start a new browser', async () => {
     const f = await fixture(() => false);
     expect(await f.controller.pollOnce()).toBe(false);
@@ -211,6 +383,7 @@ describe('P22 local controller with durable outbox and strict authority port', (
       f.controller.controllerId,
       false,
       false,
+      expect.any(AbortSignal),
     );
     expect(f.controller.hasActiveWork).toBe(false);
     expect(f.startDriver).not.toHaveBeenCalled();
@@ -350,6 +523,7 @@ describe('P22 local controller with durable outbox and strict authority port', (
           f.controller.controllerId,
           false,
           false,
+          expect.any(AbortSignal),
         );
     },
   );

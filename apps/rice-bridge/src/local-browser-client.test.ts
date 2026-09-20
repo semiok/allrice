@@ -21,6 +21,56 @@ async function fixture(handler: RequestListener) {
   });
 }
 describe('P22 real HTTP authority transport', () => {
+  it.each(['headers', 'body'])(
+    'caller stop aborts an actual pending claim %s',
+    async (phase) => {
+      let received!: () => void;
+      const requestReceived = new Promise<void>((resolve) => {
+        received = resolve;
+      });
+      const client = await fixture((_req, res) => {
+        if (phase === 'body') {
+          res.writeHead(200);
+          res.write('{');
+        }
+        received();
+      });
+      const shutdown = new AbortController();
+      const pending = client.claim(randomUUID(), false, false, shutdown.signal);
+      await requestReceived;
+      const stoppedAt = Date.now();
+      shutdown.abort();
+      await expect(pending).rejects.toThrow(
+        'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+      );
+      expect(Date.now() - stoppedAt).toBeLessThan(1000);
+    },
+  );
+  it('a pre-aborted claim sends no HTTP request and never retries preview', async () => {
+    let calls = 0;
+    const client = await fixture((_req, res) => {
+      calls++;
+      res.writeHead(400);
+      res.end('{}');
+    });
+    const shutdown = new AbortController();
+    shutdown.abort();
+    await expect(
+      client.claim(randomUUID(), true, true, shutdown.signal),
+    ).rejects.toThrow('LOCAL_BROWSER_AUTHORITY_UNAVAILABLE');
+    expect(calls).toBe(0);
+  });
+  it('rejects a non-OK partial body without waiting for the server to finish it', async () => {
+    const client = await fixture((_req, res) => {
+      res.writeHead(503);
+      res.write('{');
+    });
+    const began = Date.now();
+    await expect(client.claim(randomUUID(), false)).rejects.toThrow(
+      'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+    );
+    expect(Date.now() - began).toBeLessThan(1000);
+  });
   it('omits preview capability for ordinary claims, preserving strict P22 servers', async () => {
     const controllerId = randomUUID();
     const client = await fixture(async (req, res) => {
