@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   mkdtempSync,
   mkdirSync,
@@ -34,6 +35,7 @@ import {
   main,
   validateInternalReadiness,
 } from './p27-internal-readiness.mjs';
+import { readCodeBoundary } from './internal-evidence-reuse.mjs';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const SOURCE = 'a'.repeat(40);
@@ -428,6 +430,380 @@ function subscriptionFixture() {
   put();
   return { ...f, billingReceipt: receipt, proof, put };
 }
+
+// Reuse parser fixtures stay synthetic; two tiny local Git commits only supply
+// real diff/tree boundaries. No historical product observations are generated.
+function reuseFixture({
+  caseId = 'client/arm64/restart-without-repair',
+  subscription = false,
+  change,
+} = {}) {
+  const f = subscription ? subscriptionFixture() : fixture();
+  const checkout = checkoutFixture(f);
+  const git = (...args) =>
+    execFileSync(
+      '/usr/bin/git',
+      [
+        '-C',
+        checkout,
+        '-c',
+        'user.name=Synthetic parser test',
+        '-c',
+        'user.email=synthetic@example.test',
+        '-c',
+        'commit.gpgsign=false',
+        '-c',
+        'core.hooksPath=/dev/null',
+        ...args,
+      ],
+      { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  git('init', '--quiet');
+  const doc = join(
+    checkout,
+    'docs/architecture/allrice-2.0/p27-internal-readiness.md',
+  );
+  mkdirSync(dirname(doc), { recursive: true });
+  writeFileSync(doc, 'Synthetic gate documentation before\n');
+  writeFileSync(
+    join(checkout, 'apps/product.mjs'),
+    'export const unchanged = true;\n',
+  );
+  git('add', '.');
+  git('commit', '--quiet', '-m', 'Synthetic tested tree');
+  const tested = git('rev-parse', 'HEAD').trim();
+  writeFileSync(doc, 'Synthetic gate documentation after\n');
+  change?.({ checkout, doc, git });
+  git('add', '.');
+  git('commit', '--quiet', '-m', 'Synthetic target tree');
+  const target = git('rev-parse', 'HEAD').trim();
+  f.manifest.sourceSha = target;
+  f.preparation.sourceSha = target;
+  for (const artifact of f.preparation.artifacts) artifact.sourceSha = target;
+  f.pinPreparation();
+  for (const id of internalCases) {
+    const receipt = f.receipt(id);
+    receipt.sourceSha = target;
+    f.putReceipt(receipt);
+  }
+  const original = subscription ? f.billingReceipt : f.receipt(caseId);
+  original.sourceSha = tested;
+  if (subscription) {
+    f.proof.sourceSha = tested;
+    original.billing.proof = f.write(
+      'observations/subscription-accounting.json',
+      JSON.stringify(f.proof),
+    );
+  }
+  const needed = Object.keys(original.artifacts);
+  const wrapper = {
+    schema: 'allrice-p27-internal-evidence-reuse/v1',
+    caseId,
+    originalReceipt: null,
+    testedSourceSha: tested,
+    testedArtifacts: Object.fromEntries(
+      needed.map((id) => [
+        id,
+        f.preparation.artifacts.find((a) => a.id === id).file,
+      ]),
+    ),
+    targetSourceSha: target,
+    targetArtifacts: { ...original.artifacts },
+    impactReview: null,
+  };
+  // For negative product/type changes use the truthful diff too. Failing closed
+  // must depend on actual tree equality, not on a falsified reviewer boolean.
+  let boundary;
+  try {
+    boundary = readCodeBoundary(checkout, tested, target);
+  } catch {
+    boundary = { invalidSyntheticBoundary: true };
+  }
+  const review = {
+    schema: 'allrice-p27-internal-impact-review/v1',
+    caseId,
+    originalReceiptSha256: null,
+    testedSourceSha: tested,
+    targetSourceSha: target,
+    reviewedAt: '2026-09-14T11:30:00.000Z',
+    reviewer: 'Synthetic parser reviewer',
+    codeBoundary: null,
+    assertions: original.assertions.map(({ name }) => ({
+      name,
+      impact: 'unaffected',
+      rationale:
+        'Synthetic review; exact product tree and bound binary bytes are unchanged.',
+      boundarySha256: null,
+    })),
+  };
+  function repin() {
+    wrapper.originalReceipt = f.write(
+      'reuse/original.json',
+      JSON.stringify(original),
+    );
+    review.originalReceiptSha256 = wrapper.originalReceipt.sha256;
+    review.codeBoundary = f.write(
+      'reuse/boundary.json',
+      JSON.stringify(boundary),
+    );
+    for (const assertion of review.assertions)
+      assertion.boundarySha256 = review.codeBoundary.sha256;
+    wrapper.impactReview = f.write('reuse/review.json', JSON.stringify(review));
+    const file = f.write('reuse/wrapper.json', JSON.stringify(wrapper));
+    const index = f.manifest.evidence.findIndex(
+      (entry) => entry.caseId === caseId,
+    );
+    f.manifest.evidence[index] = { caseId, file, reuse: true };
+  }
+  repin();
+  return {
+    ...f,
+    checkout,
+    original,
+    wrapper,
+    review,
+    boundary,
+    repin,
+    tested,
+    target,
+    validate: () =>
+      f.validate({ sourceRoot: checkout, expectedSourceSha: target }),
+  };
+}
+
+test('explicit reuse preserves physical original observations and splits fresh/reused target claims', () => {
+  const f = reuseFixture();
+  const report = f.validate();
+  assert.equal(
+    report.internalReady,
+    true,
+    JSON.stringify(report.internalBlockers),
+  );
+  assert.equal(report.freshEvidence.length, 44);
+  assert.equal(report.reusedEvidence.length, 1);
+  const reused = report.reusedEvidence[0];
+  assert.equal(reused.executedOnTarget, false);
+  assert.equal(reused.testedSourceSha, f.tested);
+  assert.equal(reused.targetSourceSha, f.target);
+  assert.equal(reused.observedAt, CREATED);
+  assert.equal(reused.reviewedAt, f.review.reviewedAt);
+  assert.equal(
+    report.freshEvidence.some((r) => r.caseId === reused.caseId),
+    false,
+  );
+  neverAuthorizes(report);
+});
+
+test('reuse validates subscription accounting against original source and refuses changed ledger proof', () => {
+  const f = reuseFixture({ caseId: ASSISTANTS, subscription: true });
+  assert.equal(f.validate().internalReady, true);
+  f.proof.ledger.outputTokens += 1;
+  f.original.billing.proof = f.write(
+    'observations/subscription-accounting.json',
+    JSON.stringify(f.proof),
+  );
+  f.repin();
+  const report = f.validate();
+  rejects(report);
+  assert.ok(
+    report.internalBlockers.some(
+      (b) => b.code === 'subscription-accounting-proof-invalid',
+    ),
+  );
+  assert.equal(report.reusedEvidence.length, 0);
+});
+
+test.each([
+  [
+    'no explicit opt-in',
+    (f) => {
+      delete f.manifest.evidence.find((e) => e.reuse).reuse;
+    },
+    false,
+  ],
+  [
+    'unknown wrapper field',
+    (f) => {
+      f.wrapper.affected = false;
+    },
+  ],
+  [
+    'missing tested pin',
+    (f) => {
+      delete f.wrapper.testedArtifacts.source;
+    },
+  ],
+  [
+    'wrong tested pin',
+    (f) => {
+      f.wrapper.testedArtifacts.source = {
+        ...f.wrapper.testedArtifacts.source,
+        sha256: '0'.repeat(64),
+      };
+    },
+  ],
+  [
+    'wrong target pin',
+    (f) => {
+      f.wrapper.targetArtifacts.source = '0'.repeat(64);
+    },
+  ],
+  [
+    'wrong tested source',
+    (f) => {
+      f.wrapper.testedSourceSha = '0'.repeat(40);
+    },
+  ],
+  [
+    'changed method',
+    (f) => {
+      f.original.method = 'ledger-only';
+    },
+  ],
+  [
+    'non-real execution',
+    (f) => {
+      f.original.execution = 'simulated';
+    },
+  ],
+  [
+    'recursive original',
+    (f) => {
+      f.original.schema = 'allrice-p27-internal-evidence-reuse/v1';
+    },
+  ],
+  [
+    'stale original despite fresh review',
+    (f) => {
+      f.original.observedAt = '2026-09-01T11:00:00.000Z';
+    },
+  ],
+  [
+    'future original',
+    (f) => {
+      f.original.observedAt = '2026-09-15T11:00:00.000Z';
+    },
+  ],
+  [
+    'review precedes observation',
+    (f) => {
+      f.review.reviewedAt = '2026-09-14T10:00:00.000Z';
+    },
+  ],
+  [
+    'missing assertion review',
+    (f) => {
+      f.review.assertions.pop();
+    },
+  ],
+  [
+    'affected assertion',
+    (f) => {
+      f.review.assertions[0].impact = 'affected';
+    },
+  ],
+  [
+    'unknown assertion',
+    (f) => {
+      f.review.assertions[0].impact = 'unknown';
+    },
+  ],
+  [
+    'dishonest diff',
+    (f) => {
+      f.boundary.patch = '';
+    },
+  ],
+  [
+    'failed original assertion',
+    (f) => {
+      f.original.assertions[0].observed = false;
+    },
+  ],
+])('explicit reuse rejects %s', (_name, mutate, repin = true) => {
+  const f = reuseFixture();
+  mutate(f);
+  if (repin) f.repin();
+  const report = f.validate();
+  rejects(report);
+  assert.equal(report.reusedEvidence.length, 0);
+});
+
+test('reuse rejects raw attachment tampering and retains cross-evidence device constraints', () => {
+  const f = reuseFixture();
+  writeFileSync(
+    join(f.root, f.original.attachments[0].path),
+    'Different raw observation',
+  );
+  rejects(f.validate());
+  const g = reuseFixture();
+  g.original.device.id = 'not-the-other-arm64-device';
+  g.repin();
+  rejects(g.validate());
+});
+
+test.each([
+  [
+    'runtime code',
+    ({ checkout }) =>
+      writeFileSync(
+        join(checkout, 'apps/product.mjs'),
+        'export const changed = true;\n',
+      ),
+  ],
+  [
+    'dependency',
+    ({ checkout }) =>
+      writeFileSync(
+        join(checkout, 'package.json'),
+        '{"dependencies":{"changed":"1"}}',
+      ),
+  ],
+  [
+    'file mode',
+    ({ checkout }) => chmodSync(join(checkout, 'apps/product.mjs'), 0o755),
+  ],
+  [
+    'non-allowlisted markdown',
+    ({ checkout }) =>
+      writeFileSync(join(checkout, 'apps/prompt.md'), 'Changed model prompt'),
+  ],
+])('actual %s change defeats truthful unaffected review', (_name, change) => {
+  const f = reuseFixture({ change });
+  const report = f.validate();
+  rejects(report);
+  assert.ok(
+    report.internalBlockers.some(
+      (b) => b.code === 'reuse-product-tree-changed-or-unknown',
+    ),
+  );
+});
+
+test('same-code but changed native package bytes cannot be reused', () => {
+  const f = reuseFixture();
+  f.wrapper.testedArtifacts['bridge-arm64'] = f.write(
+    'reuse/different-package.zip',
+    'Different synthetic build bytes',
+  );
+  f.original.artifacts['bridge-arm64'] =
+    f.wrapper.testedArtifacts['bridge-arm64'].sha256;
+  f.repin();
+  rejects(f.validate());
+});
+
+test.each([
+  'source-build-package-provenance',
+  'dev-final-sha-login-history-downloads-flags-smoke',
+])('%s always requires fresh target evidence', (caseId) => {
+  const f = reuseFixture({ caseId });
+  const report = f.validate();
+  rejects(report);
+  assert.ok(
+    report.internalBlockers.some(
+      (b) => b.code === 'reuse-case-requires-fresh-execution',
+    ),
+  );
+});
 
 test('the exact 47-case matrix separates only publisher authority, never internal replay rejection', () => {
   assert.equal(INTERNAL_MATRIX.length, 47);

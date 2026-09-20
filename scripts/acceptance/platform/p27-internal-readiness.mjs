@@ -13,6 +13,7 @@ import {
   validateRelease,
 } from './p28-release-readiness.mjs';
 import { validSubscriptionEvidence } from './p28-subscription-evidence.mjs';
+import { resolveReusedEvidence } from './internal-evidence-reuse.mjs';
 import {
   digest,
   hash,
@@ -75,7 +76,9 @@ export function validateInternalReadiness({
 }) {
   const internalBlockers = [],
     notApplicable = [],
-    methodsObserved = [];
+    methodsObserved = [],
+    freshEvidence = [],
+    reusedEvidence = [];
   let preparationReport = null;
   const add = (code, path) => internalBlockers.push({ code, path });
   const require = (condition, code, path) => {
@@ -160,6 +163,8 @@ export function validateInternalReadiness({
       billingAlternatives: ASSISTANT_BILLING_ASSERTIONS,
       notApplicable,
       methodsObserved,
+      freshEvidence,
+      reusedEvidence,
       signedPackageRevalidationRequired: true,
       releaseEligible: false,
       formalReadiness: false,
@@ -329,7 +334,16 @@ export function validateInternalReadiness({
   const cases = new Map(INTERNAL_MATRIX.map((c) => [c.caseId, c]));
   for (const [index, entry] of manifest.evidence.entries()) {
     const field = `evidence[${index}]`;
-    if (!keys(entry, ['caseId', 'file'], field)) continue;
+    const entryBlockers = internalBlockers.length;
+    const reuse = entry?.reuse === true;
+    if (
+      !keys(
+        entry,
+        reuse ? ['caseId', 'file', 'reuse'] : ['caseId', 'file'],
+        field,
+      )
+    )
+      continue;
     const row = cases.get(entry.caseId);
     if (
       !require(row?.internalAssertions.length > 0 &&
@@ -337,7 +351,48 @@ export function validateInternalReadiness({
     )
       continue;
     seen.add(entry.caseId);
-    const receipt = pinnedJson(entry.file, `${field}.file`);
+    const client = entry.caseId.startsWith('client/'),
+      arch = entry.caseId.split('/')[1];
+    const needed = client ? ['source', `bridge-${arch}`] : [...ARTIFACT_IDS];
+    const bound = new Map(prep.artifacts.map((a) => [a.id, a.file.sha256]));
+    if (
+      entry.caseId.includes('rollback') &&
+      prep.rollback.mode === 'compatible-redeploy'
+    )
+      for (const artifact of prep.rollback.targetArtifacts) {
+        needed.push(`rollback/${artifact.id}`);
+        bound.set(`rollback/${artifact.id}`, artifact.file.sha256);
+      }
+    let receipt = pinnedJson(entry.file, `${field}.file`);
+    let receiptSourceSha = manifest.sourceSha;
+    let reuseReport = null;
+    if (reuse) {
+      try {
+        const resolved = resolveReusedEvidence({
+          wrapper: receipt,
+          caseId: entry.caseId,
+          evidenceRoot,
+          sourceRoot,
+          targetSourceSha: manifest.sourceSha,
+          targetArtifacts: Object.fromEntries(
+            needed.map((id) => [id, bound.get(id)]),
+          ),
+          now,
+        });
+        receipt = resolved.receipt;
+        receiptSourceSha = resolved.testedSourceSha;
+        for (const id of needed) bound.set(id, resolved.testedArtifacts[id]);
+        reuseReport = resolved.report;
+      } catch (error) {
+        add(
+          /^reuse-[a-z-]+$/.test(error?.message ?? '')
+            ? error.message
+            : 'reuse-validation-failed',
+          field,
+        );
+        continue;
+      }
+    }
     if (
       !keys(
         receipt,
@@ -368,7 +423,7 @@ export function validateInternalReadiness({
       receipt.caseId ===
         entry.caseId, 'evidence-schema-or-case-mismatch', field);
     require(receipt.sourceSha ===
-      manifest.sourceSha, 'evidence-source-mismatch', field);
+      receiptSourceSha, 'evidence-source-mismatch', field);
     require(receipt.status === 'passed' &&
       receipt.execution ===
         'real-execution', 'evidence-not-real-passed', field);
@@ -380,8 +435,6 @@ export function validateInternalReadiness({
     require(text(receipt.tenantId) &&
       text(receipt.runId) &&
       text(receipt.command), 'execution-context-required', field);
-    const client = entry.caseId.startsWith('client/'),
-      arch = entry.caseId.split('/')[1];
     const environment = client
       ? 'physical-macos'
       : entry.caseId.startsWith('dev-')
@@ -389,16 +442,6 @@ export function validateInternalReadiness({
         : 'isolated';
     require(receipt.environment ===
       environment, 'wrong-evidence-environment', field);
-    const needed = client ? ['source', `bridge-${arch}`] : [...ARTIFACT_IDS];
-    const bound = new Map(prep.artifacts.map((a) => [a.id, a.file.sha256]));
-    if (
-      entry.caseId.includes('rollback') &&
-      prep.rollback.mode === 'compatible-redeploy'
-    )
-      for (const artifact of prep.rollback.targetArtifacts) {
-        needed.push(`rollback/${artifact.id}`);
-        bound.set(`rollback/${artifact.id}`, artifact.file.sha256);
-      }
     if (keys(receipt.artifacts, needed, `${field}.artifacts`))
       for (const id of needed)
         require(receipt.artifacts[id] ===
@@ -506,6 +549,17 @@ export function validateInternalReadiness({
         devices.set(arch, receipt.device.id);
       }
     } else require(receipt.device === null, 'unexpected-device', field);
+    if (internalBlockers.length === entryBlockers) {
+      if (reuseReport) reusedEvidence.push(reuseReport);
+      else
+        freshEvidence.push({
+          caseId: entry.caseId,
+          sourceSha: receipt.sourceSha,
+          observedAt: receipt.observedAt,
+          method: receipt.method,
+          executedOnTarget: true,
+        });
+    }
   }
   for (const row of INTERNAL_MATRIX)
     if (row.internalAssertions.length)

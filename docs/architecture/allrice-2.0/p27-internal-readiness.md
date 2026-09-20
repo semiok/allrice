@@ -147,3 +147,38 @@ node scripts/acceptance/platform/p27-internal-readiness.mjs \
 退出码 0 只表示内部材料条件成立，2 表示拒绝；请同时阅读 `internalBlockers` 与始终独立保留的 `externalDistributionPending`。退出 0 不授予环境操作权限，也不把原 `dev / rc / tenant / prod` 变绿。草稿 `sourceSha/preparation` pin 为 null、evidence 为空，必须拒绝；检查器自测使用合成材料仅验证拒绝边界，不构成产品成功观察。
 
 执行顺序是 MET-148 独立 PR 审查和自测 → MET-138 / MET-142 完成真实网页审批 → Bridge 执行 → 结果返回/刷新恢复闭环及上述内部矩阵 → MET-147 集中 UX 收口。MET-143 的账号/正式身份/公证与分发准备可并行，不作为前述产品研发的前置依赖，但始终是正式分发验收的前置。MET-148 本身不执行后续真实模型/服务联验、不部署、不改工单状态；真实缺设备、权限或产品实现的事项继续登记并解决。
+
+## 7. MET-142：显式、保守的历史观察复用
+
+默认 `{caseId,file}` 仍严格要求同候选、同产物的 v1 receipt，不会自动推断复用。只有显式 `{caseId,file,reuse:true}` 才把 `file` 解释为以下独立 wrapper；`reuse:false`、未知字段和旧收据直接换 source SHA 均拒绝。当前 target preparation 仍完整经过原 prepare gate。正式 P28 checker 不接受此 wrapper，未增加正式分发豁免。
+
+```text
+schema = allrice-p27-internal-evidence-reuse/v1
+caseId
+originalReceipt = {path,sha256,bytes}
+testedSourceSha
+testedArtifacts = {每个所需 artifact ID: {path,sha256,bytes}}
+targetSourceSha
+targetArtifacts = {每个所需 artifact ID: sha256}
+impactReview = {path,sha256,bytes}
+```
+
+`originalReceipt` 必须是原始不可改写的 `allrice-p27-internal-evidence/v1`，不能指向另一个 reuse wrapper。其真实方法、run/device、原 `observedAt`、原 source/artifact、附件和计费原证明全部按同一收据校验逻辑检查；仅 artifact/source 绑定使用明确的 tested pins。客户端只要求原 receipt 对应的 source 与本架构产物，不虚构一份包含无关七件产物的旧 preparation。需要 rollback 目标的场景继续要求完整额外 pins。所有 tested 实体文件实际读核摘要/字节，target pins 必须与当前 preparation 一致。
+
+审查文件字段精确为：
+
+```text
+schema = allrice-p27-internal-impact-review/v1
+caseId / originalReceiptSha256 / testedSourceSha / targetSourceSha
+reviewedAt / reviewer
+codeBoundary = {path,sha256,bytes}
+assertions = [{name,impact:"unaffected",rationale,boundarySha256}]
+```
+
+逐断言 review 必须覆盖原收据全部断言、无遗漏/重复，绑定同一 codeBoundary；`affected`、`unknown` 或空理由拒绝。审查时间必须不早于观察且自身有效；**原观察继续受原 7 天规则约束，review 不续期，也不产生新的实测时间**。
+
+`codeBoundary` 是 `allrice-p27-code-boundary/v1` JSON，包含 `testedSourceSha/targetSourceSha/policy/testedTreeSha256/targetTreeSha256/patch`。policy 固定为 `unchanged-product-tree-and-artifact-bytes/v1`。检查器从 `sourceRoot` 的本地 Git 对象重新读取两个完整 commit、全部 tree 条目的 path/mode/type/blob，并用禁用外部 diff/textconv 的 bounded Git 命令重新计算完整 binary/full-index/no-renames patch；文件与真实计算不一致即拒绝。只能排除代码中 `REUSE_NON_PRODUCT_PATHS` 明列的验收合同/checker 文档文件，不能由 reviewer 自选路径或用一个 `affected:false` 替代。允许路径也必须是普通非执行 blob，不能换成符号链接。其余产品树必须完全相同；除 source 归档外所有所需 artifact 必须保持原字节。
+
+这是 **gate/docs-only 候选变化** 的保守复用，不是逐组件无影响分析。应用、依赖、构建配置、权限模式或非源码包字节变化一律不复用，即使作者声明“行为相同”。它不使 B5 GUI/Keychain、已超期观察或更早 Worker/provider/accounting 代码上的历史记录自动通过。`source-build-package-provenance` 和 `dev-final-sha-login-history-downloads-flags-smoke` 固定要求新的目标候选证据。
+
+报告将通过校验的 `freshEvidence` 与 `reusedEvidence` 分列；后者保留 tested/target pins、原 observedAt、reviewedAt，并始终 `executedOnTarget:false`。两类共同接受物理设备身份和跨架构约束，失败条目不会计入有效复用。哈希与 Git 等同性只证明相对于可信 pins 的材料与边界一致，不能认证原日志、操作者身份、源码归档建造链或实际执行；源码/构建来源仍必须另有 fresh 原观察。账本结构证明不能替代 E2E/physical 方法，不生成任何 receipt 或 observed=true。历史非 v1 原件如需忠实归一化，必须另行人工保留、审查原始附件、source 与时间；本实现不自动转换。所有发布/部署授权字段继续为 false。
