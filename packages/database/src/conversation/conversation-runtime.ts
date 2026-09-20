@@ -603,7 +603,8 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
               ? null
               : inputTokens + outputTokens,
           cachedInputTokens:
-            row.receipts && row.cache_usage_known
+            row.receipts &&
+            (row.cache_usage_known || Number(row.cached_input_tokens) > 0)
               ? Number(row.cached_input_tokens)
               : null,
           usageComplete: row.receipts > 0 && row.usage_complete,

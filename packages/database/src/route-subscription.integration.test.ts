@@ -341,7 +341,7 @@ integration(
           inputTokens: 203744,
           cachedInputTokens: 173568,
           outputTokens: 4677,
-          cacheUsageKnown: true,
+          cacheUsageKnown: false,
         });
         // Several timeline events must not multiply a single ledger receipt.
         for (let index = 0; index < 3; index++)
@@ -364,7 +364,7 @@ integration(
           outputTokens: 4677,
           cachedInputTokens: 173568,
           usageComplete: true,
-          cacheUsageKnown: true,
+          cacheUsageKnown: false,
           attemptCount: 1,
           receiptCount: 1,
         });
@@ -373,7 +373,7 @@ integration(
         expect(await current()).toMatchObject({
           totalTokens: 208421,
           usageComplete: false,
-          cachedInputTokens: null,
+          cachedInputTokens: 173568,
           attemptCount: 2,
           receiptCount: 1,
         });
@@ -394,7 +394,7 @@ integration(
           totalTokens: 209433,
           inputTokens: 204744,
           outputTokens: 4689,
-          cachedInputTokens: null,
+          cachedInputTokens: 173568,
           usageComplete: false,
           cacheUsageKnown: false,
           attemptCount: 2,
@@ -403,6 +403,23 @@ integration(
         expect((await listDshRuntimeEventTimeline(randomUUID())).turns).toEqual(
           [],
         );
+      }));
+    it('does not turn an unknown zero cache placeholder into a known zero', () =>
+      scenario(async (f) => {
+        await freezeRouteSubscriptionSnapshot(f.identity, f.fixture.db);
+        await f.complete({
+          ...f.outcome,
+          cachedInputTokens: 0,
+          cacheUsageKnown: false,
+        });
+        const turn = (
+          await listDshRuntimeEventTimeline(f.task.sessionId)
+        ).turns.find((t) => t.run.id === f.task.runId)!;
+        expect(turn.usage).toMatchObject({
+          cachedInputTokens: null,
+          cacheUsageKnown: false,
+          receiptCount: 1,
+        });
       }));
     it('cannot retroactively reinterpret historical subscription NULL as N/A', () =>
       scenario(async (f) => {

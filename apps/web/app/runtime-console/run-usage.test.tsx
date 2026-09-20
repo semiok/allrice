@@ -68,6 +68,18 @@ describe('per-Run recorded token usage', () => {
     expect(html).toContain('运行中，用量待结算');
     expect(html).toContain('已确认累计');
   });
+  it('retains observed cache even when the full cache breakdown is unavailable', () => {
+    const html = renderToStaticMarkup(
+      <RunUsageSummary
+        usage={{ ...usage, cacheUsageKnown: false }}
+        runStatus="succeeded"
+      />,
+    );
+    expect(html).toContain('173,568');
+    expect(html).toContain('（已记录）');
+    expect(html).toContain('缓存明细未完整');
+    expect(html).toContain('总消耗');
+  });
   it('preserves a known zero receipt', () => {
     const html = renderToStaticMarkup(
       <RunUsageSummary

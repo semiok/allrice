@@ -32,6 +32,9 @@ export function RunUsageSummary({
       </span>
       <span>
         其中缓存：<strong>{format(usage.cachedInputTokens)}</strong>
+        {!usage.cacheUsageKnown && usage.cachedInputTokens !== null
+          ? '（已记录）'
+          : null}
       </span>
       <span>输入（含缓存）：{format(usage.inputTokens)}</span>
       <span>输出：{format(usage.outputTokens)}</span>
