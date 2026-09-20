@@ -4,6 +4,7 @@ import { HandlerError } from './errors.js';
 import { riceToolCapability, riceToolRisk } from './tool-broker/definitions.js';
 import { objectValue } from './tool-broker/input-values.js';
 import { requireRiceToolHandler } from './tool-broker/registry.js';
+import { boundToolResult } from './tool-broker/result-budget.js';
 import type {
   RiceToolExecutionInput,
   RiceToolResult,
@@ -111,7 +112,10 @@ export async function executeRiceTool(
     }
 
     const registration = requireRiceToolHandler(input.call.name);
-    const result = await registration.execute({ input, arguments: args });
+    const result = await boundToolResult(
+      input,
+      await registration.execute({ input, arguments: args }),
+    );
     await recordToolBrokerAudit({
       context: input.context,
       toolName: input.call.name,

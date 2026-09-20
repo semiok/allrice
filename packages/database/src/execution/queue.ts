@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CancelRunInputSchema,
   ChatCitationSchema,
+  ChatMessageContentSchema,
   CreateRunInputSchema,
   EmployeeExecutionSnapshotSchema,
   ExecutionContextSchema,
@@ -906,9 +907,24 @@ async function transitionTerminal(
         : input.runStatus === 'canceled'
           ? 'Rice 的这次执行已取消。'
           : failureText;
+    const warning = ChatMessageContentSchema.shape.budgetWarning.safeParse(
+      input.runStatus === 'succeeded' &&
+        result.budgetWarning &&
+        typeof result.budgetWarning === 'object'
+        ? (result.budgetWarning as Record<string, unknown>).code
+        : undefined,
+    );
     await transaction`
       update allrice_messages
-      set content = ${transaction.json(toJsonValue({ text, citations }))},
+      set content = ${transaction.json(
+        toJsonValue({
+          text,
+          citations,
+          ...(warning.success && warning.data
+            ? { budgetWarning: warning.data }
+            : {}),
+        }),
+      )},
           status = ${input.runStatus === 'succeeded' ? 'completed' : 'failed'},
           error_code = ${input.code ?? null}, completed_at = now()
       where id = ${employeeRun.assistant_message_id}

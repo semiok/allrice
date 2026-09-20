@@ -18,14 +18,14 @@ const messages: Message[] = Array.from({ length: 20 }, (_, index) => ({
   runId: `run-${index}`,
   createdAt: '2026-09-08T11:00:00Z',
 }));
-function render(enabled?: boolean) {
+function render(enabled?: boolean, shownMessages = messages) {
   panels.local.mockReturnValue(null);
   panels.cloud.mockReturnValue(null);
   return renderToStaticMarkup(
     <ChatTranscript
       atBottom
       localCommandsEnabled={enabled}
-      messages={messages}
+      messages={shownMessages}
       runTraces={{}}
       runViews={{}}
       tenantHeaders={{}}
@@ -39,6 +39,27 @@ function render(enabled?: boolean) {
 }
 describe('historical transcript capability gating', () => {
   afterEach(() => vi.clearAllMocks());
+
+  it.each(['failed', 'completed'] as const)(
+    'shows the answer and budget warning without generic failure (%s)',
+    (status) => {
+      const html = render(false, [
+        {
+          ...messages[0]!,
+          status,
+          errorCode:
+            status === 'failed' ? 'MODEL_OUTPUT_BUDGET_EXCEEDED' : null,
+          content: {
+            text: 'Preserved complete answer',
+            budgetWarning: 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED',
+          },
+        },
+      ]);
+      expect(html).toContain('Preserved complete answer');
+      expect(html).toContain('答案已保留');
+      expect(html).not.toContain('这次没有完成');
+    },
+  );
 
   it.each([undefined, false])(
     'never mounts a local request panel while disabled (%s)',

@@ -974,16 +974,29 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
               };
             }
             const results = await Promise.all(
-              queries.map((query) =>
-                this.searchCodex({ query, maxResults: 5 }),
+              queries.map((query, index) =>
+                this.toolBrokerRequest(
+                  {
+                    toolCallId: `${exec.callId}:${index}`,
+                    name: 'web.search',
+                    arguments: { query, maxResults: 5 },
+                  },
+                  exec.signal,
+                ),
               ),
             );
+            if (
+              results.some((result) => typeof result?.modelContent !== 'string')
+            )
+              throw Error(
+                'AllRice Tool Broker returned an invalid search result',
+              );
             return {
               content: results
                 .map((result, index) =>
                   results.length === 1
-                    ? result.output
-                    : `### ${queries[index]}\n\n${result.output}`,
+                    ? result.modelContent
+                    : `### ${queries[index]}\n\n${result.modelContent}`,
                 )
                 .join('\n\n'),
             };

@@ -7,6 +7,12 @@ export function modelGovernanceFailureText(
   code: string | null | undefined,
 ): string | null {
   switch (code) {
+    case 'MODEL_OUTPUT_BUDGET_EXCEEDED':
+      return '本次任务达到平台内部输出 Token 预算，不代表 Codex 订阅周额度已用完。';
+    case 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED':
+      return '本次任务达到平台内部累计 Token 预算（包含缓存读取），不代表 Codex 订阅周额度已用完。';
+    case 'MODEL_COST_BUDGET_EXCEEDED':
+      return '本次任务达到平台设置的 API 费用预算上限。';
     case 'MODEL_TOKEN_USAGE_UNKNOWN':
       return '历史任务有尚未核对的模型用量，当前请求未调用模型。请联系平台管理员核对，或审批异常用量预算后继续；反复重试不会解除此限制。';
     case 'MODEL_COST_USAGE_UNKNOWN':

@@ -315,7 +315,8 @@ export function ChatTranscript({
                         >
                           <AssistantMarkdown
                             text={
-                              (message.status === 'failed'
+                              (message.status === 'failed' &&
+                              !message.content.budgetWarning
                                 ? modelGovernanceFailureText(message.errorCode)
                                 : null) ??
                               (streamedText || message.content.text)
@@ -323,7 +324,12 @@ export function ChatTranscript({
                           />
                         </div>
                       )}
-                      {message.status === 'failed' ? (
+                      {message.content.budgetWarning ? (
+                        <small role="status">
+                          答案已保留。本次任务超过平台内部预期 Token
+                          预算；真实用量已记录，这不代表 Codex 周额度耗尽。
+                        </small>
+                      ) : message.status === 'failed' ? (
                         <small className={styles.failedMessage}>
                           这次没有完成。
                         </small>

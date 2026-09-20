@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { completedBudgetAnswers } from './budget-answer.ts';
 import {
   ArtifactReviewError,
   assertWorkbenchSession,
@@ -770,13 +771,44 @@ export async function getChatSessionHistory(
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
   );
+  const recovered = await completedBudgetAnswers({
+    organizationId: context.organizationId,
+    workspaceId,
+    ownerId: row.owner_id,
+    sessionId: row.id,
+    runIds: messages
+      .filter(
+        (m) =>
+          m.status === 'failed' &&
+          [
+            'MODEL_OUTPUT_BUDGET_EXCEEDED',
+            'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED',
+          ].includes(m.error_code ?? ''),
+      )
+      .flatMap((m) => (m.run_id ? [m.run_id] : [])),
+  });
   return {
     session: mapSession(row),
     contextStatus,
     nativeContextStatus,
-    messages: messages.map((message) =>
-      mapMessage(context, message, attachments.get(message.id) ?? []),
-    ),
+    messages: messages.map((message) => {
+      const mapped = mapMessage(
+        context,
+        message,
+        attachments.get(message.id) ?? [],
+      );
+      const text = recovered.get(message.run_id ?? '');
+      if (text)
+        mapped.content = {
+          ...mapped.content,
+          text,
+          budgetWarning:
+            message.error_code === 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
+              ? 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
+              : 'MODEL_OUTPUT_BUDGET_EXCEEDED',
+        };
+      return mapped;
+    }),
   };
 }
 

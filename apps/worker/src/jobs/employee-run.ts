@@ -53,6 +53,7 @@ import {
 } from '../harness/router.js';
 import { buildAuthorizedKnowledgeContext } from '../knowledge.js';
 import { estimateModelCostCents } from '../model-cost.js';
+import { checkCompletedModelBudget } from '../model-result-budget.js';
 import { assertSubscriptionQuotaNotExhausted } from '../subscription-quota-admission.js';
 import {
   preflightAssistantPricing,
@@ -1240,21 +1241,13 @@ export async function executeEmployeeRun({
               model: result.model,
               ...result.usage,
             });
-    if (
-      runLimits &&
-      (result.usage.outputTokens > runLimits.maxOutputTokens ||
-        result.usage.inputTokens + result.usage.outputTokens >
-          runLimits.maxTotalTokens ||
-        (!subscriptionSnapshot &&
-          runLimits.maxCostCents !== null &&
-          (routeCostCents === null || routeCostCents > runLimits.maxCostCents)))
-    ) {
-      throw new HandlerError(
-        'MODEL_OUTPUT_BUDGET_EXCEEDED',
-        'Frozen employee model output budget was exceeded',
-        false,
-      );
-    }
+    const budgetWarning = checkCompletedModelBudget({
+      limits: runLimits,
+      result,
+      verifiedSubscription: !!subscriptionSnapshot,
+      governedAssistants: !!assistants,
+      costCents: routeCostCents,
+    });
     const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
       (message) =>
         message.id
@@ -1293,6 +1286,7 @@ export async function executeEmployeeRun({
     outcome = 'idle';
     return {
       ...result,
+      ...(budgetWarning ? { budgetWarning } : {}),
       citations: [...knowledge.citations, ...workflowCitations].filter(
         (citation, index, values) =>
           values.findIndex(

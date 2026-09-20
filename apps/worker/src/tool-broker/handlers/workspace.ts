@@ -22,7 +22,7 @@ import {
 } from '../input-values.js';
 import type { RiceToolHandler } from '../types.js';
 
-const maximumReadableBytes = 200_000;
+const maximumReadableBytes = 2_000_000;
 const readableMediaTypes = new Set([
   'text/plain',
   'text/markdown',
@@ -55,7 +55,7 @@ async function streamText(stream: ReadableStream<Uint8Array>) {
       if (size > maximumReadableBytes) {
         throw new HandlerError(
           'TOOL_FILE_TOO_LARGE',
-          '文件超过 200 KB 的对话读取上限',
+          '文件超过 2 MB 的分页读取上限',
           false,
         );
       }
@@ -86,6 +86,24 @@ export const readWorkspaceFile: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
+  const offset = args.offset ?? 0,
+    limit = args.limit ?? 4_000;
+  if (
+    typeof offset !== 'number' ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    offset > 2_000_000 ||
+    typeof limit !== 'number' ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 4_000
+  ) {
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      '分页 offset/limit 必须是有效整数，limit 最大 4000',
+      false,
+    );
+  }
   const file = await getToolBrokerFile(
     input.context,
     stringValue(args.objectId, 'objectId'),
@@ -97,6 +115,12 @@ export const readWorkspaceFile: RiceToolHandler = async ({
       false,
     );
   }
+  if (file.object.sizeBytes > maximumReadableBytes)
+    throw new HandlerError(
+      'TOOL_FILE_TOO_LARGE',
+      '文件超过 2 MB 的分页读取上限',
+      false,
+    );
   const content = await streamText(
     await new LocalStorageAdapter(input.storageRoot).get(file.object),
   );
@@ -105,7 +129,11 @@ export const readWorkspaceFile: RiceToolHandler = async ({
       id: file.object.id,
       fileName: file.fileName,
       mediaType: file.object.mediaType,
-      content,
+      content: content.slice(offset, offset + limit),
+      offset,
+      totalCharacters: content.length,
+      truncated: offset > 0 || offset + limit < content.length,
+      nextOffset: offset + limit < content.length ? offset + limit : null,
     }),
     summary: `已读取 ${file.fileName}`,
     itemCount: 1,
