@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   canonicalRuntimeBridgeJson,
   type LocalMcpConnection,
@@ -8,10 +8,21 @@ import {
   type BridgeDevice,
   type BridgeFolderGrant,
 } from '@allrice/contracts';
+import type { ManagedConnectorProps } from './tenant-resource-editor';
 import styles from './mcp-settings.module.css';
 type Device = BridgeDevice & { folderGrants: BridgeFolderGrant[] };
-const endpoint = '/api/v1/admin/local-mcp';
-export function LocalMcpSettings({ workspaceId }: { workspaceId: string }) {
+const legacyEndpoint = '/api/v1/admin/local-mcp';
+export function LocalMcpSettings({
+  workspaceId,
+  management,
+}: {
+  workspaceId: string;
+  management?: ManagedConnectorProps;
+}) {
+  const endpoint = management
+    ? `/api/v1/admin/tenants/${management.organizationId}/local-mcp`
+    : legacyEndpoint;
+  const subjectId = management?.subjectId;
   const [connections, setConnections] = useState<LocalMcpConnection[]>([]),
     [employees, setEmployees] = useState<McpEmployeeTarget[]>([]),
     [devices, setDevices] = useState<Device[]>([]),
@@ -31,6 +42,7 @@ export function LocalMcpSettings({ workspaceId }: { workspaceId: string }) {
     [credentialRevision, setCredentialRevision] = useState('1'),
     [edit, setEdit] = useState<LocalMcpConnection | null>(null),
     [selected, setSelected] = useState<Record<string, string>>({});
+  const initialSource = useRef(source);
   useEffect(() => {
     const abort = new AbortController();
     setError('');
@@ -38,15 +50,25 @@ export function LocalMcpSettings({ workspaceId }: { workspaceId: string }) {
     setEmployees([]);
     setDevices([]);
     setEnabled(false);
-    fetch(`${endpoint}?workspaceId=${encodeURIComponent(workspaceId)}`, {
-      cache: 'no-store',
-      signal: abort.signal,
-    })
+    fetch(
+      `${endpoint}?workspaceId=${encodeURIComponent(workspaceId)}${subjectId ? `&subjectId=${subjectId}` : ''}`,
+      {
+        cache: 'no-store',
+        signal: abort.signal,
+      },
+    )
       .then(async (response) => {
         const body = await response.json();
         if (!response.ok)
           throw Error(body.error?.message ?? '本地 MCP 配置读取失败');
         if (!abort.signal.aborted) {
+          if (
+            management &&
+            (body.organizationId !== management.organizationId ||
+              body.subjectId !== subjectId ||
+              body.workspaceId !== workspaceId)
+          )
+            throw Error('返回管理范围不匹配');
           setConnections(body.connections);
           setEmployees(body.employees);
           setDevices(body.devices);
@@ -58,12 +80,44 @@ export function LocalMcpSettings({ workspaceId }: { workspaceId: string }) {
           setError(e instanceof Error ? e.message : '读取失败');
       });
     return () => abort.abort();
-  }, [workspaceId, refresh]);
+  }, [workspaceId, refresh, endpoint, subjectId]);
+  const managementBusy = management?.onBusy,
+    managementDirty = management?.onDirty;
+  useEffect(() => {
+    managementBusy?.(busy);
+    return () => managementBusy?.(false);
+  }, [busy, managementBusy]);
+  useEffect(() => {
+    managementDirty?.(
+      !!name ||
+        !!edit ||
+        !!deviceId ||
+        !!grantId ||
+        !!credentialId ||
+        path !== '.' ||
+        source !== initialSource.current ||
+        credentialRevision !== '1',
+    );
+  }, [
+    name,
+    edit,
+    deviceId,
+    grantId,
+    credentialId,
+    path,
+    source,
+    credentialRevision,
+    managementDirty,
+  ]);
   async function mutate(
     method: 'POST' | 'PATCH',
     payload: Record<string, unknown>,
   ) {
     if (busy) return;
+    if (management && management.reason.trim().length < 5) {
+      setError('请先填写至少 5 个字符的管理操作原因。');
+      return;
+    }
     setBusy(true);
     setError('');
     setNotice('');
@@ -71,13 +125,41 @@ export function LocalMcpSettings({ workspaceId }: { workspaceId: string }) {
       const response = await fetch(endpoint, {
         method,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId, ...payload }),
+        body: JSON.stringify({
+          workspaceId,
+          ...payload,
+          ...(management
+            ? {
+                subjectId,
+                reason: management.reason,
+                ...('connectionId' in payload &&
+                payload.action !== 'employee_binding'
+                  ? {
+                      expectedConnectionRevision: connections.find(
+                        (c) => c.id === payload.connectionId,
+                      )?.revision,
+                      expectedToolGrantRevision: connections
+                        .find((c) => c.id === payload.connectionId)
+                        ?.tools.find((t) => t.revisionId === payload.revisionId)
+                        ?.grantRevision,
+                    }
+                  : {}),
+              }
+            : {}),
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw Error(data.error?.message ?? '配置未保存');
       setRefresh((n) => n + 1);
       setNotice('配置已保存；不代表已经启动或获准执行');
       setEdit(null);
+      setName('');
+      setDeviceId('');
+      setGrantId('');
+      setCredentialId('');
+      setPath('.');
+      setSource(initialSource.current);
+      setCredentialRevision('1');
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败');
     } finally {

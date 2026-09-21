@@ -10,6 +10,10 @@ import {
   isLocalCommandProfileForPlatform,
   type RequestContext,
 } from '@allrice/contracts';
+import {
+  requireTenantManagementScope,
+  type TenantManagementTarget,
+} from './tenant-management-scope.ts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import { localCommandFeatureEnabled } from './local-command-service.ts';
@@ -30,32 +34,40 @@ import {
 /** Read-only, actor-scoped discovery. No provisioning, secret material, network
  * probes, cached-membership authority, mutable grants or execution side effects.
  * Admission must still recheck the actual Run/target/binding/approval. */
-export async function getWorkspaceReadiness(
+async function readWorkspaceReadiness(
   ctx: RequestContext,
   workspaceInput: string,
   sessionInput: string | null,
   db = getDatabase(),
+  management?: TenantManagementTarget,
 ) {
   if (ctx.actor.type !== 'user')
     throw new DataAccessError('authentication_required');
   const workspaceId = UuidSchema.parse(workspaceInput);
   const sessionId =
     sessionInput === null ? null : UuidSchema.parse(sessionInput);
+  const organizationId = management?.organizationId ?? ctx.organizationId,
+    subjectId = management?.subjectId ?? ctx.actor.id;
   return db.begin('isolation level repeatable read read only', async (tx) => {
+    if (management) {
+      if (management.workspaceId !== workspaceId || sessionId !== null)
+        throw new DataAccessError('authorization_denied');
+      await requireTenantManagementScope(ctx, management, tx);
+    }
     const memberships = await tx<{ role: string }[]>`
       select m.role from allrice_memberships m
       join allrice_users u on u.id=m.user_id and u.status='active'
       join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
       join allrice_workspaces w on w.id=${workspaceId} and w.organization_id=o.id and w.archived_at is null
-      where m.organization_id=${ctx.organizationId} and m.user_id=${ctx.actor.id}
+      where m.organization_id=${organizationId} and m.user_id=${subjectId}
         and m.active and (m.workspace_id is null or m.workspace_id=w.id)`;
     if (!memberships.length) throw new DataAccessError('authorization_denied');
     let assignmentId: string | null = null;
     if (sessionId) {
       const [session] = await tx<{ employee_assignment_id: string | null }[]>`
         select employee_assignment_id from allrice_chat_sessions
-        where id=${sessionId} and organization_id=${ctx.organizationId} and workspace_id=${workspaceId}
-          and owner_id=${ctx.actor.id} and archived_at is null`;
+        where id=${sessionId} and organization_id=${organizationId} and workspace_id=${workspaceId}
+          and owner_id=${subjectId} and archived_at is null`;
       if (!session) throw new DataAccessError('not_found');
       assignmentId = session.employee_assignment_id;
     }
@@ -64,8 +76,8 @@ export async function getWorkspaceReadiness(
       join allrice_employee_versions v on v.id=a.employee_version_id and v.employee_id=a.employee_id
         and v.organization_id=a.organization_id and v.workspace_id=a.workspace_id
       join allrice_employees e on e.id=a.employee_id and e.status='active'
-      where a.organization_id=${ctx.organizationId} and a.workspace_id=${workspaceId}
-        and a.user_id=${ctx.actor.id} and a.active
+      where a.organization_id=${organizationId} and a.workspace_id=${workspaceId}
+        and a.user_id=${subjectId} and a.active
         and (${sessionId}::uuid is null or a.id=${assignmentId})
       order by a.is_default desc,e.name,a.id limit 1`;
     const parsed = EmployeeManifestSchema.safeParse(employee?.manifest);
@@ -74,7 +86,7 @@ export async function getWorkspaceReadiness(
     const [model] = sessionId
       ? await tx<{ snapshot: unknown }[]>`
       select snapshot from allrice_session_model_snapshots where session_id=${sessionId}
-        and organization_id=${ctx.organizationId} and workspace_id=${workspaceId}`
+        and organization_id=${organizationId} and workspace_id=${workspaceId}`
       : [];
     const modelSnapshot = SessionModelSnapshotSchema.safeParse(model?.snapshot);
     const provider = model
@@ -84,7 +96,7 @@ export async function getWorkspaceReadiness(
       : (manifest?.runtimePolicy.provider ?? 'unknown');
     const [control] = await tx<{ version: number; controls: unknown }[]>`
       select version,controls from allrice_runtime_policy_controls
-      where organization_id=${ctx.organizationId} and workspace_id=${workspaceId}`;
+      where organization_id=${organizationId} and workspace_id=${workspaceId}`;
     const controls = RuntimePolicyControlsSchema.safeParse(control?.controls);
     const devices = await tx<
       {
@@ -108,8 +120,8 @@ export async function getWorkspaceReadiness(
         p.profile,coalesce(p.reported_at between now()-interval '90 seconds' and now(),false) as profile_fresh
       from allrice_bridge_devices d left join allrice_bridge_runtime_profiles p on p.device_id=d.id
         and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
-      where d.organization_id=${ctx.organizationId} and d.workspace_id=${workspaceId}
-        and d.owner_id=${ctx.actor.id} and d.revoked_at is null`;
+      where d.organization_id=${organizationId} and d.workspace_id=${workspaceId}
+        and d.owner_id=${subjectId} and d.revoked_at is null`;
     const runner = devices.some((d) => {
       const p = RuntimeLocalCommandProfileSchema.safeParse(d.profile);
       return (
@@ -126,11 +138,11 @@ export async function getWorkspaceReadiness(
       { id: string; state: string; capabilities: string[] }[]
     >`
       select id,state,capabilities from allrice_execution_targets
-      where organization_id=${ctx.organizationId} and workspace_id=${workspaceId} and kind='cloud_sandbox'`;
+      where organization_id=${organizationId} and workspace_id=${workspaceId} and kind='cloud_sandbox'`;
     const cloudGrants = await tx<{ target_id: string; profile: unknown }[]>`
       select target_id,profile from allrice_cloud_execution_grants
-      where organization_id=${ctx.organizationId} and workspace_id=${workspaceId}
-        and owner_id=${ctx.actor.id} and enabled and revoked_at is null`;
+      where organization_id=${organizationId} and workspace_id=${workspaceId}
+        and owner_id=${subjectId} and enabled and revoked_at is null`;
     const browserGrants = await tx<
       {
         target_id: string;
@@ -142,8 +154,8 @@ export async function getWorkspaceReadiness(
       select g.target_id,g.profile,g.transport,l.device_id from allrice_browser_control_grants g
       left join allrice_local_browser_grants l on l.grant_id=g.id and l.organization_id=g.organization_id
         and l.workspace_id=g.workspace_id and l.owner_id=g.owner_id and l.purpose='public' and l.cleanup_requested_at is null
-      where g.organization_id=${ctx.organizationId} and g.workspace_id=${workspaceId}
-        and g.owner_id=${ctx.actor.id} and g.enabled and g.revoked_at is null`;
+      where g.organization_id=${organizationId} and g.workspace_id=${workspaceId}
+        and g.owner_id=${subjectId} and g.enabled and g.revoked_at is null`;
     function cloudStatus(
       capability: string,
       grants: { target_id: string; profile: unknown }[],
@@ -189,7 +201,7 @@ export async function getWorkspaceReadiness(
           join allrice_bridge_folder_grants g on g.id=l.folder_grant_id and g.device_id=d.id
             and g.organization_id=d.organization_id and g.workspace_id=d.workspace_id and g.owner_id=d.owner_id
           join allrice_bridge_runtime_profiles p on p.device_id=d.id and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
-          where d.id=l.device_id and d.organization_id=c.organization_id and d.workspace_id=c.workspace_id and d.owner_id=${ctx.actor.id}
+          where d.id=l.device_id and d.organization_id=c.organization_id and d.workspace_id=c.workspace_id and d.owner_id=${subjectId}
             and d.revoked_at is null and d.last_seen_at between now()-interval '90 seconds' and now()
             and g.revoked_at is null and g.runtime_generation=l.folder_grant_version
             and p.reported_at between now()-interval '90 seconds' and now() and p.profile->>'available'='true')) as local_ready
@@ -199,8 +211,8 @@ export async function getWorkspaceReadiness(
         and definition.organization_id=b.organization_id and definition.workspace_id=b.workspace_id and definition.enabled
       left join allrice_local_mcp_config l on l.binding_id=c.binding_id
         and l.organization_id=c.organization_id and l.workspace_id=c.workspace_id
-      where c.organization_id=${ctx.organizationId} and c.workspace_id=${workspaceId}
-        and (c.transport='streamable_http' or l.owner_id=${ctx.actor.id})`;
+      where c.organization_id=${organizationId} and c.workspace_id=${workspaceId}
+        and (c.transport='streamable_http' or l.owner_id=${subjectId})`;
     function mcpStatus(transport: string): ReadinessFacts['cloudMcp'] {
       const list = connections.filter((c) => c.transport === transport);
       if (!list.length) return 'missing';
@@ -296,17 +308,37 @@ export async function getWorkspaceReadiness(
         teamwork: false,
       },
     };
-    return WorkspaceReadinessSchema.parse({
-      schemaVersion: 1,
-      organizationId: ctx.organizationId,
-      workspaceId,
-      viewerId: ctx.actor.id,
-      sessionId,
-      employeeVersionId: employee?.id ?? null,
-      observedAt: time!.observed_at.toISOString(),
-      canAdminister,
-      basis: 'next_task',
-      capabilities: projectWorkspaceReadiness(facts),
-    });
+    return {
+      facts,
+      readiness: WorkspaceReadinessSchema.parse({
+        schemaVersion: 1,
+        organizationId,
+        workspaceId,
+        viewerId: subjectId,
+        sessionId,
+        employeeVersionId: employee?.id ?? null,
+        observedAt: time!.observed_at.toISOString(),
+        canAdminister,
+        basis: 'next_task',
+        capabilities: projectWorkspaceReadiness(facts),
+      }),
+    };
   });
+}
+
+export async function getWorkspaceReadiness(
+  ctx: RequestContext,
+  workspaceId: string,
+  sessionId: string | null,
+  db = getDatabase(),
+) {
+  return (await readWorkspaceReadiness(ctx, workspaceId, sessionId, db))
+    .readiness;
+}
+export async function getAdminWorkspaceReadiness(
+  ctx: RequestContext,
+  target: TenantManagementTarget,
+  db = getDatabase(),
+) {
+  return readWorkspaceReadiness(ctx, target.workspaceId, null, db, target);
 }

@@ -59,7 +59,7 @@ export class ModelGovernanceError extends Error {
   }
 }
 
-const defaultResourceLimits = {
+export const defaultResourceLimits = {
   tenant: {
     monthlyRunLimit: 10_000,
     monthlyTokenLimit: 10_000_000,
@@ -412,7 +412,7 @@ export async function updateOrganizationModelQuota(input: {
   return getOrganizationModelQuota(input.context.organizationId);
 }
 
-async function resourceStatus(
+export async function resourceStatus(
   input: {
     organizationId: string;
     workspaceId: string;
@@ -433,6 +433,8 @@ async function resourceStatus(
       concurrent_run_limit, max_runtime_ms
     from allrice_model_resource_limits
     where scope_type = ${input.scope} and scope_id = ${input.scopeId}
+      and (organization_id=${input.organizationId} or organization_id is null)
+    order by organization_id nulls last limit 1
   `;
   const usageFilter =
     input.scope === 'tenant'

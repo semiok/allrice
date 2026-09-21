@@ -118,11 +118,15 @@ const definitions: Record<
   },
 };
 
-export function projectWorkspaceReadiness(
+export function projectWorkspacePrerequisites(
   f: ReadinessFacts,
-): WorkspaceCapability[] {
+): WorkspaceCapability[][] {
   return workspaceCapabilityIds.map((id) => {
     const d = definitions[id];
+    const reasons: WorkspaceCapability[] = [];
+    const add = (...args: Parameters<typeof result>) => {
+      reasons.push(result(...args));
+    };
     const result = (
       state: WorkspaceCapability['state'],
       reason: WorkspaceCapability['reason'],
@@ -139,13 +143,11 @@ export function projectWorkspaceReadiness(
       authorization: d.authorization,
     });
     if (id === 'boost' || id === 'teamwork')
-      return result('not_released', 'planned', 'platform_admin');
-    if (!f.flags[id])
-      return result('not_released', 'release_disabled', 'platform_admin');
-    if (!f.canExecute)
-      return result('needs_authorization', 'read_only', 'tenant_admin');
+      return [result('not_released', 'planned', 'platform_admin')];
+    if (!f.flags[id]) add('not_released', 'release_disabled', 'platform_admin');
+    if (!f.canExecute) add('needs_authorization', 'read_only', 'tenant_admin');
     if (!f.employee)
-      return result('needs_configuration', 'employee_missing', 'tenant_admin');
+      add('needs_configuration', 'employee_missing', 'tenant_admin');
     if (
       d.tools.some((t) => !f.tools.includes(t)) ||
       d.capabilities.some(
@@ -154,56 +156,48 @@ export function projectWorkspaceReadiness(
       (id === 'cloud_mcp' && !f.cloudMcpPolicy) ||
       (id === 'local_mcp' && !f.localMcpPolicy)
     )
-      return result('needs_authorization', 'employee_policy', 'tenant_admin');
+      add('needs_authorization', 'employee_policy', 'tenant_admin');
     const actions =
       id === 'local_files' && f.governedLocalReads
         ? ['local.fs.list', 'local.fs.read']
         : d.actions;
     if (actions || id === 'assistants') {
       if (!f.controls)
-        return result('needs_configuration', 'policy_missing', 'tenant_admin');
+        add('needs_configuration', 'policy_missing', 'tenant_admin');
       if (
-        !f.controls.enabled ||
-        (id !== 'local_files' && f.controls.mode !== 'execute') ||
-        actions?.some(
-          (a) =>
-            !f.controls!.rules.some(
-              (r) => r.action === a && r.effect !== 'deny',
-            ) ||
-            f.controls!.rules.some(
-              (r) => r.action === a && r.effect === 'deny',
-            ),
-        ) ||
-        (id === 'assistants' &&
-          (!f.controls.rules.some(
-            (r) => r.action === 'assistant.delegate' && r.effect === 'allow',
+        f.controls &&
+        (!f.controls.enabled ||
+          (id !== 'local_files' && f.controls.mode !== 'execute') ||
+          actions?.some(
+            (a) =>
+              !f.controls!.rules.some(
+                (r) => r.action === a && r.effect !== 'deny',
+              ) ||
+              f.controls!.rules.some(
+                (r) => r.action === a && r.effect === 'deny',
+              ),
           ) ||
-            f.controls.rules.some(
-              (r) => r.action === 'assistant.delegate' && r.effect !== 'allow',
-            )))
+          (id === 'assistants' &&
+            (!f.controls.rules.some(
+              (r) => r.action === 'assistant.delegate' && r.effect === 'allow',
+            ) ||
+              f.controls.rules.some(
+                (r) =>
+                  r.action === 'assistant.delegate' && r.effect !== 'allow',
+              ))))
       )
-        return result('needs_authorization', 'policy_denied', 'tenant_admin');
+        add('needs_authorization', 'policy_denied', 'tenant_admin');
     }
     if (d.target === 'local') {
       if (f.bridge === 'missing')
-        return result(
-          'needs_configuration',
-          'bridge_missing',
-          'user',
-          'bridge',
-        );
+        add('needs_configuration', 'bridge_missing', 'user', 'bridge');
       if (f.bridge === 'offline')
-        return result('device_offline', 'bridge_offline', 'user', 'bridge');
+        add('device_offline', 'bridge_offline', 'user', 'bridge');
       // Local browser is independent of filesystem and command sandbox grants.
       if (id !== 'local_browser' && !f.folder)
-        return result(
-          'needs_configuration',
-          'folder_missing',
-          'user',
-          'bridge',
-        );
+        add('needs_configuration', 'folder_missing', 'user', 'bridge');
       if (['local_command', 'local_mcp'].includes(id) && !f.runner)
-        return result('needs_configuration', 'runner_missing', 'user');
+        add('needs_configuration', 'runner_missing', 'user');
     }
     const environment =
       id === 'cloud_command'
@@ -222,27 +216,23 @@ export function projectWorkspaceReadiness(
             : 'guide'
         : 'guide';
       if (environment === 'missing')
-        return result(
+        add(
           'needs_configuration',
           'target_missing',
           id === 'local_browser' ? 'user' : 'platform_admin',
           action,
         );
       if (environment === 'unavailable')
-        return result(
+        add(
           id === 'local_browser' ? 'device_offline' : 'needs_configuration',
           'target_unavailable',
           id === 'local_browser' ? 'user' : 'platform_admin',
           action,
         );
       if (environment === 'invalid')
-        return result('unknown', 'invalid_configuration', 'platform_admin');
-      return result(
-        'needs_authorization',
-        'grant_missing',
-        'tenant_admin',
-        action,
-      );
+        add('unknown', 'invalid_configuration', 'platform_admin');
+      if (environment === 'ungranted')
+        add('needs_authorization', 'grant_missing', 'tenant_admin', action);
     }
     const connection =
       id === 'cloud_mcp' ? f.cloudMcp : id === 'local_mcp' ? f.localMcp : null;
@@ -253,7 +243,7 @@ export function projectWorkspaceReadiness(
           : connection === 'unverified'
             ? 'connection_unverified'
             : 'connection_grant_missing';
-      return result(
+      add(
         connection === 'ungranted'
           ? 'needs_authorization'
           : 'needs_configuration',
@@ -268,11 +258,17 @@ export function projectWorkspaceReadiness(
         f.provider,
       )
     )
-      return result(
-        'needs_configuration',
-        'provider_unsupported',
-        'tenant_admin',
-      );
-    return result('ready', 'ready', 'user', 'compose');
+      add('needs_configuration', 'provider_unsupported', 'tenant_admin');
+    return reasons.length
+      ? reasons
+      : [result('ready', 'ready', 'user', 'compose')];
   });
+}
+
+/** Existing tenant tiles retain their first-action projection. Admins can inspect
+ * every independently missing prerequisite without weakening dispatch checks. */
+export function projectWorkspaceReadiness(
+  f: ReadinessFacts,
+): WorkspaceCapability[] {
+  return projectWorkspacePrerequisites(f).map((reasons) => reasons[0]!);
 }

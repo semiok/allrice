@@ -10,6 +10,10 @@ import {
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 import { getDatabase } from './core/client.ts';
+import {
+  requireTenantManagementScope,
+  type TenantManagementOptions,
+} from './tenant-management-scope.ts';
 import { browserIdentity } from './browser-control-authority.ts';
 import { browserGrantOriginDenial } from './browser-control-origin.ts';
 import {
@@ -69,6 +73,7 @@ export async function installLocalBrowserGrant(
   ctx: RequestContext,
   raw: unknown,
   db = getDatabase(),
+  administration?: TenantManagementOptions,
 ) {
   if (!localBrowserEnabled())
     throw new RuntimePolicyError('local_browser_disabled');
@@ -79,14 +84,19 @@ export async function installLocalBrowserGrant(
   }
   const grantId = randomUUID(),
     logicalProfileId = randomUUID();
+  const organizationId = administration?.organizationId ?? ctx.organizationId,
+    workspaceId = administration?.workspaceId ?? ctx.workspaceId,
+    ownerId = administration?.subjectId ?? ctx.actor.id;
   await db.begin(async (tx) => {
-    await browserIdentity(tx, ctx, true);
+    if (administration)
+      await requireTenantManagementScope(ctx, administration, tx);
+    else await browserIdentity(tx, ctx, true);
     const [device] =
       await tx`select d.id,t.id as target_id from allrice_bridge_devices d
       join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id
         and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.metadata->>'bridgeDeviceId'=d.id::text
-      where d.id=${input.deviceId} and d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId}
-        and d.owner_id=${ctx.actor.id} and d.revoked_at is null for update of d`;
+      where d.id=${input.deviceId} and d.organization_id=${organizationId} and d.workspace_id=${workspaceId}
+        and d.owner_id=${ownerId} and d.revoked_at is null for update of d`;
     if (!device) throw new RuntimePolicyError('local_browser_device_denied');
     const [count] = await tx<
       { n: number }[]
@@ -95,12 +105,12 @@ export async function installLocalBrowserGrant(
     if ((count?.n ?? 0) >= 8)
       throw new RuntimePolicyError('local_browser_grant_limit');
     await tx`insert into allrice_browser_control_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled,transport)
-      values(${grantId},${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},${device.target_id},1,${tx.json(input.profile)},true,'local')`;
+      values(${grantId},${organizationId},${workspaceId},${ownerId},${device.target_id},1,${tx.json(input.profile)},true,'local')`;
     await tx`insert into allrice_local_browser_grants(grant_id,organization_id,workspace_id,owner_id,device_id,logical_profile_id,persist_login)
-      values(${grantId},${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},${input.deviceId},${logicalProfileId},${input.persistLogin})`;
+      values(${grantId},${organizationId},${workspaceId},${ownerId},${input.deviceId},${logicalProfileId},${input.persistLogin})`;
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-      values(${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},'local.browser.grant.installed','browser_grant',${grantId},'recorded','explicit_device_browser_grant',
-        ${tx.json({ deviceId: input.deviceId, logicalProfileId, profileDigest: digest(input.profile), persistLogin: input.persistLogin })})`;
+      values(${organizationId},${workspaceId},${ctx.actor.id},'local.browser.grant.installed','browser_grant',${grantId},'recorded',${administration?.reason ?? 'explicit_device_browser_grant'},
+        ${tx.json({ ownerId, deviceId: input.deviceId, logicalProfileId, profileDigest: digest(input.profile), persistLogin: input.persistLogin, deviceOptInChanged: false })})`;
   });
   return { grantId, grantRevision: 1, logicalProfileId, ...input };
 }
@@ -140,13 +150,22 @@ export async function revokeLocalBrowserGrant(
   ctx: RequestContext,
   id: string,
   db = getDatabase(),
+  administration?: TenantManagementOptions & { expectedVersion: number },
 ) {
   return db.begin(async (tx) => {
-    await browserIdentity(tx, ctx, true);
+    const organizationId = administration?.organizationId ?? ctx.organizationId,
+      workspaceId = administration?.workspaceId ?? ctx.workspaceId,
+      ownerId = administration?.subjectId ?? ctx.actor.id;
+    if (administration) {
+      await requireTenantManagementScope(ctx, administration, tx);
+      const [current] =
+        await tx`select id from allrice_browser_control_grants where id=${UuidSchema.parse(id)} and organization_id=${organizationId} and workspace_id=${workspaceId} and owner_id=${ownerId} and version=${administration.expectedVersion} and enabled and revoked_at is null for update`;
+      if (!current) throw new RuntimePolicyError('browser_grant_unavailable');
+    } else await browserIdentity(tx, ctx, true);
     const [grant] =
       await tx`select l.grant_id from allrice_local_browser_grants l join allrice_browser_control_grants g on g.id=l.grant_id
-      where l.grant_id=${UuidSchema.parse(id)} and l.organization_id=${ctx.organizationId} and l.workspace_id=${ctx.workspaceId}
-        and l.owner_id=${ctx.actor.id} for update of g,l`;
+      where l.grant_id=${UuidSchema.parse(id)} and l.organization_id=${organizationId} and l.workspace_id=${workspaceId}
+        and l.owner_id=${ownerId} for update of g,l`;
     if (!grant) throw new RuntimePolicyError('local_browser_grant_denied');
     await tx`update allrice_browser_control_grants set enabled=false,revoked_at=coalesce(revoked_at,clock_timestamp()) where id=${id}`;
     await tx`update allrice_local_browser_grants set cleanup_requested_at=coalesce(cleanup_requested_at,clock_timestamp()) where grant_id=${id}`;
@@ -160,7 +179,7 @@ export async function revokeLocalBrowserGrant(
     await tx`update allrice_browser_direct_inputs set envelope=null,consumed_at=coalesce(consumed_at,clock_timestamp())
       where browser_workspace_id in(select id from allrice_browser_workspaces where grant_id=${id})`;
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-      values(${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},'local.browser.grant.revoked','browser_grant',${id},'recorded','stop_and_profile_cleanup_requested','{}')`;
+      values(${organizationId},${workspaceId},${ctx.actor.id},'local.browser.grant.revoked','browser_grant',${id},'recorded',${administration?.reason ?? 'stop_and_profile_cleanup_requested'},${tx.json({ ownerId, physicalStopConfirmed: false })})`;
     return { requested: true, cleanupConfirmed: false };
   });
 }
