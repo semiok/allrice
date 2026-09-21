@@ -21,6 +21,7 @@ const phases = new Set([
   'tool',
   'recover',
   'proposal',
+  'evidence',
 ]);
 const toolsSchema = z
   .array(z.string().regex(/^[a-zA-Z0-9_.-]{1,120}$/))
@@ -318,7 +319,7 @@ export async function assertAssistantAuthority(
     const [instance] = await tx<{ allowed_tools: unknown }[]>`
       select allowed_tools from allrice_assistant_instances where run_id=${task.runId} and root_run_id=${task.rootRunId}
         and parent_run_id is not distinct from ${task.parentRunId}::uuid and cancel_requested_at is null
-        and status in ('provisioning','running','waiting') for share`;
+        and (status in ('provisioning','running','waiting') or (${input.phase === 'evidence'} and status='completed')) for share`;
     const allowedTools = toolsSchema.safeParse(instance?.allowed_tools);
     requireAuthority(
       allowedTools.success &&

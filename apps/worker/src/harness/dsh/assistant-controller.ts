@@ -381,10 +381,25 @@ export function productionAssistantController(input: {
           'assistant.message',
           'assistant.report',
           'assistant.stop',
+          'assistant.development',
           'local.process.execute',
         ]),
         proposalTools: new Set(['local.process.execute']),
         onRootTool: onToolCall,
+        onDevelopment: input.storage
+          ? ({ transaction, ...request }) =>
+              runtime.development.workflow(
+                {
+                  scope: task.scope,
+                  rootRunId: task.rootRunId,
+                  worker,
+                  context: input.context,
+                  ...request,
+                },
+                input.storage!,
+                transaction,
+              )
+          : undefined,
         onModelUsage:
           pricing && frozenPrice
             ? async (usage) => {
@@ -405,6 +420,7 @@ export function productionAssistantController(input: {
               callId: call.id,
               arguments: call.arguments,
               assistant: { runId: childRunId, worker },
+              storage: input.storage,
             },
             db,
           );

@@ -361,6 +361,7 @@ async function assertArtifactExecution(
   tx: TransactionSql,
   context: ExecutionContext,
   bytes: Uint8Array,
+  assignedCopy = false,
 ) {
   const changeset = parseChangesetBytes(bytes),
     e = changeset.execution;
@@ -369,8 +370,8 @@ async function assertArtifactExecution(
     e.targetKind !== 'rice_bridge' ||
     !e.deviceId ||
     !e.grantId ||
-    e.workCopy.kind !== 'in_place' ||
-    e.workCopy.id !== e.grantId
+    (!(assignedCopy && e.workCopy.kind === 'local_copy') &&
+      (e.workCopy.kind !== 'in_place' || e.workCopy.id !== e.grantId))
   )
     fail('target_unavailable');
   const [target] = await tx`select t.id from allrice_execution_targets t
@@ -535,6 +536,14 @@ export async function publishWorkbenchArtifact(
   },
   storage: StoragePort,
   db: Database = getDatabase(),
+  /** Internal composition only, NEVER parsed from export/model arguments.
+   * Admission takes root locks before the session lock and validates the exact
+   * assignment/version each time. Storage still uses the real root job. */
+  development?: {
+    runId: string;
+    admit: (tx: TransactionSql) => Promise<void>;
+    registered?: (tx: TransactionSql, artifactId: string) => Promise<void>;
+  },
 ) {
   if (!workbenchEnabled()) fail('feature_disabled');
   const context = ExecutionContextSchema.parse(input.context),
@@ -581,6 +590,7 @@ export async function publishWorkbenchArtifact(
         context.organizationId,
         context.workspaceId,
       );
+      await development?.admit(tx);
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
       let derivedSource: WorkbenchArtifact | null = null;
       if (input.trustedCloudDerivation) {
@@ -608,11 +618,12 @@ export async function publishWorkbenchArtifact(
           await tx`select id from allrice_runtime_operations where id=${derivedSource.provenance.operationId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and snapshot->>'status'='succeeded' and snapshot->'binding'->>'action'='cloud.process.execute' for share`;
         if (!operation) fail('invalid_publication');
       }
-      await tx`select pg_advisory_xact_lock(hashtextextended(${`artifact:${context.runId}:${input.callId}`},0))`;
+      const publishingRunId = development?.runId ?? context.runId;
+      await tx`select pg_advisory_xact_lock(hashtextextended(${`artifact:${publishingRunId}:${input.callId}`},0))`;
       const [existing] = await tx<
         { version_id: string; request_digest: string }[]
       >`select version_id,request_digest from allrice_workbench_artifacts
-      where organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and run_id=${context.runId} and request_id=${input.callId}`;
+      where organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and run_id=${publishingRunId} and request_id=${input.callId}`;
       if (existing) {
         if (existing.request_digest !== requestDigest)
           fail('idempotency_conflict');
@@ -623,9 +634,11 @@ export async function publishWorkbenchArtifact(
           existing.version_id,
         );
       }
-      const requiredTool = derivedSource
-        ? 'workspace.reconciliation.export'
-        : 'workspace.export.create';
+      const requiredTool = development
+        ? 'assistant.development'
+        : derivedSource
+          ? 'workspace.reconciliation.export'
+          : 'workspace.export.create';
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
       if (derivedSource)
         await assertCloudDerivationLease(
@@ -645,7 +658,12 @@ export async function publishWorkbenchArtifact(
       }
       const execution =
         input.kind === 'changeset'
-          ? await assertArtifactExecution(tx, context, input.bytes)
+          ? await assertArtifactExecution(
+              tx,
+              context,
+              input.bytes,
+              !!development,
+            )
           : (derivedSource?.execution ?? null);
       // The entry's quota gate still covers this increment across all storage sources.
       created = {
@@ -679,12 +697,12 @@ export async function publishWorkbenchArtifact(
       );
       const provenance = {
         kind: derivedSource ? 'tool_result' : 'model_proposal',
-        runId: context.runId,
+        runId: publishingRunId,
         operationId: derivedSource?.provenance.operationId ?? null,
         stepId: null,
       };
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
-      values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${context.runId},${input.kind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
+      values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${publishingRunId},${input.kind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
       values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: input.kind, ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
@@ -703,6 +721,9 @@ export async function publishWorkbenchArtifact(
           derivedSource.provenance.operationId!,
         );
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      await development?.admit(tx);
+      await development?.registered?.(tx, artifact.id);
+      if (development?.registered) await development.admit(tx);
       return artifact;
     });
   } catch (error) {

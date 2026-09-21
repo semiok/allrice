@@ -71,7 +71,7 @@ export async function createLocalCommandOperation(
   const args = RuntimeLocalCommandToolInputSchema.parse(input.arguments);
   if (input.assistant) {
     UuidSchema.parse(input.assistant.runId);
-    if (args.background || args.candidate)
+    if (args.background)
       throw new RuntimePolicyError('assistant_authority_changed');
   }
   if (args.background && !localServiceFeatureEnabled())

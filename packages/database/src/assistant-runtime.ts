@@ -85,6 +85,7 @@ export interface AssistantAuthorityInput {
     | 'model'
     | 'tool'
     | 'recover'
+    | 'evidence'
     | 'proposal';
 }
 interface Root {
@@ -305,10 +306,20 @@ export function createAssistantRuntime(
   const api = {
     development: createDevelopmentCooperation({
       database: db,
+      registerArtifact: (value): Promise<unknown> =>
+        api.registerArtifact(value),
       authorize: async (tx, caller, tool, completed = false) => {
         const root = await lock(tx, caller.scope, caller.rootRunId);
         await assertLease(tx, root, caller.worker);
         const row = await instance(tx, root, caller.runId);
+        // The new bounded native development surface has its own explicitly
+        // frozen storage:write permission. Legacy internal foundation callers
+        // still use workspace.export.create; neither grants a generic export.
+        if (
+          tool === 'workspace.export.create' &&
+          row.allowed_tools.includes('assistant.development')
+        )
+          tool = 'assistant.development';
         if (completed) {
           const lineage = await tx<
             { status: AssistantStatus; cancel_requested_at: Date | null }[]
@@ -332,7 +343,7 @@ export function createAssistantRuntime(
           transaction: tx,
           task,
           tools: [tool],
-          phase: 'tool',
+          phase: completed ? 'evidence' : 'tool',
         });
         return task;
       },
@@ -446,6 +457,9 @@ export function createAssistantRuntime(
       text: string;
       tools: string[];
       worker: AssistantWorkerLease;
+      /** Internal callback only: bounded development assignment in this SAME
+       * transaction. Failure rolls back the child, message and launch hold. */
+      prepare?: (tx: Tx, childRunId: string) => Promise<void>;
     }) {
       const label = z.string().trim().min(1).max(120).parse(input.label),
         text = z.string().trim().min(1).max(16000).parse(input.text);
@@ -470,6 +484,7 @@ export function createAssistantRuntime(
             old.creation_digest !== creationDigest
           )
             fail('conflict');
+          await input.prepare?.(tx, old.run_id);
           return { instance: view(old), created: false };
         }
         if (tools.some((t) => !parent.allowed_tools.includes(t)))
@@ -504,6 +519,7 @@ export function createAssistantRuntime(
           Instance[]
         >`insert into allrice_assistant_instances(run_id,root_run_id,parent_run_id,native_session_id,delegation_id,creation_digest,label,depth,allowed_tools,artifact_namespace,status)
           values(${runId},${root.root_run_id},${parent.run_id},${nativeId},${input.delegationId},${creationDigest},${label},${parent.depth + 1},${json(tx, tools)},${`assistant/${root.root_run_id}/${runId}/`},'provisioning') returning *`;
+        await input.prepare?.(tx, runId);
         await queue(tx, root, parent, row!, input.delegationId, text);
         // Reserve launch before materializing a native child. The first model
         // dispatch atomically transfers this hold into its exact call vector.
@@ -652,6 +668,19 @@ export function createAssistantRuntime(
           await tx`select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id where i.root_run_id=${root.root_run_id} and i.depth>0 and (r.delivery_id is null or r.parent_adopted_seq is null) limit 1`;
         const [undelivered] =
           await tx`select 1 from allrice_assistant_messages where root_run_id=${root.root_run_id} and status not in ('adopted','canceled') limit 1`;
+        // Generic assistant.report is not the development completion gate.
+        // Only a current, tested/reviewed delivery may complete an initialized
+        // development task; a later head/version or rejection invalidates it.
+        const [developmentIncomplete] =
+          await tx`select 1 from allrice_development_heads h
+          where h.root_run_id=${root.root_run_id} and not exists(
+            select 1 from allrice_development_deliveries d
+            join allrice_development_reviews r on r.id=d.review_id and r.verdict='accept'
+            join allrice_deliverable_versions v on v.id=d.candidate_id
+            join allrice_storage_objects o on o.id=v.object_id and o.state='ready' and o.deleted_at is null
+            where d.root_run_id=h.root_run_id and d.candidate_id=h.head_artifact_id and d.digest=h.head_digest
+              and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
+              and not exists(select 1 from allrice_development_reviews reject where reject.root_run_id=h.root_run_id and reject.artifact_id=h.head_artifact_id and reject.verdict='revise'))`;
         const status =
           unsettled ||
           pending ||
@@ -659,7 +688,8 @@ export function createAssistantRuntime(
           undelivered ||
           children.some((child) => !terminal.has(child.status))
             ? 'unknown'
-            : children.some((child) => child.status !== 'completed')
+            : developmentIncomplete ||
+                children.some((child) => child.status !== 'completed')
               ? 'partial'
               : 'completed';
         await assertLease(tx, root, input.worker);

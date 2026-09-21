@@ -321,8 +321,7 @@ export function createGovernedBridgePolicyOptions(
           (command?.arguments.diagnostics &&
             !profile.data.features?.includes('project_diagnostics')) ||
           (command?.arguments.candidate &&
-            (!profile.data.features?.includes('changeset_candidate') ||
-              !!(persisted?.agentInstanceId ?? initial?.assistant?.runId))) ||
+            !profile.data.features?.includes('changeset_candidate')) ||
           !isLocalCommandProfileForPlatform(
             currentDevice.platform,
             profile.data,
@@ -516,6 +515,13 @@ export function createGovernedBridgePolicyOptions(
             employee.session_id,
             command,
             binding.execution,
+            (persisted?.agentInstanceId ?? initial?.assistant?.runId)
+              ? {
+                  rootRunId: binding.task.rootRunId,
+                  runId: (persisted?.agentInstanceId ??
+                    initial?.assistant?.runId)!,
+                }
+              : undefined,
           );
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.

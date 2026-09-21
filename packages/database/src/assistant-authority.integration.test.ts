@@ -20,6 +20,7 @@ const phases: AssistantAuthorityInput['phase'][] = [
   'model',
   'tool',
   'recover',
+  'evidence',
 ];
 const selectedTools = ['assistant.delegate', 'assistant.report', 'web.fetch'];
 const defaultControls = (): RuntimePolicyControls => ({

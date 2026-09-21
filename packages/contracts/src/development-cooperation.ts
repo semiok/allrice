@@ -3,6 +3,7 @@ import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
 import type { ChangesetDocument } from './runtime-v2/artifact-review.ts';
+import { ChangesetProposalSchema } from './runtime-v2/artifact-review.ts';
 
 /** Conservative across case-insensitive/NFD filesystems. This is a logical
  * ownership key, NOT physical path resolution or a symlink/sandbox boundary. */
@@ -42,6 +43,64 @@ export const DevelopmentArtifactRefSchema = z
 export type DevelopmentArtifactRef = z.infer<
   typeof DevelopmentArtifactRefSchema
 >;
+
+/** Native tool requests contain references/content, never caller identity,
+ * execution targets, leases, grants, checksums for generated files or receipts. */
+export const DevelopmentCommandSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('initialize'),
+      seed: DevelopmentArtifactRefSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('assign'),
+      ownerRunId: UuidSchema,
+      expectedHead: DevelopmentArtifactRefSchema,
+      role: z.enum(['edit', 'test', 'review']),
+      paths: DevelopmentPathsSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('inspect'),
+      assignmentId: UuidSchema.optional(),
+      candidate: DevelopmentArtifactRefSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('publish'),
+      assignmentId: UuidSchema,
+      proposal: ChangesetProposalSchema,
+      previous: DevelopmentArtifactRefSchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('merge'),
+      expectedHead: DevelopmentArtifactRefSchema,
+      proposals: z.array(DevelopmentArtifactRefSchema).min(1).max(16),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('review'),
+      candidate: DevelopmentArtifactRefSchema,
+      operationId: UuidSchema,
+      verdict: z.enum(['accept', 'revise']),
+      summary: z.string().trim().min(1).max(16000),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('deliver'),
+      candidate: DevelopmentArtifactRefSchema,
+      reviewId: UuidSchema,
+    })
+    .strict(),
+]);
 
 /** Pure proposal composition. A result is neither an applied filesystem change
  * nor test/review evidence. Before-text is still checked by the physical runner. */

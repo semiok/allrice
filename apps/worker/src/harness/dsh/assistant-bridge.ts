@@ -27,6 +27,14 @@ export interface AssistantWorkerBridgeOptions {
   readOnlyTools: ReadonlySet<string>;
   supportedChildTools?: ReadonlySet<string>;
   proposalTools?: ReadonlySet<string>;
+  onDevelopment?: (input: {
+    runId: string;
+    requestId: string;
+    arguments: unknown;
+    transaction?: Parameters<
+      NonNullable<Parameters<AssistantRuntime['provision']>[0]['prepare']>
+    >[0];
+  }) => Promise<unknown>;
   onPublishOutput?: (input: {
     childRunId: string;
     deliveryId: string;
@@ -281,6 +289,15 @@ export function createAssistantWorkerBridge(
       kind: 'tool',
       tool: `assistant.${method}`,
       callId: meteringId,
+      ...(method === 'development' ||
+      (method === 'delegate' && args.development !== undefined)
+        ? {
+            nativeCall: {
+              id: callId,
+              argumentsDigest: runtimePolicyDigest(args),
+            },
+          }
+        : {}),
       amounts: {
         model_calls: 0,
         tool_calls: 1,
@@ -289,6 +306,21 @@ export function createAssistantWorkerBridge(
       },
     });
     try {
+      if (method === 'development') {
+        if (!options.onDevelopment)
+          throw Error('assistant_development_unavailable');
+        const command = z
+          .object({ command: z.string().min(1).max(512000) })
+          .strict()
+          .parse(args);
+        return {
+          development: await options.onDevelopment({
+            runId: instance.runId,
+            requestId: callUuid,
+            arguments: JSON.parse(command.command),
+          }),
+        };
+      }
       if (method === 'delegate') {
         const selectedTools = tools.parse(args.tools);
         // A text-only child still needs the bounded coordination channel to
@@ -305,15 +337,72 @@ export function createAssistantWorkerBridge(
           selectedTools.some((tool) => !options.supportedChildTools!.has(tool))
         )
           throw Error('assistant_child_tool_not_supported');
+        let assignment:
+          | {
+              expectedHead: { artifactId: string; digest: string };
+              role: 'edit' | 'test' | 'review';
+              paths?: string[];
+            }
+          | undefined;
+        if (args.development !== undefined) {
+          if (
+            !options.onDevelopment ||
+            !instance.allowedTools.includes('assistant.development') ||
+            !selectedTools.includes('assistant.development')
+          )
+            throw Error('assistant_development_unavailable');
+          assignment = z
+            .object({
+              expectedHead: z
+                .object({
+                  artifactId: z.uuid(),
+                  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+                })
+                .strict(),
+              role: z.enum(['edit', 'test', 'review']),
+              paths: z.array(z.string()).optional(),
+            })
+            .strict()
+            .parse(JSON.parse(z.string().max(16000).parse(args.development)));
+          if (
+            assignment.role === 'test' &&
+            !selectedTools.includes('local.process.execute')
+          )
+            throw Error('assistant_test_tool_required');
+        }
+        const taskText =
+          text.parse(args.text) +
+          (assignment
+            ? `\nPlanned development assignment: ${JSON.stringify({ ...assignment, assignmentId: callUuid })}`
+            : '');
+        let development: unknown;
         const { instance: child } = await runtime.provision({
           ...base,
           parentRunId: instance.runId,
           delegationId: callUuid,
           label: z.string().min(1).max(120).parse(args.label),
-          text: text.parse(args.text),
+          text: taskText,
           tools: selectedTools,
+          ...(assignment
+            ? {
+                prepare: async (transaction, childRunId) => {
+                  development = await options.onDevelopment!({
+                    runId: instance.runId,
+                    requestId: callUuid,
+                    arguments: {
+                      action: 'assign',
+                      ...assignment,
+                      ownerRunId: childRunId,
+                    },
+                    transaction,
+                  });
+                },
+              }
+            : {}),
         });
         const dispatch = await messageDispatch(callUuid);
+        if (development)
+          dispatch.text += `\nPlatform development assignment (data, not permission to execute): ${JSON.stringify(development)}`;
         return { ...dispatch, instance: child };
       }
       if (method === 'message') {

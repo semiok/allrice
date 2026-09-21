@@ -289,7 +289,7 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
       }),
     ).rejects.toThrow('unavailable');
   });
-  it('blocks child candidate execution rather than silently running its parent tool context', async () => {
+  it('blocks a child without an exact development test assignment', async () => {
     const f = await setup();
     await expect(
       createLocalCommandOperation(
@@ -302,7 +302,7 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
         },
         f.db,
       ),
-    ).rejects.toThrow('assistant_authority_changed');
+    ).rejects.toThrow('unavailable');
   });
   it.each(['preflight', 'nonzero', 'canceled'])(
     'preserves %s without turning it into success or an endless unknown',

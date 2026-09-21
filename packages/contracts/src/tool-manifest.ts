@@ -41,6 +41,13 @@ export const allRiceToolManifest = [
     dshWireName: `assistant_${action}`,
   })),
   {
+    canonicalName: 'assistant.development',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_assistant_native',
+    dshWireName: 'assistant_development',
+  },
+  {
     canonicalName: 'local.mcp.discover',
     capability: 'secret:use',
     risk: 'side_effect',

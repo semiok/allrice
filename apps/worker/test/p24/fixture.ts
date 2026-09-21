@@ -68,14 +68,15 @@ export async function p24Fixture(
         Buffer.concat(chunks).toString(),
       ) as ModelRequest;
       requests.push(input);
+      const requestIndex = requests.length;
       res.on('close', () => {
         if (!res.writableFinished) abortedRequests.push(input);
       });
-      const result = await model(input, requests.length);
+      const result = await model(input, requestIndex);
       if (res.destroyed) return;
       res.setHeader('content-type', 'text/event-stream');
       const common = {
-        id: `p24-${requests.length}`,
+        id: `p24-${requestIndex}`,
         object: 'chat.completion.chunk',
         created: 1,
         model: 'p24-synthetic',
@@ -87,7 +88,7 @@ export async function p24Fixture(
               tool_calls: [
                 {
                   index: 0,
-                  id: `call-${requests.length}`,
+                  id: `call-${requestIndex}`,
                   type: 'function',
                   function: {
                     name: result.nativeTool?.name ?? 'p24_proposal',

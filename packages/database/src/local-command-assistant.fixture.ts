@@ -19,7 +19,12 @@ export async function createAssistantLocalCommandFixture(
   database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
   effect: 'ask' | 'allow' = 'ask',
   project = false,
-  options: { nativeSessionId?: string; deferRuntimeRoot?: boolean } = {},
+  options: {
+    nativeSessionId?: string;
+    deferRuntimeRoot?: boolean;
+    development?: boolean;
+    skipChild?: boolean;
+  } = {},
 ) {
   const f = await createAssistantAuthorityFixture(database, {
     project,
@@ -30,6 +35,9 @@ export async function createAssistantLocalCommandFixture(
       'assistant.report',
       'web.fetch',
       'local.process.execute',
+      ...(options.development
+        ? ['assistant.development', 'workspace.export.create']
+        : []),
     ],
     controls: {
       version: 1,
@@ -104,18 +112,19 @@ export async function createAssistantLocalCommandFixture(
       ...policy!.payload,
     },
   });
-  const child = options.deferRuntimeRoot
-    ? null
-    : (
-        await f.runtime.provision({
-          ...f.base,
-          parentRunId: f.rootRunId,
-          delegationId: randomUUID(),
-          label: 'Synthetic command proposal',
-          text: 'Submit for exact approval',
-          tools: ['local.process.execute'],
-        })
-      ).instance;
+  const child =
+    options.deferRuntimeRoot || options.skipChild
+      ? null
+      : (
+          await f.runtime.provision({
+            ...f.base,
+            parentRunId: f.rootRunId,
+            delegationId: randomUUID(),
+            label: 'Synthetic command proposal',
+            text: 'Submit for exact approval',
+            tools: ['local.process.execute'],
+          })
+        ).instance;
   if (options.deferRuntimeRoot) {
     // This is setup of our fresh synthetic fixture only. No admitted assistant
     // or operation may exist; the production controller must create the root

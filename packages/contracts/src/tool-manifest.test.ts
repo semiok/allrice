@@ -27,6 +27,7 @@ describe('AllRice tool manifest', () => {
       'assistant.message',
       'assistant.report',
       'assistant.stop',
+      'assistant.development',
     ]);
     const wireNames = nativeTools.map((tool) =>
       'dshWireName' in tool ? tool.dshWireName : undefined,
