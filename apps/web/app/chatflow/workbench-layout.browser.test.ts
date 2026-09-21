@@ -283,6 +283,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         });
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
+      if (path === '/api/v1/workspace/monthly-quota') {
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        return answer({
+          organizationId: org,
+          workspaceId: state.workspace,
+          userId: state.viewer,
+          displayName: 'Synthetic member',
+          monthlyTokenLimit: 5000000,
+          usedTokens: 2824029,
+          remainingTokens: 2175971,
+          remainingPercent: 43.51942,
+          unknownUsageRuns: 0,
+          periodStart: now,
+          resetsAt: now,
+          observedAt: now,
+        });
+      }
       if (path === '/api/v1/workspace/readiness') {
         state.readinessRequests++;
         const snapshot = {
@@ -429,6 +446,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it('shows the current member monthly balance alongside the workbench', async () => {
+    const f = await fixture();
+    try {
+      const quota = f.page.locator('summary[aria-label="账号月额度"]');
+      await quota.getByText('Synthetic member', { exact: true }).waitFor();
+      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+      await quota.click();
+      await f.page.getByText('本月已记录', { exact: false }).waitFor();
+      expect(
+        await f.page.locator('details').filter({ has: quota }).innerText(),
+      ).toContain('5,000,000');
+      await f.page.reload();
+      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+    } finally {
+      await f.close();
+    }
+  });
 
   it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
     const f = await fixture({ artifacts: true });
@@ -871,6 +906,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
       await f.page.getByRole('dialog', { name: '任务与历史' }).waitFor();
+      const quota = f.page.locator('summary[aria-label="账号月额度"]');
+      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+      await quota.focus();
+      await f.page.keyboard.press('Tab');
+      expect(
+        await f.page
+          .getByRole('dialog', { name: '任务与历史' })
+          .evaluate((e) => e.contains(document.activeElement)),
+      ).toBe(true);
+      await f.page.keyboard.press('Shift+Tab');
+      expect(await quota.evaluate((e) => e === document.activeElement)).toBe(
+        true,
+      );
       await f.page.keyboard.press('Escape');
       expect(
         await f.page.getByRole('dialog', { name: '任务与历史' }).count(),

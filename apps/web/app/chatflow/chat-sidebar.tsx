@@ -75,9 +75,13 @@ export function ChatSidebar({
         if (event.key === 'Tab') {
           const nodes = [
             ...sidebar.current!.querySelectorAll<HTMLElement>(
-              'button:not([disabled]),a[href]',
+              'button:not([disabled]),a[href],summary',
             ),
-          ].filter((n) => n.getClientRects().length);
+          ].filter(
+            (n) =>
+              n.getClientRects().length &&
+              (!n.closest('details:not([open])') || n.tagName === 'SUMMARY'),
+          );
           const first = nodes[0],
             last = nodes.at(-1);
           if (
