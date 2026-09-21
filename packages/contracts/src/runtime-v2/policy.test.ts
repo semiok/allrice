@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   evaluateRuntimePolicy,
+  runtimePolicyActionDecision,
   isRuntimeRelativePath,
   runtimeStaticPreviewPolicy,
 } from './policy.ts';
@@ -48,6 +49,42 @@ const controls = {
   rules: [{ action: binding.action, effect: 'allow' }],
 };
 describe('B1 deterministic policy', () => {
+  it('projects existing delegation authority without inventing an Ask approval path', () => {
+    const action = 'assistant.delegate';
+    for (const effect of ['allow', 'deny', 'ask'] as const) {
+      expect(
+        runtimePolicyActionDecision(
+          { ...controls, rules: [{ action, effect }] },
+          action,
+        ).effect,
+      ).toBe(effect === 'allow' ? 'allow' : 'deny');
+    }
+    expect(
+      runtimePolicyActionDecision({ ...controls, rules: [] }, action).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision(
+        {
+          ...controls,
+          mode: 'plan_only',
+          rules: [{ action, effect: 'allow' }],
+        },
+        action,
+      ).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision(
+        {
+          ...controls,
+          rules: [
+            { action, effect: 'allow' },
+            { action, effect: 'ask' },
+          ],
+        },
+        action,
+      ).effect,
+    ).toBe('deny');
+  });
   it('explicit supported allow only', () =>
     expect(evaluateRuntimePolicy(controls, binding).effect).toBe('allow'));
   it('Deny cannot be erased by a later Allow', () =>

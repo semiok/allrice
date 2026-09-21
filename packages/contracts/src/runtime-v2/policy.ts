@@ -29,6 +29,9 @@ export type RuntimePolicyDecision = {
 
 // Exact governed actions. Adding a rule cannot register a Runner or bypass its release gate.
 export const runtimeGovernedActions = [
+  // Delegation already has its own root/employee/budget authority checker.
+  // Listing its existing rule here exposes configuration, not a new Runner.
+  'assistant.delegate',
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
@@ -93,6 +96,13 @@ export function runtimePolicyActionDecision(
   // A narrower/later Allow can never erase an applicable hard Deny or Ask.
   if (matches.some((rule) => rule.effect === 'deny'))
     return { effect: 'deny', reason: 'tenant_deny' };
+  // The existing assistant authority requires explicit Allow and rejects Ask;
+  // there is no per-delegation approval/resume path to advertise.
+  if (
+    action === 'assistant.delegate' &&
+    matches.some((r) => r.effect === 'ask')
+  )
+    return { effect: 'deny', reason: 'delegation_requires_explicit_allow' };
   if (matches.some((rule) => rule.effect === 'ask'))
     return { effect: 'ask', reason: 'exact_approval_required' };
   // B2 command execution always needs an exact, single-use approval, even if

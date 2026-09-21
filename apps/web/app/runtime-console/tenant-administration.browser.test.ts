@@ -532,6 +532,15 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByLabel('local.process.execute 规则', { exact: true })
         .selectOption('allow');
       await page
+        .getByLabel('assistant.delegate 规则', { exact: true })
+        .selectOption('allow');
+      expect(
+        await page
+          .getByLabel('assistant.delegate 规则', { exact: true })
+          .locator('option[value="ask"]')
+          .isDisabled(),
+      ).toBe(true);
+      await page
         .getByLabel('策略修改原因')
         .fill('Synthetic explicit policy approval');
       await page
@@ -560,7 +569,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(stored!.controls).toMatchObject({
         version: 1,
         enabled: true,
-        rules: [{ action: 'local.process.execute', effect: 'allow' }],
+        rules: [
+          { action: 'local.process.execute', effect: 'allow' },
+          { action: 'assistant.delegate', effect: 'allow' },
+        ],
       });
       const body = {
         workspaceId: snow.workspaceId,
@@ -600,6 +612,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page
         .getByText('当前版本：1 · 保存将创建版本 2', { exact: true })
         .waitFor();
+      expect(
+        await page
+          .getByLabel('assistant.delegate 规则', { exact: true })
+          .inputValue(),
+      ).toBe('allow');
       await page.screenshot({
         path: '/tmp/met151-policy-desktop.png',
         fullPage: true,
