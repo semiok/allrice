@@ -752,7 +752,7 @@ export async function executeEmployeeRun({
       systemInstructions: [
         kernel.systemInstructions,
         `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
-        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Explicitly granted cloud.process.execute and cloud.mcp.call are selected by the native DSH Agent Loop and require their own exact, durable per-call approval. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
+        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Explicitly granted exact-approval adapters, including local.process.execute, cloud.process.execute and cloud.mcp.call, are selected by the native DSH Agent Loop and require their own exact, durable per-call approval. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
       ].join('\n\n'),
       authorizedMemoryContext: [
         kernel.authorizedMemoryContext,

@@ -19,6 +19,7 @@ export type RiceToolRisk = AllRiceToolRisk;
 // Visibility is not authorization. Native DSH selects these adapters, but every
 // invocation requires its own durable exact-input approval before execution.
 export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
+  'local.process.execute',
   'browser.workspace',
   'local.browser.workspace',
   'local.preview.open',
