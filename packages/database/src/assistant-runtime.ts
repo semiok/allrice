@@ -20,6 +20,7 @@ import {
   cancelRuntimeAgentOperationsTransaction,
 } from './runtime-ledger/ledger.ts';
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
+import { createDevelopmentCooperation } from './development-cooperation.ts';
 
 type Tx = RuntimeLedgerTransaction;
 const json = (tx: Tx, value: unknown) =>
@@ -302,6 +303,40 @@ export function createAssistantRuntime(
   }
 
   const api = {
+    development: createDevelopmentCooperation({
+      database: db,
+      authorize: async (tx, caller, tool, completed = false) => {
+        const root = await lock(tx, caller.scope, caller.rootRunId);
+        await assertLease(tx, root, caller.worker);
+        const row = await instance(tx, root, caller.runId);
+        if (completed) {
+          const lineage = await tx<
+            { status: AssistantStatus; cancel_requested_at: Date | null }[]
+          >`
+            with recursive ancestors as (
+              select * from allrice_assistant_instances where run_id=${row.run_id}
+              union all select p.* from allrice_assistant_instances p join ancestors c on c.parent_run_id=p.run_id
+            ) select status,cancel_requested_at from ancestors`;
+          if (
+            lineage.some(
+              (a) =>
+                a.cancel_requested_at ||
+                ['canceled', 'failed', 'partial', 'unknown'].includes(a.status),
+            )
+          )
+            fail('canceled');
+        } else await active(tx, root, row.run_id);
+        if (!row.allowed_tools.includes(tool)) fail('forbidden');
+        const task = taskFor(root, row);
+        await authorize({
+          transaction: tx,
+          task,
+          tools: [tool],
+          phase: 'tool',
+        });
+        return task;
+      },
+    }),
     async getSessionTrees(
       context: RequestContext,
       input: { sessionId: string; beforeRootRunId?: string },
