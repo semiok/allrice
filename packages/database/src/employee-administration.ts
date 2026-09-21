@@ -1,5 +1,7 @@
 import {
   employeeToolCatalog,
+  developmentWorkflowToolNames,
+  employeeToolConfigurationErrors,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   UuidSchema,
@@ -42,9 +44,14 @@ export function listEmployeeToolAvailability() {
   };
   return employeeToolCatalog.map((tool) => ({
     ...tool,
-    released: tool.canonicalName.startsWith('assistant.')
-      ? assistantRuntimeEnabled()
-      : (gated[tool.canonicalName] ?? true),
+    released:
+      tool.canonicalName === 'assistant.development'
+        ? assistantRuntimeEnabled() &&
+          workbenchEnabled() &&
+          changesetFeatureEnabled()
+        : tool.canonicalName.startsWith('assistant.')
+          ? assistantRuntimeEnabled()
+          : (gated[tool.canonicalName] ?? true),
   }));
 }
 
@@ -116,6 +123,19 @@ export async function reviewEmployeePublication(
           )
         : [],
       warnings: string[] = [];
+    errors.push(...employeeToolConfigurationErrors(definition));
+    if (definition.capabilities.toolNames.includes('assistant.development')) {
+      const missing = developmentWorkflowToolNames.filter(
+        (name) => !definition.capabilities.toolNames.includes(name),
+      );
+      if (missing.length)
+        warnings.push(
+          `开发协作完整链路尚缺工具：${missing.join('、')}；不能将仅提案配置视为测试与交付已就绪。`,
+        );
+      warnings.push(
+        '开发协作需在租户管理 → 能力授权核对实际成员：assistant.delegate 必须允许；本地命令与 Changeset 分别审批；本人在线 Bridge 须授权目录并报告 changeset_candidate 沙箱能力。发布不会授予设备权限。',
+      );
+    }
     if (employee.status !== 'testing' || !checksum)
       errors.push(
         '请先保存并编译当前草稿；已发布版本需另存新草稿后才能再次发布。',
@@ -206,9 +226,12 @@ export async function reviewEmployeePublication(
         ...runtimePolicyActionDecision(controls, action),
       }));
       for (const action of actions)
-        if (action.effect === 'deny')
+        if (
+          action.effect === 'deny' ||
+          (action.action === 'assistant.delegate' && action.effect !== 'allow')
+        )
           warnings.push(
-            `${target.organizationName} / ${target.name}：${action.action} 当前策略禁止（${action.reason}），可在租户管理中配置。`,
+            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），可在租户管理中配置${action.action === 'assistant.delegate' ? '为允许；助手委派不支持审批态' : ''}。`,
           );
       return {
         id: target.id,
@@ -221,7 +244,7 @@ export async function reviewEmployeePublication(
     });
     if (tools.some((tool) => tool.target !== 'saas'))
       warnings.push(
-        '运行时仍需执行目标、沙箱/浏览器/连接器及实际使用者授权。平台管理员不能替设备主人授权；完整环境配置在本单 PR-3 接入。',
+        '运行时仍需执行目标、沙箱/浏览器/连接器及实际使用者授权。请在租户管理中检查实际成员的能力与环境；平台管理员不能替设备主人授权。',
       );
     const before = employee.published_definition
       ? PlatformEmployeeDefinitionSchema.parse(employee.published_definition)

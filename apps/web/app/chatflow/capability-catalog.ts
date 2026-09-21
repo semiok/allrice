@@ -76,6 +76,13 @@ export const capabilityLabels: Record<
     title: 'Boost · 深入攻关',
     description: '规划能力（MET-145），尚未开放；不是当前日常助手的别名。',
   },
+  development: {
+    title: '受控开发协作',
+    description:
+      'Rice 分派提案、候选版本沙箱测试与独立审查，汇总证据后交付；本地执行和写盘分别审批，共享根任务预算。',
+    prompt:
+      '请在我已授权的本地工作区完成【填写开发目标及目录范围】，组织有限助手生成候选修改、在 Bridge 沙箱测试同一候选版本，并交给未参与编写的助手独立审查。测试命令和最终文件修改分别等待我的审批，交付候选 SHA、真实测试结果与审查结论；设备离线时不要转交云端。',
+  },
   teamwork: {
     title: 'Teamwork · 团队任务',
     description: '规划能力（MET-146），尚未开放；不会通过此入口启动团队模式。',
@@ -111,6 +118,8 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     folder_missing: 'Bridge 在线，但尚未选择并授权文件工作区。',
     runner_missing:
       'Bridge 在线不代表沙箱就绪；尚未收到匹配当前平台的有效 Runner 报告。',
+    candidate_runner_missing:
+      '当前设备未报告候选版本测试能力；请更新支持 changeset_candidate 的 Bridge，并在设备端启用独立沙箱。',
     target_missing: '尚未配置对应执行环境，请由平台管理员准备隔离运行环境。',
     target_unavailable: '所需执行目标不可用，请恢复对应环境后刷新。',
     grant_missing:

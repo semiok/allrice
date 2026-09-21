@@ -18,6 +18,10 @@ import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { localCommandCandidateEvidence } from './local-command-candidate.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
 import { assertAssistantAuthority } from './assistant-authority.ts';
+import {
+  inspectTenantDevelopment,
+  inspectDevelopmentTestEvidence,
+} from './tenant-development-inspection.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -301,6 +305,78 @@ suite('MET-144 real attributed development workflow', () => {
       applied: false,
       test: { testerRunId: p.tester.runId, operationId },
     });
+    const target = { ...f.task.scope, subjectId: f.context.delegatedBy.id };
+    const inspected = await inspectTenantDevelopment(
+      target,
+      f.rootRunId,
+      (text) => text,
+      f.db,
+    );
+    expect(inspected).toMatchObject({
+      candidateId: p.head.artifactId,
+      digest: p.head.digest,
+      revision: 1,
+      truncated: false,
+    });
+    expect(inspected?.proposals[0]).toMatchObject({
+      authorRunId: f.writer.runId,
+      accepted: true,
+    });
+    expect(inspected?.tests[0]).toMatchObject({
+      operationId,
+      testerRunId: p.tester.runId,
+      evidenceMatched: true,
+      exitCode: 0,
+    });
+    expect(inspected?.reviews[0]).toMatchObject({
+      reviewerRunId: p.reviewer.runId,
+      verdict: 'accept',
+    });
+    expect(inspected?.deliveries[0]).toMatchObject({
+      candidateId: p.head.artifactId,
+      reviewId,
+    });
+    expect(
+      await inspectTenantDevelopment(
+        { ...target, subjectId: randomUUID() },
+        f.rootRunId,
+        (text) => text,
+        f.db,
+      ),
+    ).toBeNull();
+    expect(
+      await inspectTenantDevelopment(
+        { ...target, workspaceId: randomUUID() },
+        f.rootRunId,
+        (text) => text,
+        f.db,
+      ),
+    ).toBeNull();
+    const [op] =
+      await f.db`select snapshot,bridge_payload from allrice_runtime_operations where id=${operationId}`;
+    const [receipt] =
+      await f.db`select payload->'evidence'->'output' as output from allrice_runtime_operation_receipts where operation_id=${operationId} and disposition='applied' limit 1`;
+    const identity = {
+      testerRunId: p.tester.runId,
+      candidateId: p.head.artifactId,
+      digest: p.head.digest,
+    };
+    expect(
+      inspectDevelopmentTestEvidence(
+        op!.snapshot,
+        op!.bridge_payload,
+        receipt!.output,
+        { ...identity, digest: hash('other') },
+      ).evidenceMatched,
+    ).toBe(false);
+    expect(
+      inspectDevelopmentTestEvidence(
+        op!.snapshot,
+        op!.bridge_payload,
+        undefined,
+        identity,
+      ).exitCode,
+    ).toBeNull();
   });
   it('rejects forged identity, widening, parent/sibling publication, and tool fields', async () => {
     const f = await setup();

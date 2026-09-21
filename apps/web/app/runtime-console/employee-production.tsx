@@ -14,6 +14,7 @@ import {
   employeeReasoningSettings,
   switchEmployeeModelProvider,
   employeeToolCatalog,
+  developmentWorkflowToolNames,
   SkillCapabilitySchema,
 } from '@allrice/contracts';
 
@@ -1068,6 +1069,42 @@ export function EmployeeProduction() {
           任意宿主 Shell / PTY 未实现，不提供虚假开关。内部执行动作（如
           local.fs.changeset）只在精确批准后由执行系统调用。
         </p>
+        <section aria-label="开发协作配置指引" className={styles.notice}>
+          <h3>受控开发协作 · MET-144</h3>
+          <p>
+            完整链路：提案 → 固定候选 SHA → 沙箱测试 → 独立审查 → Rice
+            汇总交付。不是 Boost 或 Teamwork。
+          </p>
+          <p>
+            尚缺工具：
+            {developmentWorkflowToolNames
+              .filter((name) => !draft.capabilities.toolNames.includes(name))
+              .join('、') || '工具已配齐；仍需核对策略与本人设备环境'}
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              update(
+                ['capabilities', 'toolNames'],
+                [
+                  ...new Set([
+                    ...draft.capabilities.toolNames,
+                    ...developmentWorkflowToolNames,
+                  ]),
+                ],
+              )
+            }
+          >
+            补齐开发协作工具（仅修改草稿）
+          </button>
+          <p>
+            随后保存、试用并预检发布。在租户管理中选择实际成员，检查能力授权与执行策略：允许
+            assistant.delegate，本地命令与文件修改分别审批。员工 Bridge
+            需受控读写，设备主人仍须在 Bridge
+            确认目录和独立沙箱；不会提升成员角色或自动放开权限。
+          </p>
+        </section>
       </>
     );
   } else if (tab === 'security') {

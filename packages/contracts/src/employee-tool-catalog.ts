@@ -2,6 +2,17 @@ import { allRiceToolManifest, type AllRiceToolName } from './tool-manifest.ts';
 import type { PlatformEmployeeDefinition } from './platform-employees.ts';
 import { runtimeGovernedActions } from './runtime-v2/policy.ts';
 
+/** Root workflow tools, not a grant or a child tool allowlist. */
+export const developmentWorkflowToolNames = [
+  'assistant.development',
+  'assistant.delegate',
+  'assistant.report',
+  'workspace.export.create',
+  'local.fs.list',
+  'local.fs.read',
+  'local.process.execute',
+] as const satisfies readonly AllRiceToolName[];
+
 // Presentation only. Registration, capability and risk come from the Broker manifest.
 const labels: Partial<Record<AllRiceToolName, string>> = {
   'assistant.delegate': '委派受控助手',
@@ -54,16 +65,18 @@ export const employeeToolCatalog = allRiceToolManifest.map((tool) => ({
       ? ('cloud' as const)
       : ('saas' as const),
   policyActions:
-    tool.canonicalName === 'browser.workspace'
-      ? ['cloud.browser.observe', 'cloud.browser.act']
-      : tool.canonicalName === 'local.browser.workspace' ||
-          tool.canonicalName === 'local.preview.open'
-        ? ['local.browser.observe', 'local.browser.act']
-        : (runtimeGovernedActions as readonly string[]).includes(
-              tool.canonicalName,
-            )
-          ? [tool.canonicalName]
-          : [],
+    tool.canonicalName === 'assistant.development'
+      ? ['assistant.delegate', 'local.process.execute', 'local.fs.changeset']
+      : tool.canonicalName === 'browser.workspace'
+        ? ['cloud.browser.observe', 'cloud.browser.act']
+        : tool.canonicalName === 'local.browser.workspace' ||
+            tool.canonicalName === 'local.preview.open'
+          ? ['local.browser.observe', 'local.browser.act']
+          : (runtimeGovernedActions as readonly string[]).includes(
+                tool.canonicalName,
+              )
+            ? [tool.canonicalName]
+            : [],
 }));
 export const configurableEmployeeToolNames = new Set<string>(
   employeeToolCatalog.map((tool) => tool.canonicalName),
@@ -95,6 +108,16 @@ export function employeeToolConfigurationErrors(
     }
   }
   if (new Set(names).size !== names.length) errors.push('工具清单包含重复项');
+  if (names.includes('assistant.development')) {
+    for (const required of [
+      'assistant.delegate',
+      'assistant.report',
+      'workspace.export.create',
+    ]) {
+      if (!names.includes(required))
+        errors.push(`受控开发协作缺少必需工具：${required}`);
+    }
+  }
   if (definition.securityPolicy.approvalPolicy === 'autonomous')
     errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
   return errors;

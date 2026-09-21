@@ -18,6 +18,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { RunUsageSummary } from './run-usage';
+import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
 import styles from './tenant-administration.module.css';
 
@@ -343,6 +344,9 @@ export function TenantValidation(
             {detail.run.sessionId}
           </p>
           <RunUsageSummary usage={detail.usage} runStatus={detail.run.status} />
+          {detail.development ? (
+            <DevelopmentInspection data={detail.development} />
+          ) : null}
           <details>
             <summary>用户目标与交付回复</summary>
             <SafeDocument text={detail.userText ?? '无可展示目标'} />

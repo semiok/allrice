@@ -12,6 +12,7 @@ export const workspaceCapabilityIds = [
   'cloud_mcp',
   'local_mcp',
   'assistants',
+  'development',
   'boost',
   'teamwork',
 ] as const;
@@ -43,6 +44,7 @@ export const WorkspaceCapabilitySchema = z
       'bridge_offline',
       'folder_missing',
       'runner_missing',
+      'candidate_runner_missing',
       'target_missing',
       'target_unavailable',
       'grant_missing',

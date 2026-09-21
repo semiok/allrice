@@ -75,6 +75,7 @@ suite('MET-151 PR4 scoped inspection (isolated PostgreSQL)', () => {
       status: 'succeeded',
       approval: null,
     });
+    expect(result.development).toBeNull();
     expect(result.artifacts[0]?.id).toBe(a.artifact.artifactId);
     expect(result.usage?.receiptCount).toBe(0);
     expect(result.usage?.totalTokens).toBeNull();

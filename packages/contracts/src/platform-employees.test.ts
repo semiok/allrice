@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  developmentWorkflowToolNames,
+  employeeToolConfigurationErrors,
+} from './employee-tool-catalog.ts';
 
 import {
   DisablePlatformEmployeeInputSchema,
@@ -53,6 +57,21 @@ const riceDefinition = {
 };
 
 describe('platform employee production contract', () => {
+  it('requires development orchestration dependencies without granting bridge access', () => {
+    const definition = PlatformEmployeeDefinitionSchema.parse(riceDefinition);
+    definition.capabilities.toolNames = ['assistant.development'];
+    expect(employeeToolConfigurationErrors(definition)).toEqual([
+      '受控开发协作缺少必需工具：assistant.delegate',
+      '受控开发协作缺少必需工具：assistant.report',
+      '受控开发协作缺少必需工具：workspace.export.create',
+    ]);
+    definition.capabilities.toolNames = [...developmentWorkflowToolNames];
+    expect(employeeToolConfigurationErrors(definition)).toContain(
+      'Bridge 为只读，不能配置 local.process.execute',
+    );
+    definition.securityPolicy.bridgeAccess = 'read_write';
+    expect(employeeToolConfigurationErrors(definition)).toEqual([]);
+  });
   it('accepts a platform-owned Rice definition', () => {
     expect(PlatformEmployeeDefinitionSchema.parse(riceDefinition).key).toBe(
       'rice',

@@ -1,5 +1,6 @@
 import {
   workspaceCapabilityIds,
+  developmentWorkflowToolNames,
   type WorkspaceCapability,
   type WorkspaceCapabilityId,
   type RuntimePolicyControls,
@@ -18,6 +19,7 @@ export interface ReadinessFacts {
   bridge: 'missing' | 'offline' | 'online';
   folder: boolean;
   runner: boolean;
+  developmentRunner: boolean;
   cloud: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
   cloudBrowser: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
   localBrowser: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
@@ -104,6 +106,18 @@ const definitions: Record<
     capabilities: ['model:invoke'],
     authorization: 'root_budget',
   },
+  development: {
+    target: 'local',
+    tools: [...developmentWorkflowToolNames],
+    capabilities: ['model:invoke', 'storage:read', 'storage:write'],
+    actions: [
+      'local.fs.list',
+      'local.fs.read',
+      'local.process.execute',
+      'local.fs.changeset',
+    ],
+    authorization: 'per_action',
+  },
   boost: {
     target: 'none',
     tools: [],
@@ -177,7 +191,7 @@ export function projectWorkspacePrerequisites(
                 (r) => r.action === a && r.effect === 'deny',
               ),
           ) ||
-          (id === 'assistants' &&
+          ((id === 'assistants' || id === 'development') &&
             (!f.controls.rules.some(
               (r) => r.action === 'assistant.delegate' && r.effect === 'allow',
             ) ||
@@ -196,8 +210,18 @@ export function projectWorkspacePrerequisites(
       // Local browser is independent of filesystem and command sandbox grants.
       if (id !== 'local_browser' && !f.folder)
         add('needs_configuration', 'folder_missing', 'user', 'bridge');
-      if (['local_command', 'local_mcp'].includes(id) && !f.runner)
+      if (
+        ['local_command', 'local_mcp', 'development'].includes(id) &&
+        !f.runner
+      )
         add('needs_configuration', 'runner_missing', 'user');
+      if (id === 'development' && !f.developmentRunner)
+        add(
+          'needs_configuration',
+          'candidate_runner_missing',
+          'user',
+          'bridge',
+        );
     }
     const environment =
       id === 'cloud_command'
@@ -253,7 +277,7 @@ export function projectWorkspacePrerequisites(
       );
     }
     if (
-      id === 'assistants' &&
+      (id === 'assistants' || id === 'development') &&
       !['openai-codex', 'gemini', 'google', 'openai-compatible'].includes(
         f.provider,
       )
