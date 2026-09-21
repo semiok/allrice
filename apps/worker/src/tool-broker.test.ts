@@ -665,52 +665,82 @@ describe('Codex hosted search Tool Broker integration', () => {
     }
   });
 
-  it('routes opt-in plans through the atomic workbench publisher without a second object write', async () => {
-    workbenchEnabled.mockReturnValue(true);
-    const context = executionContext(),
-      sessionId = randomUUID(),
-      callId = randomUUID(),
-      id = randomUUID(),
-      objectId = randomUUID();
-    publishWorkbenchArtifact.mockResolvedValue({
-      id,
-      object: { id: objectId, mediaType: 'text/plain', sizeBytes: 4 },
-      version: {
-        seriesId: randomUUID(),
-        version: 1,
-        parentObjectId: null,
-        changeSummary: null,
-      },
-    });
-    const result = await executeRiceTool({
-      context,
-      capabilities: ['storage:write'],
-      sessionId,
-      storageRoot: 'unused-p06-mocked-port',
-      call: {
-        id: callId,
-        name: 'workspace.export.create',
-        arguments: {
-          fileName: 'plan',
-          format: 'text',
-          content: 'plan',
-          artifactKind: 'plan',
+  it.each(['plan', 'document'])(
+    'routes opt-in %s through the atomic workbench publisher without a second object write',
+    async (kind) => {
+      workbenchEnabled.mockReturnValue(true);
+      const context = executionContext(),
+        sessionId = randomUUID(),
+        callId = randomUUID(),
+        id = randomUUID(),
+        objectId = randomUUID();
+      publishWorkbenchArtifact.mockResolvedValue({
+        id,
+        object: { id: objectId, mediaType: 'text/plain', sizeBytes: 4 },
+        version: {
+          seriesId: randomUUID(),
+          version: 1,
+          parentObjectId: null,
+          changeSummary: null,
         },
-      },
-    });
-    expect(JSON.parse(result.modelContent).artifactId).toBe(id);
-    expect(result.summary).toBe('已生成待审查计划 plan.txt · v1');
-    expect(publishWorkbenchArtifact).toHaveBeenCalledWith(
-      expect.objectContaining({
+      });
+      const result = await executeRiceTool({
         context,
+        capabilities: ['storage:write'],
         sessionId,
-        callId,
-        kind: 'plan',
-        fileName: 'plan.txt',
-        bytes: Buffer.from('plan'),
-      }),
-      expect.any(LocalStorageAdapter),
+        storageRoot: 'unused-p06-mocked-port',
+        call: {
+          id: callId,
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: 'plan',
+            format: 'text',
+            content: 'plan',
+            artifactKind: kind,
+          },
+        },
+      });
+      expect(JSON.parse(result.modelContent).artifactId).toBe(id);
+      expect(result.summary).toBe(
+        `已生成${kind === 'plan' ? '待审查计划' : '交付文件'} plan.txt · v1`,
+      );
+      expect(publishWorkbenchArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context,
+          sessionId,
+          callId,
+          kind,
+          fileName: 'plan.txt',
+          bytes: Buffer.from('plan'),
+        }),
+        expect.any(LocalStorageAdapter),
+      );
+      expect(createToolBrokerExportObject).not.toHaveBeenCalled();
+      expect(registerToolBrokerExport).not.toHaveBeenCalled();
+    },
+  );
+  it('does not claim a published report or silently use a legacy fallback when persistence fails', async () => {
+    workbenchEnabled.mockReturnValue(true);
+    publishWorkbenchArtifact.mockRejectedValue(
+      new Error('synthetic_publication_unavailable'),
     );
+    await expect(
+      executeRiceTool({
+        context: executionContext(),
+        capabilities: ['storage:write'],
+        sessionId: randomUUID(),
+        storageRoot: 'unused-mocked-port',
+        call: {
+          id: randomUUID(),
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: 'report',
+            format: 'markdown',
+            content: '# Synthetic report',
+          },
+        },
+      }),
+    ).rejects.toThrow('synthetic_publication_unavailable');
     expect(createToolBrokerExportObject).not.toHaveBeenCalled();
     expect(registerToolBrokerExport).not.toHaveBeenCalled();
   });

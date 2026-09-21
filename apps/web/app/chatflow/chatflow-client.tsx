@@ -31,6 +31,9 @@ import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
 import { useArtifactWorkbench } from './use-artifact-workbench';
 import { useWorkbenchLayout } from './use-workbench-layout';
+import { useWorkspaceReadiness } from './use-workspace-readiness';
+import { CapabilityPanel } from './capability-panel';
+import { capabilityLabels } from './capability-catalog';
 import workbenchUi from './workbench.module.css';
 import { AttachmentPreviewDialog } from './attachment-preview-dialog';
 import type { Attachment, Message } from './chatflow-types';
@@ -80,6 +83,7 @@ export function ChatFlowClient({
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
@@ -111,6 +115,14 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const readiness = useWorkspaceReadiness({
+    workspaceId: workspace?.workspaceId,
+    organizationId: workspace?.organizationId,
+    viewerId: workspace?.viewerId,
+    sessionId: activeId,
+    headers: tenantHeaders,
+    visible: capabilitiesOpen,
+  });
   const [sessionActions] = useState(() =>
     createSessionActions(captureSelection),
   );
@@ -589,12 +601,21 @@ export function ChatFlowClient({
   const activeEmployeeProfile = workspace.employeeProfiles.find(
     (profile) => profile.assignmentId === activeEmployee?.id,
   );
-  const assistantAvailability = assistantEligibility({
+  const employeeAssistantAvailability = assistantEligibility({
     enabled: assistantsEnabled,
     sessionId: activeId,
     sessionModels: workspace.sessionModels,
     employee: activeEmployee,
   });
+  const assistantReady = readiness.data?.capabilities.find(
+    (c) => c.id === 'assistants',
+  );
+  const assistantAvailability = {
+    ...employeeAssistantAvailability,
+    eligible:
+      employeeAssistantAvailability.eligible &&
+      assistantReady?.state === 'ready',
+  };
   const isRunning = Object.values(runViews).some(
     (view) => view.status === 'running' || view.status === 'connecting',
   );
@@ -626,15 +647,17 @@ export function ChatFlowClient({
       attachmentMenuOpen={attachmentMenuOpen}
       busy={busy}
       assistantModeControl={
-        assistantsEnabled && workbenchEnabled ? (
+        workbenchEnabled ? (
           <AssistantModeControl
             allowAssistants={allowAssistants}
             eligible={assistantAvailability.eligible}
             unavailableReason={assistantAvailability.unavailableReason}
+            readinessState={assistantReady?.state ?? 'unknown'}
             busy={busy}
             isRunning={isRunning}
             steering={isRunning && inputMode === 'steer'}
             onChange={setAllowAssistants}
+            onShowCapabilities={() => setCapabilitiesOpen(true)}
           />
         ) : undefined
       }
@@ -758,11 +781,7 @@ export function ChatFlowClient({
           className={conversationUi.root}
           data-phase={isEmptyConversation ? 'hero' : 'active'}
         >
-          {isEmptyConversation && !workbenchEnabled ? (
-            <header
-              className={`${conversationUi.header} ${conversationUi.headerHidden}`}
-            />
-          ) : (
+          {
             <header
               className={`${conversationUi.header} ${styles.conversationHeader}`}
             >
@@ -788,6 +807,14 @@ export function ChatFlowClient({
                   </div>
                 </div>
                 <div className={conversationUi.headerActions}>
+                  <button
+                    type="button"
+                    className={workbenchUi.entry}
+                    aria-haspopup="dialog"
+                    onClick={() => setCapabilitiesOpen(true)}
+                  >
+                    能力与环境
+                  </button>
                   {experienceEnabled && workspace ? (
                     <Link
                       className={workbenchUi.entry}
@@ -822,7 +849,7 @@ export function ChatFlowClient({
                 </div>
               </div>
             </header>
-          )}
+          }
 
           {isEmptyConversation ? (
             <div className={conversationUi.scrollBody}>
@@ -851,6 +878,21 @@ export function ChatFlowClient({
                     sessionId={activeId}
                     onArtifact={(id) => {
                       if (workbench.confirmNavigation()) workbench.show(id);
+                    }}
+                    onOperation={(id) => {
+                      const card = document.getElementById(`operation-${id}`);
+                      if (!card) {
+                        setError(
+                          '动作卡片尚未就绪，请稍候重试；不会代替你批准或重放操作。',
+                        );
+                        return;
+                      }
+                      card.tabIndex = -1;
+                      card.scrollIntoView({
+                        block: 'center',
+                        behavior: 'smooth',
+                      });
+                      card.focus({ preventScroll: true });
                     }}
                   />
                 ) : null}
@@ -951,6 +993,38 @@ export function ChatFlowClient({
         attachment={attachmentPreview}
         onClose={() => setAttachmentPreview(null)}
       />
+      {capabilitiesOpen ? (
+        <CapabilityPanel
+          key={`${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+          data={readiness.data}
+          loading={readiness.loading}
+          error={readiness.error}
+          busy={busy}
+          onClose={() => setCapabilitiesOpen(false)}
+          onRefresh={() => void readiness.reload()}
+          onBridge={() => {
+            setCapabilitiesOpen(false);
+            void loadBridgeDevices(true);
+          }}
+          onCompose={(id) => {
+            if (
+              busy ||
+              readiness.data?.capabilities.find((c) => c.id === id)?.state !==
+                'ready'
+            )
+              return;
+            const prompt = capabilityLabels[id].prompt;
+            if (!prompt) return;
+            // Never overwrite an existing draft or send on the user's behalf.
+            setDraft((current) =>
+              current.trim() ? `${current}\n\n${prompt}` : prompt,
+            );
+            setInputMode('follow_up');
+            setCapabilitiesOpen(false);
+            requestAnimationFrame(() => composerInput.current?.focus());
+          }}
+        />
+      ) : null}
 
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}
@@ -979,7 +1053,10 @@ export function ChatFlowClient({
           bodyClassName={styles.bridgeBody}
           className={styles.bridgeDialog}
           eyebrow="Rice Bridge"
-          onClose={() => setBridgeOpen(false)}
+          onClose={() => {
+            setBridgeOpen(false);
+            void readiness.reload();
+          }}
           title="本地工作区"
         >
           <div className={styles.bridgeIntro}>

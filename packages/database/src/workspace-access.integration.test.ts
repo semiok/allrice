@@ -1,11 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
-import type { RequestContext, Role } from '@allrice/contracts';
+import {
+  localCommandToolchainImageV1,
+  type RequestContext,
+  type Role,
+} from '@allrice/contracts';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import type * as Client from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
 import { resolveWorkspaceId } from './workspace/service.ts';
+import { getWorkspaceReadiness } from './workspace-readiness.ts';
+import { employeeManifest } from './employees/employee-config.ts';
 
 let admin: ReturnType<typeof postgres>;
 let database: ReturnType<typeof postgres>;
@@ -76,6 +90,7 @@ async function fixture(
 }
 
 suite('workspace MCP page scope — actual isolated PostgreSQL', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeAll(async () => {
     const base = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!base) throw Error('Explicit test database required');
@@ -208,5 +223,124 @@ suite('workspace MCP page scope — actual isolated PostgreSQL', () => {
     await expect(
       f.store.list(f.context, f.secondWorkspaceId),
     ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+  });
+
+  it('UX01-B discovery is read-only and rejects forged scopes, revoked membership and other-owner sessions', async () => {
+    const f = await fixture('member', 'workspace'),
+      other = await fixture();
+    const read = () =>
+      getWorkspaceReadiness(f.context, f.secondWorkspaceId, null);
+    const value = await read();
+    expect(value.canAdminister).toBe(false);
+    expect(value.capabilities).toHaveLength(12);
+    expect(value.viewerId).toBe(f.userId);
+    expect(JSON.stringify(value)).not.toMatch(
+      /credential|envelope|token_hash|root_fingerprint|endpoint/,
+    );
+    await expect(
+      getWorkspaceReadiness(f.context, f.firstWorkspaceId, null),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await expect(
+      getWorkspaceReadiness(f.context, other.firstWorkspaceId, null),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const session = randomUUID(),
+      employee = randomUUID(),
+      version = randomUUID();
+    await database`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${f.organizationId},${f.secondWorkspaceId},'private-fixture','Private fixture')`;
+    await database`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${f.organizationId},${f.secondWorkspaceId},${employee},1,'Fixture','synthetic','test','[]',${'sha256:' + 'a'.repeat(64)},'{}')`;
+    await database`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_version_id) values(${session},${f.organizationId},${f.secondWorkspaceId},${other.userId},'Private readiness fixture',${version})`;
+    await expect(
+      getWorkspaceReadiness(f.context, f.secondWorkspaceId, session),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    await database`update allrice_memberships set active=false where id=${f.membershipId}`;
+    await expect(read()).rejects.toMatchObject({
+      code: 'authorization_denied',
+    });
+  });
+
+  it('UX01-B reports real folder/sandbox freshness without cloud dependence or writes', async () => {
+    for (const flag of [
+      'ALLRICE_WORKBENCH_ENABLED',
+      'ALLRICE_LOCAL_COMMAND_ENABLED',
+      'ALLRICE_RUNTIME_POLICY_ENABLED',
+      'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
+    ])
+      vi.stubEnv(flag, '1');
+    const f = await fixture(),
+      org = f.organizationId,
+      ws = f.firstWorkspaceId,
+      user = f.userId;
+    const employee = randomUUID(),
+      version = randomUUID(),
+      assignment = randomUUID(),
+      session = randomUUID(),
+      device = randomUUID(),
+      folder = randomUUID();
+    const manifest = employeeManifest({
+      key: 'readiness-fixture',
+      name: 'Readiness fixture',
+      description: 'Isolated test only',
+      toolNames: [
+        'workspace.export.create',
+        'local.fs.list',
+        'local.fs.read',
+        'local.process.execute',
+      ],
+    });
+    const policy = {
+      version: 1,
+      enabled: true,
+      mode: 'execute',
+      rules: ['local.fs.list', 'local.fs.read', 'local.process.execute'].map(
+        (action) => ({ action, effect: 'allow' }),
+      ),
+    };
+    await database.begin(async (tx) => {
+      await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${ws},'readiness-fixture','Fixture')`;
+      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${ws},${employee},1,'Fixture','synthetic','test','[]',${'sha256:' + 'a'.repeat(64)},${tx.json(manifest)})`;
+      await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignment},${org},${ws},${employee},${version},${user})`;
+      await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id) values(${session},${org},${ws},${user},'Readiness',${assignment},${version})`;
+      await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls) values(${org},${ws},1,${tx.json(policy)})`;
+      await tx`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at) values(${device},${org},${ws},${user},'Isolated Bridge','macos-arm64',2,array['local.fs.list','local.fs.read'],${'b'.repeat(64)},now())`;
+      await tx`insert into allrice_execution_targets(organization_id,workspace_id,target_key,kind,label,state,capabilities) values(${org},${ws},${'bridge.' + device},'rice_bridge','Fixture','online','["files.read"]')`;
+    });
+    const read = () => getWorkspaceReadiness(f.context, ws, session);
+    const capability = async (id: string) =>
+      (await read()).capabilities.find((c) => c.id === id)!;
+    expect((await capability('local_files')).reason).toBe('folder_missing');
+    expect((await capability('report')).state).toBe('ready');
+    await database`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint) values(${folder},${org},${ws},${user},${device},'Private path not exposed',${'c'.repeat(64)})`;
+    expect((await capability('local_files')).state).toBe('ready');
+    expect((await capability('local_command')).reason).toBe('runner_missing');
+    const profile = {
+      contractVersion: 1,
+      backend: 'local-vm-container-v1',
+      imageDigest: localCommandToolchainImageV1,
+      architecture: 'arm64',
+      available: true,
+    };
+    await database`insert into allrice_bridge_runtime_profiles(device_id,organization_id,workspace_id,profile) values(${device},${org},${ws},${database.json(profile)})`;
+    expect((await capability('local_command')).state).toBe('ready');
+    await database`update allrice_bridge_runtime_profiles set reported_at=now()-interval '91 seconds' where device_id=${device}`;
+    expect((await capability('local_command')).reason).toBe('runner_missing');
+    await database`update allrice_bridge_runtime_profiles set reported_at=now(),profile=${database.json({ ...profile, architecture: 'amd64' })} where device_id=${device}`;
+    expect((await capability('local_command')).reason).toBe('runner_missing');
+    await database`update allrice_bridge_devices set last_seen_at=now()-interval '91 seconds' where id=${device}`;
+    expect((await capability('local_files')).state).toBe('device_offline');
+    expect((await capability('report')).state).toBe('ready');
+    expect(JSON.stringify(await read())).not.toContain('Private path');
+    vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
+    expect((await capability('local_command')).state).toBe('not_released');
+    const [writes] =
+      await database`select count(*)::int as n from allrice_runtime_operations where organization_id=${org}`;
+    expect(writes?.n).toBe(0);
+    // A legacy/missing assignment must not quietly switch this session to the
+    // user's otherwise valid default employee and claim its permissions.
+    await database`update allrice_chat_sessions set employee_assignment_id=null where id=${session}`;
+    expect((await capability('report')).reason).toBe('employee_missing');
+    expect((await read()).employeeVersionId).toBeNull();
+    expect(
+      (await getWorkspaceReadiness(f.context, ws, null)).employeeVersionId,
+    ).toBe(version);
   });
 });

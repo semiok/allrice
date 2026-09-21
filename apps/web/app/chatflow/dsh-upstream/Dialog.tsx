@@ -25,6 +25,7 @@ export function DshDialog({
   bodyClassName = '',
 }: DshDialogProps) {
   const [mounted, setMounted] = useState(false);
+  const dialog = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -42,6 +43,53 @@ export function DshDialog({
     };
   }, []);
 
+  useEffect(() => {
+    if (!mounted || !dialog.current) return;
+    const section = dialog.current;
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusable = () =>
+      Array.from(
+        section.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]',
+        ),
+      ).filter((node) => node.getClientRects().length > 0);
+    (focusable()[0] ?? section).focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const nodes = focusable(),
+        first = nodes[0],
+        last = nodes.at(-1);
+      if (!first || !last) {
+        event.preventDefault();
+        section.focus();
+        return;
+      }
+      if (
+        event.shiftKey &&
+        (document.activeElement === first ||
+          !section.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last ||
+          !section.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', trap);
+    return () => {
+      document.removeEventListener('keydown', trap);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [mounted]);
+
   if (!mounted) return null;
 
   return createPortal(
@@ -53,6 +101,8 @@ export function DshDialog({
       role="presentation"
     >
       <section
+        ref={dialog}
+        tabIndex={-1}
         aria-label={ariaLabel}
         aria-modal="true"
         className={`${styles.dialog} ${className}`.trim()}

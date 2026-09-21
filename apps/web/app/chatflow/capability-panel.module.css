@@ -1,0 +1,112 @@
+.dialog {
+  width: min(960px, calc(100vw - 32px));
+}
+.body {
+  padding: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+.body > p {
+  margin: 0 0 12px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.body > p:last-child {
+  margin: 16px 0 0;
+}
+.body button,
+.body a {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.body button:hover,
+.body a:hover {
+  background: var(--dsw-specific-bg-hover, #f3f4f6);
+}
+.body button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.body :is(button, a, summary):focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #4169d8);
+  outline-offset: 3px;
+}
+.refresh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.card {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  padding: 16px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.card header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.card header span {
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 2px 6px;
+  background: var(--dsw-specific-bg-hover, #f3f4f6);
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+.card[data-state='ready'] header span {
+  color: #167044;
+  background: #eaf5ee;
+}
+.card p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.card small {
+  display: block;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary);
+}
+.card button,
+.card a {
+  display: inline-block;
+  margin-top: 10px;
+}
+.card details {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.card summary {
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  .body {
+    padding: 16px;
+  }
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

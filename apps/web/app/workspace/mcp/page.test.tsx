@@ -88,6 +88,20 @@ describe('workspace MCP page access', () => {
     expect(html).toContain(`data-workspace-id="${workspaceId}"`);
   });
 
+  it('preserves the explicit workspace from the capability entry and still authorizes it', async () => {
+    vi.mocked(getRequestContext).mockResolvedValue(context());
+    const html = renderToStaticMarkup(
+      await WorkspaceMcpPage({
+        searchParams: Promise.resolve({ workspaceId }),
+      }),
+    );
+    expect(resolveWorkspaceId).toHaveBeenCalledWith(
+      expect.anything(),
+      workspaceId,
+    );
+    expect(html).toContain(`data-workspace-id="${workspaceId}"`);
+  });
+
   it.each([
     ['member', { role: 'member' as const }],
     ['viewer', { role: 'viewer' as const }],

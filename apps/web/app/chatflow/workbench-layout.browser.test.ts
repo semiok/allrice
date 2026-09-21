@@ -3,7 +3,11 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
-import { WorkbenchArtifactSchema } from '@allrice/contracts';
+import {
+  WorkbenchArtifactSchema,
+  workspaceCapabilityIds,
+  type WorkspaceCapability,
+} from '@allrice/contracts';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -165,6 +169,36 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      readinessError: false,
+      readinessWrongScope: false,
+      readinessDelay: null as Promise<void> | null,
+      readinessRequests: 0,
+      canAdminister: false,
+      capabilities: workspaceCapabilityIds.map((id): WorkspaceCapability => ({
+        id,
+        state:
+          id === 'report'
+            ? 'ready'
+            : id === 'local_files'
+              ? 'needs_configuration'
+              : 'not_released',
+        reason:
+          id === 'report'
+            ? 'ready'
+            : id === 'local_files'
+              ? 'bridge_missing'
+              : 'release_disabled',
+        action:
+          id === 'report'
+            ? 'compose'
+            : id === 'local_files'
+              ? 'bridge'
+              : 'guide',
+        target: id === 'local_files' ? 'local' : 'cloud',
+        responsibleRole: 'user',
+        releaseEnabled: ['report', 'local_files'].includes(id),
+        authorization: 'normal_policy',
+      })),
       viewer: user,
       workspace,
       items: options.artifacts ? [artifact(10)] : [],
@@ -239,6 +273,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         });
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
+      if (path === '/api/v1/workspace/readiness') {
+        state.readinessRequests++;
+        const snapshot = {
+          schemaVersion: 1,
+          organizationId: org,
+          workspaceId: state.workspace,
+          viewerId: state.readinessWrongScope ? id(99) : state.viewer,
+          sessionId: url.searchParams.get('sessionId'),
+          employeeVersionId: id(8),
+          observedAt: new Date().toISOString(),
+          basis: 'next_task',
+          canAdminister: state.canAdminister,
+          capabilities: structuredClone(state.capabilities),
+        };
+        if (state.readinessDelay && url.searchParams.get('sessionId') === A)
+          await state.readinessDelay;
+        return answer(snapshot, state.readinessError ? 503 : 200);
+      }
       if (path === '/api/v1/runtime/cloud-operations')
         return answer({ operations: [] });
       if (path === '/api/v1/runtime/assistants')
@@ -364,6 +416,200 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it('UX01-B keeps all entries visible, distinguishes release-off and preserves drafts without execution', async () => {
+    const f = await fixture();
+    try {
+      const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await composer.fill('保留我的原始问题');
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
+      await dialog
+        .getByRole('button', { name: '准备报告与文件交付任务' })
+        .waitFor();
+      expect(await dialog.locator('[data-capability]').count()).toBe(12);
+      expect(
+        await dialog
+          .locator('[data-capability="assistants"]')
+          .getAttribute('data-state'),
+      ).toBe('not_released');
+      expect(
+        await dialog
+          .locator('[data-capability="boost"]')
+          .getByRole('button', { name: /准备/ })
+          .count(),
+      ).toBe(0);
+      expect(await dialog.getByRole('link', { name: /配置/ }).count()).toBe(0);
+      await f.page.screenshot({ path: '/tmp/met147-capabilities-desktop.png' });
+      await dialog
+        .getByRole('button', { name: '准备报告与文件交付任务' })
+        .click();
+      expect(await composer.inputValue()).toContain('保留我的原始问题');
+      expect(await composer.inputValue()).toContain('workspace.export.create');
+      await expect
+        .poll(() => composer.evaluate((e) => e === document.activeElement))
+        .toBe(true);
+      expect(f.writes).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('UX01-B bridges missing configuration to the real pairing dialog and refreshes on return', async () => {
+    const f = await fixture({ width: 390 });
+    try {
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
+      const card = dialog.locator('[data-capability="local_files"]');
+      await card
+        .getByRole('button', { name: '打开 Bridge 下载与配对' })
+        .click();
+      const bridge = f.page.getByRole('dialog', { name: '本地工作区' });
+      await bridge.waitFor();
+      expect(
+        await bridge.getByRole('link', { name: /下载 M 芯片版/ }).count(),
+      ).toBe(1);
+      const calls = f.state.readinessRequests;
+      await f.page.keyboard.press('Escape');
+      await expect.poll(() => f.state.readinessRequests).toBeGreaterThan(calls);
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      await dialog.waitFor();
+      await f.page.keyboard.press('Shift+Tab');
+      expect(
+        await dialog.evaluate((e) => e.contains(document.activeElement)),
+      ).toBe(true);
+      expect(
+        await dialog.evaluate((e) => e.scrollWidth <= e.clientWidth + 1),
+      ).toBe(true);
+      await f.page.screenshot({ path: '/tmp/met147-capabilities-mobile.png' });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('UX01-B revalidates after settings, protects members, and never treats errors or wrong scope as ready', async () => {
+    const f = await fixture();
+    try {
+      f.state.capabilities = f.state.capabilities.map((c) =>
+        c.id === 'cloud_mcp'
+          ? {
+              ...c,
+              state: 'needs_authorization',
+              reason: 'connection_grant_missing',
+              action: 'mcp_settings',
+              responsibleRole: 'tenant_admin',
+            }
+          : c,
+      );
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
+      await dialog.getByText(/核对时间/).waitFor();
+      const mcp = dialog.locator('[data-capability="cloud_mcp"]');
+      expect(await mcp.getByRole('link').count()).toBe(0);
+      f.state.canAdminister = true;
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
+      const settings = mcp.getByRole('link', { name: /打开配置/ });
+      await settings.waitFor();
+      expect(await settings.getAttribute('href')).toBe(
+        `/workspace/mcp?workspaceId=${workspace}`,
+      );
+      expect(await settings.getAttribute('target')).toBe('_blank');
+      f.state.capabilities = f.state.capabilities.map((c) =>
+        c.id === 'cloud_mcp'
+          ? { ...c, state: 'ready', reason: 'ready', action: 'compose' }
+          : c,
+      );
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await mcp
+        .getByRole('button', { name: '准备云端 MCP 连接器任务' })
+        .waitFor();
+      f.state.readinessError = true;
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
+      await dialog
+        .getByText('能力状态未知，请刷新重试或重新登录。', { exact: true })
+        .waitFor();
+      expect(await dialog.getByRole('button', { name: /^准备/ }).count()).toBe(
+        0,
+      );
+      f.state.readinessError = false;
+      f.state.readinessWrongScope = true;
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
+      await dialog
+        .getByText('能力状态未知，请刷新重试或重新登录。', { exact: true })
+        .waitFor();
+      expect(await dialog.getByRole('button', { name: /^准备/ }).count()).toBe(
+        0,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('UX01-B ignores late readiness from a previous session and recovers after a failed check', async () => {
+    const f = await fixture();
+    let release!: () => void;
+    try {
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
+      await dialog
+        .getByRole('button', { name: '准备报告与文件交付任务' })
+        .waitFor();
+      f.state.readinessDelay = new Promise<void>((done) => {
+        release = done;
+      });
+      const calls = f.state.readinessRequests;
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
+      await expect.poll(() => f.state.readinessRequests).toBeGreaterThan(calls);
+      await f.page.keyboard.press('Escape');
+      f.state.capabilities = f.state.capabilities.map((c) => ({
+        ...c,
+        state: 'not_released',
+        reason: 'release_disabled',
+        action: 'guide',
+        releaseEnabled: false,
+      }));
+      await f.page.getByRole('button', { name: /研究任务 B/ }).click();
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      await dialog.getByText(/核对时间/).waitFor();
+      release();
+      expect(
+        await dialog
+          .locator('[data-capability="report"]')
+          .getAttribute('data-state'),
+      ).toBe('not_released');
+      expect(await dialog.getByRole('button', { name: /^准备/ }).count()).toBe(
+        0,
+      );
+      f.state.readinessError = true;
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
+      await dialog
+        .getByText('能力状态未知，请刷新重试或重新登录。', { exact: true })
+        .waitFor();
+      f.state.readinessError = false;
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
+      await dialog.getByText(/核对时间/).waitFor();
+      expect(
+        await dialog
+          .locator('[data-capability="report"]')
+          .getAttribute('data-state'),
+      ).toBe('not_released');
+    } finally {
+      release?.();
+      await f.close();
+    }
+  });
 
   it(
     'automatically presents a newly completed SSE delivery, but never reopens a panel the user closed',

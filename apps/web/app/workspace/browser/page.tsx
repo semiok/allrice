@@ -10,7 +10,9 @@ import {
 import { getRequestContext } from '../../../lib/identity/session';
 import { BrowserControlSettings } from './settings';
 export const dynamic = 'force-dynamic';
-export default async function BrowserSettingsPage() {
+export default async function BrowserSettingsPage({
+  searchParams,
+}: { searchParams?: Promise<{ workspaceId?: string }> } = {}) {
   const context = await getRequestContext(
     new Request('http://localhost/workspace/browser', {
       headers: await headers(),
@@ -18,7 +20,10 @@ export default async function BrowserSettingsPage() {
   );
   if (!context) redirect('/login');
   try {
-    const workspaceId = await resolveWorkspaceId(context);
+    const requested = (await searchParams)?.workspaceId;
+    const workspaceId = requested
+      ? await resolveWorkspaceId(context, requested)
+      : await resolveWorkspaceId(context);
     await listBrowserControlManagement({ ...context, workspaceId });
     return (
       <main style={{ maxWidth: 1000, margin: '0 auto', padding: 24 }}>

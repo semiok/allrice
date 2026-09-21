@@ -1,0 +1,278 @@
+import {
+  workspaceCapabilityIds,
+  type WorkspaceCapability,
+  type WorkspaceCapabilityId,
+  type RuntimePolicyControls,
+} from '@allrice/contracts';
+
+export interface ReadinessFacts {
+  canAdminister: boolean;
+  canExecute: boolean;
+  employee: boolean;
+  tools: string[];
+  capabilities: string[];
+  deniedCapabilities: string[];
+  provider: string;
+  controls: RuntimePolicyControls | null;
+  governedLocalReads: boolean;
+  bridge: 'missing' | 'offline' | 'online';
+  folder: boolean;
+  runner: boolean;
+  cloud: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
+  cloudBrowser: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
+  localBrowser: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
+  cloudMcp: 'missing' | 'unverified' | 'ungranted' | 'ready';
+  localMcp: 'missing' | 'unverified' | 'ungranted' | 'ready';
+  cloudMcpPolicy: boolean;
+  localMcpPolicy: boolean;
+  flags: Record<WorkspaceCapabilityId, boolean>;
+}
+const definitions: Record<
+  WorkspaceCapabilityId,
+  {
+    target: WorkspaceCapability['target'];
+    tools: string[];
+    capabilities: string[];
+    actions?: string[];
+    authorization: WorkspaceCapability['authorization'];
+  }
+> = {
+  report: {
+    target: 'cloud',
+    tools: ['workspace.export.create'],
+    capabilities: ['storage:write'],
+    authorization: 'normal_policy',
+  },
+  local_files: {
+    target: 'local',
+    tools: ['local.fs.list', 'local.fs.read'],
+    capabilities: ['storage:read'],
+    authorization: 'normal_policy',
+  },
+  changeset: {
+    target: 'local',
+    tools: ['local.fs.write'],
+    capabilities: ['storage:write'],
+    actions: ['local.fs.changeset'],
+    authorization: 'per_action',
+  },
+  local_command: {
+    target: 'local',
+    tools: ['local.process.execute'],
+    capabilities: ['storage:write'],
+    actions: ['local.process.execute'],
+    authorization: 'per_action',
+  },
+  cloud_command: {
+    target: 'cloud',
+    tools: ['cloud.process.execute'],
+    capabilities: ['storage:write'],
+    actions: ['cloud.process.execute'],
+    authorization: 'per_action',
+  },
+  cloud_browser: {
+    target: 'cloud',
+    tools: ['browser.workspace'],
+    capabilities: ['network:outbound'],
+    actions: ['cloud.browser.observe', 'cloud.browser.act'],
+    authorization: 'per_action',
+  },
+  local_browser: {
+    target: 'local',
+    tools: ['local.browser.workspace'],
+    capabilities: ['network:outbound'],
+    actions: ['local.browser.observe', 'local.browser.act'],
+    authorization: 'per_action',
+  },
+  cloud_mcp: {
+    target: 'cloud',
+    tools: ['cloud.mcp.call'],
+    capabilities: ['secret:use', 'network:outbound'],
+    actions: ['cloud.mcp.call'],
+    authorization: 'per_action',
+  },
+  local_mcp: {
+    target: 'local',
+    tools: ['local.mcp.discover', 'local.mcp.call'],
+    capabilities: ['secret:use', 'storage:write'],
+    actions: ['local.mcp.discover', 'local.mcp.call'],
+    authorization: 'per_action',
+  },
+  assistants: {
+    target: 'cloud_or_local',
+    tools: ['assistant.delegate'],
+    capabilities: ['model:invoke'],
+    authorization: 'root_budget',
+  },
+  boost: {
+    target: 'none',
+    tools: [],
+    capabilities: [],
+    authorization: 'unavailable',
+  },
+  teamwork: {
+    target: 'none',
+    tools: [],
+    capabilities: [],
+    authorization: 'unavailable',
+  },
+};
+
+export function projectWorkspaceReadiness(
+  f: ReadinessFacts,
+): WorkspaceCapability[] {
+  return workspaceCapabilityIds.map((id) => {
+    const d = definitions[id];
+    const result = (
+      state: WorkspaceCapability['state'],
+      reason: WorkspaceCapability['reason'],
+      responsibleRole: WorkspaceCapability['responsibleRole'] = 'user',
+      action: WorkspaceCapability['action'] = 'guide',
+    ): WorkspaceCapability => ({
+      id,
+      state,
+      reason,
+      responsibleRole,
+      action,
+      target: d.target,
+      releaseEnabled: f.flags[id],
+      authorization: d.authorization,
+    });
+    if (id === 'boost' || id === 'teamwork')
+      return result('not_released', 'planned', 'platform_admin');
+    if (!f.flags[id])
+      return result('not_released', 'release_disabled', 'platform_admin');
+    if (!f.canExecute)
+      return result('needs_authorization', 'read_only', 'tenant_admin');
+    if (!f.employee)
+      return result('needs_configuration', 'employee_missing', 'tenant_admin');
+    if (
+      d.tools.some((t) => !f.tools.includes(t)) ||
+      d.capabilities.some(
+        (c) => !f.capabilities.includes(c) || f.deniedCapabilities.includes(c),
+      ) ||
+      (id === 'cloud_mcp' && !f.cloudMcpPolicy) ||
+      (id === 'local_mcp' && !f.localMcpPolicy)
+    )
+      return result('needs_authorization', 'employee_policy', 'tenant_admin');
+    const actions =
+      id === 'local_files' && f.governedLocalReads
+        ? ['local.fs.list', 'local.fs.read']
+        : d.actions;
+    if (actions || id === 'assistants') {
+      if (!f.controls)
+        return result('needs_configuration', 'policy_missing', 'tenant_admin');
+      if (
+        !f.controls.enabled ||
+        (id !== 'local_files' && f.controls.mode !== 'execute') ||
+        actions?.some(
+          (a) =>
+            !f.controls!.rules.some(
+              (r) => r.action === a && r.effect !== 'deny',
+            ) ||
+            f.controls!.rules.some(
+              (r) => r.action === a && r.effect === 'deny',
+            ),
+        ) ||
+        (id === 'assistants' &&
+          (!f.controls.rules.some(
+            (r) => r.action === 'assistant.delegate' && r.effect === 'allow',
+          ) ||
+            f.controls.rules.some(
+              (r) => r.action === 'assistant.delegate' && r.effect !== 'allow',
+            )))
+      )
+        return result('needs_authorization', 'policy_denied', 'tenant_admin');
+    }
+    if (d.target === 'local') {
+      if (f.bridge === 'missing')
+        return result(
+          'needs_configuration',
+          'bridge_missing',
+          'user',
+          'bridge',
+        );
+      if (f.bridge === 'offline')
+        return result('device_offline', 'bridge_offline', 'user', 'bridge');
+      // Local browser is independent of filesystem and command sandbox grants.
+      if (id !== 'local_browser' && !f.folder)
+        return result(
+          'needs_configuration',
+          'folder_missing',
+          'user',
+          'bridge',
+        );
+      if (['local_command', 'local_mcp'].includes(id) && !f.runner)
+        return result('needs_configuration', 'runner_missing', 'user');
+    }
+    const environment =
+      id === 'cloud_command'
+        ? f.cloud
+        : id === 'cloud_browser'
+          ? f.cloudBrowser
+          : id === 'local_browser'
+            ? f.localBrowser
+            : null;
+    if (environment && environment !== 'ready') {
+      const action = f.canAdminister
+        ? id === 'cloud_browser'
+          ? 'browser_settings'
+          : id === 'local_browser'
+            ? 'local_browser_settings'
+            : 'guide'
+        : 'guide';
+      if (environment === 'missing')
+        return result(
+          'needs_configuration',
+          'target_missing',
+          id === 'local_browser' ? 'user' : 'platform_admin',
+          action,
+        );
+      if (environment === 'unavailable')
+        return result(
+          id === 'local_browser' ? 'device_offline' : 'needs_configuration',
+          'target_unavailable',
+          id === 'local_browser' ? 'user' : 'platform_admin',
+          action,
+        );
+      if (environment === 'invalid')
+        return result('unknown', 'invalid_configuration', 'platform_admin');
+      return result(
+        'needs_authorization',
+        'grant_missing',
+        'tenant_admin',
+        action,
+      );
+    }
+    const connection =
+      id === 'cloud_mcp' ? f.cloudMcp : id === 'local_mcp' ? f.localMcp : null;
+    if (connection && connection !== 'ready') {
+      const reason =
+        connection === 'missing'
+          ? 'connection_missing'
+          : connection === 'unverified'
+            ? 'connection_unverified'
+            : 'connection_grant_missing';
+      return result(
+        connection === 'ungranted'
+          ? 'needs_authorization'
+          : 'needs_configuration',
+        reason,
+        'tenant_admin',
+        f.canAdminister ? 'mcp_settings' : 'guide',
+      );
+    }
+    if (
+      id === 'assistants' &&
+      !['openai-codex', 'gemini', 'google', 'openai-compatible'].includes(
+        f.provider,
+      )
+    )
+      return result(
+        'needs_configuration',
+        'provider_unsupported',
+        'tenant_admin',
+      );
+    return result('ready', 'ready', 'user', 'compose');
+  });
+}

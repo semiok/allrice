@@ -6,7 +6,9 @@ import { getRequestContext } from '../../../lib/identity/session';
 import { LocalBrowserSettings } from './local-browser-settings';
 
 export const dynamic = 'force-dynamic';
-export default async function WorkspaceLocalBrowserPage() {
+export default async function WorkspaceLocalBrowserPage({
+  searchParams,
+}: { searchParams?: Promise<{ workspaceId?: string }> } = {}) {
   const context = await getRequestContext(
     new Request('http://localhost/workspace/local-browser', {
       headers: await headers(),
@@ -15,7 +17,10 @@ export default async function WorkspaceLocalBrowserPage() {
   if (!context) redirect('/login');
   let workspaceId: string;
   try {
-    workspaceId = await resolveWorkspaceId(context);
+    const requested = (await searchParams)?.workspaceId;
+    workspaceId = requested
+      ? await resolveWorkspaceId(context, requested)
+      : await resolveWorkspaceId(context);
   } catch (error) {
     if (
       !(error instanceof DataAccessError) ||

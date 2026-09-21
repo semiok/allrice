@@ -81,11 +81,13 @@ export function InteractionStatusPanel({
   error,
   sessionId,
   onArtifact,
+  onOperation,
 }: {
   data: InteractionStatus | null;
   error: string;
   sessionId: string;
   onArtifact: (id: string) => void;
+  onOperation?: (id: string) => void;
 }) {
   const waiting =
     (data?.inputs.filter((i) =>
@@ -106,6 +108,13 @@ export function InteractionStatusPanel({
                     onClick={() => onArtifact(a.artifactId!)}
                   >
                     审查文件操作与批准／拒绝
+                  </button>
+                ) : onOperation ? (
+                  <button
+                    type="button"
+                    onClick={() => onOperation(a.operationId)}
+                  >
+                    查看精确动作与批准／拒绝
                   </button>
                 ) : (
                   <a href={`?session=${sessionId}#operation-${a.operationId}`}>
