@@ -83,16 +83,14 @@ export async function getTenantValidationSummary(
     environments,
     quotas,
     quotaError: quotas === null,
-    runs: runs
-      .slice(0, 50)
-      .map((r) => ({
-        id: r.id,
-        sessionId: r.session_id,
-        title: diagnosticText(r.title).slice(0, 250),
-        status: r.state,
-        createdAt: r.created_at.toISOString(),
-        employeeVersionId: r.employee_version_id,
-      })),
+    runs: runs.slice(0, 50).map((r) => ({
+      id: r.id,
+      sessionId: r.session_id,
+      title: diagnosticText(r.title).slice(0, 250),
+      status: r.state,
+      createdAt: r.created_at.toISOString(),
+      employeeVersionId: r.employee_version_id,
+    })),
     runsTruncated: runs.length > 50,
   };
 }
@@ -177,27 +175,23 @@ export async function inspectTenantRun(
       ? diagnosticText(turn.assistantMessage.text)
       : null,
     usage: turn?.usage ?? null,
-    events: (turn?.events ?? [])
-      .slice(-150)
-      .map((e) => ({
-        key: e.key,
-        title: diagnosticText(e.title),
-        status: e.status,
-        detail: e.detail ? diagnosticText(e.detail) : null,
-      })),
-    operations: operations
-      .slice(0, 32)
-      .map((o) => ({
-        id: o.id,
-        deviceId: o.device_id,
-        targetId: o.target_id,
-        action: o.action,
-        status: o.status,
-        approval: o.approval,
-        expiresAt: o.expires_at?.toISOString() ?? null,
-        output: diagnosticText(o.output),
-        outputTruncated: o.output_length > 16000 || o.output_chunks >= 65,
-      })),
+    events: (turn?.events ?? []).slice(-150).map((e) => ({
+      key: e.key,
+      title: diagnosticText(e.title),
+      status: e.status,
+      detail: e.detail ? diagnosticText(e.detail) : null,
+    })),
+    operations: operations.slice(0, 32).map((o) => ({
+      id: o.id,
+      deviceId: o.device_id,
+      targetId: o.target_id,
+      action: o.action,
+      status: o.status,
+      approval: o.approval,
+      expiresAt: o.expires_at?.toISOString() ?? null,
+      output: diagnosticText(o.output),
+      outputTruncated: o.output_length > 16000 || o.output_chunks >= 65,
+    })),
     operationsTruncated: operations.length > 32,
     artifacts: artifacts.artifacts,
     artifactsTruncated: artifacts.truncated,
