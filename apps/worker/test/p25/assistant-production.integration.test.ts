@@ -36,6 +36,7 @@ integration(
     it.each([
       'completed',
       'missing_report',
+      'invalid_report',
       'dynamic_output',
       'revoked',
       'revoked_policy',
@@ -81,6 +82,21 @@ integration(
             );
             await overlap.promise;
             activeChildren--;
+            if (
+              outcome === 'invalid_report' &&
+              !serialized.includes('assistant_report_delivery_required')
+            )
+              return {
+                nativeTool: {
+                  name: 'assistant_report',
+                  arguments: {
+                    status: 'completed',
+                    summary: 'Synthetic calculation',
+                    evidence: [],
+                    incomplete: [],
+                  },
+                },
+              };
             return {
               usage:
                 outcome === 'unknown_usage'

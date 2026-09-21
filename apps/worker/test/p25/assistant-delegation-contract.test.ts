@@ -35,6 +35,31 @@ function fixture() {
   return { bridge, provision, settleUsage };
 }
 describe('assistant delegation requires an explicit result channel', () => {
+  it.each([
+    {
+      evidence: [{ calculation: '19+23=42' }],
+      error: 'assistant_report_invalid',
+    },
+    { evidence: [], error: 'assistant_report_delivery_required' },
+  ])(
+    'returns actionable $error without persisting fabricated completion',
+    async ({ evidence, error }) => {
+      const f = fixture();
+      await expect(
+        f.bridge.handle('report', {
+          nativeSessionId: 'root',
+          callId: 'report-1',
+          arguments: {
+            status: 'completed',
+            summary: '42',
+            evidence,
+            incomplete: [],
+          },
+        }),
+      ).resolves.toMatchObject({ error });
+      expect(f.settleUsage).toHaveBeenCalledOnce();
+    },
+  );
   it.each([{ tools: [] }, { tools: ['web.search'] }])(
     'rejects an undeliverable child before provisioning (%j)',
     async ({ tools }) => {

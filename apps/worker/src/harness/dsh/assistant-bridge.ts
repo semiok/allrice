@@ -334,11 +334,28 @@ export function createAssistantWorkerBridge(
       }
       if (method === 'report') {
         const { output, ...report } = args;
-        const result = AssistantResultSchema.parse({
+        const parsed = AssistantResultSchema.safeParse({
           ...report,
           deliveryId: callUuid,
           usageComplete: false, // The database derives this from this child's settled calls.
         });
+        if (!parsed.success)
+          return {
+            error: 'assistant_report_invalid',
+            message:
+              'Report fields are invalid. evidence must contain only existing registered artifact {id: UUID, digest: "sha256:..."} references, not calculations or prose. With no existing artifact, use evidence=[] and output={name:"result",content:"your result"}. Use incomplete=[] only when nothing remains unfinished.',
+          };
+        const result = parsed.data;
+        if (
+          result.status === 'completed' &&
+          ((!result.evidence.length && output === undefined) ||
+            result.incomplete.length)
+        )
+          return {
+            error: 'assistant_report_delivery_required',
+            message:
+              'No completed result was recorded. Completion requires no incomplete items and an existing registered artifact or output={name:"result",content:"your result"} to persist a model-generated deliverable. Use status=partial if work is unfinished. Never invent artifact IDs.',
+          };
         if (output !== undefined) {
           if (!options.onPublishOutput)
             throw Error('assistant_output_unavailable');
