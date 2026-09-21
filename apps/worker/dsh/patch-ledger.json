@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-bounded-native-search-v1",
+      "issue": "MET-150",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
+      "reason": "Route ordinary native web_search through the tenant Tool Broker for audited bounded results and durable full-result files; keep upstream DSH unchanged."
+    },
+    {
       "id": "allrice-jsonrpc-lifecycle-v1",
       "issue": "MET-85",
       "upstreamVersion": "0.1.1-rc.2",

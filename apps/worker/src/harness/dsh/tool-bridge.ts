@@ -143,7 +143,12 @@ export function dshInboundToolHandler(
     const id = shortText(params.toolCallId, 240);
     const name = shortText(params.name, 160);
     const args = record(params.arguments);
-    if (!id || !name || !args || !dshBrokerNativeToolNames.has(name)) {
+    if (
+      !id ||
+      !name ||
+      !args ||
+      (!dshBrokerNativeToolNames.has(name) && name !== 'web.search')
+    ) {
       throw new HandlerError(
         'DSH_NATIVE_TOOL_INVALID',
         'DSH requested an invalid AllRice native tool call',

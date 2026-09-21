@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { completedBudgetAnswers } from './budget-answer.ts';
 import {
   ArtifactReviewError,
   assertWorkbenchSession,
@@ -117,6 +118,7 @@ interface MessageRow {
   role: ChatMessage['role'];
   content: unknown;
   status: ChatMessage['status'];
+  error_code?: string | null;
   client_message_id: string | null;
   reply_to_id: string | null;
   created_at: Date;
@@ -660,6 +662,7 @@ function mapMessage(
     role: row.role,
     content,
     status: row.status,
+    errorCode: row.error_code ?? null,
     clientMessageId: row.client_message_id,
     replyToId: row.reply_to_id,
     runId: row.run_id ?? null,
@@ -768,13 +771,44 @@ export async function getChatSessionHistory(
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
   );
+  const recovered = await completedBudgetAnswers({
+    organizationId: context.organizationId,
+    workspaceId,
+    ownerId: row.owner_id,
+    sessionId: row.id,
+    runIds: messages
+      .filter(
+        (m) =>
+          m.status === 'failed' &&
+          [
+            'MODEL_OUTPUT_BUDGET_EXCEEDED',
+            'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED',
+          ].includes(m.error_code ?? ''),
+      )
+      .flatMap((m) => (m.run_id ? [m.run_id] : [])),
+  });
   return {
     session: mapSession(row),
     contextStatus,
     nativeContextStatus,
-    messages: messages.map((message) =>
-      mapMessage(context, message, attachments.get(message.id) ?? []),
-    ),
+    messages: messages.map((message) => {
+      const mapped = mapMessage(
+        context,
+        message,
+        attachments.get(message.id) ?? [],
+      );
+      const text = recovered.get(message.run_id ?? '');
+      if (text)
+        mapped.content = {
+          ...mapped.content,
+          text,
+          budgetWarning:
+            message.error_code === 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
+              ? 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
+              : 'MODEL_OUTPUT_BUDGET_EXCEEDED',
+        };
+      return mapped;
+    }),
   };
 }
 

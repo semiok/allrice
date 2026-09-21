@@ -53,6 +53,11 @@ import {
 } from '../harness/router.js';
 import { buildAuthorizedKnowledgeContext } from '../knowledge.js';
 import { estimateModelCostCents } from '../model-cost.js';
+import {
+  assertInitialModelInputBudget,
+  checkCompletedModelBudget,
+  modelAdmissionTokenEstimate,
+} from '../model-result-budget.js';
 import { assertSubscriptionQuotaNotExhausted } from '../subscription-quota-admission.js';
 import {
   preflightAssistantPricing,
@@ -587,6 +592,12 @@ export async function executeEmployeeRun({
       decision: routeDecision,
       providerSnapshot,
     });
+    const modelBudgetScope = {
+      verifiedSubscription: !!subscriptionSnapshot,
+      governedAssistants:
+        objectInput(input.assistantConfiguration).allowAssistants === true,
+      workflow: routeDecision.selectedKind === 'workflow',
+    };
     if (subscriptionSnapshot)
       assertSubscriptionQuotaNotExhausted(codexStatus.quota);
     assertAssistantProviderOutputBound(
@@ -629,7 +640,18 @@ export async function executeEmployeeRun({
           userId: executionSnapshot.tenantContext.actorId,
           employeeId: executionSnapshot.employee.id,
           connectionId: frozenRouteTargets[0]!.connectionId,
-          requestedTokens: frozenModelSnapshot.runLimits.maxTotalTokens,
+          requestedTokens: modelAdmissionTokenEstimate({
+            ...modelBudgetScope,
+            limits: frozenModelSnapshot.runLimits,
+            estimatedInputTokens: estimateConversationTokens(
+              [
+                kernel.systemInstructions,
+                kernel.bootstrapConversation,
+                kernel.authorizedMemoryContext,
+                kernel.userRequest,
+              ].join('\n'),
+            ),
+          }),
           requestedRuntimeMs: frozenModelSnapshot.runLimits.timeoutMs,
         });
       } catch (error) {
@@ -641,7 +663,11 @@ export async function executeEmployeeRun({
             error.code,
             error.scope
               ? `The ${error.scope} model resource limit has been reached`
-              : 'The organization model quota has been reached',
+              : error.code === 'MODEL_TOKEN_USAGE_UNKNOWN'
+                ? 'Historical model Token usage is unresolved; administrator reconciliation or explicit budget review is required'
+                : error.code === 'MODEL_COST_USAGE_UNKNOWN'
+                  ? 'Historical model API cost is unresolved; administrator reconciliation is required'
+                  : 'The organization model quota has been reached',
             false,
           );
         throw error;
@@ -784,16 +810,11 @@ export async function executeEmployeeRun({
           routedKernel.userRequest,
         ].join('\n'),
       );
-      if (
-        estimatedInputTokens > runLimits.maxInputTokens ||
-        estimatedInputTokens > runLimits.maxTotalTokens
-      ) {
-        throw new HandlerError(
-          'MODEL_INPUT_BUDGET_EXCEEDED',
-          'Frozen employee model input budget was exceeded',
-          false,
-        );
-      }
+      assertInitialModelInputBudget({
+        ...modelBudgetScope,
+        limits: runLimits,
+        estimatedInputTokens,
+      });
     }
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
@@ -1236,21 +1257,13 @@ export async function executeEmployeeRun({
               model: result.model,
               ...result.usage,
             });
-    if (
-      runLimits &&
-      (result.usage.outputTokens > runLimits.maxOutputTokens ||
-        result.usage.inputTokens + result.usage.outputTokens >
-          runLimits.maxTotalTokens ||
-        (!subscriptionSnapshot &&
-          runLimits.maxCostCents !== null &&
-          (routeCostCents === null || routeCostCents > runLimits.maxCostCents)))
-    ) {
-      throw new HandlerError(
-        'MODEL_OUTPUT_BUDGET_EXCEEDED',
-        'Frozen employee model output budget was exceeded',
-        false,
-      );
-    }
+    const budgetWarning = checkCompletedModelBudget({
+      ...modelBudgetScope,
+      limits: runLimits,
+      result,
+      governedAssistants: !!assistants,
+      costCents: routeCostCents,
+    });
     const checkpointMessages = resolved.promptSnapshot.conversation.flatMap(
       (message) =>
         message.id
@@ -1289,6 +1302,7 @@ export async function executeEmployeeRun({
     outcome = 'idle';
     return {
       ...result,
+      ...(budgetWarning ? { budgetWarning } : {}),
       citations: [...knowledge.citations, ...workflowCitations].filter(
         (citation, index, values) =>
           values.findIndex(

@@ -1,7 +1,10 @@
 'use client';
 
 import { useState, type RefObject } from 'react';
-import type { WorkbenchArtifact } from '@allrice/contracts';
+import {
+  modelGovernanceFailureText,
+  type WorkbenchArtifact,
+} from '@allrice/contracts';
 import type { AssistantTreeView } from '@allrice/database';
 
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
@@ -311,11 +314,23 @@ export function ChatTranscript({
                           className={`${assistantUi.body} ${styles.assistantCopy}`}
                         >
                           <AssistantMarkdown
-                            text={streamedText || message.content.text}
+                            text={
+                              (message.status === 'failed' &&
+                              !message.content.budgetWarning
+                                ? modelGovernanceFailureText(message.errorCode)
+                                : null) ??
+                              (streamedText || message.content.text)
+                            }
                           />
                         </div>
                       )}
-                      {message.status === 'failed' ? (
+                      {message.content.budgetWarning &&
+                      message.status === 'failed' ? (
+                        <small role="status">
+                          答案已保留。本次任务超过平台内部预期 Token
+                          预算；真实用量已记录，这不代表 Codex 周额度耗尽。
+                        </small>
+                      ) : message.status === 'failed' ? (
                         <small className={styles.failedMessage}>
                           这次没有完成。
                         </small>

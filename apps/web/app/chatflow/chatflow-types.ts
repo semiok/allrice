@@ -68,6 +68,8 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
+    budgetWarning?:
+      'MODEL_OUTPUT_BUDGET_EXCEEDED' | 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED';
     text: string;
     interaction?:
       | {
@@ -78,6 +80,7 @@ export interface Message {
       | { type: 'changeset_request'; action: ChangesetActionInput };
   };
   status: 'pending' | 'completed' | 'failed';
+  errorCode?: string | null;
   runId: string | null;
   createdAt: string;
   attachments?: Attachment[];

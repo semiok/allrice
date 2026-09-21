@@ -16,6 +16,7 @@ export async function nativeBrokerRoundtrip(input: {
   canonicalName: string;
   wireName: string;
   args: Record<string, unknown>;
+  brokerArgs?: Record<string, unknown>;
   invalidArgs: Record<string, unknown>;
   onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
@@ -138,7 +139,7 @@ export async function nativeBrokerRoundtrip(input: {
       onToolCall: async (call) => {
         received.push(call);
         expect(call.name).toBe(input.canonicalName);
-        expect(call.arguments).toEqual(input.args);
+        expect(call.arguments).toEqual(input.brokerArgs ?? input.args);
         const result = input.onToolCall
           ? await input.onToolCall(call)
           : { modelContent: sentinel, summary: 'synthetic only' };

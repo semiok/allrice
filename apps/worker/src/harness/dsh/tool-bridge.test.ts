@@ -20,6 +20,34 @@ function executionInput(input: {
 }
 
 describe('DSH Tool Bridge', () => {
+  it('routes native search through the same authorized broker and denies absent search authority', async () => {
+    const onToolCall = vi.fn(async () => ({
+      modelContent: '{"truncated":true}',
+      summary: 'bounded',
+    }));
+    const params = {
+      toolCallId: 'search:0',
+      name: 'web.search',
+      arguments: { query: 'fixture' },
+    };
+    const handler = dshInboundToolHandler(
+      executionInput({
+        onToolCall,
+        tools: [{ name: 'web.search', description: 'search', inputSchema: {} }],
+      }),
+    );
+    expect(await handler('allrice/tool-call', params)).toMatchObject({
+      modelContent: '{"truncated":true}',
+    });
+    expect(onToolCall).toHaveBeenCalledOnce();
+    await expect(
+      dshInboundToolHandler(executionInput({ onToolCall }))(
+        'allrice/tool-call',
+        params,
+      ),
+    ).rejects.toThrow();
+    expect(onToolCall).toHaveBeenCalledOnce();
+  });
   it('describes native and envelope tools without changing their boundary', () => {
     expect(dshToolBridgeInstructions(executionInput({}))).toContain(
       'No external tools are available',

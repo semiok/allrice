@@ -71,6 +71,12 @@ export type ReviewContinuationInput = z.infer<
 export const ChatMessageContentSchema = z
   .object({
     text: z.string().max(100_000),
+    budgetWarning: z
+      .enum([
+        'MODEL_OUTPUT_BUDGET_EXCEEDED',
+        'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED',
+      ])
+      .optional(),
     citations: z.array(ChatCitationSchema).default([]),
     interaction: z
       .union([
@@ -105,6 +111,7 @@ export const ChatMessageSchema = z
     role: z.enum(['user', 'assistant', 'system', 'tool']),
     content: ChatMessageContentSchema,
     status: z.enum(['pending', 'completed', 'failed']),
+    errorCode: z.string().max(160).nullable().optional(),
     clientMessageId: UuidSchema.nullable(),
     replyToId: UuidSchema.nullable(),
     runId: UuidSchema.nullable(),

@@ -3,6 +3,7 @@ import {
   IdentityError,
   QueueError,
   WorkflowRuntimeError,
+  UsageBudgetReviewError,
 } from '@allrice/database';
 
 import {
@@ -26,6 +27,16 @@ const publicationConflicts: Readonly<Record<string, string>> = {
 };
 
 export function executionErrorResponse(error: unknown) {
+  if (error instanceof UsageBudgetReviewError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      retryable: false,
+      message:
+        error.code === 'USAGE_REVIEW_CONFLICT'
+          ? '该异常用量已审批或原始记录已变化，请刷新后核对。'
+          : '仅可处理已结束、无活动任务的普通订阅异常；助手悬挂用量或 API 用量须另行核对。',
+    });
   if (
     error instanceof Error &&
     Object.hasOwn(publicationConflicts, error.message)

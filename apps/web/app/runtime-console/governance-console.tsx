@@ -8,6 +8,10 @@ import type {
   CodexSubscriptionQuotaSnapshot,
 } from '@allrice/contracts';
 import { CodexSubscriptionQuota } from './codex-subscription-quota';
+import {
+  UnknownUsageReviewCard,
+  type UnknownUsageReview,
+} from './unknown-usage-review';
 
 import styles from './governance-console.module.css';
 
@@ -70,6 +74,8 @@ interface Quota {
   unknownCostRuns: number;
   subscriptionRuns?: number;
   usageComplete: boolean;
+  reservedTokenBudget?: number;
+  subscriptionBudgetAdmissionComplete?: boolean;
 }
 
 export function GovernanceUsageSummary({
@@ -83,6 +89,7 @@ export function GovernanceUsageSummary({
     | 'unknownCostRuns'
     | 'usageComplete'
     | 'subscriptionRuns'
+    | 'reservedTokenBudget'
   >;
 }) {
   const subscriptionOnly =
@@ -95,6 +102,12 @@ export function GovernanceUsageSummary({
       <span>次运行</span>
       <strong>{quota.usedTokens.toLocaleString()}</strong>
       <span>{quota.usageComplete ? 'Token' : 'Token（部分用量待核对）'}</span>
+      {(quota.reservedTokenBudget ?? 0) > 0 ? (
+        <>
+          <strong>{quota.reservedTokenBudget!.toLocaleString()}</strong>
+          <span>额外预留的组织月度预算（非实际用量、非扣费）</span>
+        </>
+      ) : null}
       <strong>
         {subscriptionOnly
           ? '订阅用量'
@@ -142,6 +155,7 @@ export function GovernanceConsole() {
     ProviderOperation[]
   >([]);
   const [quota, setQuota] = useState<Quota | null>(null);
+  const [unknownUsage, setUnknownUsage] = useState<UnknownUsageReview[]>([]);
   const [authorization, setAuthorization] = useState<Authorization | null>(
     null,
   );
@@ -168,6 +182,7 @@ export function GovernanceConsole() {
           quota: Quota;
           providers: ProviderGovernance[];
           operations: ProviderOperation[];
+          unknownUsage: UnknownUsageReview[];
         };
       }>(await fetch('/api/v1/admin/model-governance', { cache: 'no-store' })),
       readJson<{
@@ -181,6 +196,7 @@ export function GovernanceConsole() {
     setConnections(poolResult.modelPool.connections);
     setProviders(poolResult.modelPool.providers);
     setQuota(governanceResult.governance.quota);
+    setUnknownUsage(governanceResult.governance.unknownUsage ?? []);
     setProviderStates(governanceResult.governance.providers);
     setProviderOperations(governanceResult.governance.operations);
     setAuthorization(codexResult.authorization);
@@ -276,6 +292,36 @@ export function GovernanceConsole() {
       setNotice('租户月度额度已保存。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '额度保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewUnknownUsage(review: {
+    decisionId: string;
+    reservedTokens: number;
+    reason: string;
+    acceptUnknownUsage: true;
+  }) {
+    setBusy(true);
+    try {
+      await readJson(
+        await fetch('/api/v1/admin/model-governance/usage-review', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(review),
+        }),
+      );
+      await load();
+      setNotice(
+        '预算预留已审计；原始用量仍未知。若仍有其他异常或额度限制，后续请求仍会被拦截。',
+      );
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : '预算预留失败，请刷新核对结果后再操作',
+      );
     } finally {
       setBusy(false);
     }
@@ -468,6 +514,19 @@ export function GovernanceConsole() {
             <span>用量在每次 RouteDecision 完成后写入不可重复账本</span>
           </div>
           <GovernanceUsageSummary quota={quota} />
+          {unknownUsage.length > 0 ? (
+            <div>
+              <h2>各租户异常用量处理</h2>
+              {unknownUsage.map((entry) => (
+                <UnknownUsageReviewCard
+                  key={entry.decisionId}
+                  entry={entry}
+                  busy={busy}
+                  onReview={reviewUnknownUsage}
+                />
+              ))}
+            </div>
+          ) : null}
           <div className={styles.quotaForm}>
             <label>
               运行上限

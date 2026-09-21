@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CancelRunInputSchema,
   ChatCitationSchema,
+  ChatMessageContentSchema,
   CreateRunInputSchema,
   EmployeeExecutionSnapshotSchema,
   ExecutionContextSchema,
@@ -12,6 +13,7 @@ import {
   UuidSchema,
   authorize,
   authorizeExecution,
+  modelGovernanceFailureText,
   type ExecutionContext,
   type EmployeeExecutionSnapshot,
   type Job,
@@ -892,21 +894,37 @@ async function transitionTerminal(
         ) === index,
     );
     const failureText =
-      input.code === 'SKILL_ARTIFACT_MISSING'
+      modelGovernanceFailureText(input.code) ??
+      (input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'
         : input.code === 'SKILL_ARTIFACT_MISMATCH' ||
             input.code === 'SKILL_ARTIFACT_INVALID'
           ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件校验失败。请重新安装或刷新该 Skill 后重试。'
-          : 'Rice 暂时无法完成这次请求，请稍后重试。';
+          : 'Rice 暂时无法完成这次请求，请稍后重试。');
     const text =
       input.runStatus === 'succeeded' && typeof result.answer === 'string'
         ? result.answer
         : input.runStatus === 'canceled'
           ? 'Rice 的这次执行已取消。'
           : failureText;
+    const warning = ChatMessageContentSchema.shape.budgetWarning.safeParse(
+      input.runStatus === 'succeeded' &&
+        result.budgetWarning &&
+        typeof result.budgetWarning === 'object'
+        ? (result.budgetWarning as Record<string, unknown>).code
+        : undefined,
+    );
     await transaction`
       update allrice_messages
-      set content = ${transaction.json(toJsonValue({ text, citations }))},
+      set content = ${transaction.json(
+        toJsonValue({
+          text,
+          citations,
+          ...(warning.success && warning.data
+            ? { budgetWarning: warning.data }
+            : {}),
+        }),
+      )},
           status = ${input.runStatus === 'succeeded' ? 'completed' : 'failed'},
           error_code = ${input.code ?? null}, completed_at = now()
       where id = ${employeeRun.assistant_message_id}

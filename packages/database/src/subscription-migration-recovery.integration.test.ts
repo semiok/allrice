@@ -309,6 +309,15 @@ integration('subscription incremental migration and cold SQL readers', () => {
       await tx.unsafe(quotaSql);
     });
     expect(await ledgerHistory()).toEqual(history);
+    // The current quota reader also requires the additive 0099 review table.
+    // Keep the 0097/0098 interruption assertions above, then bring this owned
+    // fixture to the reader's schema before testing cold current binaries.
+    await db.begin(async (tx) => {
+      await tx.unsafe(
+        await migration('0099_subscription_usage_budget_reviews.sql'),
+      );
+    });
+    expect(await ledgerHistory()).toEqual(history);
     expect(await getCodexProviderStatus()).toMatchObject({
       status: 'connected',
       detailCode: 'legacy-status-before-quota',

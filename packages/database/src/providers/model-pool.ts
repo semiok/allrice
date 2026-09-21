@@ -118,9 +118,11 @@ function platformAdminEmails() {
   );
 }
 
-export async function isPlatformAdmin(context: RequestContext) {
+export async function isPlatformAdmin(
+  context: RequestContext,
+  sql = getDatabase(),
+) {
   const actorId = userId(context);
-  const sql = getDatabase();
   const rows = await sql<{ email: string }[]>`
     select email from allrice_users
     where id = ${actorId} and status = 'active'
