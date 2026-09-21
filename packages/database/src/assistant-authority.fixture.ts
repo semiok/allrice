@@ -4,6 +4,7 @@ import {
   EmployeeExecutionSnapshotSchema,
   type EmployeeExecutionSnapshot,
   type EmployeeRuntimePolicy,
+  type EmployeeRuntimePackage,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
 } from '@allrice/contracts';
@@ -43,6 +44,7 @@ export async function createAssistantAuthorityFixture(
     configure?: boolean;
     /** Frozen at fixture creation; never rewrite an immutable published version. */
     runtimePolicy?: EmployeeRuntimePolicy;
+    runtimePackage?: EmployeeRuntimePackage;
   } = {},
 ) {
   const selectedTools = options.allowedTools ?? [
@@ -67,6 +69,7 @@ export async function createAssistantAuthorityFixture(
   const [membership] = await db<{ id: string }[]>`
   select id from allrice_memberships where organization_id=${org} and workspace_id=${workspace} and user_id=${user}`;
   const manifest = employeeManifest({
+    runtimePackage: options.runtimePackage,
     key: 'p25-authority',
     name: 'P25 authority',
     description: 'Synthetic authority fixture',
@@ -91,7 +94,8 @@ export async function createAssistantAuthorityFixture(
     },
   });
   if (manifest.schemaVersion !== 2) throw Error('Fixture requires v2 manifest');
-  const checksum = employeeManifestChecksum(manifest);
+  const checksum =
+    options.runtimePackage?.checksum ?? employeeManifestChecksum(manifest);
   const executionSpec = {
     kind: 'synthetic-p25-authority',
     employeeVersionId: version,

@@ -10,6 +10,7 @@ import {
 import { z } from 'zod';
 import type { AssistantAuthorityInput } from './assistant-runtime.ts';
 import { employeeManifestChecksum } from './employees/employee-config.ts';
+import { verifiedRuntimePackageChecksum } from './platform-employees/runtime-package.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 
 const phases = new Set([
@@ -225,9 +226,26 @@ export async function assertAssistantAuthority(
   );
   requireAuthority(
     snapshot.data.employee.definitionChecksum === root.config_checksum &&
-      employeeManifestChecksum(manifest.data) === root.config_checksum &&
+      (manifest.data.schemaVersion === 2 && manifest.data.runtimePackage
+        ? verifiedRuntimePackageChecksum(manifest.data.runtimePackage)
+        : employeeManifestChecksum(manifest.data)) === root.config_checksum &&
       runtimeContractEqual(snapshot.data.employee.definition, manifest.data),
   );
+  if (manifest.data.schemaVersion === 2 && manifest.data.runtimePackage) {
+    const packaged = manifest.data.runtimePackage.runtimeManifest;
+    requireAuthority(
+      packaged.provider === manifest.data.runtimePolicy.provider &&
+        packaged.model === manifest.data.runtimePolicy.model &&
+        runtimeContractEqual(
+          [...packaged.toolNames].sort(),
+          [...manifest.data.capabilityBindings.toolNames].sort(),
+        ) &&
+        runtimeContractEqual(
+          [...packaged.deniedCapabilities].sort(),
+          [...manifest.data.securityPolicy.deniedCapabilities].sort(),
+        ),
+    );
+  }
   requireAuthority(
     snapshot.data.assignment.id === root.employee_assignment_id &&
       snapshot.data.assignment.userId === root.owner_id,

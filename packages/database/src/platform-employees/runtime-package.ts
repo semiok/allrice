@@ -66,6 +66,28 @@ export function runtimePackageChecksum(value: unknown) {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
 
+/** Published versions use the signed runtime-package identity, not the legacy
+ * whole-manifest checksum. Reconstruct the original field order after JSONB. */
+export function verifiedRuntimePackageChecksum(input: unknown): string | null {
+  const parsed = EmployeeRuntimePackageSchema.safeParse(input);
+  if (!parsed.success) return null;
+  const p = parsed.data;
+  const checksum = runtimePackageChecksum({
+    schemaVersion: p.schemaVersion,
+    packageVersion: p.packageVersion,
+    capabilityFingerprint: p.capabilityFingerprint,
+    files: {
+      identityMd: p.files.identityMd,
+      soulMd: p.files.soulMd,
+      userMd: p.files.userMd,
+      agentsMd: p.files.agentsMd,
+    },
+    skills: p.skills,
+    runtimeManifest: p.runtimeManifest,
+  });
+  return checksum === p.checksum ? checksum : null;
+}
+
 function sorted(values: readonly string[]) {
   return [...values].sort();
 }
@@ -93,25 +115,9 @@ export function validatePlatformEmployeeTestExecutionSnapshot(input: {
     throw new Error('platform_employee_test_runtime_package_missing');
   }
   const declaredPackageChecksum = runtimePackage.checksum;
-  // buildEmployeeRuntimePackage signs the source package before Zod projects
-  // object keys into schema order. Reconstruct that signed field order here;
-  // JSON object order must not make an intact persisted package unverifiable.
-  const packagePayload = {
-    schemaVersion: runtimePackage.schemaVersion,
-    packageVersion: runtimePackage.packageVersion,
-    capabilityFingerprint: runtimePackage.capabilityFingerprint,
-    files: {
-      identityMd: runtimePackage.files.identityMd,
-      soulMd: runtimePackage.files.soulMd,
-      userMd: runtimePackage.files.userMd,
-      agentsMd: runtimePackage.files.agentsMd,
-    },
-    skills: runtimePackage.skills,
-    runtimeManifest: runtimePackage.runtimeManifest,
-  };
   if (
     input.packageChecksum !== declaredPackageChecksum ||
-    runtimePackageChecksum(packagePayload) !== declaredPackageChecksum
+    verifiedRuntimePackageChecksum(runtimePackage) !== declaredPackageChecksum
   ) {
     throw new Error('platform_employee_test_package_checksum_mismatch');
   }

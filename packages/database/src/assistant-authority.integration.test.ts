@@ -10,6 +10,8 @@ import {
 import type { AssistantAuthorityInput } from './assistant-runtime.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
+import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
+import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 
 const phases: AssistantAuthorityInput['phase'][] = [
   'configure',
@@ -50,6 +52,57 @@ integration(
     const authorityFixture = (
       options: Parameters<typeof createAssistantAuthorityFixture>[1] = {},
     ) => createAssistantAuthorityFixture(fixture.db, options);
+
+    it('accepts the published runtime-package checksum after JSONB, but rejects tampered packages and manifest authority', async () => {
+      const published = await createEmployeeAdministrationFixture(fixture.db);
+      const definition = {
+        ...published.definition,
+        capabilities: {
+          ...published.definition.capabilities,
+          nativeSkillIds: [],
+          toolNames: selectedTools,
+        },
+      };
+      const runtimePackage = buildEmployeeRuntimePackage({
+        revision: 1,
+        definition,
+        skills: [],
+      });
+      const runtimePolicy = {
+        ...definition.modelPolicy,
+        harness: 'dsh' as const,
+      };
+      const f = await authorityFixture({ runtimePackage, runtimePolicy });
+      for (const phase of phases)
+        await expect(f.authorize(phase)).resolves.toBeUndefined();
+      const changed = structuredClone(runtimePackage);
+      changed.files.agentsMd += '\nInjected instructions';
+      const bad = await authorityFixture({
+        runtimePackage: changed,
+        runtimePolicy,
+        configure: false,
+      });
+      await expect(bad.configure()).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+      const changedModel = await authorityFixture({
+        runtimePackage,
+        runtimePolicy: { ...runtimePolicy, model: 'unpublished-model' },
+        configure: false,
+      });
+      await expect(changedModel.configure()).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+      const changedTools = await authorityFixture({
+        runtimePackage,
+        runtimePolicy,
+        toolNames: [...selectedTools, 'local.fs.write'],
+        configure: false,
+      });
+      await expect(changedTools.configure()).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+    });
 
     it.each(phases)(
       'admits valid frozen/current authority for %s',
