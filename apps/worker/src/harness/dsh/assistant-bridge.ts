@@ -291,6 +291,15 @@ export function createAssistantWorkerBridge(
     try {
       if (method === 'delegate') {
         const selectedTools = tools.parse(args.tools);
+        // A text-only child still needs the bounded coordination channel to
+        // deliver its result. Reject before creating a child; never silently
+        // grant a missing tool or promote native idle/text to verified success.
+        if (!selectedTools.includes('assistant.report'))
+          return {
+            error: 'assistant_report_required',
+            message:
+              'No child was created. Include assistant.report in tools so the child can return its result; for a task without external tools, use tools=["assistant.report"].',
+          };
         if (
           options.supportedChildTools &&
           selectedTools.some((tool) => !options.supportedChildTools!.has(tool))

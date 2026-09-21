@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-assistant-required-delivery-v1",
+      "issue": "MET-151",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
+      "reason": "Describe required explicit assistant.report permission and the child result protocol. Worker rejects delegation without a report channel before provisioning; no implicit tool grant or native-idle success."
+    },
+    {
       "id": "allrice-workbench-native-changeset-v1",
       "issue": "MET-147",
       "upstreamVersion": "0.1.1-rc.2",
