@@ -374,6 +374,56 @@ integration(
         }),
       ).rejects.toThrow('path_conflict');
     });
+    it('cannot widen a parent file assignment through nested delegation or a fresh copy ID', async () => {
+      const t = await setup(),
+        parent = await t.child(),
+        child = await t.child(parent.runId);
+      const copy = () => ({
+        ...t.execution,
+        workCopy: { id: randomUUID(), kind: 'local_copy' as const },
+      });
+      await expect(
+        t.assign(
+          parent.runId,
+          ['private.txt'],
+          copy(),
+          t.seed,
+          randomUUID(),
+          parent.runId,
+        ),
+      ).rejects.toThrow('scope_mismatch');
+      await t.assign(parent.runId, ['src/a.ts']);
+      await expect(
+        t.assign(
+          child.runId,
+          ['src/b.ts'],
+          copy(),
+          t.seed,
+          randomUUID(),
+          parent.runId,
+        ),
+      ).rejects.toThrow('scope_mismatch');
+      await expect(
+        t.assign(
+          parent.runId,
+          ['private.txt'],
+          copy(),
+          t.seed,
+          randomUUID(),
+          parent.runId,
+        ),
+      ).rejects.toThrow('scope_mismatch');
+      await expect(
+        t.assign(
+          child.runId,
+          ['src/a.ts'],
+          copy(),
+          t.seed,
+          randomUUID(),
+          parent.runId,
+        ),
+      ).resolves.toMatchObject({ active: true });
+    });
     it('allows parallel isolated proposals but denies overlapping adoption into the final target', async () => {
       const t = await setup(),
         a = await t.child(),

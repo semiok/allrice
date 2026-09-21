@@ -250,6 +250,17 @@ export function createDevelopmentCooperation(options: {
         const claims = await tx<
           Assignment[]
         >`select * from allrice_development_assignments where root_run_id=${input.rootRunId} and released_at is null`;
+        // Recursive delegation may narrow the parent's file scope, not mint a
+        // broader scope by assigning itself or inventing another copy identity.
+        if (
+          input.runId !== input.rootRunId &&
+          !claims.some(
+            (c) =>
+              c.run_id === input.runId &&
+              paths.every((p) => c.paths.includes(p)),
+          )
+        )
+          fail('scope_mismatch');
         // Copy kind cannot be changed to evade ownership of the same copy ID.
         if (
           claims.some(
