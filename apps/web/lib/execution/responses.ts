@@ -18,6 +18,8 @@ const publicationConflicts: Readonly<Record<string, string>> = {
   platform_employee_draft_unavailable: '当前草稿不可用，请刷新并保存新草稿。',
   platform_employee_publish_snapshot_changed:
     '待发布的配置或资源版本已变化，请刷新并重新试用当前版本。',
+  platform_employee_publish_policy_changed:
+    '目标工作区的策略已变化，请重新预检并确认发布范围。无需仅因策略变化重复模型试用。',
   platform_employee_publish_workspace_unavailable:
     '发布目标工作区已不可用，请刷新并重新选择。',
   platform_employee_publish_provider_unavailable:

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   PlatformEmployeeDefinition,
@@ -13,6 +13,7 @@ import {
   employeeModelPolicyProblem,
   employeeReasoningSettings,
   switchEmployeeModelProvider,
+  employeeToolCatalog,
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
@@ -49,6 +50,26 @@ interface DirectoryResponse {
   employees: Employee[];
   skills: NativeSkill[];
   workspaces: Workspace[];
+  tools?: ((typeof employeeToolCatalog)[number] & { released: boolean })[];
+}
+
+interface PublicationReview {
+  employeeId: string;
+  revisionId: string;
+  publishedRevisionId: string | null;
+  packageChecksum: string | null;
+  targets: {
+    id: string;
+    organizationId: string;
+    organizationName: string;
+    name: string;
+    version: number | null;
+  }[];
+  policyVersions: Record<string, number | null>;
+  diff: { field: string; before: unknown; after: unknown }[];
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
 }
 
 const tabs = [
@@ -63,30 +84,6 @@ const tabs = [
   ['debug', '调试'],
   ['publish', '发布租户'],
 ] as const;
-
-const toolLabels: Record<string, string> = {
-  'workspace.file.list': '工作区文件列表',
-  'workspace.file.read': '读取工作区文件',
-  'workspace.document.read': '解析工作区文档',
-  'workspace.memory.search': '检索记忆',
-  'workspace.session.search': '检索会话',
-  'web.search': '联网搜索',
-  'web.fetch': '读取网页',
-  'browser.run': '云端浏览器',
-  'wechat.article.search': '搜索公众号文章',
-  'wechat.article.read': '读取公众号文章',
-  'market.quote': '查询公开行情',
-  'market.history': '查询历史行情',
-  'workspace.export.create': '生成可下载交付物',
-  'local.fs.list': '本地目录列表',
-  'local.fs.search': '本地文件搜索',
-  'local.fs.read': '读取本地文件',
-  'local.fs.write': '新建或更新本地文本文件',
-  'local.fs.mkdir': '新建本地目录',
-  'local.git.status': '本地 Git 状态',
-  'local.git.diff': '本地 Git 差异',
-  'automation.create': '创建自动化',
-};
 
 const lifecycleActionLabels: Record<string, string> = {
   'employee.published': '发布成功',
@@ -207,6 +204,18 @@ function Checks(props: {
 }
 
 export function EmployeeProduction() {
+  const [review, setReview] = useState<PublicationReview | null>(null),
+    [confirmed, setConfirmed] = useState(false);
+  const reviewSequence = useRef(0);
+  const [skillView, setSkillView] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const skillSequence = useRef(0);
+  const invalidateReview = () => {
+    reviewSequence.current++;
+    setReview(null);
+    setConfirmed(false);
+  };
   const [directory, setDirectory] = useState<DirectoryResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlatformEmployeeDefinition | null>(null);
@@ -244,6 +253,7 @@ export function EmployeeProduction() {
   const load = useCallback(
     async (preferredId?: string) => {
       setBusy(true);
+      invalidateReview();
       try {
         const result = await api<DirectoryResponse>(
           '/api/v1/admin/platform-employees',
@@ -263,7 +273,17 @@ export function EmployeeProduction() {
           employee?.currentDraft?.definition ??
           employee?.currentPublished?.definition;
         setDraft(definition ? clone(definition) : null);
-        setSelectedWorkspaces(employee?.assignedWorkspaceIds ?? []);
+        const requestedWorkspace = new URLSearchParams(
+          window.location.search,
+        ).get('workspaceId');
+        setSelectedWorkspaces((current) =>
+          requestedWorkspace &&
+          result.workspaces.some((w) => w.id === requestedWorkspace)
+            ? [requestedWorkspace]
+            : current.filter((id) =>
+                result.workspaces.some((w) => w.id === id),
+              ),
+        );
         setPreviewWorkspaceId((current) => {
           if (result.workspaces.some((workspace) => workspace.id === current)) {
             return current;
@@ -355,12 +375,16 @@ export function EmployeeProduction() {
   );
 
   function choose(employee: Employee) {
+    if (busy) return;
+    invalidateReview();
+    skillSequence.current++;
+    setSkillView(null);
     setSelectedId(employee.id);
     const definition =
       employee.currentDraft?.definition ??
       employee.currentPublished?.definition;
     setDraft(definition ? clone(definition) : null);
-    setSelectedWorkspaces(employee.assignedWorkspaceIds);
+    setSelectedWorkspaces([]);
     setMessage('');
     setError('');
     setTestRuns([]);
@@ -368,6 +392,7 @@ export function EmployeeProduction() {
   }
 
   function update(path: string[], value: unknown) {
+    invalidateReview();
     setDraft((current) => {
       if (!current) return current;
       const next = clone(current) as unknown as Record<string, unknown>;
@@ -408,7 +433,10 @@ export function EmployeeProduction() {
         };
       }>(`/api/v1/admin/platform-employees/${selectedId}`, {
         method: 'PUT',
-        body: JSON.stringify({ definition: draft }),
+        body: JSON.stringify({
+          definition: draft,
+          expectedRevisionId: selected?.currentDraft?.id,
+        }),
       });
       await load();
       if (!result.validation.valid) {
@@ -458,7 +486,8 @@ export function EmployeeProduction() {
   }
 
   async function publish() {
-    if (!selectedId) return;
+    if (!selectedId || !review?.valid || !confirmed || !review.packageChecksum)
+      return;
     setBusy(true);
     setMessage('');
     setError('');
@@ -470,18 +499,69 @@ export function EmployeeProduction() {
         workspaceIds: string[];
       }>(`/api/v1/admin/platform-employees/${selectedId}/publish`, {
         method: 'POST',
-        body: JSON.stringify({ workspaceIds: selectedWorkspaces }),
+        body: JSON.stringify({
+          workspaceIds: selectedWorkspaces,
+          expectedRevisionId: review.revisionId,
+          expectedPublishedRevisionId: review.publishedRevisionId,
+          expectedPackageChecksum: review.packageChecksum,
+          policyVersions: review.policyVersions,
+        }),
       });
       if (!result.valid) throw new Error(result.errors.join('\n'));
       setMessage(
-        `发布成功：revision ${result.revisionId.slice(0, 8)} 已发布到 ${result.workspaceIds.length} 个工作区。新会话生效，现有会话保持原版本。`,
+        `发布成功：revision ${result.revisionId.slice(0, 8)} 已发布到 ${result.workspaceIds.length} 个工作区。后续新 Run 使用更新后的分配版本；运行中的 Run 保持冻结快照。`,
       );
       await Promise.all([load(), loadAuditEvents(selectedId)]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '发布失败');
       void loadAuditEvents(selectedId).catch(() => undefined);
     } finally {
+      invalidateReview();
       setBusy(false);
+    }
+  }
+
+  async function preflight() {
+    if (!selectedId || !selectedWorkspaces.length || busy) return;
+    const generation = ++reviewSequence.current;
+    setReview(null);
+    setConfirmed(false);
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api<PublicationReview>(
+        `/api/v1/admin/platform-employees/${selectedId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ workspaceIds: selectedWorkspaces }),
+        },
+      );
+      if (
+        generation === reviewSequence.current &&
+        result.employeeId === selectedId &&
+        JSON.stringify(result.targets.map((t) => t.id).sort()) ===
+          JSON.stringify([...selectedWorkspaces].sort())
+      )
+        setReview(result);
+    } catch (e) {
+      if (generation === reviewSequence.current)
+        setError(e instanceof Error ? e.message : '预检失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function inspectSkill(id: string) {
+    const generation = ++skillSequence.current;
+    setSkillView(null);
+    try {
+      const result = await api<{ skill: Record<string, unknown> }>(
+        `/api/v1/admin/platform-skills/${id}`,
+      );
+      if (generation === skillSequence.current) setSkillView(result.skill);
+    } catch (e) {
+      if (generation === skillSequence.current)
+        setError(e instanceof Error ? e.message : 'Skill 读取失败');
     }
   }
 
@@ -501,8 +581,26 @@ export function EmployeeProduction() {
         };
       }>(`/api/v1/admin/platform-employees/${selectedId}`, {
         method: 'PUT',
-        body: JSON.stringify({ definition: draft }),
+        body: JSON.stringify({
+          definition: draft,
+          expectedRevisionId: selected?.currentDraft?.id,
+        }),
       });
+      // Saving for a trial also advances the immutable draft revision. Keep
+      // the editor's CAS baseline current even if compilation/trial fails.
+      setDirectory((current) =>
+        current
+          ? {
+              ...current,
+              employees: current.employees.map((employee) =>
+                employee.id === saved.employee.id ? saved.employee : employee,
+              ),
+            }
+          : current,
+      );
+      if (saved.employee.currentDraft)
+        setDraft(clone(saved.employee.currentDraft.definition));
+      invalidateReview();
       if (!saved.validation.valid) {
         throw new Error(saved.validation.errors.join('\n'));
       }
@@ -558,6 +656,12 @@ export function EmployeeProduction() {
 
   async function rollbackEmployee() {
     if (!selectedId || !rollbackReason.trim()) return;
+    if (
+      !window.confirm(
+        `将回退当前分配的全部 ${selected?.assignedWorkspaceIds.length ?? 0} 个工作区的员工版本。运行中的 Run 不变，是否继续？`,
+      )
+    )
+      return;
     setBusy(true);
     setMessage('');
     setError('');
@@ -569,12 +673,14 @@ export function EmployeeProduction() {
           body: JSON.stringify({
             action: 'rollback',
             reason: rollbackReason,
+            expectedPublishedRevisionId: selected?.currentPublished?.id,
+            expectedWorkspaceIds: selected?.assignedWorkspaceIds,
           }),
         },
       );
       setRollbackReason('');
       setMessage(
-        `已回滚到发布 revision ${result.revision}，仅影响租户新 Session。`,
+        `已回滚到发布 revision ${result.revision}，后续 Run 使用回退版本，运行中 Run 的冻结快照不变。`,
       );
       await load();
     } catch (reason) {
@@ -762,6 +868,30 @@ export function EmployeeProduction() {
             平台原生 Skill 库当前为空。先审核并迁移 Skill，再装配给 Rice。
           </p>
         )}
+        <div className={styles.actions}>
+          {directory.skills.map((skill) => (
+            <button
+              className={styles.button}
+              key={skill.id}
+              onClick={() => void inspectSkill(skill.id)}
+            >
+              查看 {skill.name} 内容
+            </button>
+          ))}
+        </div>
+        {skillView ? (
+          <section aria-label="Skill 只读内容">
+            <h3>Skill 来源与内容（只读）</h3>
+            <p>查看不执行，也不授予任何工具权限。</p>
+            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {JSON.stringify({ ...skillView, content: undefined }, null, 2)}
+            </pre>
+            <h4>原文</h4>
+            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {String(skillView.content ?? '')}
+            </pre>
+          </section>
+        ) : null}
       </>
     );
   } else if (tab === 'workflows') {
@@ -794,6 +924,7 @@ export function EmployeeProduction() {
             onChange={(event) => {
               const provider = event.target.value;
               if (provider !== 'gemini' && provider !== 'openai-codex') return;
+              invalidateReview();
               setDraft((current) =>
                 current
                   ? {
@@ -824,7 +955,8 @@ export function EmployeeProduction() {
         <Field
           label="模型"
           value={draft.modelPolicy.model}
-          onChange={(model) =>
+          onChange={(model) => {
+            invalidateReview();
             setDraft((current) => {
               if (!current) return current;
               const settings = employeeReasoningSettings(
@@ -845,8 +977,8 @@ export function EmployeeProduction() {
                       : current.modelPolicy.reasoningEffort,
                 },
               };
-            })
-          }
+            });
+          }}
         />
         <label className={styles.field}>
           <span>{reasoning.label}</span>
@@ -912,15 +1044,30 @@ export function EmployeeProduction() {
     );
   } else if (tab === 'tools') {
     panel = (
-      <Checks
-        items={Object.entries(toolLabels).map(([id, label]) => ({
-          id,
-          label,
-          detail: id,
-        }))}
-        selected={draft.capabilities.toolNames}
-        onChange={(value) => update(['capabilities', 'toolNames'], value)}
-      />
+      <>
+        <p>
+          目录来源于实际 Tool Broker
+          契约。可配置不代表已授权运行：平台开关、租户策略、环境和设备授权会独立检查。Changeset
+          是交付物提案，不新增 changeset.create/apply 工具。
+        </p>
+        <Checks
+          items={(
+            directory.tools ??
+            employeeToolCatalog.map((tool) => ({ ...tool, released: false }))
+          ).map((tool) => ({
+            id: tool.canonicalName,
+            label: tool.label,
+            detail: `${tool.canonicalName} · ${tool.target} · ${tool.capability} · ${tool.released ? '平台已开放，运行仍须授权' : '平台未开放或状态未知，可保存配置但不能执行'}`,
+            disabled: busy,
+          }))}
+          selected={draft.capabilities.toolNames}
+          onChange={(value) => update(['capabilities', 'toolNames'], value)}
+        />
+        <p>
+          任意宿主 Shell / PTY 未实现，不提供虚假开关。内部执行动作（如
+          local.fs.changeset）只在精确批准后由执行系统调用。
+        </p>
+      </>
     );
   } else if (tab === 'security') {
     panel = (
@@ -935,7 +1082,9 @@ export function EmployeeProduction() {
           >
             <option value="confirm_side_effects">所有修改前询问</option>
             <option value="confirm_external">对外操作前询问</option>
-            <option value="autonomous">已授权范围内自动执行</option>
+            <option value="autonomous" disabled>
+              不支持自动放行（请改为询问策略）
+            </option>
           </select>
         </label>
         <label className={styles.field}>
@@ -1097,21 +1246,92 @@ export function EmployeeProduction() {
         </section>
         <p className={styles.muted}>
           这里只显示真实租户工作区，不包含 Platform Control
-          Plane。发布生成不可变修订； 新会话生效，已有会话保持原版本。
+          Plane。发布生成不可变修订；后续新 Run 读取更新后的员工分配，运行中的
+          Run 保持冻结快照。发布不会修改会话已冻结的模型路由。
         </p>
         <Checks
           items={directory.workspaces.map((workspace) => ({
             id: workspace.id,
             label: workspace.name,
             detail: `${workspace.organizationName} · ${workspace.slug}`,
+            disabled: busy,
           }))}
           selected={selectedWorkspaces}
-          onChange={setSelectedWorkspaces}
+          onChange={(values) => {
+            invalidateReview();
+            setSelectedWorkspaces(values);
+          }}
         />
         <button
           className={styles.button}
+          disabled={
+            busy ||
+            selectedWorkspaces.length === 0 ||
+            JSON.stringify(draft) !==
+              JSON.stringify(selected.currentDraft?.definition)
+          }
+          onClick={() => void preflight()}
+        >
+          预检发布与版本差异
+        </button>
+        {JSON.stringify(draft) !==
+        JSON.stringify(selected.currentDraft?.definition) ? (
+          <p>有未保存的修改，请先保存草稿。</p>
+        ) : null}
+        {review ? (
+          <section aria-label="发布预检">
+            <h3>发布确认：{review.revisionId.slice(0, 8)}</h3>
+            <p>
+              目标：
+              {review.targets
+                .map(
+                  (target) =>
+                    `${target.organizationName} / ${target.name}（策略 v${target.version ?? '未配置'}）`,
+                )
+                .join('、')}
+            </p>
+            {review.errors.map((item, index) => (
+              <p className={styles.error} key={`e${index}`}>
+                {item}
+              </p>
+            ))}
+            {review.warnings.map((item, index) => (
+              <p className={styles.notice} key={`w${index}`}>
+                {item}
+              </p>
+            ))}
+            <details>
+              <summary>
+                查看与已发布版本的差异（{review.diff.length} 项）
+              </summary>
+              <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                {JSON.stringify(review.diff, null, 2)}
+              </pre>
+            </details>
+            {review.targets.map((target) => (
+              <p key={target.id}>
+                <a
+                  href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}`}
+                >
+                  配置 {target.organizationName} / {target.name} 策略 →
+                </a>
+              </p>
+            ))}
+            <label>
+              <input
+                type="checkbox"
+                checked={confirmed}
+                disabled={busy || !review.valid}
+                onChange={(event) => setConfirmed(event.target.checked)}
+              />
+              我已确认版本差异、发布范围及尚未满足的运行条件
+            </label>
+          </section>
+        ) : null}
+        <button
+          className={styles.button}
           data-primary="true"
-          disabled={busy || selectedWorkspaces.length === 0}
+          disabled={busy || !review?.valid || !confirmed}
           onClick={() => void publish()}
         >
           {busy ? '发布中…' : '发布到所选租户'}
@@ -1121,8 +1341,8 @@ export function EmployeeProduction() {
         <section className={styles.dangerZone}>
           <h3>回滚发布</h3>
           <p className={styles.muted}>
-            将当前分配的租户恢复到上一个不可变发布快照；已有 Session
-            保持原快照。
+            将当前分配的全部租户恢复到上一个不可变发布快照；后续 Run
+            使用回退版本，运行中的 Run 保持原快照。不仅限于上方勾选的工作区。
           </p>
           <Field
             label="回滚原因"
@@ -1132,7 +1352,12 @@ export function EmployeeProduction() {
           />
           <button
             className={styles.button}
-            disabled={busy || !rollbackReason.trim()}
+            disabled={
+              busy ||
+              !rollbackReason.trim() ||
+              !selected.currentPublished ||
+              selected.assignedWorkspaceIds.length === 0
+            }
             onClick={() => void rollbackEmployee()}
           >
             回滚到上一发布
@@ -1290,6 +1515,7 @@ export function EmployeeProduction() {
               className={styles.employee}
               data-active={employee.id === selectedId}
               key={employee.id}
+              disabled={busy}
               onClick={() => choose(employee)}
             >
               <strong>{employee.name}</strong>

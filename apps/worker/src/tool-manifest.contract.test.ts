@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { allRiceToolManifest } from '@allrice/contracts';
+import { allRiceToolManifest, employeeToolCatalog } from '@allrice/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -74,6 +74,21 @@ describe('AllRice worker tool manifest contract', () => {
     ).toEqual([]);
   });
   it('keeps Tool Broker definitions and policy metadata aligned', () => {
+    expect(
+      employeeToolCatalog.map((tool) => ({
+        canonicalName: tool.canonicalName,
+        capability: tool.capability,
+        risk: tool.risk,
+        transport: tool.transport,
+      })),
+    ).toEqual(
+      allRiceToolManifest.map((tool) => ({
+        canonicalName: tool.canonicalName,
+        capability: tool.capability,
+        risk: tool.risk,
+        transport: tool.transport,
+      })),
+    );
     expect(riceToolDefinitions.map((tool) => tool.name)).toEqual(
       allRiceToolManifest.map((tool) => tool.canonicalName),
     );

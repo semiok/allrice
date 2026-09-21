@@ -14,7 +14,7 @@ const headers = {
   'Cache-Control': 'private, no-store',
   'X-Content-Type-Options': 'nosniff',
 };
-async function readBody(request: Request) {
+export async function readAdminJson(request: Request, maximumBytes = 8000) {
   if (request.headers.get('content-type')?.split(';')[0] !== 'application/json')
     throw new SyntaxError();
   const reader = request.body?.getReader();
@@ -26,7 +26,7 @@ async function readBody(request: Request) {
       const next = await reader.read();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > 8000) {
+      if (size > maximumBytes) {
         await reader.cancel();
         throw new SyntaxError();
       }
@@ -56,7 +56,7 @@ export async function tenantAdministrationHttp(
           context,
           organizationId!,
           membershipId,
-          await readBody(request),
+          await readAdminJson(request),
         ),
         { headers },
       );

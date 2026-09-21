@@ -65,6 +65,22 @@ export function evaluateRuntimePolicy(
   if (!controls.success || !binding.success)
     return { effect: 'deny', reason: 'invalid_policy_or_binding' };
   const action = binding.data.action;
+  return runtimePolicyActionDecision(
+    controls.data,
+    action,
+    platformDeniedActions,
+  );
+}
+
+/** Shared explanatory projection; never substitutes for binding/identity checks. */
+export function runtimePolicyActionDecision(
+  controlsInput: unknown,
+  action: string,
+  platformDeniedActions: readonly string[] = [],
+): RuntimePolicyDecision {
+  const controls = RuntimePolicyControlsSchema.safeParse(controlsInput);
+  if (!controls.success)
+    return { effect: 'deny', reason: 'invalid_policy_or_binding' };
   if (!controls.data.enabled)
     return { effect: 'deny', reason: 'runtime_policy_disabled' };
   if (!(runtimeGovernedActions as readonly string[]).includes(action))

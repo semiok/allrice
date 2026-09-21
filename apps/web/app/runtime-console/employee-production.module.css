@@ -9,6 +9,10 @@
   border: 1px solid #34383d;
   border-radius: 18px;
 }
+.shell a {
+  color: #a8c7fa;
+  text-underline-offset: 3px;
+}
 
 .rail {
   padding: 22px;

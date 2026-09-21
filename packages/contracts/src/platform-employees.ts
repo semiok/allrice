@@ -177,6 +177,7 @@ export type PlatformEmployeeSummary = z.infer<
 export const UpdatePlatformEmployeeInputSchema = z
   .object({
     definition: PlatformEmployeeDefinitionSchema,
+    expectedRevisionId: UuidSchema.optional(),
   })
   .strict()
   .superRefine(({ definition }, context) => {
@@ -200,6 +201,15 @@ export const CreatePlatformEmployeeInputSchema = z
 export const PublishPlatformEmployeeInputSchema = z
   .object({
     workspaceIds: z.array(UuidSchema).min(1).max(500),
+    expectedRevisionId: UuidSchema.optional(),
+    expectedPublishedRevisionId: UuidSchema.nullable().optional(),
+    expectedPackageChecksum: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .optional(),
+    policyVersions: z
+      .record(UuidSchema, z.number().int().positive().nullable())
+      .optional(),
   })
   .strict();
 
@@ -290,6 +300,8 @@ export const DisablePlatformEmployeeInputSchema = z
 export const RollbackPlatformEmployeeInputSchema = z
   .object({
     revisionId: UuidSchema.optional(),
+    expectedPublishedRevisionId: UuidSchema.optional(),
+    expectedWorkspaceIds: z.array(UuidSchema).max(500).optional(),
     reason: z.string().trim().min(1).max(1_000),
   })
   .strict();
@@ -312,6 +324,8 @@ export const PlatformEmployeeLifecycleInputSchema = z.discriminatedUnion(
     z
       .object({
         action: z.literal('rollback'),
+        expectedPublishedRevisionId: UuidSchema.optional(),
+        expectedWorkspaceIds: z.array(UuidSchema).max(500).optional(),
         revisionId: UuidSchema.optional(),
         reason: z.string().trim().min(1).max(1_000),
       })

@@ -10,6 +10,7 @@ import {
   RuntimeActionBindingSchema,
   runtimeContractEqual,
   RuntimePolicyControlsSchema,
+  runtimeGovernedActions,
   UuidSchema,
   McpError,
   type RequestContext,
@@ -20,6 +21,10 @@ import {
 import type postgres from 'postgres';
 
 import { getDatabase } from './core/client.ts';
+import {
+  requireTenantAdministrationAuthority,
+  requireTenantAdministrationTarget,
+} from './tenant-administration.ts';
 import { checkCloudBindingAuthority } from './cloud-authority.ts';
 import { checkMcpBindingAuthority } from './mcp-authority.ts';
 import { assertLocalMcpApprovalAuthority } from './local-mcp-connections.ts';
@@ -139,7 +144,7 @@ async function audit(
   resourceId: string,
   action: string,
   reason: string,
-  metadata: Record<string, string | number> = {},
+  metadata: Record<string, unknown> = {},
 ) {
   await transaction`
     insert into allrice_audit_events (
@@ -147,11 +152,11 @@ async function audit(
       decision, reason, request_id, metadata
     ) values (${context.organizationId}, ${context.workspaceId}, ${context.actor.id},
       ${action}, 'runtime_operation', ${resourceId}, 'recorded', ${reason},
-      ${context.requestId}, ${transaction.json(metadata)})
+      ${context.requestId}, ${transaction.json(JSON.parse(JSON.stringify(metadata)))})
   `;
 }
 
-/** Admin service API. No HTTP policy-install endpoint and no seeded Allow policy in B1. */
+/** Existing workspace-admin service; platform administration uses its own actual issuer below. */
 export async function setRuntimePolicyControls(
   context: RequestContext,
   input: unknown,
@@ -161,32 +166,120 @@ export async function setRuntimePolicyControls(
   const controls = RuntimePolicyControlsSchema.parse(input);
   if ((expectedVersion === null ? 1 : expectedVersion + 1) !== controls.version)
     throw new RuntimePolicyError('policy_version_conflict');
-  return database.begin(async (transaction) => {
-    // Serializes initial insert as well as updates; this lock is never taken by dispatch.
-    await transaction`select pg_advisory_xact_lock(hashtextextended(${`runtime-policy:${context.organizationId}:${context.workspaceId}`}, 0))`;
-    const rows = await transaction<{ version: number }[]>`
-      select version from allrice_runtime_policy_controls
+  return database.begin((transaction) =>
+    persistPolicy(transaction, context, controls, expectedVersion, () =>
+      identity(transaction, context, true),
+    ),
+  );
+}
+
+async function persistPolicy(
+  transaction: Transaction,
+  context: RuntimePolicyPrincipal,
+  controls: ReturnType<typeof RuntimePolicyControlsSchema.parse>,
+  expectedVersion: number | null,
+  authorize: () => Promise<unknown>,
+  reason = 'explicit_admin_policy',
+  actorOrganizationId = context.organizationId,
+) {
+  // Serializes initial insert as well as updates; this lock is never taken by dispatch.
+  await transaction`select pg_advisory_xact_lock(hashtextextended(${`runtime-policy:${context.organizationId}:${context.workspaceId}`}, 0))`;
+  const rows = await transaction<{ version: number; controls: unknown }[]>`
+      select version, controls from allrice_runtime_policy_controls
       where organization_id = ${context.organizationId} and workspace_id = ${context.workspaceId} for update
     `;
-    await identity(transaction, context, true);
-    if ((rows[0]?.version ?? null) !== expectedVersion)
-      throw new RuntimePolicyError('policy_version_conflict');
-    await transaction`
+  await authorize();
+  if ((rows[0]?.version ?? null) !== expectedVersion)
+    throw new RuntimePolicyError('policy_version_conflict');
+  await transaction`
       insert into allrice_runtime_policy_controls (organization_id, workspace_id, version, controls)
       values (${context.organizationId}, ${context.workspaceId}, ${controls.version}, ${transaction.json(controls)})
       on conflict (organization_id, workspace_id) do update
       set version = excluded.version, controls = excluded.controls, updated_at = clock_timestamp()
     `;
-    await audit(
-      transaction,
-      context,
-      context.workspaceId!,
-      'runtime.policy.updated',
-      'explicit_admin_policy',
-      { version: controls.version },
-    );
-    return controls;
-  });
+  await audit(
+    transaction,
+    context,
+    context.workspaceId!,
+    'runtime.policy.updated',
+    reason,
+    {
+      version: controls.version,
+      before: rows[0]?.controls ?? null,
+      after: controls,
+      actorOrganizationId,
+    },
+  );
+  return controls;
+}
+
+/** Target scope is not a fabricated login or target membership. No feature/grant changes. */
+export async function setPlatformRuntimePolicyControls(
+  context: RequestContext,
+  target: { organizationId: string; workspaceId: string },
+  input: unknown,
+  expectedVersion: number | null,
+  reason: string,
+  database: Database = getDatabase(),
+) {
+  UuidSchema.parse(target.organizationId);
+  UuidSchema.parse(target.workspaceId);
+  const controls = RuntimePolicyControlsSchema.parse(input);
+  if (!reason.trim() || reason.length > 500)
+    throw new RuntimePolicyError('policy_reason_required');
+  if ((expectedVersion === null ? 1 : expectedVersion + 1) !== controls.version)
+    throw new RuntimePolicyError('policy_version_conflict');
+  if (
+    controls.rules.some(
+      (rule) =>
+        !(runtimeGovernedActions as readonly string[]).includes(rule.action),
+    ) ||
+    new Set(controls.rules.map((rule) => rule.action)).size !==
+      controls.rules.length
+  )
+    throw new RuntimePolicyError('policy_rules_invalid');
+  return database.begin((tx) =>
+    persistPolicy(
+      tx,
+      { ...target, actor: context.actor, requestId: context.requestId },
+      controls,
+      expectedVersion,
+      async () => {
+        await requireTenantAdministrationAuthority(context, tx);
+        await requireTenantAdministrationTarget(
+          tx,
+          target.organizationId,
+          target.workspaceId,
+        );
+      },
+      reason.trim(),
+      context.organizationId,
+    ),
+  );
+}
+
+export async function getPlatformRuntimePolicyControls(
+  context: RequestContext,
+  organizationId: string,
+  workspaceId: string,
+  database: Database = getDatabase(),
+) {
+  UuidSchema.parse(organizationId);
+  UuidSchema.parse(workspaceId);
+  await requireTenantAdministrationAuthority(context, database);
+  await requireTenantAdministrationTarget(
+    database,
+    organizationId,
+    workspaceId,
+  );
+  const [row] = await database<{ version: number; controls: unknown }[]>`
+    select version,controls from allrice_runtime_policy_controls where organization_id=${organizationId} and workspace_id=${workspaceId}`;
+  if (!row)
+    return { organizationId, workspaceId, version: null, controls: null };
+  const controls = RuntimePolicyControlsSchema.parse(row.controls);
+  if (row.version !== controls.version)
+    throw new RuntimePolicyError('runtime_policy_missing_or_invalid');
+  return { organizationId, workspaceId, version: row.version, controls };
 }
 
 type ApprovalRow = {

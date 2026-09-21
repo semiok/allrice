@@ -8,6 +8,9 @@ import { PlatformEmployeeLifecycleInputSchema } from '@allrice/contracts';
 
 import { executionErrorResponse } from '../../../../../../../lib/execution/responses';
 import { requirePlatformAdminContext } from '../../../../../../../lib/identity/platform-admin';
+import { sameOriginBrowserWrite } from '../../../../../../../lib/identity/request-origin';
+import { readAdminJson } from '../../../../../../../lib/tenant-administration/http';
+import { apiProblem } from '../../../../../../../lib/api-error-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,6 +27,12 @@ export async function GET(request: Request, routeContext: RouteContext) {
       auditEvents: await listPlatformEmployeeAuditEvents(employeeId),
     });
   } catch (error) {
+    if (error instanceof SyntaxError)
+      return apiProblem({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: '请求格式或大小不正确。',
+      });
     return executionErrorResponse(error);
   }
 }
@@ -31,9 +40,15 @@ export async function GET(request: Request, routeContext: RouteContext) {
 export async function POST(request: Request, routeContext: RouteContext) {
   try {
     const context = await requirePlatformAdminContext(request);
+    if (!sameOriginBrowserWrite(request))
+      return apiProblem({
+        status: 403,
+        code: 'AUTHORIZATION_DENIED',
+        message: '仅允许同源管理操作。',
+      });
     const { employeeId } = await routeContext.params;
     const body = PlatformEmployeeLifecycleInputSchema.parse(
-      await request.json(),
+      await readAdminJson(request, 32000),
     );
     if (body.action === 'disable') {
       return Response.json(
@@ -45,11 +60,24 @@ export async function POST(request: Request, routeContext: RouteContext) {
       );
     }
     if (body.action === 'rollback') {
+      if (!body.expectedPublishedRevisionId || !body.expectedWorkspaceIds)
+        return apiProblem({
+          status: 409,
+          code: 'CONFLICT',
+          message: '请刷新并核对回退版本和全部受影响的工作区。',
+          retryable: false,
+        });
       return Response.json(
         await rollbackPlatformEmployee(
           employeeId,
-          { reason: body.reason, revisionId: body.revisionId },
+          {
+            reason: body.reason,
+            revisionId: body.revisionId,
+            expectedPublishedRevisionId: body.expectedPublishedRevisionId,
+            expectedWorkspaceIds: body.expectedWorkspaceIds,
+          },
           context.actor.id,
+          context,
         ),
       );
     }
@@ -66,6 +94,12 @@ export async function POST(request: Request, routeContext: RouteContext) {
       new Error('Unsupported platform employee lifecycle action'),
     );
   } catch (error) {
+    if (error instanceof SyntaxError)
+      return apiProblem({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: '请求格式或大小不正确。',
+      });
     return executionErrorResponse(error);
   }
 }

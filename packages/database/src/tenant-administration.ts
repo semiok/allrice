@@ -20,7 +20,10 @@ export class TenantAdministrationError extends Error {
 }
 
 /** The issuer stays in their actual login context; target tenant is a separate input. */
-async function requireAdministrator(context: RequestContext, sql: Sql) {
+export async function requireTenantAdministrationAuthority(
+  context: RequestContext,
+  sql: Sql,
+) {
   if (context.actor.type !== 'user')
     throw new DataAccessError('authentication_required');
   if (!(await isPlatformAdmin(context, sql)))
@@ -39,8 +42,9 @@ async function requireAdministrator(context: RequestContext, sql: Sql) {
     limit 1`;
   if (!current) throw new DataAccessError('authorization_denied');
 }
+const requireAdministrator = requireTenantAdministrationAuthority;
 
-async function target(
+export async function requireTenantAdministrationTarget(
   sql: Sql,
   organizationId: string,
   workspaceId: string | null,
@@ -51,6 +55,7 @@ async function target(
         where w.organization_id=allrice_organizations.id and w.id=${workspaceId} and w.archived_at is null))`;
   if (!found) throw new DataAccessError('not_found');
 }
+const target = requireTenantAdministrationTarget;
 
 export async function listAdminTenants(
   context: RequestContext,

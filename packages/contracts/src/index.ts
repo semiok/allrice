@@ -27,6 +27,7 @@ export * from './api.ts';
 export * from './automation.ts';
 export * from './authorization.ts';
 export * from './tenant-administration.ts';
+export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';
 export * from './capabilities.ts';
 export * from './chatflow.ts';

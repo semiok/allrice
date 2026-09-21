@@ -7,6 +7,7 @@ import type {
   AdminTenantMembers,
 } from '@allrice/contracts';
 import styles from './tenant-administration.module.css';
+import { TenantPolicyEditor } from './tenant-policy-editor';
 
 const roles = { admin: '管理员', member: '成员', viewer: '只读成员' };
 const errors: Record<string, string> = {
@@ -29,6 +30,7 @@ async function json<T>(response: Response): Promise<T> {
 }
 
 export function TenantAdministration() {
+  const [view, setView] = useState<'members' | 'policy'>('members');
   const [tenants, setTenants] = useState<AdminTenant[]>([]),
     [next, setNext] = useState<string | null>(null);
   const [organizationId, setOrganizationId] = useState(''),
@@ -39,6 +41,7 @@ export function TenantAdministration() {
     [busy, setBusy] = useState(false);
   const selected = tenants.find((t) => t.id === organizationId);
   const request = useRef<AbortController | null>(null);
+  const initialTarget = useRef(false);
   const load = useCallback(async (cursor?: string) => {
     request.current?.abort();
     const controller = new AbortController();
@@ -65,6 +68,20 @@ export function TenantAdministration() {
           : data.tenants,
       );
       setNext(data.nextCursor);
+      if (!initialTarget.current) {
+        initialTarget.current = true;
+        const params = new URLSearchParams(window.location.search),
+          org = params.get('organizationId'),
+          workspace = params.get('workspaceId');
+        const tenant = data.tenants.find((t) => t.id === org);
+        if (tenant) {
+          setOrganizationId(tenant.id);
+          if (tenant.workspaces.some((w) => w.id === workspace)) {
+            setWorkspaceId(workspace!);
+            setView('policy');
+          }
+        }
+      }
     } catch (e) {
       if (!controller.signal.aborted) {
         setError(e instanceof Error ? e.message : '加载失败');
@@ -80,8 +97,7 @@ export function TenantAdministration() {
     return () => request.current?.abort();
   }, [load]);
   const canSwitch = () =>
-    !busy &&
-    (!dirty || window.confirm('切换将放弃尚未保存的成员修改，是否继续？'));
+    !busy && (!dirty || window.confirm('切换将放弃尚未保存的修改，是否继续？'));
   return (
     <section className={styles.panel} aria-label="租户管理">
       <header>
@@ -122,6 +138,7 @@ export function TenantAdministration() {
             onChange={(e) => {
               if (canSwitch()) {
                 setWorkspaceId(e.target.value);
+                if (!e.target.value) setView('members');
                 setDirty(false);
               }
             }}
@@ -153,13 +170,61 @@ export function TenantAdministration() {
               '全部工作区'}
             <small>租户 ID：{selected.id} · 不切换或冒用成员身份</small>
           </p>
-          <Members
-            key={`${organizationId}/${workspaceId}`}
-            tenant={selected}
-            workspaceId={workspaceId || null}
-            onDirty={setDirty}
-            onBusy={setBusy}
-          />
+          <div className={styles.selectors}>
+            <button
+              disabled={busy}
+              aria-pressed={view === 'members'}
+              onClick={() => {
+                if (canSwitch()) {
+                  setView('members');
+                  setDirty(false);
+                }
+              }}
+            >
+              成员与角色
+            </button>
+            <button
+              disabled={busy || !workspaceId}
+              aria-pressed={view === 'policy'}
+              onClick={() => {
+                if (canSwitch()) {
+                  setView('policy');
+                  setDirty(false);
+                }
+              }}
+            >
+              执行策略
+            </button>
+            {workspaceId ? (
+              <a
+                href={`/runtime-console?view=employees&workspaceId=${workspaceId}`}
+                onClick={(event) => {
+                  if (!canSwitch()) event.preventDefault();
+                }}
+              >
+                配置能力与 Rice 发布 →
+              </a>
+            ) : (
+              <span>选择具体工作区后配置策略与发布。</span>
+            )}
+          </div>
+          {view === 'policy' && workspaceId ? (
+            <TenantPolicyEditor
+              key={`${organizationId}/${workspaceId}`}
+              organizationId={organizationId}
+              workspaceId={workspaceId}
+              onDirty={setDirty}
+              onBusy={setBusy}
+            />
+          ) : (
+            <Members
+              key={`${organizationId}/${workspaceId}`}
+              tenant={selected}
+              workspaceId={workspaceId || null}
+              onDirty={setDirty}
+              onBusy={setBusy}
+            />
+          )}
         </>
       ) : !loading ? (
         <p>
