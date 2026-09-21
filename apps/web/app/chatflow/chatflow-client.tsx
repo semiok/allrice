@@ -27,6 +27,7 @@ import {
 } from './interaction-status';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { ChatSidebar } from './chat-sidebar';
+import { useMonthlyQuota } from './use-monthly-quota';
 import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
 import { useArtifactWorkbench } from './use-artifact-workbench';
@@ -115,6 +116,13 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const monthlyQuota = useMonthlyQuota({
+    workspaceId: workspace?.workspaceId,
+    organizationId: workspace?.organizationId,
+    viewerId: workspace?.viewerId,
+    headers: tenantHeaders,
+    refreshKey: `${activeId}/${history?.messages.length}/${history?.messages.at(-1)?.status}`,
+  });
   const readiness = useWorkspaceReadiness({
     workspaceId: workspace?.workspaceId,
     organizationId: workspace?.organizationId,
@@ -747,6 +755,7 @@ export function ChatFlowClient({
         </div>
       ) : null}
       <ChatSidebar
+        monthlyQuota={monthlyQuota}
         activeEmployeeName={
           activeEmployee?.currentVersion.manifest.name ?? 'Rice'
         }

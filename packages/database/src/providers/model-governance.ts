@@ -9,6 +9,7 @@ import {
   UpdateOrganizationModelQuotaInputSchema,
   UpdateProviderGovernanceInputSchema,
   UuidSchema,
+  UserMonthlyQuotaSchema,
   type RequestContext,
 } from '@allrice/contracts';
 
@@ -501,6 +502,75 @@ async function resourceStatus(
     usedTokens: Number(usage[0]?.used_tokens ?? 0),
     activeRuns: active[0]?.count ?? 0,
   });
+}
+
+/** Actor-scoped read model, using exactly the user resource admission accounting.
+ * No client-supplied user ID or cached role can widen this read. */
+export async function getUserMonthlyQuota(
+  context: RequestContext,
+  workspaceInput: string,
+  database = getDatabase(),
+) {
+  const userId = actorId(context);
+  const workspaceId = UuidSchema.parse(workspaceInput);
+  return database.begin(
+    'isolation level repeatable read read only',
+    async (sql) => {
+      const [viewer] = await sql<{ display_name: string }[]>`
+      select u.display_name from allrice_users u
+      join allrice_memberships m on m.user_id=u.id and m.active
+      join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+      join allrice_workspaces w on w.organization_id=o.id and w.archived_at is null
+      where u.id=${userId} and u.status='active'
+        and o.id=${context.organizationId} and w.id=${workspaceId}
+        and (m.workspace_id is null or m.workspace_id=w.id)
+      limit 1`;
+      if (!viewer) throw new DataAccessError('authorization_denied');
+      const quota = await resourceStatus(
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          scope: 'user',
+          scopeId: userId,
+        },
+        sql,
+      );
+      const [period] = await sql<
+        {
+          period_start: Date;
+          resets_at: Date;
+          observed_at: Date;
+          unknown_runs: number;
+        }[]
+      >`
+      select date_trunc('month', now()) as period_start,
+        date_trunc('month', now()) + interval '1 month' as resets_at,
+        now() as observed_at, count(*)::integer as unknown_runs
+      from allrice_model_usage_ledger l
+      join allrice_route_decisions d on d.id=l.route_decision_id
+      where l.organization_id=${context.organizationId} and l.workspace_id=${workspaceId}
+        and d.actor_id=${userId} and l.occurred_at>=date_trunc('month', now())
+        and not l.usage_complete`;
+      const remainingTokens = Math.max(
+        0,
+        quota.monthlyTokenLimit - quota.usedTokens,
+      );
+      return UserMonthlyQuotaSchema.parse({
+        organizationId: context.organizationId,
+        workspaceId,
+        userId,
+        displayName: viewer.display_name || '当前账号',
+        monthlyTokenLimit: quota.monthlyTokenLimit,
+        usedTokens: quota.usedTokens,
+        remainingTokens,
+        remainingPercent: (remainingTokens / quota.monthlyTokenLimit) * 100,
+        unknownUsageRuns: period!.unknown_runs,
+        periodStart: period!.period_start.toISOString(),
+        resetsAt: period!.resets_at.toISOString(),
+        observedAt: period!.observed_at.toISOString(),
+      });
+    },
+  );
 }
 
 export function assertModelResourceAvailable(input: {

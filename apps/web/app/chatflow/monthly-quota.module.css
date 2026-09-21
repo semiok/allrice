@@ -1,0 +1,59 @@
+.quota {
+  margin: 4px 8px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--dsw-alias-border-primary, #d9dce2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+.quota summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+.quota summary::-webkit-details-marker {
+  display: none;
+}
+.quota summary svg {
+  flex: none;
+}
+.identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.balance {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.label {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--dsw-alias-label-caption);
+}
+.detail {
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.5;
+  font-size: 11px;
+}
+.detail p {
+  margin: 8px 0;
+}
+.detail button {
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-primary, #d9dce2);
+  border-radius: 6px;
+  color: inherit;
+  padding: 4px 8px;
+  cursor: pointer;
+}

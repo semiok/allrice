@@ -1,6 +1,14 @@
 # MET-150 — Codex subscription chat stability
 
-Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, quota increases, assistant/root-budget changes, or Prod deployment.
+Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, assistant/root-budget changes, or Prod deployment. The explicit September 21 follow-up below authorizes a persistent Snow-only user monthly quota increase; earlier temporary acceptance overrides remain historical.
+
+## September 21 follow-up: Snow monthly budget and tenant-visible balance
+
+The user explicitly requested a persistent **5,000,000 Token monthly user limit for Snow**, replacing the inherited 2,000,000 default. This is a Dev-only per-user resource override, not a global default, per-Run cap, provider subscription allowance or another temporary acceptance grant. Other resource limits, original receipts/cache counts, unknown-usage reservations, roles and execution gates remain unchanged. The configuration write and prior default are audited.
+
+The tenant sidebar now adds the authenticated human account name and remaining percentage below the Rice employee card. Expand it to see exact recorded/remaining Tokens, monthly limit and the reset timestamp. Reads use the same current-user/current-workspace monthly ledger and effective resource limit as admission; cached input is already a subset of input, never added twice or silently subtracted. Incomplete receipts are disclosed in the details. This balance is not a guarantee that every task can start: organization/employee/provider limits and independent execution authorization still apply.
+
+The endpoint verifies current membership and only exposes the authenticated user's balance. It never accepts a client-selected user/limit, never caches private data, and distinguishes unavailable/loading from exhausted. The UI refreshes after history completion, every 30 seconds while visible, on window focus, and on manual request. Scope changes discard prior-account data. No model calls are needed to verify this feature.
 
 ## Evidence
 
