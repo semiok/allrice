@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { GovernanceConsole } from './governance-console';
+import { TenantAdministration } from './tenant-administration';
 import { RunUsageSummary } from './run-usage';
 import {
   dshRuntimeCoreComponents,
@@ -156,7 +157,7 @@ function tenantBridgeStatusLabel(tenant: TenantRuntimeItem) {
 
 export function RuntimeConsole() {
   const [view, setView] = useState<
-    'runtimes' | 'employees' | 'capabilities' | 'governance'
+    'runtimes' | 'employees' | 'capabilities' | 'governance' | 'tenants'
   >('runtimes');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
@@ -174,14 +175,18 @@ export function RuntimeConsole() {
       requested === 'runtimes' ||
       requested === 'employees' ||
       requested === 'capabilities' ||
-      requested === 'governance'
+      requested === 'governance' ||
+      requested === 'tenants'
     ) {
       setView(requested);
     }
   }, []);
 
   const selectView = useCallback(
-    (next: 'runtimes' | 'employees' | 'capabilities' | 'governance') => {
+    (
+      next:
+        'runtimes' | 'employees' | 'capabilities' | 'governance' | 'tenants',
+    ) => {
       setView(next);
       const url = new URL(window.location.href);
       url.searchParams.set('view', next);
@@ -336,6 +341,12 @@ export function RuntimeConsole() {
 
       <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
         <button
+          aria-current={view === 'tenants' ? 'page' : undefined}
+          onClick={() => selectView('tenants')}
+        >
+          租户管理
+        </button>
+        <button
           aria-current={view === 'employees' ? 'page' : undefined}
           onClick={() => selectView('employees')}
         >
@@ -361,7 +372,9 @@ export function RuntimeConsole() {
         </button>
       </nav>
 
-      {view === 'employees' ? (
+      {view === 'tenants' ? (
+        <TenantAdministration />
+      ) : view === 'employees' ? (
         <EmployeeProduction />
       ) : view === 'capabilities' ? (
         <CapabilitySourceView onOpenEmployees={() => selectView('employees')} />

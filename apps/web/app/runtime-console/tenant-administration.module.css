@@ -1,0 +1,101 @@
+.panel {
+  min-width: 0;
+  margin: 20px 0;
+  padding: 24px;
+  border: 1px solid #34383e;
+  border-radius: 16px;
+  background: #181a1e;
+  color: #e9edf2;
+}
+.panel p {
+  color: #bbc2cc;
+  line-height: 1.6;
+}
+.panel h2,
+.panel h3 {
+  margin: 0 0 12px;
+}
+.selectors {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+.panel label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.panel button,
+.panel select,
+.panel textarea {
+  font: inherit;
+  color: inherit;
+  background: #252930;
+  border: 1px solid #535c6b;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.panel button {
+  cursor: pointer;
+}
+.panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.panel select {
+  min-width: 0;
+  max-width: 100%;
+}
+.panel textarea {
+  width: 100%;
+  min-height: 80px;
+  box-sizing: border-box;
+}
+.target {
+  padding: 16px;
+  background: #202d3a;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.panel small {
+  display: block;
+  margin-top: 6px;
+  color: #aeb8c7;
+  overflow-wrap: anywhere;
+}
+.table {
+  overflow-x: auto;
+}
+.table table {
+  width: 100%;
+  color: inherit;
+  border-collapse: collapse;
+  min-width: 650px;
+}
+.table td,
+.table th {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid #363d48;
+}
+.editor {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid #8096af;
+  border-radius: 12px;
+}
+.panel :focus-visible {
+  outline: 2px solid #8caeff;
+  outline-offset: 3px;
+}
+@media (max-width: 700px) {
+  .panel {
+    padding: 14px;
+  }
+  .selectors > label {
+    width: 100%;
+  }
+}

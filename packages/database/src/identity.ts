@@ -349,39 +349,44 @@ export async function createSession(userId: string) {
  * can materialize the platform and tenant boundaries from trusted server
  * configuration without invitation links.
  */
-export async function ensureBootstrapPortalPrincipal(input: {
-  organizationSlug: string;
-  organizationName: string;
-  workspaceSlug: string;
-  workspaceName: string;
-  email: string;
-  displayName: string;
-  role: Role;
-}) {
+export async function ensureBootstrapPortalPrincipal(
+  input: {
+    organizationSlug: string;
+    organizationName: string;
+    workspaceSlug: string;
+    workspaceName: string;
+    email: string;
+    displayName: string;
+    role: Role;
+  },
+  sql = getDatabase(),
+) {
   const email = EmailSchema.parse(input.email);
   const passwordHash = await hashPassword(
     randomBytes(32).toString('base64url'),
   );
-  const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    await transaction`select pg_advisory_xact_lock(hashtext(${`portal-principal:${email}`}))`;
     const organizations = await transaction<{ id: string }[]>`
       insert into allrice_organizations (slug, name)
       values (${input.organizationSlug}, ${input.organizationName})
-      on conflict (slug) do update set name = excluded.name
+      on conflict (slug) do nothing
       returning id
     `;
-    const organization = organizations[0];
-    if (!organization)
-      throw new Error('portal organization provisioning failed');
+    const [organization] = await transaction<{ id: string }[]>`
+      select id from allrice_organizations where slug=${input.organizationSlug} and archived_at is null`;
+    if (!organization) throw new IdentityError('authorization_denied');
 
-    const workspaces = await transaction<{ id: string }[]>`
+    await transaction<{ id: string }[]>`
       insert into allrice_workspaces (organization_id, slug, name)
       values (${organization.id}, ${input.workspaceSlug}, ${input.workspaceName})
-      on conflict (organization_id, slug) do update set name = excluded.name
+      on conflict (organization_id, slug) do nothing
       returning id
     `;
-    const workspace = workspaces[0];
-    if (!workspace) throw new Error('portal workspace provisioning failed');
+    const [workspace] = await transaction<{ id: string }[]>`
+      select id from allrice_workspaces where organization_id=${organization.id}
+        and slug=${input.workspaceSlug} and archived_at is null`;
+    if (!workspace) throw new IdentityError('authorization_denied');
 
     const existingUsers = await transaction<UserRow[]>`
       select id, email, display_name, password_hash, status
@@ -396,26 +401,28 @@ export async function ensureBootstrapPortalPrincipal(input: {
         returning id, email, display_name, password_hash, status
       `;
       user = users[0];
-    } else if (user.status !== 'active') {
-      const users = await transaction<UserRow[]>`
-        update allrice_users
-        set display_name = ${input.displayName}, status = 'active', updated_at = now()
-        where id = ${user.id}
-        returning id, email, display_name, password_hash, status
-      `;
-      user = users[0];
-    }
+    } else if (user.status !== 'active')
+      throw new IdentityError('authentication_failed');
     if (!user) throw new Error('portal user provisioning failed');
 
-    await transaction`
+    // Provision only a new principal / new tenant. Existing member removal,
+    // deactivation and role changes are authoritative, including across login.
+    if (!existingUsers.length || organizations.length)
+      await transaction`
       insert into allrice_memberships (
         organization_id, workspace_id, user_id, role, active
       ) values (
         ${organization.id}, null, ${user.id}, ${input.role}, true
       )
       on conflict (organization_id, workspace_id, user_id)
-      do update set role = excluded.role, active = true, updated_at = now()
+      do nothing
     `;
+
+    const [membership] = await transaction`
+      select id from allrice_memberships where organization_id=${organization.id}
+        and user_id=${user.id} and active
+        and (workspace_id is null or workspace_id=${workspace.id}) limit 1`;
+    if (!membership) throw new IdentityError('authorization_denied');
 
     return {
       user: {
