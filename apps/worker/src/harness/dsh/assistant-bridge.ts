@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   AssistantResultSchema,
+  DevelopmentCommandSchema,
   type AssistantPricedUsage,
   type RequestContext,
   type RuntimeTaskRef,
@@ -309,15 +310,30 @@ export function createAssistantWorkerBridge(
       if (method === 'development') {
         if (!options.onDevelopment)
           throw Error('assistant_development_unavailable');
-        const command = z
+        const envelope = z
           .object({ command: z.string().min(1).max(512000) })
           .strict()
-          .parse(args);
+          .safeParse(args);
+        let decoded: unknown;
+        if (envelope.success) {
+          try {
+            decoded = JSON.parse(envelope.data.command);
+          } catch {
+            // Do not echo untrusted input (or a parser's source snippet).
+          }
+        }
+        const command = DevelopmentCommandSchema.safeParse(decoded);
+        if (!command.success)
+          return {
+            error: 'assistant_development_invalid',
+            message:
+              'No development action was performed. command must be a JSON string with action and its required fields. To initialize, use {"action":"initialize","seed":{"artifactId":"<artifactId>","digest":"<digest>"}} with the exact artifactId and sha256: digest returned by workspace.export.create. Never substitute objectId, a file path, or an invented checksum. Use {"action":"inspect"} only after initialization.',
+          };
         return {
           development: await options.onDevelopment({
             runId: instance.runId,
             requestId: callUuid,
-            arguments: JSON.parse(command.command),
+            arguments: command.data,
           }),
         };
       }

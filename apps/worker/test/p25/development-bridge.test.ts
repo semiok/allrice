@@ -5,6 +5,70 @@ import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bri
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
 describe('development control call identity', () => {
+  it('returns actionable bounded validation errors and never invokes invalid commands', async () => {
+    const runId = randomUUID();
+    const onDevelopment = vi.fn(async () => ({ initialized: true }));
+    const settleUsage = vi.fn(async () => {});
+    const bridge = createAssistantWorkerBridge({
+      runtime: {
+        getTree: async () => ({
+          instances: [
+            {
+              runId,
+              nativeSessionId: 'root',
+              allowedTools: ['assistant.development'],
+            },
+          ],
+        }),
+        reserveUsage: async () => ({ reserved: true }),
+        settleUsage,
+      } as unknown as AssistantRuntime,
+      task: { rootRunId: runId, scope: {} } as Options['task'],
+      context: {} as Options['context'],
+      worker: {} as Options['worker'],
+      wireNames: {},
+      readOnlyTools: new Set(),
+      onDevelopment,
+    });
+    const ref = {
+      artifactId: randomUUID(),
+      digest: `sha256:${'a'.repeat(64)}`,
+    };
+    for (const command of [
+      'secret-parser-input{',
+      JSON.stringify({ action: 'initialize', seed: ref.artifactId }),
+      JSON.stringify({
+        action: 'initialize',
+        seed: { artifactId: ref.artifactId },
+      }),
+      JSON.stringify({ action: 'initialize', seed: ref, approved: true }),
+    ]) {
+      const result = await bridge.handle('development', {
+        nativeSessionId: 'root',
+        callId: randomUUID(),
+        arguments: { command },
+      });
+      expect(result).toMatchObject({
+        error: 'assistant_development_invalid',
+        message: expect.stringContaining('workspace.export.create'),
+      });
+      expect(JSON.stringify(result)).not.toContain('secret-parser-input');
+    }
+    expect(onDevelopment).not.toHaveBeenCalled();
+    expect(settleUsage).toHaveBeenCalledTimes(4);
+    await bridge.handle('development', {
+      nativeSessionId: 'root',
+      callId: randomUUID(),
+      arguments: {
+        command: JSON.stringify({ action: 'initialize', seed: ref }),
+      },
+    });
+    expect(onDevelopment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        arguments: { action: 'initialize', seed: ref },
+      }),
+    );
+  });
   it('binds the complete command to the durable meter before an idempotent workflow retry', async () => {
     const runId = randomUUID();
     const calls = new Map<string, string>();

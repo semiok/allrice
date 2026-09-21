@@ -103,6 +103,9 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     return {
       modelContent: JSON.stringify({
         artifactId: artifact.id,
+        // This is the checksum of the persisted, server-normalized object,
+        // not a model-computed hash of its input proposal.
+        digest: artifact.object.checksum,
         artifactKind: kind,
         ...(kind === 'changeset'
           ? {
