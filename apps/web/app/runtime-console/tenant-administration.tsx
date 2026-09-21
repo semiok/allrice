@@ -8,6 +8,7 @@ import type {
 } from '@allrice/contracts';
 import styles from './tenant-administration.module.css';
 import { TenantPolicyEditor } from './tenant-policy-editor';
+import { TenantResourceEditor } from './tenant-resource-editor';
 
 const roles = { admin: '管理员', member: '成员', viewer: '只读成员' };
 const errors: Record<string, string> = {
@@ -30,7 +31,9 @@ async function json<T>(response: Response): Promise<T> {
 }
 
 export function TenantAdministration() {
-  const [view, setView] = useState<'members' | 'policy'>('members');
+  const [view, setView] = useState<
+    'members' | 'policy' | 'environments' | 'quotas'
+  >('members');
   const [tenants, setTenants] = useState<AdminTenant[]>([]),
     [next, setNext] = useState<string | null>(null);
   const [organizationId, setOrganizationId] = useState(''),
@@ -103,7 +106,7 @@ export function TenantAdministration() {
       <header>
         <h2>租户管理</h2>
         <p>
-          管理指定租户的成员与角色。管理权限不等于工具使用授权，也不会替设备主人授权本地目录。
+          管理指定租户的成员、执行策略、环境授权和分层额度。管理权限不等于工具使用授权，也不会替设备主人授权本地目录。
         </p>
       </header>
       <div className={styles.selectors}>
@@ -195,6 +198,21 @@ export function TenantAdministration() {
             >
               执行策略
             </button>
+            {(['environments', 'quotas'] as const).map((v) => (
+              <button
+                key={v}
+                disabled={busy || !workspaceId}
+                aria-pressed={view === v}
+                onClick={() => {
+                  if (canSwitch()) {
+                    setView(v);
+                    setDirty(false);
+                  }
+                }}
+              >
+                {v === 'environments' ? '环境与连接器' : '分层额度'}
+              </button>
+            ))}
             {workspaceId ? (
               <a
                 href={`/runtime-console?view=employees&workspaceId=${workspaceId}`}
@@ -208,7 +226,16 @@ export function TenantAdministration() {
               <span>选择具体工作区后配置策略与发布。</span>
             )}
           </div>
-          {view === 'policy' && workspaceId ? (
+          {(view === 'environments' || view === 'quotas') && workspaceId ? (
+            <TenantResourceEditor
+              key={`${organizationId}/${workspaceId}/${view}`}
+              mode={view}
+              organizationId={organizationId}
+              workspaceId={workspaceId}
+              onDirty={setDirty}
+              onBusy={setBusy}
+            />
+          ) : view === 'policy' && workspaceId ? (
             <TenantPolicyEditor
               key={`${organizationId}/${workspaceId}`}
               organizationId={organizationId}

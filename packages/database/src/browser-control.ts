@@ -21,6 +21,10 @@ import {
   type RuntimeActionApprovalSnapshot,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  requireTenantManagementScope,
+  type TenantManagementOptions,
+} from './tenant-management-scope.ts';
 import { browserGrantOriginDenial } from './browser-control-origin.ts';
 import {
   createManagedBrowserTask,
@@ -74,6 +78,7 @@ export async function installBrowserControlGrant(
     enabled: boolean;
   },
   db = getDatabase(),
+  administration?: TenantManagementOptions,
 ) {
   const profile = BrowserProfileSchema.parse(input.profile),
     id = randomUUID();
@@ -82,17 +87,23 @@ export async function installBrowserControlGrant(
     if (denial) throw new RuntimePolicyError(denial);
   }
   return db.begin(async (tx) => {
-    await browserIdentity(tx, ctx, true);
+    const organizationId = administration?.organizationId ?? ctx.organizationId,
+      workspaceId = administration?.workspaceId ?? ctx.workspaceId;
+    if (administration) {
+      if (input.ownerId !== administration.subjectId)
+        throw new RuntimePolicyError('membership_denied');
+      await requireTenantManagementScope(ctx, administration, tx);
+    } else await browserIdentity(tx, ctx, true);
     const [valid] =
       await tx`select t.id from allrice_execution_targets t join allrice_memberships m on m.organization_id=t.organization_id
       and (m.workspace_id is null or m.workspace_id=t.workspace_id) and m.user_id=${UuidSchema.parse(input.ownerId)} and m.active
-      where t.id=${UuidSchema.parse(input.targetId)} and t.organization_id=${ctx.organizationId} and t.workspace_id=${ctx.workspaceId}
-      and t.kind='cloud_sandbox' and t.capabilities ? 'browser.navigate' for share of t,m`;
+      where t.id=${UuidSchema.parse(input.targetId)} and t.organization_id=${organizationId} and t.workspace_id=${workspaceId}
+      and t.kind='cloud_sandbox' and t.state<>'revoked' and t.capabilities ? 'browser.navigate' for share of t,m`;
     if (!valid) throw new RuntimePolicyError('browser_target_denied');
     await tx`insert into allrice_browser_control_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled)
-      values(${id},${ctx.organizationId},${ctx.workspaceId},${input.ownerId},${input.targetId},1,${tx.json(profile)},${input.enabled})`;
+      values(${id},${organizationId},${workspaceId},${input.ownerId},${input.targetId},1,${tx.json(profile)},${input.enabled})`;
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-      values(${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},'browser.grant.installed','execution_target',${input.targetId},'recorded','explicit_admin_grant',${tx.json({ grantId: id, profileDigest: digest(profile), enabled: input.enabled })})`;
+      values(${organizationId},${workspaceId},${ctx.actor.id},'browser.grant.installed','execution_target',${input.targetId},'recorded',${administration?.reason ?? 'explicit_admin_grant'},${tx.json({ grantId: id, ownerId: input.ownerId, profileDigest: digest(profile), enabled: input.enabled })})`;
     return { id, version: 1, profile };
   });
 }
@@ -100,12 +111,21 @@ export async function revokeBrowserControlGrant(
   ctx: RequestContext,
   id: string,
   db = getDatabase(),
+  administration?: TenantManagementOptions & { expectedVersion: number },
 ) {
   return db.begin(async (tx) => {
-    await browserIdentity(tx, ctx, true);
+    const organizationId = administration?.organizationId ?? ctx.organizationId,
+      workspaceId = administration?.workspaceId ?? ctx.workspaceId,
+      ownerId = administration?.subjectId ?? ctx.actor.id;
+    if (administration) {
+      await requireTenantManagementScope(ctx, administration, tx);
+      const [current] =
+        await tx`select id from allrice_browser_control_grants where id=${UuidSchema.parse(id)} and organization_id=${organizationId} and workspace_id=${workspaceId} and owner_id=${ownerId} and version=${administration.expectedVersion} and enabled and revoked_at is null for update`;
+      if (!current) throw new RuntimePolicyError('browser_grant_unavailable');
+    } else await browserIdentity(tx, ctx, true);
     const changed =
       await tx`update allrice_browser_control_grants set enabled=false,revoked_at=coalesce(revoked_at,clock_timestamp())
-      where id=${UuidSchema.parse(id)} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and transport='cloud' returning id`;
+      where id=${UuidSchema.parse(id)} and organization_id=${organizationId} and workspace_id=${workspaceId} and transport='cloud' returning id,owner_id`;
     if (!changed.length)
       throw new RuntimePolicyError('browser_grant_unavailable');
     // Requested != stopped. Controller confirms physical close independently.
@@ -113,6 +133,7 @@ export async function revokeBrowserControlGrant(
       where grant_id=${id} and state not in ('closed','unknown','close_pending')`;
     await tx`update allrice_browser_direct_inputs set envelope=null,consumed_at=coalesce(consumed_at,clock_timestamp())
       where browser_workspace_id in(select id from allrice_browser_workspaces where grant_id=${id})`;
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata) values(${organizationId},${workspaceId},${ctx.actor.id},'browser.grant.revoked','browser_grant',${id},'recorded',${administration?.reason ?? 'explicit_admin_revoke'},${tx.json({ ownerId: changed[0]!.owner_id, physicalStopConfirmed: false })})`;
     return { requested: true };
   });
 }

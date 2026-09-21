@@ -34,6 +34,7 @@
 }
 .panel button,
 .panel select,
+.panel input,
 .panel textarea {
   font: inherit;
   color: inherit;
@@ -90,6 +91,55 @@
   padding: 20px;
   border: 1px solid #8096af;
   border-radius: 12px;
+}
+.panel article {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid #363d48;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.panel fieldset {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  min-width: 0;
+  border: 1px solid #535c6b;
+  border-radius: 10px;
+  padding: 16px;
+}
+.panel label:has(> input[type='checkbox']) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.panel input[type='checkbox'] {
+  flex: 0 0 auto;
+}
+.panel pre {
+  overflow: auto;
+  max-height: 300px;
+}
+.panel nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.tableScroll {
+  overflow-x: auto;
+}
+.tableScroll table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 680px;
+  color: inherit;
+}
+.tableScroll td,
+.tableScroll th {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid #363d48;
 }
 .panel :focus-visible {
   outline: 2px solid #8caeff;

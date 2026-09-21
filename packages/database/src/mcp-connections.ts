@@ -23,6 +23,11 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  tenantManagementScope,
+  checkTenantManagement,
+  type TenantManagementOptions,
+} from './tenant-management-scope.ts';
 import { connectorInputDigest } from './capabilities/connector-broker.ts';
 
 type Database = ReturnType<typeof postgres>;
@@ -63,7 +68,10 @@ const envelopeSchema = z
       .max(8192),
   })
   .strict();
-function adminScope(context: RequestContext, workspaceInput: string): McpScope {
+function workspaceAdminScope(
+  context: RequestContext,
+  workspaceInput: string,
+): McpScope {
   const workspaceId = UuidSchema.parse(workspaceInput);
   if (
     context.actor.type !== 'user' ||
@@ -88,7 +96,7 @@ function encryptionKey(value: string | undefined) {
     throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
   return Buffer.from(value, 'hex');
 }
-async function currentAdmin(tx: Database | Tx, scope: McpScope) {
+async function workspaceCurrentAdmin(tx: Database | Tx, scope: McpScope) {
   const [row] =
     await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id
     join allrice_organizations o on o.id=m.organization_id join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
@@ -135,7 +143,7 @@ function unseal(value: unknown, key: Buffer, associated: Buffer) {
     throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
   }
 }
-async function audit(
+async function workspaceAudit(
   tx: Tx,
   scope: McpScope,
   bindingId: string,
@@ -157,9 +165,39 @@ export interface McpDiscoveryLease {
  * own approval, dispatch and uncertainty. This adapter only authenticates the
  * frozen connector/tool authorization immediately before network access. */
 export function createMcpStore(
-  options: { database?: Database; credentialKey?: string } = {},
+  options: {
+    database?: Database;
+    credentialKey?: string;
+    administration?: TenantManagementOptions;
+  } = {},
 ) {
   const db = () => options.database ?? getDatabase();
+  const adminScope = (context: RequestContext, workspaceId: string) =>
+    options.administration
+      ? tenantManagementScope(context, workspaceId, options.administration)
+      : workspaceAdminScope(context, workspaceId);
+  const currentAdmin = (tx: Database | Tx, scope: McpScope) =>
+    options.administration
+      ? checkTenantManagement(tx, options.administration, scope)
+      : workspaceCurrentAdmin(tx, scope);
+  const audit = (
+    tx: Tx,
+    scope: McpScope,
+    id: string,
+    action: string,
+    metadata: Record<string, string | number | boolean> = {},
+  ) =>
+    workspaceAudit(tx, scope, id, action, {
+      ...metadata,
+      ...(options.administration
+        ? {
+            targetUserId: options.administration.subjectId,
+            managementReason: options.administration.reason,
+            platformIssuer: scope.actorId,
+            affectedScope: 'workspace_service_connection',
+          }
+        : {}),
+    });
   const key = () =>
     encryptionKey(
       options.credentialKey ?? process.env.ALLRICE_MCP_CREDENTIAL_KEY,

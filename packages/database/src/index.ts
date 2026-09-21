@@ -58,3 +58,6 @@ export * from './assistant-authority.ts';
 export * from './assistant-output.ts';
 export * from './assistant-pricing.ts';
 export * from './execution/route-subscription.ts';
+export * from './tenant-quotas.ts';
+export * from './tenant-environments.ts';
+export * from './tenant-management-scope.ts';

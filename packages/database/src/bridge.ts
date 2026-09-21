@@ -25,6 +25,10 @@ import {
 
 import { DataAccessError } from './data.ts';
 import { getDatabase } from './core/client.ts';
+import {
+  requireTenantManagementScope,
+  type TenantManagementTarget,
+} from './tenant-management-scope.ts';
 
 const onlineWindowSeconds = 90;
 const maximumResultBytes = 500_000;
@@ -427,15 +431,23 @@ export async function pairBridgeDevice(input: unknown) {
 export async function listBridgeDevices(
   context: RequestContext,
   workspaceIdInput: string,
+  sql = getDatabase(),
+  administration?: TenantManagementTarget,
 ) {
   const workspaceId = UuidSchema.parse(workspaceIdInput);
-  const ownerId = requireWorkspaceMember(context, workspaceId);
-  const sql = getDatabase();
+  if (administration && administration.workspaceId !== workspaceId)
+    throw new DataAccessError('authorization_denied');
+  const managed = administration
+    ? await requireTenantManagementScope(context, administration, sql)
+    : null;
+  const ownerId =
+    managed?.subjectId ?? requireWorkspaceMember(context, workspaceId);
+  const organizationId = managed?.organizationId ?? context.organizationId;
   const rows = await sql<DeviceRow[]>`
     select id, organization_id, workspace_id, owner_id, name, platform,
       protocol_version, capabilities, last_seen_at, created_at, revoked_at
     from allrice_bridge_devices
-    where organization_id = ${context.organizationId}
+    where organization_id = ${organizationId}
       and workspace_id = ${workspaceId} and owner_id = ${ownerId}
       and revoked_at is null
     order by last_seen_at desc nulls last, created_at desc

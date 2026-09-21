@@ -13,6 +13,7 @@ import {
 } from '../../../../packages/database/src/identity.ts';
 import { tenantAdministrationHttp } from '../../lib/tenant-administration/http';
 import { tenantPolicyHttp } from '../../lib/tenant-administration/policy-http';
+import { tenantResourcesHttp } from '../../lib/tenant-administration/resources-http';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
 import { GET as employeeLifecycle } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
@@ -123,9 +124,22 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
                     )
               : parts[4] === 'platform-skills'
                 ? await employeeAdministrationHttp(request, parts[5]!, 'skill')
-                : parts[6] === 'policy'
-                  ? await tenantPolicyHttp(request, parts[5]!)
-                  : await tenantAdministrationHttp(request, parts[5], parts[7]);
+                : ['quotas', 'environments', 'mcp', 'local-mcp'].includes(
+                      parts[6] ?? '',
+                    )
+                  ? await tenantResourcesHttp(
+                      request,
+                      parts[5]!,
+                      parts[6] as
+                        'quotas' | 'environments' | 'mcp' | 'local-mcp',
+                    )
+                  : parts[6] === 'policy'
+                    ? await tenantPolicyHttp(request, parts[5]!)
+                    : await tenantAdministrationHttp(
+                        request,
+                        parts[5],
+                        parts[7],
+                      );
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -193,6 +207,213 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       .waitFor();
     return { page, context };
   }
+  it('configures real member quotas through UI, restores inheritance with CAS and prevents cross-origin updates', async () => {
+    const { page, context } = await pageFor();
+    try {
+      await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      await page.getByRole('button', { name: '分层额度', exact: true }).click();
+      await page
+        .getByLabel('实际使用者', { exact: true })
+        .selectOption(snow.user.id);
+      await page.getByLabel('月 Token 上限', { exact: true }).fill('5000000');
+      await page
+        .getByLabel('额度修改原因')
+        .fill('Synthetic browser quota approval');
+      await page.getByRole('button', { name: '保存额度', exact: true }).click();
+      await page
+        .getByText(
+          '额度已保存；真实用量、未知预留和 Codex 官方额度未被改写。',
+          { exact: true },
+        )
+        .waitFor();
+      const [row] =
+        await fixture.db`select monthly_token_limit from allrice_model_resource_limits where organization_id=${snow.organizationId} and scope_type='user' and scope_id=${snow.user.id}`;
+      expect(row?.monthly_token_limit).toBe('5000000');
+      expect(
+        await page
+          .locator('table td')
+          .first()
+          .evaluate((el) => getComputedStyle(el).color),
+      ).toBe('rgb(233, 237, 242)');
+      if (process.env.ALLRICE_TEST_SCREENSHOT_DIR)
+        await page.screenshot({
+          path: resolve(
+            process.env.ALLRICE_TEST_SCREENSHOT_DIR,
+            'tenant-quotas.png',
+          ),
+          fullPage: true,
+        });
+      await page.setViewportSize({ width: 390, height: 844 });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth + 2,
+        ),
+      ).toBe(true);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      expect(
+        (
+          await fixture.db`select role from allrice_memberships where organization_id=${snow.organizationId} and user_id=${snow.user.id}`
+        )[0]?.role,
+      ).toBe('member');
+      const path = `/api/v1/admin/tenants/${snow.organizationId}/quotas`,
+        body = {
+          workspaceId: snow.workspaceId,
+          subjectId: snow.user.id,
+          scope: 'user',
+          expectedVersion: null,
+          limits: {
+            monthlyTokenLimit: 6000000,
+            monthlyRunLimit: 2000,
+            concurrentRunLimit: 3,
+            maxRuntimeMs: 1800000,
+          },
+          reason: 'Concurrent stale quota form',
+        };
+      const stale = await context.request.put(origin + path, {
+        headers: { origin },
+        data: body,
+      });
+      expect(stale.status()).toBe(409);
+      const cross = await context.request.put(origin + path, {
+        headers: { origin: 'https://elsewhere.example' },
+        data: body,
+      });
+      expect(cross.status()).toBe(403);
+      await page.getByLabel(/移除此租户对象覆盖/).check();
+      await page
+        .getByLabel('额度修改原因')
+        .fill('Synthetic restore inherited quota');
+      await page.getByRole('button', { name: '保存额度', exact: true }).click();
+      await expect
+        .poll(async () =>
+          Number(
+            await page
+              .getByLabel('月 Token 上限', { exact: true })
+              .inputValue(),
+          ),
+        )
+        .toBe(2000000);
+    } finally {
+      await context.close();
+    }
+  });
+  it('shows all missing prerequisites, grants cloud via UI without a device and exposes scoped MCP configuration', async () => {
+    vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
+    vi.stubEnv('ALLRICE_CLOUD_MCP_ENABLED', '1');
+    vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'ab'.repeat(32));
+    const target = randomUUID(),
+      approvalRun = randomUUID();
+    await fixture.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities) values(${target},${snow.organizationId},${snow.workspaceId},${`cloud.${target}`},'cloud_sandbox','Synthetic cloud target','online','["process.execute","browser.navigate"]')`;
+    await fixture.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${approvalRun},${snow.organizationId},${snow.workspaceId},${snow.user.id},'waiting_approval','{}','{}')`;
+    await fixture.db`insert into allrice_approval_requests(organization_id,workspace_id,run_id,actor_id,resource_type,resource_id,action,input_digest,requested_at,runtime_request,runtime_binding_digest,runtime_control_version,runtime_expires_at)
+      values(${snow.organizationId},${snow.workspaceId},${approvalRun},${snow.user.id},'runtime_operation',${randomUUID()},'process.execute',${`sha256:${'a'.repeat(64)}`},now()-interval '2 hours','{}',${`sha256:${'b'.repeat(64)}`},1,now()-interval '1 hour')`;
+    const { page, context } = await pageFor();
+    try {
+      await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      await page
+        .getByRole('button', { name: '环境与连接器', exact: true })
+        .click();
+      await page
+        .getByLabel('实际使用者', { exact: true })
+        .selectOption(snow.user.id);
+      await page
+        .getByRole('heading', { name: '已有平台授权', exact: true })
+        .waitFor();
+      expect(
+        await page.getByText(/尚未配对你自己的 Bridge/).count(),
+      ).toBeGreaterThan(0);
+      await page
+        .getByText('单次任务审批状态（与环境授权分开）', { exact: true })
+        .click();
+      await page
+        .getByText(new RegExp(`Run ${approvalRun.slice(0, 8)}.*单次审批已过期`))
+        .waitFor();
+      await page.getByRole('button', { name: '设备下载与确认指引' }).click();
+      await page
+        .getByRole('link', { name: '下载 M 芯片 Bridge', exact: true })
+        .waitFor();
+      await page.getByLabel('授权执行目标').selectOption(target);
+      await page
+        .getByLabel('环境修改原因')
+        .fill('Synthetic cloud platform approval');
+      await page
+        .getByRole('button', { name: '保存平台授权', exact: true })
+        .click();
+      await page
+        .getByText(
+          '平台授权已保存；设备端确认、员工版本、运行审批仍需分别满足。',
+          { exact: true },
+        )
+        .waitFor();
+      expect(
+        await fixture.db`select id from allrice_cloud_execution_grants where organization_id=${snow.organizationId} and owner_id=${snow.user.id} and target_id=${target} and enabled`,
+      ).toHaveLength(1);
+      expect(
+        await fixture.db`select id from allrice_bridge_devices where organization_id=${snow.organizationId}`,
+      ).toHaveLength(0);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      if (process.env.ALLRICE_TEST_SCREENSHOT_DIR)
+        await page.screenshot({
+          path: resolve(
+            process.env.ALLRICE_TEST_SCREENSHOT_DIR,
+            'tenant-environments.png',
+          ),
+        });
+      await page
+        .getByRole('button', { name: '云端 MCP 配置', exact: true })
+        .click();
+      await page
+        .getByRole('heading', { name: '云端 MCP', exact: true })
+        .waitFor();
+      await expect
+        .poll(
+          () =>
+            requests.filter((r) =>
+              r.includes(`/tenants/${snow.organizationId}/mcp`),
+            ).length,
+        )
+        .toBeGreaterThan(0);
+      const read = await context.request.get(
+        `${origin}/api/v1/admin/tenants/${snow.organizationId}/mcp?workspaceId=${snow.workspaceId}&subjectId=${snow.user.id}`,
+      );
+      expect(read.status()).toBe(200);
+      expect(await read.json()).toMatchObject({
+        organizationId: snow.organizationId,
+        subjectId: snow.user.id,
+      });
+      await page
+        .getByLabel('环境修改原因')
+        .fill('Synthetic MCP connection configuration');
+      await page
+        .getByLabel('连接名称', { exact: true })
+        .fill('Browser configured MCP');
+      await page
+        .getByLabel('HTTPS MCP 地址', { exact: true })
+        .fill('https://example.com/mcp');
+      await page
+        .getByLabel('租户 Bearer Token', { exact: true })
+        .fill('synthetic-browser-credential');
+      await page.getByRole('button', { name: '保存连接', exact: true }).click();
+      await page.getByText('Browser configured MCP', { exact: true }).waitFor();
+      expect(
+        await page
+          .getByLabel('租户 Bearer Token', { exact: true })
+          .inputValue(),
+      ).toBe('');
+      const [binding] =
+        await fixture.db`select b.created_by,b.organization_id,c.credential_envelope from allrice_connector_bindings b join allrice_mcp_binding_config c on c.binding_id=b.id where b.organization_id=${snow.organizationId} and c.endpoint='https://example.com/mcp'`;
+      expect(binding).toMatchObject({
+        created_by: platform.user.id,
+        organization_id: snow.organizationId,
+      });
+      expect(JSON.stringify(binding)).not.toContain(
+        'synthetic-browser-credential',
+      );
+    } finally {
+      await context.close();
+    }
+  });
   it('configures a workspace policy through the actual UI and rejects stale and cross-origin writes', async () => {
     const { page, context } = await pageFor();
     try {

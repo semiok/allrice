@@ -69,3 +69,5 @@ export * from './assistant-subscription.ts';
 export type { RuntimeRunUsage } from './runtime-run-usage.js';
 export * from './workspace-readiness.ts';
 export * from './user-monthly-quota.ts';
+export * from './tenant-quotas.ts';
+export * from './tenant-environments.ts';

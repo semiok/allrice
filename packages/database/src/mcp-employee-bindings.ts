@@ -12,6 +12,11 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  tenantManagementScope,
+  checkTenantManagement,
+  type TenantManagementOptions,
+} from './tenant-management-scope.ts';
 import { createMcpStore } from './mcp-connections.ts';
 
 type Database = ReturnType<typeof getDatabase>;
@@ -107,15 +112,26 @@ export function createEmployeeMcpBindingStore(
   options: {
     database?: Database;
     transport?: 'streamable_http' | 'local_stdio';
+    administration?: TenantManagementOptions;
   } = {},
 ) {
   const db = () => options.database ?? getDatabase();
   const transport = options.transport ?? 'streamable_http';
+  const managementScope = (context: RequestContext, workspaceId: string) =>
+    options.administration
+      ? tenantManagementScope(context, workspaceId, options.administration)
+      : scopeFor(context, workspaceId);
+  const managementMember = (tx: Database | Tx, scope: McpScope) =>
+    options.administration
+      ? checkTenantManagement(tx, options.administration, scope)
+      : currentMember(tx, scope, true);
+  const ownerId = (scope: McpScope) =>
+    options.administration?.subjectId ?? scope.actorId;
   return {
     async list(context: RequestContext, workspaceId: string) {
-      const scope = scopeFor(context, workspaceId);
+      const scope = managementScope(context, workspaceId);
       return db().begin(async (tx) => {
-        await currentMember(tx, scope, true);
+        await managementMember(tx, scope);
         const versions = await tx<
           Version[]
         >`select e.id as employee_id,v.id as version_id,v.name,v.version,v.manifest,e.status,
@@ -128,7 +144,7 @@ export function createEmployeeMcpBindingStore(
         const bindings = await tx<
           Binding[]
         >`select b.* from allrice_employee_mcp_bindings b join allrice_mcp_binding_config c on c.binding_id=b.connector_binding_id where b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId} and c.transport=${transport}
-          and (${transport}<>'local_stdio' or exists(select 1 from allrice_local_mcp_config l where l.binding_id=b.connector_binding_id and l.owner_id=${scope.actorId}))`;
+          and (${transport}<>'local_stdio' or exists(select 1 from allrice_local_mcp_config l where l.binding_id=b.connector_binding_id and l.owner_id=${ownerId(scope)}))`;
         return versions.map((v) => {
           const reasons = mcpEmployeeEligibility(v.manifest, transport);
           if (v.status !== 'active') reasons.push('员工已归档');
@@ -149,9 +165,9 @@ export function createEmployeeMcpBindingStore(
     },
     async bind(context: RequestContext, input: unknown) {
       const change = McpEmployeeBindingInputSchema.parse(input),
-        scope = scopeFor(context, change.workspaceId);
+        scope = managementScope(context, change.workspaceId);
       return db().begin(async (tx) => {
-        await currentMember(tx, scope, true);
+        await managementMember(tx, scope);
         // Same employee-first lock order as publication and assignment updates.
         const [employee] =
           await tx`select id,status from allrice_employees where id=${change.employeeId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for update`;
@@ -164,7 +180,7 @@ export function createEmployeeMcpBindingStore(
         if (!connection) throw new McpError('MCP_DENIED');
         if (transport === 'local_stdio') {
           const [owned] =
-            await tx`select binding_id from allrice_local_mcp_config where binding_id=${change.connectionId} and owner_id=${scope.actorId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
+            await tx`select binding_id from allrice_local_mcp_config where binding_id=${change.connectionId} and owner_id=${ownerId(scope)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
           if (!owned) throw new McpError('MCP_DENIED');
         }
         if (change.enabled) {
@@ -196,7 +212,7 @@ export function createEmployeeMcpBindingStore(
               Binding[]
             >`insert into allrice_employee_mcp_bindings(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id,enabled,granted_by) values(${scope.organizationId},${scope.workspaceId},${change.employeeId},${change.employeeVersionId},${change.connectionId},true,${scope.actorId}) returning *`;
         const row = rows[0]!;
-        await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata) values(${scope.organizationId},${scope.workspaceId},${scope.actorId},'mcp.employee.binding','employee',${change.employeeId},'allowed','tenant_narrowed_pre_authorized_mcp_policy',${context.requestId},${tx.json({ bindingId: row.id, employeeVersionId: change.employeeVersionId, connectionId: change.connectionId, revision: row.grant_revision, enabled: row.enabled, scope: transport === 'local_stdio' ? 'local.mcp:device_owner:every_initialize_and_call' : 'cloud.mcp.call:connector_only:every_call' })})`;
+        await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata) values(${scope.organizationId},${scope.workspaceId},${scope.actorId},'mcp.employee.binding','employee',${change.employeeId},'allowed','tenant_narrowed_pre_authorized_mcp_policy',${context.requestId},${tx.json({ ...(options.administration ? { targetUserId: ownerId(scope), managementReason: options.administration.reason, affectsAssignedEmployeeVersion: true } : {}), bindingId: row.id, employeeVersionId: change.employeeVersionId, connectionId: change.connectionId, revision: row.grant_revision, enabled: row.enabled, scope: transport === 'local_stdio' ? 'local.mcp:device_owner:every_initialize_and_call' : 'cloud.mcp.call:connector_only:every_call' })})`;
         return publicBinding(row);
       });
     },

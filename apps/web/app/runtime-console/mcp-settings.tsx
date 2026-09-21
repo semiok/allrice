@@ -3,11 +3,22 @@
 import { useEffect, useState } from 'react';
 import type { McpConnection, McpEmployeeTarget } from '@allrice/contracts';
 
+import type { ManagedConnectorProps } from './tenant-resource-editor';
 import styles from './mcp-settings.module.css';
 
-const endpoint = '/api/v1/admin/mcp';
+const legacyEndpoint = '/api/v1/admin/mcp';
 type Risk = McpConnection['tools'][number]['risk'];
-export function McpSettings({ workspaceId }: { workspaceId: string }) {
+export function McpSettings({
+  workspaceId,
+  management,
+}: {
+  workspaceId: string;
+  management?: ManagedConnectorProps;
+}) {
+  const endpoint = management
+    ? `/api/v1/admin/tenants/${management.organizationId}/mcp`
+    : legacyEndpoint;
+  const subjectId = management?.subjectId;
   const [connections, setConnections] = useState<McpConnection[]>([]);
   const [employees, setEmployees] = useState<McpEmployeeTarget[]>([]);
   const [selectedEmployees, setSelectedEmployees] = useState<
@@ -29,15 +40,25 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
     setEmployees([]);
     setEnabled(false);
     setError('');
-    fetch(`${endpoint}?workspaceId=${encodeURIComponent(workspaceId)}`, {
-      cache: 'no-store',
-      signal: controller.signal,
-    })
+    fetch(
+      `${endpoint}?workspaceId=${encodeURIComponent(workspaceId)}${subjectId ? `&subjectId=${subjectId}` : ''}`,
+      {
+        cache: 'no-store',
+        signal: controller.signal,
+      },
+    )
       .then(async (response) => {
         const body = await response.json();
         if (!response.ok)
           throw new Error(body.error?.message ?? '无法读取 MCP 配置。');
         if (!controller.signal.aborted) {
+          if (
+            management &&
+            (body.organizationId !== management.organizationId ||
+              body.subjectId !== subjectId ||
+              body.workspaceId !== workspaceId)
+          )
+            throw Error('返回管理范围不匹配');
           setConnections(body.connections);
           setEmployees(body.employees ?? []);
           setEnabled(body.enabled);
@@ -50,19 +71,53 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
           );
       });
     return () => controller.abort();
-  }, [workspaceId, refresh]);
+  }, [workspaceId, refresh, endpoint, subjectId]);
+  const managementBusy = management?.onBusy,
+    managementDirty = management?.onDirty;
+  useEffect(() => {
+    managementBusy?.(busy);
+    return () => managementBusy?.(false);
+  }, [busy, managementBusy]);
+  useEffect(() => {
+    managementDirty?.(!!name || !!url || !!token || !!rotateId || !!rotation);
+  }, [name, url, token, rotateId, rotation, managementDirty]);
   async function mutate(
     method: 'POST' | 'PATCH',
     payload: Record<string, unknown>,
   ) {
     if (busy) return;
+    if (management && management.reason.trim().length < 5) {
+      setError('请先填写至少 5 个字符的管理操作原因。');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
       const response = await fetch(endpoint, {
         method,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId, ...payload }),
+        body: JSON.stringify({
+          workspaceId,
+          ...payload,
+          ...(management
+            ? {
+                subjectId,
+                reason: management.reason,
+                ...('connectionId' in payload &&
+                payload.action !== 'employee_binding'
+                  ? {
+                      expectedConnectionRevision: connections.find(
+                        (c) => c.id === payload.connectionId,
+                      )?.revision,
+                      expectedToolGrantRevision: connections
+                        .find((c) => c.id === payload.connectionId)
+                        ?.tools.find((t) => t.revisionId === payload.revisionId)
+                        ?.grantRevision,
+                    }
+                  : {}),
+              }
+            : {}),
+        }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message ?? '操作失败。');
@@ -70,6 +125,8 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
       setToken('');
       setRotation('');
       setRotateId(null);
+      setName('');
+      setUrl('');
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : '操作失败。');
     } finally {
@@ -80,6 +137,11 @@ export function McpSettings({ workspaceId }: { workspaceId: string }) {
   }
   return (
     <section className={styles.panel} aria-label="云端 MCP 连接">
+      {management ? (
+        <p>
+          当前为所选租户的工作区配置。连接、工具与员工版本绑定影响本工作区获分配该版本的使用者，不是单个用户的私有授权；实际调用仍按各自身份和逐次审批执行。
+        </p>
+      ) : null}
       <div className={styles.header}>
         <h3>云端 MCP</h3>
         <button

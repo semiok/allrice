@@ -26,6 +26,11 @@ import {
   type FrozenMcpTool,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  tenantManagementScope,
+  checkTenantManagement,
+  type TenantManagementOptions,
+} from './tenant-management-scope.ts';
 import { runtimePolicyDigest as digest } from './runtime-policy.ts';
 import {
   mcpEmployeeEligibility,
@@ -91,6 +96,7 @@ async function read(
   scope: McpScope,
   id: string,
   lock = false,
+  ownerId = scope.actorId,
 ) {
   const rows = await tx<
     Row[]
@@ -98,14 +104,14 @@ async function read(
     from allrice_local_mcp_config l join allrice_mcp_binding_config c on c.binding_id=l.binding_id and c.transport='local_stdio'
     join allrice_connector_bindings b on b.id=l.binding_id join allrice_connector_definitions d on d.id=b.connector_id
     join allrice_bridge_devices v on v.id=l.device_id
-    where l.binding_id=${UuidSchema.parse(id)} and l.organization_id=${scope.organizationId} and l.workspace_id=${scope.workspaceId} and l.owner_id=${scope.actorId}`;
+    where l.binding_id=${UuidSchema.parse(id)} and l.organization_id=${scope.organizationId} and l.workspace_id=${scope.workspaceId} and l.owner_id=${ownerId}`;
   const row = rows[0];
   if (!row) throw new McpError('MCP_DENIED');
   if (lock) {
     await tx`select binding_id from allrice_mcp_binding_config where binding_id=${id} for share`;
     await tx`select binding_id from allrice_local_mcp_config where binding_id=${id} for share`;
     await tx`select id from allrice_connector_bindings where id=${id} for share`;
-    return read(tx, scope, id, false);
+    return read(tx, scope, id, false, ownerId);
   }
   return row;
 }
@@ -160,21 +166,54 @@ async function currentDevice(
   scope: McpScope,
   deviceId: string,
   grantId: string,
+  ownerId = scope.actorId,
 ) {
   const [row] = await tx<
     { runtime_generation: number }[]
   >`select f.runtime_generation from allrice_bridge_devices d join allrice_bridge_folder_grants f on f.device_id=d.id
-    where d.id=${deviceId} and d.owner_id=${scope.actorId} and d.organization_id=${scope.organizationId} and d.workspace_id=${scope.workspaceId}
+    where d.id=${deviceId} and d.owner_id=${ownerId} and d.organization_id=${scope.organizationId} and d.workspace_id=${scope.workspaceId}
       and f.id=${grantId} and f.owner_id=d.owner_id and f.organization_id=d.organization_id and f.workspace_id=d.workspace_id
       and d.revoked_at is null and f.revoked_at is null for share of d,f`;
   if (!row) throw new McpError('MCP_DENIED');
   return row;
 }
 
-export function createLocalMcpStore(options: { database?: Database } = {}) {
+export function createLocalMcpStore(
+  options: {
+    database?: Database;
+    administration?: TenantManagementOptions;
+  } = {},
+) {
   const db = () => options.database ?? getDatabase();
+  const managementScope = (context: RequestContext, workspaceId: string) =>
+    options.administration
+      ? tenantManagementScope(context, workspaceId, options.administration)
+      : scopeFor(context, workspaceId);
+  const managementMember = (tx: Database | Tx, scope: McpScope) =>
+    options.administration
+      ? checkTenantManagement(tx, options.administration, scope)
+      : member(tx, scope, true);
+  const ownerId = (scope: McpScope) =>
+    options.administration?.subjectId ?? scope.actorId;
+  const managementAudit = (
+    tx: Tx,
+    scope: McpScope,
+    id: string,
+    action: string,
+    metadata: Record<string, unknown> = {},
+  ) =>
+    audit(tx, scope, id, action, {
+      ...metadata,
+      targetUserId: ownerId(scope),
+      ...(options.administration
+        ? {
+            managementReason: options.administration.reason,
+            platformIssuer: scope.actorId,
+          }
+        : {}),
+    });
   async function view(scope: McpScope, id: string) {
-    const row = await read(db(), scope, id);
+    const row = await read(db(), scope, id, false, ownerId(scope));
     return LocalMcpConnectionSchema.parse({
       id: row.binding_id,
       name: row.name,
@@ -204,18 +243,19 @@ export function createLocalMcpStore(options: { database?: Database } = {}) {
     async create(context: RequestContext, input: unknown) {
       if (!localMcpEnabled()) throw new McpError('MCP_UNAVAILABLE');
       const args = CreateLocalMcpConnectionSchema.parse(input),
-        scope = scopeFor(context, args.workspaceId),
+        scope = managementScope(context, args.workspaceId),
         cfg = checkedConfiguration(args.configuration),
         id = randomUUID(),
         definition = randomUUID();
       await db().begin(async (tx) => {
         await tx`select id from allrice_workspaces where id=${scope.workspaceId} and organization_id=${scope.organizationId} for update`;
-        await member(tx, scope, true);
+        await managementMember(tx, scope);
         const grant = await currentDevice(
           tx,
           scope,
           args.deviceId,
           args.folderGrantId,
+          ownerId(scope),
         );
         const [count] = await tx<
           { n: number }[]
@@ -228,8 +268,8 @@ export function createLocalMcpStore(options: { database?: Database } = {}) {
         await tx`insert into allrice_mcp_binding_config(binding_id,organization_id,workspace_id,transport,endpoint,credential_envelope)
           values(${id},${scope.organizationId},${scope.workspaceId},'local_stdio',null,'null'::jsonb)`;
         await tx`insert into allrice_local_mcp_config(binding_id,organization_id,workspace_id,owner_id,device_id,folder_grant_id,folder_grant_version,configuration)
-          values(${id},${scope.organizationId},${scope.workspaceId},${scope.actorId},${args.deviceId},${args.folderGrantId},${grant.runtime_generation},${tx.json(cfg)})`;
-        await audit(tx, scope, id, 'local_mcp.register', {
+          values(${id},${scope.organizationId},${scope.workspaceId},${ownerId(scope)},${args.deviceId},${args.folderGrantId},${grant.runtime_generation},${tx.json(cfg)})`;
+        await managementAudit(tx, scope, id, 'local_mcp.register', {
           sourceDigest: cfg.source.digest,
           deviceId: args.deviceId,
         });
@@ -237,11 +277,11 @@ export function createLocalMcpStore(options: { database?: Database } = {}) {
       return view(scope, id);
     },
     async list(context: RequestContext, workspaceId: string) {
-      const scope = scopeFor(context, workspaceId);
-      await member(db(), scope, true);
+      const scope = managementScope(context, workspaceId);
+      await managementMember(db(), scope);
       const rows = await db()<
         { binding_id: string }[]
-      >`select binding_id from allrice_local_mcp_config where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.actorId} order by binding_id`;
+      >`select binding_id from allrice_local_mcp_config where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${ownerId(scope)} order by binding_id`;
       return Promise.all(rows.map((r) => view(scope, r.binding_id)));
     },
     async replace(
@@ -254,23 +294,35 @@ export function createLocalMcpStore(options: { database?: Database } = {}) {
         revoke?: boolean;
       },
     ) {
-      const scope = scopeFor(context, input.workspaceId);
+      const scope = managementScope(context, input.workspaceId);
       await db().begin(async (tx) => {
-        await member(tx, scope, true);
+        await managementMember(tx, scope);
         await tx`select binding_id from allrice_mcp_binding_config where binding_id=${input.connectionId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for update`;
-        const row = await read(tx, scope, input.connectionId);
+        const row = await read(
+          tx,
+          scope,
+          input.connectionId,
+          false,
+          ownerId(scope),
+        );
         if (row.revision !== input.expectedRevision || !row.enabled)
           throw new McpError('MCP_BINDING_CHANGED');
         const cfg = checkedConfiguration(
           input.configuration ?? row.configuration,
         );
         if (!input.revoke)
-          await currentDevice(tx, scope, row.device_id, row.folder_grant_id);
+          await currentDevice(
+            tx,
+            scope,
+            row.device_id,
+            row.folder_grant_id,
+            ownerId(scope),
+          );
         await tx`update allrice_local_mcp_config set configuration=${tx.json(cfg)},last_discovery_operation_id=null where binding_id=${row.binding_id}`;
         await tx`update allrice_mcp_binding_config set revision=revision+1,discovery_state='idle',checked_at=null where binding_id=${row.binding_id}`;
         await tx`update allrice_connector_bindings set enabled=${!input.revoke},credential_reference=${cfg.credential?.id ?? `local-mcp:${row.binding_id}:none`},updated_at=clock_timestamp() where id=${row.binding_id}`;
         await tx`update allrice_mcp_tool_grants set available=false,allowed=false,grant_revision=grant_revision+1 where binding_id=${row.binding_id}`;
-        await audit(
+        await managementAudit(
           tx,
           scope,
           row.binding_id,
@@ -282,20 +334,32 @@ export function createLocalMcpStore(options: { database?: Database } = {}) {
     },
     async grant(context: RequestContext, input: unknown) {
       const args = McpGrantInputSchema.parse(input),
-        scope = scopeFor(context, args.workspaceId);
+        scope = managementScope(context, args.workspaceId);
       await db().begin(async (tx) => {
-        await member(tx, scope, true);
+        await managementMember(tx, scope);
         await tx`select binding_id from allrice_mcp_binding_config where binding_id=${args.connectionId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for update`;
-        const row = await read(tx, scope, args.connectionId);
+        const row = await read(
+          tx,
+          scope,
+          args.connectionId,
+          false,
+          ownerId(scope),
+        );
         if (!row.enabled) throw new McpError('MCP_DENIED');
         const updated =
           await tx`update allrice_mcp_tool_grants set allowed=${args.allowed},risk=${args.risk},grant_revision=grant_revision+1,granted_by=${scope.actorId},updated_at=clock_timestamp() where binding_id=${row.binding_id} and revision_id=${args.revisionId} and available returning tool_name`;
         if (!updated.length) throw new McpError('MCP_DISCOVERY_STALE');
-        await audit(tx, scope, row.binding_id, 'local_mcp.tool.grant', {
-          revisionId: args.revisionId,
-          allowed: args.allowed,
-          risk: args.risk,
-        });
+        await managementAudit(
+          tx,
+          scope,
+          row.binding_id,
+          'local_mcp.tool.grant',
+          {
+            revisionId: args.revisionId,
+            allowed: args.allowed,
+            risk: args.risk,
+          },
+        );
       });
       return view(scope, args.connectionId);
     },

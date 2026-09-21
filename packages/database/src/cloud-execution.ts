@@ -16,6 +16,10 @@ import {
   type CloudCommand,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  requireTenantManagementScope,
+  type TenantManagementOptions,
+} from './tenant-management-scope.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
@@ -54,22 +58,31 @@ export async function installCloudExecutionGrant(
     enabled: boolean;
   },
   database: Database = getDatabase(),
+  administration?: TenantManagementOptions,
 ) {
   const profile = CloudExecutionProfileSchema.parse(input.profile),
     id = randomUUID();
+  const organizationId =
+      administration?.organizationId ?? context.organizationId,
+    workspaceId = administration?.workspaceId ?? context.workspaceId;
   return database.begin(async (tx) => {
+    if (administration) {
+      if (input.ownerId !== administration.subjectId)
+        throw new RuntimePolicyError('membership_denied');
+      await requireTenantManagementScope(context, administration, tx);
+    }
     const [admin] =
       await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active' where m.organization_id=${context.organizationId} and (m.workspace_id is null or m.workspace_id=${context.workspaceId}) and m.user_id=${context.actor.id} and m.active and m.role='admin' for share of m,u`;
-    if (context.actor.type !== 'user' || !admin)
+    if (context.actor.type !== 'user' || (!administration && !admin))
       throw new RuntimePolicyError('membership_denied');
     const [target] =
-      await tx`select id from allrice_execution_targets where id=${UuidSchema.parse(input.targetId)} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and kind='cloud_sandbox' for share`;
+      await tx`select id from allrice_execution_targets where id=${UuidSchema.parse(input.targetId)} and organization_id=${organizationId} and workspace_id=${workspaceId} and kind='cloud_sandbox' and state<>'revoked' and capabilities ? 'process.execute' for share`;
     const [owner] =
-      await tx`select id from allrice_memberships where organization_id=${context.organizationId} and (workspace_id is null or workspace_id=${context.workspaceId}) and user_id=${UuidSchema.parse(input.ownerId)} and active for share`;
+      await tx`select id from allrice_memberships where organization_id=${organizationId} and (workspace_id is null or workspace_id=${workspaceId}) and user_id=${UuidSchema.parse(input.ownerId)} and active for share`;
     if (!target || !owner)
       throw new RuntimePolicyError('cloud_grant_unavailable');
-    await tx`insert into allrice_cloud_execution_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled) values(${id},${context.organizationId},${context.workspaceId},${input.ownerId},${input.targetId},1,${tx.json(profile)},${input.enabled})`;
-    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata) values(${context.organizationId},${context.workspaceId},${context.actor.id},'cloud.grant.installed','execution_target',${input.targetId},'recorded','explicit_admin_grant',${tx.json({ grantId: id, ownerId: input.ownerId, profileDigest: digest(profile), enabled: input.enabled })})`;
+    await tx`insert into allrice_cloud_execution_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled) values(${id},${organizationId},${workspaceId},${input.ownerId},${input.targetId},1,${tx.json(profile)},${input.enabled})`;
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata) values(${organizationId},${workspaceId},${context.actor.id},'cloud.grant.installed','execution_target',${input.targetId},'recorded',${administration?.reason ?? 'explicit_admin_grant'},${tx.json({ grantId: id, ownerId: input.ownerId, profileDigest: digest(profile), enabled: input.enabled })})`;
     return { id, version: 1, profile };
   });
 }
