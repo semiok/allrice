@@ -449,6 +449,12 @@ export function productionAssistantController(input: {
       });
       return {
         ...bridge,
+        failureUsage: () =>
+          runtime.readFailureUsage({
+            scope: task.scope,
+            rootRunId: task.rootRunId,
+            worker,
+          }),
         finish: async () => {
           // The adapter joins/stops native loops first. Read receipts while the
           // worker is still live, then let finalization verify the durable tree.

@@ -78,6 +78,7 @@ import { productionAssistantController } from '../harness/dsh/assistant-controll
 import { getAssistantFailureDiagnostics } from '../harness/dsh/assistant-diagnostics.js';
 import {
   AssistantExecutionUnresolvedError,
+  getAssistantFailureUsage,
   assertAssistantTaskComplete,
 } from '../harness/dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
@@ -1313,7 +1314,17 @@ export async function executeEmployeeRun({
       ),
     };
   } catch (error) {
-    if (error instanceof AssistantExecutionUnresolvedError) {
+    const failedUsage = getAssistantFailureUsage(
+      error,
+      execution.context.runId,
+      execution.job.attempt,
+    );
+    if (failedUsage) {
+      routeUsage = failedUsage.usage;
+      routeCostCents = null;
+      routeUsageComplete = failedUsage.usageComplete;
+      routeCacheUsageKnown = failedUsage.cacheUsageKnown;
+    } else if (error instanceof AssistantExecutionUnresolvedError) {
       routeUsage = error.usage;
       routeCostCents = null;
       routeUsageComplete = error.usageComplete;

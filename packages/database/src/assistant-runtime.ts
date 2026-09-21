@@ -698,6 +698,41 @@ export function createAssistantRuntime(
         return summary(status, !unsettled);
       });
     },
+    /** Accounting-only read after failure/drain. This cannot finalize a task,
+     * grant dispatch, or release uncertain usage. Even a canceled/revoked user
+     * grant may be accounted by the original still-live Worker incarnation. */
+    async readFailureUsage(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      worker: AssistantWorkerLease;
+    }) {
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker, false);
+        const budgets = await tx<
+          { metric: string; spent: string }[]
+        >`select metric,spent from allrice_runtime_budgets where root_run_id=${root.root_run_id}`;
+        const [uncertain] = await tx`
+          select 1 from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null
+          union all select 1 from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null
+          union all select 1 from allrice_assistant_instances where root_run_id=${root.root_run_id} and stopped_at is null
+          union all select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled')
+          limit 1`;
+        return {
+          usage: {
+            inputTokens: Number(
+              budgets.find((b) => b.metric === 'input_tokens')?.spent ?? 0,
+            ),
+            cachedInputTokens: 0,
+            outputTokens: Number(
+              budgets.find((b) => b.metric === 'output_tokens')?.spent ?? 0,
+            ),
+          },
+          usageComplete: !uncertain && budgets.length === 4,
+          cacheUsageKnown: false as const,
+        };
+      });
+    },
     async requestMessage(
       context: RequestContext,
       raw: z.infer<typeof AssistantMessageRequestSchema>,
@@ -810,8 +845,8 @@ export function createAssistantRuntime(
       });
     },
     /** Before native prepareCall freezes maxTokens: reserve a bounded output
-     * grant and call identity, not dispatch authority. Unknown preparation never
-     * disappears merely because the native host failed before sending input. */
+     * grant and call identity, not dispatch authority. Only confirmed stop may
+     * release an unused preparation; a host error alone is not that proof. */
     async prepareModelUsage(input: {
       scope: RuntimeScope;
       rootRunId: string;
@@ -1394,6 +1429,31 @@ export function createAssistantRuntime(
         const [operation] =
           await tx`select 1 from allrice_runtime_operations where (run_id=${row.run_id} or snapshot->>'agentInstanceId'=${row.run_id}) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         if (operation) fail('unknown');
+        // Dispatch and cancellation use this same root lock. Once canceled and
+        // confirmed idle, an admission with no durable dispatch can never send.
+        // Settle that exact hold as unused, leaving its admission as a tombstone
+        // (no invented dispatched_at/finished_at). Dispatched/legacy/unknown
+        // model calls and tool side effects must retain their reservations.
+        const unused = await tx<{ call_id: string }[]>`
+          select call_id from allrice_assistant_model_admissions
+          where root_run_id=${root.root_run_id} and run_id=${row.run_id} and dispatched_at is null for update`;
+        for (const { call_id } of unused) {
+          const released = await tx<{ metric: string; amount: string }[]>`
+            update allrice_assistant_usage set settled_amount=0
+            where root_run_id=${root.root_run_id} and run_id=${row.run_id} and call_id=${call_id} and settled_amount is null
+            returning metric,amount`;
+          for (const hold of released)
+            await tx`update allrice_runtime_budgets set reserved=reserved-${Number(hold.amount)} where root_run_id=${root.root_run_id} and metric=${hold.metric}`;
+        }
+        // An unstarted child reserves a launch slot, not an external call.
+        // The first model preparation normally transfers this hold instead.
+        if (row.parent_run_id) {
+          const [launch] =
+            await tx`update allrice_assistant_usage set settled_amount=0 where root_run_id=${root.root_run_id} and run_id=${row.run_id} and call_id=${row.delegation_id} and metric='model_calls' and settled_amount is null returning amount`;
+          if (launch)
+            await tx`update allrice_runtime_budgets set reserved=reserved-${Number(launch.amount)} where root_run_id=${root.root_run_id} and metric='model_calls'`;
+        }
+        await assertLease(tx, root, input.worker, false);
         await tx`update allrice_assistant_instances set stopped_at=clock_timestamp(),status=case when status in ('completed','partial','failed') then status else 'canceled' end where run_id=${row.run_id}`;
         if (row.run_id !== row.root_run_id)
           await tx`update allrice_runs set state='canceled',updated_at=clock_timestamp() where id=${row.run_id} and state in ('running','queued','waiting_approval')`;

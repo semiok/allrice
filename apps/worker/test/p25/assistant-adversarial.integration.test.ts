@@ -330,5 +330,68 @@ integration(
         await native.close();
       }
     }, 60000);
+
+    it('actual native pre-dispatch budget rejection is drained as unused while the preceding HTTP call stays counted', async () => {
+      const f = await assistantFixture(database.db);
+      const bridge = createAssistantWorkerBridge({
+        runtime: f.runtime,
+        task: f.task,
+        context: f.context,
+        worker: f.worker,
+        wireNames: {},
+        readOnlyTools: new Set(),
+      });
+      const native = await p24Fixture(
+        async () => ({ text: 'Synthetic known reply' }),
+        undefined,
+        200,
+        { p25: true, callback: bridge.handle },
+      );
+      const client = native.launch();
+      try {
+        await client.call('ready');
+        await client.call('create', { id: f.nativeSessionId });
+        await client.call('p25/bind', { nativeSessionId: f.nativeSessionId });
+        await client.call('prompt', {
+          id: f.nativeSessionId,
+          text: 'First synthetic call',
+        });
+        await client.call('idle', { id: f.nativeSessionId });
+        await client.call('p25/flush');
+        await database.db`update allrice_runtime_budgets set capacity=spent where root_run_id=${f.task.rootRunId} and metric='input_tokens'`;
+        await client
+          .call('prompt', {
+            id: f.nativeSessionId,
+            text: 'Second call must never reach HTTP',
+          })
+          .catch(() => {});
+        await client.call('idle', { id: f.nativeSessionId });
+        await client.call('p25/flush');
+        expect(native.requests).toHaveLength(1);
+        const admissions =
+          await database.db`select dispatched_at from allrice_assistant_model_admissions where root_run_id=${f.task.rootRunId}`;
+        expect(admissions).toHaveLength(2);
+        expect(admissions.filter((a) => a.dispatched_at === null)).toHaveLength(
+          1,
+        );
+        await f.runtime.cancelRoot(f.context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        });
+        await client.call('p25/drain', await bridge.cancellation());
+        await client.call('p25/flush');
+        expect(await f.runtime.readFailureUsage(f.base)).toEqual({
+          usage: { inputTokens: 20, cachedInputTokens: 0, outputTokens: 5 },
+          usageComplete: true,
+          cacheUsageKnown: false,
+        });
+        expect(
+          (await bridge.tree()).instances.every((i) => i.stoppedAt !== null),
+        ).toBe(true);
+        expect(native.requests).toHaveLength(1);
+      } finally {
+        await native.close();
+      }
+    }, 60000);
   },
 );
