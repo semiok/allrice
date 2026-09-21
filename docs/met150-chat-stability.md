@@ -2,6 +2,18 @@
 
 Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, assistant/root-budget changes, or Prod deployment. The explicit September 21 follow-up below authorizes a persistent Snow-only user monthly quota increase; earlier temporary acceptance overrides remain historical.
 
+## September 21 follow-up: rejected startup is not a dispatched model call
+
+MET-151 exposed Run `35836b20` failing in the local assistant controller's binding checks, before the native host received an assistant binding or model prompt. The Worker had already marked execution as started and therefore produced an unknown-usage receipt. The package check itself was repaired in MET-151; this separate MET-150 patch repairs future classification, not the historical record.
+
+- Only a **fresh native host**, a matching trusted Run/attempt, and rejection in the **local controller bind before native binding/prompt** produce the in-process `DshStartupRejection` proof. The host is dropped first. Reused hosts, runtime acquisition failures, native RPC failures, sent prompts, timeouts and missing receipts do not acquire this proof.
+- The Worker accepts the proof only for the same ordinary Run/attempt, never a durable workflow. It uses the existing `undispatched` ledger path, which additionally requires this attempt's newly frozen subscription snapshot before certifying zero use. A recovered snapshot stays unknown; any existing receipt is preserved under the tenant/route locks. The failed task remains failed, but a proven unused attempt no longer blocks the next task as unknown usage. Subscription cost stays N/A.
+- Neither JSON fields nor a matching error name confer proof. Cross-Run and cross-attempt objects are rejected. No error-message matching, log-based zero inference, historical rewrites, risk-review removal, quota changes or feature-flag enablement is included.
+- Verification: adapter/budget/diagnostic regressions **63 passed**; Worker + isolated PostgreSQL/route-preservation suites **21 passed**; full P25 regression **16 files / 181 passed** (counts overlap). The final Worker suite additionally injects the original local-bind rejection through the **real adapter → Worker → PostgreSQL** path and asserts zero native assistant/prompt calls, failed task status, complete zero-use subscription receipt and subsequent quota admission. Other synthetic transport/identity/missing-receipt failures remain unknown. No live provider call or real tenant setting is needed for these failure-path tests.
+- Worker and integration TypeScript checks, changed-file lint/format, and Worker dependency/production build passed. PR/CI/deployment status is tracked in MET-150; this implementation record does not claim a new main merge or Dev deployment. Existing Dev `b787bd9` and Prod are not changed by local tests.
+
+User-approved next scope: MET-144 X01-A/B/C only after this small fix; MET-145 Boost and MET-146 Teamwork are deferred, not implemented or enabled. MET-150 observation work remains separately tracked.
+
 ## September 21 follow-up: Snow monthly budget and tenant-visible balance
 
 The user explicitly requested a persistent **5,000,000 Token monthly user limit for Snow**, replacing the inherited 2,000,000 default. This is a Dev-only per-user resource override, not a global default, per-Run cap, provider subscription allowance or another temporary acceptance grant. Other resource limits, original receipts/cache counts, unknown-usage reservations, roles and execution gates remain unchanged. The configuration write and prior default are audited.

@@ -9,6 +9,7 @@ import {
 import { DshRuntimePool, type DshRuntime } from './runtime-pool.js';
 import { getAssistantFailureDiagnostics } from './assistant-diagnostics.js';
 import { assertAssistantTaskComplete } from './assistant-outcome.js';
+import { DshStartupRejection } from './startup-rejection.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -222,6 +223,8 @@ describe('bounded assistant diagnostic consumption', () => {
       .execute(f.input)
       .catch((error: unknown) => error);
     expect(error).toBe(original);
+    // No receipt after prompt is still unknown, even on a fresh native host.
+    expect(error).not.toBeInstanceOf(DshStartupRejection);
     expect(getAssistantFailureDiagnostics(error)).toEqual(f.diagnostics);
     expect(f.order.indexOf('diagnostics')).toBeLessThan(
       f.order.indexOf('cancel'),

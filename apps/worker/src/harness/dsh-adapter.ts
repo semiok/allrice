@@ -15,6 +15,7 @@ import {
 } from './dsh/assistant-diagnostics.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import { projectNativeUsage } from './dsh/native-usage.js';
+import { DshStartupRejection } from './dsh/startup-rejection.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -152,6 +153,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
       )
       .catch(async (error) => {
         await this.runtimePool.drop(threadId);
+        // This local controller bind only configures/validates the root. The
+        // fresh host has not received assistant/bind or session/prompt yet.
+        // Reused hosts and failures after this boundary remain uncertain.
+        const runId = input.executionEnvironment.ALLRICE_RUN_ID;
+        if (fresh && runId && input.assistants?.rootRunId === runId)
+          throw new DshStartupRejection(error, runId, input.attempt);
         throw error;
       });
     const ordinaryHandler = dshInboundToolHandler(input);

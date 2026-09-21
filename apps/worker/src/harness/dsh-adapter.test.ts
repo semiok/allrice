@@ -7,7 +7,9 @@ import type { DshExecutionSnapshot, HarnessEvent } from '@allrice/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HarnessExecutionInput } from './adapter.js';
-import { DshRuntimePool } from './dsh/runtime-pool.js';
+import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
+import { DshStartupRejection } from './dsh/startup-rejection.js';
+import { HandlerError } from '../errors.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import {
   DshHarnessAdapter,
@@ -135,6 +137,65 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it.each([
+    { fresh: true, matchingRoot: true, known: true },
+    { fresh: false, matchingRoot: true, known: false },
+    { fresh: true, matchingRoot: false, known: false },
+  ])(
+    'bind rejection proves only fresh matching startup: $fresh/$matchingRoot',
+    async ({ fresh, matchingRoot, known }) => {
+      const adapter = createAdapter();
+      const input = executionInput({
+        prompt: 'never dispatch',
+        provider: snapshot('openai-compatible'),
+      });
+      const original = new HandlerError('TEST_BIND_REJECTED', 'denied', false);
+      const prompt = vi.fn();
+      const nativeAssistant = vi.fn();
+      const runtime = {
+        client: { prompt, assistant: nativeAssistant },
+      } as unknown as DshRuntime;
+      vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
+        runtime,
+        fresh,
+      });
+      const drop = vi
+        .spyOn(DshRuntimePool.prototype, 'drop')
+        .mockResolvedValue();
+      input.assistants = {
+        rootRunId: matchingRoot
+          ? input.executionEnvironment.ALLRICE_RUN_ID!
+          : randomUUID(),
+        bind: vi.fn(async () => {
+          throw original;
+        }),
+      };
+      const error = await adapter
+        .execute(input)
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({
+        code: 'TEST_BIND_REJECTED',
+        retryable: false,
+      });
+      expect(error instanceof DshStartupRejection).toBe(known);
+      if (error instanceof DshStartupRejection) {
+        expect(error.cause).toBe(original);
+        expect(
+          error.belongsTo(input.executionEnvironment.ALLRICE_RUN_ID!, 1),
+        ).toBe(true);
+        expect(error.belongsTo(randomUUID(), 1)).toBe(false);
+        expect(
+          error.belongsTo(input.executionEnvironment.ALLRICE_RUN_ID!, 2),
+        ).toBe(false);
+        expect(
+          JSON.parse(JSON.stringify(error)) instanceof DshStartupRejection,
+        ).toBe(false);
+      } else expect(error).toBe(original);
+      expect(drop).toHaveBeenCalledOnce();
+      expect(prompt).not.toHaveBeenCalled();
+      expect(nativeAssistant).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     ['usage-complete', true, true, 16, 5],
     ['usage-missing', false, false, 0, 0],
