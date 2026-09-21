@@ -1,16 +1,13 @@
 import { employeeAdministrationHttp } from '../../../../../../../lib/tenant-administration/employee-http';
-
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-interface RouteContext {
-  params: Promise<{ employeeId: string }>;
-}
-
-export async function POST(request: Request, routeContext: RouteContext) {
+export async function POST(
+  request: Request,
+  route: { params: Promise<{ employeeId: string }> },
+) {
   return employeeAdministrationHttp(
     request,
-    (await routeContext.params).employeeId,
-    'publish',
+    (await route.params).employeeId,
+    'review',
   );
 }

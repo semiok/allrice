@@ -11,6 +11,10 @@
   color: #bbc2cc;
   line-height: 1.6;
 }
+.panel a {
+  color: #a8c7fa;
+  text-underline-offset: 3px;
+}
 .panel h2,
 .panel h3 {
   margin: 0 0 12px;

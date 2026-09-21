@@ -3,6 +3,7 @@ import {
   listPlatformEmployees,
   listPlatformEmployeeWorkspaces,
   listPlatformNativeSkills,
+  listEmployeeToolAvailability,
 } from '@allrice/database';
 
 import { executionErrorResponse } from '../../../../../lib/execution/responses';
@@ -19,7 +20,10 @@ export async function GET(request: Request) {
       listPlatformNativeSkills(),
       listPlatformEmployeeWorkspaces(),
     ]);
-    return Response.json({ employees, skills, workspaces });
+    return Response.json(
+      { employees, skills, workspaces, tools: listEmployeeToolAvailability() },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    );
   } catch (error) {
     return executionErrorResponse(error);
   }

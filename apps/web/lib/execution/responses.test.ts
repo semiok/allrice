@@ -8,6 +8,7 @@ it.each([
   ['platform_employee_published_revision_immutable', '先保存为新草稿'],
   ['platform_employee_draft_unavailable', '保存新草稿'],
   ['platform_employee_publish_snapshot_changed', '重新试用'],
+  ['platform_employee_publish_policy_changed', '重新预检并确认发布范围'],
   ['platform_employee_publish_workspace_unavailable', '重新选择'],
   ['platform_employee_publish_provider_unavailable', '服务恢复'],
   ['platform_employee_publish_test_unavailable', '重新试用'],

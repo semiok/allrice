@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
 import { RoleSchema } from './authorization.ts';
+import { RuntimePolicyControlsSchema } from './runtime-v2/policy.ts';
+export const TenantPolicyChangeSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    expectedVersion: z.number().int().positive().nullable(),
+    controls: RuntimePolicyControlsSchema,
+    reason: z.string().trim().min(5).max(500),
+  })
+  .strict();
 
 export const TenantMemberChangeSchema = z
   .object({

@@ -2,8 +2,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TenantAdministration } from '../app/runtime-console/tenant-administration';
+import { EmployeeProduction } from '../app/runtime-console/employee-production';
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <TenantAdministration />
+    {new URLSearchParams(window.location.search).get('view') === 'employees' ? (
+      <EmployeeProduction />
+    ) : (
+      <TenantAdministration />
+    )}
   </StrictMode>,
 );

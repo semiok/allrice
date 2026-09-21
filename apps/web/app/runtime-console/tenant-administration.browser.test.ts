@@ -12,6 +12,12 @@ import {
   ensureBootstrapPortalPrincipal,
 } from '../../../../packages/database/src/identity.ts';
 import { tenantAdministrationHttp } from '../../lib/tenant-administration/http';
+import { tenantPolicyHttp } from '../../lib/tenant-administration/policy-http';
+import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
+import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
+import { GET as employeeLifecycle } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
+import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
+import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../lib/identity/session', () => ({
@@ -98,11 +104,28 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
               : {}),
           });
           const parts = path.split('/');
-          const result = await tenantAdministrationHttp(
-            request,
-            parts[5],
-            parts[7],
-          );
+          const result =
+            parts[4] === 'platform-employees'
+              ? !parts[5]
+                ? await employeeDirectory(request)
+                : parts[6] === 'lifecycle'
+                  ? await employeeLifecycle(request, {
+                      params: Promise.resolve({ employeeId: parts[5]! }),
+                    })
+                  : await employeeAdministrationHttp(
+                      request,
+                      parts[5]!,
+                      parts[6] === 'review'
+                        ? 'review'
+                        : parts[6] === 'publish'
+                          ? 'publish'
+                          : 'save',
+                    )
+              : parts[4] === 'platform-skills'
+                ? await employeeAdministrationHttp(request, parts[5]!, 'skill')
+                : parts[6] === 'policy'
+                  ? await tenantPolicyHttp(request, parts[5]!)
+                  : await tenantAdministrationHttp(request, parts[5], parts[7]);
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -170,6 +193,238 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       .waitFor();
     return { page, context };
   }
+  it('configures a workspace policy through the actual UI and rejects stale and cross-origin writes', async () => {
+    const { page, context } = await pageFor();
+    try {
+      await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      await page.getByRole('button', { name: '执行策略', exact: true }).click();
+      await page.getByLabel('启用工作区策略').check();
+      await page
+        .getByLabel('local.process.execute 规则', { exact: true })
+        .selectOption('allow');
+      await page
+        .getByLabel('策略修改原因')
+        .fill('Synthetic explicit policy approval');
+      await page
+        .getByRole('button', { name: '确认保存策略', exact: true })
+        .click();
+      await page
+        .getByText('策略已保存并审计；未开启平台执行开关，也未授予设备权限。', {
+          exact: true,
+        })
+        .waitFor();
+      await page
+        .getByText('当前版本：1 · 保存将创建版本 2', { exact: true })
+        .waitFor();
+      expect(
+        await page
+          .getByRole('row')
+          .filter({
+            has: page.getByText('local.process.execute', { exact: true }),
+          })
+          .locator('td')
+          .nth(2)
+          .textContent(),
+      ).toContain('需精确审批');
+      const [stored] =
+        await fixture.db`select controls from allrice_runtime_policy_controls where workspace_id=${snow.workspaceId}`;
+      expect(stored!.controls).toMatchObject({
+        version: 1,
+        enabled: true,
+        rules: [{ action: 'local.process.execute', effect: 'allow' }],
+      });
+      const body = {
+        workspaceId: snow.workspaceId,
+        expectedVersion: null,
+        controls: stored!.controls,
+        reason: 'Synthetic stale request',
+      };
+      const url = `${origin}/api/v1/admin/tenants/${snow.organizationId}/policy`;
+      expect(
+        (
+          await context.request.put(url, {
+            headers: { Origin: origin },
+            data: body,
+          })
+        ).status(),
+      ).toBe(409);
+      expect(
+        (
+          await context.request.put(url, {
+            headers: { Origin: 'https://foreign.example.test' },
+            data: body,
+          })
+        ).status(),
+      ).toBe(403);
+      expect(
+        (
+          await context.request.put(url, {
+            headers: { Origin: origin, 'Content-Type': 'application/json' },
+            data: '{broken',
+          })
+        ).status(),
+      ).toBe(400);
+      await page.reload();
+      await page.getByLabel('管理租户').selectOption(snow.organizationId);
+      await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      await page.getByRole('button', { name: '执行策略', exact: true }).click();
+      await page
+        .getByText('当前版本：1 · 保存将创建版本 2', { exact: true })
+        .waitFor();
+      await page.screenshot({
+        path: '/tmp/met151-policy-desktop.png',
+        fullPage: true,
+      });
+    } finally {
+      await context.close();
+    }
+  });
+  it('reads real Skills and canonical tools, reviews an exact scope, rejects changed policy then publishes after fresh confirmation', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: {
+        ...f.definition,
+        name: 'MET151 UI fixture',
+        capabilities: {
+          ...f.definition.capabilities,
+          toolNames: ['workspace.skill.read', 'browser.workspace'],
+        },
+      },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=employees&workspaceId=${f.workspaceId}`,
+      );
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 UI fixture' })
+        .click();
+      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
+      await page.getByText('本地项目预览', { exact: true }).waitFor();
+      await page.getByRole('checkbox', { name: /云端隔离脚本/ }).check();
+      const saving = page.waitForResponse(
+        (response) =>
+          response.url() ===
+            `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+          response.request().method() === 'PUT',
+      );
+      await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+      const saved = await saving;
+      expect(saved.status()).toBe(200);
+      expect((await saved.json()).validation.valid).toBe(true);
+      await expect
+        .poll(async () =>
+          page
+            .getByRole('button', { name: '保存草稿', exact: true })
+            .isEnabled(),
+        )
+        .toBe(true);
+      await f.preview(); // Synthetic completion only; draft save/compile above uses real UI/HTTP.
+      const unreviewed = await context.request.post(
+        `${origin}/api/v1/admin/platform-employees/${f.employeeId}/publish`,
+        {
+          headers: { Origin: origin },
+          data: { workspaceIds: [f.workspaceId] },
+        },
+      );
+      expect(unreviewed.status()).toBe(409);
+      await page.getByRole('button', { name: '安全', exact: true }).click();
+      expect(
+        await page
+          .locator('option[value="autonomous"]')
+          .evaluate((option) => (option as HTMLOptionElement).disabled),
+      ).toBe(true);
+      await page.getByRole('button', { name: '技能', exact: true }).click();
+      await page
+        .getByRole('button', {
+          name: `查看 p18-${f.skillId} 内容`,
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole('region', { name: 'Skill 只读内容' })
+        .getByText(/Synthetic reviewed Skill/)
+        .waitFor();
+      await page.getByRole('button', { name: '发布租户', exact: true }).click();
+      // Choosing an employee deliberately clears publish scope: make it explicit again.
+      const workspaceLabel = page
+        .locator('label')
+        .filter({ hasText: 'Synthetic publication' })
+        .filter({ has: page.locator('input[type="checkbox"]') });
+      await workspaceLabel.getByRole('checkbox').check();
+      expect(
+        await page
+          .getByRole('button', { name: '发布到所选租户', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      await page
+        .getByRole('button', { name: '预检发布与版本差异', exact: true })
+        .click();
+      await page.getByRole('region', { name: '发布预检' }).waitFor();
+      await page.getByText(/browser.observe 当前策略禁止/).waitFor();
+      await page.getByText(/查看与已发布版本的差异/).click();
+      await page
+        .getByLabel('我已确认版本差异、发布范围及尚未满足的运行条件', {
+          exact: true,
+        })
+        .check();
+      // Another administrator edits policy after review using the real HTTP service.
+      const url = `${origin}/api/v1/admin/tenants/${f.organizationId}/policy`;
+      expect(
+        (
+          await context.request.put(url, {
+            headers: { Origin: origin },
+            data: {
+              workspaceId: f.workspaceId,
+              expectedVersion: null,
+              controls: {
+                version: 1,
+                enabled: false,
+                mode: 'execute',
+                rules: [],
+              },
+              reason: 'Synthetic concurrent policy change',
+            },
+          })
+        ).status(),
+      ).toBe(200);
+      await page
+        .getByRole('button', { name: '发布到所选租户', exact: true })
+        .click();
+      await page
+        .getByText(/请重新预检并确认发布范围/)
+        .first()
+        .waitFor();
+      expect(await f.assigned()).toBe(0);
+      await page
+        .getByRole('button', { name: '预检发布与版本差异', exact: true })
+        .click();
+      await page
+        .getByLabel('我已确认版本差异、发布范围及尚未满足的运行条件', {
+          exact: true,
+        })
+        .check();
+      await page.screenshot({
+        path: '/tmp/met151-publication-review.png',
+        fullPage: true,
+      });
+      await page
+        .getByRole('button', { name: '发布到所选租户', exact: true })
+        .click();
+      await page
+        .getByText(/发布成功：revision/)
+        .first()
+        .waitFor();
+      expect(await f.assigned()).toBe(1);
+      expect(
+        await fixture.db`select id from allrice_memberships where user_id=${platform.user.id} and organization_id=${f.organizationId}`,
+      ).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  }, 60000);
   it('saves an explicit role via the real HTTP/DB path, refreshes it, and does not grant platform membership', async () => {
     const { page, context } = await pageFor();
     try {

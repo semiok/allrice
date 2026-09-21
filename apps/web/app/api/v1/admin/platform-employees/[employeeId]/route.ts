@@ -1,12 +1,9 @@
-import {
-  compilePlatformEmployee,
-  getPlatformEmployee,
-  savePlatformEmployeeDraft,
-} from '@allrice/database';
+import { getPlatformEmployee } from '@allrice/database';
 
 import { apiProblem } from '../../../../../../lib/api-error-response';
 import { executionErrorResponse } from '../../../../../../lib/execution/responses';
 import { requirePlatformAdminContext } from '../../../../../../lib/identity/platform-admin';
+import { employeeAdministrationHttp } from '../../../../../../lib/tenant-administration/employee-http';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,22 +30,9 @@ export async function GET(request: Request, routeContext: RouteContext) {
 }
 
 export async function PUT(request: Request, routeContext: RouteContext) {
-  try {
-    const context = await requirePlatformAdminContext(request);
-    const { employeeId } = await routeContext.params;
-    const actorLabel =
-      context.actor.type === 'user' ? context.actor.id : 'platform-admin';
-    await savePlatformEmployeeDraft(
-      employeeId,
-      await request.json(),
-      actorLabel,
-    );
-    const validation = await compilePlatformEmployee(employeeId, actorLabel);
-    return Response.json({
-      employee: await getPlatformEmployee(employeeId),
-      validation,
-    });
-  } catch (error) {
-    return executionErrorResponse(error);
-  }
+  return employeeAdministrationHttp(
+    request,
+    (await routeContext.params).employeeId,
+    'save',
+  );
 }

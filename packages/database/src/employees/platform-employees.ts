@@ -21,13 +21,16 @@ import {
   UpdatePlatformEmployeeInputSchema,
   UuidSchema,
   employeeModelPolicyProblem,
+  employeeToolConfigurationErrors,
   type PlatformEmployeeDefinition,
   type PlatformEmployeeTestRunOutput,
+  type RequestContext,
 } from '@allrice/contracts';
 
 import { employeeManifest } from './employee-config.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
+import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -47,38 +50,6 @@ export {
   runtimePackageSystemPrompt,
   validatePlatformEmployeeTestExecutionSnapshot,
 } from '../platform-employees/runtime-package.ts';
-
-const allowedToolNames = new Set([
-  'workspace.reconciliation.export',
-  'cloud.process.execute',
-  'cloud.mcp.call',
-  'local.mcp.discover',
-  'local.mcp.call',
-  'workspace.skill.read',
-  'workspace.file.list',
-  'workspace.file.read',
-  'workspace.document.read',
-  'workspace.memory.search',
-  'workspace.memory.remember',
-  'workspace.session.search',
-  'web.search',
-  'web.fetch',
-  'browser.run',
-  'wechat.article.search',
-  'wechat.article.read',
-  'market.quote',
-  'market.history',
-  'workspace.export.create',
-  'local.fs.list',
-  'local.fs.search',
-  'local.fs.read',
-  'local.fs.write',
-  'local.process.execute',
-  'local.fs.mkdir',
-  'local.git.status',
-  'local.git.diff',
-  'automation.create',
-]);
 
 interface RevisionRow {
   id: string;
@@ -1132,15 +1103,23 @@ export async function savePlatformEmployeeDraft(
   actorLabel = 'platform-admin',
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
-  const { definition } = UpdatePlatformEmployeeInputSchema.parse(input);
+  const { definition, expectedRevisionId } =
+    UpdatePlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
-    const employees = await transaction<{ id: string }[]>`
-      select id from allrice_platform_employees
+    const employees = await transaction<
+      { id: string; current_draft_revision_id: string | null }[]
+    >`
+      select id,current_draft_revision_id from allrice_platform_employees
       where id = ${employeeId} and status <> 'archived'
       for update
     `;
     if (!employees[0]) throw new Error('platform_employee_not_found');
+    if (
+      expectedRevisionId !== undefined &&
+      employees[0].current_draft_revision_id !== expectedRevisionId
+    )
+      throw new Error('platform_employee_publish_snapshot_changed');
     const nextRows = await transaction<{ revision: number }[]>`
       select coalesce(max(revision), 0)::integer + 1 as revision
       from allrice_platform_employee_revisions
@@ -1174,6 +1153,7 @@ export async function savePlatformEmployeeDraft(
 export async function compilePlatformEmployee(
   employeeIdInput: string,
   actorLabel = 'platform-admin',
+  expectedRevisionId?: string,
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
   const sql = getDatabase();
@@ -1189,6 +1169,11 @@ export async function compilePlatformEmployee(
     `;
     if (!employee?.current_draft_revision_id)
       throw new Error('platform_employee_draft_not_found');
+    if (
+      expectedRevisionId !== undefined &&
+      employee.current_draft_revision_id !== expectedRevisionId
+    )
+      throw new Error('platform_employee_publish_snapshot_changed');
     const revisions = await transaction<RevisionRow[]>`
       select * from allrice_platform_employee_revisions
       where id = ${employee.current_draft_revision_id}
@@ -1208,12 +1193,7 @@ export async function compilePlatformEmployee(
     const warnings: string[] = [];
     const modelProblem = employeeModelPolicyProblem(definition.modelPolicy);
     if (modelProblem) errors.push(modelProblem);
-    const unknownTools = definition.capabilities.toolNames.filter(
-      (name) => !allowedToolNames.has(name),
-    );
-    if (unknownTools.length > 0) {
-      errors.push(`未注册工具：${unknownTools.join(', ')}`);
-    }
+    errors.push(...employeeToolConfigurationErrors(definition));
     const skills =
       definition.capabilities.nativeSkillIds.length === 0
         ? []
@@ -1295,31 +1275,6 @@ export async function compilePlatformEmployee(
       errors.push(
         `Skill 缺少所需工具：${[...new Set(missingRequiredTools)].join(', ')}`,
       );
-    }
-    if (
-      definition.securityPolicy.bridgeAccess === 'none' &&
-      definition.capabilities.toolNames.some((name) =>
-        name.startsWith('local.'),
-      )
-    ) {
-      errors.push('Bridge 已禁用，但员工仍配置了 local.* 工具');
-    }
-    if (
-      definition.securityPolicy.bridgeAccess === 'read_only' &&
-      definition.capabilities.toolNames.some((name) =>
-        [
-          'local.fs.write',
-          'local.fs.mkdir',
-          'local.process.execute',
-          'local.mcp.discover',
-          'local.mcp.call',
-        ].includes(name),
-      )
-    ) {
-      errors.push('Bridge 为只读，但员工仍配置了本地写入工具');
-    }
-    if (definition.securityPolicy.approvalPolicy === 'autonomous') {
-      errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
     }
     if (
       definition.securityPolicy.connectorIdentityModes.includes('service') &&
@@ -1728,10 +1683,16 @@ export async function publishPlatformEmployee(
   employeeIdInput: string,
   input: unknown,
   actorLabel = 'platform-admin',
+  administrationContext?: RequestContext,
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
-  const { workspaceIds } = PublishPlatformEmployeeInputSchema.parse(input);
-  const compilation = await compilePlatformEmployee(employeeId, actorLabel);
+  const parsed = PublishPlatformEmployeeInputSchema.parse(input);
+  const { workspaceIds } = parsed;
+  const compilation = await compilePlatformEmployee(
+    employeeId,
+    actorLabel,
+    parsed.expectedRevisionId,
+  );
   if (!compilation.valid) {
     await recordPlatformEmployeeAudit({
       employeeId,
@@ -1749,6 +1710,11 @@ export async function publishPlatformEmployee(
   const packageChecksum = compilation.runtimeProfile?.runtimePackage?.checksum;
   if (!packageChecksum)
     throw new Error('platform_employee_runtime_package_missing');
+  if (
+    parsed.expectedPackageChecksum !== undefined &&
+    parsed.expectedPackageChecksum !== packageChecksum
+  )
+    throw new Error('platform_employee_publish_snapshot_changed');
   const successfulTests = await sql<{ id: string }[]>`
     select id from allrice_platform_employee_test_runs
     where employee_id = ${employeeId}
@@ -1856,14 +1822,28 @@ export async function publishPlatformEmployee(
     return rejected;
   }
   const published = await sql.begin(async (transaction) => {
+    if (administrationContext)
+      await requireTenantAdministrationAuthority(
+        administrationContext,
+        transaction,
+      );
     const [employee] = await transaction<
-      { current_draft_revision_id: string | null }[]
+      {
+        current_draft_revision_id: string | null;
+        current_published_revision_id: string | null;
+      }[]
     >`
-      select current_draft_revision_id from allrice_platform_employees
+      select current_draft_revision_id,current_published_revision_id from allrice_platform_employees
       where id = ${employeeId} and status <> 'archived'
       for update
     `;
     if (employee?.current_draft_revision_id !== compilation.revisionId)
+      throw new Error('platform_employee_publish_snapshot_changed');
+    if (
+      parsed.expectedPublishedRevisionId !== undefined &&
+      parsed.expectedPublishedRevisionId !==
+        employee.current_published_revision_id
+    )
       throw new Error('platform_employee_publish_snapshot_changed');
     const revisions = await transaction<RevisionRow[]>`
       select * from allrice_platform_employee_revisions
@@ -1893,8 +1873,10 @@ export async function publishPlatformEmployee(
     });
     // Recheck authority after obtaining the publication locks. The initial
     // UI-facing checks do not authorize a later transaction or another draft.
-    const targets = await transaction<{ id: string }[]>`
-      select workspace.id from allrice_workspaces workspace
+    const targets = await transaction<
+      { id: string; organization_id: string }[]
+    >`
+      select workspace.id,workspace.organization_id from allrice_workspaces workspace
       join allrice_organizations organization on organization.id = workspace.organization_id
       where workspace.id in ${transaction(uniqueWorkspaceIds)}
         and workspace.archived_at is null and organization.archived_at is null
@@ -1903,6 +1885,20 @@ export async function publishPlatformEmployee(
     `;
     if (targets.length !== uniqueWorkspaceIds.length)
       throw new Error('platform_employee_publish_workspace_unavailable');
+    if (parsed.policyVersions) {
+      if (Object.keys(parsed.policyVersions).length !== targets.length)
+        throw new Error('platform_employee_publish_policy_changed');
+      for (const target of [...targets].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      )) {
+        await transaction`select pg_advisory_xact_lock(hashtextextended(${`runtime-policy:${target.organization_id}:${target.id}`},0))`;
+        const [policy] = await transaction<
+          { version: number }[]
+        >`select version from allrice_runtime_policy_controls where organization_id=${target.organization_id} and workspace_id=${target.id} for share`;
+        if (parsed.policyVersions[target.id] !== (policy?.version ?? null))
+          throw new Error('platform_employee_publish_policy_changed');
+      }
+    }
     const providers = await transaction<{ checked_at: Date }[]>`
       select checked_at from allrice_provider_status
       where provider = 'codex' and status = 'connected'
@@ -1984,12 +1980,22 @@ export async function rollbackPlatformEmployee(
   employeeIdInput: string,
   input: unknown,
   actorLabel = 'platform-admin',
+  administrationContext?: RequestContext,
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
-  const { revisionId, reason } =
-    RollbackPlatformEmployeeInputSchema.parse(input);
+  const {
+    revisionId,
+    reason,
+    expectedPublishedRevisionId,
+    expectedWorkspaceIds,
+  } = RollbackPlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
   const rolledBack = await sql.begin(async (transaction) => {
+    if (administrationContext)
+      await requireTenantAdministrationAuthority(
+        administrationContext,
+        transaction,
+      );
     const employees = await transaction<
       { current_published_revision_id: string | null }[]
     >`
@@ -1999,6 +2005,11 @@ export async function rollbackPlatformEmployee(
     `;
     const employee = employees[0];
     if (!employee) throw new Error('platform_employee_not_found');
+    if (
+      expectedPublishedRevisionId !== undefined &&
+      expectedPublishedRevisionId !== employee.current_published_revision_id
+    )
+      throw new Error('platform_employee_publish_snapshot_changed');
     const revisions = revisionId
       ? await transaction<RevisionRow[]>`
           select * from allrice_platform_employee_revisions
@@ -2020,12 +2031,25 @@ export async function rollbackPlatformEmployee(
     const targets = await transaction<{ workspace_id: string }[]>`
       select workspace_id
       from allrice_platform_employee_tenant_assignments
-      where employee_id = ${employeeId}
+      where employee_id = ${employeeId} and active
       order by active desc, updated_at desc, workspace_id
     `;
     const workspaceIds = [...new Set(targets.map((row) => row.workspace_id))];
+    if (
+      expectedWorkspaceIds &&
+      JSON.stringify([...new Set(expectedWorkspaceIds)].sort()) !==
+        JSON.stringify([...workspaceIds].sort())
+    )
+      throw new Error('platform_employee_publish_snapshot_changed');
     if (workspaceIds.length === 0)
       throw new Error('platform_employee_rollback_has_no_tenant_targets');
+    const available = await transaction<
+      { id: string }[]
+    >`select w.id from allrice_workspaces w
+      join allrice_organizations o on o.id=w.organization_id where w.id in ${transaction(workspaceIds)}
+      and w.archived_at is null and o.archived_at is null and o.slug<>'allrice-platform' for share of w,o`;
+    if (available.length !== workspaceIds.length)
+      throw new Error('platform_employee_publish_workspace_unavailable');
     await materializePlatformEmployeeRevision(transaction, {
       employeeId,
       revision: target,
@@ -2040,19 +2064,20 @@ export async function rollbackPlatformEmployee(
         updated_by_label = ${actorLabel}, updated_at = now()
       where id = ${employeeId}
     `;
-    return {
+    const result = {
       employeeId,
       revisionId: target.id,
       revision: target.revision,
       previousRevisionId: employee.current_published_revision_id,
       workspaceIds,
     };
-  });
-  await recordPlatformEmployeeAudit({
-    employeeId,
-    action: 'employee.rolled_back',
-    actorLabel,
-    details: { reason, ...rolledBack },
+    await recordPlatformEmployeeAuditInTransaction(transaction, {
+      employeeId,
+      action: 'employee.rolled_back',
+      actorLabel,
+      details: { reason, ...result },
+    });
+    return result;
   });
   return rolledBack;
 }

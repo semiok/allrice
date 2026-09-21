@@ -1,6 +1,7 @@
 export * from './core/client.ts';
 export * from './identity.ts';
 export * from './tenant-administration.ts';
+export * from './employee-administration.ts';
 export * from './data.ts';
 export * from './workspace.ts';
 export * from './workspace-readiness.ts';
