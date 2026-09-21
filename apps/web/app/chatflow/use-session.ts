@@ -7,6 +7,7 @@ import type { SaasCapabilityManifest } from '@allrice/contracts';
 import type { History, Session, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 import { createSessionSelection } from './session-selection';
+import { rememberSessionLocation } from './session-location';
 
 type UseSessionOptions = {
   setError: (message: string) => void;
@@ -30,6 +31,7 @@ export function useSession({ setError }: UseSessionOptions) {
         historyRequest.current?.abort();
       }
       updateActiveId(sessionId);
+      rememberSessionLocation(sessionId);
     },
     [selection],
   );
