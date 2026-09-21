@@ -19,6 +19,7 @@ const {
   recordToolBrokerAudit,
   registerToolBrokerExport,
   publishWorkbenchArtifact,
+  publishWorkbenchChangesetProposal,
   workbenchEnabled,
   registerManagedBrowserEvidenceArtifact,
   startManagedBrowserTask,
@@ -34,6 +35,7 @@ const {
   recordToolBrokerAudit: vi.fn(async () => undefined),
   registerToolBrokerExport: vi.fn(),
   publishWorkbenchArtifact: vi.fn(),
+  publishWorkbenchChangesetProposal: vi.fn(),
   workbenchEnabled: vi.fn(),
   registerManagedBrowserEvidenceArtifact: vi.fn(),
   startManagedBrowserTask: vi.fn(),
@@ -52,6 +54,7 @@ vi.mock('@allrice/database', () => ({
   recordToolBrokerAudit,
   registerToolBrokerExport,
   publishWorkbenchArtifact,
+  publishWorkbenchChangesetProposal,
   workbenchEnabled,
   registerManagedBrowserEvidenceArtifact,
   searchToolBrokerMemories: vi.fn(),
@@ -107,6 +110,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     createDefaultManagedBrowserTask.mockReset();
     registerToolBrokerExport.mockReset();
     publishWorkbenchArtifact.mockReset();
+    publishWorkbenchChangesetProposal.mockReset();
     workbenchEnabled.mockReturnValue(false);
     registerManagedBrowserEvidenceArtifact.mockReset();
     startManagedBrowserTask.mockReset();
@@ -744,7 +748,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(createToolBrokerExportObject).not.toHaveBeenCalled();
     expect(registerToolBrokerExport).not.toHaveBeenCalled();
   });
-  it('does not allow an export tool to impersonate a Changeset action', async () => {
+  it('rejects invalid/raw Changeset documents before the proposal adapter', async () => {
     workbenchEnabled.mockReturnValue(true);
     await expect(
       executeRiceTool({
@@ -763,8 +767,57 @@ describe('Codex hosted search Tool Broker integration', () => {
           },
         },
       }),
-    ).rejects.toThrow('Changeset');
+    ).rejects.toThrow();
     expect(publishWorkbenchArtifact).not.toHaveBeenCalled();
+    expect(publishWorkbenchChangesetProposal).not.toHaveBeenCalled();
+  });
+  it('exports a Changeset proposal through the server-owned binding adapter, not local write', async () => {
+    workbenchEnabled.mockReturnValue(true);
+    const proposal = {
+      files: [{ path: 'test.mjs', before: null, after: 'console.log(1)' }],
+    };
+    publishWorkbenchChangesetProposal.mockResolvedValue({
+      id: randomUUID(),
+      object: {
+        id: randomUUID(),
+        mediaType: 'application/json',
+        sizeBytes: 512,
+      },
+      version: {
+        seriesId: randomUUID(),
+        version: 1,
+        parentObjectId: null,
+        changeSummary: null,
+      },
+    });
+    const result = await executeRiceTool({
+      context: executionContext(),
+      capabilities: ['storage:write'],
+      sessionId: randomUUID(),
+      storageRoot: 'unused-mocked-port',
+      call: {
+        id: randomUUID(),
+        name: 'workspace.export.create',
+        arguments: {
+          fileName: 'review',
+          format: 'json',
+          artifactKind: 'changeset',
+          content: JSON.stringify(proposal),
+        },
+      },
+    });
+    expect(publishWorkbenchChangesetProposal).toHaveBeenCalledWith(
+      expect.objectContaining({ proposal, fileName: 'review.json' }),
+      expect.any(LocalStorageAdapter),
+    );
+    expect(JSON.parse(result.modelContent)).toMatchObject({
+      artifactKind: 'changeset',
+      executionStarted: false,
+      approvalRequired: true,
+    });
+    expect(dispatchBridgeCommand).not.toHaveBeenCalled();
+    expect(publishWorkbenchArtifact).not.toHaveBeenCalled();
+    expect(createToolBrokerExportObject).not.toHaveBeenCalled();
   });
   it('removes staged deliverable bytes when database registration fails', async () => {
     const context = executionContext();

@@ -355,9 +355,9 @@ export const riceToolDefinitions = [
         fileName: { type: 'string', minLength: 1, maxLength: 120 },
         artifactKind: {
           type: 'string',
-          enum: ['document', 'plan'],
+          enum: ['document', 'plan', 'changeset'],
           description:
-            '可选：document 为交付文档，plan 为需单独审查的计划；认可计划不是文件执行授权。',
+            'document 为文档，plan 为计划；changeset 为当前 Bridge 目录的文件修改提案，必须 format=json，content 为 {"files":[{"path":"相对路径","before":"原文或null（新文件）","after":"修改后全文或null（删除）"}]}。先读取原文，最多32个文件，不传设备ID/授权/校验和。服务端绑定目录，右栏展示 Diff；生成提案不修改文件，必须用户另行请求应用并审批。',
         },
         format: {
           type: 'string',

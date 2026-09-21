@@ -264,7 +264,7 @@ try {
       artifact.id,
       'Artifact did not open automatically',
     );
-    assert.ok((await panel.getByRole('table').count()) > 0);
+    await panel.getByRole('table').first().waitFor({ state: 'visible' });
     const download = page.waitForEvent('download');
     await panel.getByRole('link', { name: '下载此版本' }).click();
     const file = await download;
