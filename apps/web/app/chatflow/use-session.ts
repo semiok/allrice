@@ -59,11 +59,48 @@ export function useSession({ setError }: UseSessionOptions) {
         await fetch('/api/v1/saas/capabilities', { cache: 'no-store' }),
       ),
     ]);
-    setWorkspace(workspaceResult.workspace);
+    const nextWorkspace = workspaceResult.workspace;
+    const linked = new URLSearchParams(window.location.search).get('session');
+    const requested = scope.sessionId ?? linked;
+    // The sidebar is only the first page (30 Sessions), not an authorization
+    // index. A valid old deep link must be read through the normal scoped
+    // history endpoint before adding it to this local list.
+    if (
+      scope.current() &&
+      requested &&
+      /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requested) &&
+      !nextWorkspace.sessions.some((session) => session.id === requested)
+    ) {
+      const response = await fetch(
+        `/api/v1/sessions/${requested}?workspaceId=${nextWorkspace.workspaceId}`,
+        {
+          cache: 'no-store',
+          headers: {
+            'x-allrice-organization-id': nextWorkspace.organizationId,
+            'x-allrice-workspace-id': nextWorkspace.workspaceId,
+          },
+        },
+      );
+      if (response.ok) {
+        const result = await readJson<{ history: History }>(response);
+        if (
+          scope.current() &&
+          result.history.session.id === requested &&
+          !result.history.session.archivedAt
+        )
+          nextWorkspace.sessions = [
+            result.history.session,
+            ...nextWorkspace.sessions,
+          ];
+      } else if (![403, 404].includes(response.status)) {
+        // A transient failure must not silently open a different task.
+        await readJson(response);
+      }
+    }
+    setWorkspace(nextWorkspace);
     setManifest(capabilityResult.capabilities);
     if (scope.current()) {
       const current = scope.sessionId;
-      const linked = new URLSearchParams(window.location.search).get('session');
       if (
         !current &&
         linked &&

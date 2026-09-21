@@ -174,6 +174,16 @@ export async function currentBrowserWorkspace(
   if (!browserControlEnabled())
     throw new RuntimePolicyError('browser_control_disabled');
   await browserIdentity(tx, ctx);
+  // Queue event writers lock Job before Run. A multi-table FOR SHARE below
+  // does not guarantee that order (the planner can lock Run first). Pin the
+  // same-owner Job first so concurrent event flush/heartbeat cannot deadlock
+  // the controller. This is ordering only: the full lease/authority predicate
+  // below still rechecks every field after any wait.
+  await tx`select j.id from allrice_jobs j
+    join allrice_browser_workspaces w on w.job_id=j.id and w.run_id=j.run_id
+      and w.organization_id=j.organization_id and w.workspace_id=j.workspace_id and w.owner_id=j.owner_id
+    where w.id=${id} and w.organization_id=${ctx.organizationId}
+      and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id} for share of j`;
   await lockBrowserWorkspaceGrant(tx, ctx, id);
   const [w] = await tx<
     BrowserWorkspaceRow[]

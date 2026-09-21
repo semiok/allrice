@@ -204,6 +204,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       })),
       viewer: user,
       workspace,
+      omitSessionA: false,
+      deepLinkDenied: false,
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       contentError: false,
@@ -246,7 +248,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             workspaceId: state.workspace,
             viewerId: state.viewer,
             canAdminister: false,
-            sessions: options.noSession ? [] : [session(A), session(B)],
+            sessions: options.noSession
+              ? []
+              : state.omitSessionA
+                ? [session(B)]
+                : [session(A), session(B)],
             sessionModels: [],
             employeeProfiles: [],
             employees: [
@@ -351,6 +357,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           );
         return answer({ artifact: a, feedback: [] });
       }
+      if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
+        return answer({ error: { message: 'Not accessible' } }, 403);
       if (path === `/api/v1/sessions/${A}` || path === `/api/v1/sessions/${B}`)
         return answer({
           history: {
@@ -693,6 +701,32 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([false, true])(
+    'resolves a Session outside the sidebar page only through scoped history (denied=%s)',
+    async (denied) => {
+      const f = await fixture({ artifacts: true });
+      try {
+        f.state.omitSessionA = true;
+        f.state.deepLinkDenied = denied;
+        await f.page.reload();
+        await expect
+          .poll(() => f.page.locator('h1').first().textContent())
+          .toBe(denied ? '研究任务 B' : '研究任务 A');
+        expect(new URL(f.page.url()).searchParams.get('session')).toBe(
+          denied ? B : A,
+        );
+        if (denied)
+          expect(
+            await f.panel.getByRole('heading', { name: /COIN/ }).count(),
+          ).toBe(0);
+        else await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
   it(
     'automatically presents a newly completed SSE delivery, but never reopens a panel the user closed',
     { timeout: 20_000 },
