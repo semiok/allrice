@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { BrowserObservationSchema } from '@allrice/contracts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { listBrowserControlManagement } from './browser-control-management.ts';
+import { currentBrowserWorkspace } from './browser-control-authority.ts';
 import {
   installBrowserControlGrant,
   createBrowserWorkspace,
@@ -171,6 +172,65 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       await rm(storageRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
+  it('locks Job before Run under a concurrent event writer, without losing a heartbeat or authority', async () => {
+    const f = await fixture();
+    let releaseWriter!: () => void, writerLocked!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      writerLocked = resolve;
+    });
+    let writerPid = 0,
+      readerPid = 0;
+    const writer = db.begin(async (tx) => {
+      await tx`set local statement_timeout='8s'`;
+      writerPid = (await tx`select pg_backend_pid() as pid`)[0]!.pid as number;
+      await tx`select id from allrice_jobs where id=${f.execution.jobId} for update`;
+      writerLocked();
+      await gate;
+      // This is the queue's event append lock sequence, not a mock lock.
+      await tx`select id from allrice_runs where id=${f.execution.runId} for update`;
+      await tx`update allrice_jobs set heartbeat_at=clock_timestamp() where id=${f.execution.jobId}`;
+    });
+    let reader: Promise<unknown> | undefined;
+    void writer.catch(() => undefined);
+    try {
+      await locked;
+      reader = db.begin(async (tx) => {
+        await tx`set local statement_timeout='8s'`;
+        readerPid = (await tx`select pg_backend_pid() as pid`)[0]!
+          .pid as number;
+        return currentBrowserWorkspace(tx, f.context, f.w.id);
+      });
+      void reader.catch(() => undefined);
+      // Observe the real blocking edge; no timing assumption or sleeps decide
+      // when the event writer proceeds. Pre-fix the reader holds Run here.
+      let blocked = false;
+      const until = Date.now() + 5000;
+      while (Date.now() < until) {
+        if (readerPid) {
+          const [row] =
+            await db`select ${writerPid}::int=any(pg_blocking_pids(${readerPid})) as blocked`;
+          if (row?.blocked) {
+            blocked = true;
+            break;
+          }
+        }
+        await yieldTurn();
+      }
+      expect(blocked).toBe(true);
+      releaseWriter();
+      const results = await Promise.allSettled([writer, reader]);
+      expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+      expect(
+        (await readCurrentBrowserWorkspace(f.context, f.w.id, db)).state,
+      ).toBe('agent');
+    } finally {
+      releaseWriter();
+      await Promise.allSettled([writer, ...(reader ? [reader] : [])]);
+    }
+  }, 15000);
   it('exact operation always asks; takeover invalidates old approval without fabricating revocation or stop', async () => {
     const f = await fixture(),
       op = await createBrowserOperation(f.context, f.command, randomUUID(), db);

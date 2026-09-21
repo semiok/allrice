@@ -342,11 +342,17 @@ export function ChatTranscript({
                               </p>
                               <details>
                                 <summary>展开完整回复</summary>
-                                <AssistantMarkdown text={responseText} />
+                                <AssistantMarkdown
+                                  text={responseText}
+                                  artifacts={linkedArtifacts}
+                                />
                               </details>
                             </>
                           ) : (
-                            <AssistantMarkdown text={responseText} />
+                            <AssistantMarkdown
+                              text={responseText}
+                              artifacts={linkedArtifacts}
+                            />
                           )}
                           {onPreviewMessage &&
                           !linkedArtifacts.length &&

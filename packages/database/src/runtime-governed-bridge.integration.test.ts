@@ -78,6 +78,7 @@ vi.mock('./core/client.ts', async (original) => ({
 }));
 import {
   publishWorkbenchArtifact,
+  publishWorkbenchChangesetProposal,
   listWorkbenchArtifacts,
   getWorkbenchArtifact,
   readArtifactBytes,
@@ -624,6 +625,136 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   // P24 deliberately explored native IDs before P25 had a persistent identity
   // map. Such IDs now fail closed: these are negative migration guards, NOT the
   // replacement production mapped-child command/approval/receipt acceptance.
+  it('UX01-C publishes a model text proposal with server binding/checksums, no action or approval', async () => {
+    vi.stubEnv('ALLRICE_CHANGESET_ENABLED', '1');
+    const f = await artifactFixture();
+    const input = {
+      context: f.execution,
+      sessionId: f.sessionId,
+      callId: 'proposal-adapter',
+      fileName: 'review.json',
+      proposal: {
+        files: [
+          {
+            path: 'code.mjs',
+            before: null,
+            after: 'console.log("review only")',
+          },
+        ],
+      },
+    };
+    const a = await publishWorkbenchChangesetProposal(
+      input,
+      f.storage,
+      database,
+    );
+    expect(a.kind).toBe('changeset');
+    expect(a.execution).toMatchObject({
+      deviceId: f.device.id,
+      grantId: f.grant,
+      targetId: f.target,
+      workCopy: { id: f.grant, kind: 'in_place' },
+    });
+    const content = parseChangesetBytes(
+      await readArtifactBytes(f.storage, a.object),
+    );
+    expect(content.files[0]!.after).toEqual({
+      text: 'console.log("review only")',
+      checksum: `sha256:${createHash('sha256').update('console.log("review only")').digest('hex')}`,
+    });
+    expect(
+      (await publishWorkbenchChangesetProposal(input, f.storage, database)).id,
+    ).toBe(a.id);
+    expect(
+      await database`select id from allrice_runtime_operations where run_id=${f.run}`,
+    ).toHaveLength(0);
+    expect(
+      await database`select id from allrice_approval_requests where resource_id=${a.id}`,
+    ).toHaveLength(0);
+    await expect(
+      publishWorkbenchChangesetProposal(
+        {
+          ...input,
+          proposal: {
+            ...input.proposal,
+            execution: { targetId: randomUUID() },
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      publishWorkbenchChangesetProposal(
+        {
+          ...input,
+          proposal: {
+            files: [{ path: '../escape', before: null, after: 'x' }],
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      publishWorkbenchChangesetProposal(
+        {
+          ...input,
+          proposal: {
+            files: [
+              { path: 'same', before: null, after: 'x' },
+              { path: 'same', before: null, after: 'y' },
+            ],
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      publishWorkbenchChangesetProposal(
+        {
+          ...input,
+          proposal: { files: [{ path: 'same', before: null, after: null }] },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      publishWorkbenchChangesetProposal(
+        {
+          ...input,
+          proposal: {
+            files: [{ path: 'code.mjs', before: null, after: 'changed' }],
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('idempotency_conflict');
+    const other = await artifactFixture();
+    await expect(
+      publishWorkbenchChangesetProposal(
+        { ...input, context: other.execution },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow();
+    await database`update allrice_bridge_folder_grants set revoked_at=now() where id=${f.grant}`;
+    await expect(
+      publishWorkbenchChangesetProposal(
+        { ...input, callId: 'revoked' },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('target_unavailable');
+    vi.stubEnv('ALLRICE_CHANGESET_ENABLED', '0');
+    await expect(
+      publishWorkbenchChangesetProposal(input, f.storage, database),
+    ).rejects.toThrow('feature_disabled');
+  });
+
   it.each([
     'unmapped_native',
     'root_as_child',

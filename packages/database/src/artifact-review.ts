@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   ChangesetDocumentSchema,
+  ChangesetProposalSchema,
   WorkbenchArtifactSchema,
   WorkbenchArtifactKindSchema,
   ReviewDraftInputSchema,
@@ -360,6 +361,87 @@ async function assertCloudDerivationLease(
       and j.worker_id=${context.worker.id} and j.status='running' and j.cancel_requested_at is null
       and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() for share of i,j`;
   if (!current) fail('run_unavailable');
+}
+
+/** Publish a reviewable proposal, never enqueue a file write or create approval.
+ * The model cannot supply a device, grant, scope digest, checksum or authority.
+ * Before-text is an untrusted proposal baseline; application still checks its
+ * exact SHA against actual files and requires the existing single-use approval. */
+export async function publishWorkbenchChangesetProposal(
+  input: {
+    context: ExecutionContext;
+    sessionId: string;
+    callId: string;
+    fileName: string;
+    proposal: unknown;
+    parentObjectId?: string;
+    changeSummary?: string;
+  },
+  storage: StoragePort,
+  db: Database = getDatabase(),
+) {
+  if (!workbenchEnabled() || process.env.ALLRICE_CHANGESET_ENABLED !== '1')
+    fail('feature_disabled');
+  const ctx = ExecutionContextSchema.parse(input.context);
+  const proposal = ChangesetProposalSchema.parse(input.proposal);
+  const [target] = await db<
+    {
+      target_id: string;
+      device_id: string;
+      grant_id: string;
+      runtime_generation: number;
+      root_fingerprint: string;
+    }[]
+  >`select t.id target_id,d.id device_id,g.id grant_id,g.runtime_generation,g.root_fingerprint
+    from allrice_execution_targets t
+    join allrice_bridge_devices d on t.target_key='bridge.'||d.id::text
+      and d.organization_id=t.organization_id and d.workspace_id=t.workspace_id
+    join allrice_bridge_folder_grants g on g.device_id=d.id
+      and g.organization_id=d.organization_id and g.workspace_id=d.workspace_id and g.owner_id=d.owner_id
+    where t.organization_id=${ctx.organizationId} and t.workspace_id=${ctx.workspaceId!}
+      and t.kind='rice_bridge' and t.state='online' and d.owner_id=${ctx.policySnapshot.subjectId}
+      and d.revoked_at is null and g.revoked_at is null
+      and d.last_seen_at between clock_timestamp()-interval '90 seconds' and clock_timestamp()
+    order by g.created_at desc,g.id limit 1`;
+  if (!target) fail('target_unavailable');
+  const side = (text: string | null) =>
+    text === null ? null : { text, checksum: hash(text) };
+  const changeset = ChangesetDocumentSchema.parse({
+    contractVersion: 1,
+    comparisonScope: 'changeset',
+    execution: {
+      targetId: target.target_id,
+      targetKind: 'rice_bridge',
+      deviceId: target.device_id,
+      grantId: target.grant_id,
+      grantVersion: target.runtime_generation,
+      scopeDigest: `sha256:${target.root_fingerprint}`,
+      workCopy: { id: target.grant_id, kind: 'in_place' },
+    },
+    files: proposal.files.map((f) => ({
+      path: f.path,
+      before: side(f.before),
+      after: side(f.after),
+    })),
+  });
+  const bytes = Buffer.from(JSON.stringify(changeset), 'utf8');
+  parseChangesetBytes(bytes);
+  return publishWorkbenchArtifact(
+    {
+      context: ctx,
+      sessionId: input.sessionId,
+      callId: input.callId,
+      fileName: input.fileName,
+      kind: 'changeset',
+      format: 'json',
+      mediaType: 'application/json',
+      bytes,
+      ...(input.parentObjectId ? { parentObjectId: input.parentObjectId } : {}),
+      ...(input.changeSummary ? { changeSummary: input.changeSummary } : {}),
+    },
+    storage,
+    db,
+  );
 }
 
 /** Existing export generator calls this opt-in publisher; bytes/versions retain the existing StoragePort lineage. */

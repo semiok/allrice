@@ -95,15 +95,23 @@ export function ArtifactWorkbench(props: Props) {
       props.onClose();
   }, [props.onClose]);
   useEffect(() => {
+    const element = panel.current;
+    const active = document.activeElement;
+    // A desktop → drawer resize may happen while editing inside the panel.
+    // Keep its external opener, not an input which disappears on close.
+    if (active instanceof HTMLElement && !element?.contains(active))
+      previousFocus.current = active;
     // The persistent desktop panel must never take the composer's focus.
     if (!props.narrow) return;
-    previousFocus.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    panel.current?.focus();
+    element?.focus();
     return () => {
-      if (previousFocus.current?.isConnected) previousFocus.current.focus();
+      // Respect an explicit focus destination chosen by the parent onClose.
+      if (
+        previousFocus.current?.isConnected &&
+        (document.activeElement === document.body ||
+          element?.contains(document.activeElement))
+      )
+        previousFocus.current.focus();
     };
   }, [props.narrow]);
   useEffect(() => {

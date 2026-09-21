@@ -4,9 +4,13 @@ import {
   createToolBrokerExportObject,
   registerToolBrokerExport,
   publishWorkbenchArtifact,
+  publishWorkbenchChangesetProposal,
   workbenchEnabled,
 } from '@allrice/database';
-import { DeliveryFormatSchema } from '@allrice/contracts';
+import {
+  ChangesetProposalSchema,
+  DeliveryFormatSchema,
+} from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import { generateDeliverable } from '../../deliverable-generator.js';
@@ -48,36 +52,66 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   }
   const bytes = generated.bytes;
   const storage = new LocalStorageAdapter(input.storageRoot);
+  const kind = args.artifactKind ?? 'document';
+  if (
+    kind === 'changeset' &&
+    (!workbenchEnabled() || !input.sessionId || format !== 'json')
+  )
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'Changeset 提案需要启用工作台、当前会话和 JSON 格式；不会直接修改文件。',
+      false,
+    );
   if (workbenchEnabled() && input.sessionId) {
-    const kind = args.artifactKind ?? 'document';
-    if (kind !== 'document' && kind !== 'plan')
+    if (kind !== 'document' && kind !== 'plan' && kind !== 'changeset')
       throw new HandlerError(
         'TOOL_INPUT_INVALID',
-        '此工具只创建文档或计划；文件修改提案使用专用 Changeset 入口。',
+        '此工具只创建文档、计划或 Changeset 提案，不能冒充命令回执。',
         false,
       );
-    const artifact = await publishWorkbenchArtifact(
-      {
-        context: input.context,
-        sessionId: input.sessionId,
-        callId: input.call.id,
-        kind,
-        fileName,
-        format,
-        bytes,
-        mediaType: generated.mediaType,
-        ...(typeof args.parentObjectId === 'string'
-          ? { parentObjectId: args.parentObjectId }
-          : {}),
-        ...(typeof args.changeSummary === 'string'
-          ? { changeSummary: args.changeSummary }
-          : {}),
-      },
-      storage,
-    );
+    const publication = {
+      context: input.context,
+      sessionId: input.sessionId,
+      callId: input.call.id,
+      fileName,
+      ...(typeof args.parentObjectId === 'string'
+        ? { parentObjectId: args.parentObjectId }
+        : {}),
+      ...(typeof args.changeSummary === 'string'
+        ? { changeSummary: args.changeSummary }
+        : {}),
+    };
+    const artifact =
+      kind === 'changeset'
+        ? await publishWorkbenchChangesetProposal(
+            {
+              ...publication,
+              proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
+            },
+            storage,
+          )
+        : await publishWorkbenchArtifact(
+            {
+              ...publication,
+              kind,
+              format,
+              bytes,
+              mediaType: generated.mediaType,
+            },
+            storage,
+          );
     return {
       modelContent: JSON.stringify({
         artifactId: artifact.id,
+        artifactKind: kind,
+        ...(kind === 'changeset'
+          ? {
+              executionStarted: false,
+              approvalRequired: true,
+              notice:
+                '文件修改提案已发布；请在右侧审查并请求应用，再批准精确动作。尚未修改本地文件。',
+            }
+          : {}),
         objectId: artifact.object.id,
         fileName,
         mediaType: artifact.object.mediaType,
@@ -89,7 +123,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         downloadUrl: `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(fileName)}`,
         versionsUrl: `/api/v1/files/${artifact.object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),
-      summary: `已生成${kind === 'plan' ? '待审查计划' : '交付文件'} ${fileName} · v${artifact.version.version}`,
+      summary: `已生成${kind === 'plan' ? '待审查计划' : kind === 'changeset' ? '待审查文件修改提案' : '交付文件'} ${fileName} · v${artifact.version.version}`,
       itemCount: 1,
     };
   }

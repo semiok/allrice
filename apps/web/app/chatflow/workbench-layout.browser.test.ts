@@ -101,7 +101,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       write: false,
       outdir: '/unused-met147',
       jsx: 'automatic',
-      define: { 'process.env.NODE_ENV': '"development"', 'process.env': '{}' },
+      define: {
+        'process.env.NODE_ENV': '"development"',
+        'process.env': '{}',
+      },
     });
     const js = built.outputFiles.find((f: { path: string }) =>
       f.path.endsWith('.js'),
@@ -201,10 +204,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       })),
       viewer: user,
       workspace,
+      omitSessionA: false,
+      deepLinkDenied: false,
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       contentError: false,
       text: report,
+      reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
       delay: null as null | Promise<void>,
@@ -242,7 +248,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             workspaceId: state.workspace,
             viewerId: state.viewer,
             canAdminister: false,
-            sessions: options.noSession ? [] : [session(A), session(B)],
+            sessions: options.noSession
+              ? []
+              : state.omitSessionA
+                ? [session(B)]
+                : [session(A), session(B)],
             sessionModels: [],
             employeeProfiles: [],
             employees: [
@@ -347,6 +357,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           );
         return answer({ artifact: a, feedback: [] });
       }
+      if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
+        return answer({ error: { message: 'Not accessible' } }, 403);
       if (path === `/api/v1/sessions/${A}` || path === `/api/v1/sessions/${B}`)
         return answer({
           history: {
@@ -359,7 +371,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     runId: run,
                     status: state.messageStatus,
                     content: {
-                      text: state.messageStatus === 'pending' ? '' : report,
+                      text:
+                        state.messageStatus === 'pending' ? '' : state.reply,
                     },
                     createdAt: now,
                   },
@@ -417,45 +430,89 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     };
   }
 
-  it('UX01-B keeps all entries visible, distinguishes release-off and preserves drafts without execution', async () => {
-    const f = await fixture();
+  it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
+    const f = await fixture({ artifacts: true });
     try {
-      const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
-      await composer.fill('保留我的原始问题');
-      await f.page
-        .getByRole('button', { name: '能力与环境', exact: true })
-        .click();
-      const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
-      await dialog
-        .getByRole('button', { name: '准备报告与文件交付任务' })
-        .waitFor();
-      expect(await dialog.locator('[data-capability]').count()).toBe(12);
-      expect(
-        await dialog
-          .locator('[data-capability="assistants"]')
-          .getAttribute('data-state'),
-      ).toBe('not_released');
-      expect(
-        await dialog
-          .locator('[data-capability="boost"]')
-          .getByRole('button', { name: /准备/ })
-          .count(),
-      ).toBe(0);
-      expect(await dialog.getByRole('link', { name: /配置/ }).count()).toBe(0);
-      await f.page.screenshot({ path: '/tmp/met147-capabilities-desktop.png' });
-      await dialog
-        .getByRole('button', { name: '准备报告与文件交付任务' })
-        .click();
-      expect(await composer.inputValue()).toContain('保留我的原始问题');
-      expect(await composer.inputValue()).toContain('workspace.export.create');
+      const path = `/api/v1/files/${artifact(10).object.id}/download`;
+      f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
+      await f.page.reload();
+      const link = f.page.getByRole('link', { name: '下载报告', exact: true });
       await expect
-        .poll(() => composer.evaluate((e) => e === document.activeElement))
-        .toBe(true);
-      expect(f.writes).toEqual([]);
+        .poll(() => link.getAttribute('href'))
+        .toBe(`${path}?name=report-10.md`);
+      expect(await link.getAttribute('target')).toBeNull();
+      expect(
+        await f.page
+          .getByRole('link', { name: '原始来源', exact: true })
+          .getAttribute('href'),
+      ).toBe('https://example.org/source');
+      // Even a known file in the Session cannot resolve another Run's link.
+      f.state.items = [
+        {
+          ...artifact(10),
+          provenance: { ...artifact(10).provenance, runId: id(90) },
+        },
+      ];
+      await f.page.reload();
+      await expect
+        .poll(() => link.getAttribute('href'))
+        .toBe(`https://allrice.example${path}?name=wrong`);
     } finally {
       await f.close();
     }
   });
+
+  it(
+    'UX01-B keeps all entries visible, distinguishes release-off and preserves drafts without execution',
+    { timeout: 20_000 },
+    async () => {
+      const f = await fixture();
+      try {
+        const composer = f.page.getByRole('textbox', {
+          name: '给 Rice 的消息',
+        });
+        await composer.fill('保留我的原始问题');
+        await f.page
+          .getByRole('button', { name: '能力与环境', exact: true })
+          .click();
+        const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
+        await dialog
+          .getByRole('button', { name: '准备报告与文件交付任务' })
+          .waitFor();
+        expect(await dialog.locator('[data-capability]').count()).toBe(12);
+        expect(
+          await dialog
+            .locator('[data-capability="assistants"]')
+            .getAttribute('data-state'),
+        ).toBe('not_released');
+        expect(
+          await dialog
+            .locator('[data-capability="boost"]')
+            .getByRole('button', { name: /准备/ })
+            .count(),
+        ).toBe(0);
+        expect(await dialog.getByRole('link', { name: /配置/ }).count()).toBe(
+          0,
+        );
+        await f.page.screenshot({
+          path: '/tmp/met147-capabilities-desktop.png',
+        });
+        await dialog
+          .getByRole('button', { name: '准备报告与文件交付任务' })
+          .click();
+        expect(await composer.inputValue()).toContain('保留我的原始问题');
+        expect(await composer.inputValue()).toContain(
+          'workspace.export.create',
+        );
+        await expect
+          .poll(() => composer.evaluate((e) => e === document.activeElement))
+          .toBe(true);
+        expect(f.writes).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('UX01-B bridges missing configuration to the real pairing dialog and refreshes on return', async () => {
     const f = await fixture({ width: 390 });
@@ -487,7 +544,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await dialog.evaluate((e) => e.scrollWidth <= e.clientWidth + 1),
       ).toBe(true);
-      await f.page.screenshot({ path: '/tmp/met147-capabilities-mobile.png' });
+      await f.page.screenshot({
+        path: '/tmp/met147-capabilities-mobile.png',
+      });
     } finally {
       await f.close();
     }
@@ -612,6 +671,63 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it(
+    'restores the selected Session after reload and removes stale links for new work',
+    { timeout: 20_000 },
+    async () => {
+      const f = await fixture({ artifacts: true });
+      try {
+        await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+        await expect
+          .poll(() => new URL(f.page.url()).searchParams.get('session'))
+          .toBe(B);
+        await f.page.reload();
+        await f.page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
+        await expect
+          .poll(() => f.page.locator('h1').first().textContent())
+          .toBe('研究任务 B');
+        expect(
+          await f.panel.getByRole('heading', { name: /COIN/ }).count(),
+        ).toBe(0);
+        await f.page.getByRole('button', { name: /^研究任务 A/ }).click();
+        await f.page.reload();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        expect(new URL(f.page.url()).searchParams.has('session')).toBe(false);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'resolves a Session outside the sidebar page only through scoped history (denied=%s)',
+    async (denied) => {
+      const f = await fixture({ artifacts: true });
+      try {
+        f.state.omitSessionA = true;
+        f.state.deepLinkDenied = denied;
+        await f.page.reload();
+        await expect
+          .poll(() => f.page.locator('h1').first().textContent())
+          .toBe(denied ? '研究任务 B' : '研究任务 A');
+        expect(new URL(f.page.url()).searchParams.get('session')).toBe(
+          denied ? B : A,
+        );
+        if (denied)
+          expect(
+            await f.panel.getByRole('heading', { name: /COIN/ }).count(),
+          ).toBe(0);
+        else await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  it(
     'automatically presents a newly completed SSE delivery, but never reopens a panel the user closed',
     { timeout: 20_000 },
     async () => {
@@ -662,7 +778,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ).gridTemplateColumns.split(' ').length,
         ),
       ).toBe(3);
-      const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      const composer = f.page.getByRole('textbox', {
+        name: '给 Rice 的消息',
+      });
       await composer.fill('继续核对来源');
       await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
       f.state.items.unshift(artifact(11));

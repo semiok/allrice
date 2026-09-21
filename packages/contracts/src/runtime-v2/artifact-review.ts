@@ -15,6 +15,23 @@ export const WorkbenchArtifactKindSchema = z.enum([
   'file',
 ]);
 const relativePath = z.string().max(1024).refine(isRuntimeRelativePath);
+/** Model-authored text only. Execution identity and checksums are server-owned. */
+export const ChangesetProposalSchema = z
+  .object({
+    files: z
+      .array(
+        z
+          .object({
+            path: relativePath,
+            before: z.string().max(200_000).nullable(),
+            after: z.string().max(200_000).nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(32),
+  })
+  .strict();
 export const ChangesetTextSchema = z
   .object({ text: z.string().max(200_000), checksum: ChecksumSchema })
   .strict();

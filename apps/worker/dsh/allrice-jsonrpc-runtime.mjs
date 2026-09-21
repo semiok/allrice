@@ -34,6 +34,7 @@ import {
 import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
+import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
@@ -47,6 +48,7 @@ const brokerNativeTools = [
   ...cloudNativeTools,
   ...skillNativeTools,
   ...reconciliationNativeTools,
+  ...workbenchNativeTools,
   {
     canonicalName: 'browser.run',
     wireName: 'browser_run',
@@ -476,55 +478,6 @@ const brokerNativeTools = [
       interval: {
         type: 'string',
         description: 'Interval such as 1d, 1wk, or 1mo.',
-      },
-    },
-  },
-  {
-    canonicalName: 'workspace.export.create',
-    wireName: 'workspace_export_create',
-    description:
-      'Create a tenant-private downloadable Markdown, text, HTML, JSON, Word, Excel, PowerPoint, or PDF deliverable in AllRice managed storage when the user explicitly requests a file.',
-    presentation: 'tool',
-    parameters: {
-      artifactKind: {
-        type: 'string',
-        enum: ['document', 'plan'],
-        description:
-          'Optional document or plan artifact. Plan acceptance never authorizes file or external actions.',
-      },
-      fileName: {
-        type: 'string',
-        required: true,
-        description: 'Human-readable file name.',
-      },
-      format: {
-        type: 'string',
-        required: true,
-        enum: [
-          'markdown',
-          'text',
-          'html',
-          'json',
-          'docx',
-          'xlsx',
-          'pptx',
-          'pdf',
-        ],
-      },
-      content: {
-        type: 'string',
-        required: true,
-        description: 'Complete final file content.',
-      },
-      parentObjectId: {
-        type: 'string',
-        description:
-          'Existing tenant-scoped deliverable object UUID when this file is a revision. Omit when creating the first version.',
-      },
-      changeSummary: {
-        type: 'string',
-        description:
-          'Short human-readable summary of what changed from the parent version.',
       },
     },
   },

@@ -84,6 +84,40 @@ describe('AllRice worker tool manifest contract', () => {
     }
   });
 
+  it('exposes Changeset proposals to the native model with the Broker enums and no execution authority', async () => {
+    const { workbenchNativeTools } = await import(
+      pathToFileURL(
+        resolve(
+          import.meta.dirname,
+          '../dsh/allrice-workbench-native-tools.mjs',
+        ),
+      ).href
+    );
+    expect(workbenchNativeTools).toHaveLength(1);
+    const native = workbenchNativeTools[0];
+    const broker = riceToolDefinitions.find(
+      (tool) => tool.name === native.canonicalName,
+    )!;
+    expect(native.wireName).toBe('workspace_export_create');
+    const { properties } = broker.inputSchema as {
+      properties: Record<string, { enum?: string[] }>;
+    };
+    for (const field of ['artifactKind', 'format'])
+      expect(native.parameters[field].enum).toEqual(properties[field]!.enum);
+    expect(native.parameters.artifactKind.enum).toContain('changeset');
+    expect(native.parameters.artifactKind.description).toContain('format=json');
+    expect(native.parameters.artifactKind.description).toContain('"before"');
+    expect(native.parameters.artifactKind.description).toContain('"after"');
+    expect(native.parameters.artifactKind.description).toContain(
+      'Publishing never executes changes',
+    );
+    expect(native.parameters.artifactKind.description).toContain(
+      'approve the exact action',
+    );
+    for (const field of ['deviceId', 'grantId', 'approvalId', 'execution'])
+      expect(native.parameters).not.toHaveProperty(field);
+  });
+
   it('derives the complete DSH native boundary and wire map', () => {
     const expectedNativeTools = allRiceToolManifest.filter(
       (tool) => tool.transport !== 'envelope',
