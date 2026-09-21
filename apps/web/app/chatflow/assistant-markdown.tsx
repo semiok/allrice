@@ -1,12 +1,16 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { WorkbenchArtifact } from '@allrice/contracts';
+import { artifactDownloadLink } from '../../lib/chatflow/artifact-download-link';
 
 export function AssistantMarkdown({
   text,
   allowRemoteImages = true,
+  artifacts = [],
 }: {
   text: string;
   allowRemoteImages?: boolean;
+  artifacts?: readonly WorkbenchArtifact[];
 }) {
   return (
     <ReactMarkdown
@@ -19,11 +23,12 @@ export function AssistantMarkdown({
             }
           : {}),
         a: ({ href, children, ...props }) => {
-          const external = /^https?:\/\//i.test(href ?? '');
+          const resolved = artifactDownloadLink(href, artifacts);
+          const external = /^https?:\/\//i.test(resolved ?? '');
           return (
             <a
               {...props}
-              href={href}
+              href={resolved}
               {...(external
                 ? { rel: 'noopener noreferrer', target: '_blank' }
                 : {})}

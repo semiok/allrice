@@ -280,6 +280,25 @@ try {
       checksum: artifact.object.checksum,
       bytes: bytes.length,
     };
+    // Check the conversational entry too, not only the workbench link. A model
+    // inventing allrice.example must not make an otherwise real file unusable.
+    const chatLinks = page.locator(
+      `[data-chat-scroll] a[href*="/api/v1/files/${artifact.object.id}/download"]`,
+    );
+    assert.ok(
+      (await chatLinks.count()) > 0,
+      'Report summary needs its file entry',
+    );
+    for (const link of await chatLinks.all()) {
+      const target = new URL(await link.getAttribute('href'), base);
+      assert.equal(
+        target.origin,
+        base.origin,
+        'Model-invented download origin',
+      );
+      assert.equal(target.searchParams.get('name'), artifact.version.fileName);
+    }
+    check('chat download entry resolves to the authenticated current-Run file');
     check(
       'real completed report automatically rendered and downloaded with exact SHA',
     );
