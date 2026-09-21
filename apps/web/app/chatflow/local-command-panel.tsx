@@ -10,6 +10,7 @@ import {
 } from '@allrice/contracts';
 import styles from './local-command-panel.module.css';
 import { LocalServiceCard, type LocalServiceView } from './local-service-card';
+import { CommandCandidatePreview } from './command-candidate-preview';
 
 interface Operation {
   snapshot: RuntimeOperationSnapshot;
@@ -18,6 +19,7 @@ interface Operation {
   output: { sequence: number; stream: 'stdout' | 'stderr'; content: string }[];
   evidence: { summary: string; output?: unknown } | null;
   service?: LocalServiceView | null;
+  candidateState?: 'current' | 'stale' | 'unavailable' | null;
 }
 const statusLabels: Record<string, string> = {
   planned: '正在准备',
@@ -98,6 +100,12 @@ export function LocalCommandPanel({
   ) {
     const request = op.approval?.request;
     if (busy || (decision !== 'cancel' && !request)) return;
+    if (
+      decision === 'approved' &&
+      op.command.candidate &&
+      op.candidateState !== 'current'
+    )
+      return;
     const id = op.snapshot.binding.attempt.operationId;
     setBusy(id);
     setError('');
@@ -235,6 +243,13 @@ export function LocalCommandPanel({
                 </ul>
               </section>
             )}
+            {op.command.candidate && (
+              <CommandCandidatePreview
+                key={op.command.candidate.checksum}
+                candidate={op.command.candidate}
+                state={op.candidateState}
+              />
+            )}
             <pre aria-label="待执行命令">
               {op.command.executable}
               {op.command.args.map((arg) => ` ${JSON.stringify(arg)}`).join('')}
@@ -264,7 +279,10 @@ export function LocalCommandPanel({
             {pending && (
               <div className={styles.actions}>
                 <button
-                  disabled={busy !== null}
+                  disabled={
+                    busy !== null ||
+                    (!!op.command.candidate && op.candidateState !== 'current')
+                  }
                   type="button"
                   onClick={() => void act(op, 'approved')}
                 >
@@ -301,6 +319,14 @@ export function LocalCommandPanel({
                 </button>
               )}
             {op.evidence && <p>{op.evidence.summary}</p>}
+            {result.success && result.data.candidate && (
+              <p>
+                已运行的候选版本：
+                <code>{result.data.candidate.artifactId}</code> · 输入摘要{' '}
+                <code>{result.data.candidate.inputDigest}</code>
+                。此回执只说明指定命令的结果，不代表测试覆盖充分或已完成代码审查。
+              </p>
+            )}
             {result.success && result.data.dependencies && (
               <p role="status">
                 依赖准备：

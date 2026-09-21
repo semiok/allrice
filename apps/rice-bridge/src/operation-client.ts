@@ -155,6 +155,7 @@ export class RuntimeBridgeOperationClient {
               supportsLocalMcp: await this.input.runner.localMcpEnabled(),
               supportsProjectDiagnostics: true,
               supportsNpmDependencies: true,
+              supportsChangesetCandidate: true,
               supportsBackgroundServices:
                 process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
                 localProcessManager({
@@ -672,6 +673,7 @@ export class RuntimeBridgeOperationClient {
           'UNSAFE_INPUT_FILE',
           'SENSITIVE_INPUT',
           'INPUT_LIMIT',
+          'CANDIDATE_CONTENT_CHANGED',
           'EXECUTION_REVOKED',
           'DEPENDENCY_SOURCE_DENIED',
           'DEPENDENCY_DOWNLOAD_REJECTED',

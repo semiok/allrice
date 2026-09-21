@@ -13,9 +13,16 @@ import {
   type RequestContext,
   type ExecutionContext,
   type RuntimeOperationSnapshot,
+  type StoragePort,
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import {
+  getWorkbenchArtifact,
+  readArtifactBytes,
+  parseChangesetBytes,
+} from './artifact-review.ts';
+import { localCommandCandidateEvidence } from './local-command-candidate.ts';
 import type { AssistantOperationOrigin } from './assistant-operation-authority.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { cancelRuntimeAgentOperationsTransaction } from './runtime-ledger/ledger.ts';
@@ -55,6 +62,7 @@ export async function createLocalCommandOperation(
     /** Internal Worker provenance only; deliberately absent from the public
      * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
     assistant?: AssistantOperationOrigin;
+    storage?: StoragePort;
   },
   database: Database = getDatabase(),
 ) {
@@ -63,7 +71,7 @@ export async function createLocalCommandOperation(
   const args = RuntimeLocalCommandToolInputSchema.parse(input.arguments);
   if (input.assistant) {
     UuidSchema.parse(input.assistant.runId);
-    if (args.background)
+    if (args.background || args.candidate)
       throw new RuntimePolicyError('assistant_authority_changed');
   }
   if (args.background && !localServiceFeatureEnabled())
@@ -95,6 +103,36 @@ export async function createLocalCommandOperation(
       and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!row || row.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+  const { candidate: ref, ...commandArgs } = args;
+  let candidate:
+    { artifactId: string; checksum: string; content: string } | undefined;
+  let candidateTargetId: string | null = null;
+  if (ref) {
+    if (!input.storage || process.env.ALLRICE_WORKBENCH_ENABLED !== '1')
+      throw new RuntimePolicyError('runtime_policy_disabled');
+    const artifact = await getWorkbenchArtifact(
+      {
+        actor: { type: 'user', id: owner },
+        organizationId: ctx.organizationId,
+        workspaceId: ctx.workspaceId,
+      },
+      row.session_id,
+      ref.artifactId,
+      database,
+    );
+    if (
+      artifact.kind !== 'changeset' ||
+      artifact.stale ||
+      !artifact.object.immutable ||
+      !artifact.execution ||
+      artifact.object.checksum !== ref.checksum
+    )
+      throw new RuntimePolicyError('bridge_authority_changed');
+    const bytes = await readArtifactBytes(input.storage, artifact.object);
+    const document = parseChangesetBytes(bytes);
+    candidateTargetId = document.execution.targetId;
+    candidate = { ...ref, content: bytes.toString('utf8') };
+  }
   const [target] = await database<
     {
       device: unknown;
@@ -114,6 +152,7 @@ export async function createLocalCommandOperation(
     join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.state='online'
     join lateral (select * from allrice_bridge_folder_grants where device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null order by created_at desc limit 1) g on true
     where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${owner} and d.revoked_at is null
+      and (${candidateTargetId}::uuid is null or t.id=${candidateTargetId}::uuid)
       and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds' and p.reported_at>clock_timestamp()-interval '90 seconds'
     order by d.last_seen_at desc limit 1`;
   if (!target) throw new RuntimePolicyError('local_runner_unavailable');
@@ -130,15 +169,23 @@ export async function createLocalCommandOperation(
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args.background && !profile.features?.includes('background_services'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (candidate && !profile.features?.includes('changeset_candidate'))
+    throw new RuntimePolicyError('local_runner_upgrade_required');
   const payload = RuntimeLocalCommandSchema.parse({
     capability: 'local.process.execute',
     arguments: {
-      ...args,
+      ...commandArgs,
+      ...(candidate ? { candidate } : {}),
       imageDigest: profile.imageDigest,
       isolation: profile.backend,
       network: 'none',
     },
   });
+  localCommandCandidateEvidence(payload);
+  // Leave room for the operation snapshot inside the existing 512 KB ledger
+  // envelope; do not enlarge transport limits for a code proposal.
+  if (candidate && Buffer.byteLength(JSON.stringify(payload)) > 480_000)
+    throw new RuntimePolicyError('candidate_payload_too_large');
   const key = input.assistant
     ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
     : `local-command:${ctx.runId}:${input.callId}`;
@@ -294,9 +341,27 @@ export async function listLocalCommandOperations(
         { evidence: unknown }[]
       >`select payload->'evidence' as evidence from allrice_runtime_operation_receipts
       where operation_id=${row.id} and disposition='applied' and payload->'signal'->>'type' in ('operation.outcome','operation.stopped') order by received_at desc limit 1`;
+      const command = RuntimeLocalCommandSchema.parse(
+        row.bridge_payload,
+      ).arguments;
+      const [version] = command.candidate
+        ? await database<{ current: boolean }[]>`
+        select not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version) as current
+        from allrice_deliverable_versions v join allrice_storage_objects o on o.id=v.object_id
+        where v.id=${command.candidate.artifactId} and v.organization_id=${context.organizationId}
+          and v.workspace_id=${context.workspaceId!} and v.owner_id=${context.actor.id}
+          and o.deleted_at is null and o.state='ready' and (o.retention_until is null or o.retention_until>clock_timestamp())`
+        : [];
       return {
         snapshot: RuntimeOperationSnapshotSchema.parse(row.snapshot),
-        command: RuntimeLocalCommandSchema.parse(row.bridge_payload).arguments,
+        command,
+        candidateState: command.candidate
+          ? version
+            ? version.current
+              ? 'current'
+              : 'stale'
+            : 'unavailable'
+          : null,
         approval: row.runtime_request
           ? {
               request: RuntimeActionApprovalRequestSchema.parse(

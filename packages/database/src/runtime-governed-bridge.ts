@@ -24,6 +24,7 @@ import {
 import { assertLocalMcpAuthority } from './local-mcp-connections.ts';
 import { localMcpCommandBinding } from './local-mcp-execution.ts';
 import { readArtifact } from './artifact-review.ts';
+import { assertLocalCommandCandidate } from './local-command-candidate.ts';
 import {
   localCommandBinding,
   localCommandEnabled,
@@ -319,6 +320,9 @@ export function createGovernedBridgePolicyOptions(
             !profile.data.features?.includes('npm_dependencies')) ||
           (command?.arguments.diagnostics &&
             !profile.data.features?.includes('project_diagnostics')) ||
+          (command?.arguments.candidate &&
+            (!profile.data.features?.includes('changeset_candidate') ||
+              !!(persisted?.agentInstanceId ?? initial?.assistant?.runId))) ||
           !isLocalCommandProfileForPlatform(
             currentDevice.platform,
             profile.data,
@@ -505,6 +509,14 @@ export function createGovernedBridgePolicyOptions(
         )
           throw new RuntimePolicyError('bridge_authority_changed');
         generation = runtime.thread_generation;
+        if (command?.arguments.candidate)
+          await assertLocalCommandCandidate(
+            tx,
+            context,
+            employee.session_id,
+            command,
+            binding.execution,
+          );
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
       const job =

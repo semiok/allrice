@@ -42,6 +42,7 @@ import {
   type RuntimeLedgerTransaction,
 } from './types.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
+import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -811,6 +812,7 @@ export function createRuntimeOperationLedger(options: {
       supportsLocalMcp?: boolean;
       supportsProjectDiagnostics?: boolean;
       supportsNpmDependencies?: boolean;
+      supportsChangesetCandidate?: boolean;
       supportsBackgroundServices?: boolean;
       supportsChangeset?: boolean;
       recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
@@ -827,6 +829,7 @@ export function createRuntimeOperationLedger(options: {
             or (${!!input.recoverLeaseToken} and snapshot->>'status'='dispatched' and lease_expires_at>clock_timestamp()))
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
+          and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
           and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
@@ -1215,6 +1218,47 @@ export function createRuntimeOperationLedger(options: {
         )
           disposition = 'stale';
         else {
+          if (
+            row.bridge_payload !== null &&
+            ['operation.outcome', 'operation.stopped'].includes(
+              content.signal.type,
+            )
+          ) {
+            const payload = RuntimeBridgePayloadSchema.parse(
+              row.bridge_payload,
+            );
+            if (
+              payload.capability === 'local.process.execute' &&
+              payload.arguments.candidate
+            ) {
+              const evidence = content.evidence as { output?: unknown } | null;
+              const result = RuntimeLocalCommandResultSchema.safeParse(
+                evidence?.output,
+              );
+              const success =
+                content.signal.type === 'operation.outcome' &&
+                content.signal.result.status === 'succeeded';
+              // A pre-execution rejection may have only an error code, never
+              // a fabricated process receipt. It cannot establish verification.
+              if (
+                (content.signal.type === 'operation.outcome' &&
+                  content.signal.result.effects !== 'none') ||
+                (content.signal.type === 'operation.stopped' &&
+                  content.signal.effects !== 'none') ||
+                (success && !result.success) ||
+                (result.success &&
+                  (result.data.imageDigest !== payload.arguments.imageDigest ||
+                    !runtimeContractEqual(
+                      result.data.candidate,
+                      localCommandCandidateEvidence(payload),
+                    ) ||
+                    (success &&
+                      (result.data.reason !== 'exited' ||
+                        result.data.exitCode !== 0))))
+              )
+                throw new RuntimeLedgerError('invalid_state');
+            }
+          }
           // A finite service may be stopped locally (Bridge shutdown/lease
           // loss) before the server saw a stop request. Preserve the targeted
           // intent and then its authenticated actual stop fact; never cancel

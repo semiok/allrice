@@ -42,6 +42,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsLocalMcp?: boolean;
     supportsProjectDiagnostics?: boolean;
     supportsNpmDependencies?: boolean;
+    supportsChangesetCandidate?: boolean;
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
     recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
@@ -174,6 +175,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsChangeset',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
+                'supportsChangesetCandidate',
                 'supportsBackgroundServices',
                 'supportsClaimRecovery',
               ].includes(key),
@@ -188,6 +190,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
             typeof selection.supportsNpmDependencies !== 'boolean') ||
+          ('supportsChangesetCandidate' in selection &&
+            typeof selection.supportsChangesetCandidate !== 'boolean') ||
           ('supportsBackgroundServices' in selection &&
             typeof selection.supportsBackgroundServices !== 'boolean') ||
           ('supportsClaimRecovery' in selection &&
@@ -203,6 +207,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
           supportsNpmDependencies: selection.supportsNpmDependencies === true,
+          supportsChangesetCandidate:
+            selection.supportsChangesetCandidate === true,
           supportsBackgroundServices:
             selection.supportsBackgroundServices === true,
           supportsChangeset: selection.supportsChangeset === true,
