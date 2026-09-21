@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import {
   localCommandToolchainImageV1,
+  workspaceCapabilityIds,
   type RequestContext,
   type Role,
 } from '@allrice/contracts';
@@ -232,7 +233,12 @@ suite('workspace MCP page scope — actual isolated PostgreSQL', () => {
       getWorkspaceReadiness(f.context, f.secondWorkspaceId, null);
     const value = await read();
     expect(value.canAdminister).toBe(false);
-    expect(value.capabilities).toHaveLength(12);
+    expect(value.capabilities.map((capability) => capability.id)).toEqual([
+      ...workspaceCapabilityIds,
+    ]);
+    expect(
+      value.capabilities.find((capability) => capability.id === 'development'),
+    ).toMatchObject({ state: 'not_released' });
     expect(value.viewerId).toBe(f.userId);
     expect(JSON.stringify(value)).not.toMatch(
       /credential|envelope|token_hash|root_fingerprint|endpoint/,

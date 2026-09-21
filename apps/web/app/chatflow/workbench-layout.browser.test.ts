@@ -514,7 +514,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog
           .getByRole('button', { name: '准备报告与文件交付任务' })
           .waitFor();
-        expect(await dialog.locator('[data-capability]').count()).toBe(12);
+        expect(
+          await dialog
+            .locator('[data-capability]')
+            .evaluateAll((cards) =>
+              cards.map((card) => card.getAttribute('data-capability')),
+            ),
+        ).toEqual([...workspaceCapabilityIds]);
+        expect(
+          await dialog
+            .locator('[data-capability="development"]')
+            .getAttribute('data-state'),
+        ).toBe('not_released');
         expect(
           await dialog
             .locator('[data-capability="assistants"]')
