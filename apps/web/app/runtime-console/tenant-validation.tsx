@@ -47,7 +47,9 @@ export function TenantValidation(
       signal: AbortSignal,
     ): Promise<T> => {
       const response = await fetch(url, { cache: 'no-store', signal }),
-        body = await response.json();
+        body = await response.json().catch(() => {
+          throw Error('验收接口未返回有效数据，请检查服务版本或稍后刷新。');
+        });
       if (!response.ok)
         throw Error(
           body.error?.message ??

@@ -147,11 +147,23 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
                     ? await tenantValidationHttp(request, parts[5]!)
                     : parts[6] === 'policy'
                       ? await tenantPolicyHttp(request, parts[5]!)
-                      : await tenantAdministrationHttp(
-                          request,
-                          parts[5],
-                          parts[7],
-                        );
+                      : parts[4] === 'tenants' &&
+                          (!parts[6] ||
+                            (parts[6] === 'members' &&
+                              parts[7] &&
+                              parts.length === 8))
+                        ? await tenantAdministrationHttp(
+                            request,
+                            parts[5],
+                            parts[7],
+                          )
+                        : new Response(
+                            '<!DOCTYPE html><title>Not Found</title>',
+                            {
+                              status: 404,
+                              headers: { 'Content-Type': 'text/html' },
+                            },
+                          );
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -262,6 +274,16 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(requests.slice(start).every((r) => r.startsWith('GET '))).toBe(
         true,
       );
+      expect(requests.slice(start).some((r) => r.endsWith('/members'))).toBe(
+        false,
+      );
+      expect(
+        (
+          await context.request.get(
+            `${origin}/api/v1/admin/tenants/${a.target.organizationId}/members?workspaceId=${a.target.workspaceId}`,
+          )
+        ).status(),
+      ).toBe(404);
       await page.getByRole('link', { name: '调整内部额度' }).click();
       await page.getByLabel('月 Token 上限', { exact: true }).waitFor();
       expect(

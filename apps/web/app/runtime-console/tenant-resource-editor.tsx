@@ -32,7 +32,9 @@ export type ManagedConnectorProps = {
   onBusy: (busy: boolean) => void;
 };
 async function json<T>(response: Response): Promise<T> {
-  const body = await response.json();
+  const body = await response.json().catch(() => {
+    throw Error('管理接口未返回有效数据，请检查服务版本或稍后刷新。');
+  });
   if (!response.ok)
     throw Error(
       body.error?.message ??
@@ -68,7 +70,7 @@ export function TenantResourceEditor(
       try {
         const data = await json<AdminTenantMembers>(
           await fetch(
-            `/api/v1/admin/tenants/${organizationId}/members?workspaceId=${workspaceId}${after ? `&after=${after}` : ''}`,
+            `/api/v1/admin/tenants/${organizationId}?workspaceId=${workspaceId}${after ? `&after=${after}` : ''}`,
             { cache: 'no-store', signal: c.signal },
           ),
         );
