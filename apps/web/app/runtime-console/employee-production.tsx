@@ -14,6 +14,7 @@ import {
   employeeReasoningSettings,
   switchEmployeeModelProvider,
   employeeToolCatalog,
+  SkillCapabilitySchema,
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
@@ -1106,6 +1107,40 @@ export function EmployeeProduction() {
           权限交集和审计。这里不会开放 Shell、删除或 Git
           写操作，也不会把模型密钥下发给租户或 Bridge。
         </p>
+        <fieldset className={styles.fieldWide} disabled={busy}>
+          <legend>员工禁止能力</legend>
+          <p>
+            勾选表示禁止，优先于工具清单。解除禁止只修改草稿，需重新试用和发布；
+            不会自动授予连接器、设备、租户或单次操作权限。
+          </p>
+          {SkillCapabilitySchema.options.map((capability) => (
+            <label className={styles.check} key={capability}>
+              <input
+                type="checkbox"
+                aria-label={`禁止 ${capability}`}
+                checked={draft.securityPolicy.deniedCapabilities.includes(
+                  capability,
+                )}
+                onChange={(event) =>
+                  update(
+                    ['securityPolicy', 'deniedCapabilities'],
+                    event.target.checked
+                      ? [...draft.securityPolicy.deniedCapabilities, capability]
+                      : draft.securityPolicy.deniedCapabilities.filter(
+                          (value) => value !== capability,
+                        ),
+                  )
+                }
+              />
+              <span>{capability}</span>
+            </label>
+          ))}
+          <p>
+            MCP 工具使用
+            secret:use。解除这项禁止仅允许受控连接器使用已授权凭证，
+            不允许模型读取密钥，也不改变模型订阅或 API 配置。
+          </p>
+        </fieldset>
       </div>
     );
   } else if (tab === 'debug') {

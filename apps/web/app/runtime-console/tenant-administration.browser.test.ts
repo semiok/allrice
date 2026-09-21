@@ -608,6 +608,99 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   });
+  it('requires an explicit draft-only safety change for a denied MCP capability, never silently lifting it when selecting the tool', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await fixture.db`update allrice_workspaces set name='MCP safety fixture workspace' where id=${f.workspaceId}`;
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: {
+        ...f.definition,
+        name: 'MET151 MCP safety fixture',
+        securityPolicy: {
+          ...f.definition.securityPolicy,
+          deniedCapabilities: ['secret:use'],
+        },
+      },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=employees&workspaceId=${f.workspaceId}`,
+      );
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 MCP safety fixture' })
+        .click();
+      const directory = async () =>
+        (
+          await (
+            await context.request.get(
+              `${origin}/api/v1/admin/platform-employees`,
+            )
+          ).json()
+        ).employees.find(
+          (employee: { id: string }) => employee.id === f.employeeId,
+        );
+      const original = await directory();
+      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
+      await page.getByRole('button', { name: '安全', exact: true }).click();
+      expect(
+        await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
+      ).toBe(true);
+      const save = async () => {
+        const response = page.waitForResponse(
+          (r) =>
+            r.url() ===
+              `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+            r.request().method() === 'PUT',
+        );
+        await page
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        const result = await response;
+        expect(result.status()).toBe(200);
+        await expect
+          .poll(() =>
+            page
+              .getByRole('button', { name: '保存草稿', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+        return result.json();
+      };
+      const denied = await save();
+      expect(denied.validation.valid).toBe(false);
+      expect(denied.validation.errors.join(' ')).toContain('secret:use');
+      await page.getByLabel('禁止 secret:use', { exact: true }).uncheck();
+      const permitted = await save();
+      expect(permitted.validation.valid).toBe(true);
+      const current = await directory();
+      expect(
+        current.currentDraft.definition.securityPolicy.deniedCapabilities,
+      ).toEqual([]);
+      expect(current.currentPublished).toEqual(original.currentPublished);
+      expect(current.assignedWorkspaceIds).toEqual(
+        original.assignedWorkspaceIds,
+      );
+      await page.reload();
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 MCP safety fixture' })
+        .click();
+      await page.getByRole('button', { name: '安全', exact: true }).click();
+      expect(
+        await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
+      ).toBe(false);
+      await page.getByLabel('禁止 secret:use', { exact: true }).check();
+      expect((await save()).validation.valid).toBe(false);
+      expect(
+        (await directory()).currentDraft.definition.securityPolicy
+          .deniedCapabilities,
+      ).toEqual(['secret:use']);
+    } finally {
+      await context.close();
+    }
+  });
   it('reads real Skills and canonical tools, reviews an exact scope, rejects changed policy then publishes after fresh confirmation', async () => {
     const f = await createEmployeeAdministrationFixture(fixture.db);
     await savePlatformEmployeeDraft(f.employeeId, {
@@ -680,7 +773,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       // Choosing an employee deliberately clears publish scope: make it explicit again.
       const workspaceLabel = page
         .locator('label')
-        .filter({ hasText: 'Synthetic publication' })
+        .filter({
+          has: page
+            .locator('strong')
+            .filter({ hasText: /^Synthetic publication$/ }),
+        })
         .filter({ has: page.locator('input[type="checkbox"]') });
       await workspaceLabel.getByRole('checkbox').check();
       expect(
