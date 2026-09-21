@@ -1,5 +1,5 @@
 // Isolated Chromium acceptance entry, not a Next route or production login.
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArtifactWorkbench,
@@ -24,7 +24,10 @@ function Fixture() {
     input.workspaceId,
     input.tenantHeaders,
   );
-  const w = useArtifactWorkbench({ ...input, enabled: true }),
+  const [open, setOpen] = useState(false);
+  const onOpen = useCallback(() => setOpen(true), []);
+  const onClose = useCallback(() => setOpen(false), []);
+  const w = useArtifactWorkbench({ ...input, enabled: true, onOpen, onClose }),
     [narrow, setNarrow] = useState(false);
   useEffect(() => {
     const m = matchMedia('(max-width:1100px)');
@@ -38,7 +41,7 @@ function Fixture() {
       style={{
         height: '100dvh',
         display: 'grid',
-        gridTemplateColumns: w.open && !narrow ? 'minmax(0,1fr) 650px' : '1fr',
+        gridTemplateColumns: open && !narrow ? 'minmax(0,1fr) 650px' : '1fr',
         overflow: 'hidden',
       }}
     >
@@ -53,7 +56,7 @@ function Fixture() {
         <button
           type="button"
           onClick={() => {
-            if (!w.open) w.show();
+            if (!open) w.show();
           }}
         >
           工件与审查
@@ -65,7 +68,7 @@ function Fixture() {
           }}
         />
       </section>
-      {w.open ? (
+      {open ? (
         <ArtifactWorkbench
           {...input}
           artifacts={w.artifacts}

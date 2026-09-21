@@ -9,6 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  tenant-workbench-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @allrice/worker exec playwright-core install --with-deps chromium
+      # Full React UI over isolated loopback fixtures. No DB, model quota, real
+      # tenant, Bridge or elevated capability is used or enabled by this job.
+      - name: Verify tenant workspace and composer ownership in Chromium
+        env:
+          ALLRICE_RUN_BROWSER_INTEGRATION: 1
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15

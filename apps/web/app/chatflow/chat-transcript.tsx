@@ -52,6 +52,7 @@ interface ChatTranscriptProps {
   onScrollToBottom: () => void;
   artifacts?: WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
+  onPreviewMessage?: (message: Message) => void;
 }
 
 export function ChatTranscript({
@@ -72,6 +73,7 @@ export function ChatTranscript({
   onScrollToBottom,
   artifacts = [],
   onOpenArtifact,
+  onPreviewMessage,
 }: ChatTranscriptProps) {
   const [browserRevisions, setBrowserRevisions] = useState<
     Record<string, number>
@@ -103,6 +105,20 @@ export function ChatTranscript({
               const streamedText = messageRun
                 ? assistantDelta(messageRun.events)
                 : '';
+              const linkedArtifacts = artifacts.filter(
+                (a) => a.provenance.runId === message.runId,
+              );
+              const responseText =
+                (message.status === 'failed' && !message.content.budgetWarning
+                  ? modelGovernanceFailureText(message.errorCode)
+                  : null) ??
+                (streamedText || message.content.text);
+              const summarize =
+                !!onOpenArtifact &&
+                linkedArtifacts.length > 0 &&
+                message.status === 'completed' &&
+                !messageIsRunning &&
+                responseText.length > 600;
 
               return (
                 <div
@@ -313,15 +329,37 @@ export function ChatTranscript({
                         <div
                           className={`${assistantUi.body} ${styles.assistantCopy}`}
                         >
-                          <AssistantMarkdown
-                            text={
-                              (message.status === 'failed' &&
-                              !message.content.budgetWarning
-                                ? modelGovernanceFailureText(message.errorCode)
-                                : null) ??
-                              (streamedText || message.content.text)
-                            }
-                          />
+                          {messageIsRunning && streamedText ? (
+                            <small role="status">
+                              正在生成回复，尚未完成交付。
+                            </small>
+                          ) : null}
+                          {summarize ? (
+                            <>
+                              <p>
+                                本轮已交付 {linkedArtifacts.length}{' '}
+                                个工件，可在工作台查看与审查。
+                              </p>
+                              <details>
+                                <summary>展开完整回复</summary>
+                                <AssistantMarkdown text={responseText} />
+                              </details>
+                            </>
+                          ) : (
+                            <AssistantMarkdown text={responseText} />
+                          )}
+                          {onPreviewMessage &&
+                          !linkedArtifacts.length &&
+                          message.status === 'completed' &&
+                          !messageIsRunning &&
+                          responseText.length > 600 ? (
+                            <button
+                              type="button"
+                              onClick={() => onPreviewMessage(message)}
+                            >
+                              在工作台预览回复（非工件）
+                            </button>
+                          ) : null}
                         </div>
                       )}
                       {message.content.budgetWarning &&
@@ -337,9 +375,7 @@ export function ChatTranscript({
                       ) : null}
                       {onOpenArtifact && message.runId ? (
                         <ArtifactSummaryCards
-                          artifacts={artifacts.filter(
-                            (a) => a.provenance.runId === message.runId,
-                          )}
+                          artifacts={linkedArtifacts}
                           onOpen={onOpenArtifact}
                         />
                       ) : null}
