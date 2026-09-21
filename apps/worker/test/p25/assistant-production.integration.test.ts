@@ -35,6 +35,8 @@ integration(
     });
     it.each([
       'completed',
+      'missing_report',
+      'invalid_report',
       'dynamic_output',
       'revoked',
       'revoked_policy',
@@ -68,7 +70,8 @@ integration(
         const completionReached = gate(),
           completionReleased = gate();
         let activeChildren = 0,
-          maximumActiveChildren = 0;
+          maximumActiveChildren = 0,
+          triedMissingReport = false;
         const model = await p24Fixture(async (request) => {
           const serialized = JSON.stringify(request.messages);
           if (!serialized.includes('ROOT_PRIVATE')) {
@@ -79,6 +82,21 @@ integration(
             );
             await overlap.promise;
             activeChildren--;
+            if (
+              outcome === 'invalid_report' &&
+              !serialized.includes('assistant_report_delivery_required')
+            )
+              return {
+                nativeTool: {
+                  name: 'assistant_report',
+                  arguments: {
+                    status: 'completed',
+                    summary: 'Synthetic calculation',
+                    evidence: [],
+                    incomplete: [],
+                  },
+                },
+              };
             return {
               usage:
                 outcome === 'unknown_usage'
@@ -111,6 +129,17 @@ integration(
               },
             };
           }
+          if (outcome === 'missing_report' && !triedMissingReport) {
+            triedMissingReport = true;
+            return {
+              nativeTool: {
+                name: 'assistant_delegate',
+                arguments: { label: 'Invalid', text: 'NO_REPORT', tools: [] },
+              },
+            };
+          }
+          if (outcome === 'missing_report')
+            expect(serialized).toContain('assistant_report_required');
           if (!serialized.includes('ANALYZE_A'))
             return {
               ...(outcome === 'dynamic_output'

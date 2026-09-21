@@ -276,13 +276,61 @@ export function ArtifactWorkbench(props: Props) {
 }
 
 /** Bounded safe Markdown; large documents retain the existing paged-text path. */
-function SafeDocument({ text }: { text: string }) {
+export function SafeDocument({ text }: { text: string }) {
   return text.length <= 80_000 && text.split('\n').length <= 1500 ? (
     <div className={styles.document}>
       <AssistantMarkdown text={text} allowRemoteImages={false} />
     </div>
   ) : (
     <TextPage text={text} label="正文（分页只读）" />
+  );
+}
+
+/** Shared read-only inspector; deliberately has no feedback, approval, apply or
+ * resume callbacks. The server must separately authorize the inspection scope. */
+export function ReadOnlyArtifactPreview({
+  preview,
+}: {
+  preview: ArtifactPreview;
+}) {
+  if (preview.kind === 'text')
+    return preview.mediaType === 'text/markdown' ||
+      preview.mediaType === 'text/plain' ? (
+      <SafeDocument text={preview.text} />
+    ) : (
+      <TextPage text={preview.text} label="静态源码（不执行）" />
+    );
+  if (preview.kind === 'image')
+    return (
+      <img
+        alt="工件静态证据预览"
+        style={{ maxWidth: '100%' }}
+        src={`data:${preview.mediaType};base64,${preview.base64}`}
+      />
+    );
+  if (preview.kind === 'changeset')
+    return (
+      <>
+        {preview.changeset.files.map((file) => (
+          <section key={file.path}>
+            <h5>{file.path}</h5>
+            <DiffBoundary>
+              <Suspense fallback={<p>正在加载 Diff…</p>}>
+                <RichDiff
+                  path={file.path}
+                  before={file.before?.text ?? null}
+                  after={file.after?.text ?? null}
+                  mode="unified"
+                  onSelect={() => {}}
+                />
+              </Suspense>
+            </DiffBoundary>
+          </section>
+        ))}
+      </>
+    );
+  return (
+    <p>{preview.reason} 管理检查不代替使用者操作，请由本人到租户工作台下载。</p>
   );
 }
 

@@ -14,6 +14,11 @@ import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
 import { employeeManifest } from './employees/employee-config.ts';
 const stores = new WeakMap<ReturnType<typeof postgres>, LocalStorageAdapter>();
+export function assistantFixtureStorage(db: ReturnType<typeof postgres>) {
+  const storage = stores.get(db);
+  if (!storage) throw Error('Isolated fixture storage required');
+  return storage;
+}
 
 export interface AssistantFixtureCleanupProof {
   schema: string;

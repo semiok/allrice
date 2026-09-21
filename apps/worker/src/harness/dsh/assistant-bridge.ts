@@ -291,6 +291,15 @@ export function createAssistantWorkerBridge(
     try {
       if (method === 'delegate') {
         const selectedTools = tools.parse(args.tools);
+        // A text-only child still needs the bounded coordination channel to
+        // deliver its result. Reject before creating a child; never silently
+        // grant a missing tool or promote native idle/text to verified success.
+        if (!selectedTools.includes('assistant.report'))
+          return {
+            error: 'assistant_report_required',
+            message:
+              'No child was created. Include assistant.report in tools so the child can return its result; for a task without external tools, use tools=["assistant.report"].',
+          };
         if (
           options.supportedChildTools &&
           selectedTools.some((tool) => !options.supportedChildTools!.has(tool))
@@ -325,11 +334,28 @@ export function createAssistantWorkerBridge(
       }
       if (method === 'report') {
         const { output, ...report } = args;
-        const result = AssistantResultSchema.parse({
+        const parsed = AssistantResultSchema.safeParse({
           ...report,
           deliveryId: callUuid,
           usageComplete: false, // The database derives this from this child's settled calls.
         });
+        if (!parsed.success)
+          return {
+            error: 'assistant_report_invalid',
+            message:
+              'Report fields are invalid. evidence must contain only existing registered artifact {id: UUID, digest: "sha256:..."} references, not calculations or prose. With no existing artifact, use evidence=[] and output={name:"result",content:"your result"}. Use incomplete=[] only when nothing remains unfinished.',
+          };
+        const result = parsed.data;
+        if (
+          result.status === 'completed' &&
+          ((!result.evidence.length && output === undefined) ||
+            result.incomplete.length)
+        )
+          return {
+            error: 'assistant_report_delivery_required',
+            message:
+              'No completed result was recorded. Completion requires no incomplete items and an existing registered artifact or output={name:"result",content:"your result"} to persist a model-generated deliverable. Use status=partial if work is unfinished. Never invent artifact IDs.',
+          };
         if (output !== undefined) {
           if (!options.onPublishOutput)
             throw Error('assistant_output_unavailable');

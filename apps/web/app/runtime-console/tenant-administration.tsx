@@ -32,7 +32,7 @@ async function json<T>(response: Response): Promise<T> {
 
 export function TenantAdministration() {
   const [view, setView] = useState<
-    'members' | 'policy' | 'environments' | 'quotas'
+    'members' | 'policy' | 'environments' | 'quotas' | 'validation'
   >('members');
   const [tenants, setTenants] = useState<AdminTenant[]>([]),
     [next, setNext] = useState<string | null>(null);
@@ -72,16 +72,24 @@ export function TenantAdministration() {
       );
       setNext(data.nextCursor);
       if (!initialTarget.current) {
-        initialTarget.current = true;
         const params = new URLSearchParams(window.location.search),
           org = params.get('organizationId'),
           workspace = params.get('workspaceId');
         const tenant = data.tenants.find((t) => t.id === org);
+        initialTarget.current = Boolean(tenant) || !data.nextCursor || !org;
         if (tenant) {
           setOrganizationId(tenant.id);
           if (tenant.workspaces.some((w) => w.id === workspace)) {
             setWorkspaceId(workspace!);
-            setView('policy');
+            const requestedView = params.get('tenantView');
+            setView(
+              requestedView === 'environments' ||
+                requestedView === 'quotas' ||
+                requestedView === 'validation' ||
+                requestedView === 'members'
+                ? requestedView
+                : 'policy',
+            );
           }
         }
       }
@@ -198,7 +206,7 @@ export function TenantAdministration() {
             >
               执行策略
             </button>
-            {(['environments', 'quotas'] as const).map((v) => (
+            {(['environments', 'quotas', 'validation'] as const).map((v) => (
               <button
                 key={v}
                 disabled={busy || !workspaceId}
@@ -210,7 +218,11 @@ export function TenantAdministration() {
                   }
                 }}
               >
-                {v === 'environments' ? '环境与连接器' : '分层额度'}
+                {v === 'environments'
+                  ? '环境与连接器'
+                  : v === 'quotas'
+                    ? '分层额度'
+                    : '验收与交付'}
               </button>
             ))}
             {workspaceId ? (
@@ -226,7 +238,10 @@ export function TenantAdministration() {
               <span>选择具体工作区后配置策略与发布。</span>
             )}
           </div>
-          {(view === 'environments' || view === 'quotas') && workspaceId ? (
+          {(view === 'environments' ||
+            view === 'quotas' ||
+            view === 'validation') &&
+          workspaceId ? (
             <TenantResourceEditor
               key={`${organizationId}/${workspaceId}/${view}`}
               mode={view}

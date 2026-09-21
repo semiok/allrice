@@ -5,7 +5,10 @@ import { resolve } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+import {
+  createAssistantFixtureDatabase,
+  assistantFixtureStorage,
+} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -14,13 +17,18 @@ import {
 import { tenantAdministrationHttp } from '../../lib/tenant-administration/http';
 import { tenantPolicyHttp } from '../../lib/tenant-administration/policy-http';
 import { tenantResourcesHttp } from '../../lib/tenant-administration/resources-http';
+import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
+import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
 import { GET as employeeLifecycle } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
 
-const ports = vi.hoisted(() => ({ context: vi.fn() }));
+const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
+vi.mock('../../lib/storage/runtime', () => ({
+  getStorageAdapter: ports.storage,
+}));
 vi.mock('../../lib/identity/session', () => ({
   getRequestContext: ports.context,
 }));
@@ -55,7 +63,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     return { ...p, input, session };
   }
   beforeAll(async () => {
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     fixture = await createAssistantFixtureDatabase();
+    ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     platform = await principal('Platform fixture', 'admin');
     snow = await principal('Snow fixture', 'member');
@@ -133,13 +143,27 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
                       parts[6] as
                         'quotas' | 'environments' | 'mcp' | 'local-mcp',
                     )
-                  : parts[6] === 'policy'
-                    ? await tenantPolicyHttp(request, parts[5]!)
-                    : await tenantAdministrationHttp(
-                        request,
-                        parts[5],
-                        parts[7],
-                      );
+                  : parts[6] === 'validation'
+                    ? await tenantValidationHttp(request, parts[5]!)
+                    : parts[6] === 'policy'
+                      ? await tenantPolicyHttp(request, parts[5]!)
+                      : parts[4] === 'tenants' &&
+                          (!parts[6] ||
+                            (parts[6] === 'members' &&
+                              parts[7] &&
+                              parts.length === 8))
+                        ? await tenantAdministrationHttp(
+                            request,
+                            parts[5],
+                            parts[7],
+                          )
+                        : new Response(
+                            '<!DOCTYPE html><title>Not Found</title>',
+                            {
+                              status: 404,
+                              headers: { 'Content-Type': 'text/html' },
+                            },
+                          );
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -207,6 +231,90 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       .waitFor();
     return { page, context };
   }
+  it('opens scoped validation from a deep link, inspects the real stored Run and never exposes execution controls', async () => {
+    const a = await tenantValidationFixture(fixture.db),
+      { page, context } = await pageFor();
+    try {
+      const start = requests.length;
+      await page.goto(
+        `${origin}/runtime-console?view=tenants&organizationId=${a.target.organizationId}&workspaceId=${a.target.workspaceId}&tenantView=validation&subjectId=${a.target.subjectId}`,
+      );
+      await page
+        .getByRole('heading', { name: '验收与交付', exact: true })
+        .waitFor();
+      expect(
+        await page.getByLabel('实际使用者', { exact: true }).inputValue(),
+      ).toBe(a.target.subjectId);
+      await page.getByLabel('选择验收 Run').selectOption(a.task.runId);
+      await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
+      const text = await page
+        .getByRole('region', { name: '真实任务检查结果' })
+        .innerText();
+      expect(text).toContain(a.versionId);
+      expect(text).toContain('运行中，用量待结算');
+      expect(text).toContain('process.execute');
+      expect(text).toContain('evidence.txt');
+      expect(text).not.toContain('NEVER_EXPOSE_RAW_SNAPSHOT');
+      expect(text).not.toContain('PRIVATE_TEST_SECRET');
+      expect(
+        await page
+          .getByRole('button', { name: /批准|执行此任务|应用修改|恢复运行/ })
+          .count(),
+      ).toBe(0);
+      await page
+        .getByRole('button', {
+          name: 'evidence.txt · v1 · document',
+          exact: true,
+        })
+        .click();
+      await page.getByRole('region', { name: '只读交付物预览' }).waitFor();
+      expect(
+        await page.getByRole('region', { name: '只读交付物预览' }).innerText(),
+      ).toContain('Isolated fixture, not a real model answer.');
+      expect(requests.slice(start).every((r) => r.startsWith('GET '))).toBe(
+        true,
+      );
+      expect(requests.slice(start).some((r) => r.endsWith('/members'))).toBe(
+        false,
+      );
+      expect(
+        (
+          await context.request.get(
+            `${origin}/api/v1/admin/tenants/${a.target.organizationId}/members?workspaceId=${a.target.workspaceId}`,
+          )
+        ).status(),
+      ).toBe(404);
+      await page.getByRole('link', { name: '调整内部额度' }).click();
+      await page.getByLabel('月 Token 上限', { exact: true }).waitFor();
+      expect(
+        await page.getByLabel('实际使用者', { exact: true }).inputValue(),
+      ).toBe(a.target.subjectId);
+    } finally {
+      await context.close();
+    }
+  });
+  it('rejects a foreign Run from the validation form and clears the previous result', async () => {
+    const a = await tenantValidationFixture(fixture.db),
+      b = await tenantValidationFixture(fixture.db),
+      { page, context } = await pageFor();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=tenants&organizationId=${a.target.organizationId}&workspaceId=${a.target.workspaceId}&tenantView=validation&subjectId=${a.target.subjectId}`,
+      );
+      await page.getByLabel('选择验收 Run').selectOption(a.task.runId);
+      await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
+      await page.getByLabel('完整验收 Run ID').fill(b.task.runId);
+      await page
+        .getByRole('button', { name: '检查此 Run', exact: true })
+        .click();
+      await page.getByRole('alert').waitFor();
+      expect(
+        await page.getByRole('region', { name: '真实任务检查结果' }).count(),
+      ).toBe(0);
+    } finally {
+      await context.close();
+    }
+  });
   it('configures real member quotas through UI, restores inheritance with CAS and prevents cross-origin updates', async () => {
     const { page, context } = await pageFor();
     try {
@@ -424,6 +532,15 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByLabel('local.process.execute 规则', { exact: true })
         .selectOption('allow');
       await page
+        .getByLabel('assistant.delegate 规则', { exact: true })
+        .selectOption('allow');
+      expect(
+        await page
+          .getByLabel('assistant.delegate 规则', { exact: true })
+          .locator('option[value="ask"]')
+          .isDisabled(),
+      ).toBe(true);
+      await page
         .getByLabel('策略修改原因')
         .fill('Synthetic explicit policy approval');
       await page
@@ -452,7 +569,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(stored!.controls).toMatchObject({
         version: 1,
         enabled: true,
-        rules: [{ action: 'local.process.execute', effect: 'allow' }],
+        rules: [
+          { action: 'local.process.execute', effect: 'allow' },
+          { action: 'assistant.delegate', effect: 'allow' },
+        ],
       });
       const body = {
         workspaceId: snow.workspaceId,
@@ -492,10 +612,119 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page
         .getByText('当前版本：1 · 保存将创建版本 2', { exact: true })
         .waitFor();
+      expect(
+        await page
+          .getByLabel('assistant.delegate 规则', { exact: true })
+          .inputValue(),
+      ).toBe('allow');
       await page.screenshot({
         path: '/tmp/met151-policy-desktop.png',
         fullPage: true,
       });
+    } finally {
+      await context.close();
+    }
+  });
+  it('requires an explicit draft-only safety change for a denied MCP capability, never silently lifting it when selecting the tool', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await fixture.db`update allrice_workspaces set name='MCP safety fixture workspace' where id=${f.workspaceId}`;
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: {
+        ...f.definition,
+        name: 'MET151 MCP safety fixture',
+        securityPolicy: {
+          ...f.definition.securityPolicy,
+          deniedCapabilities: ['secret:use'],
+          connectorIdentityModes: ['user'],
+        },
+      },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=employees&workspaceId=${f.workspaceId}`,
+      );
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 MCP safety fixture' })
+        .click();
+      const directory = async () =>
+        (
+          await (
+            await context.request.get(
+              `${origin}/api/v1/admin/platform-employees`,
+            )
+          ).json()
+        ).employees.find(
+          (employee: { id: string }) => employee.id === f.employeeId,
+        );
+      const original = await directory();
+      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
+      await page.getByRole('button', { name: '安全', exact: true }).click();
+      expect(
+        await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
+      ).toBe(true);
+      expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
+        false,
+      );
+      const save = async () => {
+        const response = page.waitForResponse(
+          (r) =>
+            r.url() ===
+              `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+            r.request().method() === 'PUT',
+        );
+        await page
+          .getByRole('button', { name: '保存草稿', exact: true })
+          .click();
+        const result = await response;
+        expect(result.status()).toBe(200);
+        await expect
+          .poll(() =>
+            page
+              .getByRole('button', { name: '保存草稿', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+        return result.json();
+      };
+      const denied = await save();
+      expect(denied.validation.valid).toBe(false);
+      expect(denied.validation.errors.join(' ')).toContain('secret:use');
+      await page.getByLabel('禁止 secret:use', { exact: true }).uncheck();
+      await page.getByLabel('允许连接器身份 service').check();
+      const permitted = await save();
+      expect(permitted.validation.valid).toBe(true);
+      const current = await directory();
+      expect(
+        current.currentDraft.definition.securityPolicy.deniedCapabilities,
+      ).toEqual([]);
+      expect(current.currentPublished).toEqual(original.currentPublished);
+      expect(current.assignedWorkspaceIds).toEqual(
+        original.assignedWorkspaceIds,
+      );
+      expect(
+        current.currentDraft.definition.securityPolicy.connectorIdentityModes,
+      ).toEqual(['user', 'service']);
+      await page.reload();
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 MCP safety fixture' })
+        .click();
+      await page.getByRole('button', { name: '安全', exact: true }).click();
+      expect(
+        await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
+      ).toBe(false);
+      expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
+        true,
+      );
+      await page.getByLabel('禁止 secret:use', { exact: true }).check();
+      expect((await save()).validation.valid).toBe(false);
+      expect(
+        (await directory()).currentDraft.definition.securityPolicy
+          .deniedCapabilities,
+      ).toEqual(['secret:use']);
     } finally {
       await context.close();
     }
@@ -572,7 +801,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       // Choosing an employee deliberately clears publish scope: make it explicit again.
       const workspaceLabel = page
         .locator('label')
-        .filter({ hasText: 'Synthetic publication' })
+        .filter({
+          has: page
+            .locator('strong')
+            .filter({ hasText: /^Synthetic publication$/ }),
+        })
         .filter({ has: page.locator('input[type="checkbox"]') });
       await workspaceLabel.getByRole('checkbox').check();
       expect(

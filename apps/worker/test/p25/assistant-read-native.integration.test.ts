@@ -74,7 +74,7 @@ integration(
     async function exercise(name: string, read?: (typeof reads)[number]) {
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
-        allowedTools: ['assistant.delegate', name],
+        allowedTools: ['assistant.delegate', 'assistant.report', name],
       });
       // Remove only this fixture's unused synthetic ledger, never rewrite a
       // frozen live root. The real production controller creates its own caps.
@@ -133,7 +133,7 @@ integration(
                 arguments: {
                   label: 'Bounded read',
                   text: 'CHILD_FINITE_QUERY: use the selected query once.',
-                  tools: [name],
+                  tools: ['assistant.report', name],
                 },
               },
             };
@@ -157,9 +157,9 @@ integration(
         },
       });
       const tools = riceToolDefinitions.filter((tool) =>
-        ['assistant.delegate', name].includes(tool.name),
+        ['assistant.delegate', 'assistant.report', name].includes(tool.name),
       );
-      expect(tools).toHaveLength(2);
+      expect(tools).toHaveLength(3);
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), 20000);
       try {
@@ -242,7 +242,7 @@ integration(
         );
         expect(children).toHaveLength(1);
         const child = children[0]!;
-        expect(child.allowedTools).toEqual([read.name]);
+        expect(child.allowedTools).toEqual(['assistant.report', read.name]);
         expect(childRequests).toHaveLength(2);
         expect(childRequests[1]).toContain('SYNTHETIC_QUERY_RESULT');
         expect(

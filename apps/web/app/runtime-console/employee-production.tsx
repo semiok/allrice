@@ -14,6 +14,7 @@ import {
   employeeReasoningSettings,
   switchEmployeeModelProvider,
   employeeToolCatalog,
+  SkillCapabilitySchema,
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
@@ -1106,6 +1107,72 @@ export function EmployeeProduction() {
           权限交集和审计。这里不会开放 Shell、删除或 Git
           写操作，也不会把模型密钥下发给租户或 Bridge。
         </p>
+        <fieldset className={styles.fieldWide} disabled={busy}>
+          <legend>允许的连接器身份</legend>
+          <p>
+            仅约束员工可使用的身份类型，不创建连接、保存凭证或绑定员工版本。
+          </p>
+          {(['user', 'service'] as const).map((mode) => (
+            <label className={styles.check} key={mode}>
+              <input
+                type="checkbox"
+                aria-label={`允许连接器身份 ${mode}`}
+                checked={draft.securityPolicy.connectorIdentityModes.includes(
+                  mode,
+                )}
+                onChange={(event) =>
+                  update(
+                    ['securityPolicy', 'connectorIdentityModes'],
+                    event.target.checked
+                      ? [...draft.securityPolicy.connectorIdentityModes, mode]
+                      : draft.securityPolicy.connectorIdentityModes.filter(
+                          (value) => value !== mode,
+                        ),
+                  )
+                }
+              />
+              <span>
+                {mode === 'user'
+                  ? '使用者身份（user）'
+                  : '租户服务身份（service，云端 MCP）'}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        <fieldset className={styles.fieldWide} disabled={busy}>
+          <legend>员工禁止能力</legend>
+          <p>
+            勾选表示禁止，优先于工具清单。解除禁止只修改草稿，需重新试用和发布；
+            不会自动授予连接器、设备、租户或单次操作权限。
+          </p>
+          {SkillCapabilitySchema.options.map((capability) => (
+            <label className={styles.check} key={capability}>
+              <input
+                type="checkbox"
+                aria-label={`禁止 ${capability}`}
+                checked={draft.securityPolicy.deniedCapabilities.includes(
+                  capability,
+                )}
+                onChange={(event) =>
+                  update(
+                    ['securityPolicy', 'deniedCapabilities'],
+                    event.target.checked
+                      ? [...draft.securityPolicy.deniedCapabilities, capability]
+                      : draft.securityPolicy.deniedCapabilities.filter(
+                          (value) => value !== capability,
+                        ),
+                  )
+                }
+              />
+              <span>{capability}</span>
+            </label>
+          ))}
+          <p>
+            MCP 工具使用
+            secret:use。解除这项禁止仅允许受控连接器使用已授权凭证，
+            不允许模型读取密钥，也不改变模型订阅或 API 配置。
+          </p>
+        </fieldset>
       </div>
     );
   } else if (tab === 'debug') {
@@ -1314,6 +1381,12 @@ export function EmployeeProduction() {
                   href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}`}
                 >
                   配置 {target.organizationName} / {target.name} 策略 →
+                </a>
+                {' · '}
+                <a
+                  href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}&tenantView=validation`}
+                >
+                  检查该租户实际使用者与交付 →
                 </a>
               </p>
             ))}

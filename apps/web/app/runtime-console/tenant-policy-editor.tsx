@@ -121,6 +121,11 @@ export function TenantPolicyEditor({
         Changeset：workspace.export.create 生成提案 → 网页精确审批 →
         local.fs.changeset 落盘；后者是内部执行动作，不是新增模型工具。
       </p>
+      <p>
+        assistant.delegate
+        只控制受控助手的委派许可，仍受员工工具、任务选择和根预算约束。
+        当前不支持逐次委派审批；未配置、禁止或旧的每次审批规则均不能启动助手。
+      </p>
       <button
         disabled={busy || loading}
         onClick={() => {
@@ -242,7 +247,14 @@ export function TenantPolicyEditor({
                         >
                           <option value="unset">未配置（禁止）</option>
                           <option value="deny">禁止</option>
-                          <option value="ask">每次审批</option>
+                          <option
+                            value="ask"
+                            disabled={action === 'assistant.delegate'}
+                          >
+                            {action === 'assistant.delegate'
+                              ? '每次审批（暂不支持，禁止委派）'
+                              : '每次审批'}
+                          </option>
                           <option value="allow">
                             {forced
                               ? '允许申请（仍每次审批）'

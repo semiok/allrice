@@ -130,6 +130,28 @@ function fixture(result = storedResult) {
 }
 
 describe('governed native parent report delivery', () => {
+  it('keeps the child turn open for correctable report validation errors', async () => {
+    const f = fixture();
+    f.agents.requireInitiator = () => ({ id: 'synthetic-child' });
+    f.bridge.mockResolvedValue({
+      error: 'assistant_report_delivery_required',
+      message: 'Provide a deliverable.',
+    });
+    const tool = f.ctx.tools.register.mock.calls
+      .map(([value]) => value)
+      .find((value) => value.name === 'assistant_report');
+    const exec = {
+      callId: 'invalid-report',
+      signal: new globalThis.AbortController().signal,
+      concludeTurn: vi.fn(),
+    };
+    const result = await tool.execute(
+      { status: 'completed', summary: '42', evidence: [], incomplete: [] },
+      exec,
+    );
+    expect(result.content).toContain('assistant_report_delivery_required');
+    expect(exec.concludeTurn).not.toHaveBeenCalled();
+  });
   it('report concludes the child but only native settlement delivers the current platform report', async () => {
     const f = fixture();
     f.agents.requireInitiator = () => ({ id: 'synthetic-child' });

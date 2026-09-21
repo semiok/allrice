@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-assistant-required-delivery-v1",
+      "issue": "MET-151",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
+      "reason": "Describe required explicit assistant.report permission and exact artifact/output result schema. Worker rejects an undeliverable child before provisioning and returns correctable validation errors without ending the child turn; no implicit tool grant, fabricated evidence or native-idle success."
+    },
+    {
       "id": "allrice-workbench-native-changeset-v1",
       "issue": "MET-147",
       "upstreamVersion": "0.1.1-rc.2",
