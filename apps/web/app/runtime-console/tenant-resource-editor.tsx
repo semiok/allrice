@@ -15,6 +15,7 @@ import {
 } from '../chatflow/capability-catalog';
 import { McpSettings } from './mcp-settings';
 import { LocalMcpSettings } from './local-mcp-settings';
+import { TenantValidation } from './tenant-validation';
 import styles from './tenant-administration.module.css';
 
 export type TenantResourceProps = {
@@ -43,7 +44,9 @@ async function json<T>(response: Response): Promise<T> {
 }
 
 export function TenantResourceEditor(
-  props: TenantResourceProps & { mode: 'quotas' | 'environments' },
+  props: TenantResourceProps & {
+    mode: 'quotas' | 'environments' | 'validation';
+  },
 ) {
   const [members, setMembers] = useState<AdminTenantMember[]>([]),
     [subjectId, setSubjectId] = useState(''),
@@ -54,6 +57,7 @@ export function TenantResourceEditor(
     [busy, setBusy] = useState(false);
   const { organizationId, workspaceId, onBusy, onDirty } = props;
   const request = useRef<AbortController | null>(null);
+  const initialSubject = useRef(false);
   const load = useCallback(
     async (after?: string) => {
       request.current?.abort();
@@ -83,6 +87,21 @@ export function TenantResourceEditor(
             : data.members,
         );
         setNext(data.nextCursor);
+        if (!initialSubject.current) {
+          const params = new URLSearchParams(window.location.search);
+          const requested = params.get('subjectId');
+          if (
+            params.get('organizationId') === organizationId &&
+            params.get('workspaceId') === workspaceId &&
+            data.members.some(
+              (m) =>
+                m.userId === requested && m.active && m.userStatus === 'active',
+            )
+          ) {
+            setSubjectId(requested!);
+            initialSubject.current = true;
+          }
+        }
       } catch (e) {
         if (!c.signal.aborted)
           setError(e instanceof Error ? e.message : '加载失败');
@@ -119,7 +138,13 @@ export function TenantResourceEditor(
   }, [dirty, busy]);
   return (
     <section
-      aria-label={props.mode === 'quotas' ? '分层额度管理' : '环境与连接器管理'}
+      aria-label={
+        props.mode === 'quotas'
+          ? '分层额度管理'
+          : props.mode === 'validation'
+            ? '租户验收管理'
+            : '环境与连接器管理'
+      }
     >
       <label>
         实际使用者
@@ -133,6 +158,7 @@ export function TenantResourceEditor(
               window.confirm('切换使用者将放弃未保存修改，是否继续？')
             ) {
               setDirty(false);
+              initialSubject.current = true;
               setSubjectId(e.target.value);
             }
           }}
@@ -160,6 +186,14 @@ export function TenantResourceEditor(
           </p>
           {props.mode === 'quotas' ? (
             <Quotas
+              key={subjectId}
+              {...props}
+              subjectId={subjectId}
+              onDirty={setDirty}
+              onBusy={setBusy}
+            />
+          ) : props.mode === 'validation' ? (
+            <TenantValidation
               key={subjectId}
               {...props}
               subjectId={subjectId}

@@ -27,6 +27,10 @@ import {
   registerToolBrokerExport,
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import {
+  requireTenantManagementScope,
+  type TenantManagementTarget,
+} from './tenant-management-scope.ts';
 
 type Database = ReturnType<typeof getDatabase>;
 type Reader = Database | TransactionSql;
@@ -158,11 +162,12 @@ function mapArtifact(row: ArtifactRow): WorkbenchArtifact {
 }
 async function artifactRows(
   db: Reader,
-  context: WorkbenchPrincipal,
+  scope: { organizationId: string; workspaceId: string; ownerId: string },
   sessionId: string,
   artifactId: string | null,
   limit: number,
   before?: { createdAt: string; id: string },
+  runId: string | null = null,
 ) {
   return db<
     ArtifactRow[]
@@ -173,10 +178,11 @@ async function artifactRows(
     left join allrice_deliverable_versions parent on parent.id=v.parent_version_id
     left join allrice_workbench_artifacts a on a.version_id=v.id and a.organization_id=v.organization_id and a.workspace_id=v.workspace_id and a.owner_id=v.owner_id
     join lateral (select id from allrice_deliverable_versions x where x.series_id=v.series_id and x.organization_id=v.organization_id and x.workspace_id=v.workspace_id and x.owner_id=v.owner_id order by version desc limit 1) latest on true
-    where v.organization_id=${context.organizationId} and v.workspace_id=${context.workspaceId!} and v.owner_id=${context.actor.id}
+    where v.organization_id=${scope.organizationId} and v.workspace_id=${scope.workspaceId} and v.owner_id=${scope.ownerId}
       and v.session_id=${sessionId} and o.state='ready' and o.deleted_at is null
       and (o.retention_until is null or o.retention_until>clock_timestamp())
       and (${artifactId}::uuid is null or v.id=${artifactId}::uuid)
+      and (${runId}::uuid is null or a.run_id=${runId}::uuid)
       and (${before?.createdAt ?? null}::timestamptz is null or (v.created_at,v.id)<(${before?.createdAt ?? null}::timestamptz,${before?.id ?? null}::uuid))
     order by v.created_at desc,v.id desc limit ${limit}`;
 }
@@ -189,7 +195,18 @@ export async function listWorkbenchArtifacts(
   if (before) WorkbenchCursorSchema.parse(before);
   return db.begin(async (tx) => {
     await assertWorkbenchSession(tx, context, sessionId);
-    const rows = await artifactRows(tx, context, sessionId, null, 51, before);
+    const rows = await artifactRows(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId!,
+        ownerId: context.actor.id,
+      },
+      sessionId,
+      null,
+      51,
+      before,
+    );
     const page = rows.slice(0, 50).map(mapArtifact),
       last = page.at(-1);
     return {
@@ -208,7 +225,17 @@ export async function readArtifact(
   id: string,
 ) {
   UuidSchema.parse(id);
-  const [row] = await artifactRows(db, context, sessionId, id, 1);
+  const [row] = await artifactRows(
+    db,
+    {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId!,
+      ownerId: context.actor.id,
+    },
+    sessionId,
+    id,
+    1,
+  );
   if (!row) fail('artifact_not_found');
   return mapArtifact(row);
 }
@@ -221,6 +248,49 @@ export async function getWorkbenchArtifact(
   return db.begin(async (tx) => {
     await assertWorkbenchSession(tx, context, sessionId);
     return readArtifact(tx, context, sessionId, id);
+  });
+}
+/** Platform inspection only. The issuer remains the real administrator; this
+ * explicit subject scope cannot be passed to publishing, feedback or execution. */
+export async function inspectTenantRunArtifacts(
+  issuer: RequestContext,
+  target: TenantManagementTarget,
+  runInput: string,
+  artifactInput: string | null = null,
+  db: Database = getDatabase(),
+) {
+  const runId = UuidSchema.parse(runInput),
+    artifactId =
+      artifactInput === null ? null : UuidSchema.parse(artifactInput);
+  return db.begin(async (tx) => {
+    await requireTenantManagementScope(issuer, target, tx);
+    const [run] = await tx<
+      { session_id: string }[]
+    >`select e.session_id from allrice_employee_runs e
+      join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id and s.archived_at is null
+      where e.run_id=${runId} and e.organization_id=${target.organizationId} and e.workspace_id=${target.workspaceId} and e.owner_id=${target.subjectId}`;
+    if (!run) fail('artifact_not_found');
+    const rows = await artifactRows(
+      tx,
+      {
+        organizationId: target.organizationId,
+        workspaceId: target.workspaceId,
+        ownerId: target.subjectId,
+      },
+      run.session_id,
+      artifactId,
+      51,
+      undefined,
+      runId,
+    );
+    if (artifactId && !rows.length) fail('artifact_not_found');
+    if (artifactId)
+      await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+      values(${target.organizationId},${target.workspaceId},${issuer.actor.id},'tenant.artifact.access_checked','artifact',${artifactId},'recorded','read_only_preview_authorization',${tx.json({ subjectId: target.subjectId, runId, readOnly: true })})`;
+    return {
+      artifacts: rows.slice(0, 50).map(mapArtifact),
+      truncated: rows.length > 50,
+    };
   });
 }
 export async function readArtifactBytes(

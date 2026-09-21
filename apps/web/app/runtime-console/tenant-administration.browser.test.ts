@@ -5,7 +5,10 @@ import { resolve } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+import {
+  createAssistantFixtureDatabase,
+  assistantFixtureStorage,
+} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -14,13 +17,18 @@ import {
 import { tenantAdministrationHttp } from '../../lib/tenant-administration/http';
 import { tenantPolicyHttp } from '../../lib/tenant-administration/policy-http';
 import { tenantResourcesHttp } from '../../lib/tenant-administration/resources-http';
+import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
+import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
 import { GET as employeeLifecycle } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
 
-const ports = vi.hoisted(() => ({ context: vi.fn() }));
+const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
+vi.mock('../../lib/storage/runtime', () => ({
+  getStorageAdapter: ports.storage,
+}));
 vi.mock('../../lib/identity/session', () => ({
   getRequestContext: ports.context,
 }));
@@ -55,7 +63,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     return { ...p, input, session };
   }
   beforeAll(async () => {
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     fixture = await createAssistantFixtureDatabase();
+    ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     platform = await principal('Platform fixture', 'admin');
     snow = await principal('Snow fixture', 'member');
@@ -133,13 +143,15 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
                       parts[6] as
                         'quotas' | 'environments' | 'mcp' | 'local-mcp',
                     )
-                  : parts[6] === 'policy'
-                    ? await tenantPolicyHttp(request, parts[5]!)
-                    : await tenantAdministrationHttp(
-                        request,
-                        parts[5],
-                        parts[7],
-                      );
+                  : parts[6] === 'validation'
+                    ? await tenantValidationHttp(request, parts[5]!)
+                    : parts[6] === 'policy'
+                      ? await tenantPolicyHttp(request, parts[5]!)
+                      : await tenantAdministrationHttp(
+                          request,
+                          parts[5],
+                          parts[7],
+                        );
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -207,6 +219,80 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       .waitFor();
     return { page, context };
   }
+  it('opens scoped validation from a deep link, inspects the real stored Run and never exposes execution controls', async () => {
+    const a = await tenantValidationFixture(fixture.db),
+      { page, context } = await pageFor();
+    try {
+      const start = requests.length;
+      await page.goto(
+        `${origin}/runtime-console?view=tenants&organizationId=${a.target.organizationId}&workspaceId=${a.target.workspaceId}&tenantView=validation&subjectId=${a.target.subjectId}`,
+      );
+      await page
+        .getByRole('heading', { name: '验收与交付', exact: true })
+        .waitFor();
+      expect(
+        await page.getByLabel('实际使用者', { exact: true }).inputValue(),
+      ).toBe(a.target.subjectId);
+      await page.getByLabel('选择验收 Run').selectOption(a.task.runId);
+      await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
+      const text = await page
+        .getByRole('region', { name: '真实任务检查结果' })
+        .innerText();
+      expect(text).toContain(a.versionId);
+      expect(text).toContain('运行中，用量待结算');
+      expect(text).toContain('process.execute');
+      expect(text).toContain('evidence.txt');
+      expect(text).not.toContain('NEVER_EXPOSE_RAW_SNAPSHOT');
+      expect(text).not.toContain('PRIVATE_TEST_SECRET');
+      expect(
+        await page
+          .getByRole('button', { name: /批准|执行此任务|应用修改|恢复运行/ })
+          .count(),
+      ).toBe(0);
+      await page
+        .getByRole('button', {
+          name: 'evidence.txt · v1 · document',
+          exact: true,
+        })
+        .click();
+      await page.getByRole('region', { name: '只读交付物预览' }).waitFor();
+      expect(
+        await page.getByRole('region', { name: '只读交付物预览' }).innerText(),
+      ).toContain('Isolated fixture, not a real model answer.');
+      expect(requests.slice(start).every((r) => r.startsWith('GET '))).toBe(
+        true,
+      );
+      await page.getByRole('link', { name: '调整内部额度' }).click();
+      await page.getByLabel('月 Token 上限', { exact: true }).waitFor();
+      expect(
+        await page.getByLabel('实际使用者', { exact: true }).inputValue(),
+      ).toBe(a.target.subjectId);
+    } finally {
+      await context.close();
+    }
+  });
+  it('rejects a foreign Run from the validation form and clears the previous result', async () => {
+    const a = await tenantValidationFixture(fixture.db),
+      b = await tenantValidationFixture(fixture.db),
+      { page, context } = await pageFor();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=tenants&organizationId=${a.target.organizationId}&workspaceId=${a.target.workspaceId}&tenantView=validation&subjectId=${a.target.subjectId}`,
+      );
+      await page.getByLabel('选择验收 Run').selectOption(a.task.runId);
+      await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
+      await page.getByLabel('完整验收 Run ID').fill(b.task.runId);
+      await page
+        .getByRole('button', { name: '检查此 Run', exact: true })
+        .click();
+      await page.getByRole('alert').waitFor();
+      expect(
+        await page.getByRole('region', { name: '真实任务检查结果' }).count(),
+      ).toBe(0);
+    } finally {
+      await context.close();
+    }
+  });
   it('configures real member quotas through UI, restores inheritance with CAS and prevents cross-origin updates', async () => {
     const { page, context } = await pageFor();
     try {

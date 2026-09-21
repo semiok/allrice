@@ -6,8 +6,6 @@ import {
   listArtifactFeedback,
   saveArtifactFeedback,
   addressArtifactFeedback,
-  readArtifactBytes,
-  parseChangesetBytes,
 } from '@allrice/database';
 import {
   WorkbenchCursorSchema,
@@ -17,7 +15,7 @@ import {
 import { getRequestContext } from '../identity/session';
 import { sameOriginBrowserWrite } from '../identity/request-origin';
 import { getStorageAdapter } from '../storage/runtime';
-import { boundedRaster } from './raster-preview';
+import { readStaticArtifactPreview } from './static-artifact-preview';
 
 type RouteAction =
   'list' | 'detail' | 'content' | 'draft' | 'submit' | 'address';
@@ -90,66 +88,10 @@ export async function artifactHttp(
         { headers },
       );
     if (action === 'content') {
-      const policy = runtimeStaticPreviewPolicy(artifact.object.mediaType);
-      const supportedText = [
-        'text/plain',
-        'text/markdown',
-        'text/html',
-        'application/json',
-        'image/svg+xml',
-      ].includes(artifact.object.mediaType);
-      if (
-        artifact.object.sizeBytes > 512_000 ||
-        (!supportedText && policy.mode !== 'authenticated_raster')
-      )
-        return Response.json(
-          {
-            kind: 'download_only',
-            reason: '此格式或文件大小仅支持下载，不在主站执行。',
-          },
-          { headers },
-        );
-      const bytes = await readArtifactBytes(
-        getStorageAdapter(),
-        artifact.object,
-      );
+      const preview = await readStaticArtifactPreview(artifact);
       // Recheck current authorization after storage IO; bytes never grant future access.
       await getWorkbenchArtifact(context, sessionId, id);
-      if (artifact.kind === 'changeset')
-        return Response.json(
-          { kind: 'changeset', changeset: parseChangesetBytes(bytes) },
-          { headers },
-        );
-      if (policy.mode === 'authenticated_raster')
-        return Response.json(
-          boundedRaster(bytes, artifact.object.mediaType)
-            ? {
-                kind: 'image',
-                mediaType: artifact.object.mediaType,
-                base64: bytes.toString('base64'),
-              }
-            : {
-                kind: 'download_only',
-                reason:
-                  '图片格式、动画或像素尺寸不符合静态预览限制，请下载查看。',
-              },
-          { headers },
-        );
-      try {
-        return Response.json(
-          {
-            kind: 'text',
-            text: new TextDecoder('utf8', { fatal: true }).decode(bytes),
-            mediaType: artifact.object.mediaType,
-          },
-          { headers },
-        );
-      } catch {
-        return Response.json(
-          { kind: 'download_only', reason: '非 UTF-8 文本，请下载查看。' },
-          { headers },
-        );
-      }
+      return Response.json(preview, { headers });
     }
     const input = await body(request);
     if (

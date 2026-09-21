@@ -1315,6 +1315,12 @@ export function EmployeeProduction() {
                 >
                   配置 {target.organizationName} / {target.name} 策略 →
                 </a>
+                {' · '}
+                <a
+                  href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}&tenantView=validation`}
+                >
+                  检查该租户实际使用者与交付 →
+                </a>
               </p>
             ))}
             <label>

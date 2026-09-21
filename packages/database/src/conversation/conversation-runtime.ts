@@ -526,9 +526,13 @@ export async function listTenantRuntimeInventory() {
  * survive this projection; prompts, tool arguments, credentials, host paths and
  * hidden chain-of-thought are never returned.
  */
-export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
+export async function listDshRuntimeEventTimeline(
+  sessionIdInput: string,
+  options: { runId?: string; database?: ReturnType<typeof getDatabase> } = {},
+) {
   const sessionId = UuidSchema.parse(sessionIdInput);
-  const sql = getDatabase();
+  const sql = options.database ?? getDatabase(),
+    selectedRun = options.runId ? UuidSchema.parse(options.runId) : null;
   const rows = await sql<DshRuntimeEventRow[]>`
     select employee_run.run_id, run.state as run_state,
       employee_run.created_at as run_created_at,
@@ -553,11 +557,15 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
       on assistant_message.id = employee_run.assistant_message_id
       and assistant_message.organization_id = employee_run.organization_id
       and assistant_message.workspace_id = employee_run.workspace_id
-    left join allrice_run_events event
-      on event.run_id = employee_run.run_id
-      and event.organization_id = employee_run.organization_id
-      and event.workspace_id = employee_run.workspace_id
+    left join lateral (
+      select event.* from allrice_run_events event
+      where event.run_id = employee_run.run_id
+        and event.organization_id = employee_run.organization_id
+        and event.workspace_id = employee_run.workspace_id
+      order by event.sequence desc limit ${selectedRun ? 150 : null}::int
+    ) event on true
     where employee_run.session_id = ${sessionId}
+      and (${selectedRun}::uuid is null or employee_run.run_id=${selectedRun}::uuid)
     order by employee_run.created_at, event.sequence nulls first
   `;
   // Aggregate once per route receipt, independently of the many timeline events.
@@ -587,6 +595,7 @@ export async function listDshRuntimeEventTimeline(sessionIdInput: string) {
     left join allrice_model_usage_ledger l on l.route_decision_id=d.id
       and l.organization_id=er.organization_id and l.workspace_id=er.workspace_id
     where er.session_id=${sessionId}
+      and (${selectedRun}::uuid is null or er.run_id=${selectedRun}::uuid)
     group by er.run_id
   `;
   const usageByRun = new Map<string, RuntimeRunUsage>(
