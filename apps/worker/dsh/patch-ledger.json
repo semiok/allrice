@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-workbench-native-changeset-v1",
+      "issue": "MET-147",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-workbench-native-tools.mjs",
+      "reason": "Expose the existing Broker changeset proposal schema to the actual native model; preserve server target binding, exact approval and file CAS. Contract tests keep native/Broker artifact and format enums aligned."
+    },
+    {
       "id": "allrice-bounded-native-search-v1",
       "issue": "MET-150",
       "upstreamVersion": "0.1.1-rc.2",

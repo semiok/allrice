@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -90,13 +91,21 @@ describe('AllRice DSH protocol runtime', () => {
       resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
       'utf8',
     );
-    const exportToolSource = runtimeSource.slice(
-      runtimeSource.indexOf("canonicalName: 'workspace.export.create'"),
-      runtimeSource.indexOf("canonicalName: 'automation.create'"),
+    const { workbenchNativeTools } = await import(
+      pathToFileURL(
+        resolve(
+          import.meta.dirname,
+          '../../dsh/allrice-workbench-native-tools.mjs',
+        ),
+      ).href
     );
-
-    expect(exportToolSource).toContain('parentObjectId: {');
-    expect(exportToolSource).toContain('changeSummary: {');
+    const exportTool = workbenchNativeTools.find(
+      (tool: { canonicalName: string }) =>
+        tool.canonicalName === 'workspace.export.create',
+    );
+    expect(runtimeSource).toContain('...workbenchNativeTools,');
+    expect(exportTool.parameters.parentObjectId.type).toBe('string');
+    expect(exportTool.parameters.changeSummary.type).toBe('string');
     expect(runtimeSource).toContain(
       'pass its object ID as parentObjectId and summarize the revision in changeSummary',
     );
