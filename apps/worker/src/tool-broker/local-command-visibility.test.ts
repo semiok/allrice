@@ -25,6 +25,13 @@ describe('MET-147 real tenant local command admission', () => {
         ),
       ),
     ).toEqual(['local.process.execute']);
+    const [command] = riceToolDefinitionsForTurn(
+      ['storage:write'],
+      ['local.process.execute'],
+      [],
+    );
+    expect(command!.description).toContain('根任务明确分配的同一候选版本');
+    expect(command!.description).not.toContain('子助手候选执行尚未接通');
   });
 
   it.each(flags)('keeps command invisible when %s is off', (flag) => {
