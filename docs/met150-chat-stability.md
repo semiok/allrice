@@ -1,6 +1,16 @@
 # MET-150 — Codex subscription chat stability
 
-Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, quota increases, assistant/root-budget changes, or Prod deployment.
+Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, assistant/root-budget changes, or Prod deployment. The explicit September 21 follow-up below authorizes a persistent Snow-only user monthly quota increase; earlier temporary acceptance overrides remain historical.
+
+## September 21 follow-up: Snow monthly budget and tenant-visible balance
+
+The user explicitly requested a persistent **5,000,000 Token monthly user limit for Snow**, replacing the inherited 2,000,000 default. This is a Dev-only per-user resource override, not a global default, per-Run cap, provider subscription allowance or another temporary acceptance grant. Other resource limits, original receipts/cache counts, unknown-usage reservations, roles and execution gates remain unchanged. The configuration write and prior default are audited.
+
+The tenant sidebar now adds the authenticated human account name and remaining percentage below the Rice employee card. Expand it to see exact recorded/remaining Tokens, monthly limit and the reset timestamp. Reads use the same current-user/current-workspace monthly ledger and effective resource limit as admission; cached input is already a subset of input, never added twice or silently subtracted. Incomplete receipts are disclosed in the details. This balance is not a guarantee that every task can start: organization/employee/provider limits and independent execution authorization still apply.
+
+The endpoint verifies current membership and only exposes the authenticated user's balance. It never accepts a client-selected user/limit, never caches private data, and distinguishes unavailable/loading from exhausted. The UI refreshes after history completion, every 30 seconds while visible, on window focus, and on manual request. Scope changes discard prior-account data. No model calls are needed to verify this feature.
+
+Verification: 16 unit/API/UI/governance regressions and 3 isolated PostgreSQL tests passed; Web/Database typechecks, changed-file lint/format, full build and DSH distribution verification passed. Dev release `8c362bafe040346972d5aa25881c944988d9bb83` was deployed at `/Users/a123/allrice-dev-releases/met150-monthly-quota-20260921`. Public Snow login checks confirmed desktop and 390px sidebar rendering, expanded details, refresh/focus recovery, deliberate 503 -> unavailable -> recovery, anonymous 401 and unauthorized workspace 403. At verification, the ledger subtotal was 2,824,029, balance 2,175,971 (43% displayed), with two incomplete historical receipts explicitly disclosed. Prod launch configuration and processes were unchanged. No model request, main merge, extra capability enablement or user role change was made. Private deployment/UI/configuration evidence is under `.local/monthly-quota-deploy`, `.local/monthly-quota-ui` and `.local/met150-snow-quota-change.json`.
 
 ## Evidence
 
@@ -49,3 +59,9 @@ Each Run shows total/confirmed Token usage, cached input, input including cache,
 Unit tests cover budget classification, truthful cache accounting, warning eligibility, no softening of incomplete/assistant/API results, bounded previews and unchanged small/control results. Isolated PostgreSQL + real local-storage tests cover warning delivery/audit events, historical recovery, cross-tenant/owner/attempt denial, exact byte-preserving full results, pagination and storage quota failure. React server rendering checks visible answer + warning for new and historical messages. A real pinned DSH subprocess + synthetic loopback provider checks native search -> Broker -> bounded result -> next model request, with invalid-input denial. Real Codex Dev smoke is a separate deployment acceptance step, not replaced by synthetic tests.
 
 Rollback: switch Dev launch services back to the prior immutable release; no database migration or accounting rewrite is required. Prod stays untouched.
+
+## Integration follow-up (2026-09-21)
+
+PR #76 packages the previously Dev-verified stability fixes and includes the two legacy subscription fixture corrections from #73. PR #77 packages the monthly balance separately after #73 → #74 → #75. MET-150 remains under observation; merging its completed code does not close the observation work.
+
+The first #77 CI exposed the missing monthly-quota endpoint in the isolated workbench HTTP fixture. The fixture now returns a scoped synthetic receipt and asserts the current workspace; unknown requests are still rejected. A full-workbench balance/reload test was added. A targeted mobile regression also exposed focus escaping past the new quota summary: the sidebar trap now includes summary elements and excludes children of closed details. The regression failed before the complete fix and passed after it. Local subscription/receipt PostgreSQL checks: 40 passed; full Chromium workbench/composer checks after adding the quota fixture: 31 passed; final CI is required before merge. No model task or tenant permission change was used for these tests.

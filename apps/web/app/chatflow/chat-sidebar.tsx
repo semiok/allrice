@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
+import { MonthlyQuota } from './monthly-quota';
+import type { useMonthlyQuota } from './use-monthly-quota';
 
 import type { Session, Workspace } from './chatflow-types';
 import { formatTime, providerForSession } from './chatflow-utils';
@@ -20,6 +22,7 @@ interface ChatSidebarProps {
   manifest: SaasCapabilityManifest;
   sessions: Session[];
   workspace: Workspace;
+  monthlyQuota: ReturnType<typeof useMonthlyQuota>;
   onCollapsedChange: (collapsed: boolean) => void;
   onNewSession: () => void;
   onOpenEmployeeDetails: () => void;
@@ -35,6 +38,7 @@ export function ChatSidebar({
   manifest,
   sessions,
   workspace,
+  monthlyQuota,
   onCollapsedChange,
   onNewSession,
   onOpenEmployeeDetails,
@@ -71,9 +75,13 @@ export function ChatSidebar({
         if (event.key === 'Tab') {
           const nodes = [
             ...sidebar.current!.querySelectorAll<HTMLElement>(
-              'button:not([disabled]),a[href]',
+              'button:not([disabled]),a[href],summary',
             ),
-          ].filter((n) => n.getClientRects().length);
+          ].filter(
+            (n) =>
+              n.getClientRects().length &&
+              (!n.closest('details:not([open])') || n.tagName === 'SUMMARY'),
+          );
           const first = nodes[0],
             last = nodes.at(-1);
           if (
@@ -242,6 +250,11 @@ export function ChatSidebar({
                   ›
                 </button>
               </div>
+              <MonthlyQuota
+                data={monthlyQuota.data}
+                failed={monthlyQuota.failed}
+                onRefresh={() => void monthlyQuota.reload()}
+              />
             </>
           ) : (
             <button
