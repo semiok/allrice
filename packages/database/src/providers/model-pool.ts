@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
 
 import {
   EmployeeModelPolicySchema,
@@ -120,7 +121,7 @@ function platformAdminEmails() {
 
 export async function isPlatformAdmin(
   context: RequestContext,
-  sql = getDatabase(),
+  sql: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
 ) {
   const actorId = userId(context);
   const rows = await sql<{ email: string }[]>`
