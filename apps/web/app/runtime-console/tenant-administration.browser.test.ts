@@ -618,6 +618,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         securityPolicy: {
           ...f.definition.securityPolicy,
           deniedCapabilities: ['secret:use'],
+          connectorIdentityModes: ['user'],
         },
       },
     });
@@ -647,6 +648,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
       ).toBe(true);
+      expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
+        false,
+      );
       const save = async () => {
         const response = page.waitForResponse(
           (r) =>
@@ -672,6 +676,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(denied.validation.valid).toBe(false);
       expect(denied.validation.errors.join(' ')).toContain('secret:use');
       await page.getByLabel('禁止 secret:use', { exact: true }).uncheck();
+      await page.getByLabel('允许连接器身份 service').check();
       const permitted = await save();
       expect(permitted.validation.valid).toBe(true);
       const current = await directory();
@@ -682,6 +687,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(current.assignedWorkspaceIds).toEqual(
         original.assignedWorkspaceIds,
       );
+      expect(
+        current.currentDraft.definition.securityPolicy.connectorIdentityModes,
+      ).toEqual(['user', 'service']);
       await page.reload();
       await page
         .getByRole('button')
@@ -691,6 +699,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
       ).toBe(false);
+      expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
+        true,
+      );
       await page.getByLabel('禁止 secret:use', { exact: true }).check();
       expect((await save()).validation.valid).toBe(false);
       expect(

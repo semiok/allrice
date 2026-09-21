@@ -1108,6 +1108,38 @@ export function EmployeeProduction() {
           写操作，也不会把模型密钥下发给租户或 Bridge。
         </p>
         <fieldset className={styles.fieldWide} disabled={busy}>
+          <legend>允许的连接器身份</legend>
+          <p>
+            仅约束员工可使用的身份类型，不创建连接、保存凭证或绑定员工版本。
+          </p>
+          {(['user', 'service'] as const).map((mode) => (
+            <label className={styles.check} key={mode}>
+              <input
+                type="checkbox"
+                aria-label={`允许连接器身份 ${mode}`}
+                checked={draft.securityPolicy.connectorIdentityModes.includes(
+                  mode,
+                )}
+                onChange={(event) =>
+                  update(
+                    ['securityPolicy', 'connectorIdentityModes'],
+                    event.target.checked
+                      ? [...draft.securityPolicy.connectorIdentityModes, mode]
+                      : draft.securityPolicy.connectorIdentityModes.filter(
+                          (value) => value !== mode,
+                        ),
+                  )
+                }
+              />
+              <span>
+                {mode === 'user'
+                  ? '使用者身份（user）'
+                  : '租户服务身份（service，云端 MCP）'}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        <fieldset className={styles.fieldWide} disabled={busy}>
           <legend>员工禁止能力</legend>
           <p>
             勾选表示禁止，优先于工具清单。解除禁止只修改草稿，需重新试用和发布；
