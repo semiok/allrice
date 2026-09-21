@@ -62,9 +62,10 @@ describe('MET-147 real tenant local command admission', () => {
   it('keeps platform read-only previews unable to execute', () => {
     enable();
     expect(
-      riceReadOnlyToolDefinitionsForPreview(['storage:write'], [
-        'local.process.execute',
-      ]),
+      riceReadOnlyToolDefinitionsForPreview(
+        ['storage:write'],
+        ['local.process.execute'],
+      ),
     ).toEqual([]);
   });
 });
