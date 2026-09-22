@@ -10,6 +10,7 @@ import {
 } from '@allrice/contracts';
 
 import type { RiceToolHandler } from '../types.js';
+import { LocalStorageAdapter } from '@allrice/storage';
 
 export const executeControlledLocalCommand: RiceToolHandler = async ({
   input,
@@ -19,6 +20,7 @@ export const executeControlledLocalCommand: RiceToolHandler = async ({
     context: input.context,
     arguments: args,
     callId: input.call.id,
+    storage: new LocalStorageAdapter(input.storageRoot),
   });
   const result = await waitLocalCommandOperation(operation, input.signal);
   return {

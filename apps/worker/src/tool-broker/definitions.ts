@@ -454,6 +454,7 @@ export const riceToolDefinitions = [
   {
     name: 'local.process.execute',
     description:
+      '主 Rice 可指定 candidate:{artifactId,checksum} 测试当前会话已发布的 Changeset：服务端读取不可变内容，Bridge 在隔离副本装载 after 后执行；files 仍是原目录的 before 基线和其余测试依赖，全部修改文件必须被覆盖。新增文件不列入原目录 files，删除文件须列出原 SHA。需支持 changeset_candidate 的新版 Bridge；仅前台命令，不与诊断、依赖安装或后台服务组合。子助手候选执行尚未接通。命令成功不等于测试充分、独立审查通过或已落盘。' +
       '在当前已授权 Bridge 的本地 Linux 隔离副本中运行一次 Node/npm 命令；不是 macOS Shell。先读取文件取得 SHA-256，只复制准确 files 清单（合计256 KiB），不写回原目录。诊断：diagnostics:{kind:"node_project"}、固定 node 路径、args:[]，只读清单/锁文件，不运行项目脚本、不检查主机 PATH；expectedNodeMajor/expectedNpmMajor 可选。依赖安装必须显式提交 dependencies:{manager:"npm",strategy:"locked_ci",registry:"https://registry.npmjs.org",scripts:"disabled"或"allow_in_isolated_copy",packages:[{name,version,integrity,archivePath?}]}；提供 v3 package-lock.json/package.json，所有传递包精确列出（最多8个、归档合计128KiB），否则不安装。优先已有授权归档，否则须有 network:outbound 权限，由 Bridge 仅下载固定公开 npm 归档；项目/安装脚本本身始终无网络。执行 npm ci 后才运行本次 executable/args 验证，环境不跨操作保留。批准绑定版本/来源/脚本/验证命令，不得将诊断或计划认可当作安装授权。必须等待网页精确审批；排队、批准、取消请求都不等于执行完成。',
     // Service configuration is schema-bound and never an implicit shell/PTY grant.
     inputSchema: z.toJSONSchema(RuntimeLocalCommandToolInputSchema, {

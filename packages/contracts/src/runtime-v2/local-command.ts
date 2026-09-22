@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  CommandCandidateSchema,
+  CommandCandidateRefSchema,
+  CommandCandidateEvidenceSchema,
+} from './command-candidate.ts';
 
 import { BridgeCommandPayloadSchema } from '../bridge.ts';
 import { ChecksumSchema } from '../runs.ts';
@@ -63,6 +68,7 @@ export const RuntimeLocalCommandSchema = z
         diagnostics: RuntimeProjectDiagnosticsRequestSchema.optional(),
         dependencies: RuntimeDependencyPreparationSchema.optional(),
         background: RuntimeLocalServiceConfigSchema.optional(),
+        candidate: CommandCandidateSchema.optional(),
         files: z
           .array(z.object({ path, sha256: ChecksumSchema }).strict())
           .min(1)
@@ -84,6 +90,17 @@ export const RuntimeLocalCommandSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.arguments.candidate &&
+      (value.arguments.background ||
+        value.arguments.dependencies ||
+        value.arguments.diagnostics)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'candidate execution is a foreground verification command only',
+      });
     if (
       value.arguments.background &&
       (value.arguments.dependencies || value.arguments.diagnostics)
@@ -122,11 +139,14 @@ export const RuntimeLocalCommandSchema = z
 
 export type RuntimeLocalCommand = z.infer<typeof RuntimeLocalCommandSchema>;
 export const RuntimeLocalCommandToolInputSchema =
-  RuntimeLocalCommandSchema.shape.arguments.omit({
-    imageDigest: true,
-    isolation: true,
-    network: true,
-  });
+  RuntimeLocalCommandSchema.shape.arguments
+    .omit({
+      imageDigest: true,
+      isolation: true,
+      network: true,
+      candidate: true,
+    })
+    .extend({ candidate: CommandCandidateRefSchema.optional() });
 export const RuntimeBridgePayloadSchema = z.union([
   BridgeCommandPayloadSchema,
   RuntimeLocalCommandSchema,
@@ -149,6 +169,7 @@ export const RuntimeLocalCommandProfileSchema = z
           'npm_dependencies',
           'background_services',
           'local_mcp',
+          'changeset_candidate',
         ]),
       )
       .max(8)
@@ -186,6 +207,7 @@ export const RuntimeLocalCommandResultSchema = z
     sourceDirectoryModified: z.literal(false),
     diagnostics: RuntimeProjectDiagnosticsSchema.optional(),
     dependencies: RuntimeDependencyPreparationResultSchema.optional(),
+    candidate: CommandCandidateEvidenceSchema.optional(),
   })
   .strict();
 export type RuntimeLocalCommandResult = z.infer<

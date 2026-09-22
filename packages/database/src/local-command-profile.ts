@@ -47,6 +47,14 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
       path: args.path,
       files: args.files,
       kind: 'local_copy',
+      ...(args.candidate
+        ? {
+            candidate: {
+              artifactId: args.candidate.artifactId,
+              checksum: args.candidate.checksum,
+            },
+          }
+        : {}),
     }),
     effectiveEnvironmentDigest: runtimePolicyDigest({
       version: 'local-vm-container-v1',

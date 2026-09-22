@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   RuntimeLocalCommandSchema,
   RuntimeLocalCommandResultSchema,
@@ -12,6 +13,7 @@ import { LocalDockerApi } from './local-docker-api.js';
 import {
   LocalCommandError,
   readLocalCommandInputs,
+  candidateEvidence,
 } from './local-command-inputs.js';
 import { localCommandSupervisor } from './local-command-supervisor.js';
 import { diagnosticEvidence } from './project-diagnostics.js';
@@ -39,6 +41,10 @@ export interface LocalCommandOutput {
 }
 
 const label = 'xyz.bplabs.allrice.attempt';
+const payloadDigest = (command: RuntimeLocalCommand) =>
+  createHash('sha256')
+    .update(JSON.stringify(RuntimeLocalCommandSchema.parse(command)))
+    .digest('hex');
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 /** Explicit, fixed local backend. Callers still need current server approval and leases. */
@@ -117,6 +123,7 @@ export class LocalCommandRunner {
       features: [
         'project_diagnostics',
         'npm_dependencies',
+        'changeset_candidate',
         ...((await this.localMcpEnabled()) ? ['local_mcp'] : []),
         ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1'
           ? ['background_services']
@@ -171,7 +178,12 @@ export class LocalCommandRunner {
     });
     if (prepareSignal.aborted) throw new LocalCommandError('EXECUTION_REVOKED');
     const encoded = Buffer.from(
-      JSON.stringify({ ...bundle, deadlineUnixMs, archives }),
+      JSON.stringify({
+        ...bundle,
+        command: { ...bundle.command, candidate: undefined },
+        deadlineUnixMs,
+        archives,
+      }),
     ).toString('base64');
     const parts = encoded.match(/.{1,32768}/g) ?? [];
     const limits = command.arguments.limits;
@@ -193,6 +205,14 @@ export class LocalCommandRunner {
         Labels: {
           [label]: options.attemptId,
           'xyz.bplabs.allrice.backend': 'local-vm-container-v1',
+          ...(bundle.candidate
+            ? {
+                'xyz.bplabs.allrice.candidate': JSON.stringify(
+                  bundle.candidate,
+                ),
+                'xyz.bplabs.allrice.command': payloadDigest(command),
+              }
+            : {}),
         },
         HostConfig: {
           NetworkMode: 'none',
@@ -382,6 +402,7 @@ export class LocalCommandRunner {
           filters.stderr.truncated,
         workCopy: 'local_isolated_copy',
         sourceDirectoryModified: false,
+        ...(bundle.candidate ? { candidate: bundle.candidate } : {}),
         ...dependencyEvidence(command, inspected.State.ExitCode, reason),
         ...diagnosticEvidence(
           command,
@@ -434,6 +455,15 @@ export class LocalCommandRunner {
         `/containers/${existing.Id}/kill?signal=KILL`,
       );
     if (before.State.Status === 'created') return null;
+    const candidate = candidateEvidence(command);
+    if (
+      command.arguments.candidate &&
+      (before.Config.Labels['xyz.bplabs.allrice.candidate'] !==
+        JSON.stringify(candidate.candidate) ||
+        before.Config.Labels['xyz.bplabs.allrice.command'] !==
+          payloadDigest(command))
+    )
+      throw new LocalCommandError('CANDIDATE_EVIDENCE_MISSING');
     let pending = '',
       stdout = '',
       stderr = '',
@@ -533,6 +563,7 @@ export class LocalCommandRunner {
       truncated: truncated || reason === 'output_limit',
       workCopy: 'local_isolated_copy',
       sourceDirectoryModified: false,
+      ...candidate,
       ...dependencyEvidence(command, state.State.ExitCode, reason),
       ...diagnosticEvidence(command, stdout, state.State.ExitCode, reason),
     });
