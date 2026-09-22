@@ -412,13 +412,14 @@ suite('MET-153 PR-1 E2E Database Integration', () => {
       insert into allrice_runtime_roots (root_run_id, organization_id, workspace_id, task, deadline_at, initial_deadline_at, created_at)
       values (${rootRunId}, ${orgId}, ${workspaceId}, ${rootTask}::jsonb, ${rootCreatedAt}, ${rootCreatedAt}, ${rootCreatedAt})
     `;
+    const deadline = new Date(rootCreatedAt.getTime() + 3_600_000);
     await database`
       insert into allrice_jobs (
         id, organization_id, workspace_id, owner_id, run_id, status,
-        idempotency_key, timeout_at, initial_timeout_at, payload
+        idempotency_key, created_at, timeout_at, initial_timeout_at, payload
       ) values (
-        ${jobId}, ${orgId}, ${workspaceId}, ${userId}, ${rootRunId}, 'running',
-        ${'job-' + randomUUID().slice(0, 8)}, ${rootCreatedAt}, ${rootCreatedAt},
+        ${jobId}, ${orgId}, ${workspaceId}, ${userId}, ${rootRunId}, 'queued',
+        ${'job-' + randomUUID().slice(0, 8)}, ${rootCreatedAt}, ${deadline}, ${deadline},
         '{"schemaVersion":1,"type":"allrice.employee.run","input":{}}'::jsonb
       )
     `;

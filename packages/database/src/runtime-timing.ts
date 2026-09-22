@@ -196,15 +196,18 @@ export async function computeRootSuspendedTiming(
   // 1. Approvals under this root
   const approvals = await sql<
     {
+      id: string;
       requested_at: Date;
       decided_at: Date | null;
       runtime_revoked_at: Date | null;
       runtime_expires_at: Date;
       status: string;
       run_id: string;
+      resource_id: string | null;
+      resource_type: string | null;
     }[]
   >`
-    select requested_at, decided_at, runtime_revoked_at, runtime_expires_at, status, run_id
+    select id, requested_at, decided_at, runtime_revoked_at, runtime_expires_at, status, run_id, resource_id, resource_type
     from allrice_approval_requests
     where run_id = ${input.rootRunId} or run_id in (
       select run_id from allrice_runtime_run_links where root_run_id = ${input.rootRunId}
@@ -216,12 +219,13 @@ export async function computeRootSuspendedTiming(
     {
       id: string;
       run_id: string;
+      agent_instance_id: string | null;
       status: string;
       created_at: Date;
       updated_at: Date;
     }[]
   >`
-    select id, run_id, snapshot->>'status' as status, created_at, updated_at
+    select id, run_id, snapshot->>'agentInstanceId' as agent_instance_id, snapshot->>'status' as status, created_at, updated_at
     from allrice_runtime_operations
     where root_run_id = ${input.rootRunId}
   `;
@@ -230,12 +234,13 @@ export async function computeRootSuspendedTiming(
   const instances = await sql<
     {
       run_id: string;
+      parent_run_id: string | null;
       status: string;
       created_at: Date;
       stopped_at: Date | null;
     }[]
   >`
-    select run_id, status, created_at, stopped_at
+    select run_id, parent_run_id, status, created_at, stopped_at
     from allrice_assistant_instances
     where root_run_id = ${input.rootRunId}
   `;
@@ -281,6 +286,15 @@ export async function computeRootSuspendedTiming(
     ...deviceWaitIntervals,
   ]);
 
+  // Map approval to target instance ID
+  const getApprovalInstanceId = (a: (typeof approvals)[number]) => {
+    if (a.resource_type === 'runtime_operation' && a.resource_id) {
+      const op = operations.find((o) => o.id === a.resource_id);
+      if (op?.agent_instance_id) return op.agent_instance_id;
+    }
+    return a.run_id;
+  };
+
   // Calculate active execution intervals across all instances and operations
   const activeIntervals: TimeInterval[] = [];
 
@@ -290,13 +304,44 @@ export async function computeRootSuspendedTiming(
       const instEnd = inst.stopped_at ? inst.stopped_at.getTime() : nowMs;
       if (instEnd <= instStart) continue;
 
+      // When an instance delegates to children, the parent is blocked awaiting the child
+      const childIntervals: TimeInterval[] = instances
+        .filter((c) => c.parent_run_id === inst.run_id)
+        .map((c) => ({
+          start: c.created_at.getTime(),
+          end: c.stopped_at ? c.stopped_at.getTime() : nowMs,
+        }))
+        .filter((i) => i.end > i.start);
+
       const instApprovals = approvalIntervals.filter((_, idx) => {
         const row = approvals[idx];
-        return row && row.run_id === inst.run_id;
+        if (!row) return false;
+        const targetId = getApprovalInstanceId(row);
+        return (
+          targetId === inst.run_id ||
+          (inst.run_id === input.rootRunId && targetId === input.rootRunId)
+        );
       });
+
+      const instDeviceWaits: TimeInterval[] = operations
+        .filter(
+          (op) =>
+            op.status === 'waiting_device' &&
+            (op.agent_instance_id === inst.run_id ||
+              (!op.agent_instance_id && inst.run_id === input.rootRunId)),
+        )
+        .map((op) => ({ start: op.updated_at.getTime(), end: nowMs }))
+        .filter((i) => i.end > i.start);
+
+      const instPauses = mergeIntervals([
+        ...childIntervals,
+        ...instApprovals,
+        ...instDeviceWaits,
+      ]);
+
       const instActive = subtractIntervals(
         [{ start: instStart, end: instEnd }],
-        instApprovals,
+        instPauses,
       );
       activeIntervals.push(...instActive);
     }

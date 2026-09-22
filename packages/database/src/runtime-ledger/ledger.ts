@@ -162,7 +162,11 @@ async function lockOperation(tx: Tx, scope: RuntimeScope, operationId: string) {
 }
 
 function ensureRootAdmits(root: RootRow, at: Date) {
-  if (root.cancel_request_id) throw new RuntimeLedgerError('root_canceled');
+  if (root.cancel_request_id)
+    throw new RuntimeLedgerError(
+      'root_canceled',
+      `root_canceled:${root.cancel_reason ?? 'unknown'}`,
+    );
   if (root.deadline_at <= at) throw new RuntimeLedgerError('deadline_exceeded');
 }
 

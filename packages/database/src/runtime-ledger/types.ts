@@ -88,7 +88,8 @@ export class RuntimeLedgerError extends Error {
       | 'receipt_conflict'
       | 'invalid_state'
       | 'invalid_usage',
+    message?: string,
   ) {
-    super(code);
+    super(message ?? code);
   }
 }
