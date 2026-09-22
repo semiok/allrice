@@ -138,7 +138,7 @@ export type ModelFallbackCondition = z.infer<
 
 export const ModelRunLimitsSchema = z
   .object({
-    timeoutMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
+    timeoutMs: z.number().int().min(0).max(86_400_000).default(3_600_000),
     maxInputTokens: z.number().int().min(1_000).max(2_000_000).default(120_000),
     maxOutputTokens: z.number().int().min(1).max(200_000).default(16_000),
     maxTotalTokens: z.number().int().min(1_000).max(2_000_000).default(136_000),
@@ -201,7 +201,7 @@ export const EmployeeModelPolicySchema = z
         'transient_error',
       ]),
     runLimits: ModelRunLimitsSchema.default({
-      timeoutMs: 300_000,
+      timeoutMs: 3_600_000,
       maxInputTokens: 120_000,
       maxOutputTokens: 16_000,
       maxTotalTokens: 136_000,
@@ -263,7 +263,7 @@ export const SessionModelSnapshotSchema = z
         'transient_error',
       ]),
     runLimits: ModelRunLimitsSchema.default({
-      timeoutMs: 300_000,
+      timeoutMs: 3_600_000,
       maxInputTokens: 120_000,
       maxOutputTokens: 16_000,
       maxTotalTokens: 136_000,
@@ -292,7 +292,7 @@ export const UpsertEmployeeModelPolicyInputSchema = z
         'transient_error',
       ]),
     runLimits: ModelRunLimitsSchema.default({
-      timeoutMs: 300_000,
+      timeoutMs: 3_600_000,
       maxInputTokens: 120_000,
       maxOutputTokens: 16_000,
       maxTotalTokens: 136_000,

@@ -11,7 +11,7 @@ export const TenantQuotaLimitsSchema = z
     monthlyRunLimit: z.number().int().min(1).max(2147483647),
     monthlyTokenLimit: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     concurrentRunLimit: z.number().int().min(1).max(10000),
-    maxRuntimeMs: z.number().int().min(1000).max(86400000),
+    maxRuntimeMs: z.number().int().min(0).max(86400000),
   })
   .strict();
 export const TenantQuotaChangeSchema = z

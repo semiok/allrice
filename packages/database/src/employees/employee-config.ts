@@ -174,7 +174,7 @@ export function employeeManifest(input: {
       provider: defaultProvider.route,
       model: defaultProvider.model,
       reasoningEffort: defaultProvider.reasoningEffort,
-      timeoutMs: 300_000,
+      timeoutMs: 3_600_000,
       fallbackModels: [],
       credentialReference: defaultProvider.credentialReference,
       baseUrl: null,

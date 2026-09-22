@@ -71,7 +71,7 @@ export const defaultResourceLimits = {
     monthlyRunLimit: 2_000,
     monthlyTokenLimit: 2_000_000,
     concurrentRunLimit: 3,
-    maxRuntimeMs: 1_800_000,
+    maxRuntimeMs: 3_600_000,
   },
   employee: {
     monthlyRunLimit: 5_000,
@@ -590,7 +590,10 @@ export function assertModelResourceAvailable(input: {
   billingMode?: 'token_metered' | 'subscription';
 }) {
   for (const resource of input.resources) {
-    if (resource.usedRuns >= resource.monthlyRunLimit) {
+    if (
+      input.billingMode !== 'subscription' &&
+      resource.usedRuns >= resource.monthlyRunLimit
+    ) {
       throw new ModelGovernanceError(
         'MODEL_REQUEST_QUOTA_EXCEEDED',
         resource.scope,
@@ -611,7 +614,11 @@ export function assertModelResourceAvailable(input: {
         resource.scope,
       );
     }
-    if (input.requestedRuntimeMs > resource.maxRuntimeMs) {
+    if (
+      resource.maxRuntimeMs > 0 &&
+      input.requestedRuntimeMs > 0 &&
+      input.requestedRuntimeMs > resource.maxRuntimeMs
+    ) {
       throw new ModelGovernanceError(
         'MODEL_RUNTIME_LIMIT_EXCEEDED',
         resource.scope,

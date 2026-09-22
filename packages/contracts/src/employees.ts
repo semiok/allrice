@@ -86,7 +86,7 @@ export const EmployeeRuntimePolicySchema = z
     provider: z.string().trim().min(1).max(120),
     model: z.string().trim().min(1).max(200),
     reasoningEffort: z.enum(['none', 'low', 'medium', 'high', 'xhigh']),
-    timeoutMs: z.number().int().min(1_000).max(3_600_000),
+    timeoutMs: z.number().int().min(0).max(86_400_000),
     fallbackModels: z.array(z.string().trim().min(1).max(200)).max(8),
     credentialReference: z.string().trim().min(1).max(255).optional(),
     baseUrl: z.string().url().max(2_000).nullable().optional(),

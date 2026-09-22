@@ -304,9 +304,12 @@ export async function enqueueRun(
   let availableAt = submission.availableAt
     ? new Date(submission.availableAt)
     : new Date();
-  let timeoutAt = new Date(
-    Math.max(Date.now(), availableAt.getTime()) + submission.timeoutMs,
-  );
+  let timeoutAt =
+    submission.timeoutMs === 0
+      ? new Date(Math.max(Date.now(), availableAt.getTime()) + 365 * 86_400_000)
+      : new Date(
+          Math.max(Date.now(), availableAt.getTime()) + submission.timeoutMs,
+        );
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
     await transaction`
@@ -422,7 +425,10 @@ export async function enqueueRun(
         expectedTurnId = exactTurn ? runtime.active_turn_id : null;
         expectedGeneration = exactTurn ? runtime.thread_generation : null;
         availableAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        timeoutAt = new Date(availableAt.getTime() + submission.timeoutMs);
+        timeoutAt =
+          submission.timeoutMs === 0
+            ? new Date(availableAt.getTime() + 365 * 86_400_000)
+            : new Date(availableAt.getTime() + submission.timeoutMs);
       }
     }
     const policyExpiresAt = new Date(timeoutAt.getTime() + 24 * 60 * 60 * 1000);

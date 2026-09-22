@@ -229,7 +229,7 @@ function runtimePolicy(manifest: EmployeeManifest) {
     provider: 'openai-codex' as const,
     model: manifest.provider.model,
     reasoningEffort: manifest.provider.reasoningEffort,
-    timeoutMs: 300_000,
+    timeoutMs: 3_600_000,
     fallbackModels: [],
     credentialReference: 'deployment:codex-default',
     baseUrl: null,

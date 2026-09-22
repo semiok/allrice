@@ -33,7 +33,7 @@ export const CreateRunInputSchema = z
     input: z.unknown(),
     priority: z.number().int().min(-100).max(100).default(0),
     maxAttempts: z.number().int().min(1).max(10).default(3),
-    timeoutMs: z.number().int().min(1_000).max(86_400_000).default(300_000),
+    timeoutMs: z.number().int().min(0).max(86_400_000).default(3_600_000),
     availableAt: TimestampSchema.optional(),
   })
   .strict();

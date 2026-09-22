@@ -97,7 +97,7 @@ describe('P01 additive contracts preserve the production wire contract', () => {
       input: {},
       priority: 0,
       maxAttempts: 3,
-      timeoutMs: 300_000,
+      timeoutMs: 3_600_000,
     });
     const job = {
       id,

@@ -202,5 +202,42 @@ describe('model governance preflight', () => {
         requestedRuntimeMs: 90_000,
       }),
     ).toThrow(new ModelGovernanceError('MODEL_RUNTIME_LIMIT_EXCEEDED', 'user'));
+
+    // MET-153 PR-1: Codex subscription observes run counts without blocking admission
+    const runCapResource = {
+      ...resource,
+      usedRuns: resource.monthlyRunLimit,
+      activeRuns: 0,
+    };
+    expect(() =>
+      assertModelResourceAvailable({
+        resources: [runCapResource],
+        billingMode: 'subscription',
+        requestedTokens: 1_000,
+        requestedRuntimeMs: 30_000,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertModelResourceAvailable({
+        resources: [runCapResource],
+        billingMode: 'token_metered',
+        requestedTokens: 1_000,
+        requestedRuntimeMs: 30_000,
+      }),
+    ).toThrow(new ModelGovernanceError('MODEL_REQUEST_QUOTA_EXCEEDED', 'user'));
+
+    // MET-153 PR-1: Unlimited runtime (0) allows tasks without runtime cap error
+    const unlimitedResource = {
+      ...resource,
+      maxRuntimeMs: 0,
+    };
+    expect(() =>
+      assertModelResourceAvailable({
+        resources: [unlimitedResource],
+        billingMode: 'subscription',
+        requestedTokens: 1_000,
+        requestedRuntimeMs: 7_200_000,
+      }),
+    ).not.toThrow();
   });
 });

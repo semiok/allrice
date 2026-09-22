@@ -39,6 +39,13 @@ export function AssistantTreeCard({
         <span className={ui.meta}>本任务模式：日常</span>
       </div>
       <p className={ui.meta}>{state.summary}</p>
+      {tree.timing ? (
+        <p className={ui.meta}>
+          {tree.timing.isSuspended
+            ? `任务已挂起暂停计时（${tree.timing.suspensionReason === 'waiting_user' ? '等待审批中' : '等待设备中'}，不计入运行时限）`
+            : `有效运行：${Math.round(tree.timing.effectiveRuntimeMs / 60000)} 分钟 · 等待暂停：${Math.round(tree.timing.suspendedWaitMs / 60000)} 分钟`}
+        </p>
+      ) : null}
       {error ? (
         <p className={ui.alert} role="alert">
           {error}

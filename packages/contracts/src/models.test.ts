@@ -31,7 +31,7 @@ describe('platform model pool contracts', () => {
     });
     expect(policy.reasoningEffort).toBe('xhigh');
     expect(policy.runLimits).toEqual({
-      timeoutMs: 300_000,
+      timeoutMs: 3_600_000,
       maxInputTokens: 120_000,
       maxOutputTokens: 16_000,
       maxTotalTokens: 136_000,

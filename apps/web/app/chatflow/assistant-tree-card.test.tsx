@@ -18,6 +18,14 @@ function fixture(): AssistantTreeView {
       maxChildren: 4,
     },
     cancelRequested: false,
+    timing: {
+      effectiveRuntimeMs: 60_000,
+      suspendedWaitMs: 0,
+      wallClockElapsedMs: 60_000,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+      isSuspended: false,
+      suspensionReason: null,
+    },
     instances: [
       {
         runId: root,

@@ -284,6 +284,8 @@ export async function getPlatformRuntimePolicyControls(
 
 type ApprovalRow = {
   id: string;
+  run_id: string;
+  requested_at: Date;
   runtime_request: unknown;
   runtime_response: unknown;
   runtime_binding_digest: string;
@@ -612,13 +614,13 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
 export async function requestRuntimeActionApproval(
   options: RuntimePolicyOptions,
   bindingInput: unknown,
-  lifetimeMs = 600_000,
+  lifetimeMs = 3_600_000,
   database: Database = getDatabase(),
 ): Promise<RuntimeActionApprovalRequest> {
   if (
     !Number.isInteger(lifetimeMs) ||
     lifetimeMs < 1_000 ||
-    lifetimeMs > 3_600_000
+    lifetimeMs > 86_400_000
   )
     throw new RuntimePolicyError('approval_lifetime_invalid');
   return database.begin(async (transaction) => {
@@ -838,6 +840,41 @@ export async function decideRuntimeActionApproval(
     await transaction`update allrice_approval_requests set status = ${response.decision},
       decided_by = ${context.actor.id}, decided_at = ${now}, runtime_response = ${transaction.json(response)}
       where id = ${row.id}`;
+    const waitDurationMs = now.getTime() - row.requested_at.getTime();
+    if (waitDurationMs > 0) {
+      const [rootLink] = await transaction<{ root_run_id: string }[]>`
+        select root_run_id from allrice_runtime_run_links where run_id = ${row.run_id}
+      `;
+      const rootRunId = rootLink?.root_run_id ?? row.run_id;
+      const activeInstances = await transaction<{ count: string }[]>`
+        select count(*)::text as count from allrice_assistant_instances
+        where root_run_id = ${rootRunId}
+          and run_id <> ${row.run_id}
+          and status in ('provisioning', 'running')
+      `;
+      const hasActiveAssistants = Number(activeInstances[0]?.count ?? 0) > 0;
+      const activeOperations = await transaction<{ count: string }[]>`
+        select count(*)::text as count from allrice_runtime_operations
+        where root_run_id = ${rootRunId}
+          and id <> ${request.binding.attempt.operationId}
+          and snapshot->>'status' in ('running', 'dispatched')
+      `;
+      const hasActiveOperations = Number(activeOperations[0]?.count ?? 0) > 0;
+      if (!hasActiveAssistants && !hasActiveOperations) {
+        await transaction`
+          update allrice_runtime_roots
+          set deadline_at = deadline_at + (${waitDurationMs} * interval '1 millisecond')
+          where root_run_id = ${rootRunId}
+        `;
+        await transaction`
+          update allrice_jobs
+          set timeout_at = timeout_at + (${waitDurationMs} * interval '1 millisecond')
+          where (run_id = ${rootRunId} or run_id in (
+            select run_id from allrice_runtime_run_links where root_run_id = ${rootRunId}
+          )) and status in ('queued', 'claimed', 'running', 'waiting_approval')
+        `;
+      }
+    }
     await audit(
       transaction,
       context,

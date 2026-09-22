@@ -201,12 +201,12 @@ describe('queue contracts', () => {
     });
     expect(submission.priority).toBe(0);
     expect(submission.maxAttempts).toBe(3);
-    expect(submission.timeoutMs).toBe(300_000);
+    expect(submission.timeoutMs).toBe(3_600_000);
     expect(CancelRunInputSchema.parse({}).reason).toBe('user_requested');
     expect(() =>
       CreateRunInputSchema.parse({
         ...submission,
-        timeoutMs: 999,
+        timeoutMs: -1,
       }),
     ).toThrow();
   });

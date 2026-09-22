@@ -359,6 +359,7 @@ function Quotas({
             {new Date(data.resetsAt).toLocaleDateString()}
             。缓存是输入的一部分，已计入总量，不重复相加。未知不是 0。
           </p>
+          <h4>用量统计（真实只读记录）</h4>
           <div className={styles.tableScroll}>
             <table>
               <thead>
@@ -372,6 +373,7 @@ function Quotas({
                     Token 上限
                   </th>
                   <th>已记录总量 / 其中缓存</th>
+                  <th>月模型调用统计</th>
                   <th>未知用量 / 风险预留</th>
                 </tr>
               </thead>
@@ -402,6 +404,12 @@ function Quotas({
                         : q.cachedInputTokens.toLocaleString()}
                     </td>
                     <td>
+                      {q.usedRuns.toLocaleString()} 次
+                      {data.subscription.tokenPolicy === 'observe' ? (
+                        <small>观察模式 · 不阻断准入</small>
+                      ) : null}
+                    </td>
+                    <td>
                       {q.unknownUsageRuns} 笔 /{' '}
                       {q.reservedTokens.toLocaleString()} Token
                     </td>
@@ -411,6 +419,7 @@ function Quotas({
             </table>
           </div>
           <p>{data.subscription.message}</p>
+          <h4>运行保护配置</h4>
           <label>
             调整对象
             <select
@@ -466,14 +475,46 @@ function Quotas({
                     与调用次数；组织美分限额保持原值，订阅不据此推算费用。
                   </p>
                 )}
+                {scope !== 'organization' ? (
+                  <label>
+                    任务有效运行时限
+                    <select
+                      aria-label="任务有效运行时限"
+                      value={limits.maxRuntimeMs}
+                      disabled={inherit}
+                      onChange={(e) => {
+                        setLimits({
+                          ...limits,
+                          maxRuntimeMs: Number(e.target.value),
+                        });
+                        setDirty(true);
+                      }}
+                    >
+                      <option value={1_800_000}>30 分钟</option>
+                      <option value={3_600_000}>1 小时（推荐默认）</option>
+                      <option value={0}>不限制</option>
+                      {![1_800_000, 3_600_000, 0].includes(
+                        limits.maxRuntimeMs,
+                      ) && (
+                        <option value={limits.maxRuntimeMs}>
+                          自定义（{limits.maxRuntimeMs} 毫秒）
+                        </option>
+                      )}
+                    </select>
+                  </label>
+                ) : null}
                 {(
-                  [
-                    'monthlyTokenLimit',
-                    'monthlyRunLimit',
-                    ...(scope === 'organization'
-                      ? []
-                      : ['concurrentRunLimit', 'maxRuntimeMs']),
-                  ] as (keyof TenantQuotaLimits)[]
+                  (scope === 'organization'
+                    ? ['monthlyTokenLimit', 'monthlyRunLimit']
+                    : [
+                        'monthlyTokenLimit',
+                        'monthlyRunLimit',
+                        'concurrentRunLimit',
+                      ]) as (
+                    | 'monthlyTokenLimit'
+                    | 'monthlyRunLimit'
+                    | 'concurrentRunLimit'
+                  )[]
                 ).map((key) => (
                   <label key={key}>
                     {
@@ -481,7 +522,6 @@ function Quotas({
                         monthlyTokenLimit: '月 Token 上限',
                         monthlyRunLimit: '月模型调用次数上限',
                         concurrentRunLimit: '并发运行上限',
-                        maxRuntimeMs: '单次运行最长毫秒数',
                       }[key]
                     }
                     <input
@@ -490,12 +530,11 @@ function Quotas({
                           monthlyTokenLimit: '月 Token 上限',
                           monthlyRunLimit: '月模型调用次数上限',
                           concurrentRunLimit: '并发运行上限',
-                          maxRuntimeMs: '单次运行最长毫秒数',
                         }[key]
                       }
                       type="number"
                       required
-                      min={key === 'maxRuntimeMs' ? 1000 : 1}
+                      min={1}
                       step="1"
                       value={limits[key]}
                       disabled={inherit}

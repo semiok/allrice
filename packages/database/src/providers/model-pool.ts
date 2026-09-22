@@ -348,7 +348,7 @@ export async function listModelPool(context: RequestContext) {
         'transient_error',
       ] as const,
       runLimits: {
-        timeoutMs: 300_000,
+        timeoutMs: 3_600_000,
         maxInputTokens: 120_000,
         maxOutputTokens: 16_000,
         maxTotalTokens: 136_000,
@@ -625,7 +625,7 @@ async function ensureDefaultPolicy(input: {
         'rate_limited',
         'timeout',
         'transient_error',
-      ])}, 300000, 120000, 16000, 136000, null,
+      ])}, 3600000, 120000, 16000, 136000, null,
       1, ${input.actorId}
     ) on conflict (employee_id) do update
       set employee_id = excluded.employee_id
@@ -779,7 +779,13 @@ export async function freezeSessionModelSnapshot(input: {
     fallbackPolicy: policy.fallbackPolicy,
     fallbackTargets: policy.fallbackTargets,
     fallbackOn: policy.fallbackOn,
-    runLimits: policy.runLimits,
+    runLimits: {
+      ...policy.runLimits,
+      timeoutMs:
+        policy.revision === 1 && policy.runLimits.timeoutMs === 300_000
+          ? 3_600_000
+          : policy.runLimits.timeoutMs,
+    },
     resolvedFallbacks,
     frozenAt: new Date().toISOString(),
   });
