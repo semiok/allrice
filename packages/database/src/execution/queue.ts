@@ -533,11 +533,11 @@ export async function enqueueRun(
     const jobs = await transaction<{ id: string }[]>`
       insert into allrice_jobs (
         organization_id, workspace_id, owner_id, run_id, status,
-        idempotency_key, priority, max_attempts, available_at, timeout_at, initial_timeout_at, payload
+        idempotency_key, priority, max_attempts, available_at, timeout_at, payload
       ) values (
         ${context.organizationId}, ${workspaceId}, ${ownerId}, ${run.id}, 'queued',
         ${submission.idempotencyKey}, ${submission.priority},
-        ${submission.maxAttempts}, ${availableAt}, ${timeoutAt}, ${timeoutAt},
+        ${submission.maxAttempts}, ${availableAt}, ${timeoutAt},
         ${transaction.json(toJsonValue(payload))}
       )
       returning id

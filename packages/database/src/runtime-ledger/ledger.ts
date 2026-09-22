@@ -710,8 +710,8 @@ export function createRuntimeOperationLedger(options: {
         if (new Date(deadlineAt) <= (await now(tx)))
           throw new RuntimeLedgerError('deadline_exceeded');
         await tx`
-          insert into allrice_runtime_roots (root_run_id, organization_id, workspace_id, task, deadline_at, initial_deadline_at)
-          values (${task.runId},${task.scope.organizationId},${task.scope.workspaceId},${json(tx, task)},${deadlineAt},${deadlineAt})
+          insert into allrice_runtime_roots (root_run_id, organization_id, workspace_id, task, deadline_at)
+          values (${task.runId},${task.scope.organizationId},${task.scope.workspaceId},${json(tx, task)},${deadlineAt})
         `;
         await linkRun(tx, task);
         for (const budget of budgets)
