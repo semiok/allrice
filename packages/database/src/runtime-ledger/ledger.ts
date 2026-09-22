@@ -606,27 +606,29 @@ export function createRuntimeOperationLedger(options: {
         },
         tx,
       );
-      const [rootFresh] = await tx<
-        { initial_deadline_at: Date; deadline_at: Date }[]
-      >`
-        select coalesce(initial_deadline_at, deadline_at) as initial_deadline_at, deadline_at
-        from allrice_runtime_roots
-        where root_run_id = ${root.root_run_id}
-      `;
-      if (rootFresh) {
-        const newDeadline = new Date(
-          rootFresh.initial_deadline_at.getTime() + timing.suspendedWaitMs,
-        );
-        if (newDeadline.getTime() > rootFresh.deadline_at.getTime()) {
-          await tx`
-            update allrice_runtime_roots
-            set deadline_at = ${newDeadline}
-            where root_run_id = ${root.root_run_id}
-          `;
-          root.deadline_at = newDeadline;
-        }
-      }
       if (timing.suspendedWaitMs > 0) {
+        const [rootFresh] = await tx<
+          { initial_deadline_at: Date | null; deadline_at: Date }[]
+        >`
+          select initial_deadline_at, deadline_at
+          from allrice_runtime_roots
+          where root_run_id = ${root.root_run_id}
+        `;
+        if (rootFresh) {
+          const baseDeadline =
+            rootFresh.initial_deadline_at ?? rootFresh.deadline_at;
+          const newDeadline = new Date(
+            baseDeadline.getTime() + timing.suspendedWaitMs,
+          );
+          if (newDeadline.getTime() > rootFresh.deadline_at.getTime()) {
+            await tx`
+              update allrice_runtime_roots
+              set deadline_at = ${newDeadline}
+              where root_run_id = ${root.root_run_id}
+            `;
+            root.deadline_at = newDeadline;
+          }
+        }
         await tx`
           update allrice_jobs
           set timeout_at = greatest(

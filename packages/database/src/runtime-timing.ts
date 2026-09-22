@@ -517,27 +517,31 @@ export async function checkJobEffectiveTimeout(
   );
 
   const initialTimeout = job.initial_timeout_at ?? job.timeout_at;
-  const effectiveDeadline = new Date(
-    initialTimeout.getTime() + timing.suspendedWaitMs,
-  );
+  const effectiveDeadline =
+    timing.suspendedWaitMs > 0
+      ? new Date(initialTimeout.getTime() + timing.suspendedWaitMs)
+      : job.timeout_at;
 
-  const [rootRow] = await sql<
-    { initial_deadline_at: Date; deadline_at: Date }[]
-  >`
-    select coalesce(initial_deadline_at, deadline_at) as initial_deadline_at, deadline_at
-    from allrice_runtime_roots
-    where root_run_id = ${rootRunId}
-  `;
-  if (rootRow) {
-    const rootNewDeadline = new Date(
-      rootRow.initial_deadline_at.getTime() + timing.suspendedWaitMs,
-    );
-    if (rootNewDeadline.getTime() > rootRow.deadline_at.getTime()) {
-      await sql`
-        update allrice_runtime_roots
-        set deadline_at = ${rootNewDeadline}
-        where root_run_id = ${rootRunId}
-      `;
+  if (timing.suspendedWaitMs > 0) {
+    const [rootRow] = await sql<
+      { initial_deadline_at: Date | null; deadline_at: Date }[]
+    >`
+      select initial_deadline_at, deadline_at
+      from allrice_runtime_roots
+      where root_run_id = ${rootRunId}
+    `;
+    if (rootRow) {
+      const baseDeadline = rootRow.initial_deadline_at ?? rootRow.deadline_at;
+      const rootNewDeadline = new Date(
+        baseDeadline.getTime() + timing.suspendedWaitMs,
+      );
+      if (rootNewDeadline.getTime() > rootRow.deadline_at.getTime()) {
+        await sql`
+          update allrice_runtime_roots
+          set deadline_at = ${rootNewDeadline}
+          where root_run_id = ${rootRunId}
+        `;
+      }
     }
   }
 
