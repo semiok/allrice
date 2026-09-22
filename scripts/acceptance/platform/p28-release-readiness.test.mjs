@@ -440,6 +440,24 @@ test('subscription discriminator never substitutes for a pinned accounting proof
   }
 });
 
+test('billing mode must be a strict string: arrays, objects and null never coerce into a proof-free subscription', () => {
+  for (const mode of [
+    ['subscription'],
+    ['token_metered'],
+    { value: 'subscription' },
+    { toString: 'subscription' },
+    null,
+  ]) {
+    const f = subscriptionFixture();
+    // Retain the five subscription assertions, but intentionally omit proof.
+    // ['subscription'] must not pass Object.hasOwn by string coercion and then
+    // skip a separate strict-equality proof branch.
+    f.receipt.billing = { mode };
+    f.putReceipt(f.receipt);
+    assert.equal(f.validate().passed, false, JSON.stringify(mode));
+  }
+});
+
 test('subscription proof rejects forged identity, N/A, token totals, unknown and duplicate/adopted usage', () => {
   for (const change of [
     (p) => {

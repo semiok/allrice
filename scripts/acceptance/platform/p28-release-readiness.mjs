@@ -881,12 +881,14 @@ export function validateRelease({
           // V1 retains its exact API pricing requirement. Only explicit V2 can
           // choose subscription, with a separate pinned accounting proof.
           const mode = billingAware ? receipt.billing?.mode : 'token_metered';
-          require(Object.hasOwn(
-            ASSISTANT_BILLING_ASSERTIONS,
-            mode ?? '',
-          ), 'assistant-billing-mode-required', field, technical);
+          const validMode = require(typeof mode === 'string' &&
+            Object.hasOwn(
+              ASSISTANT_BILLING_ASSERTIONS,
+              mode,
+            ), 'assistant-billing-mode-required', field, technical);
           if (
             billingAware &&
+            validMode &&
             keys(
               receipt.billing,
               mode === 'subscription' ? ['mode', 'proof'] : ['mode'],
@@ -905,8 +907,10 @@ export function validateRelease({
               add(technical, 'subscription-accounting-proof-invalid', field);
             }
           }
-          for (const name of ASSISTANT_BILLING_ASSERTIONS[mode] ?? [])
-            expectedAssertions[name] = true;
+          if (validMode) {
+            for (const name of ASSISTANT_BILLING_ASSERTIONS[mode] ?? [])
+              expectedAssertions[name] = true;
+          }
         }
         if (caseName === 'developer-id-signature-notarization') {
           expectedAssertions['publisher-team-id'] =
