@@ -329,13 +329,34 @@ export function createAssistantWorkerBridge(
             message:
               'No development action was performed. Correct the command JSON; this is an argument error, not an authorization denial. Editor inspect: {"action":"inspect","assignmentId":"<edit assignment UUID>"}. Tester/reviewer inspect: {"action":"inspect","candidate":{"artifactId":"<assigned artifactId>","digest":"<assigned digest>"}}, WITHOUT assignmentId. Never combine assignmentId and candidate; alternatively inspect the current initialized head with {"action":"inspect"}. To initialize, use {"action":"initialize","seed":{"artifactId":"<artifactId>","digest":"<digest>"}} with the exact artifactId and sha256: digest returned by workspace.export.create. Never substitute objectId, a file path, or an invented checksum.',
           };
-        return {
-          development: await options.onDevelopment({
-            runId: instance.runId,
-            requestId: callUuid,
-            arguments: command.data,
-          }),
-        };
+        try {
+          return {
+            development: await options.onDevelopment({
+              runId: instance.runId,
+              requestId: callUuid,
+              arguments: command.data,
+            }),
+          };
+        } catch (error) {
+          const guidance: Record<string, string> = {
+            development_proposal_mismatch:
+              'For publish, previous is null for the FIRST proposal on this edit assignment, or the exact reference returned by your OWN earlier successful publish. It is NEVER the root seed/base/head. For merge, proposals must be exact, not-yet-adopted child proposal references. Inspect the actual references; do not invent IDs.',
+            development_previous_version_required:
+              'This edit assignment already has a proposal. Publish a revision with previous set to your own latest successful proposal reference, not null or the root base.',
+            development_baseline_conflict:
+              'Inspect the edit assignment again. Each proposal before must exactly equal the assigned file after.text, preserving real newlines and all bytes; before/after are text or null, not checksum objects. Do not overwrite concurrent edits.',
+            development_head_conflict:
+              'The current candidate changed. Inspect the current head and coordinate a new version-specific assignment; do not reuse old approval, test or review evidence.',
+          };
+          if (error instanceof Error && Object.hasOwn(guidance, error.message))
+            return {
+              error: error.message,
+              message: `Development request rejected. ${guidance[error.message]}`,
+            };
+          // Never turn permission, budget, storage or unknown failures into
+          // successful calls, or leak their raw diagnostic text to the model.
+          throw error;
+        }
       }
       if (method === 'delegate') {
         const selectedTools = tools.parse(args.tools);
@@ -411,6 +432,9 @@ export function createAssistantWorkerBridge(
             : '') +
           (assignment && assignment.role !== 'edit'
             ? `\nInspect your assigned candidate using exactly ${JSON.stringify({ action: 'inspect', candidate: assignment.expectedHead })}. Do not pass assignmentId: it is only for an editor's file claim, not a verifier assignment. An argument-validation response means correct the syntax, not bypass a policy denial.`
+            : '') +
+          (assignment?.role === 'edit'
+            ? '\nPublication protocol: wrap each action object as the JSON string command argument to assistant.development. For your FIRST publish, previous MUST be null, never expectedHead/base. Only revising your own successful published proposal uses that proposal reference as previous. before/after are exact text strings or null, not {text,checksum} objects. Preserve actual newlines from inspect; do not double-escape them into literal backslash-n.'
             : '') +
           (assignment?.role === 'test'
             ? '\nApproval protocol: call local.process.execute with the exact assigned candidate and command to REQUEST approval. That call creates the web approval card; it is not permission to execute. The platform waits for the user and only dispatches after approval. Do not wait for a nonexistent card before submitting, and do not report partial merely because approval has not yet been requested. Report success only from the returned terminal command receipt; preserve a real rejection, cancellation or timeout as incomplete.'

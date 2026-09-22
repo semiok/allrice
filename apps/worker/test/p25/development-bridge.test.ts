@@ -268,4 +268,56 @@ describe('development control call identity', () => {
     ).rejects.toThrow('conflict');
     expect(onDevelopment).toHaveBeenCalledTimes(2);
   });
+  it('explains only known version errors without softening authority or unknown failures', async () => {
+    const runId = randomUUID();
+    const onDevelopment = vi.fn();
+    const bridge = createAssistantWorkerBridge({
+      runtime: {
+        getTree: async () => ({
+          instances: [
+            {
+              runId,
+              nativeSessionId: 'root',
+              allowedTools: ['assistant.development'],
+            },
+          ],
+        }),
+        reserveUsage: async () => ({ reserved: true }),
+        settleUsage: async () => {},
+      } as unknown as AssistantRuntime,
+      task: { rootRunId: runId, scope: {} } as Options['task'],
+      context: {} as Options['context'],
+      worker: {} as Options['worker'],
+      wireNames: {},
+      readOnlyTools: new Set(),
+      onDevelopment,
+    });
+    const call = () =>
+      bridge.handle('development', {
+        nativeSessionId: 'root',
+        callId: randomUUID(),
+        arguments: { command: JSON.stringify({ action: 'inspect' }) },
+      });
+    for (const code of [
+      'development_proposal_mismatch',
+      'development_previous_version_required',
+      'development_baseline_conflict',
+      'development_head_conflict',
+    ]) {
+      onDevelopment.mockRejectedValueOnce(new Error(code));
+      expect(await call()).toMatchObject({
+        error: code,
+        message: expect.stringContaining('Development request rejected'),
+      });
+    }
+    for (const code of [
+      'development_forbidden',
+      'budget_exhausted',
+      'private-database-detail',
+    ]) {
+      const error = new Error(code);
+      onDevelopment.mockRejectedValueOnce(error);
+      await expect(call()).rejects.toBe(error);
+    }
+  });
 });
