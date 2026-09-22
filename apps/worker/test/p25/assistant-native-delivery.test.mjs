@@ -130,6 +130,34 @@ function fixture(result = storedResult) {
 }
 
 describe('governed native parent report delivery', () => {
+  it('does not yield on a rejected or replayed development delegation', async () => {
+    const f = fixture();
+    f.agents.requireInitiator = () => f.parent;
+    const tool = f.ctx.tools.register.mock.calls
+      .map(([value]) => value)
+      .find((value) => value.name === 'assistant_delegate');
+    for (const result of [
+      { error: 'development_delegate_invalid' },
+      { dispatch: false, created: false },
+    ]) {
+      f.bridge.mockResolvedValue(result);
+      const exec = {
+        callId: 'development-delegation',
+        signal: new globalThis.AbortController().signal,
+        concludeTurn: vi.fn(),
+      };
+      await tool.execute(
+        {
+          label: 'edit',
+          text: 'Scoped proposal.',
+          tools: ['assistant.development', 'assistant.report'],
+          development: '{}',
+        },
+        exec,
+      );
+      expect(exec.concludeTurn).not.toHaveBeenCalled();
+    }
+  });
   it('keeps the child turn open for correctable report validation errors', async () => {
     const f = fixture();
     f.agents.requireInitiator = () => ({ id: 'synthetic-child' });

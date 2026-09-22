@@ -600,7 +600,7 @@ export function createGovernedAssistantNativeRuntime(
       development: {
         type: 'string',
         description:
-          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths; test/review MUST OMIT paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester. A child report automatically wakes the parent: do not poll inspect or send repeated messages merely to wait; message is for new instructions or corrections.',
+          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths; test/review MUST OMIT paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester. Successful development delegation yields this parent turn after the current tool batch; the child report automatically resumes the parent with the result. Submit independent development delegations in one tool batch if parallel work is needed. Do not poll inspect or send repeated messages merely to wait; message is for new instructions or corrections.',
       },
       tools: {
         type: 'array',
@@ -701,7 +701,16 @@ export function createGovernedAssistantNativeRuntime(
               },
               exec.signal,
             );
-            if (action === 'delegate' && result.dispatch) await start(result);
+            if (action === 'delegate' && result.dispatch) {
+              await start(result);
+              // A version-bound development stage depends on the delegated
+              // result. Yield the native turn instead of starting a model call
+              // with no result yet; that call cannot see a later inbox arrival.
+              // Existing authorized settlement wakes the parent. This does not
+              // complete the business Run, block sibling calls in this batch,
+              // or alter ordinary parallel-assistant delegation.
+              if (args.development !== undefined) exec.concludeTurn();
+            }
             if (action === 'message' && result.dispatch) await followup(result);
             if (action === 'report' && !result.error) {
               exec.concludeTurn();

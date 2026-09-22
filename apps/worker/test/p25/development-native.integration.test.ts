@@ -174,6 +174,7 @@ suite(
                   },
                 };
               case 2: {
+                expect(text).toContain('Published scoped proposal.');
                 const report = await resultFor('DEV_WRITER');
                 return command({
                   action: 'merge',
@@ -206,6 +207,9 @@ suite(
                   },
                 };
               case 4:
+                expect(text).toContain(
+                  'Exact candidate command completed; see authoritative receipt.',
+                );
                 await resultFor('DEV_TESTER');
                 return {
                   nativeTool: {
@@ -222,6 +226,7 @@ suite(
                   },
                 };
               case 5: {
+                expect(text).toContain('Independent review saved.');
                 await resultFor('DEV_REVIEWER');
                 if (mode === 'missing-delivery')
                   return {
