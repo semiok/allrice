@@ -13,6 +13,10 @@ The user explicitly prioritizes product usability before commercialization. This
 
 Implementation covers Worker admission/completion, ordinary and shared assistant accounting, tool operation admission after observed Token overage, and tenant/admin presentation. Verification and deployment evidence are recorded in the issue; implementation alone does not close MET-144.
 
+Verification/deployment: code `460a12d0f07aa081b6cced590e5a8c6d6acc155a` is deployed only to Dev at `met150-token-observe-20260922`. Full suite: 313 files / 2,812 passed (integration/browser-dependent suites separately gated); targeted isolated PostgreSQL suites, workspace typecheck, lint, DSH verification and clean production build passed. Both Dev processes explicitly use `observe`; existing security flags, credentials and `.env` are unchanged. Prod configuration hashes and process IDs matched the pre-deployment baseline.
+
+Real Snow browser Run `105228d0-61f6-4766-843b-e3b10f8e5b48` succeeded through the verified Codex subscription route with a complete receipt. Old Run `756dfee1` retains the identical incomplete ledger hash and zero manual reviews, proving follow-up chat no longer requires a budget exception. Snow remains a member and its historical 5M setting is unchanged. The sidebar displays recorded usage instead of remaining percentage; the administrator projection marks the old unknown receipt observation-only. Private evidence: `.local/evidence/tokenobserve/` and `tokenobserve-deployment*.json`. No main merge or Prod deployment; full MET-144 cooperation acceptance remains separate.
+
 ## Historical scope (superseded where explicitly stated above)
 
 Earlier scope was ordinary Codex subscription chat on Dev; the September 21 follow-up authorized a persistent Snow-only 5,000,000 monthly configuration. Earlier enforcement decisions and evidence remain below as history.
