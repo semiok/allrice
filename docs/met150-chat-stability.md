@@ -1,6 +1,21 @@
 # MET-150 — Codex subscription chat stability
 
-Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, assistant/root-budget changes, or Prod deployment. The explicit September 21 follow-up below authorizes a persistent Snow-only user monthly quota increase; earlier temporary acceptance overrides remain historical.
+## September 22 decision: Codex subscription Tokens are statistics, not admission
+
+The user explicitly prioritizes product usability before commercialization. This decision supersedes the historical monthly-cap/manual-reservation/assistant-token-budget rules below.
+
+- Default `ALLRICE_CODEX_TOKEN_POLICY=observe` (also when unset): server-verified Codex subscription routes do not enforce internal per-task, shared-assistant or organization/user/employee/provider monthly Token ceilings. API/unverified routes retain enforcement. Explicit `enforce` is the legacy rollback switch; invalid explicit values also enforce.
+- Actual input/output/cache receipts remain immutable and distinguish known subtotals from missing receipts. Cached input remains part of input, not added twice. Missing Token receipts alone do not fail an otherwise evidenced completion or lock subsequent chats. Execution ambiguity, partial results, missing deliveries and unresolved external operations are still not successes.
+- Shared model/tool-call counts, concurrency, deadline/cancellation, lease fencing, external effects/approval and actual provider quota checks remain active. Per-response generation settings and actual model context capacity are not monthly billing quotas.
+- Tenant details show monthly recorded usage/cache/unknown receipts, not an internal remaining percentage. Assistant and administrative views identify Tokens as observational. Historical 5M configuration and past manual reservations are retained, not relabeled as actual usage or official Codex quota.
+- The proposed **24,946 Token manual reservation** for Run `756dfee1` is **withdrawn**, not approved or applied. No new administrator budget exception is required. The failed Run and incomplete receipt stay unchanged; no side-effect replay.
+- Scope: Dev only, MET-150 policy follow-up supporting MET-144. No Prod, main merge, Gemini billing, MET-145/146 or new high-privilege flag enablement.
+
+Implementation covers Worker admission/completion, ordinary and shared assistant accounting, tool operation admission after observed Token overage, and tenant/admin presentation. Verification and deployment evidence are recorded in the issue; implementation alone does not close MET-144.
+
+## Historical scope (superseded where explicitly stated above)
+
+Earlier scope was ordinary Codex subscription chat on Dev; the September 21 follow-up authorized a persistent Snow-only 5,000,000 monthly configuration. Earlier enforcement decisions and evidence remain below as history.
 
 ## September 21 follow-up: rejected startup is not a dispatched model call
 

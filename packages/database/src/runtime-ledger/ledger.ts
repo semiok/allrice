@@ -43,6 +43,10 @@ import {
 } from './types.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
+import {
+  observesRootTokens,
+  isTokenMetric,
+} from '../subscription-token-accounting.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -735,16 +739,22 @@ export function createRuntimeOperationLedger(options: {
           new Set(reservations.map((r) => r.metric)).size !== budgets.length
         )
           throw new RuntimeLedgerError('invalid_usage');
+        const observeTokens = await observesRootTokens(
+          tx,
+          root.task,
+          runtimeLedgerInputDigest,
+        );
         for (const budget of budgets) {
           const reservation = reservations.find(
             (r) => r.metric === budget.metric,
           );
           if (!reservation) throw new RuntimeLedgerError('invalid_usage');
           if (
+            !(observeTokens && isTokenMetric(budget.metric)) &&
             BigInt(budget.reserved) +
               BigInt(budget.spent) +
               BigInt(reservation.amount) >
-            BigInt(budget.capacity)
+              BigInt(budget.capacity)
           )
             throw new RuntimeLedgerError('budget_exhausted');
         }
@@ -1427,7 +1437,13 @@ export function createRuntimeOperationLedger(options: {
           throw new RuntimeLedgerError('invalid_usage');
         await tx`update allrice_runtime_reservations set settled_amount=${observation.amount},observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${observation.metric}`;
         await tx`update allrice_runtime_budgets set reserved=${String(reserved)},spent=${String(spent)} where root_run_id=${root.root_run_id} and metric=${observation.metric}`;
-        if (reserved + spent > BigInt(budget.capacity))
+        if (
+          reserved + spent > BigInt(budget.capacity) &&
+          !(
+            isTokenMetric(budget.metric) &&
+            (await observesRootTokens(tx, root.task, runtimeLedgerInputDigest))
+          )
+        )
           await cancelLocked(tx, root, randomUUID(), 'budget_exhausted');
         return { duplicate: false };
       });

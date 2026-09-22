@@ -295,9 +295,9 @@ export function productionAssistantController(input: {
           digest: runtimePolicyDigest(row.execution_spec),
         },
       };
-      // Entire tree shares these immutable admission limits. For subscriptions,
-      // token capacities are observed thresholds, not remote output guarantees:
-      // actual overage is durably recorded by settleUsage and cancels the root.
+      // Shared call limits still bound runaway loops. Token capacities remain
+      // historical configuration; verified subscriptions observe actual usage
+      // without enforcing these capacities (server policy, not model input).
       const budgets: RuntimeBudgetLimit[] = [
         { metric: 'model_calls', unit: 'calls', capacity: 16 },
         { metric: 'tool_calls', unit: 'calls', capacity: 64 },

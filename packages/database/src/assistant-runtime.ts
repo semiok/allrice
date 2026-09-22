@@ -21,6 +21,10 @@ import {
 } from './runtime-ledger/ledger.ts';
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import { createDevelopmentCooperation } from './development-cooperation.ts';
+import {
+  observesRootTokens,
+  isTokenMetric,
+} from './subscription-token-accounting.ts';
 
 type Tx = RuntimeLedgerTransaction;
 const json = (tx: Tx, value: unknown) =>
@@ -89,6 +93,7 @@ export interface AssistantAuthorityInput {
     | 'proposal';
 }
 interface Root {
+  observeTokens: boolean;
   root_run_id: string;
   task: RuntimeTaskRef;
   deadline_at: Date;
@@ -203,7 +208,27 @@ export function createAssistantRuntime(
     root.configuration = AssistantRunConfigurationSchema.parse(
       root.configuration,
     );
+    root.observeTokens = await observesRootTokens(
+      tx,
+      root.task,
+      runtimeLedgerInputDigest,
+    );
     return root;
+  }
+  const observesMetric = (root: Root, metric: string) =>
+    root.observeTokens && isTokenMetric(metric);
+
+  async function unsettledUsage(tx: Tx, root: Root, runId?: string) {
+    const rows = await tx<{ blocking: boolean }[]>`
+      select not (${root.observeTokens} and metric in ('input_tokens','output_tokens')) as blocking
+      from allrice_assistant_usage where root_run_id=${root.root_run_id}
+        and (${runId ?? null}::uuid is null or run_id=${runId ?? null}) and settled_amount is null
+      union all
+      select true from allrice_runtime_reservations u
+      join allrice_runtime_operations o on o.id=u.operation_id
+      where u.root_run_id=${root.root_run_id} and u.settled_amount is null
+        and (${runId ?? null}::uuid is null or o.initial_snapshot->>'agentInstanceId'=${runId ?? null})`;
+    return { unknown: rows.length > 0, blocking: rows.some((r) => r.blocking) };
   }
   async function assertLease(
     tx: Tx,
@@ -608,6 +633,7 @@ export function createAssistantRuntime(
           })),
           budgets: budgets.map((b) => ({
             ...b,
+            ...(observesMetric(root, b.metric) ? { enforced: false } : {}),
             capacity: Number(b.capacity),
             reserved: Number(b.reserved),
             spent: Number(b.spent),
@@ -659,9 +685,9 @@ export function createAssistantRuntime(
         const children = await tx<
           Instance[]
         >`select * from allrice_assistant_instances where root_run_id=${root.root_run_id} and depth>0 for update`;
-        const [unsettled] =
-          await tx`select 1 from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null union all select 1 from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null limit 1`;
-        if (terminal.has(main.status)) return summary(main.status, !unsettled);
+        const unsettled = await unsettledUsage(tx, root);
+        if (terminal.has(main.status))
+          return summary(main.status, !unsettled.unknown);
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         const [unadopted] =
@@ -682,7 +708,7 @@ export function createAssistantRuntime(
               and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
               and not exists(select 1 from allrice_development_reviews reject where reject.root_run_id=h.root_run_id and reject.artifact_id=h.head_artifact_id and reject.verdict='revise'))`;
         const status =
-          unsettled ||
+          unsettled.blocking ||
           pending ||
           unadopted ||
           undelivered ||
@@ -695,7 +721,7 @@ export function createAssistantRuntime(
         await assertLease(tx, root, input.worker);
         await tx`update allrice_assistant_instances set status=${status},stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where run_id=${root.root_run_id}`;
         await tx`update allrice_assistant_instances set stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where root_run_id=${root.root_run_id} and depth>0 and status in ('completed','partial','failed','canceled','unknown')`;
-        return summary(status, !unsettled);
+        return summary(status, !unsettled.unknown);
       });
     },
     /** Accounting-only read after failure/drain. This cannot finalize a task,
@@ -911,12 +937,14 @@ export function createAssistantRuntime(
         )
           fail('budget_exhausted');
         const output = budgets.find((b) => b.metric === 'output_tokens')!;
-        const outputTokens = Math.min(
-          input.requestedOutputTokens,
-          Number(output.capacity) -
-            Number(output.spent) -
-            Number(output.reserved),
-        );
+        const outputTokens = root.observeTokens
+          ? input.requestedOutputTokens
+          : Math.min(
+              input.requestedOutputTokens,
+              Number(output.capacity) -
+                Number(output.spent) -
+                Number(output.reserved),
+            );
         if (!Number.isSafeInteger(outputTokens) || outputTokens <= 0)
           fail('budget_exhausted');
         if (row.parent_run_id) {
@@ -933,7 +961,7 @@ export function createAssistantRuntime(
         };
         for (const [metric, amount] of Object.entries(amounts)) {
           const [budget] =
-            await tx`update allrice_runtime_budgets set reserved=reserved+${amount} where root_run_id=${root.root_run_id} and metric=${metric} and reserved+spent+${amount}<=capacity returning metric`;
+            await tx`update allrice_runtime_budgets set reserved=reserved+${amount} where root_run_id=${root.root_run_id} and metric=${metric} and (${observesMetric(root, metric)} or reserved+spent+${amount}<=capacity) returning metric`;
           if (!budget) fail('budget_exhausted');
           await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${input.callId},${row.run_id},${root.root_run_id},${metric},${amount})`;
         }
@@ -1002,7 +1030,7 @@ export function createAssistantRuntime(
         if (!hold || Number(hold.amount) !== 0 || hold.settled_amount !== null)
           fail('conflict');
         const [budget] =
-          await tx`update allrice_runtime_budgets set reserved=reserved+${input.inputTokens} where root_run_id=${root.root_run_id} and metric='input_tokens' and reserved+spent+${input.inputTokens}<=capacity returning metric`;
+          await tx`update allrice_runtime_budgets set reserved=reserved+${input.inputTokens} where root_run_id=${root.root_run_id} and metric='input_tokens' and (${root.observeTokens} or reserved+spent+${input.inputTokens}<=capacity) returning metric`;
         if (!budget) fail('budget_exhausted');
         await tx`update allrice_assistant_usage set amount=${input.inputTokens} where call_id=${input.callId} and metric='input_tokens'`;
         await tx`update allrice_assistant_model_admissions set input_tokens=${input.inputTokens},request_digest=${input.requestDigest},dispatched_at=clock_timestamp() where call_id=${input.callId}`;
@@ -1102,7 +1130,7 @@ export function createAssistantRuntime(
         }
         for (const [metric, amount] of Object.entries(amounts)) {
           const [b] =
-            await tx`update allrice_runtime_budgets set reserved=reserved+${amount} where root_run_id=${root.root_run_id} and metric=${metric} and reserved+spent+${amount}<=capacity returning metric`;
+            await tx`update allrice_runtime_budgets set reserved=reserved+${amount} where root_run_id=${root.root_run_id} and metric=${metric} and (${observesMetric(root, metric)} or reserved+spent+${amount}<=capacity) returning metric`;
           if (!b) fail('budget_exhausted');
           await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount,tool_name,native_call_id,arguments_digest) values(${input.callId},${row.run_id},${root.root_run_id},${metric},${amount},${input.tool ?? null},${input.nativeCall?.id ?? null},${input.nativeCall?.argumentsDigest ?? null})`;
         }
@@ -1171,7 +1199,10 @@ export function createAssistantRuntime(
           const [b] = await tx<
             { spent: string; reserved: string; capacity: string }[]
           >`update allrice_runtime_budgets set reserved=reserved-${Number(row.amount)},spent=spent+${amount} where root_run_id=${root.root_run_id} and metric=${row.metric} returning spent,reserved,capacity`;
-          if (Number(b!.spent) + Number(b!.reserved) > Number(b!.capacity))
+          if (
+            !observesMetric(root, row.metric) &&
+            Number(b!.spent) + Number(b!.reserved) > Number(b!.capacity)
+          )
             await cancelAssistantRootTransaction(
               tx,
               root.root_run_id,
@@ -1227,12 +1258,11 @@ export function createAssistantRuntime(
         }
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where (run_id=${row.run_id} or snapshot->>'agentInstanceId'=${row.run_id}) and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
-        const [unsettled] =
-          await tx`select 1 from allrice_assistant_usage where run_id=${row.run_id} and settled_amount is null union all select 1 from allrice_runtime_reservations u join allrice_runtime_operations o on o.id=u.operation_id where o.root_run_id=${root.root_run_id} and o.initial_snapshot->>'agentInstanceId'=${row.run_id} and u.settled_amount is null limit 1`;
-        const usageComplete = !pending && !unsettled;
+        const unsettled = await unsettledUsage(tx, root, row.run_id);
+        const usageComplete = !pending && !unsettled.unknown;
         const status = pending
           ? 'unknown'
-          : result.status === 'completed' && !usageComplete
+          : result.status === 'completed' && unsettled.blocking
             ? 'partial'
             : result.status;
         const effective = {
@@ -1242,7 +1272,7 @@ export function createAssistantRuntime(
           incomplete: [
             ...result.incomplete,
             ...(pending ? ['Execution evidence is still unresolved.'] : []),
-            ...(unsettled
+            ...(unsettled.blocking
               ? [
                   'Assistant usage remains unresolved; reserved budget has not been released.',
                 ]

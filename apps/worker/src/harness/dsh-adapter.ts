@@ -5,7 +5,7 @@ import {
   UserQuestionRequestSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
-import { AssistantRuntimeError } from '@allrice/database';
+import { AssistantRuntimeError, observeCodexTokens } from '@allrice/database';
 
 import { HandlerError } from '../errors.js';
 import {
@@ -399,7 +399,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
               throw Error('assistant_completion_proof_required');
             Object.assign(usage, assistantOutcome.usage);
             if (
-              !assistantOutcome.usageComplete ||
+              (!assistantOutcome.usageComplete &&
+                !observeCodexTokens(
+                  !!input.assistants?.subscriptionSnapshot,
+                )) ||
               !['completed', 'partial'].includes(assistantOutcome.status)
             )
               throw new AssistantExecutionUnresolvedError(

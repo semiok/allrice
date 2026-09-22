@@ -1,4 +1,5 @@
 import { HandlerError } from '../../errors.js';
+import { observeCodexTokens } from '@allrice/database';
 import type { HarnessExecutionResult } from '../adapter.js';
 import {
   attachAssistantFailureDiagnostics,
@@ -67,10 +68,16 @@ export class AssistantExecutionUnresolvedError extends HandlerError {
 
 /** Run has no 'partial success' state. Save the clearly marked partial answer,
  * then fail non-retryably instead of declaring the entire job successful. */
-export function assertAssistantTaskComplete(result: HarnessExecutionResult) {
+export function assertAssistantTaskComplete(
+  result: HarnessExecutionResult,
+  verifiedSubscription = false,
+) {
   if (!result.assistantStatus) return;
   const diagnostics = getAssistantFailureDiagnostics(result);
-  if (result.usageComplete !== true)
+  if (
+    result.usageComplete !== true &&
+    !observeCodexTokens(verifiedSubscription)
+  )
     throw new AssistantExecutionUnresolvedError(
       result.usage,
       false,

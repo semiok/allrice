@@ -16,6 +16,19 @@ const entry = {
   reviewedAt: null,
 };
 describe('unknown usage operator UI', () => {
+  it('never asks for an arbitrary reservation in subscription observation mode', () => {
+    const html = renderToStaticMarkup(
+      <UnknownUsageReviewCard
+        entry={{ ...entry, tokenObservationOnly: true }}
+        busy={false}
+        onReview={async () => {}}
+      />,
+    );
+    expect(html).toContain('无需填写预留预算');
+    expect(html).not.toContain('<input');
+    expect(html).not.toContain('<button');
+    expect(html).toContain('原始未知记录保留');
+  });
   it('never enables recovery before explicit confirmation/reason and labels holds as non-usage', () => {
     const html = renderToStaticMarkup(
       <UnknownUsageReviewCard

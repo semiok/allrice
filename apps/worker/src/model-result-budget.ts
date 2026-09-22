@@ -1,4 +1,5 @@
 import type { ModelRunLimits } from '@allrice/contracts';
+import { observeCodexTokens } from '@allrice/database';
 import type { HarnessExecutionResult } from './harness/adapter.js';
 import { HandlerError } from './errors.js';
 
@@ -11,7 +12,8 @@ type BudgetScope = {
 
 function observeCumulativeUsage(scope: BudgetScope) {
   return (
-    scope.verifiedSubscription && !scope.governedAssistants && !scope.workflow
+    observeCodexTokens(scope.verifiedSubscription) ||
+    (scope.verifiedSubscription && !scope.governedAssistants && !scope.workflow)
   );
 }
 
@@ -47,7 +49,8 @@ export function assertInitialModelInputBudget(
   if (
     !Number.isSafeInteger(input.estimatedInputTokens) ||
     input.estimatedInputTokens < 0 ||
-    input.estimatedInputTokens > input.limits.maxInputTokens ||
+    (!observeCodexTokens(input.verifiedSubscription) &&
+      input.estimatedInputTokens > input.limits.maxInputTokens) ||
     (!observeCumulativeUsage(input) &&
       input.estimatedInputTokens > input.limits.maxTotalTokens)
   )
@@ -68,10 +71,14 @@ export function checkCompletedModelBudget(
 ) {
   const { limits, result } = input;
   if (observeCumulativeUsage(input)) {
-    // Initial input checks and adapter output settings remain at dispatch. Re-reading context
+    // Estimate validity and adapter output settings remain at dispatch. Re-reading context
     // and generating output over multiple calls are observations, not violations
-    // of the old single-task 136k/16k cumulative thresholds. Keep receipts intact.
-    if (result.usageComplete !== true)
+    // of the old single-task 136k/16k cumulative thresholds. Keep receipts intact,
+    // including their unknown status; only legacy enforcement blocks on it.
+    if (
+      !observeCodexTokens(input.verifiedSubscription) &&
+      result.usageComplete !== true
+    )
       throw new HandlerError(
         'MODEL_TOKEN_USAGE_UNKNOWN',
         'Model usage receipt is incomplete',

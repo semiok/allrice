@@ -17,6 +17,7 @@ const integration =
 integration('MET-144 failure accounting — isolated real PostgreSQL', () => {
   let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
   beforeAll(async () => {
+    vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce'); // Historical repair is separate from observation.
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     database = await createAssistantFixtureDatabase();
   }, 120000);

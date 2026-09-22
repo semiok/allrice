@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import { codexTokenPolicy } from './codex-token-policy.ts';
 
 import {
   ModelGovernanceError,
@@ -25,6 +26,55 @@ const quota = {
 };
 
 describe('model governance preflight', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it('observes verified subscriptions even over monthly caps with unknown usage; preserves API and concurrency guards', () => {
+    vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', undefined);
+    expect(codexTokenPolicy()).toBe('observe');
+    const unknown = {
+      ...quota,
+      usedTokens: 99_000_000,
+      reservedTokenBudget: 1_000_000,
+      usageComplete: false,
+      usedCostCents: null,
+      unknownCostRuns: 1,
+    };
+    expect(() =>
+      assertQuotaAvailable(unknown, 'subscription', 10_000_000),
+    ).not.toThrow();
+    expect(() => assertQuotaAvailable(unknown, 'token_metered')).toThrow();
+    const resource = {
+      scope: 'user' as const,
+      scopeId: randomUUID(),
+      monthlyRunLimit: 100,
+      monthlyTokenLimit: 1,
+      concurrentRunLimit: 2,
+      maxRuntimeMs: 60000,
+      usedRuns: 1,
+      usedTokens: 99_000_000,
+      activeRuns: 1,
+    };
+    const request = {
+      resources: [resource],
+      billingMode: 'subscription' as const,
+      requestedTokens: 10_000_000,
+      requestedRuntimeMs: 30000,
+    };
+    expect(() => assertModelResourceAvailable(request)).not.toThrow();
+    expect(() =>
+      assertModelResourceAvailable({
+        ...request,
+        resources: [{ ...resource, activeRuns: 2 }],
+      }),
+    ).toThrow('MODEL_RESOURCE_CONCURRENCY_EXCEEDED');
+    expect(() =>
+      assertModelResourceAvailable({ ...request, requestedRuntimeMs: 60001 }),
+    ).toThrow('MODEL_RUNTIME_LIMIT_EXCEEDED');
+    for (const policy of ['enforce', 'invalid']) {
+      vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', policy);
+      expect(codexTokenPolicy()).toBe('enforce');
+      expect(() => assertQuotaAvailable(unknown, 'subscription')).toThrow();
+    }
+  });
   it('returns safe defaults before a connection has governance rows', () => {
     const connectionId = randomUUID();
     expect(

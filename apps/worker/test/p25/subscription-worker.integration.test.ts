@@ -262,13 +262,6 @@ integration(
             await expect(pending).rejects.toMatchObject({
               code: 'ASSISTANT_SUBSCRIPTION_RESULT_UNVERIFIED',
             });
-          else if (mode === 'missing_usage')
-            // MET-150 removes ordinary cumulative thresholds, not unknown
-            // receipt protection. Missing receipts must remain unresolved.
-            await expect(pending).rejects.toMatchObject({
-              code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-              retryable: false,
-            });
           else
             expect(await pending).toMatchObject({
               billingMode: 'subscription',
@@ -323,14 +316,10 @@ integration(
               error_code: 'CONVERSATION_FAILED',
             });
           }
-          if (unknownUsage)
-            expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-              'MODEL_TOKEN_USAGE_UNKNOWN',
-            );
-          else
-            expect(() =>
-              assertQuotaAvailable(quota, 'subscription'),
-            ).not.toThrow();
+          // Unknown accounting must stay unknown, but no longer locks the account.
+          expect(() =>
+            assertQuotaAvailable(quota, 'subscription'),
+          ).not.toThrow();
         } finally {
           await cleanup?.();
           expect(await fixture.close()).toMatchObject({

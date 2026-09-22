@@ -1,4 +1,5 @@
 export * from './core/client.ts';
+export * from './codex-token-policy.ts';
 export * from './identity.ts';
 export * from './tenant-administration.ts';
 export * from './employee-administration.ts';

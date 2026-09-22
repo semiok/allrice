@@ -15,6 +15,7 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { codexTokenPolicy, observeCodexTokens } from '../codex-token-policy.ts';
 import { isPlatformAdmin } from './model-pool.ts';
 import {
   usageBudgetReviewMatches,
@@ -242,6 +243,8 @@ export function assertQuotaAvailable(
   if (quota.usedRuns >= quota.monthlyRunLimit) {
     throw new ModelGovernanceError('MODEL_RUN_QUOTA_EXCEEDED');
   }
+  // Missing receipts remain unknown in the ledger, not an account-wide lock.
+  if (observeCodexTokens(billingMode === 'subscription')) return;
   if (
     quota.usedTokens + (quota.reservedTokenBudget ?? 0) >=
       quota.monthlyTokenLimit ||
@@ -543,16 +546,18 @@ export async function getUserMonthlyQuota(
           resets_at: Date;
           observed_at: Date;
           unknown_runs: number;
+          cached: string | null;
         }[]
       >`
       select date_trunc('month', now()) as period_start,
         date_trunc('month', now()) + interval '1 month' as resets_at,
-        now() as observed_at, count(*)::integer as unknown_runs
+        now() as observed_at, count(*) filter(where not l.usage_complete)::integer as unknown_runs,
+        case when coalesce(bool_and(l.cache_usage_known),true) then coalesce(sum(l.cached_input_tokens),0)::text else null end as cached
       from allrice_model_usage_ledger l
       join allrice_route_decisions d on d.id=l.route_decision_id
       where l.organization_id=${context.organizationId} and l.workspace_id=${workspaceId}
         and d.actor_id=${userId} and l.occurred_at>=date_trunc('month', now())
-        and not l.usage_complete`;
+        `;
       const remainingTokens = Math.max(
         0,
         quota.monthlyTokenLimit - quota.usedTokens,
@@ -564,6 +569,9 @@ export async function getUserMonthlyQuota(
         displayName: viewer.display_name || '当前账号',
         monthlyTokenLimit: quota.monthlyTokenLimit,
         usedTokens: quota.usedTokens,
+        codexTokenPolicy: codexTokenPolicy(),
+        cachedInputTokens:
+          period!.cached === null ? null : Number(period!.cached),
         remainingTokens,
         remainingPercent: (remainingTokens / quota.monthlyTokenLimit) * 100,
         unknownUsageRuns: period!.unknown_runs,
@@ -579,6 +587,7 @@ export function assertModelResourceAvailable(input: {
   resources: Awaited<ReturnType<typeof resourceStatus>>[];
   requestedTokens: number;
   requestedRuntimeMs: number;
+  billingMode?: 'token_metered' | 'subscription';
 }) {
   for (const resource of input.resources) {
     if (resource.usedRuns >= resource.monthlyRunLimit) {
@@ -588,8 +597,8 @@ export function assertModelResourceAvailable(input: {
       );
     }
     if (
-      resource.usedTokens + input.requestedTokens >
-      resource.monthlyTokenLimit
+      !observeCodexTokens(input.billingMode === 'subscription') &&
+      resource.usedTokens + input.requestedTokens > resource.monthlyTokenLimit
     ) {
       throw new ModelGovernanceError(
         'MODEL_TOKEN_QUOTA_EXCEEDED',
@@ -702,7 +711,8 @@ export async function admitModelExecution(input: {
       billing?.subscription === true ? 'subscription' : 'token_metered',
       values.requestedTokens,
     );
-    await assertNoOrphanedAssistantUsage(values.organizationId, transaction);
+    if (!observeCodexTokens(billing?.subscription === true))
+      await assertNoOrphanedAssistantUsage(values.organizationId, transaction);
     const resources = await Promise.all(
       scopes.map(([scope, scopeId]) =>
         resourceStatus(
@@ -718,6 +728,8 @@ export async function admitModelExecution(input: {
     );
     assertModelResourceAvailable({
       resources,
+      billingMode:
+        billing?.subscription === true ? 'subscription' : 'token_metered',
       requestedTokens: values.requestedTokens,
       requestedRuntimeMs: values.requestedRuntimeMs,
     });
@@ -845,6 +857,7 @@ export async function getModelGovernanceForAdmin(context: RequestContext) {
   ]);
   return {
     ...snapshot,
+    codexTokenPolicy: codexTokenPolicy(),
     unknownUsage,
     operations: operations.map((item) => ({
       connectionId: item.connection_id,

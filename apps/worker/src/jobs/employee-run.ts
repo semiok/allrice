@@ -1207,7 +1207,7 @@ export async function executeEmployeeRun({
     }
     routeUsage = result.usage;
     // Keep subscription accounting incomplete until identity-bound receipts
-    // are verified. A forged/mismatched result cannot unblock the next Run.
+    // are verified. A forged/mismatched result cannot claim successful delivery.
     routeUsageComplete = subscriptionSnapshot
       ? false
       : (result.usageComplete ?? true);
@@ -1285,7 +1285,7 @@ export async function executeEmployeeRun({
       configChecksum,
       workflowLease,
     });
-    assertAssistantTaskComplete(result);
+    assertAssistantTaskComplete(result, modelBudgetScope.verifiedSubscription);
     await completeRouteDecision({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,

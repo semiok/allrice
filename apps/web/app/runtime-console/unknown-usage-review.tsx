@@ -12,6 +12,7 @@ export interface UnknownUsageReview {
   knownTokens: number;
   reservedTokens: number | null;
   approved: boolean;
+  tokenObservationOnly?: boolean;
   eligible: boolean;
   reason: string | null;
   reviewedAt: string | null;
@@ -44,7 +45,16 @@ export function UnknownUsageReviewCard({
         {entry.model} · {entry.occurredAt} · 已知小计{' '}
         {entry.knownTokens.toLocaleString()} Token
       </p>
-      {entry.approved ? (
+      {entry.tokenObservationOnly ? (
+        <p>
+          Codex
+          订阅仅记录用量。缺少回执不会阻断后续聊天，无需填写预留预算；原始未知记录保留，不按
+          0 处理。
+          {entry.approved
+            ? ` 历史人工预留 ${entry.reservedTokens?.toLocaleString()} Token 仅留档，不作为实际用量。`
+            : ''}
+        </p>
+      ) : entry.approved ? (
         <p>
           已批准额外预留 {entry.reservedTokens?.toLocaleString()} Token
           组织月度预算；实际用量仍未知。{entry.reason}

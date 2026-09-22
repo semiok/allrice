@@ -10,6 +10,8 @@ export const UserMonthlyQuotaSchema = z
     displayName: z.string().min(1),
     monthlyTokenLimit: z.number().int().positive(),
     usedTokens: z.number().int().nonnegative(),
+    codexTokenPolicy: z.enum(['observe', 'enforce']).optional(),
+    cachedInputTokens: z.number().int().nonnegative().nullable().optional(),
     remainingTokens: z.number().int().nonnegative(),
     remainingPercent: z.number().min(0).max(100),
     unknownUsageRuns: z.number().int().nonnegative(),

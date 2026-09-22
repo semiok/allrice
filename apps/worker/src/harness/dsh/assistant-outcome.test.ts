@@ -18,6 +18,22 @@ const result: HarnessExecutionResult = {
   model: 'synthetic',
 };
 describe('assistant completion at the Worker success boundary', () => {
+  it('separates missing subscription accounting from an evidenced completion, not from partial work', () => {
+    const missing = {
+      ...result,
+      assistantStatus: 'completed' as const,
+      usageComplete: false,
+    };
+    expect(() => assertAssistantTaskComplete(missing, true)).not.toThrow();
+    expect(() => assertAssistantTaskComplete(missing, false)).toThrow();
+    expect(() =>
+      assertAssistantTaskComplete(
+        { ...missing, assistantStatus: 'partial' },
+        true,
+      ),
+    ).toThrow('未完成事项');
+    expect(missing.usageComplete).toBe(false);
+  });
   it('failure receipts are local, bound to the exact Run/attempt and cannot be forged by serialized fields', () => {
     const error = Object.freeze(Error('original failure'));
     const runId = randomUUID();
