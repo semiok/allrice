@@ -1339,7 +1339,13 @@ export async function prepareEmployeeRunBinding(input: {
         assignedAt: assignment.assigned_at.toISOString(),
       },
       runtimePolicy: selectedRuntimePolicy,
-      modelSnapshot,
+      modelSnapshot: {
+        ...modelSnapshot,
+        runLimits: {
+          ...modelSnapshot.runLimits,
+          timeoutMs: effectiveTimeoutMs,
+        },
+      },
       capabilitySnapshot: {
         declaredCapabilities: manifest.data.capabilities,
         grantedCapabilities,

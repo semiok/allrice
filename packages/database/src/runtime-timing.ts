@@ -227,7 +227,7 @@ export async function computeRootSuspendedTiming(
   >`
     select id, run_id, snapshot->>'agentInstanceId' as agent_instance_id, snapshot->>'status' as status, created_at, updated_at
     from allrice_runtime_operations
-    where root_run_id = ${input.rootRunId}
+    where root_run_id = ${input.rootRunId} or run_id = ${input.rootRunId}
   `;
 
   // 3. Assistant instances (for parallel branch active execution accounting)
@@ -267,17 +267,95 @@ export async function computeRootSuspendedTiming(
     }
   }
 
+  // Query historical operation events to reconstruct exact device waiting intervals
+  interface OpEvent {
+    operation_id: string;
+    sequence: number | string;
+    created_at: Date;
+    signal_type: string | null;
+    signal_reason: string | null;
+    occurred_at: string | null;
+  }
+  const operationIds = operations.map((o) => o.id);
+  const operationEvents: OpEvent[] =
+    operationIds.length > 0
+      ? await sql<OpEvent[]>`
+          select
+            operation_id,
+            sequence,
+            created_at,
+            payload->'signal'->>'type' as signal_type,
+            payload->'signal'->>'reason' as signal_reason,
+            payload->>'occurredAt' as occurred_at
+          from allrice_runtime_operation_events
+          where operation_id in ${sql(operationIds)}
+          order by operation_id, sequence asc
+        `
+      : [];
+
   const deviceWaitIntervals: TimeInterval[] = [];
+  const opDeviceWaitIntervals = new Map<string, TimeInterval[]>();
   let hasWaitingDevice = false;
 
+  const eventsByOp = new Map<string, OpEvent[]>();
+  for (const e of operationEvents) {
+    const list = eventsByOp.get(e.operation_id) ?? [];
+    list.push(e);
+    eventsByOp.set(e.operation_id, list);
+  }
+
   for (const op of operations) {
+    const opIntervals: TimeInterval[] = [];
+    const opEvents = eventsByOp.get(op.id) ?? [];
+    for (let i = 0; i < opEvents.length; i++) {
+      const event = opEvents[i]!;
+      if (
+        event.signal_type === 'operation.waiting' &&
+        event.signal_reason === 'device'
+      ) {
+        const start = new Date(event.occurred_at ?? event.created_at).getTime();
+        let end: number;
+        let nextNonWaitEvent: OpEvent | null = null;
+        for (let j = i + 1; j < opEvents.length; j++) {
+          const next = opEvents[j]!;
+          if (
+            next.signal_type !== 'operation.waiting' ||
+            next.signal_reason !== 'device'
+          ) {
+            nextNonWaitEvent = next;
+            break;
+          }
+        }
+        if (nextNonWaitEvent) {
+          end = new Date(
+            nextNonWaitEvent.occurred_at ?? nextNonWaitEvent.created_at,
+          ).getTime();
+        } else if (op.status === 'waiting_device') {
+          end = nowMs;
+        } else {
+          end = op.updated_at.getTime();
+        }
+        if (end > start) {
+          opIntervals.push({ start, end });
+        }
+      }
+    }
+
     if (op.status === 'waiting_device') {
       hasWaitingDevice = true;
-      const start = op.updated_at.getTime();
-      const end = nowMs;
-      if (end > start) {
-        deviceWaitIntervals.push({ start, end });
+      if (opIntervals.length === 0) {
+        const start = op.updated_at.getTime();
+        const end = nowMs;
+        if (end > start) {
+          opIntervals.push({ start, end });
+        }
       }
+    }
+
+    if (opIntervals.length > 0) {
+      const mergedOpIntervals = mergeIntervals(opIntervals);
+      opDeviceWaitIntervals.set(op.id, mergedOpIntervals);
+      deviceWaitIntervals.push(...mergedOpIntervals);
     }
   }
 
@@ -304,15 +382,6 @@ export async function computeRootSuspendedTiming(
       const instEnd = inst.stopped_at ? inst.stopped_at.getTime() : nowMs;
       if (instEnd <= instStart) continue;
 
-      // When an instance delegates to children, the parent is blocked awaiting the child
-      const childIntervals: TimeInterval[] = instances
-        .filter((c) => c.parent_run_id === inst.run_id)
-        .map((c) => ({
-          start: c.created_at.getTime(),
-          end: c.stopped_at ? c.stopped_at.getTime() : nowMs,
-        }))
-        .filter((i) => i.end > i.start);
-
       const instApprovals = approvalIntervals.filter((_, idx) => {
         const row = approvals[idx];
         if (!row) return false;
@@ -323,21 +392,19 @@ export async function computeRootSuspendedTiming(
         );
       });
 
-      const instDeviceWaits: TimeInterval[] = operations
+      const instOpIds = operations
         .filter(
           (op) =>
-            op.status === 'waiting_device' &&
-            (op.agent_instance_id === inst.run_id ||
-              (!op.agent_instance_id && inst.run_id === input.rootRunId)),
+            op.agent_instance_id === inst.run_id ||
+            (!op.agent_instance_id && inst.run_id === input.rootRunId),
         )
-        .map((op) => ({ start: op.updated_at.getTime(), end: nowMs }))
-        .filter((i) => i.end > i.start);
+        .map((op) => op.id);
 
-      const instPauses = mergeIntervals([
-        ...childIntervals,
-        ...instApprovals,
-        ...instDeviceWaits,
-      ]);
+      const instDeviceWaits: TimeInterval[] = instOpIds.flatMap(
+        (id) => opDeviceWaitIntervals.get(id) ?? [],
+      );
+
+      const instPauses = mergeIntervals([...instApprovals, ...instDeviceWaits]);
 
       const instActive = subtractIntervals(
         [{ start: instStart, end: instEnd }],
@@ -354,7 +421,7 @@ export async function computeRootSuspendedTiming(
     if (runEnd > rootCreatedMs) {
       const runActive = subtractIntervals(
         [{ start: rootCreatedMs, end: runEnd }],
-        approvalIntervals,
+        allWaitIntervals,
       );
       activeIntervals.push(...runActive);
     }
@@ -397,5 +464,121 @@ export async function computeRootSuspendedTiming(
     suspensionReason,
     effectiveRuntimeMs,
     wallClockElapsedMs,
+  };
+}
+
+/**
+ * Checks whether a job has genuinely exceeded its effective compute timeout,
+ * taking into account suspended waiting periods (approvals and device waiting).
+ * Automatically extends job timeout_at and root deadline_at if extended by wait.
+ */
+export async function checkJobEffectiveTimeout(
+  sql: postgres.Sql | postgres.TransactionSql,
+  job: {
+    id: string;
+    run_id: string;
+    created_at?: Date;
+    timeout_at: Date;
+    initial_timeout_at?: Date | null;
+  },
+  now = new Date(),
+): Promise<{
+  timedOut: boolean;
+  isSuspended: boolean;
+  effectiveDeadline: Date;
+  suspendedWaitMs: number;
+}> {
+  if (job.timeout_at > now) {
+    return {
+      timedOut: false,
+      isSuspended: false,
+      effectiveDeadline: job.timeout_at,
+      suspendedWaitMs: 0,
+    };
+  }
+
+  const [link] = await sql<{ root_run_id: string }[]>`
+    select root_run_id from allrice_runtime_run_links where run_id = ${job.run_id}
+  `;
+  const rootRunId = link?.root_run_id ?? job.run_id;
+
+  const [runRow] = await sql<{ created_at: Date }[]>`
+    select created_at from allrice_runs where id = ${rootRunId}
+  `;
+  const rootCreatedAt = runRow?.created_at ?? job.created_at ?? now;
+
+  const timing = await computeRootSuspendedTiming(
+    {
+      rootRunId,
+      rootCreatedAt,
+      now,
+    },
+    sql,
+  );
+
+  const initialTimeout = job.initial_timeout_at ?? job.timeout_at;
+  const effectiveDeadline = new Date(
+    initialTimeout.getTime() + timing.suspendedWaitMs,
+  );
+
+  const [rootRow] = await sql<
+    { initial_deadline_at: Date; deadline_at: Date }[]
+  >`
+    select coalesce(initial_deadline_at, deadline_at) as initial_deadline_at, deadline_at
+    from allrice_runtime_roots
+    where root_run_id = ${rootRunId}
+  `;
+  if (rootRow) {
+    const rootNewDeadline = new Date(
+      rootRow.initial_deadline_at.getTime() + timing.suspendedWaitMs,
+    );
+    if (rootNewDeadline.getTime() > rootRow.deadline_at.getTime()) {
+      await sql`
+        update allrice_runtime_roots
+        set deadline_at = ${rootNewDeadline}
+        where root_run_id = ${rootRunId}
+      `;
+    }
+  }
+
+  if (timing.isSuspended) {
+    if (effectiveDeadline.getTime() > job.timeout_at.getTime()) {
+      await sql`
+        update allrice_jobs
+        set timeout_at = ${effectiveDeadline}
+        where id = ${job.id}
+      `;
+      job.timeout_at = effectiveDeadline;
+    }
+    return {
+      timedOut: false,
+      isSuspended: true,
+      effectiveDeadline,
+      suspendedWaitMs: timing.suspendedWaitMs,
+    };
+  }
+
+  if (effectiveDeadline.getTime() > now.getTime()) {
+    if (effectiveDeadline.getTime() > job.timeout_at.getTime()) {
+      await sql`
+        update allrice_jobs
+        set timeout_at = ${effectiveDeadline}
+        where id = ${job.id}
+      `;
+      job.timeout_at = effectiveDeadline;
+    }
+    return {
+      timedOut: false,
+      isSuspended: false,
+      effectiveDeadline,
+      suspendedWaitMs: timing.suspendedWaitMs,
+    };
+  }
+
+  return {
+    timedOut: true,
+    isSuspended: false,
+    effectiveDeadline,
+    suspendedWaitMs: timing.suspendedWaitMs,
   };
 }

@@ -654,7 +654,9 @@ export async function executeEmployeeRun({
               ].join('\n'),
             ),
           }),
-          requestedRuntimeMs: frozenModelSnapshot.runLimits.timeoutMs,
+          requestedRuntimeMs:
+            executionSnapshot.runtimePolicy?.timeoutMs ??
+            frozenModelSnapshot.runLimits.timeoutMs,
         });
       } catch (error) {
         // No dispatch occurred. The existing pre-dispatch failure path records

@@ -47,6 +47,7 @@ import {
   observesRootTokens,
   isTokenMetric,
 } from '../subscription-token-accounting.ts';
+import { computeRootSuspendedTiming } from '../runtime-timing.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -91,6 +92,7 @@ interface RootRow {
   deadline_at: Date;
   cancel_request_id: string | null;
   cancel_reason: string | null;
+  created_at: Date;
 }
 interface OperationRow {
   id: string;
@@ -595,6 +597,48 @@ export function createRuntimeOperationLedger(options: {
     if (missing?.missing) throw new RuntimeLedgerError('budget_exhausted');
     await admit(tx, row, 'dispatch', at);
     const admittedAt = await now(tx);
+    if (root.deadline_at <= admittedAt) {
+      const timing = await computeRootSuspendedTiming(
+        {
+          rootRunId: root.root_run_id,
+          rootCreatedAt: root.created_at,
+          now: admittedAt,
+        },
+        tx,
+      );
+      const [rootFresh] = await tx<
+        { initial_deadline_at: Date; deadline_at: Date }[]
+      >`
+        select coalesce(initial_deadline_at, deadline_at) as initial_deadline_at, deadline_at
+        from allrice_runtime_roots
+        where root_run_id = ${root.root_run_id}
+      `;
+      if (rootFresh) {
+        const newDeadline = new Date(
+          rootFresh.initial_deadline_at.getTime() + timing.suspendedWaitMs,
+        );
+        if (newDeadline.getTime() > rootFresh.deadline_at.getTime()) {
+          await tx`
+            update allrice_runtime_roots
+            set deadline_at = ${newDeadline}
+            where root_run_id = ${root.root_run_id}
+          `;
+          root.deadline_at = newDeadline;
+        }
+      }
+      if (timing.suspendedWaitMs > 0) {
+        await tx`
+          update allrice_jobs
+          set timeout_at = greatest(
+            timeout_at,
+            coalesce(initial_timeout_at, timeout_at) + (${timing.suspendedWaitMs} * interval '1 millisecond')
+          )
+          where (run_id = ${root.root_run_id} or run_id in (
+            select run_id from allrice_runtime_run_links where root_run_id = ${root.root_run_id}
+          )) and status in ('queued', 'claimed', 'running', 'retry_wait', 'waiting_approval')
+        `;
+      }
+    }
     ensureRootAdmits(root, admittedAt);
     if (row.snapshot.status !== 'ready')
       await append(tx, row, { type: 'operation.ready' });

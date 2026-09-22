@@ -49,6 +49,7 @@ import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 import { prepareChangesetAction } from '../changeset-service.ts';
 import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
+import { checkJobEffectiveTimeout } from '../runtime-timing.ts';
 
 export { queueMaintenanceAction } from '../queue/policy.ts';
 export type { MaintenanceAction } from '../queue/policy.ts';
@@ -1011,15 +1012,22 @@ export async function startClaimedJob(
       return { execution: null, denied: false };
     }
     if (job.timeout_at <= now) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'failed',
-        runStatus: 'failed',
-        eventType: 'run.failed',
-        code: 'JOB_TIMEOUT',
-        message: 'Job timed out before execution started',
-        payload: { code: 'JOB_TIMEOUT' },
-      });
-      return { execution: null, denied: false };
+      const timeoutCheck = await checkJobEffectiveTimeout(
+        transaction,
+        job,
+        now,
+      );
+      if (timeoutCheck.timedOut) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'JOB_TIMEOUT',
+          message: 'Job timed out before execution started',
+          payload: { code: 'JOB_TIMEOUT' },
+        });
+        return { execution: null, denied: false };
+      }
     }
     const policies = await transaction<PolicyRow[]>`
       select p.*
@@ -1181,18 +1189,25 @@ export async function heartbeatJob(
       });
       return { active: false, canceled: true };
     }
-    if (job.timeout_at <= new Date()) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'failed',
-        runStatus: 'failed',
-        eventType: 'run.failed',
-        code: 'JOB_TIMEOUT',
-        message: 'Job execution timed out',
-        payload: { code: 'JOB_TIMEOUT' },
-      });
-      return { active: false, canceled: false };
-    }
     const now = new Date();
+    if (job.timeout_at <= now) {
+      const timeoutCheck = await checkJobEffectiveTimeout(
+        transaction,
+        job,
+        now,
+      );
+      if (timeoutCheck.timedOut) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'JOB_TIMEOUT',
+          message: 'Job execution timed out',
+          payload: { code: 'JOB_TIMEOUT' },
+        });
+        return { active: false, canceled: false };
+      }
+    }
     await transaction`
       update allrice_jobs
       set heartbeat_at = ${now}, lease_expires_at = ${leaseDeadline(leaseMs, now)},
@@ -1282,10 +1297,20 @@ export async function failJob(input: {
       });
       return { retrying: false };
     }
+    const now = new Date();
+    let effectiveTimeoutAt = job.timeout_at;
+    if (effectiveTimeoutAt <= now) {
+      const timeoutCheck = await checkJobEffectiveTimeout(
+        transaction,
+        job,
+        now,
+      );
+      effectiveTimeoutAt = timeoutCheck.effectiveDeadline;
+    }
     const canRetry =
       input.retryable &&
       job.attempt < job.max_attempts &&
-      job.timeout_at > new Date();
+      effectiveTimeoutAt > now;
     if (canRetry) {
       const availableAt = retryAvailableAt(
         job.attempt,
@@ -1358,7 +1383,9 @@ export async function maintainQueue(limit = 100) {
           cancel_requested_at is not null
           or (timeout_at <= ${now} and not exists (
             select 1 from allrice_approval_requests a
-            where a.run_id = j.run_id
+            where (a.run_id = j.run_id or a.run_id in (
+              select run_id from allrice_runtime_run_links where root_run_id = j.run_id
+            ))
               and a.runtime_response is null
               and a.runtime_revoked_at is null
               and a.runtime_expires_at > ${now}
@@ -1402,6 +1429,15 @@ export async function maintainQueue(limit = 100) {
         continue;
       }
       if (action === 'timeout') {
+        const timeoutCheck = await checkJobEffectiveTimeout(
+          transaction,
+          job,
+          now,
+        );
+        if (!timeoutCheck.timedOut) {
+          counts.timeout -= 1;
+          continue;
+        }
         await transitionTerminal(transaction, job, {
           jobStatus: 'failed',
           runStatus: 'failed',

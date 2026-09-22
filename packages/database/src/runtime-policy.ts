@@ -857,16 +857,16 @@ export async function decideRuntimeActionApproval(
       where root_run_id = ${rootRunId}
     `;
 
-    if (rootRow) {
-      const timing = await computeRootSuspendedTiming(
-        {
-          rootRunId,
-          rootCreatedAt: rootRow.created_at,
-          now,
-        },
-        transaction,
-      );
+    const timing = await computeRootSuspendedTiming(
+      {
+        rootRunId,
+        rootCreatedAt: rootRow?.created_at ?? now,
+        now,
+      },
+      transaction,
+    );
 
+    if (rootRow) {
       const newDeadline = new Date(
         rootRow.initial_deadline_at.getTime() + timing.suspendedWaitMs,
       );
@@ -876,7 +876,9 @@ export async function decideRuntimeActionApproval(
         set deadline_at = greatest(deadline_at, ${newDeadline})
         where root_run_id = ${rootRunId}
       `;
+    }
 
+    if (timing.suspendedWaitMs > 0) {
       await transaction`
         update allrice_jobs
         set timeout_at = greatest(
