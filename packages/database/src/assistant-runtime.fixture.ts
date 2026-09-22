@@ -43,11 +43,17 @@ export class AssistantFixtureCleanupError extends Error {
 }
 
 export async function createAssistantFixtureDatabase(
-  options: { throughMigration?: '0096_assistant_pricing.sql' } = {},
+  options: {
+    throughMigration?:
+      '0096_assistant_pricing.sql' | '0100_tenant_scoped_resource_quotas.sql';
+  } = {},
 ) {
   if (
     options.throughMigration !== undefined &&
-    options.throughMigration !== '0096_assistant_pricing.sql'
+    ![
+      '0096_assistant_pricing.sql',
+      '0100_tenant_scoped_resource_quotas.sql',
+    ].includes(options.throughMigration)
   )
     throw Error('Unsupported isolated migration checkpoint');
   const value = process.env.ALLRICE_TEST_DATABASE_URL;

@@ -34,21 +34,22 @@ This directory is the collaboration entry point for AllRice. A feature is not re
 
 ## Feature index
 
-| Capability              | Status                          | Linear          | Documentation                                          |
-| ----------------------- | ------------------------------- | --------------- | ------------------------------------------------------ |
-| Identity and tenancy    | Foundation implemented          | MET-41 / MET-49 | [README](features/identity/README.md)                  |
-| Employee workspace      | Rice tenant work surface        | MET-50 / MET-93 | [README](features/employee-workspace/README.md)        |
-| Chat and Session        | Feature implemented             | MET-50          | [README](features/chat-session/README.md)              |
-| File storage            | Workflow implemented            | MET-42 / MET-50 | [README](features/file-storage/README.md)              |
-| Memory                  | Workflow implemented            | MET-42 / MET-50 | [README](features/memory/README.md)                    |
-| Worker and Queue        | Feature implemented             | MET-43 / MET-49 | [README](features/worker-queue/README.md)              |
-| DSH-native Skills       | Platform registry reset         | MET-92 / MET-93 | [README](architecture/platform-employee-production.md) |
-| WeChat article research | Cloud-native Skill implemented  | MET-96          | [README](features/wechat-research/README.md)           |
-| Employee production     | Phase A + compiler implemented  | MET-93          | [README](architecture/platform-employee-production.md) |
-| Operations and recovery | Baseline definitions            | MET-47          | [README](features/operations/README.md)                |
-| ChatFlow Runtime        | Single-path 3.0 implemented     | MET-88          | [README](architecture/chatflow-runtime.md)             |
-| Platform model pool     | Governed routing implemented    | MET-80–84       | [README](architecture/platform-model-pool.md)          |
-| SaaS conversation UI    | Tenant work surface implemented | MET-86 / MET-93 | [README](architecture/chatflow-runtime.md)             |
+| Capability              | Status                                                    | Linear          | Documentation                                          |
+| ----------------------- | --------------------------------------------------------- | --------------- | ------------------------------------------------------ |
+| Identity and tenancy    | Foundation implemented                                    | MET-41 / MET-49 | [README](features/identity/README.md)                  |
+| Employee workspace      | Rice tenant work surface                                  | MET-50 / MET-93 | [README](features/employee-workspace/README.md)        |
+| Chat and Session        | Feature implemented                                       | MET-50          | [README](features/chat-session/README.md)              |
+| File storage            | Workflow implemented                                      | MET-42 / MET-50 | [README](features/file-storage/README.md)              |
+| Memory                  | Workflow implemented                                      | MET-42 / MET-50 | [README](features/memory/README.md)                    |
+| Worker and Queue        | Feature implemented                                       | MET-43 / MET-49 | [README](features/worker-queue/README.md)              |
+| DSH-native Skills       | Platform registry reset                                   | MET-92 / MET-93 | [README](architecture/platform-employee-production.md) |
+| WeChat article research | Cloud-native Skill implemented                            | MET-96          | [README](features/wechat-research/README.md)           |
+| Employee production     | Phase A + compiler implemented                            | MET-93          | [README](architecture/platform-employee-production.md) |
+| Operations and recovery | Baseline definitions                                      | MET-47          | [README](features/operations/README.md)                |
+| ChatFlow Runtime        | Single-path 3.0 implemented                               | MET-88          | [README](architecture/chatflow-runtime.md)             |
+| Development cooperation | Ownership/version foundation; runtime integration pending | MET-144         | [README](features/development-cooperation/README.md)   |
+| Platform model pool     | Governed routing implemented                              | MET-80–84       | [README](architecture/platform-model-pool.md)          |
+| SaaS conversation UI    | Tenant work surface implemented                           | MET-86 / MET-93 | [README](architecture/chatflow-runtime.md)             |
 
 ## Documentation rule
 
