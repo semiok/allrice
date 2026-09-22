@@ -600,7 +600,7 @@ export function createGovernedAssistantNativeRuntime(
       development: {
         type: 'string',
         description:
-          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths; test/review MUST OMIT paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester.',
+          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths; test/review MUST OMIT paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester. A child report automatically wakes the parent: do not poll inspect or send repeated messages merely to wait; message is for new instructions or corrections.',
       },
       tools: {
         type: 'array',
@@ -624,7 +624,7 @@ export function createGovernedAssistantNativeRuntime(
       evidence: {
         type: 'array',
         description:
-          'References to existing platform-registered artifacts only. Never put prose or calculations here or invent IDs. Use [] and output to deliver a new model-generated result.',
+          'References to your OWN existing platform-registered artifacts only, such as your successful edit proposal. Root candidate IDs, command operation IDs and review IDs are NOT your registered artifacts. For a tester/reviewer report use evidence=[] and output={name:"verification-result",content:"your summary with the actual operation/review references"}; this stores your report without pretending it is the command receipt. Never invent IDs.',
         items: {
           type: 'object',
           additionalProperties: false,
