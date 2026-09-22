@@ -8,6 +8,9 @@ import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runt
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
+import type { DshRuntime } from '../../src/harness/dsh/runtime-pool.ts';
+import * as AssistantController from '../../src/harness/dsh/assistant-controller.ts';
+import { DshStartupRejection } from '../../src/harness/dsh/startup-rejection.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import {
   getOrganizationModelQuota,
@@ -61,10 +64,16 @@ integration(
       'mismatched_result',
       'missing_usage',
       'quota_exhausted',
+      'startup_undispatched',
+      'startup_other_run',
+      'startup_other_attempt',
+      'startup_forged',
     ])(
       'writes trustworthy subscription N/A and preserves admission for %s',
       async (mode) => {
-        const fails = mode !== 'complete';
+        const unknownUsage = !['complete', 'startup_undispatched'].includes(
+          mode,
+        );
         const temporary = await mkdtemp(
           join(tmpdir(), 'allrice-subscription-worker-test-'),
         );
@@ -119,11 +128,62 @@ integration(
                 },
               ],
             });
+          const nativePrompt = vi.fn(async () => {
+            throw Error('TEST_MODEL_DISPATCH_FORBIDDEN');
+          });
+          const nativeAssistant = vi.fn(async () => {
+            throw Error('TEST_NATIVE_ASSISTANT_BIND_FORBIDDEN');
+          });
+          if (mode === 'startup_undispatched') {
+            // Exercise the actual adapter -> Worker -> PG classification. Only
+            // the local controller rejection/empty host are fault-injected;
+            // no native prompt, credential or model can be reached.
+            vi.mocked(DshRuntimePool.prototype.acquire).mockResolvedValue({
+              runtime: {
+                client: { prompt: nativePrompt, assistant: nativeAssistant },
+              } as unknown as DshRuntime,
+              fresh: true,
+            });
+            vi.spyOn(DshRuntimePool.prototype, 'drop').mockResolvedValue();
+            vi.spyOn(
+              AssistantController,
+              'productionAssistantController',
+            ).mockImplementation((input) => ({
+              rootRunId: input.context.runId,
+              subscriptionSnapshot: input.subscriptionSnapshot,
+              bind: async () => {
+                throw Error('synthetic bind rejected before prompt');
+              },
+            }));
+          }
+          const originalExecute = DshHarnessAdapter.prototype.execute;
           const execute = vi
             .spyOn(DshHarnessAdapter.prototype, 'execute')
-            .mockImplementation(async () => {
+            .mockImplementation(async function (
+              this: DshHarnessAdapter,
+              input,
+            ) {
+              if (mode === 'startup_undispatched')
+                return originalExecute.call(this, input);
               if (mode === 'transport_failure')
                 throw Error('synthetic transport failed after dispatch');
+              if (mode.startsWith('startup_')) {
+                const original = Error('synthetic bind rejected before prompt');
+                if (mode === 'startup_forged')
+                  throw Object.assign(original, {
+                    name: 'DshStartupRejection',
+                    undispatched: true,
+                    runId: task.runId,
+                    attempt: input.attempt,
+                  });
+                throw new DshStartupRejection(
+                  original,
+                  mode === 'startup_other_run' ? 'other-run' : task.runId,
+                  mode === 'startup_other_attempt'
+                    ? input.attempt + 1
+                    : input.attempt,
+                );
+              }
               return {
                 answer: 'Synthetic',
                 provider: 'openai-codex',
@@ -158,7 +218,11 @@ integration(
             expect(proof?.count).toBe(0);
             return;
           }
-          if (mode === 'transport_failure')
+          if (mode.startsWith('startup_'))
+            await expect(pending).rejects.toThrow(
+              'synthetic bind rejected before prompt',
+            );
+          else if (mode === 'transport_failure')
             await expect(pending).rejects.toThrow('synthetic transport failed');
           else if (mode === 'mismatched_result')
             await expect(pending).rejects.toMatchObject({
@@ -182,13 +246,17 @@ integration(
               usage: { inputTokens: 10, outputTokens: 3 },
             });
           expect(execute).toHaveBeenCalledTimes(1);
-          expect(DshRuntimePool.prototype.acquire).not.toHaveBeenCalled();
+          expect(DshRuntimePool.prototype.acquire).toHaveBeenCalledTimes(
+            mode === 'startup_undispatched' ? 1 : 0,
+          );
+          expect(nativePrompt).not.toHaveBeenCalled();
+          expect(nativeAssistant).not.toHaveBeenCalled();
           const [ledger] =
-            await fixture.db`select l.cost_cents,l.usage_complete,s.snapshot_digest
+            await fixture.db`select l.cost_cents,l.usage_complete,l.input_tokens,l.cached_input_tokens,l.output_tokens,s.snapshot_digest
         from allrice_model_usage_ledger l join allrice_route_subscription_snapshots s on s.route_decision_id=l.route_decision_id`;
           expect(ledger).toMatchObject({
             cost_cents: null,
-            usage_complete: !fails,
+            usage_complete: !unknownUsage,
             snapshot_digest: expect.stringMatching(/^sha256:/),
           });
           const quota = await getOrganizationModelQuota(
@@ -198,9 +266,22 @@ integration(
           expect(quota).toMatchObject({
             unknownCostRuns: 0,
             subscriptionRuns: 1,
-            usageComplete: !fails,
+            usageComplete: !unknownUsage,
           });
-          if (fails)
+          if (mode === 'startup_undispatched') {
+            expect(ledger).toMatchObject({
+              input_tokens: 0,
+              cached_input_tokens: 0,
+              output_tokens: 0,
+            });
+            const [decision] =
+              await fixture.db`select status,error_code from allrice_route_decisions`;
+            expect(decision).toMatchObject({
+              status: 'failed',
+              error_code: 'CONVERSATION_FAILED',
+            });
+          }
+          if (unknownUsage)
             expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
               'MODEL_TOKEN_USAGE_UNKNOWN',
             );

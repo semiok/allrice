@@ -71,6 +71,20 @@ may be lowered in deterministic acceptance tests.
 
 ## Event contract
 
+### MET-150 startup accounting follow-up (2026-09-21)
+
+For governed Codex subscription tasks, a rejected local assistant-controller
+bind on a fresh host can prove that the current Run/attempt never reached a
+native bind or model prompt. The Worker passes this in-process proof to the
+existing tenant-scoped route ledger; only a newly frozen subscription snapshot
+can settle that failed attempt as known zero use (subscription cost remains N/A).
+The failed Run is not marked successful. Reused hosts, dispatched requests,
+missing receipts and historical unknown records remain protected. No public
+proof field, new permission, migration, quota or deployment change is added.
+Adapter/Worker/isolated PostgreSQL regression covers the classification, forged
+or mismatched identities and preservation of existing receipts. See
+[MET-150 verification and rollout record](../../met150-chat-stability.md).
+
 Schema version 1 adds `assistant.text.delta`, `assistant.text.completed`,
 `tool.started`, `tool.completed`, `tool.failed`, and `run.retrying`. Tool event
 payloads contain a safe label, status and summary; raw credentials, local paths,

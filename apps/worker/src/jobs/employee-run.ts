@@ -81,6 +81,7 @@ import {
   assertAssistantTaskComplete,
 } from '../harness/dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
+import { DshStartupRejection } from '../harness/dsh/startup-rejection.js';
 import type { HarnessExecutionResult } from '../harness/adapter.js';
 import {
   executeRiceTool,
@@ -1345,7 +1346,10 @@ export async function executeEmployeeRun({
       await completeRouteDecision({
         organizationId: execution.context.organizationId,
         workspaceId: execution.context.workspaceId!,
-        ...(!routeExecutionStarted
+        ...(!routeExecutionStarted ||
+        (decision.selectedKind !== 'workflow' &&
+          error instanceof DshStartupRejection &&
+          error.belongsTo(execution.context.runId, execution.job.attempt))
           ? { undispatched: { subscriptionSnapshotCreated } }
           : {}),
         outcome: {
