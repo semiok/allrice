@@ -948,12 +948,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await f.panel.count()).toBe(0);
       await f.page.setViewportSize({ width: 1440, height: 950 });
       await f.panel.waitFor();
+      await expect
+        .poll(() => f.panel.getAttribute('role'))
+        .toBe('complementary');
       const opinion =
         f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
       await opinion.fill('保留我的意见');
       await f.page.setViewportSize({ width: 390, height: 844 });
+      // Viewport acknowledgement precedes the matchMedia event/React commit.
+      // Await the rendered drawer, rather than racing its previous wide role.
+      await expect.poll(() => f.panel.getAttribute('role')).toBe('dialog');
       expect(await opinion.inputValue()).toBe('保留我的意见');
-      expect(await f.panel.getAttribute('role')).toBe('dialog');
       await f.page.screenshot({ path: '/tmp/met147-mobile.png' });
       expect(
         await f.page.evaluate(

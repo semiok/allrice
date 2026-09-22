@@ -1,5 +1,9 @@
 # MET-144 X01-C：真实开发协作验收
 
+## CI 浏览器同步修正
+
+`afc45e6` 的 validate、developer-bootstrap、compose-smoke 通过；浏览器任务在缩小视口后立即断言 role，抢在 matchMedia / React 更新前读到旧的 complementary。测试现等待实际渲染的 dialog / complementary 条件，保留焦点、草稿和溢出断言，不靠固定睡眠或跳过失败。完整工作台及输入隔离两文件 31 项本地 Chromium 回归通过；此修改只有测试同步，不改变 Dev 运行代码。
+
 ## 2026-09-22：整任务截止时间诊断
 
 Run `30e0d1ca-40c3-400a-ae29-73a5e30fb30d` 已编辑、合并并完成测试助手同版 inspect，未发命令。其任务创建 `04:00:32.980Z`、durable deadline `04:05:32.980Z`，在 `04:05:33.113Z` 停止，证实是原员工 300,000 ms 时限到期，不是 M5/Token 阻断。存活检查关闭宿主进程时丢失原因，表面为 `DSH_RUNTIME_CLOSED (0)`；现保留受信任的执行时限原因并禁止无效重试，停止保护不放宽。后续仅通过正式后台将 Snow 验收员工临时设为 900,000 ms，发布后新 Run 才生效，结束恢复原设置；不延长已到期任务或修改历史结果。
