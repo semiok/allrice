@@ -2,6 +2,8 @@
 
 ## September 22 closeout boundary
 
+Final fixed-candidate validation `64413ba` also completed the real Snow/M5 development Run `0b72a009-0d70-4e2e-b903-07f23794637e`: one route attempt, three completed assistants, one successful physical command and a tested/reviewed formal delivery. Input 145,740 / output 5,559 were recorded completely; cache detail is unknown, not a certified zero. Internal Token statistics did not interrupt the task. Existing failed/unknown receipts were preserved without a manual Token reservation. PR #86 carries this policy together with the verified MET-144 fixes; after integration and Dev health/restoration verification, both scopes may close. Official quota UI remains MET-152, and Prod remains unchanged.
+
 The user approved closing the stability scope after integration; open-ended trial observation and choosing a new internal Token cap are no longer closure gates. Official subscription window/balance/reset presentation is tracked separately in **MET-152 (Backlog)**, not claimed implemented here. Token/cache statistics are not the official remaining allowance. PR #82 (pre-dispatch startup accounting) merged as `fc721f6`; the observation-policy follow-up is in PR #86 pending integration. Dev evidence remains valid; Prod is unchanged.
 
 ## September 22 decision: Codex subscription Tokens are statistics, not admission
