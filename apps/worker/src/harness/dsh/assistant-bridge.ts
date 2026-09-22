@@ -367,7 +367,13 @@ export function createAssistantWorkerBridge(
             !selectedTools.includes('assistant.development')
           )
             throw Error('assistant_development_unavailable');
-          assignment = z
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(z.string().max(16000).parse(args.development));
+          } catch {
+            // Only bounded guidance below; never echo parser input or secrets.
+          }
+          const parsed = z
             .object({
               expectedHead: z
                 .object({
@@ -379,7 +385,19 @@ export function createAssistantWorkerBridge(
               paths: z.array(z.string()).optional(),
             })
             .strict()
-            .parse(JSON.parse(z.string().max(16000).parse(args.development)));
+            .safeParse(decoded);
+          if (
+            !parsed.success ||
+            (parsed.data.role === 'edit'
+              ? !parsed.data.paths?.length
+              : parsed.data.paths !== undefined)
+          )
+            return {
+              error: 'assistant_development_assignment_invalid',
+              message:
+                'No child was created. development must be a JSON string with expectedHead={artifactId,digest} and role. Only role=edit requires paths (the permitted files). For role=test or role=review, omit paths: scope is the exact expectedHead candidate, not a new write assignment. Include assistant.development and assistant.report in tools; a tester also requires local.process.execute. Correct the request; do not stop or resend a completed editor.',
+            };
+          assignment = parsed.data;
           if (
             assignment.role === 'test' &&
             !selectedTools.includes('local.process.execute')

@@ -178,10 +178,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
           );
         } catch (error) {
           if (
-            [
-              'allrice/assistant/model-prepare',
-              'allrice/assistant/model-dispatch',
-            ].includes(method) &&
             error instanceof AssistantRuntimeError &&
             error.code === 'budget_exhausted'
           ) {

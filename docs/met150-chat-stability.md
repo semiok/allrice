@@ -1,5 +1,9 @@
 # MET-150 — Codex subscription chat stability
 
+## September 22 closeout boundary
+
+The user approved closing the stability scope after integration; open-ended trial observation and choosing a new internal Token cap are no longer closure gates. Official subscription window/balance/reset presentation is tracked separately in **MET-152 (Backlog)**, not claimed implemented here. Token/cache statistics are not the official remaining allowance. PR #82 (pre-dispatch startup accounting) merged as `fc721f6`; the observation-policy follow-up is in PR #86 pending integration. Dev evidence remains valid; Prod is unchanged.
+
 ## September 22 decision: Codex subscription Tokens are statistics, not admission
 
 The user explicitly prioritizes product usability before commercialization. This decision supersedes the historical monthly-cap/manual-reservation/assistant-token-budget rules below.

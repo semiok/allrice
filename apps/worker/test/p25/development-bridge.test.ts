@@ -5,6 +5,69 @@ import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bri
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
 describe('development control call identity', () => {
+  it('rejects malformed verifier assignments with usable guidance before creating a child', async () => {
+    const runId = randomUUID();
+    const provision = vi.fn();
+    const onDevelopment = vi.fn();
+    const settleUsage = vi.fn();
+    const bridge = createAssistantWorkerBridge({
+      runtime: {
+        getTree: async () => ({
+          instances: [
+            {
+              runId,
+              nativeSessionId: 'root',
+              allowedTools: ['assistant.delegate', 'assistant.development'],
+            },
+          ],
+        }),
+        reserveUsage: async () => ({ reserved: true }),
+        settleUsage,
+        provision,
+      } as unknown as AssistantRuntime,
+      task: { rootRunId: runId, scope: {} } as Options['task'],
+      context: {} as Options['context'],
+      worker: {} as Options['worker'],
+      wireNames: {},
+      readOnlyTools: new Set(),
+      onDevelopment,
+    });
+    const expectedHead = {
+      artifactId: randomUUID(),
+      digest: `sha256:${'a'.repeat(64)}`,
+    };
+    const invalid = [
+      'private-malformed{',
+      ...['test', 'review'].map((role) =>
+        JSON.stringify({ expectedHead, role, paths: ['test.mjs'] }),
+      ),
+      JSON.stringify({ expectedHead, role: 'edit' }),
+    ];
+    for (const development of invalid) {
+      const result = await bridge.handle('delegate', {
+        nativeSessionId: 'root',
+        callId: randomUUID(),
+        arguments: {
+          label: 'test',
+          text: 'test',
+          tools: [
+            'assistant.development',
+            'assistant.report',
+            'local.process.execute',
+          ],
+          development,
+        },
+      });
+      expect(result).toMatchObject({
+        error: 'assistant_development_assignment_invalid',
+        message: expect.stringContaining('omit paths'),
+      });
+      expect(JSON.stringify(result)).not.toContain('private-malformed');
+    }
+    expect(provision).not.toHaveBeenCalled();
+    expect(onDevelopment).not.toHaveBeenCalled();
+    expect(settleUsage).toHaveBeenCalledTimes(invalid.length);
+  });
   it('returns actionable bounded validation errors and never invokes invalid commands', async () => {
     const runId = randomUUID();
     const onDevelopment = vi.fn(async () => ({ initialized: true }));

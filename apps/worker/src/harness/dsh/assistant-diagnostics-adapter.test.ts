@@ -31,6 +31,7 @@ function fixture(options: {
   drainError?: boolean;
   admissionFailure?: boolean;
   admissionFailureReturned?: boolean;
+  admissionMethod?: string;
 }) {
   const sessionId = randomUUID();
   const threadId = `dsh-${sessionId}`;
@@ -68,7 +69,10 @@ function fixture(options: {
     },
     prompt: async () => {
       if (options.admissionFailure) {
-        await handler?.('allrice/assistant/model-dispatch', {}).catch(() => {});
+        await handler?.(
+          options.admissionMethod ?? 'allrice/assistant/model-dispatch',
+          {},
+        ).catch(() => {});
         if (!options.admissionFailureReturned)
           throw Error('native generic error');
       }
@@ -255,9 +259,17 @@ describe('bounded assistant diagnostic consumption', () => {
     ).toBeUndefined();
     expect(f.order).toContain('drop');
   });
-  it.each([false, true])(
-    'a trusted local model admission denial is non-retryable even if native returns text (%s)',
-    async (admissionFailureReturned) => {
+  it.each(
+    ['model-prepare', 'model-dispatch', 'delegate', 'development'].flatMap(
+      (admissionMethod) =>
+        [false, true].map((admissionFailureReturned) => ({
+          admissionMethod,
+          admissionFailureReturned,
+        })),
+    ),
+  )(
+    'a trusted local admission denial is non-retryable ($admissionMethod, $admissionFailureReturned)',
+    async ({ admissionMethod, admissionFailureReturned }) => {
       const receipt = {
         usage: { inputTokens: 20, outputTokens: 3, cachedInputTokens: 0 },
         usageComplete: true,
@@ -265,6 +277,7 @@ describe('bounded assistant diagnostic consumption', () => {
       };
       const f = fixture({
         admissionFailure: true,
+        admissionMethod: `allrice/assistant/${admissionMethod}`,
         admissionFailureReturned,
         failureUsage: receipt,
       });

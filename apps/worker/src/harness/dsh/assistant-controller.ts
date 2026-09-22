@@ -35,6 +35,8 @@ import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 import { assertAssistantProviderOutputBound } from './assistant-provider.js';
 import { assertSubscriptionQuotaNotExhausted } from '../../subscription-quota-admission.js';
 
+import { assistantModelCallCapacity } from './assistant-call-limits.js';
+
 function assertPriceProvider(
   price: AssistantPriceSnapshot,
   provider: DshExecutionSnapshot,
@@ -299,7 +301,11 @@ export function productionAssistantController(input: {
       // historical configuration; verified subscriptions observe actual usage
       // without enforcing these capacities (server policy, not model input).
       const budgets: RuntimeBudgetLimit[] = [
-        { metric: 'model_calls', unit: 'calls', capacity: 16 },
+        {
+          metric: 'model_calls',
+          unit: 'calls',
+          capacity: assistantModelCallCapacity(configuration, allowedTools),
+        },
         { metric: 'tool_calls', unit: 'calls', capacity: 64 },
         {
           metric: 'input_tokens',
