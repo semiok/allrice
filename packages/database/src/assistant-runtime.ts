@@ -25,6 +25,7 @@ import {
   observesRootTokens,
   isTokenMetric,
 } from './subscription-token-accounting.ts';
+import { computeRootSuspendedTiming } from './runtime-timing.ts';
 
 type Tx = RuntimeLedgerTransaction;
 const json = (tx: Tx, value: unknown) =>
@@ -384,7 +385,11 @@ export function createAssistantRuntime(
     }),
     async getSessionTrees(
       context: RequestContext,
-      input: { sessionId: string; beforeRootRunId?: string },
+      input: {
+        sessionId: string;
+        beforeRootRunId?: string;
+        includeTiming?: boolean;
+      },
     ) {
       uuid.parse(input.sessionId);
       if (context.actor.type !== 'user') fail('forbidden');
@@ -399,7 +404,10 @@ export function createAssistantRuntime(
         order by a.created_at desc,a.root_run_id desc limit 20`;
       return Promise.all(
         roots.map(async (r) => {
-          const tree = await api.getTree(context, { runId: r.root_run_id });
+          const tree = await api.getTree(context, {
+            runId: r.root_run_id,
+            includeTiming: input.includeTiming,
+          });
           return {
             ...tree,
             messages: [],
@@ -627,78 +635,25 @@ export function createAssistantRuntime(
         >`select metric from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null union select metric from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null`;
         let timing: AssistantTimingView | undefined;
         if (input.includeTiming) {
-          const approvals = await tx<
-            {
-              requested_at: Date;
-              decided_at: Date | null;
-              status: string;
-            }[]
-          >`select requested_at, decided_at, status from allrice_approval_requests
-            where run_id in (select run_id from allrice_runtime_run_links where root_run_id=${root.root_run_id})
-               or run_id=${root.root_run_id}
-            order by requested_at`;
-          const operations = await tx<
-            {
-              id: string;
-              status: string;
-            }[]
-          >`select id, snapshot->>'status' as status
-            from allrice_runtime_operations
-            where root_run_id=${root.root_run_id}`;
-          const hasActiveInstances = instances.some((inst) =>
-            ['provisioning', 'running'].includes(inst.status),
-          );
-          const hasActiveOperations = operations.some((op) =>
-            ['running', 'dispatched'].includes(op.status),
-          );
-          const pendingApproval = approvals.find((a) => a.status === 'pending');
-          const hasWaitingDevice = operations.some(
-            (op) => op.status === 'waiting_device',
-          );
-          const isSuspended =
-            !hasActiveInstances &&
-            !hasActiveOperations &&
-            (!!pendingApproval || hasWaitingDevice);
-          const suspensionReason = pendingApproval
-            ? ('waiting_user' as const)
-            : hasWaitingDevice
-              ? ('waiting_device' as const)
-              : null;
           const [clockRow] = await tx<
             { now: Date }[]
           >`select clock_timestamp() as now`;
           const now = clockRow?.now ?? new Date();
-          const wallClockElapsedMs = Math.max(
-            0,
-            now.getTime() - root.created_at.getTime(),
-          );
-          const completedApprovalWaitMs = approvals
-            .filter((a) => a.decided_at !== null)
-            .reduce(
-              (acc, a) =>
-                acc +
-                Math.max(0, a.decided_at!.getTime() - a.requested_at.getTime()),
-              0,
-            );
-          const pendingWaitMs =
-            isSuspended && pendingApproval
-              ? Math.max(
-                  0,
-                  now.getTime() - pendingApproval.requested_at.getTime(),
-                )
-              : 0;
-          const suspendedWaitMs = completedApprovalWaitMs + pendingWaitMs;
-          const effectiveRuntimeMs = Math.max(
-            0,
-            wallClockElapsedMs - suspendedWaitMs,
+          const computed = await computeRootSuspendedTiming(
+            {
+              rootRunId: root.root_run_id,
+              rootCreatedAt: root.created_at,
+              now,
+            },
+            tx,
           );
           timing = {
-            effectiveRuntimeMs,
-            suspendedWaitMs,
-            wallClockElapsedMs,
+            effectiveRuntimeMs: computed.effectiveRuntimeMs,
+            suspendedWaitMs: computed.suspendedWaitMs,
+            wallClockElapsedMs: computed.wallClockElapsedMs,
             deadlineAt: root.deadline_at.toISOString(),
-            isSuspended,
-            suspensionReason,
+            isSuspended: computed.isSuspended,
+            suspensionReason: computed.suspensionReason,
           };
         }
         return {

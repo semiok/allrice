@@ -21,6 +21,7 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { getEffectiveRuntimeLimit } from '../runtime-timing.ts';
 
 const defaultProviderId = '51000000-0000-4000-8000-000000000001';
 const defaultConnectionId = '52000000-0000-4000-8000-000000000001';
@@ -762,6 +763,18 @@ export async function freezeSessionModelSnapshot(input: {
       }),
     ),
   );
+  const effectiveTimeoutMs = await getEffectiveRuntimeLimit(
+    {
+      organizationId: input.organizationId,
+      userId: session.owner_id,
+      employeeId: session.employee_id,
+      baseTimeoutMs:
+        policy.revision === 1 && policy.runLimits.timeoutMs === 300_000
+          ? 3_600_000
+          : policy.runLimits.timeoutMs,
+    },
+    sql,
+  );
   const snapshot = SessionModelSnapshotSchema.parse({
     schemaVersion: 1,
     sessionId: input.sessionId,
@@ -781,10 +794,7 @@ export async function freezeSessionModelSnapshot(input: {
     fallbackOn: policy.fallbackOn,
     runLimits: {
       ...policy.runLimits,
-      timeoutMs:
-        policy.revision === 1 && policy.runLimits.timeoutMs === 300_000
-          ? 3_600_000
-          : policy.runLimits.timeoutMs,
+      timeoutMs: effectiveTimeoutMs,
     },
     resolvedFallbacks,
     frozenAt: new Date().toISOString(),

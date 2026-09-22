@@ -33,6 +33,7 @@ async function handle(request: Request, write: boolean) {
       const trees = await service.getSessionTrees(scoped, {
         sessionId,
         ...(beforeRootRunId ? { beforeRootRunId } : {}),
+        includeTiming: true,
       });
       return Response.json(
         {
@@ -45,7 +46,7 @@ async function handle(request: Request, write: boolean) {
     const runId = UuidSchema.parse(url.searchParams.get('runId'));
     if (!write)
       return Response.json(
-        { tree: await service.getTree(scoped, { runId }) },
+        { tree: await service.getTree(scoped, { runId, includeTiming: true }) },
         { headers },
       );
     const reader = request.body?.getReader();

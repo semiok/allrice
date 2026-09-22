@@ -58,7 +58,7 @@ describe('P26 assistants HTTP boundary (database authorization tested separately
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(mocks.tree).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId }),
-      { runId },
+      { runId, includeTiming: true },
     );
     mocks.context.mockResolvedValueOnce(null);
     expect((await GET(new Request(url))).status).toBe(401);
@@ -79,7 +79,7 @@ describe('P26 assistants HTTP boundary (database authorization tested separately
     expect(response.status).toBe(200);
     expect(mocks.session).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId }),
-      { sessionId },
+      { sessionId, includeTiming: true },
     );
   });
   it('rejects cross-origin writes before authentication or cancellation', async () => {

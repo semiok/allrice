@@ -32,6 +32,7 @@ import {
   checkBrowserBindingAuthority,
   lockBrowserBindingOperations,
 } from './browser-control-authority.ts';
+import { computeRootSuspendedTiming } from './runtime-timing.ts';
 
 type Transaction = postgres.TransactionSql;
 type Database = ReturnType<typeof getDatabase>;
@@ -699,6 +700,19 @@ export async function requestRuntimeActionApproval(
       'exact_binding',
       { approvalId: request.approvalId, digest },
     );
+    const expiresAtDate = new Date(request.expiresAt);
+    await transaction`
+      update allrice_runtime_roots
+      set deadline_at = greatest(deadline_at, ${expiresAtDate})
+      where root_run_id = ${binding.task.rootRunId}
+    `;
+    await transaction`
+      update allrice_jobs
+      set timeout_at = greatest(timeout_at, ${expiresAtDate})
+      where (run_id = ${binding.task.rootRunId} or run_id in (
+        select run_id from allrice_runtime_run_links where root_run_id = ${binding.task.rootRunId}
+      )) and status in ('queued', 'claimed', 'running', 'retry_wait', 'waiting_approval')
+    `;
     const completedAt = await clock(transaction);
     if (policyExpiresAt <= completedAt)
       throw new RuntimePolicyError('frozen_policy_invalid');
@@ -840,40 +854,49 @@ export async function decideRuntimeActionApproval(
     await transaction`update allrice_approval_requests set status = ${response.decision},
       decided_by = ${context.actor.id}, decided_at = ${now}, runtime_response = ${transaction.json(response)}
       where id = ${row.id}`;
-    const waitDurationMs = now.getTime() - row.requested_at.getTime();
-    if (waitDurationMs > 0) {
-      const [rootLink] = await transaction<{ root_run_id: string }[]>`
-        select root_run_id from allrice_runtime_run_links where run_id = ${row.run_id}
-      `;
-      const rootRunId = rootLink?.root_run_id ?? row.run_id;
-      const activeInstances = await transaction<{ count: string }[]>`
-        select count(*)::text as count from allrice_assistant_instances
+    const [rootLink] = await transaction<{ root_run_id: string }[]>`
+      select root_run_id from allrice_runtime_run_links where run_id = ${row.run_id}
+    `;
+    const rootRunId = rootLink?.root_run_id ?? row.run_id;
+
+    const [rootRow] = await transaction<
+      {
+        created_at: Date;
+        initial_deadline_at: Date;
+      }[]
+    >`
+      select created_at, coalesce(initial_deadline_at, deadline_at) as initial_deadline_at
+      from allrice_runtime_roots
+      where root_run_id = ${rootRunId}
+    `;
+
+    if (rootRow) {
+      const timing = await computeRootSuspendedTiming(
+        {
+          rootRunId,
+          rootCreatedAt: rootRow.created_at,
+          now,
+        },
+        transaction,
+      );
+
+      const newDeadline = new Date(
+        rootRow.initial_deadline_at.getTime() + timing.suspendedWaitMs,
+      );
+
+      await transaction`
+        update allrice_runtime_roots
+        set deadline_at = ${newDeadline}
         where root_run_id = ${rootRunId}
-          and run_id <> ${row.run_id}
-          and status in ('provisioning', 'running')
       `;
-      const hasActiveAssistants = Number(activeInstances[0]?.count ?? 0) > 0;
-      const activeOperations = await transaction<{ count: string }[]>`
-        select count(*)::text as count from allrice_runtime_operations
-        where root_run_id = ${rootRunId}
-          and id <> ${request.binding.attempt.operationId}
-          and snapshot->>'status' in ('running', 'dispatched')
+
+      await transaction`
+        update allrice_jobs
+        set timeout_at = coalesce(initial_timeout_at, timeout_at) + (${timing.suspendedWaitMs} * interval '1 millisecond')
+        where (run_id = ${rootRunId} or run_id in (
+          select run_id from allrice_runtime_run_links where root_run_id = ${rootRunId}
+        )) and status in ('queued', 'claimed', 'running', 'retry_wait', 'waiting_approval')
       `;
-      const hasActiveOperations = Number(activeOperations[0]?.count ?? 0) > 0;
-      if (!hasActiveAssistants && !hasActiveOperations) {
-        await transaction`
-          update allrice_runtime_roots
-          set deadline_at = deadline_at + (${waitDurationMs} * interval '1 millisecond')
-          where root_run_id = ${rootRunId}
-        `;
-        await transaction`
-          update allrice_jobs
-          set timeout_at = timeout_at + (${waitDurationMs} * interval '1 millisecond')
-          where (run_id = ${rootRunId} or run_id in (
-            select run_id from allrice_runtime_run_links where root_run_id = ${rootRunId}
-          )) and status in ('queued', 'claimed', 'running', 'waiting_approval')
-        `;
-      }
     }
     await audit(
       transaction,

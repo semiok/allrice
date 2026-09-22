@@ -533,11 +533,11 @@ export async function enqueueRun(
     const jobs = await transaction<{ id: string }[]>`
       insert into allrice_jobs (
         organization_id, workspace_id, owner_id, run_id, status,
-        idempotency_key, priority, max_attempts, available_at, timeout_at, payload
+        idempotency_key, priority, max_attempts, available_at, timeout_at, initial_timeout_at, payload
       ) values (
         ${context.organizationId}, ${workspaceId}, ${ownerId}, ${run.id}, 'queued',
         ${submission.idempotencyKey}, ${submission.priority},
-        ${submission.maxAttempts}, ${availableAt}, ${timeoutAt},
+        ${submission.maxAttempts}, ${availableAt}, ${timeoutAt}, ${timeoutAt},
         ${transaction.json(toJsonValue(payload))}
       )
       returning id
@@ -1352,11 +1352,21 @@ export async function maintainQueue(limit = 100) {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const rows = await transaction<JobRow[]>`
-      select * from allrice_jobs
+      select * from allrice_jobs j
       where status in ('queued', 'claimed', 'running', 'retry_wait')
         and (
           cancel_requested_at is not null
-          or timeout_at <= ${now}
+          or (timeout_at <= ${now} and not exists (
+            select 1 from allrice_approval_requests a
+            where a.run_id = j.run_id
+              and a.runtime_response is null
+              and a.runtime_revoked_at is null
+              and a.runtime_expires_at > ${now}
+          ) and not exists (
+            select 1 from allrice_runtime_operations o
+            where (o.run_id = j.run_id or o.root_run_id = j.run_id)
+              and o.snapshot->>'status' = 'waiting_device'
+          ))
           or (status = 'retry_wait' and available_at <= ${now})
           or (status in ('claimed', 'running') and lease_expires_at <= ${now})
         )

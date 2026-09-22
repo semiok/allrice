@@ -240,7 +240,10 @@ export function assertQuotaAvailable(
   billingMode: 'token_metered' | 'subscription' = 'token_metered',
   requestedTokens = 0,
 ) {
-  if (quota.usedRuns >= quota.monthlyRunLimit) {
+  if (
+    billingMode !== 'subscription' &&
+    quota.usedRuns >= quota.monthlyRunLimit
+  ) {
     throw new ModelGovernanceError('MODEL_RUN_QUOTA_EXCEEDED');
   }
   // Missing receipts remain unknown in the ledger, not an account-wide lock.

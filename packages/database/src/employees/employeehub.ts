@@ -48,6 +48,7 @@ import {
 } from './employee-config.ts';
 import { getDatabase } from '../core/client.ts';
 import { freezeSessionModelSnapshot } from '../providers/model-pool.ts';
+import { getEffectiveRuntimeLimit } from '../runtime-timing.ts';
 import {
   ensureDefaultEmployee,
   resolveWorkspaceId,
@@ -1225,6 +1226,15 @@ export async function prepareEmployeeRunBinding(input: {
         ? null
         : modelSnapshot.baseUrl,
   });
+  const effectiveTimeoutMs = await getEffectiveRuntimeLimit(
+    {
+      organizationId: input.context.organizationId,
+      userId: actorId,
+      employeeId: assignment.employee_id,
+      baseTimeoutMs: modelSnapshot.runLimits.timeoutMs,
+    },
+    sql,
+  );
   const selectedRuntimePolicy = EmployeeRuntimePolicySchema.parse({
     ...runtimePolicy(manifest.data),
     harness: 'dsh',
@@ -1244,7 +1254,7 @@ export async function prepareEmployeeRunBinding(input: {
         ? null
         : modelSnapshot.baseUrl,
     fallbackModels: [],
-    timeoutMs: modelSnapshot.runLimits.timeoutMs,
+    timeoutMs: effectiveTimeoutMs,
   });
   const nativeSkills = nativeSkillRows.map((skill) =>
     validateFrozenSkill({

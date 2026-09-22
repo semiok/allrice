@@ -134,7 +134,7 @@ export const ModelResourceStatusSchema = z
     monthlyRunLimit: z.number().int().positive(),
     monthlyTokenLimit: z.number().int().positive(),
     concurrentRunLimit: z.number().int().positive(),
-    maxRuntimeMs: z.number().int().positive(),
+    maxRuntimeMs: z.number().int().min(0).max(86400000),
     usedRuns: z.number().int().nonnegative(),
     usedTokens: z.number().int().nonnegative(),
     activeRuns: z.number().int().nonnegative(),
