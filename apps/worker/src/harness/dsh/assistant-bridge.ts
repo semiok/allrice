@@ -327,7 +327,7 @@ export function createAssistantWorkerBridge(
           return {
             error: 'assistant_development_invalid',
             message:
-              'No development action was performed. command must be a JSON string with action and its required fields. To initialize, use {"action":"initialize","seed":{"artifactId":"<artifactId>","digest":"<digest>"}} with the exact artifactId and sha256: digest returned by workspace.export.create. Never substitute objectId, a file path, or an invented checksum. Use {"action":"inspect"} only after initialization.',
+              'No development action was performed. Correct the command JSON; this is an argument error, not an authorization denial. Editor inspect: {"action":"inspect","assignmentId":"<edit assignment UUID>"}. Tester/reviewer inspect: {"action":"inspect","candidate":{"artifactId":"<assigned artifactId>","digest":"<assigned digest>"}}, WITHOUT assignmentId. Never combine assignmentId and candidate; alternatively inspect the current initialized head with {"action":"inspect"}. To initialize, use {"action":"initialize","seed":{"artifactId":"<artifactId>","digest":"<digest>"}} with the exact artifactId and sha256: digest returned by workspace.export.create. Never substitute objectId, a file path, or an invented checksum.',
           };
         return {
           development: await options.onDevelopment({
@@ -407,7 +407,10 @@ export function createAssistantWorkerBridge(
         const taskText =
           text.parse(args.text) +
           (assignment
-            ? `\nPlanned development assignment: ${JSON.stringify({ ...assignment, assignmentId: callUuid })}`
+            ? `\nPlanned development assignment: ${JSON.stringify({ ...assignment, ...(assignment.role === 'edit' ? { assignmentId: callUuid } : {}) })}`
+            : '') +
+          (assignment && assignment.role !== 'edit'
+            ? `\nInspect your assigned candidate using exactly ${JSON.stringify({ action: 'inspect', candidate: assignment.expectedHead })}. Do not pass assignmentId: it is only for an editor's file claim, not a verifier assignment. An argument-validation response means correct the syntax, not bypass a policy denial.`
             : '') +
           (assignment?.role === 'test'
             ? '\nApproval protocol: call local.process.execute with the exact assigned candidate and command to REQUEST approval. That call creates the web approval card; it is not permission to execute. The platform waits for the user and only dispatches after approval. Do not wait for a nonexistent card before submitting, and do not report partial merely because approval has not yet been requested. Report success only from the returned terminal command receipt; preserve a real rejection, cancellation or timeout as incomplete.'

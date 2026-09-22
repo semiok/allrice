@@ -71,6 +71,8 @@ describe('development control call identity', () => {
     });
     expect(first.text).toContain('to REQUEST approval');
     expect(first.text).toContain('only dispatches after approval');
+    expect(first.text).toContain('Do not pass assignmentId');
+    expect(first.text).not.toContain('"assignmentId":');
     const recovered = await bridge.messageDispatch(callId);
     expect(recovered.text).toBe(first.text);
     expect(onProposal).not.toHaveBeenCalled();
@@ -168,6 +170,11 @@ describe('development control call identity', () => {
       digest: `sha256:${'a'.repeat(64)}`,
     };
     for (const command of [
+      JSON.stringify({
+        action: 'inspect',
+        assignmentId: ref.artifactId,
+        candidate: ref,
+      }),
       'secret-parser-input{',
       JSON.stringify({ action: 'initialize', seed: ref.artifactId }),
       JSON.stringify({
@@ -188,7 +195,7 @@ describe('development control call identity', () => {
       expect(JSON.stringify(result)).not.toContain('secret-parser-input');
     }
     expect(onDevelopment).not.toHaveBeenCalled();
-    expect(settleUsage).toHaveBeenCalledTimes(4);
+    expect(settleUsage).toHaveBeenCalledTimes(5);
     await bridge.handle('development', {
       nativeSessionId: 'root',
       callId: randomUUID(),

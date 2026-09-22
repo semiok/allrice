@@ -5,6 +5,25 @@ const ref = {
   digest: `sha256:${'a'.repeat(64)}`,
 };
 describe('bounded native development commands', () => {
+  it('separates editor assignment inspection from candidate verification', () => {
+    expect(
+      DevelopmentCommandSchema.safeParse({
+        action: 'inspect',
+        assignmentId: ref.artifactId,
+        candidate: ref,
+      }).success,
+    ).toBe(false);
+    for (const args of [
+      {},
+      { assignmentId: ref.artifactId },
+      { candidate: ref },
+    ]) {
+      expect(
+        DevelopmentCommandSchema.safeParse({ action: 'inspect', ...args })
+          .success,
+      ).toBe(true);
+    }
+  });
   it.each([
     'runId',
     'worker',
