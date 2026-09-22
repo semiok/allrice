@@ -146,7 +146,16 @@ export const RuntimeLocalCommandToolInputSchema =
       network: true,
       candidate: true,
     })
-    .extend({ candidate: CommandCandidateRefSchema.optional() });
+    .extend({
+      candidate: CommandCandidateRefSchema.optional(),
+      // The trusted Node supervisor and the project Node/npm process both
+      // need native threads. On the pinned ARM image a 16-task cgroup can
+      // hang child startup before any output. Reject undersized NEW requests
+      // before approval; retain the wire schema for historic 16-task receipts.
+      limits: RuntimeLocalCommandSchema.shape.arguments.shape.limits.extend({
+        pids: z.number().int().min(32).max(64),
+      }),
+    });
 export const RuntimeBridgePayloadSchema = z.union([
   BridgeCommandPayloadSchema,
   RuntimeLocalCommandSchema,

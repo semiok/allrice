@@ -285,7 +285,7 @@ const brokerNativeTools = [
           pids: { type: 'integer', required: true },
         },
         description:
-          'timeoutMs 500..60000; outputBytes 1024..65536; memoryMiB 128..512; cpuMillis 100..1000; pids 16..64.',
+          'timeoutMs 500..60000; outputBytes 1024..65536; memoryMiB 128..512; cpuMillis 100..1000; pids 32..64 (use 32 for a small Node test; the limit includes supervisor and native threads, not only child processes).',
       },
       diagnostics: {
         type: 'object',
