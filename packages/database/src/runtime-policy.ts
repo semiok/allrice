@@ -700,19 +700,6 @@ export async function requestRuntimeActionApproval(
       'exact_binding',
       { approvalId: request.approvalId, digest },
     );
-    const expiresAtDate = new Date(request.expiresAt);
-    await transaction`
-      update allrice_runtime_roots
-      set deadline_at = greatest(deadline_at, ${expiresAtDate})
-      where root_run_id = ${binding.task.rootRunId}
-    `;
-    await transaction`
-      update allrice_jobs
-      set timeout_at = greatest(timeout_at, ${expiresAtDate})
-      where (run_id = ${binding.task.rootRunId} or run_id in (
-        select run_id from allrice_runtime_run_links where root_run_id = ${binding.task.rootRunId}
-      )) and status in ('queued', 'claimed', 'running', 'retry_wait', 'waiting_approval')
-    `;
     const completedAt = await clock(transaction);
     if (policyExpiresAt <= completedAt)
       throw new RuntimePolicyError('frozen_policy_invalid');
