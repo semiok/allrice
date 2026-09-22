@@ -408,6 +408,9 @@ export function createAssistantWorkerBridge(
           text.parse(args.text) +
           (assignment
             ? `\nPlanned development assignment: ${JSON.stringify({ ...assignment, assignmentId: callUuid })}`
+            : '') +
+          (assignment?.role === 'test'
+            ? '\nApproval protocol: call local.process.execute with the exact assigned candidate and command to REQUEST approval. That call creates the web approval card; it is not permission to execute. The platform waits for the user and only dispatches after approval. Do not wait for a nonexistent card before submitting, and do not report partial merely because approval has not yet been requested. Report success only from the returned terminal command receipt; preserve a real rejection, cancellation or timeout as incomplete.'
             : '');
         let development: unknown;
         const { instance: child } = await runtime.provision({

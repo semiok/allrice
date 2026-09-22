@@ -5,6 +5,76 @@ import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bri
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
 describe('development control call identity', () => {
+  it('persists approval request guidance in the tester message, including recovery dispatch', async () => {
+    const runId = randomUUID(),
+      childRunId = randomUUID();
+    const parent = {
+      runId,
+      nativeSessionId: 'root',
+      allowedTools: ['assistant.delegate', 'assistant.development'],
+    };
+    const child = {
+      runId: childRunId,
+      parentRunId: runId,
+      nativeSessionId: 'tester',
+      allowedTools: [
+        'assistant.development',
+        'assistant.report',
+        'local.process.execute',
+      ],
+    };
+    let persistedText = '';
+    const provision = vi.fn(async (input: { text: string }) => {
+      persistedText = input.text;
+      return { instance: child };
+    });
+    const onProposal = vi.fn();
+    const bridge = createAssistantWorkerBridge({
+      runtime: {
+        getTree: async () => ({
+          instances: [parent, child],
+          configuration: { maxDepth: 1 },
+        }),
+        reserveUsage: async () => ({ reserved: true }),
+        settleUsage: async () => {},
+        provision,
+        claimMessage: async () => ({
+          dispatch: true,
+          instance: child,
+          message: { text: persistedText },
+        }),
+      } as unknown as AssistantRuntime,
+      task: { rootRunId: runId, scope: {} } as Options['task'],
+      context: {} as Options['context'],
+      worker: {} as Options['worker'],
+      wireNames: {},
+      readOnlyTools: new Set(),
+      onProposal,
+      onDevelopment: vi.fn(),
+    });
+    const callId = randomUUID();
+    const first = await bridge.handle('delegate', {
+      nativeSessionId: 'root',
+      callId,
+      arguments: {
+        label: 'tester',
+        text: 'Wait for exact web approval.',
+        tools: child.allowedTools,
+        development: JSON.stringify({
+          role: 'test',
+          expectedHead: {
+            artifactId: randomUUID(),
+            digest: `sha256:${'a'.repeat(64)}`,
+          },
+        }),
+      },
+    });
+    expect(first.text).toContain('to REQUEST approval');
+    expect(first.text).toContain('only dispatches after approval');
+    const recovered = await bridge.messageDispatch(callId);
+    expect(recovered.text).toBe(first.text);
+    expect(onProposal).not.toHaveBeenCalled();
+  });
   it('rejects malformed verifier assignments with usable guidance before creating a child', async () => {
     const runId = randomUUID();
     const provision = vi.fn();
