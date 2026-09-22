@@ -2,7 +2,10 @@
  * No VM, command process, customer data, external credential or deployment. */
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
+import {
+  RuntimeLocalCommandToolInputSchema,
+  localCommandToolchainImageV1,
+} from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import { assertAssistantAuthority } from './assistant-authority.ts';
@@ -98,6 +101,142 @@ integration(
         leaseOwner: randomUUID(),
         leaseMs: 30000,
       });
+
+    it.each([0, 124])(
+      'settles a terminal assistant command exactly once, exit %s',
+      async (exitCode) => {
+        const f = await proposalFixture(),
+          c = await f.create();
+        const operationId = c.snapshot.binding.attempt.operationId;
+        await f.approve(await f.approvalFor(operationId));
+        const ledger = f.freshLedger(),
+          lease = await dispatch(f, c, ledger);
+        const identity = {
+          scope: f.task.scope,
+          operationId,
+          leaseToken: lease.leaseToken,
+          attempt: lease.snapshot.binding.attempt,
+        };
+        await ledger.startOperation({ ...identity, receiptId: randomUUID() });
+        const unsettled = () =>
+          f.db`select metric from allrice_runtime_reservations where operation_id=${operationId} and settled_amount is null`;
+        await ledger.recordReceipt({
+          ...identity,
+          receiptId: randomUUID(),
+          signal: { type: 'operation.uncertain', reason: 'connection_lost' },
+        });
+        expect(await unsettled()).toHaveLength(4);
+        const receipt = {
+          ...identity,
+          receiptId: randomUUID(),
+          signal: {
+            type: 'operation.outcome' as const,
+            result: {
+              status:
+                exitCode === 0 ? ('succeeded' as const) : ('failed' as const),
+              effects: 'none' as const,
+              evidence: {
+                id: randomUUID(),
+                recordedAt: new Date().toISOString(),
+                digest: `sha256:${'a'.repeat(64)}`,
+              },
+            },
+          },
+          evidence: {
+            output: {
+              backend: 'local-vm-container-v1',
+              containerId: 'b'.repeat(64),
+              imageDigest: localCommandToolchainImageV1,
+              stopped: true,
+              exitCode,
+              reason: exitCode === 0 ? 'exited' : 'timeout',
+              stdout: '',
+              stderr: '',
+              truncated: false,
+              workCopy: 'local_isolated_copy',
+              sourceDirectoryModified: false,
+            },
+          },
+        };
+        await expect(
+          ledger.recordReceipt({
+            ...receipt,
+            receiptId: randomUUID(),
+            leaseToken: 'wrong',
+          }),
+        ).rejects.toThrow();
+        expect(await unsettled()).toHaveLength(4);
+        expect(
+          (
+            await ledger.recordReceipt({
+              ...receipt,
+              receiptId: randomUUID(),
+              attempt: { ...identity.attempt, attemptId: randomUUID() },
+            })
+          ).disposition,
+        ).toBe('stale');
+        expect(await unsettled()).toHaveLength(4);
+        expect((await ledger.recordReceipt(receipt)).disposition).toBe(
+          'applied',
+        );
+        expect(await unsettled()).toHaveLength(0);
+        const observations =
+          await f.db`select metric,settled_amount,observation from allrice_runtime_reservations where operation_id=${operationId} order by metric`;
+        expect(observations.map((r) => [r.metric, r.settled_amount])).toEqual([
+          ['input_tokens', '0'],
+          ['model_calls', '0'],
+          ['output_tokens', '0'],
+          ['tool_calls', '1'],
+        ]);
+        const budgets =
+          await f.db`select metric,spent,reserved from allrice_runtime_budgets where root_run_id=${f.rootRunId} order by metric`;
+        expect((await ledger.recordReceipt(receipt)).disposition).toBe(
+          'duplicate',
+        );
+        expect(
+          await f.db`select metric,settled_amount,observation from allrice_runtime_reservations where operation_id=${operationId} order by metric`,
+        ).toEqual(observations);
+        expect(
+          await f.db`select metric,spent,reserved from allrice_runtime_budgets where root_run_id=${f.rootRunId} order by metric`,
+        ).toEqual(budgets);
+      },
+    );
+
+    it('does not invent measured usage from a terminal error without a process receipt', async () => {
+      const f = await proposalFixture(),
+        c = await f.create();
+      const operationId = c.snapshot.binding.attempt.operationId;
+      await f.approve(await f.approvalFor(operationId));
+      const ledger = f.freshLedger(),
+        lease = await dispatch(f, c, ledger);
+      const identity = {
+        scope: f.task.scope,
+        operationId,
+        leaseToken: lease.leaseToken,
+        attempt: lease.snapshot.binding.attempt,
+      };
+      await ledger.startOperation({ ...identity, receiptId: randomUUID() });
+      await ledger.recordReceipt({
+        ...identity,
+        receiptId: randomUUID(),
+        signal: {
+          type: 'operation.outcome',
+          result: {
+            status: 'failed',
+            effects: 'none',
+            evidence: {
+              id: randomUUID(),
+              recordedAt: new Date().toISOString(),
+              digest: `sha256:${'a'.repeat(64)}`,
+            },
+          },
+        },
+        evidence: { error: 'runner_unavailable' },
+      });
+      expect(
+        await f.db`select metric from allrice_runtime_reservations where operation_id=${operationId} and settled_amount is null`,
+      ).toHaveLength(4);
+    });
 
     it('keeps public arguments free of Worker provenance and binds immutable operation origin to the real child', async () => {
       const f = await proposalFixture();

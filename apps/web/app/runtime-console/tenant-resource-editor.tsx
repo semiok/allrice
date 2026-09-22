@@ -335,10 +335,11 @@ function Quotas({
   }
   return (
     <div>
-      <h3>内部月额度</h3>
+      <h3>用量统计与资源限制</h3>
       <p>
-        组织总额度、租户资源限额和用户限额共同约束新任务；提高用户额度不会绕过组织额度。员工/Provider
-        限额仍由原运行准入检查。
+        {data?.subscription.tokenPolicy === 'observe'
+          ? 'Codex 订阅不按内部 Token 限额拦截。下方保留 API 额度配置；并发、运行时长和请求次数限制仍用于保护服务。'
+          : '组织总额度、租户资源限额和用户限额共同约束新任务；提高用户额度不会绕过组织额度。员工/Provider 限额仍由原运行准入检查。'}
       </p>
       <button
         disabled={busy}
@@ -363,7 +364,13 @@ function Quotas({
               <thead>
                 <tr>
                   <th>限额层级</th>
-                  <th>来源 / 生效 Token 上限</th>
+                  <th>
+                    来源 /{' '}
+                    {data.subscription.tokenPolicy === 'observe'
+                      ? 'API'
+                      : '生效'}{' '}
+                    Token 上限
+                  </th>
                   <th>已记录总量 / 其中缓存</th>
                   <th>未知用量 / 风险预留</th>
                 </tr>

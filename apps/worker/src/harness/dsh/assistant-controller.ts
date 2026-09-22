@@ -35,6 +35,8 @@ import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 import { assertAssistantProviderOutputBound } from './assistant-provider.js';
 import { assertSubscriptionQuotaNotExhausted } from '../../subscription-quota-admission.js';
 
+import { assistantModelCallCapacity } from './assistant-call-limits.js';
+
 function assertPriceProvider(
   price: AssistantPriceSnapshot,
   provider: DshExecutionSnapshot,
@@ -295,11 +297,15 @@ export function productionAssistantController(input: {
           digest: runtimePolicyDigest(row.execution_spec),
         },
       };
-      // Entire tree shares these immutable admission limits. For subscriptions,
-      // token capacities are observed thresholds, not remote output guarantees:
-      // actual overage is durably recorded by settleUsage and cancels the root.
+      // Shared call limits still bound runaway loops. Token capacities remain
+      // historical configuration; verified subscriptions observe actual usage
+      // without enforcing these capacities (server policy, not model input).
       const budgets: RuntimeBudgetLimit[] = [
-        { metric: 'model_calls', unit: 'calls', capacity: 16 },
+        {
+          metric: 'model_calls',
+          unit: 'calls',
+          capacity: assistantModelCallCapacity(configuration, allowedTools),
+        },
         { metric: 'tool_calls', unit: 'calls', capacity: 64 },
         {
           metric: 'input_tokens',
@@ -449,6 +455,12 @@ export function productionAssistantController(input: {
       });
       return {
         ...bridge,
+        failureUsage: () =>
+          runtime.readFailureUsage({
+            scope: task.scope,
+            rootRunId: task.rootRunId,
+            worker,
+          }),
         finish: async () => {
           // The adapter joins/stops native loops first. Read receipts while the
           // worker is still live, then let finalization verify the durable tree.

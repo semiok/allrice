@@ -8,6 +8,8 @@ import {
 import {
   assertAssistantTaskComplete,
   AssistantExecutionUnresolvedError,
+  attachAssistantFailureUsage,
+  getAssistantFailureUsage,
 } from './assistant-outcome.js';
 const result: HarnessExecutionResult = {
   answer: 'Synthetic answer',
@@ -16,6 +18,45 @@ const result: HarnessExecutionResult = {
   model: 'synthetic',
 };
 describe('assistant completion at the Worker success boundary', () => {
+  it('separates missing subscription accounting from an evidenced completion, not from partial work', () => {
+    const missing = {
+      ...result,
+      assistantStatus: 'completed' as const,
+      usageComplete: false,
+    };
+    expect(() => assertAssistantTaskComplete(missing, true)).not.toThrow();
+    expect(() => assertAssistantTaskComplete(missing, false)).toThrow();
+    expect(() =>
+      assertAssistantTaskComplete(
+        { ...missing, assistantStatus: 'partial' },
+        true,
+      ),
+    ).toThrow('未完成事项');
+    expect(missing.usageComplete).toBe(false);
+  });
+  it('failure receipts are local, bound to the exact Run/attempt and cannot be forged by serialized fields', () => {
+    const error = Object.freeze(Error('original failure'));
+    const runId = randomUUID();
+    const receipt = {
+      usage: { ...result.usage },
+      usageComplete: true,
+      cacheUsageKnown: false,
+    };
+    attachAssistantFailureUsage(error, runId, 1, receipt);
+    expect(getAssistantFailureUsage(error, runId, 1)).toEqual(receipt);
+    expect(getAssistantFailureUsage(error, randomUUID(), 1)).toBeUndefined();
+    expect(getAssistantFailureUsage(error, runId, 2)).toBeUndefined();
+    expect(
+      getAssistantFailureUsage({ ...receipt, runId, attempt: 1 }, runId, 1),
+    ).toBeUndefined();
+    expect(
+      getAssistantFailureUsage(JSON.parse(JSON.stringify(error)), runId, 1),
+    ).toBeUndefined();
+    receipt.usage.inputTokens = 999;
+    expect(getAssistantFailureUsage(error, runId, 1)?.usage.inputTokens).toBe(
+      20,
+    );
+  });
   it.each(['completed', 'partial'] as const)(
     'preserves the safe sidecar from a %s result when usage is incomplete',
     (assistantStatus) => {

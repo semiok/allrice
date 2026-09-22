@@ -49,5 +49,9 @@ export interface AdminTenantQuotas {
   periodStart: string;
   resetsAt: string;
   quotas: AdminTenantQuota[];
-  subscription: { status: 'not_queried'; message: string };
+  subscription: {
+    status: 'not_queried';
+    message: string;
+    tokenPolicy?: 'observe' | 'enforce';
+  };
 }

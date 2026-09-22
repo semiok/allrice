@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   AssistantResultSchema,
+  DevelopmentCommandSchema,
   type AssistantPricedUsage,
   type RequestContext,
   type RuntimeTaskRef,
@@ -309,17 +310,53 @@ export function createAssistantWorkerBridge(
       if (method === 'development') {
         if (!options.onDevelopment)
           throw Error('assistant_development_unavailable');
-        const command = z
+        const envelope = z
           .object({ command: z.string().min(1).max(512000) })
           .strict()
-          .parse(args);
-        return {
-          development: await options.onDevelopment({
-            runId: instance.runId,
-            requestId: callUuid,
-            arguments: JSON.parse(command.command),
-          }),
-        };
+          .safeParse(args);
+        let decoded: unknown;
+        if (envelope.success) {
+          try {
+            decoded = JSON.parse(envelope.data.command);
+          } catch {
+            // Do not echo untrusted input (or a parser's source snippet).
+          }
+        }
+        const command = DevelopmentCommandSchema.safeParse(decoded);
+        if (!command.success)
+          return {
+            error: 'assistant_development_invalid',
+            message:
+              'No development action was performed. Correct the command JSON; this is an argument error, not an authorization denial. Editor inspect: {"action":"inspect","assignmentId":"<edit assignment UUID>"}. Tester/reviewer inspect: {"action":"inspect","candidate":{"artifactId":"<assigned artifactId>","digest":"<assigned digest>"}}, WITHOUT assignmentId. Never combine assignmentId and candidate; alternatively inspect the current initialized head with {"action":"inspect"}. To initialize, use {"action":"initialize","seed":{"artifactId":"<artifactId>","digest":"<digest>"}} with the exact artifactId and sha256: digest returned by workspace.export.create. Never substitute objectId, a file path, or an invented checksum.',
+          };
+        try {
+          return {
+            development: await options.onDevelopment({
+              runId: instance.runId,
+              requestId: callUuid,
+              arguments: command.data,
+            }),
+          };
+        } catch (error) {
+          const guidance: Record<string, string> = {
+            development_proposal_mismatch:
+              'For publish, previous is null for the FIRST proposal on this edit assignment, or the exact reference returned by your OWN earlier successful publish. It is NEVER the root seed/base/head. For merge, proposals must be exact, not-yet-adopted child proposal references. Inspect the actual references; do not invent IDs.',
+            development_previous_version_required:
+              'This edit assignment already has a proposal. Publish a revision with previous set to your own latest successful proposal reference, not null or the root base.',
+            development_baseline_conflict:
+              'Inspect the edit assignment again. Each proposal before must exactly equal the assigned file after.text, preserving real newlines and all bytes; before/after are text or null, not checksum objects. Do not overwrite concurrent edits.',
+            development_head_conflict:
+              'The current candidate changed. Inspect the current head and coordinate a new version-specific assignment; do not reuse old approval, test or review evidence.',
+          };
+          if (error instanceof Error && Object.hasOwn(guidance, error.message))
+            return {
+              error: error.message,
+              message: `Development request rejected. ${guidance[error.message]}`,
+            };
+          // Never turn permission, budget, storage or unknown failures into
+          // successful calls, or leak their raw diagnostic text to the model.
+          throw error;
+        }
       }
       if (method === 'delegate') {
         const selectedTools = tools.parse(args.tools);
@@ -351,7 +388,13 @@ export function createAssistantWorkerBridge(
             !selectedTools.includes('assistant.development')
           )
             throw Error('assistant_development_unavailable');
-          assignment = z
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(z.string().max(16000).parse(args.development));
+          } catch {
+            // Only bounded guidance below; never echo parser input or secrets.
+          }
+          const parsed = z
             .object({
               expectedHead: z
                 .object({
@@ -363,7 +406,19 @@ export function createAssistantWorkerBridge(
               paths: z.array(z.string()).optional(),
             })
             .strict()
-            .parse(JSON.parse(z.string().max(16000).parse(args.development)));
+            .safeParse(decoded);
+          if (
+            !parsed.success ||
+            (parsed.data.role === 'edit'
+              ? !parsed.data.paths?.length
+              : parsed.data.paths !== undefined)
+          )
+            return {
+              error: 'assistant_development_assignment_invalid',
+              message:
+                'No child was created. development must be a JSON string with expectedHead={artifactId,digest} and role. Only role=edit requires paths (the permitted files). For role=test or role=review, omit paths: scope is the exact expectedHead candidate, not a new write assignment. Include assistant.development and assistant.report in tools; a tester also requires local.process.execute. Correct the request; do not stop or resend a completed editor.',
+            };
+          assignment = parsed.data;
           if (
             assignment.role === 'test' &&
             !selectedTools.includes('local.process.execute')
@@ -373,7 +428,16 @@ export function createAssistantWorkerBridge(
         const taskText =
           text.parse(args.text) +
           (assignment
-            ? `\nPlanned development assignment: ${JSON.stringify({ ...assignment, assignmentId: callUuid })}`
+            ? `\nPlanned development assignment: ${JSON.stringify({ ...assignment, ...(assignment.role === 'edit' ? { assignmentId: callUuid } : {}) })}`
+            : '') +
+          (assignment && assignment.role !== 'edit'
+            ? `\nInspect your assigned candidate using exactly ${JSON.stringify({ action: 'inspect', candidate: assignment.expectedHead })}. Do not pass assignmentId: it is only for an editor's file claim, not a verifier assignment. An argument-validation response means correct the syntax, not bypass a policy denial. For your final assistant.report, use evidence=[] and output={name:"verification-result",content:"your summary citing actual operation/review references"}; a root candidate, command operation or review ID is NOT an artifact registered to your child. Formal testing/review still require their actual platform records, not this report text.`
+            : '') +
+          (assignment?.role === 'edit'
+            ? '\nPublication protocol: wrap each action object as the JSON string command argument to assistant.development. For your FIRST publish, previous MUST be null, never expectedHead/base. Only revising your own successful published proposal uses that proposal reference as previous. before/after are exact text strings or null, not {text,checksum} objects. Preserve actual newlines from inspect; do not double-escape them into literal backslash-n.'
+            : '') +
+          (assignment?.role === 'test'
+            ? '\nApproval protocol: call local.process.execute with the exact assigned candidate and command to REQUEST approval. That call creates the web approval card; it is not permission to execute. The platform waits for the user and only dispatches after approval. Do not wait for a nonexistent card before submitting, and do not report partial merely because approval has not yet been requested. Report success only from the returned terminal command receipt; preserve a real rejection, cancellation or timeout as incomplete.'
             : '');
         let development: unknown;
         const { instance: child } = await runtime.provision({

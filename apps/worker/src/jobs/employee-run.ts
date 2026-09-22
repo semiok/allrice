@@ -78,6 +78,7 @@ import { productionAssistantController } from '../harness/dsh/assistant-controll
 import { getAssistantFailureDiagnostics } from '../harness/dsh/assistant-diagnostics.js';
 import {
   AssistantExecutionUnresolvedError,
+  getAssistantFailureUsage,
   assertAssistantTaskComplete,
 } from '../harness/dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
@@ -1206,7 +1207,7 @@ export async function executeEmployeeRun({
     }
     routeUsage = result.usage;
     // Keep subscription accounting incomplete until identity-bound receipts
-    // are verified. A forged/mismatched result cannot unblock the next Run.
+    // are verified. A forged/mismatched result cannot claim successful delivery.
     routeUsageComplete = subscriptionSnapshot
       ? false
       : (result.usageComplete ?? true);
@@ -1284,7 +1285,7 @@ export async function executeEmployeeRun({
       configChecksum,
       workflowLease,
     });
-    assertAssistantTaskComplete(result);
+    assertAssistantTaskComplete(result, modelBudgetScope.verifiedSubscription);
     await completeRouteDecision({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
@@ -1313,7 +1314,17 @@ export async function executeEmployeeRun({
       ),
     };
   } catch (error) {
-    if (error instanceof AssistantExecutionUnresolvedError) {
+    const failedUsage = getAssistantFailureUsage(
+      error,
+      execution.context.runId,
+      execution.job.attempt,
+    );
+    if (failedUsage) {
+      routeUsage = failedUsage.usage;
+      routeCostCents = null;
+      routeUsageComplete = failedUsage.usageComplete;
+      routeCacheUsageKnown = failedUsage.cacheUsageKnown;
+    } else if (error instanceof AssistantExecutionUnresolvedError) {
       routeUsage = error.usage;
       routeCostCents = null;
       routeUsageComplete = error.usageComplete;

@@ -18,6 +18,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { RunUsageSummary } from './run-usage';
+import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
 import styles from './tenant-administration.module.css';
 
@@ -277,10 +278,12 @@ export function TenantValidation(
                 ：已记录 {q.usedTokens.toLocaleString()} / 上限{' '}
                 {q.effective.monthlyTokenLimit.toLocaleString()} Token；风险预留{' '}
                 {q.reservedTokens.toLocaleString()}；
-                {q.usedTokens + q.reservedTokens >=
-                q.effective.monthlyTokenLimit
-                  ? '已达内部额度，请检查限制'
-                  : '仍需执行时准入'}
+                {data.quotas?.subscription.tokenPolicy === 'observe'
+                  ? 'Codex 订阅仅统计，不受此 Token 上限或预留阻断；其他执行保护仍生效'
+                  : q.usedTokens + q.reservedTokens >=
+                      q.effective.monthlyTokenLimit
+                    ? '已达内部额度，请检查限制'
+                    : '仍需执行时准入'}
                 （{q.usageScope === 'workspace' ? '当前工作区统计' : '组织统计'}
                 ）
               </p>
@@ -343,6 +346,9 @@ export function TenantValidation(
             {detail.run.sessionId}
           </p>
           <RunUsageSummary usage={detail.usage} runStatus={detail.run.status} />
+          {detail.development ? (
+            <DevelopmentInspection data={detail.development} />
+          ) : null}
           <details>
             <summary>用户目标与交付回复</summary>
             <SafeDocument text={detail.userText ?? '无可展示目标'} />

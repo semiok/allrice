@@ -312,7 +312,8 @@ integration(
           expect.objectContaining({
             metric: 'output_tokens',
             amount: '64',
-            settled_amount: null,
+            // Confirmed stop releases a preparation that never dispatched.
+            settled_amount: '0',
           }),
         ]),
       );

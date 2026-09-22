@@ -8,10 +8,18 @@ import {
 } from '../dsh-protocol-client.js';
 import { DshRuntimePool, type DshRuntime } from './runtime-pool.js';
 import { getAssistantFailureDiagnostics } from './assistant-diagnostics.js';
-import { assertAssistantTaskComplete } from './assistant-outcome.js';
+import {
+  assertAssistantTaskComplete,
+  getAssistantFailureUsage,
+  type AssistantFailureUsage,
+} from './assistant-outcome.js';
+import { AssistantRuntimeError } from '@allrice/database';
 import { DshStartupRejection } from './startup-rejection.js';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 /** Adapter bookkeeping unit seam only: no native host or provider. Actual
  * native/RPC/PG correlation is covered by the loopback Gemini integration. */
@@ -21,12 +29,23 @@ function fixture(options: {
   malformed?: boolean;
   ordinary?: boolean;
   outcome?: 'partial' | 'completed' | 'unknown';
+  failureUsage?: AssistantFailureUsage;
+  failureUsageError?: boolean;
+  drainError?: boolean;
+  admissionFailure?: boolean;
+  admissionFailureReturned?: boolean;
+  admissionMethod?: string;
+  authorityFailure?: Error;
 }) {
   const sessionId = randomUUID();
   const threadId = `dsh-${sessionId}`;
   const order: string[] = [];
   let notify: ((value: DshNotification) => void) | undefined;
   let cleared = false;
+  let rejectPrompt: ((error: Error) => void) | undefined;
+  let handler:
+    | ((method: string, params: Record<string, unknown>) => Promise<unknown>)
+    | null;
   const diagnostics = {
     version: 1,
     failures: [
@@ -44,7 +63,10 @@ function fixture(options: {
     truncated: false,
   };
   const client = {
-    setRequestHandler: vi.fn(),
+    interrupt: vi.fn(async () => ({})),
+    setRequestHandler: vi.fn((value) => {
+      handler = value;
+    }),
     subscribe: (listener: (value: DshNotification) => void) => {
       notify = listener;
       return () => {
@@ -52,6 +74,18 @@ function fixture(options: {
       };
     },
     prompt: async () => {
+      if (options.authorityFailure)
+        return new Promise((_, reject) => {
+          rejectPrompt = reject;
+        });
+      if (options.admissionFailure) {
+        await handler?.(
+          options.admissionMethod ?? 'allrice/assistant/model-dispatch',
+          {},
+        ).catch(() => {});
+        if (!options.admissionFailureReturned)
+          throw Error('native generic error');
+      }
       if (options.originalError) throw options.originalError;
       notify?.({
         method: 'session.event',
@@ -80,6 +114,8 @@ function fixture(options: {
     },
     assistant: vi.fn(async (action: string) => {
       order.push(action);
+      if (action === 'drain' && options.drainError)
+        throw Error('drain unavailable');
       if (action === 'diagnostics') {
         if (options.diagnosticFailure)
           throw Error('diagnostic-endpoint-failed');
@@ -103,6 +139,7 @@ function fixture(options: {
   vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
   vi.spyOn(DshRuntimePool.prototype, 'drop').mockImplementation(async () => {
     order.push('drop');
+    rejectPrompt?.(new Error('native runtime closed'));
   });
   const input: HarnessExecutionInput = {
     kernel: {
@@ -144,11 +181,27 @@ function fixture(options: {
       : {
           rootRunId: randomUUID(),
           bind: async () => ({
-            handle: async () => ({}),
-            cancellation: async () => ({ instances: [] }),
+            handle: async () => {
+              if (options.admissionFailure)
+                throw new AssistantRuntimeError('budget_exhausted');
+              return {};
+            },
+            cancellation: async () => {
+              if (options.authorityFailure) throw options.authorityFailure;
+              return { instances: [] };
+            },
             cancel: async () => {
               order.push('cancel');
             },
+            failureUsage:
+              options.failureUsage || options.failureUsageError
+                ? async () => {
+                    order.push('failureUsage');
+                    if (options.failureUsageError)
+                      throw Error('ledger unavailable');
+                    return options.failureUsage!;
+                  }
+                : undefined,
             finish: async () => ({
               status: options.outcome ?? 'unknown',
               usageComplete:
@@ -170,6 +223,108 @@ function fixture(options: {
 }
 
 describe('bounded assistant diagnostic consumption', () => {
+  it('preserves the durable execution deadline instead of generic runtime closure', async () => {
+    vi.useFakeTimers();
+    const f = fixture({
+      authorityFailure: new AssistantRuntimeError('budget_exhausted'),
+    });
+    const outcome = f.adapter.execute(f.input).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await outcome).toMatchObject({
+      code: 'ASSISTANT_BUDGET_EXHAUSTED',
+      retryable: false,
+      message: expect.stringContaining('执行时限'),
+    });
+    expect(f.order).toContain('drop');
+  });
+  it.each([true, false])(
+    'propagates known prior usage with completeness=%s, only after drain and before host disposal',
+    async (usageComplete) => {
+      const original = Object.freeze(Error('original'));
+      const receipt = {
+        usage: { inputTokens: 47002, outputTokens: 3214, cachedInputTokens: 0 },
+        usageComplete,
+        cacheUsageKnown: false,
+      };
+      const f = fixture({
+        originalError: original,
+        failureUsage: receipt,
+        drainError: !usageComplete,
+      });
+      const error = await f.adapter
+        .execute(f.input)
+        .catch((error: unknown) => error);
+      expect(error).toBe(original);
+      expect(
+        getAssistantFailureUsage(
+          error,
+          f.input.assistants!.rootRunId,
+          f.input.attempt,
+        ),
+      ).toEqual(receipt);
+      expect(f.order.indexOf('drain')).toBeLessThan(
+        f.order.indexOf('failureUsage'),
+      );
+      expect(f.order.indexOf('failureUsage')).toBeLessThan(
+        f.order.indexOf('drop'),
+      );
+      expect(f.order).not.toContain('finish');
+    },
+  );
+  it('does not guess usage if durable accounting fails', async () => {
+    const original = Error('original');
+    const f = fixture({ originalError: original, failureUsageError: true });
+    const error = await f.adapter
+      .execute(f.input)
+      .catch((error: unknown) => error);
+    expect(error).toBe(original);
+    expect(
+      getAssistantFailureUsage(
+        error,
+        f.input.assistants!.rootRunId,
+        f.input.attempt,
+      ),
+    ).toBeUndefined();
+    expect(f.order).toContain('drop');
+  });
+  it.each(
+    ['model-prepare', 'model-dispatch', 'delegate', 'development'].flatMap(
+      (admissionMethod) =>
+        [false, true].map((admissionFailureReturned) => ({
+          admissionMethod,
+          admissionFailureReturned,
+        })),
+    ),
+  )(
+    'a trusted local admission denial is non-retryable ($admissionMethod, $admissionFailureReturned)',
+    async ({ admissionMethod, admissionFailureReturned }) => {
+      const receipt = {
+        usage: { inputTokens: 20, outputTokens: 3, cachedInputTokens: 0 },
+        usageComplete: true,
+        cacheUsageKnown: false,
+      };
+      const f = fixture({
+        admissionFailure: true,
+        admissionMethod: `allrice/assistant/${admissionMethod}`,
+        admissionFailureReturned,
+        failureUsage: receipt,
+      });
+      const error = await f.adapter
+        .execute(f.input)
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({
+        code: 'ASSISTANT_BUDGET_EXHAUSTED',
+        retryable: false,
+      });
+      expect(
+        getAssistantFailureUsage(
+          error,
+          f.input.assistants!.rootRunId,
+          f.input.attempt,
+        ),
+      ).toEqual(receipt);
+    },
+  );
   it('keeps partial return diagnostics through the later Worker completion error without serializable fields', async () => {
     const f = fixture({ outcome: 'partial' });
     const result = await f.adapter.execute(f.input);

@@ -68,7 +68,10 @@ export const DevelopmentCommandSchema = z.discriminatedUnion('action', [
       assignmentId: UuidSchema.optional(),
       candidate: DevelopmentArtifactRefSchema.optional(),
     })
-    .strict(),
+    .strict()
+    .refine((command) => !(command.assignmentId && command.candidate), {
+      message: 'Inspect an edit assignment OR a candidate, not both',
+    }),
   z
     .object({
       action: z.literal('publish'),

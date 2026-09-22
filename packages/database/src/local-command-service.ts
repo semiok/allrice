@@ -103,7 +103,31 @@ export async function createLocalCommandOperation(
       and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!row || row.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
-  const { candidate: ref, ...commandArgs } = args;
+  const { candidate: requestedCandidate, ...commandArgs } = args;
+  let ref = requestedCandidate;
+  if (input.assistant && !ref) {
+    // A development tester already has an immutable, server-assigned version.
+    // Bind that version before generating the approval digest; never silently
+    // test the unmodified workspace when the model omits this optional field.
+    const assignments = await database<
+      { artifact_id: string; digest: string; current: boolean }[]
+    >`select v.artifact_id,v.digest,
+        (h.head_artifact_id=v.artifact_id and h.head_digest=v.digest) as current
+      from allrice_development_verifiers v
+      join allrice_development_heads h on h.root_run_id=v.root_run_id
+      join allrice_workbench_artifacts a on a.version_id=v.artifact_id and a.run_id=h.root_run_id
+      where v.root_run_id=${ctx.runId} and v.run_id=${input.assistant.runId} and v.role='test'
+        and a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner}`;
+    if (assignments.length) {
+      const current = assignments.filter((v) => v.current);
+      if (current.length !== 1)
+        throw new RuntimePolicyError('assistant_authority_changed');
+      ref = {
+        artifactId: current[0]!.artifact_id,
+        checksum: current[0]!.digest,
+      };
+    }
+  }
   let candidate:
     { artifactId: string; checksum: string; content: string } | undefined;
   let candidateTargetId: string | null = null;

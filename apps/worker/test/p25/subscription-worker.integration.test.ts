@@ -11,6 +11,8 @@ import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
 import type { DshRuntime } from '../../src/harness/dsh/runtime-pool.ts';
 import * as AssistantController from '../../src/harness/dsh/assistant-controller.ts';
 import { DshStartupRejection } from '../../src/harness/dsh/startup-rejection.ts';
+import { attachAssistantFailureUsage } from '../../src/harness/dsh/assistant-outcome.ts';
+import { HandlerError } from '../../src/errors.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import {
   getOrganizationModelQuota,
@@ -68,12 +70,17 @@ integration(
       'startup_other_run',
       'startup_other_attempt',
       'startup_forged',
+      'failed_known_usage',
+      'failed_unknown_usage',
+      'failed_foreign_usage',
     ])(
       'writes trustworthy subscription N/A and preserves admission for %s',
       async (mode) => {
-        const unknownUsage = !['complete', 'startup_undispatched'].includes(
-          mode,
-        );
+        const unknownUsage = ![
+          'complete',
+          'startup_undispatched',
+          'failed_known_usage',
+        ].includes(mode);
         const temporary = await mkdtemp(
           join(tmpdir(), 'allrice-subscription-worker-test-'),
         );
@@ -167,6 +174,28 @@ integration(
                 return originalExecute.call(this, input);
               if (mode === 'transport_failure')
                 throw Error('synthetic transport failed after dispatch');
+              if (mode.startsWith('failed_')) {
+                const error = new HandlerError(
+                  'ASSISTANT_BUDGET_EXHAUSTED',
+                  'synthetic internal budget stop',
+                  false,
+                );
+                attachAssistantFailureUsage(
+                  error,
+                  mode === 'failed_foreign_usage' ? 'another-run' : task.runId,
+                  input.attempt,
+                  {
+                    usage: {
+                      inputTokens: 47002,
+                      outputTokens: 3214,
+                      cachedInputTokens: 0,
+                    },
+                    usageComplete: mode !== 'failed_unknown_usage',
+                    cacheUsageKnown: false,
+                  },
+                );
+                throw error;
+              }
               if (mode.startsWith('startup_')) {
                 const original = Error('synthetic bind rejected before prompt');
                 if (mode === 'startup_forged')
@@ -218,7 +247,12 @@ integration(
             expect(proof?.count).toBe(0);
             return;
           }
-          if (mode.startsWith('startup_'))
+          if (mode.startsWith('failed_'))
+            await expect(pending).rejects.toMatchObject({
+              code: 'ASSISTANT_BUDGET_EXHAUSTED',
+              retryable: false,
+            });
+          else if (mode.startsWith('startup_'))
             await expect(pending).rejects.toThrow(
               'synthetic bind rejected before prompt',
             );
@@ -227,13 +261,6 @@ integration(
           else if (mode === 'mismatched_result')
             await expect(pending).rejects.toMatchObject({
               code: 'ASSISTANT_SUBSCRIPTION_RESULT_UNVERIFIED',
-            });
-          else if (mode === 'missing_usage')
-            // MET-150 removes ordinary cumulative thresholds, not unknown
-            // receipt protection. Missing receipts must remain unresolved.
-            await expect(pending).rejects.toMatchObject({
-              code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-              retryable: false,
             });
           else
             expect(await pending).toMatchObject({
@@ -259,6 +286,14 @@ integration(
             usage_complete: !unknownUsage,
             snapshot_digest: expect.stringMatching(/^sha256:/),
           });
+          if (['failed_known_usage', 'failed_unknown_usage'].includes(mode))
+            expect(ledger).toMatchObject({
+              input_tokens: 47002,
+              output_tokens: 3214,
+              cached_input_tokens: 0,
+            });
+          if (mode === 'failed_foreign_usage')
+            expect(ledger).toMatchObject({ input_tokens: 0, output_tokens: 0 });
           const quota = await getOrganizationModelQuota(
             fixture.organizationId,
             fixture.db,
@@ -281,14 +316,10 @@ integration(
               error_code: 'CONVERSATION_FAILED',
             });
           }
-          if (unknownUsage)
-            expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-              'MODEL_TOKEN_USAGE_UNKNOWN',
-            );
-          else
-            expect(() =>
-              assertQuotaAvailable(quota, 'subscription'),
-            ).not.toThrow();
+          // Unknown accounting must stay unknown, but no longer locks the account.
+          expect(() =>
+            assertQuotaAvailable(quota, 'subscription'),
+          ).not.toThrow();
         } finally {
           await cleanup?.();
           expect(await fixture.close()).toMatchObject({

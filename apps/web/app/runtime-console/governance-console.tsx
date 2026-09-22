@@ -155,6 +155,9 @@ export function GovernanceConsole() {
     ProviderOperation[]
   >([]);
   const [quota, setQuota] = useState<Quota | null>(null);
+  const [tokenPolicy, setTokenPolicy] = useState<'observe' | 'enforce'>(
+    'enforce',
+  );
   const [unknownUsage, setUnknownUsage] = useState<UnknownUsageReview[]>([]);
   const [authorization, setAuthorization] = useState<Authorization | null>(
     null,
@@ -180,6 +183,7 @@ export function GovernanceConsole() {
       readJson<{
         governance: {
           quota: Quota;
+          codexTokenPolicy?: 'observe' | 'enforce';
           providers: ProviderGovernance[];
           operations: ProviderOperation[];
           unknownUsage: UnknownUsageReview[];
@@ -196,6 +200,7 @@ export function GovernanceConsole() {
     setConnections(poolResult.modelPool.connections);
     setProviders(poolResult.modelPool.providers);
     setQuota(governanceResult.governance.quota);
+    setTokenPolicy(governanceResult.governance.codexTokenPolicy ?? 'enforce');
     setUnknownUsage(governanceResult.governance.unknownUsage ?? []);
     setProviderStates(governanceResult.governance.providers);
     setProviderOperations(governanceResult.governance.operations);
@@ -509,11 +514,18 @@ export function GovernanceConsole() {
           <div className={styles.sectionHeading}>
             <div>
               <p>租户治理</p>
-              <h2>平台内部月度限制</h2>
+              <h2>平台用量统计与资源限制</h2>
             </div>
             <span>用量在每次 RouteDecision 完成后写入不可重复账本</span>
           </div>
           <GovernanceUsageSummary quota={quota} />
+          {tokenPolicy === 'observe' ? (
+            <p>
+              Codex 订阅 Token 仅统计，不受内部任务/月度 Token
+              上限及未知用量阻断，无需人工预算预留。Token 限额配置仅用于按量
+              API；并发、运行超时、调用次数和权限审批继续生效。
+            </p>
+          ) : null}
           {unknownUsage.length > 0 ? (
             <div>
               <h2>各租户异常用量处理</h2>

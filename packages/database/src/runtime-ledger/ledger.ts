@@ -43,6 +43,10 @@ import {
 } from './types.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
+import {
+  observesRootTokens,
+  isTokenMetric,
+} from '../subscription-token-accounting.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -397,6 +401,91 @@ function receiptContent(receipt: RuntimeLedgerReceipt) {
   };
 }
 
+/** Only the platform's bounded assistant command meter is derivable from an
+ * authenticated terminal local-runner receipt: one tool call, zero model use.
+ * This does not settle model admissions, unknown execution or arbitrary meters. */
+async function settleAssistantCommandReceipt(
+  tx: Tx,
+  row: OperationRow,
+  content: ReturnType<typeof receiptContent>,
+) {
+  if (
+    row.snapshot.agentInstanceId === null ||
+    row.bridge_payload === null ||
+    row.snapshot.binding.action !== 'local.process.execute' ||
+    content.signal.type !== 'operation.outcome' ||
+    !['succeeded', 'failed'].includes(row.snapshot.status)
+  )
+    return;
+  const payload = RuntimeBridgePayloadSchema.parse(row.bridge_payload);
+  const result = RuntimeLocalCommandResultSchema.safeParse(
+    (content.evidence as { output?: unknown } | null)?.output,
+  );
+  if (
+    payload.capability !== 'local.process.execute' ||
+    payload.arguments.background ||
+    !result.success ||
+    result.data.imageDigest !== payload.arguments.imageDigest
+  )
+    return;
+  const reservations = await tx<
+    (Pick<BudgetRow, 'metric' | 'unit' | 'currency' | 'source'> & {
+      accounting_id: string;
+      amount: string;
+      settled_amount: string | null;
+    })[]
+  >`select r.metric,r.accounting_id,r.amount,r.settled_amount,b.unit,b.currency,b.source
+    from allrice_runtime_reservations r join allrice_runtime_budgets b using(root_run_id,metric)
+    where r.operation_id=${row.id} for update of r`;
+  if (
+    reservations.length !== 4 ||
+    reservations.some(
+      (r) =>
+        ![
+          'tool_calls',
+          'model_calls',
+          'input_tokens',
+          'output_tokens',
+        ].includes(r.metric) ||
+        r.amount !== (r.metric === 'tool_calls' ? '1' : '0') ||
+        r.unit !== (isTokenMetric(r.metric) ? 'tokens' : 'calls') ||
+        r.currency !== null,
+    )
+  )
+    return;
+  const at = (await now(tx)).toISOString();
+  for (const r of reservations) {
+    if (r.settled_amount !== null) continue;
+    const observation = RuntimeUsageObservationSchema.parse({
+      contractVersion: 1,
+      observationId: randomUUID(),
+      accountingId: r.accounting_id,
+      task: row.snapshot.binding.task,
+      source: r.source,
+      accountingBoundary: {
+        kind: 'operation',
+        attempt: row.snapshot.binding.attempt,
+      },
+      aggregation: 'self_only',
+      metric: r.metric,
+      unit: r.unit,
+      currency: r.currency,
+      mode: 'cumulative',
+      quality: 'measured',
+      amount: Number(r.amount),
+      state: 'settled',
+      window: {
+        id: randomUUID(),
+        startedAt: row.created_at.toISOString(),
+        endedAt: at,
+      },
+      observedAt: at,
+    });
+    await tx`update allrice_runtime_reservations set settled_amount=${r.amount},observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${r.metric}`;
+    await tx`update allrice_runtime_budgets set reserved=reserved-${r.amount}::bigint,spent=spent+${r.amount}::bigint where root_run_id=${row.root_run_id} and metric=${r.metric}`;
+  }
+}
+
 /**
  * Server-only adapter, not an HTTP authorization boundary. Required admission is
  * evaluated IN the operation transaction; absence never means allow. Read/root
@@ -735,16 +824,22 @@ export function createRuntimeOperationLedger(options: {
           new Set(reservations.map((r) => r.metric)).size !== budgets.length
         )
           throw new RuntimeLedgerError('invalid_usage');
+        const observeTokens = await observesRootTokens(
+          tx,
+          root.task,
+          runtimeLedgerInputDigest,
+        );
         for (const budget of budgets) {
           const reservation = reservations.find(
             (r) => r.metric === budget.metric,
           );
           if (!reservation) throw new RuntimeLedgerError('invalid_usage');
           if (
+            !(observeTokens && isTokenMetric(budget.metric)) &&
             BigInt(budget.reserved) +
               BigInt(budget.spent) +
               BigInt(reservation.amount) >
-            BigInt(budget.capacity)
+              BigInt(budget.capacity)
           )
             throw new RuntimeLedgerError('budget_exhausted');
         }
@@ -1326,6 +1421,8 @@ export function createRuntimeOperationLedger(options: {
         }
         await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
           values(${input.receiptId},${row.id},${json(tx, content)},${disposition})`;
+        if (disposition === 'applied')
+          await settleAssistantCommandReceipt(tx, row, content);
         return { snapshot: row.snapshot, disposition };
       });
     },
@@ -1427,7 +1524,13 @@ export function createRuntimeOperationLedger(options: {
           throw new RuntimeLedgerError('invalid_usage');
         await tx`update allrice_runtime_reservations set settled_amount=${observation.amount},observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${observation.metric}`;
         await tx`update allrice_runtime_budgets set reserved=${String(reserved)},spent=${String(spent)} where root_run_id=${root.root_run_id} and metric=${observation.metric}`;
-        if (reserved + spent > BigInt(budget.capacity))
+        if (
+          reserved + spent > BigInt(budget.capacity) &&
+          !(
+            isTokenMetric(budget.metric) &&
+            (await observesRootTokens(tx, root.task, runtimeLedgerInputDigest))
+          )
+        )
           await cancelLocked(tx, root, randomUUID(), 'budget_exhausted');
         return { duplicate: false };
       });

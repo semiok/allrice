@@ -122,7 +122,10 @@ async function readWorkspaceReadiness(
         and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
       where d.organization_id=${organizationId} and d.workspace_id=${workspaceId}
         and d.owner_id=${subjectId} and d.revoked_at is null`;
-    const runner = devices.some((d) => {
+    const runnerAvailable = (
+      d: (typeof devices)[number],
+      candidate = false,
+    ) => {
       const p = RuntimeLocalCommandProfileSchema.safeParse(d.profile);
       return (
         d.online &&
@@ -131,9 +134,12 @@ async function readWorkspaceReadiness(
         d.profile_fresh &&
         p.success &&
         p.data.available &&
+        (!candidate ||
+          p.data.features?.includes('changeset_candidate') === true) &&
         isLocalCommandProfileForPlatform(d.platform, p.data)
       );
-    });
+    };
+    const runner = devices.some((d) => runnerAvailable(d));
     const targets = await tx<
       { id: string; state: string; capabilities: string[] }[]
     >`
@@ -263,6 +269,7 @@ async function readWorkspaceReadiness(
           : 'offline',
       folder: devices.some((d) => d.online && d.folder),
       runner,
+      developmentRunner: devices.some((d) => runnerAvailable(d, true)),
       cloud: cloudStatus(
         'process.execute',
         cloudGrants,
@@ -304,6 +311,11 @@ async function readWorkspaceReadiness(
         cloud_mcp: mcpExecutionEnabled(),
         local_mcp: localMcpEnabled(),
         assistants: assistantRuntimeEnabled(),
+        development:
+          assistantRuntimeEnabled() &&
+          workbenchEnabled() &&
+          changesetFeatureEnabled() &&
+          localCommandFeatureEnabled(),
         boost: false,
         teamwork: false,
       },

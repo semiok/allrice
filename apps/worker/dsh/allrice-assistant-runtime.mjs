@@ -600,7 +600,7 @@ export function createGovernedAssistantNativeRuntime(
       development: {
         type: 'string',
         description:
-          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester.',
+          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths; test/review MUST OMIT paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester. Successful development delegation yields this parent turn after the current tool batch; the child report automatically resumes the parent with the result. Submit independent development delegations in one tool batch if parallel work is needed. Do not poll inspect or send repeated messages merely to wait; message is for new instructions or corrections.',
       },
       tools: {
         type: 'array',
@@ -624,7 +624,7 @@ export function createGovernedAssistantNativeRuntime(
       evidence: {
         type: 'array',
         description:
-          'References to existing platform-registered artifacts only. Never put prose or calculations here or invent IDs. Use [] and output to deliver a new model-generated result.',
+          'References to your OWN existing platform-registered artifacts only, such as your successful edit proposal. Root candidate IDs, command operation IDs and review IDs are NOT your registered artifacts. For a tester/reviewer report use evidence=[] and output={name:"verification-result",content:"your summary with the actual operation/review references"}; this stores your report without pretending it is the command receipt. Never invent IDs.',
         items: {
           type: 'object',
           additionalProperties: false,
@@ -662,7 +662,8 @@ export function createGovernedAssistantNativeRuntime(
         type: 'string',
         required: true,
         description:
-          'JSON command. References use {artifactId,digest}. Root: initialize {seed}; merge {expectedHead,proposals:[refs]}; deliver {candidate,reviewId}. Any caller: inspect {assignmentId? ,candidate?}; edit assignee: publish {assignmentId,proposal:{files:[{path,before,after}]},previous:null|ref}; reviewer: review {candidate,operationId,verdict:"accept"|"revise",summary}. Always include action. Root can assign {ownerRunId,expectedHead,role:"edit"|"test"|"review",paths?}, or use delegate.development before starting a child. Inspect edit baseline uses after text; publish does not write local files. Merge creates an UNVERIFIED head. Assign a tester to that head, inspect baselineFiles, then local.process.execute with candidate:{artifactId,checksum:digest}, explicit files, command and limits; exact user approval is required. Review must cite that real terminal operation. Use another reviewer, then deliver. Never equate assistant prose, a different version, or a successful command with independent review. Local application always needs separate approval.',
+          'For publish, previous=null on the FIRST proposal. On later revisions use only your own earlier successful proposal reference, NEVER the root seed/base/head. before/after are text strings or null, preserving actual newlines. Wrap every action object in this command JSON-string argument. ' +
+          'JSON command. References are objects {artifactId,digest}, never bare IDs or file paths. First publish an unchanged baseline using workspace.export.create (artifactKind=changeset); copy its returned artifactId AND digest, not objectId and not a guessed hash. Initialize example: {"action":"initialize","seed":{"artifactId":"<returned artifactId>","digest":"<returned sha256: digest>"}}. Root: merge {expectedHead,proposals:[refs]}; deliver {candidate,reviewId}. Editor inspect: {"action":"inspect","assignmentId":"<edit file claim UUID>"}. Tester/reviewer inspect: {"action":"inspect","candidate":{"artifactId":"<assigned artifactId>","digest":"<assigned digest>"}}, WITHOUT assignmentId. Never combine assignmentId and candidate. Root may inspect current head with {"action":"inspect"}. Edit assignee: publish {assignmentId,proposal:{files:[{path,before,after}]},previous:null|ref}; reviewer: review {candidate,operationId,verdict:"accept"|"revise",summary}. Always include action. Root can assign {ownerRunId,expectedHead,role:"edit"|"test"|"review",paths?}, or use delegate.development before starting a child; only edit uses paths. Inspect edit baseline uses after text; publish does not write local files. Merge creates an UNVERIFIED head. Assign a tester to that head, inspect baselineFiles, then CALL local.process.execute with candidate:{artifactId,checksum:digest}, explicit files, command and limits TO REQUEST exact user approval. The platform creates the card, waits, then executes only if approved; do not wait for a nonexistent card before calling. Review must cite that real terminal operation. Use another reviewer, then deliver. Never equate assistant prose, a different version, or a successful command with independent review. Local application always needs separate approval.',
       },
     },
   };
@@ -700,7 +701,16 @@ export function createGovernedAssistantNativeRuntime(
               },
               exec.signal,
             );
-            if (action === 'delegate' && result.dispatch) await start(result);
+            if (action === 'delegate' && result.dispatch) {
+              await start(result);
+              // A version-bound development stage depends on the delegated
+              // result. Yield the native turn instead of starting a model call
+              // with no result yet; that call cannot see a later inbox arrival.
+              // Existing authorized settlement wakes the parent. This does not
+              // complete the business Run, block sibling calls in this batch,
+              // or alter ordinary parallel-assistant delegation.
+              if (args.development !== undefined) exec.concludeTurn();
+            }
             if (action === 'message' && result.dispatch) await followup(result);
             if (action === 'report' && !result.error) {
               exec.concludeTurn();

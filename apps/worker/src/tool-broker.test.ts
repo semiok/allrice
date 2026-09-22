@@ -782,6 +782,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         id: randomUUID(),
         mediaType: 'application/json',
         sizeBytes: 512,
+        checksum: `sha256:${'a'.repeat(64)}`,
       },
       version: {
         seriesId: randomUUID(),
@@ -812,6 +813,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     );
     expect(JSON.parse(result.modelContent)).toMatchObject({
       artifactKind: 'changeset',
+      digest: `sha256:${'a'.repeat(64)}`,
       executionStarted: false,
       approvalRequired: true,
     });

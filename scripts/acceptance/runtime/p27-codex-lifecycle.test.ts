@@ -40,6 +40,9 @@ integration(
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
+      // Historical enforcement remains supported; explicitly select it instead
+      // of treating the new observation default as a regression.
+      vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
       database = await createAssistantFixtureDatabase();
       const [scope] = await database.db`select current_schema() as schema`;
       fixtureUrl.searchParams.set(
@@ -443,6 +446,54 @@ integration(
         );
       });
     }, 60000);
+    it.each(['unknown_usage', 'over_budget'] as const)(
+      'observe mode keeps %s receipts and allows later work without canceling a delivered task',
+      async (mode) => {
+        vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'observe');
+        try {
+          await scenario(mode, async (s) => {
+            await s.start();
+            s.releaseChild('A');
+            s.releaseChild('B');
+            await expect
+              .poll(
+                async () =>
+                  (await s.bound.tree()).results.filter(
+                    (r) => r.parentAdoptedSeq !== null,
+                  ).length,
+                { timeout: 20000 },
+              )
+              .toBe(2);
+            const outcome = await s.finish();
+            expect(outcome).toMatchObject({
+              status: 'completed',
+              usageComplete: mode !== 'unknown_usage',
+              billingMode: 'subscription',
+            });
+            const tree = await s.bound.tree();
+            expect(tree.cancelRequested).toBe(false);
+            if (mode === 'over_budget') {
+              const budget = tree.budgets.find(
+                (b) => b.metric === 'output_tokens',
+              )!;
+              expect(budget.spent).toBeGreaterThan(budget.capacity);
+            }
+            await s.project(outcome);
+            const quota = await getOrganizationModelQuota(s.f.org, database.db);
+            expect(quota.usageComplete).toBe(mode !== 'unknown_usage');
+            expect(() =>
+              assertQuotaAvailable(quota, 'subscription'),
+            ).not.toThrow();
+            await expect(
+              admitModelExecution(s.nextAdmission),
+            ).resolves.toHaveLength(4);
+          });
+        } finally {
+          vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
+        }
+      },
+      60000,
+    );
     it('SIGKILL recovery adopts actual persisted native message IDs but cannot redispatch uncertain subscription work', async () => {
       const s = await createCodexLifecycleScenario(database.db, {
         loseCheckpointAck: true,

@@ -19,6 +19,8 @@ export function readinessFixture(): ReadinessFacts {
     'local.mcp.discover',
     'local.mcp.call',
     'assistant.delegate',
+    'assistant.development',
+    'assistant.report',
   ];
   const actions = [
     ...tools,
@@ -52,6 +54,7 @@ export function readinessFixture(): ReadinessFacts {
     bridge: 'online',
     folder: true,
     runner: true,
+    developmentRunner: true,
     cloud: 'ready',
     cloudBrowser: 'ready',
     localBrowser: 'ready',
@@ -70,11 +73,30 @@ export function readinessFixture(): ReadinessFacts {
 const item = (f: ReadinessFacts, id: string) =>
   projectWorkspaceReadiness(f).find((c) => c.id === id)!;
 describe('MET-147 capability matrix: discovery is not authority', () => {
+  it('development requires the complete tools, candidate runner and explicit delegation allow', () => {
+    const f = readinessFixture();
+    expect(item(f, 'development')).toMatchObject({
+      state: 'ready',
+      target: 'local',
+      authorization: 'per_action',
+    });
+    f.developmentRunner = false;
+    expect(item(f, 'development').reason).toBe('candidate_runner_missing');
+    expect(item(f, 'local_command').state).toBe('ready');
+    f.developmentRunner = true;
+    f.tools = f.tools.filter((t) => t !== 'assistant.report');
+    expect(item(f, 'development').reason).toBe('employee_policy');
+    f.tools.push('assistant.report');
+    f.controls!.rules.push({ action: 'assistant.delegate', effect: 'ask' });
+    expect(item(f, 'development').reason).toBe('policy_denied');
+    f.flags.development = false;
+    expect(item(f, 'development').reason).toBe('release_disabled');
+  });
   it('offers implemented capabilities with original per-action/root-budget boundaries', () => {
     const f = readinessFixture();
     expect(
       projectWorkspaceReadiness(f).filter((c) => c.state === 'ready'),
-    ).toHaveLength(10);
+    ).toHaveLength(11);
     expect(item(f, 'local_command').authorization).toBe('per_action');
     expect(item(f, 'assistants').authorization).toBe('root_budget');
     expect(item(f, 'boost')).toMatchObject({

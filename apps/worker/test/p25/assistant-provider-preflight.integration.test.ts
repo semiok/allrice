@@ -213,6 +213,7 @@ integration(
       execute = vi.spyOn(adapter, 'execute');
     }, 120000);
     beforeEach(() => {
+      vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce'); // Legacy quota preflight, alongside default-mode regressions.
       vi.clearAllMocks();
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', undefined);
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', undefined);

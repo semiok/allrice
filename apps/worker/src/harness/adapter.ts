@@ -56,6 +56,12 @@ export interface HarnessExecutionInput {
         instances: readonly { nativeSessionId: string }[];
       }>;
       cancel(): Promise<void>;
+      /** Trusted durable ledger read; never derived from an RPC error payload. */
+      failureUsage?(): Promise<{
+        usage: HarnessExecutionResult['usage'];
+        usageComplete: boolean;
+        cacheUsageKnown: boolean;
+      }>;
       finish?(): Promise<{
         status: string;
         usage: {

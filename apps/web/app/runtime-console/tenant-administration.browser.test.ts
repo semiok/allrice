@@ -234,6 +234,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
   it('opens scoped validation from a deep link, inspects the real stored Run and never exposes execution controls', async () => {
     const a = await tenantValidationFixture(fixture.db),
       { page, context } = await pageFor();
+    // Synthetic metadata only: the empty evidence state must not claim a test passed.
+    await fixture.db`insert into allrice_development_heads(root_run_id,seed_artifact_id,seed_digest,head_artifact_id,head_digest,execution)
+      values(${a.task.runId},${a.artifact.artifactId},${`sha256:${'a'.repeat(64)}`},${a.artifact.artifactId},${`sha256:${'a'.repeat(64)}`},'{}')`;
     try {
       const start = requests.length;
       await page.goto(
@@ -254,6 +257,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(text).toContain('运行中，用量待结算');
       expect(text).toContain('process.execute');
       expect(text).toContain('evidence.txt');
+      expect(text).toContain('开发协作证据链 · 只读');
+      expect(text).toContain('尚无候选版本测试操作');
+      expect(text).toContain('尚无正式开发交付记录');
       expect(text).not.toContain('NEVER_EXPOSE_RAW_SNAPSHOT');
       expect(text).not.toContain('PRIVATE_TEST_SECRET');
       expect(
@@ -659,6 +665,25 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           (employee: { id: string }) => employee.id === f.employeeId,
         );
       const original = await directory();
+      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page
+        .getByRole('button', {
+          name: '补齐开发协作工具（仅修改草稿）',
+          exact: true,
+        })
+        .click();
+      expect(
+        await page
+          .getByRole('checkbox', { name: /受控开发提案、测试与独立审查/ })
+          .isChecked(),
+      ).toBe(true);
+      expect((await directory()).currentDraft).toEqual(original.currentDraft);
+      // Discard the unsaved development bundle before the independent MCP scenario.
+      await page.reload();
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 MCP safety fixture' })
+        .click();
       await page.getByRole('button', { name: '工具', exact: true }).click();
       await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
       await page.getByRole('button', { name: '安全', exact: true }).click();

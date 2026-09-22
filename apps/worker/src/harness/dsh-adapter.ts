@@ -5,9 +5,14 @@ import {
   UserQuestionRequestSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
+import { AssistantRuntimeError, observeCodexTokens } from '@allrice/database';
 
 import { HandlerError } from '../errors.js';
-import { AssistantExecutionUnresolvedError } from './dsh/assistant-outcome.js';
+import {
+  AssistantExecutionUnresolvedError,
+  attachAssistantFailureUsage,
+  type AssistantFailureUsage,
+} from './dsh/assistant-outcome.js';
 import {
   attachAssistantFailureDiagnostics,
   parseAssistantFailureDiagnostics,
@@ -162,13 +167,29 @@ export class DshHarnessAdapter implements HarnessAdapter {
         throw error;
       });
     const ordinaryHandler = dshInboundToolHandler(input);
+    let assistantAdmissionFailure: HandlerError | undefined;
     runtime.client.setRequestHandler(async (method, params) => {
       if (method.startsWith('allrice/assistant/')) {
         if (!assistant) throw Error('assistant_runtime_disabled');
-        return assistant.handle(
-          method.slice('allrice/assistant/'.length),
-          params,
-        );
+        try {
+          return await assistant.handle(
+            method.slice('allrice/assistant/'.length),
+            params,
+          );
+        } catch (error) {
+          if (
+            error instanceof AssistantRuntimeError &&
+            error.code === 'budget_exhausted'
+          ) {
+            assistantAdmissionFailure = new HandlerError(
+              'ASSISTANT_BUDGET_EXHAUSTED',
+              '本次任务达到平台内部执行预算，已停止继续调用；这不代表 Codex 订阅额度耗尽。',
+              false,
+            );
+            throw assistantAdmissionFailure;
+          }
+          throw error;
+        }
       }
       return ordinaryHandler(method, params);
     });
@@ -196,7 +217,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ? runtime.client.assistant('drain', request)
             : undefined,
         )
-        .catch(async () => {
+        .catch(async (error) => {
+          if (
+            error instanceof AssistantRuntimeError &&
+            error.code === 'budget_exhausted'
+          ) {
+            // The liveness check enforces the root's durable deadline even
+            // while a model stream is active. Preserve that cause before
+            // closing the owned host produces a generic runtime-closed error.
+            assistantAdmissionFailure ??= new HandlerError(
+              'ASSISTANT_BUDGET_EXHAUSTED',
+              '本次任务已达到配置的执行时限，已停止继续运行；这不是 Token 配额限制。',
+              false,
+            );
+          }
           // Loss of read authority cannot keep an owned model stream alive.
           // Process termination needs no new user grant; do not invent stopped receipts.
           assistantFailureSignal.abort();
@@ -349,11 +383,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
         cacheUsageKnown &&= result.cacheUsageKnown;
         const toolCall = parseDshToolCall(result.answer);
         if (!toolCall) {
+          if (assistantAdmissionFailure) throw assistantAdmissionFailure;
           const joined = assistant
             ? await runtime.client.assistant('join', {
                 nativeSessionId: threadId,
               })
             : null;
+          if (assistantAdmissionFailure) throw assistantAdmissionFailure;
           if (assistant) {
             // Native join proves all loops idle. Stop and await the active-run
             // poll before persisting a terminal root, whose authority is no
@@ -372,7 +408,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
               throw Error('assistant_completion_proof_required');
             Object.assign(usage, assistantOutcome.usage);
             if (
-              !assistantOutcome.usageComplete ||
+              (!assistantOutcome.usageComplete &&
+                !observeCodexTokens(
+                  !!input.assistants?.subscriptionSnapshot,
+                )) ||
               !['completed', 'partial'].includes(assistantOutcome.status)
             )
               throw new AssistantExecutionUnresolvedError(
@@ -493,11 +532,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw error;
         }
       }
-    } catch (error) {
+    } catch (caught) {
+      // Preserve a trusted local admission denial rather than the native RPC's
+      // generic retryable wrapper. Never classify from model-supplied text.
+      const error = assistantAdmissionFailure ?? caught;
       // Capture before cancel/drop destroys the host, without widening root
       // authority or reading another native session's transcript.
       await captureAssistantDiagnostics();
       attachAssistantFailureDiagnostics(error, assistantDiagnostics);
+      let failedUsage: AssistantFailureUsage | undefined;
+      if (cancellationTimer) clearInterval(cancellationTimer);
+      await cancellationTask?.catch(() => {});
       try {
         if (assistant && !assistantFinished) {
           await assistant.cancel().catch(() => {});
@@ -509,8 +554,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
       } catch {
         // Revoked membership/lease may forbid reading the tree; still stop our host.
       } finally {
+        // Drain's durable stopped receipts release only undispatched holds.
+        // Read confirmed prior usage even if drain failed (then completeness
+        // remains false). Do not use model output, diagnostics or guessed zero.
+        failedUsage = await assistant?.failureUsage?.().catch(() => undefined);
         await this.runtimePool.drop(threadId);
       }
+      const attachUsage = (failure: unknown) => {
+        if (failedUsage && input.assistants)
+          attachAssistantFailureUsage(
+            failure,
+            input.assistants.rootRunId,
+            input.attempt,
+            failedUsage,
+          );
+      };
       if (input.signal.aborted) {
         const aborted = new HandlerError(
           'EXECUTION_ABORTED',
@@ -518,8 +576,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
           false,
         );
         attachAssistantFailureDiagnostics(aborted, assistantDiagnostics);
+        attachUsage(aborted);
         throw aborted;
       }
+      attachUsage(error);
       throw error;
     } finally {
       if (cancellationTimer) clearInterval(cancellationTimer);

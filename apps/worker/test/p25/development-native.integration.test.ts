@@ -174,6 +174,7 @@ suite(
                   },
                 };
               case 2: {
+                expect(text).toContain('Published scoped proposal.');
                 const report = await resultFor('DEV_WRITER');
                 return command({
                   action: 'merge',
@@ -206,6 +207,9 @@ suite(
                   },
                 };
               case 4:
+                expect(text).toContain(
+                  'Exact candidate command completed; see authoritative receipt.',
+                );
                 await resultFor('DEV_TESTER');
                 return {
                   nativeTool: {
@@ -222,6 +226,7 @@ suite(
                   },
                 };
               case 5: {
+                expect(text).toContain('Independent review saved.');
                 await resultFor('DEV_REVIEWER');
                 if (mode === 'missing-delivery')
                   return {
@@ -450,35 +455,15 @@ suite(
             },
             evidence: { output },
           });
+          // A real Bridge submits the terminal receipt, not a second usage
+          // API call. Do not conceal missing production settlement in fixtures.
           const reservations =
-            await f.db`select r.metric,b.unit,b.currency,r.accounting_id,b.source from allrice_runtime_reservations r join allrice_runtime_budgets b using(root_run_id,metric) where r.operation_id=${operation.id}`;
-          for (const r of reservations) {
-            const now = new Date().toISOString();
-            await ledger.settleUsage({
-              ...identity,
-              observation: {
-                contractVersion: 1,
-                observationId: randomUUID(),
-                accountingId: r.accounting_id,
-                task: lease.snapshot.binding.task,
-                source: r.source,
-                accountingBoundary: {
-                  kind: 'operation',
-                  attempt: identity.attempt,
-                },
-                aggregation: 'self_only',
-                metric: r.metric,
-                unit: r.unit,
-                currency: r.currency,
-                mode: 'cumulative',
-                quality: 'measured',
-                amount: r.metric === 'tool_calls' ? 1 : 0,
-                state: 'settled',
-                window: { id: randomUUID(), startedAt: now, endedAt: now },
-                observedAt: now,
-              },
-            });
-          }
+            await f.db`select metric,settled_amount from allrice_runtime_reservations where operation_id=${operation.id}`;
+          expect(reservations).toHaveLength(4);
+          for (const r of reservations)
+            expect(r.settled_amount).toBe(
+              r.metric === 'tool_calls' ? '1' : '0',
+            );
           await expect(execution).resolves.toMatchObject({
             answer: expect.stringContaining('NATIVE_DEVELOPMENT_DELIVERED'),
             assistantStatus:

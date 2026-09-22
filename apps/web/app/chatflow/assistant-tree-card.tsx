@@ -203,8 +203,14 @@ export function AssistantTreeCard({
                   cost: '费用',
                 } as Record<string, string>
               )[budget.metric] ?? budget.metric}
-              ：已结算 {budget.spent} / 上限 {budget.capacity} {budget.unit}
-              {budget.reserved ? ` · 在途预留 ${budget.reserved}` : ''}
+              ：已记录 {budget.spent}{' '}
+              {budget.enforced === false
+                ? ' · 仅统计'
+                : `/ 上限 ${budget.capacity}`}{' '}
+              {budget.unit}
+              {budget.reserved
+                ? ` · ${budget.enforced === false ? '待核对估算' : '在途预留'} ${budget.reserved}`
+                : ''}
               {budget.usageComplete ? '' : ' · 总用量尚未结清'}
             </span>
           ))}

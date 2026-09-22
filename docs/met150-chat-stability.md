@@ -1,6 +1,31 @@
 # MET-150 — Codex subscription chat stability
 
-Scope: ordinary Codex subscription chat on Dev. No Gemini billing work, feature-flag enablement, assistant/root-budget changes, or Prod deployment. The explicit September 21 follow-up below authorizes a persistent Snow-only user monthly quota increase; earlier temporary acceptance overrides remain historical.
+## September 22 closeout boundary
+
+Final fixed-candidate validation `64413ba` also completed the real Snow/M5 development Run `0b72a009-0d70-4e2e-b903-07f23794637e`: one route attempt, three completed assistants, one successful physical command and a tested/reviewed formal delivery. Input 145,740 / output 5,559 were recorded completely; cache detail is unknown, not a certified zero. Internal Token statistics did not interrupt the task. Existing failed/unknown receipts were preserved without a manual Token reservation. PR #86 carries this policy together with the verified MET-144 fixes; after integration and Dev health/restoration verification, both scopes may close. Official quota UI remains MET-152, and Prod remains unchanged.
+
+The user approved closing the stability scope after integration; open-ended trial observation and choosing a new internal Token cap are no longer closure gates. Official subscription window/balance/reset presentation is tracked separately in **MET-152 (Backlog)**, not claimed implemented here. Token/cache statistics are not the official remaining allowance. PR #82 (pre-dispatch startup accounting) merged as `fc721f6`; the observation-policy follow-up is in PR #86 pending integration. Dev evidence remains valid; Prod is unchanged.
+
+## September 22 decision: Codex subscription Tokens are statistics, not admission
+
+The user explicitly prioritizes product usability before commercialization. This decision supersedes the historical monthly-cap/manual-reservation/assistant-token-budget rules below.
+
+- Default `ALLRICE_CODEX_TOKEN_POLICY=observe` (also when unset): server-verified Codex subscription routes do not enforce internal per-task, shared-assistant or organization/user/employee/provider monthly Token ceilings. API/unverified routes retain enforcement. Explicit `enforce` is the legacy rollback switch; invalid explicit values also enforce.
+- Actual input/output/cache receipts remain immutable and distinguish known subtotals from missing receipts. Cached input remains part of input, not added twice. Missing Token receipts alone do not fail an otherwise evidenced completion or lock subsequent chats. Execution ambiguity, partial results, missing deliveries and unresolved external operations are still not successes.
+- Shared model/tool-call counts, concurrency, deadline/cancellation, lease fencing, external effects/approval and actual provider quota checks remain active. Per-response generation settings and actual model context capacity are not monthly billing quotas.
+- Tenant details show monthly recorded usage/cache/unknown receipts, not an internal remaining percentage. Assistant and administrative views identify Tokens as observational. Historical 5M configuration and past manual reservations are retained, not relabeled as actual usage or official Codex quota.
+- The proposed **24,946 Token manual reservation** for Run `756dfee1` is **withdrawn**, not approved or applied. No new administrator budget exception is required. The failed Run and incomplete receipt stay unchanged; no side-effect replay.
+- Scope: Dev only, MET-150 policy follow-up supporting MET-144. No Prod, main merge, Gemini billing, MET-145/146 or new high-privilege flag enablement.
+
+Implementation covers Worker admission/completion, ordinary and shared assistant accounting, tool operation admission after observed Token overage, and tenant/admin presentation. Verification and deployment evidence are recorded in the issue; implementation alone does not close MET-144.
+
+Verification/deployment: code `460a12d0f07aa081b6cced590e5a8c6d6acc155a` is deployed only to Dev at `met150-token-observe-20260922`. Full suite: 313 files / 2,812 passed (integration/browser-dependent suites separately gated); targeted isolated PostgreSQL suites, workspace typecheck, lint, DSH verification and clean production build passed. Both Dev processes explicitly use `observe`; existing security flags, credentials and `.env` are unchanged. Prod configuration hashes and process IDs matched the pre-deployment baseline.
+
+Real Snow browser Run `105228d0-61f6-4766-843b-e3b10f8e5b48` succeeded through the verified Codex subscription route with a complete receipt. Old Run `756dfee1` retains the identical incomplete ledger hash and zero manual reviews, proving follow-up chat no longer requires a budget exception. Snow remains a member and its historical 5M setting is unchanged. The sidebar displays recorded usage instead of remaining percentage; the administrator projection marks the old unknown receipt observation-only. Private evidence: `.local/evidence/tokenobserve/` and `tokenobserve-deployment*.json`. No main merge or Prod deployment; full MET-144 cooperation acceptance remains separate.
+
+## Historical scope (superseded where explicitly stated above)
+
+Earlier scope was ordinary Codex subscription chat on Dev; the September 21 follow-up authorized a persistent Snow-only 5,000,000 monthly configuration. Earlier enforcement decisions and evidence remain below as history.
 
 ## September 21 follow-up: rejected startup is not a dispatched model call
 

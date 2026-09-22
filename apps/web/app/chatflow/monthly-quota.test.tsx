@@ -18,6 +18,25 @@ const data: UserMonthlyQuota = {
   observedAt: '2026-09-21T08:00:00Z',
 };
 describe('account monthly balance', () => {
+  it('shows statistics, not remaining quota, for subscription observation mode', () => {
+    const html = renderToStaticMarkup(
+      <MonthlyQuota
+        data={{
+          ...data,
+          codexTokenPolicy: 'observe',
+          cachedInputTokens: 2000000,
+          unknownUsageRuns: 1,
+        }}
+        failed={false}
+        onRefresh={() => {}}
+      />,
+    );
+    expect(html).toContain('账号使用情况');
+    expect(html).toContain('2,000,000');
+    expect(html).toContain('不阻断 Codex 后续聊天');
+    expect(html).not.toContain('剩余');
+    expect(html).not.toContain('5,000,000');
+  });
   it('labels the human account, internal monthly balance, exact totals and reset', () => {
     const html = renderToStaticMarkup(
       <MonthlyQuota data={data} failed={false} onRefresh={() => {}} />,

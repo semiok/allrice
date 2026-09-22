@@ -14,6 +14,7 @@ import { getAdminTenantEnvironments } from './tenant-environments.ts';
 import { getAdminTenantQuotas } from './tenant-quotas.ts';
 import { inspectTenantRunArtifacts } from './artifact-review.ts';
 import { listDshRuntimeEventTimeline } from './conversation/conversation-runtime.ts';
+import { inspectTenantDevelopment } from './tenant-development-inspection.ts';
 // Do not expose provider configuration, raw event payloads or encrypted inputs.
 // Persisted output has already passed runtime redaction; mask common credential
 // forms once more at this new display boundary, without decrypting any secret.
@@ -153,6 +154,12 @@ export async function inspectTenantRun(
     left join lateral(select left(string_agg(left(x.content,16000),E'\n' order by x.sequence),16000) as content,sum(length(x.content))+greatest(count(*)-1,0) as length,count(*) as chunks from (select content,sequence from allrice_runtime_operation_output where operation_id=o.id order by sequence limit 65) x) out on true
     where o.organization_id=${organizationId} and o.workspace_id=${workspaceId} and o.run_id=${runId}
       and o.snapshot->'binding'->'requestedBy'->>'id'=${subjectId} order by o.created_at,o.id limit 33`;
+  const development = await inspectTenantDevelopment(
+    target,
+    runId,
+    diagnosticText,
+    db,
+  );
   await db.begin(async (tx) => {
     await requireTenantManagementScope(issuer, target, tx);
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
@@ -195,5 +202,6 @@ export async function inspectTenantRun(
     operationsTruncated: operations.length > 32,
     artifacts: artifacts.artifacts,
     artifactsTruncated: artifacts.truncated,
+    development,
   };
 }

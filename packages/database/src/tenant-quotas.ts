@@ -92,8 +92,11 @@ async function snapshot(
     quotas,
     subscription: {
       status: 'not_queried',
+      tokenPolicy: codexTokenPolicy(),
       message:
-        '此页是 AllRice 内部月额度；Codex 官方窗口需按实际订阅账号查询，不能由 Token 推算。',
+        codexTokenPolicy() === 'observe'
+          ? 'Codex 订阅 Token 仅统计：不因内部任务/月额度或缺少用量回执阻断聊天，无需人工预留。以下 Token 限额仅对按量 API 生效。并发、超时、调用次数和操作授权仍生效；Codex 官方额度不能由 Token 推算。'
+          : '此页是 AllRice 内部月额度；Codex 官方窗口需按实际订阅账号查询，不能由 Token 推算。',
     },
   };
 }
@@ -161,3 +164,4 @@ export async function updateAdminTenantQuota(
     return after;
   });
 }
+import { codexTokenPolicy } from './codex-token-policy.ts';
