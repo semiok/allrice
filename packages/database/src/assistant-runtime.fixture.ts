@@ -45,7 +45,9 @@ export class AssistantFixtureCleanupError extends Error {
 export async function createAssistantFixtureDatabase(
   options: {
     throughMigration?:
-      '0096_assistant_pricing.sql' | '0100_tenant_scoped_resource_quotas.sql';
+      | '0096_assistant_pricing.sql'
+      | '0100_tenant_scoped_resource_quotas.sql'
+      | '0101_development_cooperation.sql';
   } = {},
 ) {
   if (
@@ -53,6 +55,7 @@ export async function createAssistantFixtureDatabase(
     ![
       '0096_assistant_pricing.sql',
       '0100_tenant_scoped_resource_quotas.sql',
+      '0101_development_cooperation.sql',
     ].includes(options.throughMigration)
   )
     throw Error('Unsupported isolated migration checkpoint');

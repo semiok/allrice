@@ -30,11 +30,13 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
-  ...(['delegate', 'message', 'report', 'stop'] as const).map((action) => ({
-    name: `assistant.${action}` as const,
-    description: `Governed assistant ${action}. Requires explicit employee authorization and this Run's frozen opt-in; native DSH only.`,
-    inputSchema: { type: 'object', additionalProperties: true },
-  })),
+  ...(['delegate', 'message', 'report', 'stop', 'development'] as const).map(
+    (action) => ({
+      name: `assistant.${action}` as const,
+      description: `Governed assistant ${action}. Requires explicit employee authorization and this Run's frozen opt-in; native DSH only.`,
+      inputSchema: { type: 'object', additionalProperties: true },
+    }),
+  ),
   {
     name: 'local.mcp.discover',
     description:

@@ -597,6 +597,11 @@ export function createGovernedAssistantNativeRuntime(
     delegate: {
       label: { type: 'string', required: true },
       text: { type: 'string', required: true },
+      development: {
+        type: 'string',
+        description:
+          'Optional JSON {expectedHead:{artifactId,digest},role:"edit"|"test"|"review",paths?:[relative files]}. Requires assistant.development on parent and child. Assigns the exact version BEFORE starting the child; edit requires paths. Test needs local.process.execute too. Review must be a different assistant from all authors and the tester.',
+      },
       tools: {
         type: 'array',
         items: { type: 'string' },
@@ -652,6 +657,14 @@ export function createGovernedAssistantNativeRuntime(
       },
     },
     stop: { childRunId: { type: 'string', required: true } },
+    development: {
+      command: {
+        type: 'string',
+        required: true,
+        description:
+          'JSON command. References use {artifactId,digest}. Root: initialize {seed}; merge {expectedHead,proposals:[refs]}; deliver {candidate,reviewId}. Any caller: inspect {assignmentId? ,candidate?}; edit assignee: publish {assignmentId,proposal:{files:[{path,before,after}]},previous:null|ref}; reviewer: review {candidate,operationId,verdict:"accept"|"revise",summary}. Always include action. Root can assign {ownerRunId,expectedHead,role:"edit"|"test"|"review",paths?}, or use delegate.development before starting a child. Inspect edit baseline uses after text; publish does not write local files. Merge creates an UNVERIFIED head. Assign a tester to that head, inspect baselineFiles, then local.process.execute with candidate:{artifactId,checksum:digest}, explicit files, command and limits; exact user approval is required. Review must cite that real terminal operation. Use another reviewer, then deliver. Never equate assistant prose, a different version, or a successful command with independent review. Local application always needs separate approval.',
+      },
+    },
   };
   for (const [action, parameters] of Object.entries(schemas))
     if (

@@ -9,6 +9,7 @@ import {
   type RuntimeScope,
   type RuntimeTaskRef,
   type StoragePort,
+  type ExecutionContext,
 } from '@allrice/contracts';
 import { z } from 'zod';
 import type { AssistantWorkerLease } from './assistant-runtime.ts';
@@ -20,6 +21,7 @@ import {
   readArtifactBytes,
   parseChangesetBytes,
 } from './artifact-review.ts';
+import { executeDevelopmentWorkflow } from './development-workflow.ts';
 
 type Tx = RuntimeLedgerTransaction;
 export interface DevelopmentCaller {
@@ -29,7 +31,7 @@ export interface DevelopmentCaller {
   runId: string;
   worker: AssistantWorkerLease;
 }
-interface Head {
+export interface DevelopmentHead {
   seed_artifact_id: string;
   seed_digest: string;
   head_artifact_id: string;
@@ -37,7 +39,8 @@ interface Head {
   execution: RuntimeExecutionScope;
   revision: number;
 }
-interface Assignment {
+type Head = DevelopmentHead;
+export interface DevelopmentAssignment {
   id: string;
   run_id: string;
   assigned_by_run_id: string;
@@ -48,6 +51,7 @@ interface Assignment {
   request_digest: string;
   released_at: Date | null;
 }
+type Assignment = DevelopmentAssignment;
 function fail(code: string): never {
   throw Error(`development_${code}`);
 }
@@ -67,6 +71,13 @@ function sameDestination(a: RuntimeExecutionScope, b: RuntimeExecutionScope) {
  * Each call shares the existing root lock, lease, ancestry and authority checks. */
 export function createDevelopmentCooperation(options: {
   database: ReturnType<typeof getDatabase>;
+  registerArtifact: (
+    input: DevelopmentCaller & {
+      artifactId: string;
+      digest: string;
+      relativePath: string;
+    },
+  ) => Promise<unknown>;
   authorize: (
     tx: Tx,
     caller: DevelopmentCaller,
@@ -150,7 +161,46 @@ export function createDevelopmentCooperation(options: {
   const rootOnly = (caller: DevelopmentCaller) => {
     if (caller.runId !== caller.rootRunId) fail('forbidden');
   };
-  return {
+  const api = {
+    async workflow(
+      input: DevelopmentCaller & {
+        context: ExecutionContext;
+        requestId: string;
+        arguments: unknown;
+      },
+      storage: StoragePort,
+      transaction?: Tx,
+    ): Promise<unknown> {
+      const result = await executeDevelopmentWorkflow(
+        input,
+        storage,
+        {
+          ...options,
+          core: api,
+          head,
+          assignment,
+          artifact,
+        },
+        transaction,
+      );
+      const action = (input.arguments as { action?: string }).action;
+      if (action === 'publish' || action === 'review') {
+        const source = DevelopmentArtifactRefSchema.parse(
+          action === 'publish'
+            ? result
+            : (result as { artifact: unknown }).artifact,
+        );
+        // Same durable evidence registry as assistant.report output. A child
+        // can report the actual saved proposal without inventing an artifact.
+        await options.registerArtifact({
+          ...input,
+          artifactId: source.artifactId,
+          digest: source.digest,
+          relativePath: `development/${input.requestId}.json`,
+        });
+      }
+      return result;
+    },
     async initialize(
       input: DevelopmentCaller & { seed: DevelopmentArtifactRef },
       storage: StoragePort,
@@ -199,6 +249,7 @@ export function createDevelopmentCooperation(options: {
         execution: RuntimeExecutionScope;
         paths: string[];
       },
+      transaction?: Tx,
     ) {
       z.uuid().parse(input.assignmentId);
       z.uuid().parse(input.ownerRunId);
@@ -212,7 +263,7 @@ export function createDevelopmentCooperation(options: {
         execution,
         paths,
       });
-      return db.begin(async (tx) => {
+      const assign = async (tx: Tx) => {
         await options.authorize(tx, input, 'assistant.delegate');
         const owner = await options.authorize(
           tx,
@@ -276,7 +327,8 @@ export function createDevelopmentCooperation(options: {
           values(${input.assignmentId},${input.rootRunId},${input.ownerRunId},${input.runId},${expected.artifactId},${expected.digest},${json(tx, execution)},${json(tx, paths)},${requestDigest})`;
         await options.authorize(tx, input, 'assistant.delegate');
         return { assignmentId: input.assignmentId, active: true };
-      });
+      };
+      return transaction ? assign(transaction) : db.begin(assign);
     },
     async propose(
       input: DevelopmentCaller & {
@@ -483,4 +535,5 @@ export function createDevelopmentCooperation(options: {
       });
     },
   };
+  return api;
 }

@@ -39,6 +39,7 @@ export function ChangesetPanel({
   disabled: boolean;
   onContinued?: (runId: string) => void;
 }) {
+  const proposalCopy = artifact.execution?.workCopy.kind === 'local_copy';
   const [records, setRecords] = useState<ChangesetRunView[] | null>(null),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false);
@@ -68,6 +69,7 @@ export function ChangesetPanel({
     [api, headers],
   );
   useEffect(() => {
+    if (proposalCopy) return;
     const a = new AbortController();
     void reload(a.signal);
     const t = setInterval(() => void reload(a.signal), 1500);
@@ -76,9 +78,9 @@ export function ChangesetPanel({
       a.abort();
       clearInterval(t);
     };
-  }, [reload]);
+  }, [reload, proposalCopy]);
   async function requestExecution(restoreOf: string | null) {
-    if (busy || disabled) return;
+    if (busy || disabled || proposalCopy) return;
     setBusy(true);
     setError('');
     const body = {
@@ -168,6 +170,16 @@ export function ChangesetPanel({
       setBusy(false);
     }
   }
+  if (proposalCopy)
+    return (
+      <section className={styles.root} aria-label="子助手开发提案">
+        <h4>子助手提案 · 未写入本地</h4>
+        <p>
+          此版本属于助手的独立候选副本，不能直接应用到原目录。请由主 Rice
+          合成候选版，完成同版本测试和独立审查后，再单独申请落盘审批。
+        </p>
+      </section>
+    );
   if (records === null && !error) return null;
   return (
     <section className={styles.root} aria-label="文件变更审批与执行">
