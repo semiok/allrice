@@ -288,7 +288,7 @@ export async function computeRootSuspendedTiming(
             payload->'signal'->>'reason' as signal_reason,
             payload->>'occurredAt' as occurred_at
           from allrice_runtime_operation_events
-          where operation_id in ${sql(operationIds)}
+          where operation_id = any(${operationIds}::uuid[])
           order by operation_id, sequence asc
         `
       : [];
