@@ -71,9 +71,21 @@ update allrice_runtime_roots
   set initial_deadline_at = deadline_at
   where initial_deadline_at is null;
 
-alter table allrice_runtime_roots
-  alter column initial_deadline_at set default now(),
-  alter column initial_deadline_at set not null;
+create or replace function allrice_set_initial_root_deadline()
+returns trigger language plpgsql as $$
+begin
+  if new.initial_deadline_at is null then
+    new.initial_deadline_at := new.deadline_at;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists allrice_runtime_roots_initial_deadline_trigger on allrice_runtime_roots;
+create trigger allrice_runtime_roots_initial_deadline_trigger
+  before insert on allrice_runtime_roots
+  for each row
+  execute function allrice_set_initial_root_deadline();
 
 alter table allrice_jobs
   add column if not exists initial_timeout_at timestamptz;
@@ -82,9 +94,21 @@ update allrice_jobs
   set initial_timeout_at = timeout_at
   where initial_timeout_at is null;
 
-alter table allrice_jobs
-  alter column initial_timeout_at set default now(),
-  alter column initial_timeout_at set not null;
+create or replace function allrice_set_initial_job_timeout()
+returns trigger language plpgsql as $$
+begin
+  if new.initial_timeout_at is null then
+    new.initial_timeout_at := new.timeout_at;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists allrice_jobs_initial_timeout_trigger on allrice_jobs;
+create trigger allrice_jobs_initial_timeout_trigger
+  before insert on allrice_jobs
+  for each row
+  execute function allrice_set_initial_job_timeout();
 
 insert into allrice_runtime_metadata (key, value)
 values (

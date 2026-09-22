@@ -886,13 +886,16 @@ export async function decideRuntimeActionApproval(
 
       await transaction`
         update allrice_runtime_roots
-        set deadline_at = ${newDeadline}
+        set deadline_at = greatest(deadline_at, ${newDeadline})
         where root_run_id = ${rootRunId}
       `;
 
       await transaction`
         update allrice_jobs
-        set timeout_at = coalesce(initial_timeout_at, timeout_at) + (${timing.suspendedWaitMs} * interval '1 millisecond')
+        set timeout_at = greatest(
+          timeout_at,
+          coalesce(initial_timeout_at, timeout_at) + (${timing.suspendedWaitMs} * interval '1 millisecond')
+        )
         where (run_id = ${rootRunId} or run_id in (
           select run_id from allrice_runtime_run_links where root_run_id = ${rootRunId}
         )) and status in ('queued', 'claimed', 'running', 'retry_wait', 'waiting_approval')
