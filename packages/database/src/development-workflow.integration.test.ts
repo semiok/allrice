@@ -14,8 +14,12 @@ import {
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import { publishWorkbenchChangesetProposal } from './artifact-review.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
-import { localCommandCandidateEvidence } from './local-command-candidate.ts';
+import {
+  assertLocalCommandCandidate,
+  localCommandCandidateEvidence,
+} from './local-command-candidate.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
 import { assertAssistantAuthority } from './assistant-authority.ts';
 import {
@@ -186,7 +190,7 @@ suite('MET-144 real attributed development workflow', () => {
       });
       return { proposal, head, tester, reviewer };
     };
-    const command = async (runId: string, head: DevelopmentArtifactRef) =>
+    const command = async (runId: string, head?: DevelopmentArtifactRef) =>
       createLocalCommandOperation(
         {
           context: f.context,
@@ -196,7 +200,14 @@ suite('MET-144 real attributed development workflow', () => {
           arguments: {
             ...f.args,
             files: [{ path: 'test.mjs', sha256: hash(original) }],
-            candidate: { artifactId: head.artifactId, checksum: head.digest },
+            ...(head
+              ? {
+                  candidate: {
+                    artifactId: head.artifactId,
+                    checksum: head.digest,
+                  },
+                }
+              : {}),
           },
         },
         f.db,
@@ -267,6 +278,69 @@ suite('MET-144 real attributed development workflow', () => {
       original,
     };
   }
+  it('binds an omitted tester candidate to its exact assigned head before requesting approval', async () => {
+    const f = await setup(),
+      p = await f.prepare();
+    const cmd = await f.command(p.tester.runId);
+    expect(cmd.snapshot.status).toBe('waiting_user');
+    const [op] =
+      await f.db`select bridge_payload from allrice_runtime_operations where id=${cmd.snapshot.binding.attempt.operationId}`;
+    const payload = RuntimeLocalCommandSchema.parse(op!.bridge_payload);
+    expect(payload.arguments.candidate).toMatchObject({
+      artifactId: p.head.artifactId,
+      checksum: p.head.digest,
+    });
+    expect(cmd.snapshot.binding.inputDigest).toBe(runtimePolicyDigest(payload));
+    await f.receipt(cmd);
+  });
+  it('does not replace an explicitly wrong candidate or silently upgrade a stale test assignment', async () => {
+    const f = await setup(),
+      p = await f.prepare();
+    await expect(f.command(p.tester.runId, f.seed)).rejects.toThrow(
+      'bridge_authority_changed',
+    );
+    const stale = await setup();
+    const tester = await stale.child('early tester', ['local.process.execute']);
+    await stale.work(stale.rootRunId, {
+      action: 'assign',
+      role: 'test',
+      ownerRunId: tester.runId,
+      expectedHead: stale.seed,
+    });
+    // A real workflow merge advances the head after this test was assigned.
+    await stale.prepare();
+    await expect(stale.command(tester.runId)).rejects.toThrow(
+      'assistant_authority_changed',
+    );
+    const [count] =
+      await stale.db`select count(*)::int as n from allrice_runtime_operations where run_id in (${f.rootRunId},${stale.rootRunId})`;
+    expect(count!.n).toBe(0);
+  });
+  it('rejects an unversioned tester command on cold authority validation', async () => {
+    const f = await setup(),
+      p = await f.prepare(),
+      cmd = await f.command(p.tester.runId, p.head);
+    const [op] =
+      await f.db`select bridge_payload from allrice_runtime_operations where id=${cmd.snapshot.binding.attempt.operationId}`;
+    const payload = RuntimeLocalCommandSchema.parse(op!.bridge_payload);
+    delete payload.arguments.candidate;
+    await expect(
+      f.db.begin((tx) =>
+        assertLocalCommandCandidate(
+          tx,
+          {
+            actor: { type: 'user', id: f.context.policySnapshot.subjectId },
+            organizationId: f.context.organizationId,
+            workspaceId: f.context.workspaceId,
+          },
+          f.task.chatSessionId!,
+          payload,
+          cmd.snapshot.binding.execution,
+          { rootRunId: f.rootRunId, runId: p.tester.runId },
+        ),
+      ),
+    ).rejects.toThrow('assistant_authority_changed');
+  });
   it('publishes actual child-owned bytes, tests the merged version and requires another reviewer before delivery', async () => {
     const f = await setup(),
       p = await f.prepare();

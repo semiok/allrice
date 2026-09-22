@@ -508,7 +508,7 @@ export function createGovernedBridgePolicyOptions(
         )
           throw new RuntimePolicyError('bridge_authority_changed');
         generation = runtime.thread_generation;
-        if (command?.arguments.candidate)
+        if (command)
           await assertLocalCommandCandidate(
             tx,
             context,

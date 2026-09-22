@@ -40,7 +40,16 @@ export async function assertLocalCommandCandidate(
   assistant?: { rootRunId: string; runId: string },
 ) {
   const candidate = command.arguments.candidate;
-  if (!candidate) return;
+  if (!candidate) {
+    if (assistant) {
+      // Cold reconstruction and dispatch must reject old/unversioned tester
+      // requests too. This check shares the existing session authority lock.
+      const [assigned] = await tx`select id from allrice_development_verifiers
+        where root_run_id=${assistant.rootRunId} and run_id=${assistant.runId} and role='test' limit 1`;
+      if (assigned) throw new RuntimePolicyError('assistant_authority_changed');
+    }
+    return;
+  }
   if (process.env.ALLRICE_WORKBENCH_ENABLED !== '1')
     throw new RuntimePolicyError('bridge_authority_changed');
   const [version] = await tx`select v.id from allrice_deliverable_versions v
