@@ -16,7 +16,10 @@ import {
 import { AssistantRuntimeError } from '@allrice/database';
 import { DshStartupRejection } from './startup-rejection.js';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 /** Adapter bookkeeping unit seam only: no native host or provider. Actual
  * native/RPC/PG correlation is covered by the loopback Gemini integration. */
@@ -32,12 +35,14 @@ function fixture(options: {
   admissionFailure?: boolean;
   admissionFailureReturned?: boolean;
   admissionMethod?: string;
+  authorityFailure?: Error;
 }) {
   const sessionId = randomUUID();
   const threadId = `dsh-${sessionId}`;
   const order: string[] = [];
   let notify: ((value: DshNotification) => void) | undefined;
   let cleared = false;
+  let rejectPrompt: ((error: Error) => void) | undefined;
   let handler:
     | ((method: string, params: Record<string, unknown>) => Promise<unknown>)
     | null;
@@ -58,6 +63,7 @@ function fixture(options: {
     truncated: false,
   };
   const client = {
+    interrupt: vi.fn(async () => ({})),
     setRequestHandler: vi.fn((value) => {
       handler = value;
     }),
@@ -68,6 +74,10 @@ function fixture(options: {
       };
     },
     prompt: async () => {
+      if (options.authorityFailure)
+        return new Promise((_, reject) => {
+          rejectPrompt = reject;
+        });
       if (options.admissionFailure) {
         await handler?.(
           options.admissionMethod ?? 'allrice/assistant/model-dispatch',
@@ -129,6 +139,7 @@ function fixture(options: {
   vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
   vi.spyOn(DshRuntimePool.prototype, 'drop').mockImplementation(async () => {
     order.push('drop');
+    rejectPrompt?.(new Error('native runtime closed'));
   });
   const input: HarnessExecutionInput = {
     kernel: {
@@ -175,7 +186,10 @@ function fixture(options: {
                 throw new AssistantRuntimeError('budget_exhausted');
               return {};
             },
-            cancellation: async () => ({ instances: [] }),
+            cancellation: async () => {
+              if (options.authorityFailure) throw options.authorityFailure;
+              return { instances: [] };
+            },
             cancel: async () => {
               order.push('cancel');
             },
@@ -209,6 +223,20 @@ function fixture(options: {
 }
 
 describe('bounded assistant diagnostic consumption', () => {
+  it('preserves the durable execution deadline instead of generic runtime closure', async () => {
+    vi.useFakeTimers();
+    const f = fixture({
+      authorityFailure: new AssistantRuntimeError('budget_exhausted'),
+    });
+    const outcome = f.adapter.execute(f.input).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await outcome).toMatchObject({
+      code: 'ASSISTANT_BUDGET_EXHAUSTED',
+      retryable: false,
+      message: expect.stringContaining('执行时限'),
+    });
+    expect(f.order).toContain('drop');
+  });
   it.each([true, false])(
     'propagates known prior usage with completeness=%s, only after drain and before host disposal',
     async (usageComplete) => {

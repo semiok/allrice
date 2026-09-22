@@ -217,7 +217,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ? runtime.client.assistant('drain', request)
             : undefined,
         )
-        .catch(async () => {
+        .catch(async (error) => {
+          if (
+            error instanceof AssistantRuntimeError &&
+            error.code === 'budget_exhausted'
+          ) {
+            // The liveness check enforces the root's durable deadline even
+            // while a model stream is active. Preserve that cause before
+            // closing the owned host produces a generic runtime-closed error.
+            assistantAdmissionFailure ??= new HandlerError(
+              'ASSISTANT_BUDGET_EXHAUSTED',
+              '本次任务已达到配置的执行时限，已停止继续运行；这不是 Token 配额限制。',
+              false,
+            );
+          }
           // Loss of read authority cannot keep an owned model stream alive.
           // Process termination needs no new user grant; do not invent stopped receipts.
           assistantFailureSignal.abort();
