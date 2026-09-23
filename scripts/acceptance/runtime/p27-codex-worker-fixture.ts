@@ -341,7 +341,7 @@ export async function createP27CodexWorkerFixture(
             idempotencyKey: randomUUID(),
             type: 'allrice.employee.run',
             maxAttempts: 1,
-            timeoutMs: runLimits.timeoutMs,
+            timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
             input: {
               employeeAssignmentId: assignmentId,
               employeeVersionId,
