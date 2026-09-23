@@ -57,10 +57,10 @@ rc.3 不再提供旧 `writeBatchMaxDelayMs` 调试配置。P24 的未 checkpoint
 
 验证日期 2026-09-23。原生测试运行安装的 rc.3 子进程；模型端点为合成 loopback，数据库为独立的本机 PostgreSQL 17 临时实例，不使用 Dev/Prod 的数据、授权或模型配额。
 
-- 受限握手、普通消息、搜索 Broker、工具、附件、Skill、取消、压缩、历史等待与进展暂停：`pnpm dsh:golden-replay`。
-- 原生协作与杀进程恢复：P24；原生准入/交付、Codex wire：对应 `.test.mjs`。
-- 真实 PostgreSQL：clock/progress/native-wait、P25 Worker 恢复、助手权限/交付/用量、MET-144 开发协作、冻结 Skill 与 MCP/运行策略。
-- 管理员真实启动与认证：`apps/dsh-admin/server.integration.test.mjs`，使用独立临时 home 与合成密码；同时验证原生直连仍为 401。
-- 安装锁、format、lint、全仓与跨应用 typecheck、全量单元/集成测试和 build；CI 执行其显式数据库/浏览器/Compose 检查。最终结果随 PR 记录更新。
+- `pnpm dsh:golden-replay`：6 个文件 / **67 项通过**，含单写入者迁移拒绝；覆盖受限握手、消息、搜索 Broker、工具、附件、Skill、取消、压缩、历史等待与进展暂停。
+- P24 原生协作/冷恢复/杀进程：**5 项通过**；原生交付及 Codex wire 窄接口：**40 项通过**。
+- 真实 PostgreSQL：**47 个文件 / 600 项全部通过，无 skipped**。覆盖 clock/progress/native-wait、P25 Worker 恢复、助手权限/交付/用量、MET-144 开发协作、冻结 Skill 与 MCP/运行策略。
+- 管理员：**2 个文件 / 4 项通过**。`server.integration.test.mjs` 实际启动 rc.3，使用独立临时 home 与合成密码，同时验证原生直连仍为 401。
+- 冻结锁安装、format、lint、全仓与跨应用 typecheck、build 通过。全量本机首次 2869 passed / 8 failed / 1107 skipped：8 个失败均为本地 Playwright 包内额外生成的 `node_modules/.bin` 被完整性检查拒绝。隔离生成物后 frozen install 通过，该文件 **8/8 通过**；未修改 Bridge 校验。CI 使用干净安装，完整结果以 PR 当前 SHA 为准。
 
 本地无真实模型验收，未部署 Dev/Prod。MET-154 保持进行中，后续上游适配退役与 Dev 验收分别归 PR-3/PR-4。

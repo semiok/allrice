@@ -1184,32 +1184,32 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   async createSession(sessionId, resumeOnly = false) {
     try {
       await readStoredDshSession(this.ctx, sessionId);
-      const isGemini = this.provider === 'gemini' || this.provider === 'google';
-      const model =
-        isGemini && this.model === '3.8flash' ? 'gemini-3.8-flash' : this.model;
-      const handle = await this.ctx.agents.resume({
-        resumeSessionId: sessionId,
-        agentOptions: {
-          provider: isGemini ? 'google' : this.provider,
-          model,
-          ...(this.maxTokens === undefined
-            ? {}
-            : { maxTokens: this.maxTokens }),
-        },
-      });
-      const record = { handle };
-      this.sessions.set(sessionId, record);
-      return record;
     } catch (error) {
+      // Only the persistence service's exact absent identity allows creation.
+      // A missing reference inside an existing log must never become a new task.
       if (
-        resumeOnly ||
-        !/not found|no such file|ENOENT|does not exist/i.test(
-          error instanceof Error ? error.message : '',
-        )
+        !resumeOnly &&
+        error instanceof Error &&
+        error.name === 'SessionPersistenceNotFoundError' &&
+        error.sessionId === sessionId
       )
-        throw error;
-      return super.createSession(sessionId);
+        return super.createSession(sessionId);
+      throw error;
     }
+    const isGemini = this.provider === 'gemini' || this.provider === 'google';
+    const model =
+      isGemini && this.model === '3.8flash' ? 'gemini-3.8-flash' : this.model;
+    const handle = await this.ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: {
+        provider: isGemini ? 'google' : this.provider,
+        model,
+        ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
+      },
+    });
+    const record = { handle };
+    this.sessions.set(sessionId, record);
+    return record;
   }
 
   async interrupt(params) {
