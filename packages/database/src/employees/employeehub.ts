@@ -144,6 +144,12 @@ export function resolveEmployeeCapabilities(
   const denied = new Set(deniedCapabilities);
   const explicitTools = new Set(selectedToolNames ?? []);
   const nativeSkillGranted = new Set([
+    // Local MCP runs inside the granted device workspace. Its executor needs
+    // write capability; the tool allowlist still limits which tools can use it.
+    ...(explicitTools.has('local.mcp.call') ||
+    explicitTools.has('local.mcp.discover')
+      ? ['storage:write' as const]
+      : []),
     ...nativeSkills.flatMap((skill) =>
       nativeSkillCapabilityGrants(skill.requiredToolRefs),
     ),

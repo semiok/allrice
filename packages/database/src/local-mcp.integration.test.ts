@@ -136,15 +136,13 @@ suite(
         (await f.store.freeze(f.scope, f.employee, f.version)).tools,
       ).toEqual([]);
     });
-    it('does not turn a local MCP employee binding into a generic storage write capability', async () => {
+    it('activates explicitly selected local MCP/write tools without an unrelated Skill, while retaining operation approval', async () => {
       const f = await createLocalMcpFixture(db, { skill: false });
       const run = await f.newRun();
-      expect(run.snapshot.capabilitySnapshot.grantedCapabilities).not.toContain(
+      expect(run.snapshot.capabilitySnapshot.grantedCapabilities).toContain(
         'storage:write',
       );
-      await expect(run.create()).rejects.toMatchObject({
-        code: 'unavailable',
-      });
+      expect((await run.create()).snapshot.status).toBe('waiting_user');
     });
     it('granted discovery is adopted by the next real frozen Run, never inserted into the original Run', async () => {
       const f = await fixture(),

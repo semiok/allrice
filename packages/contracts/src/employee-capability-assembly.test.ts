@@ -50,6 +50,9 @@ it('selecting MCP assembles its identity permission and local discovery dependen
     'service',
   ]);
   expect(result.securityPolicy.deniedCapabilities).not.toContain('secret:use');
+  expect(result.securityPolicy.deniedCapabilities).not.toContain(
+    'storage:write',
+  );
 });
 it('makes a development selection include the whole delivery workflow and required Bridge mode', () => {
   const input = definition();

@@ -32,6 +32,14 @@ describe('Rice capability intersection', () => {
     ).toEqual(['model:invoke']);
     expect(
       resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:write', 'secret:use'],
+        [],
+        [],
+        ['local.mcp.call'],
+      ),
+    ).toEqual(['model:invoke', 'storage:write']);
+    expect(
+      resolveEmployeeCapabilities(
         ['model:invoke', 'storage:write'],
         [],
         [],

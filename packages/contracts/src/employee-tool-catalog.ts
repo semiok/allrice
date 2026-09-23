@@ -153,6 +153,7 @@ export function assembleEmployeeCapabilities(
     names.has(tool.canonicalName),
   );
   const capabilities = new Set<string>(tools.map((tool) => tool.capability));
+  if (localMcp) capabilities.add('storage:write');
   if (names.has('cloud.mcp.call')) capabilities.add('network:outbound');
   const bridgeTools = tools.filter((tool) => tool.target === 'bridge');
   const bridgeAccess = bridgeTools.some(
