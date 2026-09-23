@@ -16,6 +16,7 @@ import {
   admitModelExecution,
   assertProviderAvailable,
   appendJobEvent,
+  createTaskProgressRuntime,
   completeRouteDecision,
   estimateConversationTokens,
   getCodexProviderStatus,
@@ -606,6 +607,16 @@ export async function executeEmployeeRun({
         objectInput(input.assistantConfiguration).allowAssistants === true,
       workflow: routeDecision.selectedKind === 'workflow',
     };
+    const taskProgress =
+      subscriptionSnapshot &&
+      executionSnapshot.schemaVersion === 2 &&
+      executionSnapshot.taskRuntimePolicy
+        ? createTaskProgressRuntime({
+            context: execution.context,
+            worker: workflowLease,
+          })
+        : undefined;
+    if (taskProgress) loopGuard.observeCallsOnly();
     if (subscriptionSnapshot)
       assertSubscriptionQuotaNotExhausted(codexStatus.quota);
     assertAssistantProviderOutputBound(
@@ -1008,6 +1019,7 @@ export async function executeEmployeeRun({
                   skillVersionIds: skillIds,
                 });
                 const stepResult = await adapter.execute({
+                  progress: taskProgress,
                   kernel: stepKernel,
                   nativeSkills: resolved.nativeSkills,
                   storageObjects: [],
@@ -1080,6 +1092,7 @@ export async function executeEmployeeRun({
           })()
         : await adapter
             .execute({
+              progress: taskProgress,
               assistants,
               kernel: routedKernel,
               nativeSkills: resolved.nativeSkills,

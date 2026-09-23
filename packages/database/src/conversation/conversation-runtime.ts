@@ -1,4 +1,9 @@
-import { UuidSchema, type RuntimeRunUsage } from '@allrice/contracts';
+import {
+  UuidSchema,
+  type RuntimeRunUsage,
+  type TaskRuntimeTiming,
+} from '@allrice/contracts';
+import { readTaskClocks } from '../task-clock.ts';
 import type postgres from 'postgres';
 import { z } from 'zod';
 import { cancelUnadoptedSteers } from './conversation-input.ts';
@@ -624,6 +629,9 @@ export async function listDshRuntimeEventTimeline(
       ];
     }),
   );
+  const timingByRun = await sql.begin((tx) =>
+    readTaskClocks(tx, [...new Set(rows.map((row) => row.run_id))]),
+  );
   const turns = new Map<
     string,
     {
@@ -641,6 +649,7 @@ export async function listDshRuntimeEventTimeline(
       };
       events: NonNullable<ReturnType<typeof mapDshRuntimeEvent>>[];
       usage: RuntimeRunUsage | null;
+      timing: TaskRuntimeTiming | null;
     }
   >();
   for (const row of rows) {
@@ -665,6 +674,7 @@ export async function listDshRuntimeEventTimeline(
           ),
         },
         events: [],
+        timing: timingByRun.get(row.run_id) ?? null,
         usage: usageByRun.has(row.run_id)
           ? {
               ...usageByRun.get(row.run_id)!,

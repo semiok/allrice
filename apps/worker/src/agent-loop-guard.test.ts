@@ -27,6 +27,32 @@ function toolEvent(order: number, payload: Record<string, unknown> = {}) {
 }
 
 describe('agent loop guard', () => {
+  it('observes healthy tool counts beyond 80 when the durable progress guard is enrolled', () => {
+    const guard = new AgentLoopGuard(undefined, 'durable');
+    guard.observeCallsOnly();
+    for (let i = 0; i < 200; i++)
+      expect(() => guard.observe(toolEvent(i))).not.toThrow();
+  });
+  it('retains a rate-based event flood stop rather than an unlimited buffer', () => {
+    const guard = new AgentLoopGuard(
+      {
+        maxEvents: 3,
+        maxToolCalls: 1,
+        maxIdenticalToolCalls: 1,
+        maxRuntimeMs: 1,
+      },
+      'durable',
+    );
+    guard.observeCallsOnly();
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) guard.observe(toolEvent(i), now);
+    expect(() => guard.observe(toolEvent(4), now + 60000)).not.toThrow();
+    guard.observe(toolEvent(5), now + 60000);
+    guard.observe(toolEvent(6), now + 60000);
+    expect(() => guard.observe(toolEvent(7), now + 60000)).toThrow(
+      'AGENT_EVENT_LIMIT_EXCEEDED',
+    );
+  });
   it('does not reintroduce a wall-clock cap when the durable task clock owns elapsed time', () => {
     const guard = new AgentLoopGuard(undefined, 'durable');
     expect(() =>

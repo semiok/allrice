@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { GovernanceConsole } from './governance-console';
 import { TenantAdministration } from './tenant-administration';
 import { RunUsageSummary } from './run-usage';
+import { RunTimingSummary } from './run-timing';
 import {
   dshRuntimeCoreComponents,
   runtimeCapabilityCatalog,
@@ -746,6 +747,7 @@ function RuntimeTurn(props: {
         usage={props.turn.usage}
         runStatus={props.turn.run.status}
       />
+      <RunTimingSummary timing={props.turn.timing} />
 
       <div className={styles.dialogueMessage} data-role="user">
         <span>租户</span>

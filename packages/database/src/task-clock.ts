@@ -54,6 +54,7 @@ export function taskClockPhase(input: {
   operations: { agent_id: string; status: string }[];
   runId: string;
   modelInFlight?: boolean;
+  progressPaused?: boolean;
 }): Phase {
   if (['succeeded', 'failed', 'canceled'].includes(input.state))
     return 'terminal';
@@ -62,6 +63,7 @@ export function taskClockPhase(input: {
   const blocked = new Set(['waiting_user', 'waiting_device']);
   const liveOps = input.operations.filter((op) => !terminal.has(op.status));
   if (liveOps.some((op) => !blocked.has(op.status))) return 'active';
+  if (input.progressPaused) return 'waiting';
   if (input.state === 'queued' && liveOps.length === 0) return 'queued';
   const liveInstances = input.instances.filter(
     (inst) =>
@@ -119,12 +121,31 @@ export async function refreshTaskClock(tx: Tx, runId: string) {
       and not exists(select 1 from allrice_task_operation_calls c join allrice_runtime_operations o on o.id=c.operation_id
         where c.run_id=u.root_run_id and c.agent_id=u.run_id and c.native_call_id=u.native_call_id
           and o.snapshot->>'status' in ('waiting_user','waiting_device'))) as active`;
+  const [progressTable] =
+    await tx`select to_regclass(format('%I.allrice_task_progress',current_schema())) is not null as available`;
+  let progressPaused = false,
+    nativeActive = false;
+  if (progressTable?.available) {
+    const [progress] =
+      await tx`select pause_id from allrice_task_progress where run_id=${runId}`;
+    progressPaused = !!progress?.pause_id;
+    const [calls] =
+      await tx`select exists(select 1 from allrice_task_calls c where c.run_id=${runId} and c.finished_at is null
+      and not exists(select 1 from allrice_task_operation_calls b join allrice_runtime_operations o on o.id=b.operation_id
+        where b.run_id=c.run_id and b.native_call_id=c.call_id
+          and (exists(select 1 from allrice_assistant_instances i where i.run_id=b.agent_id and i.native_session_id=c.native_session_id)
+            or (b.agent_id=c.run_id and exists(select 1 from allrice_employee_runs e where e.run_id=c.run_id and 'dsh-'||e.session_id::text=c.native_session_id)))
+          and o.snapshot->>'status' in ('waiting_user','waiting_device'))
+      and not (c.kind='tool' and c.name='ask_user_question' and exists(select 1 from allrice_task_questions q where q.run_id=c.run_id and q.pending))) as active`;
+    nativeActive = !!calls?.active;
+  }
   const phase = taskClockPhase({
     state: run!.state,
     instances,
     operations,
     runId,
-    modelInFlight: model?.active || tool?.active,
+    modelInFlight: model?.active || tool?.active || nativeActive,
+    progressPaused,
   });
   const current = projectTaskClock(row, now);
   const startedAt =
@@ -161,15 +182,50 @@ export async function refreshTaskClockForJob(tx: Tx, jobId: string) {
 }
 
 export async function readTaskClock(tx: Tx, runId: string) {
+  return (await readTaskClocks(tx, [runId])).get(runId) ?? null;
+}
+
+/** Caller supplies already-authorized Runs; batch avoids a timeline N+1 query. */
+export async function readTaskClocks(tx: Tx, runIds: string[]) {
+  const result = new Map<
+    string,
+    ReturnType<typeof projectTaskClock> & {
+      calls: {
+        modelRequests: number;
+        toolCalls: number;
+        pending: number;
+      } | null;
+    }
+  >();
+  if (!runIds.length) return result;
   const [table] =
     await tx`select to_regclass(format('%I.allrice_task_clocks',current_schema())) is not null as available`;
-  if (!table?.available) return null;
-  const [row] = await tx<
+  if (!table?.available) return result;
+  const rows = await tx<
     TaskClockRow[]
-  >`select * from allrice_task_clocks where run_id=${runId}`;
-  if (!row) return null;
+  >`select * from allrice_task_clocks where run_id in ${tx(runIds)}`;
+  if (!rows.length) return result;
   const [at] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
-  return projectTaskClock(row, at!.now);
+  const [callsTable] =
+    await tx`select to_regclass(format('%I.allrice_task_calls',current_schema())) is not null as available`;
+  const counts = callsTable?.available
+    ? await tx`select run_id,count(*) filter(where kind='model')::int as models,count(*) filter(where kind='tool')::int as tools,count(*) filter(where finished_at is null)::int as pending from allrice_task_calls where run_id in ${tx(runIds)} group by run_id`
+    : [];
+  const byRun = new Map(counts.map((row) => [row.run_id, row]));
+  for (const row of rows) {
+    const calls = byRun.get(row.run_id);
+    result.set(row.run_id, {
+      ...projectTaskClock(row, at!.now),
+      calls: calls
+        ? {
+            modelRequests: calls.models as number,
+            toolCalls: calls.tools as number,
+            pending: calls.pending as number,
+          }
+        : null,
+    });
+  }
+  return result;
 }
 
 /** Called only within the lease-checked Worker event transaction. Duplicate or

@@ -47,6 +47,8 @@ import { refreshTaskClock, readTaskClock } from '../task-clock.ts';
 import {
   observesRootTokens,
   isTokenMetric,
+  isCallMetric,
+  observesRootCalls,
 } from '../subscription-token-accounting.ts';
 
 type Tx = RuntimeLedgerTransaction;
@@ -836,6 +838,11 @@ export function createRuntimeOperationLedger(options: {
           root.task,
           runtimeLedgerInputDigest,
         );
+        const observeCalls = await observesRootCalls(
+          tx,
+          root.task,
+          runtimeLedgerInputDigest,
+        );
         for (const budget of budgets) {
           const reservation = reservations.find(
             (r) => r.metric === budget.metric,
@@ -843,6 +850,7 @@ export function createRuntimeOperationLedger(options: {
           if (!reservation) throw new RuntimeLedgerError('invalid_usage');
           if (
             !(observeTokens && isTokenMetric(budget.metric)) &&
+            !(observeCalls && isCallMetric(budget.metric)) &&
             BigInt(budget.reserved) +
               BigInt(budget.spent) +
               BigInt(reservation.amount) >
@@ -1536,6 +1544,10 @@ export function createRuntimeOperationLedger(options: {
           !(
             isTokenMetric(budget.metric) &&
             (await observesRootTokens(tx, root.task, runtimeLedgerInputDigest))
+          ) &&
+          !(
+            isCallMetric(budget.metric) &&
+            (await observesRootCalls(tx, root.task, runtimeLedgerInputDigest))
           )
         )
           await cancelLocked(tx, root, randomUUID(), 'budget_exhausted');

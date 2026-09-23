@@ -11,6 +11,7 @@ export * from './bridge.ts';
 export * from './bridge-connections.ts';
 export * from './runtime-policy.ts';
 export { taskDeadlineOpen, linkTaskOperationCall } from './task-clock.ts';
+export { createTaskProgressRuntime } from './task-progress.ts';
 export * from './skill-bundles.ts';
 export * from './mcp-connections.ts';
 export * from './local-mcp-connections.ts';

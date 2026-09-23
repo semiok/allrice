@@ -35,6 +35,10 @@ export interface HarnessImageInput {
 }
 
 export interface HarnessExecutionInput {
+  /** Trusted Worker progress port. Never supplied by model/browser arguments. */
+  progress?: (
+    request: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
   /** Trusted Worker port; never deserialized from model or browser input. */
   assistants?: {
     rootRunId: string;

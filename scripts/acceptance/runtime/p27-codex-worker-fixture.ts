@@ -334,6 +334,13 @@ export async function createP27CodexWorkerFixture(
               catalogId,
           'P27_CODEX_WORKER_FROZEN_MODEL_MISMATCH',
         );
+        // This one migration fixture intentionally seeds a pre-0103 Run. Keep
+        // its historical policy; never rewrite a persisted production snapshot.
+        if (options.throughMigration) {
+          delete binding.executionSnapshot.taskRuntimePolicy;
+          binding.executionSnapshot.runtimePolicy.timeoutMs =
+            runLimits.timeoutMs;
+        }
         const submission = await queue.enqueueRun(
           context,
           {
@@ -341,7 +348,7 @@ export async function createP27CodexWorkerFixture(
             idempotencyKey: randomUUID(),
             type: 'allrice.employee.run',
             maxAttempts: 1,
-            timeoutMs: runLimits.timeoutMs,
+            timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
             input: {
               employeeAssignmentId: assignmentId,
               employeeVersionId,

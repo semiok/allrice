@@ -106,6 +106,7 @@ export function createAssistantWorkerBridge(
     p: Record<string, unknown>,
   ): Promise<Record<string, unknown>> => {
     const { instance, snapshot } = await lookup(p.nativeSessionId);
+    if (method === 'progress-identity') return { owned: true };
     if (method === 'checkpoint') {
       if (
         !snapshot.messages.some(

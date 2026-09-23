@@ -895,6 +895,23 @@ describe('DshHarnessAdapter', () => {
     expect(recovered.answer).toBe('turn-1');
   });
 
+  it.each([false, true])(
+    'never reports an empty success when canceled before dispatch (progress %s)',
+    async (progress) => {
+      const adapter = createAdapter(),
+        controller = new AbortController();
+      const input = executionInput({
+        prompt: 'must not start',
+        signal: controller.signal,
+      });
+      if (progress) input.progress = async () => ({ paused: false });
+      input.onThreadBound = async () => {
+        controller.abort();
+      };
+      await expect(adapter.execute(input)).rejects.toThrow('interrupted');
+    },
+  );
+
   it('uses DSH native compaction without replacing the live session', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;

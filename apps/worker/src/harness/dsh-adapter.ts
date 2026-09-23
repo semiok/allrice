@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 import {
   HarnessEventSchema,
@@ -169,6 +169,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const ordinaryHandler = dshInboundToolHandler(input);
     let assistantAdmissionFailure: HandlerError | undefined;
     runtime.client.setRequestHandler(async (method, params) => {
+      if (method === 'allrice/progress') {
+        if (!input.progress) throw Error('task_progress_disabled');
+        if (params.nativeSessionId !== threadId) {
+          if (!assistant) throw Error('task_progress_native_scope');
+          // Existing owned-tree lookup, with lease and tenant checks, runs
+          // before accepting a child's progress report.
+          await assistant.handle('progress-identity', {
+            nativeSessionId: params.nativeSessionId,
+          });
+        }
+        return input.progress(params);
+      }
       if (method.startsWith('allrice/assistant/')) {
         if (!assistant) throw Error('assistant_runtime_disabled');
         try {
@@ -359,9 +371,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
     try {
       for (
         let callIndex = 0;
-        callIndex <= maximumDshToolCallsPerTurn;
+        input.progress || callIndex <= maximumDshToolCallsPerTurn;
         callIndex++
       ) {
+        if (executionSignal.aborted)
+          throw new HandlerError(
+            'EXECUTION_ABORTED',
+            'DSH execution was interrupted',
+            false,
+          );
         const result = await this.runOnce({
           runtime,
           prompt,
@@ -437,7 +455,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           });
           break;
         }
-        if (callIndex === maximumDshToolCallsPerTurn) {
+        if (!input.progress && callIndex === maximumDshToolCallsPerTurn) {
           throw new HandlerError(
             'DSH_TOOL_LIMIT_EXCEEDED',
             'DSH exceeded the AllRice tool-call limit',
@@ -476,6 +494,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
         });
         try {
+          const envelopeDigest = (value: unknown) =>
+            `sha256:${createHash('sha256')
+              .update(JSON.stringify(value) ?? 'null')
+              .digest('hex')}`;
+          if (input.progress)
+            await input.progress({
+              action: 'start',
+              kind: 'tool',
+              nativeSessionId: threadId,
+              callId: toolCall.id,
+              name: toolCall.name,
+              argumentsDigest: envelopeDigest(toolCall.arguments),
+            });
           const assistantResult = assistant
             ? await assistant.handle('tool', {
                 nativeSessionId: threadId,
@@ -493,6 +524,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   : {}),
               }
             : await input.onToolCall(toolCall);
+          if (input.progress)
+            await input.progress({
+              action: 'finish',
+              kind: 'tool',
+              nativeSessionId: threadId,
+              callId: toolCall.id,
+              resultDigest: envelopeDigest(toolResult.modelContent),
+              outcome: toolResult.itemCount === 0 ? 'empty' : 'success',
+            });
           await emit({
             type: 'tool.completed',
             toolCallId: toolCall.id,

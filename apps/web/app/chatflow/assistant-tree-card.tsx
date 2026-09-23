@@ -51,6 +51,9 @@ export function AssistantTreeCard({
           {tree.timing.phase === 'waiting'
             ? '（整项任务等待中，活跃计时暂停）'
             : ''}
+          {tree.timing.calls
+            ? ` · 原生模型请求尝试 ${tree.timing.calls.modelRequests} 次 / 工具 ${tree.timing.calls.toolCalls} 次（仅统计）`
+            : ''}
           {tree.timing.sources.length
             ? ` · 策略来源：${tree.timing.sources.map((s) => `${({ tenant: '租户', user: '用户', employee: '员工', provider: '模型连接' } as Record<string, string>)[s.scope] ?? s.scope} ${s.timeoutMs === 0 ? '不限制' : `${s.timeoutMs / 60000} 分钟`}`).join('、')}`
             : ' · 来源：平台默认'}
