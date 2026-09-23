@@ -1053,7 +1053,7 @@ export async function disablePlatformEmployee(
       `;
       await transaction`
         update allrice_employees
-        set status = 'disabled', updated_at = now()
+        set status = 'archived', updated_at = now()
         where organization_id = ${assignment.organization_id}
           and workspace_id = ${assignment.workspace_id}
           and id = ${assignment.tenant_employee_id}

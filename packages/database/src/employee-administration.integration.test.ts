@@ -31,6 +31,7 @@ import {
   publishPlatformEmployee,
   savePlatformEmployeeDraft,
   rollbackPlatformEmployee,
+  archivePlatformEmployee,
 } from './employees/platform-employees.ts';
 
 const suite =
@@ -203,6 +204,15 @@ suite('MET-151 policy and exact employee publication administration', () => {
         await fixture.db`select count(*)::int n from allrice_platform_employee_audit_events where employee_id=${f.employeeId} and action='employee.capabilities.enabled'`;
       expect(audit?.n).toBe(1);
       expect(saved!.currentDraft!.id).toBe(review.revisionId);
+      await archivePlatformEmployee(
+        f.employeeId,
+        { reason: 'Acceptance complete' },
+        f.context.actor.id,
+      );
+      const [remaining] =
+        await fixture.db`select count(*)::int n from allrice_employee_assignments
+        where workspace_id=${f.workspaceId} and active`;
+      expect(remaining?.n).toBe(0);
     } finally {
       if (oldEnvironment === undefined) delete process.env.ALLRICE_ENV;
       else process.env.ALLRICE_ENV = oldEnvironment;
