@@ -203,11 +203,27 @@ integration(
         });
         let controllerOptions:
           Parameters<typeof productionAssistantController>[0] | undefined;
+        const stoppedReceipts = new Set<string>();
         const controller = (
           options: Parameters<typeof productionAssistantController>[0],
         ) => {
           controllerOptions = options;
-          return productionAssistantController(options);
+          const original = productionAssistantController(options);
+          return {
+            ...original,
+            bind: async (...args: Parameters<typeof original.bind>) => {
+              const bound = await original.bind(...args);
+              return {
+                ...bound,
+                handle: async (...request: Parameters<typeof bound.handle>) => {
+                  const result = await bound.handle(...request);
+                  if (request[0] === 'stopped' && result.stopped === true)
+                    stoppedReceipts.add(String(request[1].nativeSessionId));
+                  return result;
+                },
+              };
+            },
+          };
         };
         try {
           const executionInput: HarnessExecutionInput = {
@@ -350,11 +366,17 @@ integration(
             await expect
               .poll(() => model.abortedRequests.length, { timeout: 10000 })
               .toBe(2);
-            // A dead process is not a platform receipt; uncertainty is retained.
+            // A dead process alone is not a platform receipt. A current-authority
+            // poll can race with cancel/drain: only a successfully persisted
+            // native stopped ACK may make stopped_at non-null. Verify the exact
+            // evidence rather than requiring one scheduling order in CI.
             const rows =
-              await database.db`select stopped_at from allrice_assistant_instances where root_run_id=${f.rootRunId} and depth>0`;
+              await database.db`select native_session_id,stopped_at from allrice_assistant_instances where root_run_id=${f.rootRunId} and depth>0`;
             expect(rows).toHaveLength(2);
-            expect(rows.every((row) => row.stopped_at === null)).toBe(true);
+            for (const row of rows)
+              expect(row.stopped_at !== null).toBe(
+                stoppedReceipts.has(row.native_session_id),
+              );
             const [usage] =
               await database.db`select count(*) as unresolved from allrice_assistant_usage where root_run_id=${f.rootRunId} and settled_amount is null`;
             expect(Number(usage!.unresolved)).toBeGreaterThan(0);
