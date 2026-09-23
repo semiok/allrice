@@ -6,13 +6,13 @@
 
 ## 本轮复核
 
-- 日期：2026-09-23；负责工单：[MET-154][met154] PR-2。已实现固定候选兼容升级；业务归属见各项原工单，模块化归 MET-155。
+- 日期：2026-09-23；负责工单：[MET-154][met154] PR-3。已实现固定候选兼容升级与图片转换局部退役；业务归属见各项原工单，模块化归 MET-155。
 - Allrice 基线：`a77c640`；已核对 main 的 CI、Dev 已验收代码及全部开放 PR。
 - 复核范围：当前 `0.1.1-rc.2` 源码 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` → 已安装候选 `0.1.5-rc.3` 源码 `a4c74a91e06b00fe0b0937bde982170c526cc842`。
 - `0.1.7-alpha.2` / `00102833dfaee1da9f48a3a8eae9d34005a75218` 只作为前瞻研究。下表所有上游链接固定到对应源码 SHA。
-- 精确包差异、协议矩阵、迁移实测和发布阻断项见 [本轮升级基线](dsh-upgrades/met154-rc3-baseline.md)。PR-2 已完成受限组合、私有事件迁移和助手接口适配；实现与发布限制见 [候选兼容验收](dsh-upgrades/met154-rc3-compatibility.md)。`installedChannel=candidate` 不代表已部署或已晋级，真实账号与 Dev 发布验收仍在 PR-4。
+- 精确包差异、协议矩阵、迁移实测和发布阻断项见 [本轮升级基线](dsh-upgrades/met154-rc3-baseline.md)。PR-2 已完成受限组合、私有事件迁移和助手接口适配；实现与发布限制见 [候选兼容验收](dsh-upgrades/met154-rc3-compatibility.md)。`installedChannel=candidate` 不代表已部署或已晋级，真实账号与 Dev 发布验收仍在 PR-4。PR-3 的具体删除、接口差异与保留理由见 [复用收敛记录](dsh-upgrades/met154-rc3-reuse.md)。
 
-状态含义：**保留**＝上游没有承担对应 Allrice 责任；**可复用待验证**＝有重叠但还不能删旧路径；**适配后替换**＝已找到替代接口，待通过同等行为验证；**已替换**＝删除旧路径的 PR 和证据齐全；**明确不接入**＝本轮不启用该执行面。来源存在不等于产品已启用，也不等于验证通过。本轮没有“已替换”条目。
+状态含义：**保留**＝上游没有承担对应 Allrice 责任；**可复用待验证**＝有重叠但还不能删旧路径；**适配后替换**＝已找到替代接口，待通过同等行为验证；**已替换**＝删除旧路径的 PR 和证据齐全；**明确不接入**＝本轮不启用该执行面。来源存在不等于产品已启用，也不等于验证通过。本轮仅图片准入后的引用转换标记为“已替换”；所属生命周期适配整体保留。
 
 ## 已登记的 10 项适配
 
@@ -44,7 +44,7 @@
 
 ### allrice-development-workflow-v1
 
-- ID：`allrice-development-workflow-v1`；归属 MET-144；**可复用待验证**（消息/等待机制）；业务规则保留。
+- ID：`allrice-development-workflow-v1`；归属 MET-144；**保留**（PR-3 已复核；原生派发已复用，剩余为平台治理）。
 - Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs)、数据库 `development-cooperation.ts` / `development-workflow.ts`。现有 message/report/stop 已使用原生子助手，不是从零搭建消息系统。
 - 上游：[rc.3 subagent][subagent] 用 `sendMessage` 取代旧 `followup`，PR-2 已改用 Host 专用 `queueHostSubagentPrompt` 保留 Queue 与 coordinator 来源，不能用会唤醒接收者的 `sendMessage` 冒充旧 quiet report。冷恢复使用官方 session-query-sqlite 的 `openAt: never`，仅启用精确读取，不创建索引或注册模型查询工具；[Agent Team][team]有持久排队→目标采纳→ACK、任务 revision CAS、事件等待和中断后保留 Inbox，可借鉴这些机制。
 - 退役条件：只替换重复派发/唤醒/等待路径；固定候选 SHA、同版本测试、独立审查、文件 CAS、租户授权和交付证据仍由 Allrice 核验。Team 的单进程任务板不能成为 PostgreSQL 队列的第二个权威来源，`writeScopes` 也不是锁。
@@ -52,9 +52,9 @@
 
 ### allrice-assistant-required-delivery-v1
 
-- ID：`allrice-assistant-required-delivery-v1`；归属 MET-151；**可复用待验证**（结算通知）；显式交付语义保留。
+- ID：`allrice-assistant-required-delivery-v1`；归属 MET-151；**保留**（PR-3 已复核；原生结算通知仍需平台授权后唤醒）。
 - Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs)。report 权限、输出 grant、证据结构、幂等通知和可修正参数错误都属于 Allrice 合约。
-- 上游：[子助手结算][subagent]、[alpha.2 完成唤醒修复][alpha-release]可降低消息适配成本，但 native idle/结束仍不等于已提交可验收结果，alpha 修复也不能推定 rc.3 已包含。
+- 上游：[子助手结算][subagent]、[alpha.2 完成唤醒修复][alpha-release]可降低消息适配成本，但 native idle/结束仍不等于已提交可验收结果，alpha 修复也不能推定 rc.3 已包含。PR-3 核对后保留 `guardSettlement` 与 delivery 去重，具体差异见 [复用收敛记录](dsh-upgrades/met154-rc3-reuse.md)。
 - 退役条件：原生唤醒保留真实平台 report、拒绝重复/换父节点通知，且不制造成功。需逐段删除旧唤醒包装，而不是只增加一条新路径。
 - 验收：`assistant-native-delivery.test.mjs`、数据库 `assistant-output.integration.test.ts` / `assistant-output-budget.integration.test.ts`。回退保留 durable delivery ID，避免第二次投递。
 
@@ -76,11 +76,11 @@
 
 ### allrice-jsonrpc-lifecycle-v1
 
-- ID：`allrice-jsonrpc-lifecycle-v1`；归属 MET-85；**适配后替换**（部分图片准入实现）；生命周期扩展保留。
+- ID：`allrice-jsonrpc-lifecycle-v1`；归属 MET-85；**已替换**（图片准入后的有序引用转换）；生命周期扩展保留。
 - Allrice：[allrice-jsonrpc-runtime.mjs](../../apps/worker/dsh/allrice-jsonrpc-runtime.mjs)、[allrice-dsh-runtime-compatibility.mjs](../../apps/worker/dsh/allrice-dsh-runtime-compatibility.mjs)。承担发行身份、Broker、会话恢复、压缩和 typed input 的受控桥接。
-- 上游：[SDK server][sdk] / [wire types][wire]新增 inline image admission、初始化就绪和 reasoning effort 校验，图片准入是明确的复用候选。上游握手版本仍为 `0.0.1`，不能用它替代 Allrice 发行版本核验。旧 `Session.events` 读取及内容事件格式已有变化。
-- 退役条件：图片数量/字节/像素边界、类型核验、顺序、身份和租户附件授权均通过现有回归，再删除重复准入路径；不得把 SDK 整个默认工具组合开放给租户。
-- 验收：`dsh:golden-replay`、`allrice-dsh-runtime-compatibility.test.mjs`。旧日志迁移通过前保留原运行时与存储副本，恢复失败不能悄悄创建新会话。
+- 上游：[SDK server][sdk] / [wire types][wire]新增 inline image admission、初始化就绪和 reasoning effort 校验，但 SDK inline image 不传递 `name`，不能直接替代现有有名附件。PR-3 改用 rc.3 新增的 [AttachmentStore.admitPromptContent][attachment-admission]，复用原生准入及有序引用转换，并删除 `admitDshPromptImageBlocks`。上游握手版本仍为 `0.0.1`，不能用它替代 Allrice 发行版本核验。旧 `Session.events` 读取及内容事件格式已有变化。
+- 保留范围：`prompt` 只把现有 wire images 标记为原生图片片段，保留 display name；SDK 继续创建消息身份与排队。租户授权、冻结附件及校验和仍在 Allrice。SDK 覆盖名称后才考虑删除这层 wire 桥接，不开放默认工具组合。
+- 验收：`dsh-images-native.integration.test.ts` 覆盖真实存储拒绝边界、整批拒绝、名称/顺序、消息 ID 与进程重启；已纳入 `dsh:golden-replay`。实现与验证见 [PR-3 记录](dsh-upgrades/met154-rc3-reuse.md)。回退此局部替换可在相同 rc.3 构建恢复原 helper；这不授予 v3 历史降级到 rc.2 的资格。
 
 ### dsh-admin-webui-private-entrypoint-v1
 
@@ -130,7 +130,7 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 2. `pnpm dsh:verify` 检查每个 ledger ID 在此有入口；评审仍需核对内容，不能只补一个 ID。也必须审查 `patchedDependencies`，一个 ledger 条目可对应多个物理源码补丁，不能用条目数代替补丁清点。
 3. 每条至少保留稳定 ID、Allrice 路径/原工单、上游包/源码 SHA、存在/启用差异、决策、权威边界、验收、退役条件、回退方式和实现 PR。退役记录保留，不抹掉历史。
 4. 上游新版本的研究快照放在 `dsh-upgrades/`，从本页链接；机器发行文件只随实际兼容实现更新。历史日志夹具保持原字节，不用新版本重新生成来冒充兼容。
-5. 不以“减少多少代码/节省多少 token”替代行为验收；有测量再填写收益。本轮未删除适配，未改变发行版本、依赖锁或工具集合。
+5. 不以“减少多少代码/节省多少 token”替代行为验收；有测量再填写收益。PR-2 已更新候选依赖及发行事实；PR-3 只删除一段重复转换，不减少 ledger 条目或物理补丁数量，不改变工具集合。
 
 [met154]: https://linear.app/metasnowsky/issue/MET-154
 [persistence]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/session/session-persistence-jsonl/README.md
@@ -154,3 +154,4 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 [sandbox]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/sandbox/sandbox-local/README.md
 [hooks]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/hooks/hook-protocol/README.md
 [alpha-release]: https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-alpha.2
+[attachment-admission]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/attachment/attachment/src/index.ts
