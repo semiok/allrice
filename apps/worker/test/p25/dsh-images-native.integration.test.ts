@@ -27,7 +27,12 @@ const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC';
 const largerPng =
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVQImWNgYPgPRmAKABf2A/38FIMyAAAAAElFTkSuQmCC';
-const image = { type: 'image', mediaType: 'image/png', data: png } as const;
+const image = {
+  type: 'image',
+  mediaType: 'image/png',
+  data: png,
+  name: 'image.png',
+} as const;
 
 describe('MET154 native prompt image admission', () => {
   const refusals: {

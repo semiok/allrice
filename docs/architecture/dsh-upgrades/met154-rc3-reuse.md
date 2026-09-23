@@ -1,6 +1,6 @@
 # MET-154 PR-3：复用原生图片准入，保留协作治理
 
-本次基于 [PR-2 #93](https://github.com/semiok/allrice/pull/93) 的 `c99e249`，固定上游 `0.1.5-rc.3` / `a4c74a91e06b00fe0b0937bde982170c526cc842`。决策日期 2026-09-23；持续入口是 [DSH 复用与替换清单](../dsh-reuse-and-replacement.md)。
+实现：[PR-3 #94](https://github.com/semiok/allrice/pull/94)。本次基于 [PR-2 #93](https://github.com/semiok/allrice/pull/93) 的 `c99e249`，固定上游 `0.1.5-rc.3` / `a4c74a91e06b00fe0b0937bde982170c526cc842`。决策日期 2026-09-23；持续入口是 [DSH 复用与替换清单](../dsh-reuse-and-replacement.md)。
 
 ## 实际替换
 
@@ -32,6 +32,8 @@ PR-3 删除这个 helper 及其导入。JSON-RPC `prompt` 把现有 wire images 
 - 实际落盘后关闭进程，再恢复同一 Session。两张图片仍能进入下一次显式提示的模型请求，原提示不重放。
 - 模型只使用本地合成 HTTP 端点；测试临时 profile 显式声明该测试模型支持图片。真实用户数据、模型配额与生产模型配置均不参与。
 
-租户存储授权、不可变 Run 附件快照和摘要核对仍由原有 `getStoredFile` / `loadHarnessImages` 执行，没有转交给 DSH；针对冻结附件的现有测试与 golden replay 一并运行。本地 `dsh:golden-replay` **7 文件 / 76 项通过**（包含新增图片测试 9 项）；另跑冻结附件、兼容助手、P24 原生协作、助手交付/准入/用量与开发桥接回归，**7 文件 / 76 项通过**。合成测试不代表真实 Dev 账号验收。
+租户存储授权、不可变 Run 附件快照和摘要核对仍由原有 `getStoredFile` / `loadHarnessImages` 执行，没有转交给 DSH；针对冻结附件的现有测试与 golden replay 一并运行。本地 `dsh:golden-replay` **7 文件 / 76 项通过**（包含新增图片测试 9 项）；另跑冻结附件、兼容助手、P24 原生协作、助手交付/准入/用量与开发桥接回归，**7 文件 / 76 项通过**。
+
+真实 PostgreSQL 回归 **5 文件 / 51 项通过，无 skipped**：开发工作流、原生开发协作、生产助手交付、存储配额与 workspace 授权。使用独立本机测试集群和隔离 schema，结束后已关闭。冻结锁安装、format、lint、全仓类型检查与 build 通过；CI 以 PR 当前 SHA 为准。合成测试不代表真实 Dev 账号验收。
 
 如需撤销这项局部替换，在同一 rc.3 发行版中恢复旧 helper 即可，附件引用和会话格式没有变化。该操作不允许把已写入 v3 的会话交回 rc.2。部署、真实旧日志副本、在途任务盘点与回退演练仍按 [PR-2 发布边界](met154-rc3-compatibility.md) 留给 PR-4。
