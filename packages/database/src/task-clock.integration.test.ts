@@ -10,6 +10,8 @@ import {
   heartbeatJob,
   maintainQueue,
   appendJobEvent,
+  claimNextJob,
+  startClaimedJob,
 } from './execution/queue.ts';
 import {
   refreshTaskClock,
@@ -57,6 +59,78 @@ suite(
       await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
       return f;
     }
+    it.each(['active', 'waiting'] as const)(
+      'preserves %s time across a real expired lease, maintenance and a different Worker claim',
+      async (phase) => {
+        const f = await setup();
+        // Durable action approvals survive a Worker owner change. Native Ask
+        // User RPC IDs instead need re-emission by the new live process.
+        const operation =
+          phase === 'waiting'
+            ? await createLocalCommandOperation(
+                { context: f.context, arguments: f.args, callId: randomUUID() },
+                f.db,
+              )
+            : null;
+        await f.db`update allrice_task_clocks set active_ms=60000,waiting_ms=30000,changed_at=clock_timestamp()-interval '10 seconds' where run_id=${f.rootRunId}`;
+        const before = await f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
+        await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        await maintainQueue();
+        const recovered = await f.db.begin((tx) =>
+          readTaskClock(tx, f.rootRunId),
+        );
+        expect(recovered!.activeMs).toBeGreaterThanOrEqual(before!.activeMs);
+        expect(recovered!.waitingMs).toBeGreaterThanOrEqual(before!.waitingMs);
+        if (phase === 'waiting') expect(recovered!.activeMs).toBe(60000);
+        await expect(
+          heartbeatJob(
+            f.worker.workerId,
+            f.worker.jobId,
+            f.worker.leaseToken,
+            30000,
+          ),
+        ).rejects.toMatchObject({ code: 'lease_lost' });
+        const replacement = randomUUID();
+        const claimed = await claimNextJob(replacement, 30000);
+        expect(claimed?.id).toBe(f.worker.jobId);
+        await startClaimedJob(replacement, claimed!.id, claimed!.lease!.token);
+        await heartbeatJob(
+          replacement,
+          claimed!.id,
+          claimed!.lease!.token,
+          30000,
+        );
+        const resumed = await f.db.begin((tx) =>
+          readTaskClock(tx, f.rootRunId),
+        );
+        expect(resumed!.activeMs).toBeGreaterThanOrEqual(recovered!.activeMs);
+        expect(resumed!.waitingMs).toBeGreaterThanOrEqual(recovered!.waitingMs);
+        expect(resumed!.phase).toBe(phase);
+        if (phase === 'waiting') {
+          expect(resumed!.activeMs).toBe(60000);
+          const operationId = operation!.snapshot.binding.attempt.operationId;
+          await f.approve(await f.approvalFor(operationId));
+          await f.freshLedger().dispatch({
+            scope: f.task.scope,
+            operationId,
+            leaseOwner: randomUUID(),
+            leaseMs: 15000,
+          });
+          const finishedWait = await f.db.begin((tx) =>
+            readTaskClock(tx, f.rootRunId),
+          );
+          expect(finishedWait!.phase).toBe('active');
+          expect(finishedWait!.waitingMs).toBeGreaterThanOrEqual(
+            resumed!.waitingMs,
+          );
+        }
+        // Re-running maintenance does not create another recovery or reset time.
+        await maintainQueue();
+        const events =
+          await f.db`select 1 from allrice_run_events where run_id=${f.rootRunId} and payload->>'kind'='lease.recovered'`;
+        expect(events).toHaveLength(1);
+      },
+    );
     it('does not kill a 40-minute approval wait; resume keeps the accumulated wait and bounded command lease', async () => {
       const f = await setup();
       const c = await createLocalCommandOperation(
