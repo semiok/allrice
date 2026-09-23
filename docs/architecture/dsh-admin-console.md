@@ -63,8 +63,8 @@ Worker is prohibited.
 
 ## Runtime difference view
 
-The official settings dialog includes an AllRice-owned, read-only
-`Runtime 差异` section. It is registered through DSH's native
+The official settings dialog includes an AllRice-owned
+`版本与能力` section. It is registered through DSH's native
 `settings.section` slot, so it follows the upstream dialog layout, theme and
 scroll behavior instead of maintaining a second settings shell.
 
@@ -75,10 +75,17 @@ The section records three explicit sets:
 - capabilities supplied only by AllRice, such as ChatFlow, Tool Broker,
   Employee capability assembly and Rice Bridge.
 
-This first version is a reviewed architecture snapshot, not a live publish
-button. It deliberately cannot enable a plugin or mutate a Worker. A future
-sync bridge can replace the snapshot with inventory data and drift status,
-but promotion must still follow the review and immutable-bundle path above.
+Both administrator surfaces display the pinned build version and the shared
+`packages/dsh-runtime-diff/capabilities.json` catalog by default. The Lab gateway
+adds the version and catalog to authenticated HTML; the AllRice console uses
+the same build inputs. They distinguish integrated features, current upstream
+reuse candidates and alpha-only previews. The catalog's review version is
+shown as stale when it differs from the build version. These are build facts,
+not a claim that every Worker or tenant has enabled every capability.
+
+Integrated optional capabilities link to the existing employee configuration,
+trial and tenant publication flow. Native experiments remain in the Lab;
+execution and file changes continue through their existing approval paths.
 
 ## Temporary portals
 

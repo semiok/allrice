@@ -1,4 +1,4 @@
-/* global document, window */
+/* global document, window, URL */
 
 window.__ModuleLoader__.load({
   id: '@allrice/dsh-runtime-diff',
@@ -6,6 +6,20 @@ window.__ModuleLoader__.load({
     const module = { exports: {} };
     const exports = module.exports;
     const { jsx, jsxs } = require('react/jsx-runtime');
+
+    let catalog = null;
+    try {
+      const meta = document.querySelector(
+        'meta[name="allrice-dsh-capabilities"]',
+      );
+      if (meta) catalog = JSON.parse(decodeURIComponent(meta.content));
+    } catch {
+      // Keep the existing comparison usable if an older gateway served the page.
+    }
+    const consoleUrl = window.location.hostname.startsWith('dsh.')
+      ? new URL('/runtime-console?view=employees', window.location.href)
+      : null;
+    if (consoleUrl) consoleUrl.hostname = `allrice-${window.location.hostname}`;
 
     const styleId = '@allrice/dsh-runtime-diff/styles';
     if (!document.querySelector(`style[data-plugin-css="${styleId}"]`)) {
@@ -32,6 +46,10 @@ window.__ModuleLoader__.load({
 .allriceRuntimeDiff__item:last-child{border-bottom:0}
 .allriceRuntimeDiff__item strong{font-size:13px;line-height:20px}
 .allriceRuntimeDiff__item span{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}
+.allriceRuntimeDiff__upgrade{display:grid;gap:12px;padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}
+.allriceRuntimeDiff__upgrade h3,.allriceRuntimeDiff__upgrade p{margin:0}
+.allriceRuntimeDiff__upgrade p{font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
+.allriceRuntimeDiff a{color:var(--dsw-alias-label-primary);text-decoration:underline}
 .allriceRuntimeDiff__footer{padding:14px 16px;border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}
 @media(max-width:720px){.allriceRuntimeDiff__summary{grid-template-columns:1fr}.allriceRuntimeDiff__item{grid-template-columns:1fr;gap:2px}}
 `;
@@ -57,6 +75,7 @@ window.__ModuleLoader__.load({
         'Rice Bridge',
         'local.fs.* 授权目录受控读写与 local.git.* 本地只读 Native Tools',
       ],
+      ['开发协作', '编辑提案、同版沙箱测试、独立审查与正式交付'],
       ['员工能力装配', '按员工分配 Skill、Workflow、Knowledge 与模型策略'],
     ];
 
@@ -94,6 +113,72 @@ window.__ModuleLoader__.load({
       });
     }
 
+    function UpgradeCapabilities() {
+      if (!catalog)
+        return jsx('p', {
+          children: '版本与升级能力信息暂不可用，请刷新页面。',
+        });
+      return jsxs('section', {
+        className: 'allriceRuntimeDiff__upgrade',
+        children: [
+          jsx('h3', { children: `当前构建 · DSH ${catalog.version}` }),
+          jsx('p', {
+            children:
+              '升级能力默认展示。已接入的能力可前往 AllRice 配置试用，原生能力可在 Lab 中探索。',
+          }),
+          catalog.reviewedVersion !== catalog.version
+            ? jsx('p', {
+                children: `能力说明复核于 ${catalog.reviewedVersion}，当前版本说明待同步。`,
+              })
+            : null,
+          consoleUrl
+            ? jsx('a', {
+                href: consoleUrl.toString(),
+                target: '_blank',
+                rel: 'noreferrer',
+                children: '前往 AllRice 配置 Rice 并试用 →',
+              })
+            : null,
+          ...catalog.groups.map((group) =>
+            jsxs(
+              'section',
+              {
+                children: [
+                  jsx('h3', { children: group.title }),
+                  jsx('p', { children: group.description }),
+                  jsx('ul', {
+                    className: 'allriceRuntimeDiff__list',
+                    children: group.items.map((item) =>
+                      jsxs(
+                        'li',
+                        {
+                          className: 'allriceRuntimeDiff__item',
+                          children: [
+                            jsx('strong', { children: item.name }),
+                            jsx('span', {
+                              children: `${item.status} · ${item.detail}`,
+                            }),
+                          ],
+                        },
+                        item.id,
+                      ),
+                    ),
+                  }),
+                ],
+              },
+              group.id,
+            ),
+          ),
+          jsx('a', {
+            href: 'https://github.com/semiok/allrice/blob/main/docs/architecture/dsh-reuse-and-replacement.md',
+            target: '_blank',
+            rel: 'noreferrer',
+            children: '查看复用清单与接入进度 →',
+          }),
+        ],
+      });
+    }
+
     function RuntimeDiffSection() {
       return jsxs('div', {
         className: 'allriceRuntimeDiff',
@@ -103,19 +188,20 @@ window.__ModuleLoader__.load({
             children: [
               jsxs('div', {
                 children: [
-                  jsx('h2', { children: 'AllRice Runtime 对照' }),
+                  jsx('h2', { children: 'DSH 版本与能力' }),
                   jsx('p', {
                     children:
-                      '对照 DSH 管理实例与 AllRice Runtime 的能力边界，作为后续审核、发布与同步桥的基线。',
+                      '查看当前升级能力与 AllRice 接入情况，快速找到可以试用和复用的功能。',
                   }),
                 ],
               }),
               jsx('span', {
                 className: 'allriceRuntimeDiff__readonly',
-                children: '只读快照',
+                children: '能力总览',
               }),
             ],
           }),
+          jsx(UpgradeCapabilities, {}),
           jsxs('div', {
             className: 'allriceRuntimeDiff__summary',
             children: [
@@ -142,7 +228,7 @@ window.__ModuleLoader__.load({
           jsx(Group, { title: '共有能力', tag: '已共享', items: shared }),
           jsx(Group, {
             title: '仅 DSH 管理实例',
-            tag: '未发布',
+            tag: 'Lab 探索',
             items: adminOnly,
           }),
           jsx(Group, {
@@ -153,7 +239,7 @@ window.__ModuleLoader__.load({
           jsx('div', {
             className: 'allriceRuntimeDiff__footer',
             children:
-              '当前页面只做差异展示，不会直接修改 Worker。未来同步桥应遵循：管理端调试 → 安全审核 → 发布到能力库 → 分配给 AI 员工 → 新 Session 生效。',
+              '已接入的能力通过 AllRice 员工配置试用并发布；原生能力的实验结果进入复用清单，随后续版本持续接入。',
           }),
         ],
       });
@@ -167,7 +253,7 @@ window.__ModuleLoader__.load({
             name: 'settings.section',
             id: 'allrice-runtime-diff',
             order: 40,
-            label: () => 'Runtime 差异',
+            label: () => '版本与能力',
           },
           RuntimeDiffSection,
         ),

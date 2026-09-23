@@ -171,7 +171,7 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
           name: '向用户确认',
           packageName: '@deepseek-ai/dsh-tool-ask-user',
           detail:
-            '保持当前 Run，通过 active-turn steer 在原 Session 中等待并接收文本回答。',
+            '持久化问题与答案；等待时释放原生进程和租约，重启后继续原 Run。',
           policy: '同 Session 续跑',
         },
         {
@@ -185,11 +185,19 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
     },
     {
       source: 'allrice',
-      title: 'AllRice 控制平面与执行能力',
-      badge: 'SaaS 权限边界',
+      title: 'AllRice 已接入的执行能力',
+      badge: '可按租户配置',
       description:
-        '这些是 AllRice 自己拥有的多租户控制、工具授权和本地协作能力，不是 DSH 插件，也不是业务 Skill。',
+        '整合 DSH 原生助手与 AllRice 的任务、工具和设备能力，按员工配置发布给租户。',
       items: [
+        {
+          id: 'subagent',
+          name: '并行助手与开发协作',
+          packageName: '@deepseek-ai/dsh-subagent',
+          detail:
+            '复用原生助手派发与消息，已接通父子任务、共享预算、候选测试和独立审查。',
+          policy: '员工配置后按租户试用与发布',
+        },
         {
           id: 'chatflow',
           name: 'ChatFlow 3.0',
@@ -213,7 +221,7 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
           id: 'rice-bridge',
           name: 'Rice Bridge',
           detail:
-            '提供授权目录内的 local.fs.* 受控读写与 local.git.* 只读能力；不开放任意 Shell、删除或 Git 写操作。',
+            '提供授权目录读写、Git 只读、独立浏览器与沙箱命令；支持在隔离副本测试候选修改。',
           policy: '设备授权目录内受控读写；覆盖需校验 SHA-256',
         },
         {
@@ -232,18 +240,19 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
     },
     {
       source: 'blocked',
-      title: '未准入的 DSH 能力',
-      badge: '默认禁止',
+      title: '原生工具与 AllRice 执行方式',
+      badge: '按环境选择',
       description:
-        '这些能力依赖单机信任边界；如未来确有需求，必须先改造成可授权、可审计、可撤销的 SaaS 工具。',
+        '原生主机工具可在独立 Lab 中探索。租户侧通过已接入的 Bridge、沙箱和连接器执行，以下列出对应方式。',
       items: [
         {
           id: 'bash',
           name: 'Shell / 持久终端',
           packageName:
             '@deepseek-ai/dsh-tool-bash · @deepseek-ai/dsh-tool-bash-persistent',
-          detail: '可执行任意宿主命令，无法直接满足租户隔离和最小权限。',
-          policy: '禁止直接启用',
+          detail:
+            'DSH 原生工具面向主机终端；AllRice 已提供本地和云端沙箱命令。',
+          policy: '使用沙箱命令',
         },
         {
           id: 'host-fs',
@@ -256,18 +265,10 @@ export const runtimeCapabilityCatalog: readonly RuntimeCapabilityCatalogGroup[] 
         },
         {
           id: 'mcp',
-          name: '任意 MCP 接入',
-          detail: '连接器权限、密钥和数据边界未经 AllRice 冻结与审计。',
-          policy: '需 Connector Broker 改造',
-        },
-        {
-          id: 'subagent',
-          name: '进程内 Subagent',
-          packageName:
-            '@deepseek-ai/dsh-subagent · @deepseek-ai/dsh-tool-subagent-control',
+          name: 'MCP 连接器',
           detail:
-            '会扩张执行并发、上下文与权限范围，当前没有租户级预算和隔离。',
-          policy: '需额度与隔离改造',
+            'AllRice 已接通云端与本地 MCP，可发现工具、配置连接并绑定员工版本。',
+          policy: '在租户连接器中配置',
         },
         {
           id: 'dynamic-plugin',

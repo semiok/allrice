@@ -13,6 +13,10 @@ import {
 } from './runtime-capability-catalog';
 import { EmployeeProduction } from './employee-production';
 import {
+  DshReleaseSummary,
+  DshUpgradeCapabilities,
+} from './dsh-upgrade-capabilities';
+import {
   aggregateRuntimeTimelineEvents,
   type RuntimeTimelineEvent,
   type RuntimeTimelineItem,
@@ -340,6 +344,10 @@ export function RuntimeConsole() {
         </div>
       </header>
 
+      <DshReleaseSummary
+        onOpenCapabilities={() => selectView('capabilities')}
+      />
+
       <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
         <button
           aria-current={view === 'tenants' ? 'page' : undefined}
@@ -363,7 +371,7 @@ export function RuntimeConsole() {
           aria-current={view === 'capabilities' ? 'page' : undefined}
           onClick={() => selectView('capabilities')}
         >
-          能力来源
+          版本与能力
         </button>
         <button
           aria-current={view === 'governance' ? 'page' : undefined}
@@ -917,11 +925,10 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
     <section className={styles.capabilityPage}>
       <header className={styles.capabilityHeader}>
         <div>
-          <p>Runtime 组件、Tool 与 Skill 边界</p>
-          <h1>能力来源</h1>
+          <p>DSH 升级与 AllRice 能力</p>
+          <h1>版本与能力</h1>
           <span>
-            DSH 提供 Agent 执行引擎，AllRice 负责租户权限、Tool 与业务 Skill
-            发布。DSH Lab 中手动安装的内容不会自动进入租户 Runtime。
+            查看当前版本带来的能力，试用已接入的功能，探索下一项可复用的上游能力。
           </span>
         </div>
         <aside>
@@ -932,9 +939,11 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
           <strong>{skillsLoading ? '—' : availableSkills.length}</strong>
           <span>可绑定业务 Skill</span>
           <strong>{blocked?.items.length ?? 0}</strong>
-          <span>默认禁止能力</span>
+          <span>执行方式差异</span>
         </aside>
       </header>
+
+      <DshUpgradeCapabilities onOpenEmployees={props.onOpenEmployees} />
 
       <div className={styles.capabilityTaxonomy}>
         <article>
@@ -1029,9 +1038,8 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
       </div>
 
       <footer className={styles.capabilityFooter}>
-        正式路径：DSH Lab 发现候选 → 管理端验证 → 安全与许可证审核 → 固定版本 →
-        AllRice 发布 → 绑定 Employee → 下一次 Run 冻结生效。DSH Lab
-        的手动安装不会直接进入生产租户。
+        升级后默认展示能力。已接入的能力可在 AI 员工中配置、试用并发布给租户；
+        上游能力按复用清单推进接入，实际命令和文件修改沿用任务中的审批。
       </footer>
 
       {coreOpen ? (

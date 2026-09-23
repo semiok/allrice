@@ -1,7 +1,13 @@
 /* global Buffer, URL, URLSearchParams, console, fetch, process */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +36,19 @@ const cookieName = 'allrice_dsh_admin_session';
 const secureCookie = process.env.ALLRICE_DSH_ADMIN_SECURE_COOKIE !== '0';
 const trustedAdminMeta =
   '<meta name="allrice-dsh-admin" content="authenticated">';
+const capabilityCatalog = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../packages/dsh-runtime-diff/capabilities.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+);
+const pinnedDsh = JSON.parse(
+  readFileSync(new URL('../worker/dsh/upstream.json', import.meta.url), 'utf8'),
+);
+const capabilityMeta = `<meta name="allrice-dsh-capabilities" content="${encodeURIComponent(JSON.stringify({ ...capabilityCatalog, version: pinnedDsh.version }))}">`;
 const allowedHosts = new Set(
   (
     process.env.ALLRICE_DSH_ADMIN_ALLOWED_HOSTS ??
@@ -195,8 +214,8 @@ async function serveTrustedAdminShell(request, response) {
     let body = await upstreamResponse.text();
     if (contentType.includes('text/html') && !body.includes(trustedAdminMeta)) {
       body = body.includes('</head>')
-        ? body.replace('</head>', `${trustedAdminMeta}</head>`)
-        : `${trustedAdminMeta}${body}`;
+        ? body.replace('</head>', `${trustedAdminMeta}${capabilityMeta}</head>`)
+        : `${trustedAdminMeta}${capabilityMeta}${body}`;
     }
     response.writeHead(upstreamResponse.status, {
       'cache-control': 'no-store',
