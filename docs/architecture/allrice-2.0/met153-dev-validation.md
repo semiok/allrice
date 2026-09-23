@@ -62,3 +62,12 @@ Snow 普通成员通过正式登录和 ChatFlow 发起 `82b0d095`，不是直接
 - 独立 Worker 测试使用真实 queue/job-runner/adapter、原生 DSH 和合成 HTTP 模型，验证等待后强杀 Worker、新 Worker 回答并完成同 Run；活跃强杀不发起第二次模型请求。它的 handler 是精简 fixture，不等于真实 Codex 的完整业务入口验收。
 - 全工作区类型检查、跨应用 TypeScript、变更 lint、格式与 DSH 分发检查通过。全仓首轮发现旧测试替身缺少新接口，已同步；桌面/原生/发布验收测试复核通过，额度超时测试单独复核通过。最终全仓与 GitHub 结果随后追加，不将最初失败隐藏为通过。
 - 兼容回退版 `8631f58` 基于 `6e9c62f`，补 0105 清单和原生检查点事件词汇，已构建 Web/Worker。候选部署、回退健康及真实 Snow 重启闭环另行记录；完成前仍保持 In Progress。
+
+### `6a1cfac` 真实重启恢复与发现的展示问题
+
+- 0105 迁移前备份 Dev PostgreSQL，`8631f58` 在新 schema 上实际启动 Web/Worker 健康通过，再切换 `6a1cfac`；Prod PID/配置哈希、Dev 环境、额度和成员权限均未改变。
+- Snow 正式入口真实 Codex Run `41a6e11c-c68e-4d7a-ba36-88412d8f17c2`：原生问题超过 30 秒后队列变为 `waiting_approval`，清空租约，原生进程清单为空。强杀 Dev Worker，launchd 启动不同 PID；页面刷新后回答原问题，attempt 2 在同一个 Run / native Session 成功交付。
+- 等待跨重启期间活跃值固定 7,706 ms；最终活跃 11,847 ms、等待 291,974 ms、总历时 303,821 ms，2 次模型请求、1 次工具调用、0 条未完成回执。前段 parked、后段 completed 的 dispatch 标记均保留，费用 NULL/N/A，缓存已知性仍为 false，没有假设全量缓存回执已知。
+- 验收首先发现普通计时轮询误绑 `ALLRICE_WORKBENCH_ENABLED`，因此 `6a1cfac` 不能作为普通页面展示通过的证据。随后增加独立认证计时接口，复用同一个轮询器；没有打开 Dev 工作台开关。Chromium 覆盖开关开启/关闭、窄屏、等待刷新、503 清理及恢复，两文件 33 项通过；隔离数据库计时/授权 11 项通过；前端与 CI 首轮失败用例复核 43 项通过。
+- 最终证据采集脚本曾把 PostgreSQL `Result` 与普通数组作严格原型比较，以及使用不存在的用量时间列；修正只读采集后完成复核，未重发任务或改变数据。原始失败记录保留在本地证据目录。
+- `6a1cfac` 全仓本地 321 文件 2,863 项通过、1,105 项环境跳过。GitHub 数据库/浏览器/Compose 三项通过，validate 的两个旧 Bridge 测试在并发负载下超时；本地分别通过。CI 改用与本地全仓一致的 `--maxWorkers=2` 限制测试竞争，不放宽产品超时或测试断言。最终新候选的 CI 和 Dev 普通页面复验另行追加。

@@ -369,6 +369,10 @@ suite(
           answer(response, { runtime: null, pendingActions: [], inputs: [] });
           return;
         }
+        if (path.endsWith('/timings')) {
+          answer(response, { runTimings: [] });
+          return;
+        }
         if (path.endsWith('/events')) {
           if (url.searchParams.get('format') === 'json') {
             answer(response, { events: [] });

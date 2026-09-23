@@ -68,7 +68,8 @@ jobs:
       - run: pnpm typecheck
       # Cross-app tests must not become production Web dependency edges.
       - run: pnpm exec tsc -p tests/integration/tsconfig.json
-      - run: pnpm test
+      # Native child processes and fsync journals need bounded contention.
+      - run: pnpm test --maxWorkers=2
       - run: pnpm build
 
   developer-bootstrap:

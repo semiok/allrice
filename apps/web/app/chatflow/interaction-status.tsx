@@ -2,12 +2,13 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import {
   InteractionStatusSchema as schema,
+  SessionRunTimingsSchema,
   type InteractionStatus,
 } from '@allrice/contracts';
 import styles from './workbench.module.css';
 
 export function useInteractionStatus(
-  enabled: boolean,
+  workbenchEnabled: boolean,
   sessionId: string | null,
   workspaceId: string | undefined,
   headers: Record<string, string>,
@@ -21,15 +22,23 @@ export function useInteractionStatus(
   const generation = useRef(0);
   const reload = useCallback(
     async (signal?: AbortSignal) => {
-      if (!enabled || !sessionId || !workspaceId) return;
+      if (!sessionId || !workspaceId) return;
       const requestGeneration = ++generation.current;
       try {
         const response = await fetch(
-          `/api/v1/sessions/${sessionId}/interactions?workspaceId=${workspaceId}`,
+          `/api/v1/sessions/${sessionId}/${workbenchEnabled ? 'interactions' : 'timings'}?workspaceId=${workspaceId}`,
           { headers, cache: 'no-store', signal },
         );
         if (!response.ok) throw new Error('交互状态暂不可用');
-        const data = schema.parse(await response.json());
+        const body = await response.json();
+        const data = workbenchEnabled
+          ? schema.parse(body)
+          : {
+              ...SessionRunTimingsSchema.parse(body),
+              runtime: null,
+              inputs: [],
+              pendingActions: [],
+            };
         if (!signal?.aborted && requestGeneration === generation.current) {
           setValue({ scope, data });
           setError('');
@@ -41,7 +50,7 @@ export function useInteractionStatus(
         }
       }
     },
-    [enabled, sessionId, workspaceId, headers, scope],
+    [workbenchEnabled, sessionId, workspaceId, headers, scope],
   );
   useEffect(() => {
     const abort = new AbortController();

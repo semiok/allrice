@@ -1,17 +1,21 @@
 import { z } from 'zod';
 import { UuidSchema, TimestampSchema } from '../common.ts';
 import { TaskRuntimeTimingSchema } from '../task-runtime-timing.ts';
-export const InteractionStatusSchema = z
+export const SessionRunTimingsSchema = z
   .object({
-    // Optional for an older Web/Worker response during a compatible rollout.
     runTimings: z
       .array(
         z
           .object({ runId: UuidSchema, timing: TaskRuntimeTimingSchema })
           .strict(),
       )
-      .max(30)
-      .optional(),
+      .max(30),
+  })
+  .strict();
+export const InteractionStatusSchema = z
+  .object({
+    // Optional for an older Web/Worker response during a compatible rollout.
+    runTimings: SessionRunTimingsSchema.shape.runTimings.optional(),
     pendingActions: z
       .array(
         z

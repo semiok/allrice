@@ -913,6 +913,9 @@ export function ChatFlowClient({
                     </button>
                   </p>
                 ) : null}
+                {!workbenchEnabled && interactions.error ? (
+                  <p role="status">{interactions.error}</p>
+                ) : null}
                 {workbenchEnabled && assistants.hasMore ? (
                   <button
                     type="button"
