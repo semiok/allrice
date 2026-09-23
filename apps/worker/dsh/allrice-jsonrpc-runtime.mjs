@@ -23,7 +23,6 @@ import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 
 import {
-  admitDshPromptImageBlocks,
   steerDshAgent,
   structuredUserQuestionAnswer,
 } from './allrice-dsh-runtime-compatibility.mjs';
@@ -764,9 +763,10 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   async prompt(params) {
     const images = Array.isArray(params?.images) ? params.images : [];
     if (!images.length) return super.prompt(params);
-    const imageBlocks = await admitDshPromptImageBlocks(
-      this.ctx.attachments,
-      images,
+    // The rc.3 SDK inline-image wire drops names. Use the native attachment
+    // admission API to retain display names as well as ordered durable refs.
+    const imageBlocks = await this.ctx.attachments.admitPromptContent(
+      images.map((image) => ({ ...image, type: 'image' })),
     );
     return super.prompt({
       ...params,

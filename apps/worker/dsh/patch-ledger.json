@@ -63,7 +63,7 @@
       "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-      "reason": "Expose native session lifecycle and report the approved distribution version without modifying upstream packages."
+      "reason": "Expose native session lifecycle and report the installed distribution version. Image admission and ordered durable-reference projection reuse rc.3 AttachmentStore.admitPromptContent; the AllRice wire bridge retains display names omitted by SDK inline images. No upstream source patch or additional tool authority."
     },
     {
       "id": "dsh-admin-webui-private-entrypoint-v1",

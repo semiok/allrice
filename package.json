@@ -26,7 +26,7 @@
     "doctor": "node scripts/doctor.mjs",
     "doctor:ci": "node scripts/doctor.mjs --core-only",
     "dsh:verify": "node scripts/verify-dsh-distribution.mjs",
-    "dsh:golden-replay": "pnpm dsh:verify && pnpm exec vitest run --maxWorkers=2 apps/worker/src/harness/dsh-distribution.test.ts apps/worker/src/harness/dsh-protocol-runtime.test.ts apps/worker/src/harness/dsh-adapter.test.ts apps/worker/test/p25/dsh-legacy-replay.test.ts apps/worker/test/p25/task-wait-native.integration.test.ts apps/worker/test/p25/task-progress-native.integration.test.ts",
+    "dsh:golden-replay": "pnpm dsh:verify && pnpm exec vitest run --maxWorkers=2 apps/worker/src/harness/dsh-distribution.test.ts apps/worker/src/harness/dsh-protocol-runtime.test.ts apps/worker/src/harness/dsh-adapter.test.ts apps/worker/test/p25/dsh-legacy-replay.test.ts apps/worker/test/p25/task-wait-native.integration.test.ts apps/worker/test/p25/task-progress-native.integration.test.ts apps/worker/test/p25/dsh-images-native.integration.test.ts",
     "dsh:codex-smoke": "tsx scripts/dsh-codex-provider-smoke.ts",
     "acceptance:release-gate": "node scripts/acceptance/platform/release-gate.mjs",
     "acceptance:platform-governance": "tsx scripts/acceptance/platform/authenticated-governance.ts",

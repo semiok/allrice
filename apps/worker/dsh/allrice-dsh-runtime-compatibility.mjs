@@ -1,4 +1,3 @@
-import { admitEncodedImages } from '@deepseek-ai/dsh-attachment';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 const userQuestionAnswerPrefix = 'allrice:user-question:v1:';
@@ -80,18 +79,6 @@ export function structuredUserQuestionAnswer(pending, text) {
       };
     }),
   };
-}
-
-/**
- * Admit AllRice wire images through DSH and project the ordered references into
- * the content-block shape expected by the upstream prompt implementation.
- */
-export async function admitDshPromptImageBlocks(attachments, images) {
-  const references = await admitEncodedImages(attachments, images);
-  return references.map((attachment) => ({
-    type: 'image',
-    attachment,
-  }));
 }
 
 /**
