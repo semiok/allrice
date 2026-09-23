@@ -28,3 +28,4 @@ Describe any new variable, secret, service, migration, backfill, rollback, or co
 
 - [ ] Relevant feature documentation and acceptance status are updated
 - [ ] Reused external/OpenRice code records repository, commit, path, license, dependencies, and modifications
+- [ ] DSH dependency, profile or patch changes update [reuse and replacement decisions](https://github.com/semiok/allrice/blob/main/docs/architecture/dsh-reuse-and-replacement.md), including reviewed version, retained patches and retirement evidence (or explain why not applicable)

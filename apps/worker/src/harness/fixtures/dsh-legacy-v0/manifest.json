@@ -1,0 +1,33 @@
+{
+  "capturedWith": {
+    "allriceCommit": "a77c6403775b82b8bb40c39a4059c79bd8e186a5",
+    "upstreamVersion": "0.1.1-rc.2",
+    "upstreamCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+    "sessionFormat": 0,
+    "model": "synthetic loopback HTTP; no provider credentials",
+    "normalizedCwd": "/allrice/legacy-fixture"
+  },
+  "answerId": "11111111-1111-4111-8111-111111111111",
+  "files": [
+    {
+      "file": "ordinary-tool.jsonl",
+      "sha256": "50a91a3cb6505b1325118f355661f0d8a18f456014e2ab7952075a576f3924e2",
+      "sessionId": "legacy-ordinary-tool"
+    },
+    {
+      "file": "parked-question.jsonl",
+      "sha256": "f10714a72478e56de6493d9973c43d804b15ee3d44435a1ee476d3fdf82aed50",
+      "sessionId": "legacy-question"
+    },
+    {
+      "file": "answered-question.jsonl",
+      "sha256": "5605d7b049a28651dc13f9cd523ed467f7f77776e1f2979ace81756557b26eee",
+      "sessionId": "legacy-question"
+    },
+    {
+      "file": "continued-question.jsonl",
+      "sha256": "cfd5b02f8771f4c53b61d26dc590d236f07abfb49c560a8abd7bb350b8c36646",
+      "sessionId": "legacy-question"
+    }
+  ]
+}

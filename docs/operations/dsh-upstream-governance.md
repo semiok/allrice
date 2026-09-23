@@ -18,15 +18,29 @@ and runtime generation; an in-flight session is never silently migrated.
 
 ## Update procedure
 
-1. Review the upstream release, license and breaking-change notes.
-2. Verify the source archive SHA-256 and update `upstream.json`.
-3. Pin every `@deepseek-ai/dsh-*` package to the exact candidate version.
-4. Keep the restricted Cordis profile closed to arbitrary shell, filesystem,
-   browser, network, MCP, subagent and dynamic-plugin capabilities.
-5. Record every unavoidable downstream patch in `patch-ledger.json`. Prefer an
+1. Review the upstream release, license and breaking-change notes. Update the
+   [reuse and replacement decisions](../architecture/dsh-reuse-and-replacement.md)
+   for every existing adapter and newly relevant upstream capability. The
+   [MET-154 rc.3 assessment](../architecture/dsh-upgrades/met154-rc3-baseline.md)
+   is a research baseline, not an approved runtime distribution.
+2. Verify the exact source commit and source archive SHA-256. Research-only PRs
+   leave the current distribution and dependency lock untouched; update
+   `upstream.json` with the corresponding implementation and compatibility work.
+3. Pin available `@deepseek-ai/dsh-*` packages to the exact candidate and audit
+   removed packages, replacement compositions and their complete transitive/peer
+   dependency graph. Supporting libraries have independent version numbers.
+   Verify Worker and DSH Admin together, including `pnpm-workspace.yaml` patches.
+4. Preserve the restricted profile and tenant-frozen tool allowlist. Existing
+   governed subagents, browser and MCP facades still go through AllRice authority;
+   installing an upstream bundle never authorizes its shell or other tools.
+5. Record every unavoidable downstream adapter in `patch-ledger.json` and every
+   source patch in `pnpm-workspace.yaml`; link both from the reuse decisions. Prefer an
    AllRice plugin, profile overlay or adapter change over a source patch.
-6. Run `pnpm dsh:verify`, contract tests, replay fixtures, tenant-boundary tests
-   and the MET-62 evaluation suite.
+6. Run `pnpm dsh:golden-replay`, explicit PostgreSQL/Worker recovery and
+   tenant-boundary tests, and the MET-62 evaluation suite. Test old journal copies
+   before migration and preserve original bytes. Unknown private events and
+   missing migration/rollback evidence block promotion; never mark them ignorable
+   to bypass a reader. A format-only probe is not full runtime acceptance.
 7. Canary the candidate by employee and tenant. Promote it to `current` only
    after approval, moving the previous current generation to `rollback`.
 

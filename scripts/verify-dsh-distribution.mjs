@@ -21,6 +21,7 @@ const [
   platformEmployeeContract,
   compatibility,
   adminCompatibilityAdapter,
+  reuseDecisions,
 ] = await Promise.all([
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
@@ -40,6 +41,10 @@ const [
   ),
   json('apps/worker/dsh/compatibility.json'),
   readFile(resolve(root, 'apps/dsh-admin/dsh-webui-compatibility.mjs'), 'utf8'),
+  readFile(
+    resolve(root, 'docs/architecture/dsh-reuse-and-replacement.md'),
+    'utf8',
+  ),
 ]);
 
 assert(distribution.schemaVersion === 1, 'distribution schema must be v1');
@@ -71,6 +76,12 @@ assert(
   ledger.schemaVersion === 1 && Array.isArray(ledger.patches),
   'invalid patch ledger',
 );
+for (const patch of ledger.patches) {
+  assert(
+    reuseDecisions.includes(`\`${patch.id}\``),
+    `DSH reuse decisions are missing patch ${patch.id}`,
+  );
+}
 assert(
   ledger.patches.some(
     (patch) =>
@@ -142,6 +153,12 @@ const requiredReplayScenarios = [
   'cancel',
   'recovery',
   'compaction',
+  'legacy-tool-history',
+  'legacy-question-adoption',
+  'legacy-continuation-no-replay',
+  'legacy-format-refusal',
+  'durable-question-restart',
+  'native-progress-decision',
 ];
 const replayById = new Map(
   (compatibility.goldenReplay ?? []).map((scenario) => [scenario.id, scenario]),
