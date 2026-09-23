@@ -206,9 +206,13 @@ integration(
         const stoppedReceipts = new Set<string>();
         const controller = (
           options: Parameters<typeof productionAssistantController>[0],
-        ) => {
+        ): NonNullable<HarnessExecutionInput['assistants']> => {
           controllerOptions = options;
           const original = productionAssistantController(options);
+          if (!original)
+            throw new Error(
+              'Production assistant controller required by fixture',
+            );
           return {
             ...original,
             bind: async (...args: Parameters<typeof original.bind>) => {
