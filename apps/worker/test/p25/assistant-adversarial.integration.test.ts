@@ -277,7 +277,6 @@ integration(
           };
         },
         undefined,
-        200,
         { p25: true, callback: bridge.handle },
       );
       const client = native.launch();
@@ -344,7 +343,6 @@ integration(
       const native = await p24Fixture(
         async () => ({ text: 'Synthetic known reply' }),
         undefined,
-        200,
         { p25: true, callback: bridge.handle },
       );
       const client = native.launch();

@@ -10,8 +10,8 @@ const require = createRequire(import.meta.url);
 const nativeRoot = dirname(
   require.resolve('@deepseek-ai/dsh-subagent/package.json'),
 );
-const { SubagentContinuationManager } = await import(
-  pathToFileURL(join(nativeRoot, 'lib/types/continuation.js')).href
+const { ContinuableActivationRegistry } = await import(
+  pathToFileURL(join(nativeRoot, 'lib/types/continuation-activation.js')).href
 );
 const { finalAssistantOutput } = await import(
   pathToFileURL(join(nativeRoot, 'lib/types/assistant-output.js')).href
@@ -37,7 +37,13 @@ function fixture(result = storedResult) {
   const parent = {
     id: 'synthetic-parent',
     status: 'idle',
-    session: { header: {}, events: [] },
+    session: {
+      header: {},
+      events: [],
+      snapshotEvents() {
+        return [...this.events];
+      },
+    },
     ctx: { tools: { restrict: vi.fn() } },
     followup: vi.fn((message) => message.id),
     steer: vi.fn((message) => message.id),
@@ -71,10 +77,10 @@ function fixture(result = storedResult) {
     parentNativeSessionId: parent.id,
   });
   const manager = Object.assign(
-    Object.create(SubagentContinuationManager.prototype),
+    Object.create(ContinuableActivationRegistry.prototype),
     {
       ctx,
-      activations: new Map(),
+      resident: new Map(),
       closingScopes: new Map(),
       draining: false,
     },
@@ -83,6 +89,7 @@ function fixture(result = storedResult) {
     {
       type: 'assistant/message',
       data: {
+        stream: [],
         message: {
           content: [
             {

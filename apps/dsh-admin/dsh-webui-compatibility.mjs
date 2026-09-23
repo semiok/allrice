@@ -50,7 +50,9 @@ export function createDshWebUiInvocation({
       ...trustedHosts,
     ],
     options: {
-      stdio: 'inherit',
+      // Private browser credentials travel over IPC; native launch URLs must
+      // not be forwarded to the gateway's public stdout.
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
       env: {
         ...inheritedEnvironment,
         DSH_HOME: adminHome,

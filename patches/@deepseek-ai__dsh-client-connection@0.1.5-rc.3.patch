@@ -1,0 +1,15 @@
+diff --git a/lib/client.js b/lib/client.js
+index 532fa67b86656f99fb05cc2c792306bb7d9dd8f7..774e71eb6a51964976ca8d43c71ef297c8f611f3 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -6341,7 +6341,9 @@ window.__ModuleLoader__.load({
+ 				publishState(void 0);
+ 			};
+ 			const handle = {
+-				isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),
++				// AllRice's authenticated gateway injects this UI marker. Server-side
++				// administrator authorization and the loopback Host fence remain required.
++				isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname) || globalThis.document?.querySelector('meta[name="allrice-dsh-admin"][content="authenticated"]') != null,
+ 				generation: {
+ 					getSnapshot: () => generation,
+ 					subscribe: (listener) => {

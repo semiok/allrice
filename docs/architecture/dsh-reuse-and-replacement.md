@@ -6,15 +6,15 @@
 
 ## 本轮复核
 
-- 日期：2026-09-23；负责工单：[MET-154][met154] PR-1。业务归属见各项原工单；后续兼容实现由 MET-154 PR-2 承接，模块化归 MET-155。
+- 日期：2026-09-23；负责工单：[MET-154][met154] PR-2。已实现固定候选兼容升级；业务归属见各项原工单，模块化归 MET-155。
 - Allrice 基线：`a77c640`；已核对 main 的 CI、Dev 已验收代码及全部开放 PR。
-- 复核范围：当前 `0.1.1-rc.2` 源码 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` → 评估候选 `0.1.5-rc.3` 源码 `a4c74a91e06b00fe0b0937bde982170c526cc842`。
+- 复核范围：当前 `0.1.1-rc.2` 源码 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` → 已安装候选 `0.1.5-rc.3` 源码 `a4c74a91e06b00fe0b0937bde982170c526cc842`。
 - `0.1.7-alpha.2` / `00102833dfaee1da9f48a3a8eae9d34005a75218` 只作为前瞻研究。下表所有上游链接固定到对应源码 SHA。
-- 精确包差异、协议矩阵、迁移实测和发布阻断项见 [本轮升级基线](dsh-upgrades/met154-rc3-baseline.md)。**rc.3 尚不能接替现网运行时**：旧私有事件迁移、组合包删除及助手接口变更尚未适配。
+- 精确包差异、协议矩阵、迁移实测和发布阻断项见 [本轮升级基线](dsh-upgrades/met154-rc3-baseline.md)。PR-2 已完成受限组合、私有事件迁移和助手接口适配；实现与发布限制见 [候选兼容验收](dsh-upgrades/met154-rc3-compatibility.md)。`installedChannel=candidate` 不代表已部署或已晋级，真实账号与 Dev 发布验收仍在 PR-4。
 
 状态含义：**保留**＝上游没有承担对应 Allrice 责任；**可复用待验证**＝有重叠但还不能删旧路径；**适配后替换**＝已找到替代接口，待通过同等行为验证；**已替换**＝删除旧路径的 PR 和证据齐全；**明确不接入**＝本轮不启用该执行面。来源存在不等于产品已启用，也不等于验证通过。本轮没有“已替换”条目。
 
-## 已登记的 9 项适配
+## 已登记的 10 项适配
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
@@ -31,7 +31,7 @@
 - ID：`allrice-durable-progress-guard-v1`；归属 MET-153；**保留**。
 - Allrice：[allrice-task-progress.mjs](../../apps/worker/dsh/allrice-task-progress.mjs)、数据库 `task-progress.ts`。模型/工具事实交给持久暂停策略，用户选择继续/取消；调用次数仅统计。
 - 上游：[重复工具提醒][repeat]是模型提示策略，[Goal driver][goal]是目标推进机制，都没有等价的租约、跨进程暂停状态和精确决策账本。
-- 退役条件：上游提供可接入现有权威状态的等价事实回调与暂停机制，并覆盖失败、空进展、取消和重启；当前保持原策略，不引入固定调用次数上限或第二套 Agent 循环。
+- 退役条件：上游提供可接入现有权威状态的等价事实回调与暂停机制，并覆盖失败、空进展、取消和重启；PR-2 已适配 `user-questions/request`，保持原策略，不引入固定调用次数上限或第二套 Agent 循环。
 - 验收：`task-progress-native.integration.test.ts`、数据库 `task-progress.integration.test.ts`。回退保留暂停记录和原决策版本，不通过清空状态“恢复”。
 
 ### allrice-durable-task-clock-v1
@@ -46,7 +46,7 @@
 
 - ID：`allrice-development-workflow-v1`；归属 MET-144；**可复用待验证**（消息/等待机制）；业务规则保留。
 - Allrice：[allrice-assistant-runtime.mjs](../../apps/worker/dsh/allrice-assistant-runtime.mjs)、数据库 `development-cooperation.ts` / `development-workflow.ts`。现有 message/report/stop 已使用原生子助手，不是从零搭建消息系统。
-- 上游：[rc.3 subagent][subagent] 用 `sendMessage` 取代旧 `followup`，消息来源与 Queue/Steer 的授权接口有变化；[Agent Team][team]有持久排队→目标采纳→ACK、任务 revision CAS、事件等待和中断后保留 Inbox，可借鉴这些机制。
+- 上游：[rc.3 subagent][subagent] 用 `sendMessage` 取代旧 `followup`，PR-2 已改用 Host 专用 `queueHostSubagentPrompt` 保留 Queue 与 coordinator 来源，不能用会唤醒接收者的 `sendMessage` 冒充旧 quiet report。冷恢复使用官方 session-query-sqlite 的 `openAt: never`，仅启用精确读取，不创建索引或注册模型查询工具；[Agent Team][team]有持久排队→目标采纳→ACK、任务 revision CAS、事件等待和中断后保留 Inbox，可借鉴这些机制。
 - 退役条件：只替换重复派发/唤醒/等待路径；固定候选 SHA、同版本测试、独立审查、文件 CAS、租户授权和交付证据仍由 Allrice 核验。Team 的单进程任务板不能成为 PostgreSQL 队列的第二个权威来源，`writeScopes` 也不是锁。
 - 验收：数据库 `development-cooperation.integration.test.ts` / `development-workflow.integration.test.ts`、`apps/worker/test/p25/assistant-production.integration.test.ts` 和 MET-144 真实交付链。回退必须排空候选助手树，不能让旧/新两个协调器同时投递。
 
@@ -85,18 +85,26 @@
 ### dsh-admin-webui-private-entrypoint-v1
 
 - ID：`dsh-admin-webui-private-entrypoint-v1`；归属 MET-100；**保留**。
-- Allrice：[dsh-webui-compatibility.mjs](../../apps/dsh-admin/dsh-webui-compatibility.mjs)。隔离私有 `@deepseek-ai/dsh/lib/bin.js`、启动参数与管理员入口。
+- Allrice：[dsh-webui-compatibility.mjs](../../apps/dsh-admin/dsh-webui-compatibility.mjs)。隔离私有 `@deepseek-ai/dsh/lib/bin.js`、启动参数与管理员入口。PR-2 新增受信任 Host 插件，经父子进程 IPC 提交原生 `authenticatedUrl`；网关内部交换和定时更新 cookie，浏览器仍只持有 Allrice 管理员会话。HTTP/API 的 Host 与 Origin 必须先通过网关校验。
 - 上游：[rc.3 CLI manifest][cli]仍以 `lib/bin.js` 暴露可执行文件；这不是稳定的 Allrice 管理 API。[client connection][connection]内部已有较大改动，需要连同下一项源码补丁核对。
 - 退役条件：上游有满足同等参数和管理员访问边界的稳定入口，或 Allrice 不再需要原生管理员 WebUI；否则继续集中封装，不能把 Web Host 作为租户后端。
 - 验收：`apps/dsh-admin/dsh-webui-compatibility.test.mjs`、管理员 gateway 授权回归及真实启动。回退使用成套 CLI、UI 资源和补丁，不能只换 Worker。
+
+### allrice-private-session-migration-v1
+
+- ID：`allrice-private-session-migration-v1`；归属 MET-154 PR-2；**保留**。
+- 实现：[私有事实预检](../../apps/worker/dsh/allrice-session-compatibility.mjs)、`patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch` 和 JSONL 持久化包的对应补丁。新增四种精确 log-only 事件；主线程与内嵌 verifier 使用相同 payload 校验，Session 运行时使用同一词表。
+- 复用原生 v0→v1→v2→v3 迁移、序号/引用重映射、只读句柄、代际文件及单写入者租约；平台预检会话/turn/答案/续接关系。不丢弃私有事实、不伪造答案采纳证明、不覆盖唯一源文件。
+- 验收：`dsh-legacy-replay.test.ts` 的源字节不变、等待迁移、重复答案/重启续接、未知格式/事件、损坏事实与并发写入拒绝。带私有事实的 seeded/child 日志明确拒绝，不能默认为根会话。
+- 退役条件：上游提供同时覆盖迁移校验器、运行时和独立 worker bundle 的版本化下游事件注册机制；届时先通过同一旧日志测试，再删除两个物理包补丁与运行时词表扩展。候选写入 v3 后禁止旧二进制继续旧历史。
 
 ## 机器 ledger 之外的源码补丁
 
 稳定 ID：`allrice-admin-authenticated-origin-pnpm-v1`；归属 MET-100；**保留，升级时重新验证**。
 
-[pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 `patchedDependencies` 还登记了 [client-connection 补丁](../../patches/@deepseek-ai__dsh-client-connection@0.1.1-rc.2.patch)：已认证 HTML 的 `allrice-dsh-admin` 标记让管理员 UI 使用受控网关。这是一个实际第三方包源码补丁，与上述 9 项 ledger 适配分开计数，不能漏审。
+[pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 `patchedDependencies` 还登记了 [client-connection 补丁](../../patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch)：已认证 HTML 的 `allrice-dsh-admin` 标记让管理员 UI 使用受控网关。这是一个实际第三方包源码补丁，与 ledger 中的协议适配分开核查，不能漏审。
 
-rc.3 [connection 实现][connection]仍含 loopback 判断，但内部布局已变化；原补丁不能按版本改名后直接视为适用。退役需证明新的正式远程连接入口在既有管理员认证、Host 检查和回环服务限制下工作，并通过未登录/非管理员拒绝测试。HTML 标记本身不是权限凭证。回退需要旧锁文件、旧补丁、网关和 UI 同时兼容。详见 [管理员架构](dsh-admin-console.md)。
+rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重新移植；保留服务端原生认证，并用真实原生 WebUI 启动、登录、API、Host 和跨域拒绝测试验证。退役需证明新的正式远程连接入口在既有管理员认证、Host 检查和回环服务限制下工作，并通过未登录/非管理员拒绝测试。HTML 标记本身不是权限凭证。回退需要旧锁文件、旧补丁、网关和 UI 同时兼容。详见 [管理员架构](dsh-admin-console.md)。
 
 ## 值得复用的上游能力
 
@@ -119,7 +127,7 @@ rc.3 [connection 实现][connection]仍含 loopback 判断，但内部布局已�
 ## 持续维护规则
 
 1. 每次上游升级、适配新增/删除或源码补丁变更，都在同一 PR 更新有关条目；保留理由也要注明新复核日期与固定 SHA。
-2. `pnpm dsh:verify` 检查每个 ledger ID 在此有入口；评审仍需核对内容，不能只补一个 ID。也必须审查 `patchedDependencies`，它不在九项 ledger 的计数内。
+2. `pnpm dsh:verify` 检查每个 ledger ID 在此有入口；评审仍需核对内容，不能只补一个 ID。也必须审查 `patchedDependencies`，一个 ledger 条目可对应多个物理源码补丁，不能用条目数代替补丁清点。
 3. 每条至少保留稳定 ID、Allrice 路径/原工单、上游包/源码 SHA、存在/启用差异、决策、权威边界、验收、退役条件、回退方式和实现 PR。退役记录保留，不抹掉历史。
 4. 上游新版本的研究快照放在 `dsh-upgrades/`，从本页链接；机器发行文件只随实际兼容实现更新。历史日志夹具保持原字节，不用新版本重新生成来冒充兼容。
 5. 不以“减少多少代码/节省多少 token”替代行为验收；有测量再填写收益。本轮未删除适配，未改变发行版本、依赖锁或工具集合。

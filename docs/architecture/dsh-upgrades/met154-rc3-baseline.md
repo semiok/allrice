@@ -2,6 +2,8 @@
 
 复核日期：2026-09-23。关联 [MET-154](https://linear.app/metasnowsky/issue/MET-154)；持续决策入口是 [DSH 复用与替换清单](../dsh-reuse-and-replacement.md)。本 PR 交付差异审查和回放基线，不升级运行时。
 
+> 本文记录 PR-1 时点。PR-2 的已实现差异、候选发行语义和验收结果见 [兼容验收](met154-rc3-compatibility.md)；下文探针拒绝记录作为历史证据保留。
+
 ## 选版与出处
 
 | 项目         | 固定值 / 本轮结论                                                                                           |

@@ -3,6 +3,7 @@
 import { resolve } from 'node:path';
 import { boot, installFailLoud } from '@deepseek-ai/dsh-app-boot';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol';
 
@@ -151,26 +152,23 @@ async function request(method, p) {
     });
   if (method === 'followup')
     return {
-      messageId: await ctx.subagents.followup(
+      messageId: await queueHostSubagentPrompt(
+        ctx.subagents,
         live(p.parentId),
         p.id,
         content(p.text),
-        {
-          source: {
-            kind: 'coordinator',
-            form: 'relay',
-            senderSessionId: p.parentId,
-          },
-          signal: signal(),
-        },
+        { kind: 'coordinator', form: 'relay', senderSessionId: p.parentId },
+        signal(),
       ),
     };
-  if (method === 'report')
+  if (method === 'message')
     return {
-      messageId: await ctx.subagents.reportFrom(live(p.id), content(p.text), {
-        delivery: p.delivery ?? 'quiet',
-        signal: signal(),
-      }),
+      messageId: await ctx.subagents.sendMessage(
+        live(p.id),
+        p.targetId,
+        content(p.text),
+        { signal: signal() },
+      ),
     };
   if (method === 'prompt') {
     const message = createUserMessage({
@@ -216,7 +214,8 @@ async function request(method, p) {
       live: !!agent,
       status: agent?.status,
       header: agent?.session.header,
-      events: agent?.session.events.filter((e) => safe.has(e.type)) ?? [],
+      events:
+        agent?.session.snapshotEvents().filter((e) => safe.has(e.type)) ?? [],
       observations,
       interactiveRequests,
     };

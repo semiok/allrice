@@ -37,6 +37,7 @@ import { reconciliationNativeTools } from './allrice-reconciliation-native-tools
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
+import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 import {
   checkpointNativeQuestion,
   answerNativeWait,
@@ -676,92 +677,87 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   installUserQuestionProvider() {
     if (!this.ctx.userQuestions) return;
-    this.ctx.userQuestions.registerProvider({
-      ask: async (request) => {
-        const session = [...this.sessions.entries()].find(
-          ([, record]) => record.handle.agent === request.agent,
+    this.ctx.on('user-questions/request', async (request) => {
+      const session = [...this.sessions.entries()].find(
+        ([, record]) => record.handle.agent === request.agent,
+      );
+      if (!session) {
+        throw new Error(
+          'AllRice could not bind the user question to a live Session',
         );
-        if (!session) {
-          throw new Error(
-            'AllRice could not bind the user question to a live Session',
-          );
-        }
-        const [sessionId] = session;
-        // A child progress pause may arrive while Rice is asking an ordinary
-        // question. Serialize them; never replace or accidentally answer it.
-        while (this.pendingUserQuestions.has(sessionId)) {
-          request.signal?.throwIfAborted();
-          const pending = this.pendingUserQuestions.get(sessionId);
-          await new Promise((resolveWait, rejectWait) => {
-            const abort = () => rejectWait(request.signal.reason);
-            request.signal?.addEventListener('abort', abort, { once: true });
-            pending.done.then(() => {
-              request.signal?.removeEventListener('abort', abort);
-              resolveWait();
-            });
-          });
-        }
+      }
+      const [sessionId] = session;
+      // A child progress pause may arrive while Rice is asking an ordinary
+      // question. Serialize them; never replace or accidentally answer it.
+      while (this.pendingUserQuestions.has(sessionId)) {
         request.signal?.throwIfAborted();
-        if (!this.sessions.has(sessionId))
-          throw Error('INPUT_SESSION_NOT_LIVE');
-        const questionId = `question-${randomUUID()}`;
-        let markDone;
-        const done = new Promise((resolveDone) => {
-          markDone = resolveDone;
-        });
-        return new Promise((resolveQuestion, rejectQuestion) => {
-          const abort = () => {
-            this.pendingUserQuestions.delete(sessionId);
-            markDone();
-            rejectQuestion(
-              new Error(
-                'ask_user_question was aborted before the user answered',
-              ),
-            );
-          };
+        const pending = this.pendingUserQuestions.get(sessionId);
+        await new Promise((resolveWait, rejectWait) => {
+          const abort = () => rejectWait(request.signal.reason);
           request.signal?.addEventListener('abort', abort, { once: true });
-          this.pendingUserQuestions.set(sessionId, {
-            done,
-            questionId,
-            questions: request.questions,
-            resolve: (answer) => {
-              request.signal?.removeEventListener('abort', abort);
-              markDone();
-              resolveQuestion(answer);
-            },
-            reject: (error) => {
-              request.signal?.removeEventListener('abort', abort);
-              markDone();
-              rejectQuestion(error);
-            },
-          });
-          this.userQuestionNotify({
-            sessionId,
-            questionId,
-            questions: request.questions.map((question) => ({
-              id: question.id,
-              question: question.question,
-              ...(typeof question.detail === 'string'
-                ? { detail: question.detail }
-                : {}),
-              header: question.header ?? null,
-              options: (question.options ?? []).map((option) => ({
-                label: option.label,
-                description: option.description ?? null,
-              })),
-              multiSelect: question.multiSelect === true,
-              ...(question.intent?.kind === 'plan-review'
-                ? {
-                    intent: {
-                      kind: 'plan-review',
-                      approve: question.intent.approve,
-                    },
-                  }
-                : {}),
-            })),
+          pending.done.then(() => {
+            request.signal?.removeEventListener('abort', abort);
+            resolveWait();
           });
         });
-      },
+      }
+      request.signal?.throwIfAborted();
+      if (!this.sessions.has(sessionId)) throw Error('INPUT_SESSION_NOT_LIVE');
+      const questionId = `question-${randomUUID()}`;
+      let markDone;
+      const done = new Promise((resolveDone) => {
+        markDone = resolveDone;
+      });
+      return new Promise((resolveQuestion, rejectQuestion) => {
+        const abort = () => {
+          this.pendingUserQuestions.delete(sessionId);
+          markDone();
+          rejectQuestion(
+            new Error('ask_user_question was aborted before the user answered'),
+          );
+        };
+        request.signal?.addEventListener('abort', abort, { once: true });
+        this.pendingUserQuestions.set(sessionId, {
+          done,
+          questionId,
+          questions: request.questions,
+          resolve: (answer) => {
+            request.signal?.removeEventListener('abort', abort);
+            markDone();
+            resolveQuestion(answer);
+          },
+          reject: (error) => {
+            request.signal?.removeEventListener('abort', abort);
+            markDone();
+            rejectQuestion(error);
+          },
+        });
+        this.userQuestionNotify({
+          sessionId,
+          questionId,
+          questions: request.questions.map((question) => ({
+            id: question.id,
+            question: question.question,
+            ...(typeof question.detail === 'string'
+              ? { detail: question.detail }
+              : {}),
+            header: question.header ?? null,
+            options: (question.options ?? []).map((option) => ({
+              label: option.label,
+              description: option.description ?? null,
+            })),
+            multiSelect: question.multiSelect === true,
+            ...(question.intent?.kind === 'plan-review'
+              ? {
+                  intent: {
+                    kind: 'plan-review',
+                    approve: question.intent.approve,
+                  },
+                }
+              : {}),
+          })),
+        });
+      });
     });
   }
 
@@ -1187,32 +1183,33 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   async createSession(sessionId, resumeOnly = false) {
     try {
-      const isGemini = this.provider === 'gemini' || this.provider === 'google';
-      const model =
-        isGemini && this.model === '3.8flash' ? 'gemini-3.8-flash' : this.model;
-      const handle = await this.ctx.agents.resume({
-        resumeSessionId: sessionId,
-        agentOptions: {
-          provider: isGemini ? 'google' : this.provider,
-          model,
-          ...(this.maxTokens === undefined
-            ? {}
-            : { maxTokens: this.maxTokens }),
-        },
-      });
-      const record = { handle };
-      this.sessions.set(sessionId, record);
-      return record;
+      await readStoredDshSession(this.ctx, sessionId);
     } catch (error) {
+      // Only the persistence service's exact absent identity allows creation.
+      // A missing reference inside an existing log must never become a new task.
       if (
-        resumeOnly ||
-        !/not found|no such file|ENOENT|does not exist/i.test(
-          error instanceof Error ? error.message : '',
-        )
+        !resumeOnly &&
+        error instanceof Error &&
+        error.name === 'SessionPersistenceNotFoundError' &&
+        error.sessionId === sessionId
       )
-        throw error;
-      return super.createSession(sessionId);
+        return super.createSession(sessionId);
+      throw error;
     }
+    const isGemini = this.provider === 'gemini' || this.provider === 'google';
+    const model =
+      isGemini && this.model === '3.8flash' ? 'gemini-3.8-flash' : this.model;
+    const handle = await this.ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: {
+        provider: isGemini ? 'google' : this.provider,
+        model,
+        ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
+      },
+    });
+    const record = { handle };
+    this.sessions.set(sessionId, record);
+    return record;
   }
 
   async interrupt(params) {
@@ -1249,7 +1246,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             this.sessions.get(sessionId) === record &&
             this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
             params.turnId ===
-              `${sessionId}:turn:${record.handle.agent.session.events.findLast((e) => e.type === 'turn/start')?.data.turn}`,
+              `${sessionId}:turn:${record.handle.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
           notify: () => {
             this.pendingUserQuestions.delete(sessionId);
             this.userQuestionNotify({
@@ -1594,6 +1591,13 @@ if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1') {
   await ctx.plugin((await import('@deepseek-ai/dsh-user-approval')).default, {
     policy: 'never',
   });
+  await ctx.plugin(
+    (await import('@deepseek-ai/dsh-session-query-sqlite')).default,
+    {
+      path: ':memory:',
+      openAt: 'never',
+    },
+  );
   await ctx.plugin((await import('@deepseek-ai/dsh-subagent')).default);
   await ctx.plugin(await import('@deepseek-ai/dsh-subagent-spawn-in-process'), {
     providerName: 'spawn',

@@ -8,7 +8,13 @@ function fixture(settle = async () => ({ settled: true })) {
   const listeners = new Map();
   const agent = {
     id: 'synthetic-native-id',
-    session: { header: {}, events: [] },
+    session: {
+      header: {},
+      events: [],
+      snapshotEvents() {
+        return [...this.events];
+      },
+    },
     ctx: { tools: { restrict: vi.fn() } },
     followup: vi.fn(),
     steer: vi.fn(),

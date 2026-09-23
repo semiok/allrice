@@ -210,6 +210,7 @@ async function runWire({
           displayName: 'Synthetic Codex loopback',
           piProvider,
           configuredMaxTokens: new Map(),
+          modelErrors: new Map(),
           reasoning: 'low',
           transport: 'sse',
           timeoutMs: 2000,
@@ -299,7 +300,12 @@ describe.sequential(
       expect(result.calls[0].body).not.toHaveProperty('max_completion_tokens');
       expect(result.chunks).toContainEqual({
         type: 'usage',
-        usage: { inputTokens: 16, cacheReadTokens: 4, outputTokens: 7 },
+        usage: {
+          inputTokens: 16,
+          cacheReadTokens: 4,
+          outputTokens: 7,
+          totalTokens: 27,
+        },
       });
       expect(result.chunks.at(-1)).toMatchObject({
         type: 'finish',

@@ -16,7 +16,10 @@ import {
   DeploymentDshCredentialResolver,
   type DshCredentialResolver,
 } from '../dsh-credential-resolver.js';
-import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../dsh-distribution.js';
+import {
+  DSH_DISTRIBUTION_CURRENT_GENERATION,
+  DSH_DISTRIBUTION_CURRENT_VERSION,
+} from '../dsh-distribution.js';
 import { dshEgressEnvironment } from '../dsh-egress-environment.js';
 import { DshProtocolClient } from '../dsh-protocol-client.js';
 import { isDshNativeTool } from './tool-bridge.js';
@@ -155,6 +158,17 @@ export class DshRuntimePool {
     systemInstructions: string;
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
   }) {
+    const frozenGeneration = input.input.kernel.runtimeDistributionGeneration;
+    if (
+      frozenGeneration !== undefined &&
+      frozenGeneration !== DSH_DISTRIBUTION_CURRENT_GENERATION
+    ) {
+      throw new HandlerError(
+        'DSH_GENERATION_MISMATCH',
+        'The frozen employee package requires a different DSH generation; finish its Run on the original Worker before migrating',
+        false,
+      );
+    }
     if (
       input.snapshot.route === 'gemini' &&
       process.env.ALLRICE_GEMINI_API_ENABLED !== '1'

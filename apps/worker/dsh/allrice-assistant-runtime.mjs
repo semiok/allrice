@@ -2,6 +2,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { types } from 'node:util';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
+import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 
 // Provider failures may arrive as finish chunks, not thrown exceptions. Keep
 // only source-defined codes; never persist provider text, URLs or raw thoughts.
@@ -294,14 +296,16 @@ export function createGovernedAssistantNativeRuntime(
       session = agent?.session ?? ctx.sessions.get(id);
     if (!session) return;
     await ctx.sessions.flush(session);
-    const adopted = session.events.find(
-      (e) => e.type === 'user/message' && e.data.id === messageId,
-    );
-    const queued = session.events.findLast(
-      (e) =>
-        e.type === 'agent/inbox/spliced' &&
-        e.data.inserted?.some((message) => message.id === messageId),
-    );
+    const adopted = session
+      .snapshotEvents()
+      .find((e) => e.type === 'user/message' && e.data.id === messageId);
+    const queued = session
+      .snapshotEvents()
+      .findLast(
+        (e) =>
+          e.type === 'agent/inbox/spliced' &&
+          e.data.inserted?.some((message) => message.id === messageId),
+      );
     const previous = checkpointProofs.get(inputId);
     const durableSeq = previous?.durableSeq ?? (adopted ?? queued)?.seq;
     const proof = await bridge(
@@ -324,7 +328,9 @@ export function createGovernedAssistantNativeRuntime(
     // First model dispatch may race native start's ACK. The first explicit user
     // message is the native initial prompt, correlated to our precommitted input.
     if (entry.initialInputId && !entry.initialMessageId) {
-      const first = agent.session.events.find((e) => e.type === 'user/message');
+      const first = agent.session
+        .snapshotEvents()
+        .find((e) => e.type === 'user/message');
       if (first) entry.initialMessageId = first.data.id;
     }
     if (entry.initialInputId && entry.initialMessageId)
@@ -332,10 +338,13 @@ export function createGovernedAssistantNativeRuntime(
     for (const [inputId, messageId] of entry.messages ?? [])
       await checkpoint(id, inputId, messageId);
     await ctx.sessions.flush(agent.session);
-    for (const event of agent.session.events.filter(
-      (e) =>
-        e.type === 'user/message' && e.data.source?.kind === 'subagent-settled',
-    )) {
+    for (const event of agent.session
+      .snapshotEvents()
+      .filter(
+        (e) =>
+          e.type === 'user/message' &&
+          e.data.source?.kind === 'subagent-settled',
+      )) {
       const childId = event.data.source.senderSessionId,
         delivery = deliveries.get(childId);
       if (
@@ -575,18 +584,17 @@ export function createGovernedAssistantNativeRuntime(
   async function followup(p) {
     const entry = binding(p.nativeSessionId),
       parent = live(p.parentNativeSessionId);
-    const messageId = await ctx.subagents.followup(
+    const messageId = await queueHostSubagentPrompt(
+      ctx.subagents,
       parent,
       p.nativeSessionId,
       content(p.text),
       {
-        source: {
-          kind: 'coordinator',
-          form: 'relay',
-          senderSessionId: parent.id,
-        },
-        signal: signal(),
+        kind: 'coordinator',
+        form: 'relay',
+        senderSessionId: parent.id,
       },
+      signal(),
     );
     entry.messages ??= new Map();
     entry.messages.set(p.inputId, messageId);
@@ -788,13 +796,15 @@ export function createGovernedAssistantNativeRuntime(
         await Promise.all([...pendingWrites]);
         if (before === bindings.size) {
           await checkpoints(root.id);
-          const last = root.session.events.findLast(
-            (event) =>
-              event.type === 'assistant/message' &&
-              event.data.message?.content?.some(
-                (block) => block.type === 'text',
-              ),
-          );
+          const last = root.session
+            .snapshotEvents()
+            .findLast(
+              (event) =>
+                event.type === 'assistant/message' &&
+                event.data.message?.content?.some(
+                  (block) => block.type === 'text',
+                ),
+            );
           return {
             answer: (last?.data.message.content ?? [])
               .filter((block) => block.type === 'text')
@@ -806,9 +816,10 @@ export function createGovernedAssistantNativeRuntime(
       throw Error('assistant_native_join_bound_exceeded');
     },
     async inspect(p) {
-      const session =
-        ctx.sessions.get(p.nativeSessionId) ??
-        (await ctx.sessionPersistence.load(p.nativeSessionId));
+      const live = ctx.sessions.get(p.nativeSessionId);
+      const session = live
+        ? { header: live.header, events: live.snapshotEvents() }
+        : await readStoredDshSession(ctx, p.nativeSessionId);
       return {
         header: session.header,
         events: session.events

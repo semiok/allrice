@@ -131,6 +131,11 @@ export function assembleEmployeeKernel(input: {
         ? input.resolved.executionSnapshot.employee.definition.runtimePackage
             ?.checksum
         : undefined,
+    runtimeDistributionGeneration:
+      input.resolved.executionSnapshot?.employee.definition.schemaVersion === 2
+        ? input.resolved.executionSnapshot.employee.definition.runtimePackage
+            ?.runtimeManifest.distributionGeneration
+        : undefined,
     imageAttachments: input.resolved.promptSnapshot.imageAttachments,
   });
 }

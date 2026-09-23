@@ -49,7 +49,7 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
       );
       expect(JSON.stringify(childRequests()[1])).toContain('proposal_only');
       // A child's normal settlement separately wakes its parent. It is not a
-      // second proposal or a child tool-result adoption; quiet reports differ.
+      // second proposal or a child tool-result adoption.
       await expect
         .poll(async () => JSON.stringify((await c.snapshot(root)).events))
         .toContain('subagent-settled');
@@ -83,7 +83,7 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
     }
   }, 45_000);
 
-  it('routes selected reports without silently waking the parent and cold-resumes a child on the same durable identity', async () => {
+  it('uses native adjacent-agent messages that wake the parent and cold-resumes the same child identity', async () => {
     const hold = gate();
     const f = await p24Fixture(async (request) => {
       if (JSON.stringify(request.messages.at(-1)).includes('HOLD_CHILD'))
@@ -98,14 +98,12 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
       await c.call('create', { id: root });
       await c.call('start', { parentId: root, id: child, text: 'HOLD_CHILD' });
       await expect.poll(() => f.requests.length).toBe(1);
-      await c.call('report', {
+      await c.call('message', {
         id: child,
+        targetId: root,
         text: 'SELECTED_REPORT',
-        delivery: 'quiet',
       });
-      expect((await c.snapshot(root)).status).toBe('idle');
-      expect(f.requests).toHaveLength(1);
-      await c.call('prompt', { id: root, text: 'Read the report.' });
+      await expect.poll(() => f.requests.length).toBe(2);
       await c.call('idle', { id: root });
       expect(JSON.stringify(f.requests[1])).toContain('SELECTED_REPORT');
       hold.release();
@@ -130,7 +128,7 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
       await expect.poll(resumedRequest, { timeout: 15_000 }).toBeDefined();
       expect(JSON.stringify(resumedRequest())).toContain('HOLD_CHILD');
       await c.close();
-      expect(await f.logs()).toContain('"kind":"subagent-report"');
+      expect(await f.logs()).toContain('"kind":"agent-message"');
     } finally {
       hold.release();
       await f.close();
@@ -310,18 +308,14 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
       await f.close();
     }
   }, 45_000);
-  it('loses uncheckpointed admission on SIGKILL rather than silently inventing an inbox replay', async () => {
+  it('recovers only the inbox records actually persisted before SIGKILL', async () => {
     const hold = gate();
-    // Native configuration, not a fake inbox: widen its batching window so the
-    // acknowledgement→disk gap is deterministic, while checkpoints stay real.
-    const f = await p24Fixture(
-      async (_request, index) => {
-        if (index === 2) await hold.promise;
-        return { text: 'Synthetic completed.' };
-      },
-      undefined,
-      60_000,
-    );
+    // rc.3 owns the batching deadline internally. Admission alone is not a
+    // durability guarantee: after the kill, the persisted bytes decide replay.
+    const f = await p24Fixture(async (_request, index) => {
+      if (index === 2) await hold.promise;
+      return { text: 'Synthetic completed.' };
+    });
     let c = f.launch();
     const root = randomUUID(),
       child = randomUUID();
@@ -344,8 +338,8 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
         text: 'UNFLUSHED_QUEUED_INPUT',
       });
       expect(typeof accepted.messageId).toBe('string');
-      expect(await f.logs()).not.toContain('UNFLUSHED_QUEUED_INPUT');
       await c.crash();
+      const persisted = (await f.logs()).includes('UNFLUSHED_QUEUED_INPUT');
       hold.release();
       c = f.launch();
       await c.call('ready');
@@ -361,11 +355,18 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
         );
       await expect.poll(recovered, { timeout: 15_000 }).toBeDefined();
       expect(JSON.stringify(recovered())).toContain('Persisted first prompt.');
-      expect(JSON.stringify(recovered())).not.toContain(
-        'UNFLUSHED_QUEUED_INPUT',
-      );
+      expect(
+        JSON.stringify(recovered()).includes('UNFLUSHED_QUEUED_INPUT'),
+      ).toBe(persisted);
       await c.close();
-      expect(await f.logs()).not.toContain(String(accepted.messageId));
+      const adopted = (await f.logs())
+        .split('\n')
+        .filter(
+          (line) =>
+            line.includes('"type":"user/message"') &&
+            line.includes(String(accepted.messageId)),
+        );
+      expect(adopted).toHaveLength(persisted ? 1 : 0);
     } finally {
       hold.release();
       await f.close();

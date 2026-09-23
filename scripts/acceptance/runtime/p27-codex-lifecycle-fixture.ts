@@ -212,7 +212,6 @@ export async function createCodexLifecycleScenario(
       };
     },
     undefined,
-    200,
     {
       p25: true,
       callback: async (method, params) => {

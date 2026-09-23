@@ -54,7 +54,7 @@ describe('DSH WebUI compatibility adapter', () => {
         'localhost',
       ],
       options: {
-        stdio: 'inherit',
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
         env: {
           NODE_ENV: 'test',
           DSH_HOME: '/state/dsh-admin',
