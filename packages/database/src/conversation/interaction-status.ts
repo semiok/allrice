@@ -4,6 +4,7 @@ import {
   type WorkbenchPrincipal,
 } from '../artifact-review.ts';
 import { RuntimeNativeInputProofSchema } from '@allrice/contracts';
+import { readTaskClocks } from '../task-clock.ts';
 
 /** Read-only bounded projections of durable authority; never resumes a Run. */
 export async function getInteractionStatus(
@@ -80,7 +81,34 @@ export async function getInteractionStatus(
       and a.runtime_request->>'respondentId'=${context.actor.id}
       and a.status='pending' and a.runtime_response is null and a.runtime_revoked_at is null and a.runtime_expires_at>now()
       and op.snapshot->>'status'='waiting_user' order by a.requested_at limit 30`;
+    // One bounded batch for this already-authorized Session, including ordinary
+    // Runs with no assistant tree. Keep the active Run even in a long Session.
+    const runs = await tx<{ run_id: string }[]>`
+      select er.run_id from allrice_employee_runs er
+      join allrice_runs r on r.id=er.run_id
+      where er.organization_id=${context.organizationId}
+        and er.workspace_id=${context.workspaceId!}
+        and er.owner_id=${context.actor.id} and er.session_id=${sessionId}
+      order by (er.run_id=${runtime?.active_run_id ?? null}::uuid) desc nulls last,
+        r.created_at desc,r.id desc limit 30`;
+    const clocks = await readTaskClocks(
+      tx,
+      runs.map((r) => r.run_id),
+    );
     return {
+      runTimings: [...clocks].map(([runId, clock]) => ({
+        runId,
+        timing: {
+          activeMs: clock.activeMs,
+          waitingMs: clock.waitingMs,
+          wallMs: clock.wallMs,
+          timeoutMs: clock.timeoutMs,
+          remainingMs: clock.remainingMs,
+          phase: clock.phase,
+          sources: clock.sources,
+          calls: clock.calls,
+        },
+      })),
       pendingActions: actions.map((a) => ({
         approvalId: a.id,
         operationId: a.resource_id,

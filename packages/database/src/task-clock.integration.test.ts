@@ -23,6 +23,8 @@ import {
   freezeTaskRuntimePolicy,
 } from './task-runtime-policy.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
+import { getInteractionStatus } from './conversation/interaction-status.ts';
+import { InteractionStatusSchema } from '@allrice/contracts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -59,6 +61,57 @@ suite(
       await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
       return f;
     }
+    it('projects ordinary Run clocks through the authorized Session without changing time or exposing another tenant', async () => {
+      const f = await setup();
+      const other = await createAssistantLocalCommandFixture(
+        fixture.db,
+        'ask',
+        false,
+        { skipChild: true },
+      );
+      // No child assistant is created; use the same real approval wait as the Worker.
+      await createLocalCommandOperation(
+        { context: f.context, arguments: f.args, callId: randomUUID() },
+        f.db,
+      );
+      await f.db`update allrice_task_clocks set active_ms=12460,changed_at=clock_timestamp()-interval '40 minutes' where run_id=${f.rootRunId}`;
+      const before =
+        await f.db`select * from allrice_task_clocks where run_id=${f.rootRunId}`;
+      const status = InteractionStatusSchema.parse(
+        await getInteractionStatus(f.requestContext, f.session, f.db),
+      );
+      expect(status.runTimings).toHaveLength(1);
+      expect(status.runTimings![0]).toMatchObject({
+        runId: f.rootRunId,
+        timing: {
+          activeMs: 12460,
+          phase: 'waiting',
+          timeoutMs: 3600000,
+          calls: null,
+        },
+      });
+      expect(status.runTimings![0]!.timing.waitingMs).toBeGreaterThanOrEqual(
+        2400000,
+      );
+      expect(status.runTimings![0]!.timing).not.toHaveProperty('deadlineAt');
+      expect(
+        await f.db`select * from allrice_task_clocks where run_id=${f.rootRunId}`,
+      ).toEqual(before);
+      await expect(
+        getInteractionStatus(f.requestContext, other.session, f.db),
+      ).rejects.toMatchObject({ code: 'artifact_not_found' });
+      await expect(
+        getInteractionStatus(
+          { ...f.requestContext, actor: other.requestContext.actor },
+          f.session,
+          f.db,
+        ),
+      ).rejects.toMatchObject({ code: 'artifact_not_found' });
+      expect(
+        (await getInteractionStatus(other.requestContext, other.session, f.db))
+          .runTimings,
+      ).toEqual([]);
+    });
     it.each(['active', 'waiting'] as const)(
       'preserves %s time across a real expired lease, maintenance and a different Worker claim',
       async (phase) => {

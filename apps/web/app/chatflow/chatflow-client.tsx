@@ -926,6 +926,7 @@ export function ChatFlowClient({
                   localCommandsEnabled={localCommandsEnabled}
                   localMcpEnabled={localMcpEnabled}
                   assistantTrees={assistants.trees}
+                  runTimings={interactions.data?.runTimings}
                   onAssistantChanged={assistants.reload}
                   messages={history?.messages ?? []}
                   onLoadRunTrace={loadRunTrace}
