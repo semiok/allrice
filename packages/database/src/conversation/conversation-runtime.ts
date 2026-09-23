@@ -770,7 +770,7 @@ export async function acquireConversationRuntime(input: {
     const updated = await transaction<ConversationRuntimeRow[]>`
       update allrice_conversation_runtimes
       set state = 'running', active_run_id = ${values.runId},
-          active_turn_id = null, worker_id = ${values.workerId},
+          active_turn_id = ${current.active_run_id === values.runId && !configChanged ? current.active_turn_id : null}, worker_id = ${values.workerId},
           config_checksum = ${values.configChecksum},
           thread_id = ${configChanged ? null : current.thread_id},
           usage_baseline_input_tokens = ${configChanged ? null : current.usage_baseline_input_tokens},

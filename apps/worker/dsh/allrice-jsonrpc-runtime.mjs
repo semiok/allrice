@@ -37,6 +37,11 @@ import { reconciliationNativeTools } from './allrice-reconciliation-native-tools
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
+import {
+  checkpointNativeQuestion,
+  answerNativeWait,
+  continueNativeWait,
+} from './allrice-dsh-waits.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
@@ -818,6 +823,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           process.env.DSH_DISTRIBUTION_VERSION ?? 'unapproved-development',
       },
       capabilities: {
+        durableQuestions: true,
         taskProgress: !!this.taskProgress,
         interrupt: true,
         steer: true,
@@ -1528,6 +1534,20 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       return this.governedAssistants[action](params);
     }
     switch (method) {
+      case 'session/park-question':
+        return {
+          checkpoint: await checkpointNativeQuestion(
+            this,
+            requiredSessionId(params),
+            params.questionId,
+          ),
+        };
+      case 'session/answer-wait':
+        requiredSessionId(params);
+        return answerNativeWait(this, params);
+      case 'session/continue-wait':
+        requiredSessionId(params);
+        return continueNativeWait(this, params);
       case 'session/interrupt':
         return this.interrupt(params);
       case 'session/steer':

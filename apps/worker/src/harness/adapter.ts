@@ -8,6 +8,7 @@ import type {
   ImageMediaType,
   RuntimeNativeInputProof,
   AssistantSubscriptionSnapshot,
+  NativeQuestionCheckpoint,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -35,6 +36,25 @@ export interface HarnessImageInput {
 }
 
 export interface HarnessExecutionInput {
+  questionWait?: {
+    resume?: {
+      sessionId: string;
+      questionId: string;
+      turnId: string;
+      inputId: string;
+      text: string;
+    };
+    /** Worker-only ports, never model or HTTP parameters. */
+    park(
+      checkpoint: NativeQuestionCheckpoint,
+      receipt: {
+        usage: HarnessExecutionResult['usage'];
+        usageComplete: boolean;
+        cacheUsageKnown: boolean;
+      },
+    ): Promise<void>;
+    adopted(proof: RuntimeNativeInputProof): Promise<void>;
+  };
   /** Trusted Worker progress port. Never supplied by model/browser arguments. */
   progress?: (
     request: Record<string, unknown>,

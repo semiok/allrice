@@ -32,6 +32,15 @@ import {
   ModelGovernanceError,
   assertReviewRunCurrent,
   assertAssistantAuthority,
+  parkNativeQuestion,
+  readNativeQuestionWait,
+  continueNativeQuestion,
+  claimConversationSteer,
+  consumeConversationSteer,
+  beginNativeTask,
+  completeNativeTask,
+  readParkedNativeUsage,
+  NativeWaitAuthorityError,
 } from '@allrice/database';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
@@ -84,7 +93,11 @@ import {
 } from '../harness/dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from '../harness/dsh/assistant-provider.js';
 import { DshStartupRejection } from '../harness/dsh/startup-rejection.js';
-import type { HarnessExecutionResult } from '../harness/adapter.js';
+import type {
+  HarnessExecutionInput,
+  HarnessExecutionResult,
+} from '../harness/adapter.js';
+import { NativeQuestionParked } from '../harness/dsh/native-question-wait.js';
 import {
   executeRiceTool,
   riceToolCapability,
@@ -281,6 +294,7 @@ export async function executeEmployeeRun({
     throw error;
   }
   let outcome: 'idle' | 'interrupted' | 'error' = 'error';
+  let nativeQuestionParked = false;
   let errorCode: string | undefined;
   let routeDecision: RouteDecision | null = null;
   let routeUsage = {
@@ -841,6 +855,89 @@ export async function executeEmployeeRun({
     }
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
+    let questionWait: HarnessExecutionInput['questionWait'];
+    if (
+      taskProgress &&
+      !assistants &&
+      !selectedWorkflow &&
+      adapter.kind === 'dsh'
+    ) {
+      const waitOwner = { context: execution.context, worker: workflowLease };
+      const checkpoint = await readNativeQuestionWait({
+        ...waitOwner,
+        configChecksum,
+        generation: runtime.generation,
+      });
+      const command = checkpoint
+        ? await claimConversationSteer({
+            ...ownership,
+            generation: runtime.generation,
+            turnId: checkpoint.turnId,
+          })
+        : null;
+      if (checkpoint && (!command || command.inputKind !== 'ask_user'))
+        throw new HandlerError(
+          'NATIVE_WAIT_ANSWER_UNAVAILABLE',
+          '等待中的问题尚无可恢复的回答。',
+          false,
+        );
+      questionWait = {
+        ...(checkpoint && command
+          ? {
+              resume: {
+                sessionId: checkpoint.sessionId,
+                questionId: checkpoint.questionId,
+                turnId: checkpoint.turnId,
+                inputId: command.clientUserMessageId,
+                text: command.message,
+              },
+            }
+          : {}),
+        adopted: async (proof) => {
+          if (!checkpoint || !command || proof.status !== 'adopted')
+            throw new HandlerError(
+              'NATIVE_WAIT_ANSWER_UNPROVEN',
+              '回答尚未得到持久化接收确认。',
+              false,
+            );
+          await consumeConversationSteer({
+            commandId: command.id,
+            workerId: workflowLease.workerId,
+            proof,
+          });
+          await continueNativeQuestion({
+            ...waitOwner,
+            questionId: checkpoint.questionId,
+          });
+        },
+        park: async (next, receipt) => {
+          // This native segment was deliberately interrupted at a question;
+          // its usage is settled once, while the original Run stays waiting.
+          await completeRouteDecision({
+            organizationId: ownership.organizationId,
+            workspaceId: ownership.workspaceId,
+            outcome: {
+              decisionId: routeDecision!.id,
+              status: 'canceled',
+              ...receipt.usage,
+              costCents: null,
+              usageComplete: receipt.usageComplete,
+              cacheUsageKnown: receipt.cacheUsageKnown,
+              errorCode: 'NATIVE_QUESTION_PARKED',
+              failureCategory: null,
+              completedAt: new Date().toISOString(),
+            },
+          });
+          await parkNativeQuestion({
+            ...waitOwner,
+            checkpoint: next,
+            configChecksum,
+            generation: runtime.generation,
+          });
+          nativeQuestionParked = true;
+        },
+      };
+    }
     const workflowCitations: typeof knowledge.citations = [];
     // Once a normal assistant or subscription execution starts, any transport, tool,
     // revocation or lease failure is incomplete accounting until an authoritative
@@ -855,6 +952,19 @@ export async function executeEmployeeRun({
       routeCacheUsageKnown = false;
     }
     routeExecutionStarted = true;
+    if (
+      questionWait &&
+      !(await beginNativeTask({
+        context: execution.context,
+        worker: workflowLease,
+        attempt: execution.job.attempt,
+      }))
+    )
+      throw new HandlerError(
+        'DSH_EXECUTION_OUTCOME_UNKNOWN',
+        '先前执行进程已中断；结果不明的操作不会自动重跑，请查看已保留的内容与执行记录。',
+        false,
+      );
     const result: HarnessExecutionResult =
       routeDecision.selectedKind === 'workflow'
         ? await (async () => {
@@ -1093,6 +1203,7 @@ export async function executeEmployeeRun({
         : await adapter
             .execute({
               progress: taskProgress,
+              questionWait,
               assistants,
               kernel: routedKernel,
               nativeSkills: resolved.nativeSkills,
@@ -1220,6 +1331,12 @@ export async function executeEmployeeRun({
                 });
               }
             });
+    if (questionWait)
+      await completeNativeTask({
+        context: execution.context,
+        worker: workflowLease,
+        attempt: execution.job.attempt,
+      });
     if (routeDecision.selectedKind !== 'workflow') {
       await appendChatFlowEvent('turn.completed', {
         source: adapter.kind,
@@ -1325,8 +1442,28 @@ export async function executeEmployeeRun({
       },
     });
     outcome = 'idle';
+    const priorWaitUsage = questionWait?.resume
+      ? await readParkedNativeUsage(execution.context)
+      : null;
     return {
       ...result,
+      ...(priorWaitUsage
+        ? {
+            usage: {
+              inputTokens:
+                result.usage.inputTokens + priorWaitUsage.usage.inputTokens,
+              cachedInputTokens:
+                result.usage.cachedInputTokens +
+                priorWaitUsage.usage.cachedInputTokens,
+              outputTokens:
+                result.usage.outputTokens + priorWaitUsage.usage.outputTokens,
+            },
+            usageComplete:
+              result.usageComplete === true && priorWaitUsage.usageComplete,
+            cacheUsageKnown:
+              result.cacheUsageKnown === true && priorWaitUsage.cacheUsageKnown,
+          }
+        : {}),
       ...(budgetWarning ? { budgetWarning } : {}),
       citations: [...knowledge.citations, ...workflowCitations].filter(
         (citation, index, values) =>
@@ -1336,7 +1473,17 @@ export async function executeEmployeeRun({
           ) === index,
       ),
     };
-  } catch (error) {
+  } catch (caught) {
+    if (caught instanceof NativeQuestionParked && caught.persisted)
+      throw caught;
+    const error =
+      caught instanceof NativeWaitAuthorityError
+        ? new HandlerError(
+            caught.code.toUpperCase(),
+            '等待期间的授权或配置已变更，未恢复执行。请重新确认后发起任务。',
+            false,
+          )
+        : caught;
     const failedUsage = getAssistantFailureUsage(
       error,
       execution.context.runId,
@@ -1413,11 +1560,12 @@ export async function executeEmployeeRun({
     throw error;
   } finally {
     try {
-      await releaseConversationRuntime({
-        ...ownership,
-        outcome,
-        ...(errorCode ? { errorCode } : {}),
-      });
+      if (!nativeQuestionParked)
+        await releaseConversationRuntime({
+          ...ownership,
+          outcome,
+          ...(errorCode ? { errorCode } : {}),
+        });
     } catch (error) {
       if (!(
         error instanceof ConversationRuntimeError &&

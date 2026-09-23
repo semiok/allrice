@@ -64,6 +64,7 @@ function fixture(options: {
   };
   const client = {
     interrupt: vi.fn(async () => ({})),
+    onFailure: vi.fn(() => () => {}),
     setRequestHandler: vi.fn((value) => {
       handler = value;
     }),
@@ -87,6 +88,18 @@ function fixture(options: {
           throw Error('native generic error');
       }
       if (options.originalError) throw options.originalError;
+      notify?.({
+        method: 'session.event',
+        params: {
+          sessionId: threadId,
+          event: {
+            type: 'turn/start',
+            seq: 0,
+            time: Date.now(),
+            data: { turn: 1 },
+          },
+        },
+      });
       notify?.({
         method: 'session.event',
         params: {

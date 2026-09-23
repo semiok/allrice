@@ -10,6 +10,7 @@ import type { HarnessExecutionInput } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError } from '../errors.js';
+import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import {
   DshHarnessAdapter,
@@ -137,6 +138,39 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('settles an acknowledged turn when its process dies, preserving output without retrying', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({
+      prompt: 'crash after acknowledgement',
+      events,
+    });
+    const error = await adapter.execute(input).catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: 'DSH_EXECUTION_OUTCOME_UNKNOWN',
+      retryable: false,
+    });
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'assistant.delta' && e.text === 'retained partial output',
+      ),
+    ).toBe(true);
+    expect(events.some((e) => e.type === 'assistant.completed')).toBe(false);
+    expect(adapter.runtimeInventory()).toEqual([]);
+    expect(
+      getAssistantFailureUsage(
+        error,
+        input.executionEnvironment.ALLRICE_RUN_ID!,
+        input.attempt,
+      ),
+    ).toEqual({
+      usage: { inputTokens: 11, cachedInputTokens: 3, outputTokens: 5 },
+      usageComplete: false,
+      cacheUsageKnown: false,
+    });
+  }, 5000);
+
   it.each([
     { fresh: true, matchingRoot: true, known: true },
     { fresh: false, matchingRoot: true, known: false },

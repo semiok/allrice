@@ -80,7 +80,15 @@ export function inspectDshInput(agent, input) {
 /** Idempotent within DSH's own persisted journal, including RPC ACK loss.
  * A record without native insertion/adoption is unknown and is never replayed. */
 export async function deliverDshInput(
-  { agent, sessionId, pendingQuestion, notify, flush, isCurrent },
+  {
+    agent,
+    sessionId,
+    pendingQuestion,
+    notify,
+    flush,
+    isCurrent,
+    suspended = false,
+  },
   input,
 ) {
   if (
@@ -99,7 +107,7 @@ export async function deliverDshInput(
   const turn = agent.session.events.findLast((e) => e.type === 'turn/start')
     ?.data.turn;
   if (
-    agent.status !== 'running' ||
+    agent.status !== (suspended ? 'idle' : 'running') ||
     input.turnId !== `${sessionId}:turn:${turn}`
   )
     throw new TypeError('INPUT_TURN_CHANGED');

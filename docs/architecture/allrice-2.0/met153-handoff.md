@@ -21,9 +21,16 @@
 
 本次只完成评估与 PR #90 的代码收尾，没有执行上述合并、改基线或强推动作。
 
-## 剩余两项运行时工作
+## 本次补充的恢复边界
 
-1. **长期等待的进程释放与重建**：`DshRuntimePool` 目前持有内存中的 client/session；`allrice-jsonrpc-runtime.mjs` 的原生问题包含进程内 Promise，而 `runNativeTurn` 等待原生 idle。仅调用 `drop()` 会关闭进程，不构成可恢复挂起。应先定义持久化等待描述和可重建边界，确认所有主/子调用及命令已停，保存原 Run/时钟/问题或审批身份，再有序退出并在新租约下恢复。并行活跃参与者及结果未知的已派发动作不能进入该路径。
-2. **完整 Worker/原生进程中断验收**：原生 `createSession()` 已尝试从持久会话恢复，但这并不恢复任意进程内 RPC。需要通过真实 Worker 子进程的停止/重启、新租约 claim、原生重建和实际入口回答形成完整回归。覆盖问题等待、动作审批、旧租约 fencing、重复恢复、过期审批、撤权、候选变化与未知执行拒绝重放；检查原 Run 的 active/waiting 累计与统计都不重置。先用隔离 PostgreSQL 和合成 HTTP 模型验证生产路径，再做获准 Dev/Snow 场景。
+普通 DSH 任务的原生提问与无进展提问，在等待 30 秒且没有其他活跃原生参与者时，先写原生 journal 检查点、排空提问回调，再持久化为队列等待并释放原生进程、任务 heartbeat 和本轮等待定时器。0105 保存问题、会话、原 turn、配置和 generation，回答仍使用现有认证入口及原生采纳证明。新 Worker 续接同一个 Allrice Run 的原生会话，新建一个原生 continuation turn；不再次发送原任务提示词。
 
-普通聊天新增展示还需固定新候选的 Dev 浏览器复验。完成前保持工单进行中；本次范围不含 Prod、MET-145 Boost、MET-146 Teamwork 或 Apple 签名。
+这是明确的静止边界，不能序列化任意 JavaScript 回调。助手树、未结束模型/工具调用、尚未完成或结果未知的运行时动作均禁止走提问释放路径；持久化工作流审批继续使用原有 workflow 恢复机制。新的 dispatch 标记使普通任务在活跃进程丢失后保留未知结果并终止，禁止以重发任务来假装恢复。
+
+独立 Worker 子进程 + 真实 PostgreSQL + 原生 DSH + 合成 HTTP 模型已覆盖等待后杀 Worker、新 Worker claim、原问题回答、同 Run 完成、40 分钟等待不耗活跃预算；活跃时强杀则不产生第二次模型请求。数据库回归覆盖撤权、配置变化、旧租约、无效回答、重复恢复和取消。该 Worker fixture 调用生产 queue/job-runner/adapter，使用精简 handler；完整 `executeEmployeeRun` 和真实 Codex 的证据仍须由固定候选 Dev/Snow 验收提供。
+
+## 回退与剩余交付
+
+0105 是兼容扩展，不删除历史时钟或账本。旧运行时代码回退必须同时保留 0105 迁移清单，并识别原生 journal 的 `allrice/wait/checkpoint`、`allrice/wait/continued` 两种私有事件；原 `731f836` 不具备该词汇，不能直接作为新候选的回退版。旧版不能接管已挂起的新式问题，切换前须确认 Dev 没有活动或挂起任务。新候选/兼容回退版需实际构建并启动验证。
+
+普通聊天新增展示和本次恢复实现还需固定新候选的 Dev 浏览器复验。完成前保持工单进行中；本次范围不含 Prod、MET-145 Boost、MET-146 Teamwork 或 Apple 签名。

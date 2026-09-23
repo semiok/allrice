@@ -228,6 +228,7 @@ export class DshRuntimePool {
           runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
           systemInstructions: input.systemInstructions,
           taskProgress: !!input.input.progress,
+          durableQuestions: !!input.input.questionWait,
           ...(input.input.assistants
             ? { assistantRootRunId: input.input.assistants.rootRunId }
             : {}),
@@ -387,6 +388,7 @@ export class DshRuntimePool {
           (input.input.assistants ? 16_000 : undefined),
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         requireTaskProgress: !!input.input.progress,
+        requireDurableQuestions: !!input.input.questionWait,
       });
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true };

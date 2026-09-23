@@ -3,11 +3,14 @@ import { randomUUID, createHash } from 'node:crypto';
 import {
   HarnessEventSchema,
   UserQuestionRequestSchema,
+  NativeQuestionCheckpointSchema,
+  RuntimeNativeInputProofSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
 import { AssistantRuntimeError, observeCodexTokens } from '@allrice/database';
 
 import { HandlerError } from '../errors.js';
+import { NativeQuestionParked } from './dsh/native-question-wait.js';
 import {
   AssistantExecutionUnresolvedError,
   attachAssistantFailureUsage,
@@ -348,6 +351,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let prompt = initialPrompt;
     let answer = '';
     let assistantFinished = false;
+    let interruptedUsage: AssistantFailureUsage | undefined;
     let assistantDiagnostics: AssistantFailureDiagnostics | undefined;
     const captureAssistantDiagnostics = async () => {
       if (!assistant || assistantFinished || assistantDiagnostics) return;
@@ -386,6 +390,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
           images: callIndex === 0 ? (input.images ?? []) : [],
           signal: executionSignal,
           subscription: snapshot.route === 'openai-codex',
+          questionWait: !assistant ? input.questionWait : undefined,
+          resume: callIndex === 0 ? input.questionWait?.resume : undefined,
+          onFailureUsage: (receipt) => {
+            interruptedUsage = {
+              ...receipt,
+              usage: {
+                inputTokens: usage.inputTokens + receipt.usage.inputTokens,
+                cachedInputTokens:
+                  usage.cachedInputTokens + receipt.usage.cachedInputTokens,
+                outputTokens: usage.outputTokens + receipt.usage.outputTokens,
+              },
+            };
+          },
           onTurn: async (nextTurnId) => {
             turnId = nextTurnId;
             await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
@@ -573,14 +590,45 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
       }
     } catch (caught) {
+      if (
+        caught instanceof NativeQuestionParked &&
+        input.questionWait &&
+        !assistant
+      ) {
+        for (const key of [
+          'inputTokens',
+          'cachedInputTokens',
+          'outputTokens',
+        ] as const)
+          caught.receipt.usage[key] += usage[key];
+        caught.receipt.usageComplete &&= usageComplete;
+        caught.receipt.cacheUsageKnown &&= cacheUsageKnown;
+        try {
+          await input.questionWait.park(caught.checkpoint, caught.receipt);
+          caught.persisted = true;
+        } finally {
+          await this.runtimePool.drop(threadId);
+        }
+        throw caught;
+      }
       // Preserve a trusted local admission denial rather than the native RPC's
       // generic retryable wrapper. Never classify from model-supplied text.
-      const error = assistantAdmissionFailure ?? caught;
+      const error =
+        assistantAdmissionFailure ??
+        (input.questionWait?.resume &&
+        caught instanceof HandlerError &&
+        caught.retryable
+          ? new HandlerError(
+              'NATIVE_WAIT_RECOVERY_REJECTED',
+              '等待恢复未得到确认，未自动重放任务；请查看保留的执行记录。',
+              false,
+            )
+          : caught);
       // Capture before cancel/drop destroys the host, without widening root
       // authority or reading another native session's transcript.
       await captureAssistantDiagnostics();
       attachAssistantFailureDiagnostics(error, assistantDiagnostics);
-      let failedUsage: AssistantFailureUsage | undefined;
+      let failedUsage: AssistantFailureUsage | undefined = interruptedUsage;
       if (cancellationTimer) clearInterval(cancellationTimer);
       await cancellationTask?.catch(() => {});
       try {
@@ -597,14 +645,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
         // Drain's durable stopped receipts release only undispatched holds.
         // Read confirmed prior usage even if drain failed (then completeness
         // remains false). Do not use model output, diagnostics or guessed zero.
-        failedUsage = await assistant?.failureUsage?.().catch(() => undefined);
+        if (assistant)
+          failedUsage = await assistant.failureUsage?.().catch(() => undefined);
         await this.runtimePool.drop(threadId);
       }
       const attachUsage = (failure: unknown) => {
-        if (failedUsage && input.assistants)
+        const runId =
+          input.assistants?.rootRunId ??
+          input.executionEnvironment.ALLRICE_RUN_ID;
+        if (failedUsage && runId)
           attachAssistantFailureUsage(
             failure,
-            input.assistants.rootRunId,
+            runId,
             input.attempt,
             failedUsage,
           );
@@ -743,6 +795,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     images: HarnessExecutionInput['images'];
     signal: AbortSignal;
     subscription: boolean;
+    questionWait?: HarnessExecutionInput['questionWait'];
+    resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
+    onFailureUsage(receipt: AssistantFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
     onDelta(text: string, source: DshSourceMetadata): Promise<void>;
     onNative(event: HarnessEventPayload): Promise<void>;
@@ -755,6 +810,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let eventChain = Promise.resolve();
     let processingError: unknown;
     let idle = false;
+    let started = false;
+    let waitTimer: NodeJS.Timeout | undefined;
+    let parking: Promise<unknown> | undefined;
     let settle!: () => void;
     const idlePromise = new Promise<void>((resolveIdle) => {
       settle = resolveIdle;
@@ -834,9 +892,25 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ? normalized.data
             : { questionId, questionCount: questions.length },
         });
+        if (input.questionWait && questionId && normalized.success) {
+          clearTimeout(waitTimer);
+          // Quick answers keep the live callback; after this bounded grace
+          // period the queue owns the wait and this timer is discarded.
+          waitTimer = setTimeout(() => {
+            parking = input.runtime.client.parkQuestion(
+              input.runtime.sessionId,
+              questionId,
+            );
+            void parking.catch((error) => {
+              processingError ??= error;
+              settle();
+            });
+          }, 30_000);
+        }
         return;
       }
       if (notification.method === 'session.user-question-answered') {
+        clearTimeout(waitTimer);
         await input.onNative({
           type: 'native.event',
           presentation: 'context',
@@ -855,6 +929,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         notification.method === 'session.status' &&
         notification.params.status === 'idle'
       ) {
+        // Loading a persisted native session also announces idle. It is not
+        // completion of the continuation we have yet to dispatch.
+        if (!started) return;
         idle = true;
         settle();
         return;
@@ -967,6 +1044,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const nativeView = nativeEventView(event);
       if (nativeView) await input.onNative(nativeView);
       if (event.type === 'turn/start') {
+        started = true;
         const turn =
           typeof data.turn === 'number' || typeof data.turn === 'string'
             ? String(data.turn)
@@ -1090,6 +1168,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
           settle();
         });
     });
+    const unsubscribeFailure = input.runtime.client.onFailure(() => {
+      // The accepted prompt may have invoked tools before its host vanished.
+      // A fresh prompt would replay the task, not recover its native callback.
+      eventChain = eventChain.then(() => {
+        if (idle) return;
+        processingError ??= new HandlerError(
+          'DSH_EXECUTION_OUTCOME_UNKNOWN',
+          '执行进程已中断，未确认的操作不会自动重试；已产生的内容与执行记录保留。',
+          false,
+        );
+        settle();
+      });
+    });
     const abort = () => {
       void input.runtime.client
         .interrupt(input.runtime.sessionId)
@@ -1099,12 +1190,36 @@ export class DshHarnessAdapter implements HarnessAdapter {
     input.signal.addEventListener('abort', abort, { once: true });
     if (input.signal.aborted) abort();
     try {
-      await input.runtime.client.prompt(
-        input.runtime.sessionId,
-        input.prompt,
-        input.images,
-      );
+      if (input.resume && input.questionWait) {
+        const answer = await input.runtime.client.answerWait(input.resume);
+        await input.questionWait.adopted(
+          RuntimeNativeInputProofSchema.parse(answer.proof),
+        );
+      }
+      await (
+        input.resume
+          ? input.runtime.client.continueWait(input.resume)
+          : input.runtime.client.prompt(
+              input.runtime.sessionId,
+              input.prompt,
+              input.images,
+            )
+      ).catch(async (error: unknown) => {
+        await eventChain;
+        if (
+          !processingError &&
+          error instanceof HandlerError &&
+          ['DSH_REQUEST_TIMEOUT', 'DSH_RUNTIME_CLOSED'].includes(error.code)
+        )
+          processingError = new HandlerError(
+            'DSH_EXECUTION_OUTCOME_UNKNOWN',
+            '执行请求未得到完成确认，未自动重试。',
+            false,
+          );
+        throw processingError ?? error;
+      });
       if (!idle) await idlePromise;
+      const parked = parking ? record(await parking) : null;
       await eventChain;
       if (processingError) throw processingError;
       if (input.signal.aborted) {
@@ -1114,6 +1229,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
           false,
         );
       }
+      if (parked?.checkpoint)
+        throw new NativeQuestionParked(
+          NativeQuestionCheckpointSchema.parse(parked.checkpoint),
+          {
+            usage,
+            usageComplete: messageReceipts > 0 && usageComplete,
+            cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
+          },
+        );
       if (deltaMode === 'unknown' && deltaBuffer && !parseDshToolCall(answer)) {
         await input.onDelta(deltaBuffer, {
           sourceEventId: `dsh:buffer:${randomUUID()}`,
@@ -1133,8 +1257,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
           Object.values(usage).every(Number.isSafeInteger),
         cacheUsageKnown: messageReceipts > 0 && cacheUsageKnown,
       };
+    } catch (error) {
+      if (!(error instanceof NativeQuestionParked))
+        input.onFailureUsage({
+          usage,
+          usageComplete: false,
+          cacheUsageKnown: false,
+        });
+      throw error;
     } finally {
+      clearTimeout(waitTimer);
       unsubscribe();
+      unsubscribeFailure();
       input.signal.removeEventListener('abort', abort);
     }
   }

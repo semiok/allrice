@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-durable-native-question-wait-v1",
+      "issue": "MET-153",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-dsh-waits.mjs",
+      "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
+    },
+    {
       "id": "allrice-durable-progress-guard-v1",
       "issue": "MET-153",
       "upstreamVersion": "0.1.1-rc.2",

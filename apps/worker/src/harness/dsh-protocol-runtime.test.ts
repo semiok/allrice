@@ -19,6 +19,28 @@ afterEach(async () => {
 });
 
 describe('AllRice DSH protocol runtime', () => {
+  it('notifies termination even with no RPC pending and replays the failure to late subscribers', async () => {
+    const client = new DshProtocolClient({
+      command: process.execPath,
+      args: [
+        '-e',
+        `process.stdin.on('data', () => process.kill(process.pid, 'SIGKILL'));`,
+      ],
+      cwd: process.cwd(),
+      environment: {},
+      requestTimeoutMs: 1000,
+    });
+    clients.push(client);
+    const failure = new Promise<Error>((resolve) => client.onFailure(resolve));
+    await expect(client.providerStatus()).rejects.toMatchObject({
+      code: 'DSH_RUNTIME_CLOSED',
+    });
+    const error = await failure;
+    const replay = new Promise<Error>((resolve) => client.onFailure(resolve));
+    expect(await replay).toBe(error);
+    await expect(client.close()).resolves.toBeUndefined();
+  });
+
   it('long-lived join ignores acknowledgement timeout but process exit still rejects it', async () => {
     const client = new DshProtocolClient({
       command: process.execPath,
