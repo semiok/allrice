@@ -46,7 +46,10 @@ const capabilityCatalog = JSON.parse(
   ),
 );
 const pinnedDsh = JSON.parse(
-  readFileSync(new URL('../worker/dsh/upstream.json', import.meta.url), 'utf8'),
+  readFileSync(
+    new URL('./node_modules/@deepseek-ai/dsh/package.json', import.meta.url),
+    'utf8',
+  ),
 );
 const capabilityMeta = `<meta name="allrice-dsh-capabilities" content="${encodeURIComponent(JSON.stringify({ ...capabilityCatalog, version: pinnedDsh.version }))}">`;
 const allowedHosts = new Set(
