@@ -34,6 +34,7 @@ import { employeeManifest } from './employee-config.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
+import { enablePublishedDevelopmentCloud } from './development-cloud-grants.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
 import {
   buildEmployeeRuntimePackage,
@@ -1591,6 +1592,27 @@ async function materializePlatformEmployeeRevision(
         active = true, assigned_by = excluded.assigned_by,
         assigned_at = now(), updated_at = now()
     `;
+    if (
+      rapidEmployeeIterationEnabled() &&
+      input.definition.capabilities.toolNames.includes('cloud.process.execute')
+    ) {
+      const grants = await enablePublishedDevelopmentCloud(transaction, {
+        organizationId: workspace.organization_id,
+        workspaceId: workspace.id,
+        employeeId: tenantEmployeeId,
+      });
+      if (grants.length)
+        await recordPlatformEmployeeAuditInTransaction(transaction, {
+          employeeId: input.employeeId,
+          action: 'employee.cloud.enabled',
+          actorLabel: input.actorLabel,
+          details: {
+            workspaceId: workspace.id,
+            revisionId: input.revision.id,
+            grants,
+          },
+        });
+    }
     // Publishing a new tenant revision must be transparent to existing chats.
     // Runs that are already queued keep their immutable execution snapshot; the
     // next Run created for each Session uses the newly materialized version.

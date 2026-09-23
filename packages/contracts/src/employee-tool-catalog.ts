@@ -143,6 +143,12 @@ export function assembleEmployeeCapabilities(
   if (names.has('assistant.development')) {
     for (const name of developmentWorkflowToolNames) names.add(name);
   }
+  const localMcp =
+    names.has('local.mcp.call') || names.has('local.mcp.discover');
+  if (localMcp) {
+    names.add('local.mcp.call');
+    names.add('local.mcp.discover');
+  }
   const tools = employeeToolCatalog.filter((tool) =>
     names.has(tool.canonicalName),
   );
@@ -162,6 +168,15 @@ export function assembleEmployeeCapabilities(
     securityPolicy: {
       ...definition.securityPolicy,
       bridgeAccess,
+      connectorIdentityModes:
+        localMcp || names.has('cloud.mcp.call')
+          ? [
+              ...new Set([
+                ...definition.securityPolicy.connectorIdentityModes,
+                'service' as const,
+              ]),
+            ]
+          : definition.securityPolicy.connectorIdentityModes,
       deniedCapabilities: definition.securityPolicy.deniedCapabilities.filter(
         (capability) => !capabilities.has(capability),
       ),

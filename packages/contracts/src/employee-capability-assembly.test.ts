@@ -13,6 +13,7 @@ function definition(): PlatformEmployeeDefinition {
     },
     securityPolicy: {
       bridgeAccess: 'none',
+      connectorIdentityModes: ['user'],
       deniedCapabilities: ['storage:write', 'secret:use'],
     },
   } as PlatformEmployeeDefinition;
@@ -38,6 +39,17 @@ it('assembles the selected Skill dependencies and their employee permissions in 
     [],
   );
   expect(removed.capabilities.toolNames).toEqual(result.capabilities.toolNames);
+});
+it('selecting MCP assembles its identity permission and local discovery dependency', () => {
+  const input = definition();
+  input.capabilities.toolNames = ['local.mcp.call'];
+  const result = assembleEmployeeCapabilities(input, []);
+  expect(result.capabilities.toolNames).toContain('local.mcp.discover');
+  expect(result.securityPolicy.connectorIdentityModes).toEqual([
+    'user',
+    'service',
+  ]);
+  expect(result.securityPolicy.deniedCapabilities).not.toContain('secret:use');
 });
 it('makes a development selection include the whole delivery workflow and required Bridge mode', () => {
   const input = definition();

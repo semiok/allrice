@@ -6,6 +6,7 @@ import {
   allRiceToolManifest,
   employeeToolConfigurationErrors,
   runtimePolicyActionDecision,
+  CloudExecutionProfileSchema,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -136,6 +137,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
               'assistant.delegate',
               'web.search',
               'workspace.skill.read',
+              'cloud.process.execute',
             ],
           },
         },
@@ -155,10 +157,31 @@ suite('MET-151 policy and exact employee publication administration', () => {
       const review = await f.review();
       expect(review.valid).toBe(true);
       expect(review.policyVersions[f.workspaceId]).toBe(before.version);
+      await expect(f.publish(review)).rejects.toThrow(
+        'cloud_runner_unavailable',
+      );
+      const profile = CloudExecutionProfileSchema.parse({
+        ...Object.fromEntries(
+          Object.entries(CloudExecutionProfileSchema.shape)
+            .filter(([key]) => key !== 'maximumConcurrency')
+            .map(([key, schema]) => [
+              key,
+              'value' in schema ? schema.value : undefined,
+            ]),
+        ),
+        maximumConcurrency: 1,
+      });
+      await fixture.db`insert into allrice_execution_targets
+        (organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
+        values (${f.organizationId},${f.workspaceId},'test-installed-cloud','cloud_sandbox','Synthetic installed sandbox','online','["process.execute"]',${fixture.db.json({ managedBy: 'allrice', profile })})`;
       const result = await f.publish(review);
       expect(result.valid).toBe(true);
       const policy = await f.read();
       expect(policy.controls).toMatchObject({ enabled: true, mode: 'execute' });
+      const [cloud] =
+        await fixture.db`select count(*)::int n from allrice_cloud_execution_grants
+        where workspace_id=${f.workspaceId} and enabled and revoked_at is null`;
+      expect(cloud?.n).toBeGreaterThan(0);
       expect(
         runtimePolicyActionDecision(policy.controls, 'assistant.delegate')
           .effect,
