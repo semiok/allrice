@@ -41,6 +41,7 @@ const scope = await getDatabase()<
 if (!/^p25_[a-f0-9]{32}$/.test(scope[0]!.schema))
   throw Error('isolated_fixture_schema_required');
 const workerId = randomUUID();
+let questionSuspension = false;
 const job = await claimNextJob(workerId, 30000);
 if (!job?.lease) throw Error('fixture_job_missing');
 const adapter = new DshHarnessAdapter({
@@ -128,7 +129,14 @@ await runClaimedJob(
         generation: runtime.generation,
         threadId: runtime.threadId,
         tools: [],
-        onEvent: onHarnessEvent,
+        onEvent: async (event) => {
+          if (
+            event.type === 'tool.failed' &&
+            event.sourcePayload?.questionWait === true
+          )
+            questionSuspension = true;
+          await onHarnessEvent(event);
+        },
         onThreadBound: async (input) => {
           runtime = await bindConversationThread({ ...ownership, ...input });
           return { generation: runtime.generation };
@@ -184,6 +192,7 @@ process.send?.({
   jobId: job.id,
   workerId,
   processes: adapter.runtimeInventory().length,
+  questionSuspension,
 });
 await adapter.close();
 // Simulates the Worker remaining available for other jobs; no per-Run timer.

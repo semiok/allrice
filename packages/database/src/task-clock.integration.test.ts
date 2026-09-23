@@ -68,6 +68,10 @@ suite(
       'projects ordinary Run clocks through authorized %s without changing time or exposing another tenant',
       async (read) => {
         const f = await setup();
+        const explicitPolicy = resolveTaskRuntimePolicy([
+          { scope: 'user', scopeId: f.user, timeoutMs: 1800000 },
+        ]);
+        await f.db`update allrice_task_clocks set policy=${f.db.json({ ...explicitPolicy })} where run_id=${f.rootRunId}`;
         const other = await createAssistantLocalCommandFixture(
           fixture.db,
           'ask',
@@ -93,7 +97,8 @@ suite(
           timing: {
             activeMs: 12460,
             phase: 'waiting',
-            timeoutMs: 3600000,
+            timeoutMs: 1800000,
+            sources: [{ scope: 'user', timeoutMs: 1800000 }],
             calls: null,
           },
         });

@@ -185,7 +185,10 @@ async function sessionRunTimings(
       timeoutMs: clock.timeoutMs,
       remainingMs: clock.remainingMs,
       phase: clock.phase,
-      sources: clock.sources,
+      sources: clock.sources.map(({ scope, timeoutMs }) => ({
+        scope,
+        timeoutMs,
+      })),
       calls: clock.calls,
     },
   }));

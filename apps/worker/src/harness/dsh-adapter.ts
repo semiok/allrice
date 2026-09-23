@@ -813,6 +813,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let started = false;
     let waitTimer: NodeJS.Timeout | undefined;
     let parking: Promise<unknown> | undefined;
+    let parkingQuestion = false;
     let settle!: () => void;
     const idlePromise = new Promise<void>((resolveIdle) => {
       settle = resolveIdle;
@@ -941,6 +942,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const data = record(event?.data);
       if (!event || !data) return;
       const source = sourceMetadata(event);
+      if (event.type === 'allrice/wait/checkpoint' && parking) {
+        parkingQuestion = true;
+        return;
+      }
       if (event.type === 'tool/call') {
         const callId = shortText(data.callId, 240);
         const rawName = shortText(data.name, 160);
@@ -1006,28 +1011,33 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const failed =
           Boolean(data.error) ||
           (firstBlock?.type === 'tool-result' && firstBlock.isError === true);
+        const parkedQuestion =
+          failed && parkingQuestion && name === 'ask_user_question';
         await input.onNative({
           type: failed ? 'tool.failed' : 'tool.completed',
           toolCallId: callId,
           name,
           label: skillName ? `Skill · ${skillName}` : name,
           source: 'harness',
-          summary: skillName
-            ? failed
-              ? 'Skill 加载失败'
-              : 'Skill 已加载'
-            : isDshSearchTool(name)
+          summary: parkedQuestion
+            ? '提问已挂起，等待你的回答'
+            : skillName
               ? failed
-                ? '搜索失败'
-                : '搜索完成'
-              : failed
-                ? '工具执行失败'
-                : '工具执行完成',
+                ? 'Skill 加载失败'
+                : 'Skill 已加载'
+              : isDshSearchTool(name)
+                ? failed
+                  ? '搜索失败'
+                  : '搜索完成'
+                : failed
+                  ? '工具执行失败'
+                  : '工具执行完成',
           ...source,
           sourcePayload: {
             ...source.sourcePayload,
             presentation: isDshSearchTool(name) ? 'search' : 'tool',
             status: failed ? 'failed' : 'completed',
+            ...(parkedQuestion ? { questionWait: true } : {}),
             ...(active?.query ? { query: active.query } : {}),
             ...(skillName
               ? {

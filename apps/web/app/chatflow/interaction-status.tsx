@@ -43,10 +43,10 @@ export function useInteractionStatus(
           setValue({ scope, data });
           setError('');
         }
-      } catch (e) {
+      } catch {
         if (!signal?.aborted && requestGeneration === generation.current) {
           setValue(null);
-          setError(e instanceof Error ? e.message : '状态不可用');
+          setError(workbenchEnabled ? '交互状态暂不可用' : '运行时间暂不可用');
         }
       }
     },

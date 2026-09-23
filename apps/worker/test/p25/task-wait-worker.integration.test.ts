@@ -163,6 +163,7 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
           const [wait] =
             await f.db`select checkpoint,generation from allrice_native_question_waits where run_id=${f.rootRunId} and state='parked'`;
           expect(wait).toBeTruthy();
+          expect(first.report()?.questionSuspension).toBe(true);
           const before = await f.db.begin((tx) =>
             readTaskClock(tx, f.rootRunId),
           );

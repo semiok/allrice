@@ -521,7 +521,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(true);
         f.state.timingError = true;
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
-        await f.page.getByText('交互状态暂不可用', { exact: true }).waitFor();
+        await f.page
+          .getByText(disabled ? '运行时间暂不可用' : '交互状态暂不可用', {
+            exact: true,
+          })
+          .waitFor();
         f.state.timingError = false;
         await timing.waitFor();
         await f.page.reload();
