@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import {
   DevelopmentCommandSchema,
@@ -80,8 +81,8 @@ export async function executeDevelopmentWorkflow(
   transaction?: Tx,
 ): Promise<unknown> {
   if (
-    process.env.ALLRICE_WORKBENCH_ENABLED !== '1' ||
-    process.env.ALLRICE_CHANGESET_ENABLED !== '1'
+    !runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') ||
+    !runtimeFeatureEnabled('ALLRICE_CHANGESET_ENABLED')
   )
     fail('disabled');
   const args = DevelopmentCommandSchema.parse(input.arguments);

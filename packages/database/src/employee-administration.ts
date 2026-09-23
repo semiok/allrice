@@ -1,5 +1,8 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   employeeToolCatalog,
+  rapidEmployeeIterationEnabled,
+  employeePublicationPolicy,
   developmentWorkflowToolNames,
   employeeToolConfigurationErrors,
   PlatformEmployeeDefinitionSchema,
@@ -40,7 +43,8 @@ export function listEmployeeToolAvailability() {
     'local.browser.workspace': localBrowserEnabled(),
     'local.preview.open': localPreviewEnabled(),
     'workspace.reconciliation.export':
-      process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' && workbenchEnabled(),
+      runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
+      workbenchEnabled(),
   };
   return employeeToolCatalog.map((tool) => ({
     ...tool,
@@ -76,6 +80,7 @@ export async function reviewEmployeePublication(
   workspaceInputs: string[],
   db = getDatabase(),
 ) {
+  const rapidIteration = rapidEmployeeIterationEnabled();
   const employeeId = UuidSchema.parse(employeeInput);
   if (!workspaceInputs.length || workspaceInputs.length > 500)
     throw new DataAccessError('not_found');
@@ -133,7 +138,7 @@ export async function reviewEmployeePublication(
           `开发协作完整链路尚缺工具：${missing.join('、')}；不能将仅提案配置视为测试与交付已就绪。`,
         );
       warnings.push(
-        '开发协作需在租户管理 → 能力授权核对实际成员：assistant.delegate 必须允许；本地命令与 Changeset 分别审批；本人在线 Bridge 须授权目录并报告 changeset_candidate 沙箱能力。发布不会授予设备权限。',
+        '开发协作需要连接 Rice Bridge、选择项目目录并准备测试沙箱；可在租户工作台连接设备。',
       );
     }
     if (employee.status !== 'testing' || !checksum)
@@ -144,14 +149,17 @@ export async function reviewEmployeePublication(
       await tx`select id from allrice_platform_employee_test_runs where employee_id=${employeeId}
       and revision_id=${employee.revision_id} and frozen_package_checksum=${checksum} and status='succeeded'
       and completed_at >= clock_timestamp()-interval '24 hours' limit 1`;
-    if (!test)
+    if (!test && !rapidIteration)
       errors.push(
         '当前确切运行包缺少 24 小时内的成功试用，请到调试页完成试用。',
       );
     const [provider] =
       await tx`select status from allrice_provider_status where provider='codex' and status='connected'
       and checked_at >= clock_timestamp()-interval '120 seconds'`;
-    if (definition.modelPolicy.provider !== 'openai-codex' || !provider)
+    if (
+      !rapidIteration &&
+      (definition.modelPolicy.provider !== 'openai-codex' || !provider)
+    )
       errors.push('Codex 订阅 Provider 不可用或健康状态已过期。');
     const tools = listEmployeeToolAvailability().filter((tool) =>
       definition.capabilities.toolNames.includes(tool.canonicalName),
@@ -197,7 +205,7 @@ export async function reviewEmployeePublication(
         );
         if (!matches.length)
           warnings.push(
-            `${target.organizationName} / ${target.name}：尚未登记 ${kind} 执行目标，需平台运维配置；发布员工不会自动创建环境。`,
+            `${target.organizationName} / ${target.name}：尚未连接 ${kind === 'rice_bridge' ? 'Rice Bridge，请在租户工作台连接设备并选择目录' : kind === 'cloud_mcp' ? 'MCP 服务，请在租户管理中添加连接' : '云端执行环境，请在租户管理中配置环境'}。`,
           );
         else
           warnings.push(
@@ -206,8 +214,8 @@ export async function reviewEmployeePublication(
       }
     for (const tool of tools)
       if (!tool.released)
-        warnings.push(
-          `${tool.label}：平台尚未开放，发布配置不会开启执行开关；需平台运维处理。`,
+        (rapidIteration ? errors : warnings).push(
+          `${tool.label}：执行服务当前已暂停，恢复后即可发布使用。`,
         );
     if (definition.capabilities.toolNames.includes('workspace.export.create'))
       warnings.push(
@@ -215,8 +223,13 @@ export async function reviewEmployeePublication(
       );
     const policies = targets.map((target) => {
       const parsed = RuntimePolicyControlsSchema.safeParse(target.controls);
-      const controls =
-        parsed.success && parsed.data.version === target.version
+      const controls = rapidIteration
+        ? employeePublicationPolicy(
+            target.controls,
+            definition.capabilities.toolNames,
+            target.version ?? 1,
+          )
+        : parsed.success && parsed.data.version === target.version
           ? parsed.data
           : null;
       const actions = [
@@ -244,7 +257,7 @@ export async function reviewEmployeePublication(
     });
     if (tools.some((tool) => tool.target !== 'saas'))
       warnings.push(
-        '运行时仍需执行目标、沙箱/浏览器/连接器及实际使用者授权。请在租户管理中检查实际成员的能力与环境；平台管理员不能替设备主人授权。',
+        '发布后可进入租户工作台试用。首次使用本地工具时，连接设备并选择允许访问的目录；需要确认的操作会在任务中提示。',
       );
     const before = employee.published_definition
       ? PlatformEmployeeDefinitionSchema.parse(employee.published_definition)

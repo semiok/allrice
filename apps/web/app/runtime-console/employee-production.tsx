@@ -14,6 +14,7 @@ import {
   employeeReasoningSettings,
   switchEmployeeModelProvider,
   employeeToolCatalog,
+  assembleEmployeeCapabilities,
   developmentWorkflowToolNames,
   SkillCapabilitySchema,
 } from '@allrice/contracts';
@@ -24,6 +25,7 @@ import { GeminiCredentialSettings } from './gemini-credential-settings';
 type Employee = PlatformEmployeeSummary;
 
 interface NativeSkill {
+  requiredToolRefs: string[];
   bundleChecksum?: string | null;
   resourceCount?: number;
   id: string;
@@ -38,6 +40,7 @@ interface NativeSkill {
 }
 
 interface Workspace {
+  trialUrl?: string | null;
   id: string;
   organizationName: string;
   slug: string;
@@ -49,6 +52,7 @@ interface Workspace {
 }
 
 interface DirectoryResponse {
+  rapidIteration?: boolean;
   employees: Employee[];
   skills: NativeSkill[];
   workspaces: Workspace[];
@@ -231,6 +235,9 @@ export function EmployeeProduction() {
     '请用一句话说明你的名字、职责和工作方式。不要调用任何工具。',
   );
   const [testRuns, setTestRuns] = useState<PlatformEmployeeTestRun[]>([]);
+  const [trialTargets, setTrialTargets] = useState<
+    { workspaceId: string; employeeId: string }[]
+  >([]);
   const [auditEvents, setAuditEvents] = useState<PlatformEmployeeAuditEvent[]>(
     [],
   );
@@ -386,10 +393,11 @@ export function EmployeeProduction() {
       employee.currentDraft?.definition ??
       employee.currentPublished?.definition;
     setDraft(definition ? clone(definition) : null);
-    setSelectedWorkspaces([]);
+    setSelectedWorkspaces([...employee.assignedWorkspaceIds]);
     setMessage('');
     setError('');
     setTestRuns([]);
+    setTrialTargets([]);
     setAuditEvents([]);
   }
 
@@ -405,6 +413,24 @@ export function EmployeeProduction() {
       cursor[path.at(-1)!] = value;
       return next as unknown as PlatformEmployeeDefinition;
     });
+  }
+
+  function selectCapabilities(
+    kind: 'nativeSkillIds' | 'toolNames',
+    values: string[],
+  ) {
+    invalidateReview();
+    setDraft((current) =>
+      current
+        ? assembleEmployeeCapabilities(
+            {
+              ...current,
+              capabilities: { ...current.capabilities, [kind]: values },
+            },
+            directory?.skills ?? [],
+          )
+        : current,
+    );
   }
 
   async function refresh() {
@@ -519,6 +545,75 @@ export function EmployeeProduction() {
       void loadAuditEvents(selectedId).catch(() => undefined);
     } finally {
       invalidateReview();
+      setBusy(false);
+    }
+  }
+
+  async function publishSelected(targets = selectedWorkspaces) {
+    if (!selectedId || !draft || !targets.length || busy) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    invalidateReview();
+    try {
+      const saved = await api<{
+        employee: Employee;
+        validation: { valid: boolean; errors: string[] };
+      }>(`/api/v1/admin/platform-employees/${selectedId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          definition: draft,
+          expectedRevisionId: selected?.currentDraft?.id,
+        }),
+      });
+      // Keep the new draft/CAS baseline even if a subsequent publication fails.
+      setDirectory((current) =>
+        current
+          ? {
+              ...current,
+              employees: current.employees.map((employee) =>
+                employee.id === saved.employee.id ? saved.employee : employee,
+              ),
+            }
+          : current,
+      );
+      if (saved.employee.currentDraft)
+        setDraft(clone(saved.employee.currentDraft.definition));
+      if (!saved.validation.valid)
+        throw new Error(saved.validation.errors.join('\n'));
+      const check = await api<PublicationReview>(
+        `/api/v1/admin/platform-employees/${selectedId}/review`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ workspaceIds: targets }),
+        },
+      );
+      if (!check.valid) throw new Error(check.errors.join('\n'));
+      const result = await api<{
+        valid: boolean;
+        errors?: string[];
+        workspaceIds: string[];
+        trialTargets?: { workspaceId: string; employeeId: string }[];
+      }>(`/api/v1/admin/platform-employees/${selectedId}/publish`, {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceIds: targets,
+          expectedRevisionId: check.revisionId,
+          expectedPublishedRevisionId: check.publishedRevisionId,
+          expectedPackageChecksum: check.packageChecksum,
+          policyVersions: check.policyVersions,
+        }),
+      });
+      if (!result.valid)
+        throw new Error(result.errors?.join('\n') ?? '发布失败');
+      setMessage(
+        `已发布到 ${result.workspaceIds.length} 个工作区，所选工具和执行策略已启用。现在可进入租户工作台真实试用。`,
+      );
+      await Promise.all([load(), loadAuditEvents(selectedId)]);
+      setTrialTargets(result.trialTargets ?? []);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '发布失败');
+    } finally {
       setBusy(false);
     }
   }
@@ -721,6 +816,26 @@ export function EmployeeProduction() {
   }
 
   let panel: React.ReactNode;
+  const trialLinks = trialTargets.map((target) => {
+    const workspace = directory.workspaces.find(
+      (item) => item.id === target.workspaceId,
+    );
+    if (!workspace?.trialUrl) return null;
+    const url = new URL(workspace.trialUrl);
+    url.searchParams.set('employee', target.employeeId);
+    return (
+      <a
+        className={styles.button}
+        href={url.toString()}
+        target="_blank"
+        rel="noreferrer"
+        key={target.workspaceId}
+      >
+        在 {workspace.organizationName} 真实试用此员工 →
+      </a>
+    );
+  });
+
   if (tab === 'basic') {
     panel = (
       <div className={styles.grid}>
@@ -845,7 +960,7 @@ export function EmployeeProduction() {
         <div className={styles.runtimeSourceNotice}>
           <div>
             <code>AGENTS.md</code>
-            <span>根据已选 Skill 自动生成目录和自主路由说明</span>
+            <span>勾选技能自动添加所需工具，并生成技能目录和路由说明</span>
           </div>
           <div>
             <code>SKILL.md</code>
@@ -861,9 +976,7 @@ export function EmployeeProduction() {
               disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
             }))}
             selected={draft.capabilities.nativeSkillIds}
-            onChange={(value) =>
-              update(['capabilities', 'nativeSkillIds'], value)
-            }
+            onChange={(value) => selectCapabilities('nativeSkillIds', value)}
           />
         ) : (
           <p className={styles.notice}>
@@ -1048,7 +1161,9 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p>
-          选择员工可使用的工具。保存并发布后生效，实际运行仍需满足租户策略和设备授权。
+          {directory.rapidIteration
+            ? '勾选工具后保存并发布即可启用；所需的员工能力和执行策略会自动配置。'
+            : '选择员工工具，保存并发布后生效。'}
         </p>
         <Checks
           items={(
@@ -1057,11 +1172,11 @@ export function EmployeeProduction() {
           ).map((tool) => ({
             id: tool.canonicalName,
             label: tool.label,
-            detail: `${tool.canonicalName} · ${tool.target} · ${tool.capability} · ${tool.released ? '平台已开放，运行仍须授权' : '平台未开放或状态未知，可保存配置但不能执行'}`,
+            detail: `${tool.canonicalName} · ${tool.target} · ${tool.capability} · ${tool.released ? '可用 · 发布后生效' : '服务已暂停，暂不可执行'}`,
             disabled: busy,
           }))}
           selected={draft.capabilities.toolNames}
-          onChange={(value) => update(['capabilities', 'toolNames'], value)}
+          onChange={(value) => selectCapabilities('toolNames', value)}
         />
         <div className={styles.actions}>
           <button
@@ -1069,15 +1184,12 @@ export function EmployeeProduction() {
             type="button"
             disabled={busy}
             onClick={() =>
-              update(
-                ['capabilities', 'toolNames'],
-                [
-                  ...new Set([
-                    ...draft.capabilities.toolNames,
-                    ...developmentWorkflowToolNames,
-                  ]),
-                ],
-              )
+              selectCapabilities('toolNames', [
+                ...new Set([
+                  ...draft.capabilities.toolNames,
+                  ...developmentWorkflowToolNames,
+                ]),
+              ])
             }
           >
             添加开发协作工具
@@ -1207,9 +1319,7 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p className={styles.notice}>
-          试用会先保存并自动检查当前草稿，然后借用所选租户真实可用的模型、Skill、
-          Tool Broker 运行一次预览。预览不会改变该租户已经发布的 Rice
-          配置，也不会进入租户的正式会话。
+          配置预览会保存当前草稿，并验证模型和只读工具。需要写入或执行命令的技能在此预览中不会加载。完整能力请发布后在租户工作台真实试用。
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
           <span>预览环境</span>
@@ -1244,9 +1354,22 @@ export function EmployeeProduction() {
             disabled={busy || !testPrompt.trim() || !previewWorkspaceId}
             onClick={() => void runDraftPreview()}
           >
-            {busy ? '启动中…' : '试用当前配置'}
+            {busy ? '启动中…' : '运行只读配置预览'}
           </button>
         </div>
+        {directory.rapidIteration ? (
+          <div className={styles.actions}>
+            <button
+              className={styles.button}
+              data-primary="true"
+              disabled={busy || !previewWorkspaceId}
+              onClick={() => void publishSelected([previewWorkspaceId])}
+            >
+              发布到所选租户并真实试用
+            </button>
+            {trialLinks}
+          </div>
+        ) : null}
         <div className={styles.testRuns}>
           {testRuns.length === 0 ? (
             <p className={styles.muted}>还没有配置试用记录。</p>
@@ -1357,6 +1480,22 @@ export function EmployeeProduction() {
             setSelectedWorkspaces(values);
           }}
         />
+        {directory.rapidIteration ? (
+          <div className={styles.actions}>
+            <button
+              className={styles.button}
+              data-primary="true"
+              disabled={busy || !selectedWorkspaces.length}
+              onClick={() => void publishSelected()}
+            >
+              {busy ? '正在保存并发布…' : '保存并发布所选能力'}
+            </button>
+            <p>
+              发布会自动保存草稿、检查依赖并启用所选工具。配置预览可选，不再作为发布前置条件。
+            </p>
+            {trialLinks}
+          </div>
+        ) : null}
         <button
           className={styles.button}
           disabled={
@@ -1367,11 +1506,15 @@ export function EmployeeProduction() {
           }
           onClick={() => void preflight()}
         >
-          预检发布与版本差异
+          查看发布检查与版本差异
         </button>
         {JSON.stringify(draft) !==
         JSON.stringify(selected.currentDraft?.definition) ? (
-          <p>有未保存的修改，请先保存草稿。</p>
+          <p>
+            {directory.rapidIteration
+              ? '有未保存的修改，点击“保存并发布所选能力”会一并保存。'
+              : '有未保存的修改，请先保存草稿。'}
+          </p>
         ) : null}
         {review ? (
           <section aria-label="发布预检">

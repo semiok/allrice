@@ -1,6 +1,9 @@
 import { allRiceToolManifest, type AllRiceToolName } from './tool-manifest.ts';
 import type { PlatformEmployeeDefinition } from './platform-employees.ts';
-import { runtimeGovernedActions } from './runtime-v2/policy.ts';
+import {
+  runtimeGovernedActions,
+  RuntimePolicyControlsSchema,
+} from './runtime-v2/policy.ts';
 
 /** Root workflow tools, not a grant or a child tool allowlist. */
 export const developmentWorkflowToolNames = [
@@ -121,4 +124,74 @@ export function employeeToolConfigurationErrors(
   if (definition.securityPolicy.approvalPolicy === 'autonomous')
     errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
   return errors;
+}
+
+/** Selecting a Skill/tool is the administrator's capability configuration.
+ * Resolve its implementation dependencies in the same edit, without granting
+ * a device directory, connector credential or individual external operation. */
+export function assembleEmployeeCapabilities(
+  definition: PlatformEmployeeDefinition,
+  skills: readonly { id: string; requiredToolRefs: readonly string[] }[],
+): PlatformEmployeeDefinition {
+  const selectedSkills = new Set(definition.capabilities.nativeSkillIds);
+  const names = new Set([
+    ...definition.capabilities.toolNames,
+    ...skills
+      .filter((skill) => selectedSkills.has(skill.id))
+      .flatMap((skill) => [...skill.requiredToolRefs]),
+  ]);
+  if (names.has('assistant.development')) {
+    for (const name of developmentWorkflowToolNames) names.add(name);
+  }
+  const tools = employeeToolCatalog.filter((tool) =>
+    names.has(tool.canonicalName),
+  );
+  const capabilities = new Set<string>(tools.map((tool) => tool.capability));
+  if (names.has('cloud.mcp.call')) capabilities.add('network:outbound');
+  const bridgeTools = tools.filter((tool) => tool.target === 'bridge');
+  const bridgeAccess = bridgeTools.some(
+    (tool) => tool.capability !== 'storage:read',
+  )
+    ? 'read_write'
+    : bridgeTools.length && definition.securityPolicy.bridgeAccess === 'none'
+      ? 'read_only'
+      : definition.securityPolicy.bridgeAccess;
+  return {
+    ...definition,
+    capabilities: { ...definition.capabilities, toolNames: [...names] },
+    securityPolicy: {
+      ...definition.securityPolicy,
+      bridgeAccess,
+      deniedCapabilities: definition.securityPolicy.deniedCapabilities.filter(
+        (capability) => !capabilities.has(capability),
+      ),
+    },
+  };
+}
+
+/** Workspace execution settings resulting from an explicit employee publication.
+ * Unselected actions retain their rules; exact-operation approvals stay intact. */
+export function employeePublicationPolicy(
+  current: unknown,
+  toolNames: readonly string[],
+  version: number,
+) {
+  const previous = RuntimePolicyControlsSchema.safeParse(current);
+  const selected = new Set(toolNames);
+  const actions = new Set(
+    employeeToolCatalog
+      .filter((tool) => selected.has(tool.canonicalName))
+      .flatMap((tool) => tool.policyActions),
+  );
+  return RuntimePolicyControlsSchema.parse({
+    version,
+    enabled: true,
+    mode: 'execute',
+    rules: [
+      ...(previous.success
+        ? previous.data.rules.filter((rule) => !actions.has(rule.action))
+        : []),
+      ...[...actions].sort().map((action) => ({ action, effect: 'allow' })),
+    ],
+  });
 }

@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import {
   CloudCommandSchema,
@@ -189,8 +190,8 @@ export async function listCloudRuntimeOperations(
           database,
         ),
         enabled:
-          process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1',
+          runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),
         proposal: {
           kind: 'mcp',
           endpoint: row.endpoint ?? 'Endpoint unavailable',
@@ -213,8 +214,8 @@ export async function listCloudRuntimeOperations(
         snapshot,
         mcpAuthorization: null,
         enabled:
-          process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1',
+          runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),
         proposal: {
           kind: 'cloud',
           script: payload.arguments.script,

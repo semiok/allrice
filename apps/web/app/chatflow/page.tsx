@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { ChatFlowClient } from './chatflow-client';
 import {
   localCommandFeatureEnabled,
@@ -11,7 +12,7 @@ export const dynamic = 'force-dynamic';
 export default function ChatFlowPage() {
   return (
     <ChatFlowClient
-      workbenchEnabled={process.env.ALLRICE_WORKBENCH_ENABLED === '1'}
+      workbenchEnabled={runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED')}
       localCommandsEnabled={localCommandFeatureEnabled()}
       localMcpEnabled={localMcpEnabled()}
       experienceEnabled={experienceReviewEnabled()}

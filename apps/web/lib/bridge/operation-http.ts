@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 
 import {
@@ -253,7 +254,7 @@ export function createRuntimeBridgeHttpHandler(input: {
       if (action === 'service') {
         if (
           !ledger.exchangeLocalService ||
-          process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '1'
+          !runtimeFeatureEnabled('ALLRICE_LOCAL_SERVICE_ENABLED')
         )
           throw new HttpProblem(404, 'FEATURE_DISABLED');
         const body = RuntimeLocalServiceExchangeSchema.parse(

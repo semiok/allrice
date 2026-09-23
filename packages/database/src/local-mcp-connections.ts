@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
@@ -66,10 +67,10 @@ type ToolRow = {
   risk: FrozenMcpTool['risk'];
 };
 export const localMcpEnabled = () =>
-  process.env.ALLRICE_LOCAL_MCP_ENABLED === '1' &&
-  process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-  process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_LOCAL_MCP_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_LOCAL_COMMAND_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED');
 
 function scopeFor(
   context: Pick<RequestContext, 'actor' | 'organizationId'>,

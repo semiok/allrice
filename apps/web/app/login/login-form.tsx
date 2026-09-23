@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import { loginDestination } from '../../lib/portal/login-destination';
 
 export function LoginForm(props: {
   bootstrap?: { username: string; homePath: string };
@@ -26,7 +27,11 @@ export function LoginForm(props: {
     if (response.ok) {
       const result = (await response.json()) as { homePath?: string };
       window.location.assign(
-        result.homePath ?? props.bootstrap?.homePath ?? '/chatflow',
+        loginDestination(
+          new URLSearchParams(window.location.search).get('next'),
+          result.homePath ?? props.bootstrap?.homePath ?? '/chatflow',
+          window.location.origin,
+        ),
       );
     } else {
       setError('登录失败，请检查账号和密码。');

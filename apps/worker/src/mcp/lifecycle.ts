@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createMcpStore, type McpStore } from '@allrice/database';
 import {
   McpError,
@@ -13,7 +14,7 @@ export async function executeNextMcpDiscovery(input: {
   store?: McpStore;
   transport?: ReturnType<typeof createMcpTransport>;
 }) {
-  if (process.env.ALLRICE_CLOUD_MCP_ENABLED !== '1') return false;
+  if (!runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED')) return false;
   const store = input.store ?? createMcpStore();
   const lease = await store.claimDiscovery(input.workerId);
   if (!lease) return false;
@@ -49,7 +50,7 @@ export async function invokeFrozenMcpTool(input: {
   store?: McpStore;
   transport?: ReturnType<typeof createMcpTransport>;
 }) {
-  if (process.env.ALLRICE_CLOUD_MCP_ENABLED !== '1')
+  if (!runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED'))
     throw new McpError('MCP_UNAVAILABLE');
   const store = input.store ?? createMcpStore();
   const assertAuthorized = async () => {

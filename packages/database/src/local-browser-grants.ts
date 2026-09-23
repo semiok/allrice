@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -23,9 +24,9 @@ import {
 } from './runtime-policy.ts';
 
 export const localBrowserEnabled = () =>
-  process.env.ALLRICE_LOCAL_BROWSER_ENABLED === '1' &&
-  process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_LOCAL_BROWSER_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_BROWSER_CONTROL_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
 export const localBrowserPrincipal = (
   device: BridgeDevice,
 ): RuntimePolicyPrincipal => ({

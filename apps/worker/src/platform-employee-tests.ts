@@ -126,6 +126,7 @@ export async function executeNextPlatformEmployeeTest(input: {
       generation: 0,
       maxOutputTokens: 8_000,
       tools,
+      authorizedToolNames: test.runtimeProfile.toolNames,
       onToolCall:
         tools.length > 0
           ? (call) =>

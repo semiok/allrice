@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { z } from 'zod';
 import {
   AssistantPriceSnapshotSchema,
@@ -87,7 +88,7 @@ export function createAssistantPricing(
     const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
     if (
       admitting &&
-      (process.env.ALLRICE_ASSISTANTS_ENABLED !== '1' ||
+      (!runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') ||
         assistant.configuration.allowAssistants !== true ||
         root.cancel_request_id ||
         root.deadline_at <= clock!.now)
