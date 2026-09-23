@@ -13,6 +13,8 @@ import {
 } from '../api-error-response';
 
 const publicationConflicts: Readonly<Record<string, string>> = {
+  cloud_runner_unavailable:
+    '该租户尚无可用的云端计算环境，暂未发布。连接并验证云端沙箱后重试，所选工具会自动配置使用授权。',
   platform_employee_published_revision_immutable:
     '已发布版本不能重新编译。请先保存为新草稿，再编译和试用。',
   platform_employee_draft_unavailable: '当前草稿不可用，请刷新并保存新草稿。',
