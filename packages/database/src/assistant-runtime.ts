@@ -21,6 +21,7 @@ import {
 } from './runtime-ledger/ledger.ts';
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import { createDevelopmentCooperation } from './development-cooperation.ts';
+import { refreshTaskClock, readTaskClock } from './task-clock.ts';
 import {
   observesRootTokens,
   isTokenMetric,
@@ -208,6 +209,8 @@ export function createAssistantRuntime(
     root.configuration = AssistantRunConfigurationSchema.parse(
       root.configuration,
     );
+    const clock = await refreshTaskClock(tx, rootRunId);
+    if (clock) root.deadline_at = clock.deadlineAt;
     root.observeTokens = await observesRootTokens(
       tx,
       root.task,
@@ -236,6 +239,8 @@ export function createAssistantRuntime(
     lease: AssistantWorkerLease,
     admitting = true,
   ) {
+    const clock = await refreshTaskClock(tx, root.root_run_id);
+    if (clock) root.deadline_at = clock.deadlineAt;
     const [job] =
       await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
       where j.id=${lease.jobId} and j.run_id=${root.root_run_id}
@@ -582,6 +587,24 @@ export function createAssistantRuntime(
         return { cancelRequested: false };
       });
     },
+    /** Trusted native idle proof, not inferred from the mere presence of a
+     * child. Concurrent model admissions win over a delayed idle callback. */
+    async markNativeIdle(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      runId: string;
+      worker: AssistantWorkerLease;
+    }) {
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker);
+        await active(tx, root, input.runId);
+        await tx`update allrice_assistant_instances set status='waiting',updated_at=clock_timestamp()
+          where run_id=${input.runId} and status='running'
+            and not exists(select 1 from allrice_assistant_model_admissions where run_id=${input.runId} and finished_at is null)`;
+        await refreshTaskClock(tx, root.root_run_id);
+      });
+    },
     async getTree(context: RequestContext, input: { runId: string }) {
       return db.begin(async (tx) => {
         const root = await owner(tx, context, input.runId);
@@ -615,6 +638,7 @@ export function createAssistantRuntime(
         >`select metric from allrice_assistant_usage where root_run_id=${root.root_run_id} and settled_amount is null union select metric from allrice_runtime_reservations where root_run_id=${root.root_run_id} and settled_amount is null`;
         return {
           rootRunId: root.root_run_id,
+          timing: await readTaskClock(tx, root.root_run_id),
           configuration: root.configuration,
           cancelRequested: !!root.cancel_request_id,
           instances: instances.map(view),
@@ -966,6 +990,7 @@ export function createAssistantRuntime(
           await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${input.callId},${row.run_id},${root.root_run_id},${metric},${amount})`;
         }
         await tx`insert into allrice_assistant_model_admissions(call_id,run_id,root_run_id,requested_output_tokens,granted_output_tokens) values(${input.callId},${row.run_id},${root.root_run_id},${input.requestedOutputTokens},${outputTokens})`;
+        await tx`update allrice_assistant_instances set status='running',updated_at=clock_timestamp() where run_id=${row.run_id} and status='waiting'`;
         await assertLease(tx, root, input.worker);
         return { prepared: true, outputTokens };
       });
@@ -1214,6 +1239,7 @@ export function createAssistantRuntime(
           await tx`update allrice_assistant_usage set result_digest=${input.resultDigest} where call_id=${input.callId}`;
         if (admission)
           await tx`update allrice_assistant_model_admissions set finished_at=coalesce(finished_at,clock_timestamp()) where call_id=${input.callId}`;
+        await refreshTaskClock(tx, root.root_run_id);
       });
     },
     async recordResult(input: {

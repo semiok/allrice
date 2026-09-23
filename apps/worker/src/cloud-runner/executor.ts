@@ -8,6 +8,7 @@ import {
   cloudStableId,
   getDatabase,
   runtimePolicyDigest,
+  taskDeadlineOpen,
 } from '@allrice/database';
 import {
   CloudCommandSchema,
@@ -56,7 +57,9 @@ export async function runCloudCommandOperation(
   const cancel = () =>
     ledger.cancelRoot(scope, binding.task.rootRunId, randomUUID());
   if (!leaseToken) {
-    while (Date.now() < Date.parse(created.deadlineAt)) {
+    while (
+      await taskDeadlineOpen(db, binding.task.rootRunId, created.deadlineAt)
+    ) {
       if (options.signal?.aborted || !(await currentWorker(created, db))) {
         if (options.signal?.aborted) await cancel();
         return {

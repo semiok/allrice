@@ -32,6 +32,7 @@ describe('model governance preflight', () => {
     expect(codexTokenPolicy()).toBe('observe');
     const unknown = {
       ...quota,
+      usedRuns: 9999,
       usedTokens: 99_000_000,
       reservedTokenBudget: 1_000_000,
       usageComplete: false,
@@ -49,7 +50,7 @@ describe('model governance preflight', () => {
       monthlyTokenLimit: 1,
       concurrentRunLimit: 2,
       maxRuntimeMs: 60000,
-      usedRuns: 1,
+      usedRuns: 9999,
       usedTokens: 99_000_000,
       activeRuns: 1,
     };

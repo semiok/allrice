@@ -292,7 +292,13 @@ export async function executeEmployeeRun({
   let routeCacheUsageKnown = true;
   let routeExecutionStarted = false;
   let subscriptionSnapshotCreated = false;
-  const loopGuard = new AgentLoopGuard();
+  const loopGuard = new AgentLoopGuard(
+    undefined,
+    resolved.executionSnapshot?.schemaVersion === 2 &&
+      resolved.executionSnapshot.taskRuntimePolicy
+      ? 'durable'
+      : 'wall',
+  );
   const guardedHarnessEvent = async (event: HarnessEvent) => {
     try {
       loopGuard.observe(event);
@@ -654,7 +660,11 @@ export async function executeEmployeeRun({
               ].join('\n'),
             ),
           }),
-          requestedRuntimeMs: frozenModelSnapshot.runLimits.timeoutMs,
+          requestedRuntimeMs: executionSnapshot.runtimePolicy.timeoutMs,
+          ...(executionSnapshot.schemaVersion === 2 &&
+          executionSnapshot.taskRuntimePolicy
+            ? { runId: execution.context.runId }
+            : {}),
         });
       } catch (error) {
         // No dispatch occurred. The existing pre-dispatch failure path records

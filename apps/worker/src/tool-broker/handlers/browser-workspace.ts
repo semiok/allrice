@@ -8,6 +8,8 @@ import {
   requestBrowserControl,
   readCurrentBrowserWorkspace,
   cloudStableId,
+  linkTaskOperationCall,
+  getDatabase,
 } from '@allrice/database';
 import { BrowserWorkspaceToolInputSchema } from '../../browser-control/tool-input.js';
 import {
@@ -95,6 +97,11 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
     ctx,
     payload,
     cloudStableId(`browser-call:${input.context.runId}:${input.call.id}`),
+  );
+  await linkTaskOperationCall(
+    getDatabase(),
+    op.snapshot.binding.attempt.operationId,
+    input.call.id,
   );
   const result = await waitBrowserOperationResult(
     ctx,

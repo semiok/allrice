@@ -54,6 +54,7 @@ function fixture(result = storedResult) {
   const bridge = vi.fn(async (method) => {
     if (method === 'settled') return result;
     if (method === 'adopt-result') return { adopted: true };
+    if (method === 'native-idle') return { recorded: true };
     throw Error(`unexpected bridge call: ${method}`);
   });
   const ctx = {

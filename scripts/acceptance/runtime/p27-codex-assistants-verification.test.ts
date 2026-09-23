@@ -483,12 +483,15 @@ describe('ordinary follow-up subscription quota semantics, no database or provid
     expect(mixed).toMatchObject({ usedCostCents: null, unknownCostRuns: 1 });
   });
 
-  it.each([[{ usedRuns: 10 }, 'MODEL_RUN_QUOTA_EXCEEDED']])(
-    'keeps mandatory internal quota checks %j',
-    (change, code) => {
+  it.each([{ usedRuns: 10 }, { usedRuns: 10000 }])(
+    'observes subscription monthly request counts but preserves API limits %j',
+    (change) => {
       expect(() =>
         assertQuotaAvailable({ ...quota(), ...change }, 'subscription'),
-      ).toThrow(code);
+      ).not.toThrow();
+      expect(() =>
+        assertQuotaAvailable({ ...quota(), ...change }, 'token_metered'),
+      ).toThrow('MODEL_RUN_QUOTA_EXCEEDED');
     },
   );
   it.each([{ usageComplete: false }, { usedTokens: 1000 }])(

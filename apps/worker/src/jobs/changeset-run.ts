@@ -4,6 +4,7 @@ import {
   createChangesetOperation,
   readChangesetEvidence,
   getDatabase,
+  taskDeadlineOpen,
 } from '@allrice/database';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import { HandlerError } from '../errors.js';
@@ -22,7 +23,14 @@ export async function executeChangesetRun({
   const scope = created.snapshot.binding.task.scope;
   try {
     while (true) {
-      if (signal.aborted || Date.now() >= Date.parse(created.deadlineAt))
+      if (
+        signal.aborted ||
+        !(await taskDeadlineOpen(
+          getDatabase(),
+          execution.context.runId,
+          created.deadlineAt,
+        ))
+      )
         throw new HandlerError(
           'CHANGESET_CANCELED',
           '文件任务停止；请查看逐文件执行记录。',

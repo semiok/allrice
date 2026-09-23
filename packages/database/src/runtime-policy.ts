@@ -612,7 +612,7 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
 export async function requestRuntimeActionApproval(
   options: RuntimePolicyOptions,
   bindingInput: unknown,
-  lifetimeMs = 600_000,
+  lifetimeMs = 3_600_000,
   database: Database = getDatabase(),
 ): Promise<RuntimeActionApprovalRequest> {
   if (

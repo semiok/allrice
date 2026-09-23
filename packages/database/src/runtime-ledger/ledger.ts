@@ -43,6 +43,7 @@ import {
 } from './types.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
+import { refreshTaskClock, readTaskClock } from '../task-clock.ts';
 import {
   observesRootTokens,
   isTokenMetric,
@@ -138,6 +139,8 @@ async function lockRoot(tx: Tx, scopeInput: RuntimeScope, rootRunId: string) {
   `;
   if (!root || !matchesRuntimeScope(root.task.scope, scope))
     throw new RuntimeLedgerError('scope_mismatch');
+  const clock = await refreshTaskClock(tx, rootRunId);
+  if (clock) root.deadline_at = clock.deadlineAt;
   return root;
 }
 
@@ -247,6 +250,7 @@ async function append(
   `;
   row.snapshot = snapshot;
   row.next_sequence = String(Number(row.next_sequence) + 1);
+  await refreshTaskClock(tx, snapshot.binding.task.rootRunId);
   return snapshot;
 }
 
@@ -685,6 +689,9 @@ export function createRuntimeOperationLedger(options: {
           RootRow[]
         >`select * from allrice_runtime_roots where root_run_id = ${task.runId} for update`;
         if (prior) {
+          // A durable active-time clock owns this mutable projection. Re-entry
+          // may carry a pre-wait deadline; it must neither reset nor extend it.
+          const clock = await readTaskClock(tx, task.rootRunId);
           const rows = await tx<
             BudgetRow[]
           >`select * from allrice_runtime_budgets where root_run_id = ${task.runId} order by metric`;
@@ -697,7 +704,7 @@ export function createRuntimeOperationLedger(options: {
           }));
           if (
             !runtimeContractEqual(prior.task, task) ||
-            prior.deadline_at.toISOString() !== deadlineAt ||
+            (!clock && prior.deadline_at.toISOString() !== deadlineAt) ||
             !runtimeContractEqual(existing, budgets)
           )
             throw new RuntimeLedgerError('idempotency_conflict');

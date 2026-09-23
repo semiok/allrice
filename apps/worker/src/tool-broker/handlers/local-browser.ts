@@ -8,6 +8,8 @@ import {
   readCurrentBrowserWorkspace,
   cloudStableId,
   localBrowserEnabled,
+  linkTaskOperationCall,
+  getDatabase,
 } from '@allrice/database';
 import { LocalBrowserToolInputSchema } from '../../browser-control/local-tool-input.js';
 import { waitBrowserOperationResult } from '../../browser-control/controller.js';
@@ -100,6 +102,11 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
     ctx,
     payload,
     cloudStableId(`local-browser-call:${input.context.runId}:${input.call.id}`),
+  );
+  await linkTaskOperationCall(
+    getDatabase(),
+    op.snapshot.binding.attempt.operationId,
+    input.call.id,
   );
   const result = await waitBrowserOperationResult(
     ctx,

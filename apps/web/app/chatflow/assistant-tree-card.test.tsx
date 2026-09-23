@@ -49,6 +49,7 @@ function fixture(): AssistantTreeView {
     messages: [],
     results: [],
     budgets: [],
+    timing: null,
   };
 }
 function render(tree: AssistantTreeView, detailed = true) {

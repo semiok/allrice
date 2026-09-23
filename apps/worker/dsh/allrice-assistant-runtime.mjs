@@ -772,6 +772,8 @@ export function createGovernedAssistantNativeRuntime(
       // Await native loops, not a second execution loop. A parent's result
       // adoption may start a further bounded child, hence a bounded fixed point.
       for (let pass = 0; pass < 18; pass++) {
+        if (root.status === 'idle')
+          await bridge('native-idle', { nativeSessionId: root.id }, signal());
         const before = bindings.size;
         await Promise.all(
           [...bindings.keys()]
