@@ -60,6 +60,7 @@ rc.3 不再提供旧 `writeBatchMaxDelayMs` 调试配置。P24 的未 checkpoint
 - `pnpm dsh:golden-replay`：6 个文件 / **67 项通过**，含单写入者迁移拒绝；覆盖受限握手、消息、搜索 Broker、工具、附件、Skill、取消、压缩、历史等待与进展暂停。
 - P24 原生协作/冷恢复/杀进程：**5 项通过**；原生交付及 Codex wire 窄接口：**40 项通过**。
 - 真实 PostgreSQL：**47 个文件 / 600 项全部通过，无 skipped**。覆盖 clock/progress/native-wait、P25 Worker 恢复、助手权限/交付/用量、MET-144 开发协作、冻结 Skill 与 MCP/运行策略。
+- 订阅生命周期/增量迁移专用 PostgreSQL 套件：**7 个文件 / 107 项通过**。同步更新 P27 的原生夹具调用，并把该夹具纳入跨应用 typecheck，避免门控测试跳过时遗漏接口错误。
 - 管理员：**2 个文件 / 4 项通过**。`server.integration.test.mjs` 实际启动 rc.3，使用独立临时 home 与合成密码，同时验证原生直连仍为 401。
 - 冻结锁安装、format、lint、全仓与跨应用 typecheck、build 通过。全量本机首次 2869 passed / 8 failed / 1107 skipped：8 个失败均为本地 Playwright 包内额外生成的 `node_modules/.bin` 被完整性检查拒绝。隔离生成物后 frozen install 通过，该文件 **8/8 通过**；未修改 Bridge 校验。CI 使用干净安装，完整结果以 PR 当前 SHA 为准。
 
