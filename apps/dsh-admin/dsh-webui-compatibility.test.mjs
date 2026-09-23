@@ -64,6 +64,23 @@ describe('DSH WebUI compatibility adapter', () => {
     });
   });
 
+  it('keeps the AllRice status token out of the native Lab and its tools', () => {
+    const invocation = createDshWebUiInvocation({
+      ...options,
+      inheritedEnvironment: {
+        ...options.inheritedEnvironment,
+        ALLRICE_CAPABILITY_SYNC_TOKEN: 'private-readonly-token',
+        ALLRICE_CAPABILITY_SYNC_BASE_URL: 'http://web:3000',
+      },
+    });
+    expect(invocation.options.env).not.toHaveProperty(
+      'ALLRICE_CAPABILITY_SYNC_TOKEN',
+    );
+    expect(invocation.options.env).not.toHaveProperty(
+      'ALLRICE_CAPABILITY_SYNC_BASE_URL',
+    );
+  });
+
   it('starts DSH only through the compatibility invocation', () => {
     const child = { on: vi.fn() };
     const spawn = vi.fn(() => child);

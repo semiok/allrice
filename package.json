@@ -45,7 +45,7 @@
     "lint": "eslint . --max-warnings=0",
     "met62:verify": "pnpm acceptance:release-gate",
     "met62:auth-smoke": "pnpm acceptance:platform-governance",
-    "test": "vitest run",
+    "test": "pnpm --filter @allrice/contracts build && vitest run",
     "test:compose": "bash scripts/compose-smoke.sh",
     "typecheck": "pnpm -r --if-present run typecheck"
   },

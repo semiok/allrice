@@ -65,3 +65,57 @@ export interface RuntimeCapabilityInventory {
   workers: WorkerCapabilityObservation[];
   publications: RuntimeCapabilityPublication[];
 }
+
+/** Read-only aggregate exported to the DSH Lab; no tenant identities or manifests. */
+export const AllriceCapabilitySummarySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    checkedAt: TimestampSchema,
+    webReleaseSha: z.string().max(100).nullable(),
+    workerReleaseShas: z.array(z.string().max(100)).max(500),
+    versions: z.array(z.string().max(100)).max(500),
+    onlineWorkers: z.number().int().nonnegative(),
+    componentCount: z.string().max(30),
+    enhancementCount: z.string().max(30),
+    availableSkills: z.number().int().nonnegative(),
+    publishedSkills: z.number().int().nonnegative(),
+    publications: z.number().int().nonnegative(),
+    capabilities: z
+      .array(
+        z
+          .object({
+            id: z.string().max(100),
+            status: z.string().max(200),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict();
+
+export const DshNativeCapabilitySnapshotSchema = z
+  .object({
+    type: z.literal('allrice/admin-native-capabilities'),
+    components: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(200),
+            name: z.string().min(1).max(200),
+            state: z.enum([
+              'active',
+              'disabled',
+              'pending',
+              'failed',
+              'unknown',
+            ]),
+          })
+          .strict(),
+      )
+      .max(1000),
+  })
+  .strict();
+
+export type AllriceCapabilitySummary = z.infer<
+  typeof AllriceCapabilitySummarySchema
+>;

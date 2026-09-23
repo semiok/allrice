@@ -108,6 +108,45 @@ Integrated optional capabilities link to the existing employee configuration,
 trial and tenant publication flow. Native experiments remain in the Lab;
 execution and file changes continue through their existing approval paths.
 
+## Live Lab state and AllRice sync
+
+The Lab's native `版本与能力` section now polls its authenticated same-origin
+`/api/allrice/capabilities` endpoint every ten seconds. Its two panels remain
+independent:
+
+- **DSH 实际运行状态** comes from the running native loader, sent over private
+  parent/child IPC every five seconds. It lists each non-group plugin and its
+  active, disabled, pending, failed or unknown state. Counts therefore describe
+  actual loaded plugins, unlike the Worker's installed configuration count.
+  The gateway timestamps receipt, expires reports after twenty seconds, and
+  reports an unknown version for a custom executable. No configs, errors,
+  credentials or local module paths cross this telemetry boundary.
+- **AllRice 实际接入状态** comes from the same inventory and projection used by
+  the AllRice console: online Workers, engine/build versions, configured
+  components, enhancements, available/published Skills and tenant employee
+  versions. Integrated capability badges use actual Worker/Web gates and
+  tenant publication/execute policies. Unavailable data is shown as unknown;
+  failure on one side does not hide successful facts on the other.
+
+Configure a random `ALLRICE_CAPABILITY_SYNC_TOKEN` (at least 32 characters) in
+both **Web and the Lab gateway**, and set the gateway's
+`ALLRICE_CAPABILITY_SYNC_BASE_URL` to the corresponding Web origin (Compose:
+`http://web:3000`; local Dev Web: `http://127.0.0.1:3001`). Use the private
+service network or HTTPS between hosts. The fixed read-only
+`/api/v1/internal/runtime-capabilities` endpoint accepts only this token and
+exports aggregate facts, never tenant names/IDs or employee manifests. The
+exact route bypasses portal cookies but validates its token before any reads;
+other APIs retain their existing authentication. The token is removed from
+the native DSH subprocess environment and never returned to the browser.
+Redirects, responses over 64 KiB, invalid schemas and snapshots older than
+30 seconds fail to unknown. Requests time out after four seconds.
+
+`@allrice/dsh-admin` now consumes the built contracts package. Build contracts
+before starting the gateway locally (`pnpm --filter @allrice/contracts build`);
+the Docker image and root test command do this automatically. Shared capability
+descriptions and architecture comparisons remain documentation, not evidence
+that a plugin is currently running or a tenant may execute it.
+
 ## Temporary portals
 
 | Host family      | Surface                 | Current authority                                          |

@@ -67,6 +67,9 @@ importers:
 
   apps/dsh-admin:
     dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@allrice/dsh-runtime-diff':
         specifier: workspace:*
         version: link:../../packages/dsh-runtime-diff

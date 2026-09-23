@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { get } from 'node:http';
+import { get, createServer as httpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
@@ -32,6 +32,44 @@ it('boots the pinned native WebUI behind both authentication boundaries', async 
     nativePort = await port();
   const gateway = `http://127.0.0.1:${gatewayPort}`;
   const native = `http://127.0.0.1:${nativePort}`;
+  const syncToken = 'synthetic-readonly-sync-token-32-bytes';
+  let syncRequests = 0,
+    syncMode = 'available';
+  const sync = httpServer((req, res) => {
+    syncRequests++;
+    if (
+      req.url !== '/api/v1/internal/runtime-capabilities' ||
+      req.headers.authorization !== `Bearer ${syncToken}`
+    ) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    res.writeHead(syncMode === 'unavailable' ? 503 : 200, {
+      'content-type': 'application/json',
+    });
+    res.end(
+      JSON.stringify({
+        schemaVersion: 1,
+        checkedAt: new Date(
+          Date.now() - (syncMode === 'stale' ? 60000 : 0),
+        ).toISOString(),
+        webReleaseSha: 'synthetic-release',
+        workerReleaseShas: [],
+        versions: ['test-version'],
+        onlineWorkers: 1,
+        componentCount: '32',
+        enhancementCount: '7',
+        availableSkills: 11,
+        publishedSkills: 10,
+        publications: 3,
+        capabilities: [{ id: 'assistants', status: 'Worker 功能开关未开启' }],
+      }),
+    );
+  });
+  sync.listen(0, '127.0.0.1');
+  await once(sync, 'listening');
+
   const child = spawn(
     process.execPath,
     [fileURLToPath(new URL('./server.mjs', import.meta.url))],
@@ -44,6 +82,8 @@ it('boots the pinned native WebUI behind both authentication boundaries', async 
         DSH_HOME: root,
         ALLRICE_DSH_ADMIN_HOME: root,
         ALLRICE_DSH_ADMIN_CREDENTIALS_PATH: join(root, 'credentials.yaml'),
+        ALLRICE_CAPABILITY_SYNC_TOKEN: syncToken,
+        ALLRICE_CAPABILITY_SYNC_BASE_URL: `http://127.0.0.1:${sync.address().port}`,
         ALLRICE_DSH_ADMIN_HOST: '127.0.0.1',
         ALLRICE_DSH_ADMIN_PORT: String(gatewayPort),
         ALLRICE_DSH_WEBUI_PORT: String(nativePort),
@@ -72,6 +112,8 @@ it('boots the pinned native WebUI behind both authentication boundaries', async 
         { timeout: 15000 },
       )
       .toBe(200);
+    expect((await request('/api/allrice/capabilities')).status).toBe(303);
+    expect(syncRequests).toBe(0);
     expect((await request('/')).status).toBe(303);
     expect((await request('/api/connection')).status).toBe(303);
     expect(
@@ -131,6 +173,57 @@ it('boots the pinned native WebUI behind both authentication boundaries', async 
     expect((await fetch(native + '/', { redirect: 'manual' })).status).toBe(
       401,
     );
+    let status;
+    await expect
+      .poll(
+        async () => {
+          const response = await request('/api/allrice/capabilities', {
+            headers: { cookie },
+          });
+          expect(response.headers.get('cache-control')).toBe('no-store');
+          status = await response.json();
+          return (
+            status.native?.components.filter((c) => c.state === 'active')
+              .length ?? 0
+          );
+        },
+        { timeout: 15000 },
+      )
+      .toBeGreaterThan(5);
+    expect(status.native.version).toBe('0.1.5-rc.3');
+    expect(status.allrice.data).toMatchObject({
+      componentCount: '32',
+      publishedSkills: 10,
+    });
+    expect(JSON.stringify(status)).not.toContain(syncToken);
+    expect(JSON.stringify(status)).not.toContain(root);
+    const syncCount = syncRequests;
+    expect(
+      (
+        await request('/api/allrice/capabilities', {
+          headers: { cookie, origin: 'https://untrusted.invalid' },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request('/api/allrice/capabilities', {
+          method: 'POST',
+          headers: { cookie },
+        })
+      ).status,
+    ).toBe(405);
+    expect(syncRequests).toBe(syncCount);
+    for (const mode of ['unavailable', 'stale']) {
+      syncMode = mode;
+      const failed = await (
+        await request('/api/allrice/capabilities', { headers: { cookie } })
+      ).json();
+      expect(failed.allrice).toEqual({ status: 'unavailable', data: null });
+      expect(failed.native.components.some((c) => c.state === 'active')).toBe(
+        true,
+      );
+    }
     // A native 404 proves authenticated API routing, distinct from its 401/403 fence.
     const api = await request('/api/allrice-missing-route', {
       headers: { cookie, origin: gateway },
@@ -154,6 +247,7 @@ it('boots the pinned native WebUI behind both authentication boundaries', async 
   } finally {
     stop(child);
     await closed;
+    await new Promise((resolve) => sync.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
 }, 60000);
