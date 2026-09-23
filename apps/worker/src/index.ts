@@ -15,6 +15,8 @@ import {
   markWorkerDshRuntimesOffline,
   replaceWorkerDshRuntimeInventory,
   syncAutomationRuns,
+  recordWorkerCapabilities,
+  removeWorkerCapabilities,
 } from '@allrice/database';
 
 import {
@@ -27,6 +29,7 @@ import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { executeNextMcpDiscovery } from './mcp/lifecycle.js';
 import { recoverMcpRuntimeOperations } from './mcp/executor.js';
 import { recoverCloudCommandOperations } from './cloud-runner/executor.js';
+import { readWorkerCapabilities } from './harness/runtime-capabilities.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -154,18 +157,25 @@ async function refreshCodexProviderStatus() {
   }
 }
 
-async function refreshDshRuntimeInventory() {
-  try {
-    await replaceWorkerDshRuntimeInventory({
+let dshInventoryTask: Promise<void> | null = null;
+function refreshDshRuntimeInventory() {
+  if (stopping || dshInventoryTask) return;
+  dshInventoryTask = Promise.allSettled([
+    Promise.resolve().then(() =>
+      recordWorkerCapabilities(readWorkerCapabilities(workerId)),
+    ),
+    replaceWorkerDshRuntimeInventory({
       workerId,
       runtimes: getHarnessRouter().runtimeInventory(),
+    }),
+  ])
+    .then((results) => {
+      if (results.some((result) => result.status === 'rejected'))
+        console.error('[MET-90] DSH runtime inventory sync failed');
+    })
+    .finally(() => {
+      dshInventoryTask = null;
     });
-  } catch (error) {
-    console.error('[MET-90] DSH runtime inventory sync failed', {
-      message:
-        error instanceof Error ? error.message : 'runtime_inventory_failed',
-    });
-  }
 }
 
 const server = createServer((request, response) => {
@@ -352,7 +362,9 @@ async function shutdown(signal: string) {
   if (mcpRecoveryTask) await mcpRecoveryTask;
   await codexAuthorizationBroker.close();
   await closeHarnessAdapters();
+  await dshInventoryTask;
   await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);
+  await removeWorkerCapabilities(workerId).catch(() => undefined);
   await closeDatabase();
   process.exit(0);
 }

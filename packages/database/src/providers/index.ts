@@ -1,5 +1,6 @@
 /** Canonical model Provider and DSH runtime-domain surface. */
 export * from './dsh-runtime-registry.ts';
+export * from './runtime-capabilities.ts';
 export * from './model-governance.ts';
 export * from './usage-budget-review.ts';
 export * from './model-pool.ts';

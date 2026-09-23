@@ -75,13 +75,34 @@ The section records three explicit sets:
 - capabilities supplied only by AllRice, such as ChatFlow, Tool Broker,
   Employee capability assembly and Rice Bridge.
 
-Both administrator surfaces display the pinned build version and the shared
-`packages/dsh-runtime-diff/capabilities.json` catalog by default. The Lab gateway
-adds the version and catalog to authenticated HTML; the AllRice console uses
-the same build inputs. They distinguish integrated features, current upstream
-reuse candidates and alpha-only previews. The catalog's review version is
-shown as stale when it differs from the build version. These are build facts,
-not a claim that every Worker or tenant has enabled every capability.
+Both administrator surfaces share the version-reviewed descriptions in
+`packages/dsh-runtime-diff/capabilities.json`. The Lab gateway reads its own
+installed DSH package version into authenticated HTML. AllRice's header labels
+its build version; the capability page reads live Worker versions and facts
+from the administrator-only, uncached `/api/v1/admin/runtime-console/capabilities`.
+The descriptions distinguish integrated features, upstream reuse candidates
+and alpha-only previews; mismatched Worker versions mark the review as stale.
+
+Workers report every five seconds into `allrice_runtime_metadata`, under a
+worker-specific `dsh-worker-capabilities:` key. Reports contain installed
+package versions, the actual Cordis composition digest and entry states, and
+the existing tool-availability checks evaluated in the Worker process. No
+config values, credentials or filesystem paths are published. Upstream's YAML
+parser preserves `!!js` expressions without evaluating them. Unsupported
+custom executables or unreadable profiles report unknown; disabled, conditional
+and missing entries are excluded from the configured count. These facts describe
+the composition for new tasks, not currently loaded idle processes.
+
+The API expires heartbeats after 20 seconds using database time, preserves
+separate Worker reports, and reads actual tenant versions assigned to active
+members rather than platform drafts. It returns published Skill IDs and tools
+alongside the current enabled/reviewed Skill catalog. The page refreshes every
+10 seconds, shows per-Worker count ranges for mixed deployments, and reports
+unknown on failed reads instead of substituting static counts or zeroes.
+Integrated capability cards check both Worker and Web tool switches and tenant
+publication/execute-policy state; task-time member, action and device checks
+still apply. An installed package or a published Skill alone is not a claim
+that every tenant can execute every tool.
 
 Integrated optional capabilities link to the existing employee configuration,
 trial and tenant publication flow. Native experiments remain in the Lab;

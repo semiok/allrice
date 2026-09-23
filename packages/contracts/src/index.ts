@@ -50,6 +50,7 @@ export * from './models.ts';
 export * from './operations.ts';
 export * from './provider-auth.ts';
 export * from './platform-employees.ts';
+export * from './runtime-capabilities.ts';
 export * from './quality.ts';
 export * from './secrets.ts';
 export * from './skills.ts';
