@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-09-23T16:37:41.383Z",
-  "status": "dev-core-passed-met144-pending",
+  "recordedAt": "2026-09-23T17:13:09.096Z",
+  "status": "dev-accepted",
   "release": {
     "candidate": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
     "previous": "add83cbbbf5df2c78578596ed0070af5e3d30e76",
@@ -125,6 +125,83 @@
         "route_decisions": 0,
         "native_adoption_proofs": 1
       }
+    },
+    "development": {
+      "at": "2026-09-23T17:06:31.698Z",
+      "sha": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+      "runId": "caeb71a9-2b58-4ae8-bbe2-9d8aa90edbc4",
+      "sessionId": "1a864c1e-002e-4d48-8f35-f85e78f549be",
+      "status": "succeeded",
+      "realModel": true,
+      "device": "M5 arm64",
+      "syntheticProject": true,
+      "bridgeCoreSha256": "74fdeb7279c59b1af3c72a45c235e7949a166e1ab1886b37678d6f25de82c0fe",
+      "bridgeCodeUnchangedSinceMet144": true,
+      "temporaryPublishedRevision": 54,
+      "temporaryTools": 28,
+      "candidate": {
+        "id": "557d6475-7574-4feb-a5ff-2385bd594f8a",
+        "digest": "sha256:74adc5eb37651e94c74fe1d3816d19c5888f36ab239b0b4408ee17a2f6870a2e"
+      },
+      "actors": {
+        "coordinator": "caeb71a9-2b58-4ae8-bbe2-9d8aa90edbc4",
+        "editor": "89915e81-0023-4dbe-b28a-bf39b0043e48",
+        "tester": "64df0e7d-4412-4d6b-95fe-ad5ddbd75e00",
+        "reviewer": "547820c2-a283-4340-a69d-a610a25ba49a"
+      },
+      "operationId": "53504361-d79a-48cb-a11a-d372d7f4e16e",
+      "reviewId": "417b0994-20c6-4bfb-a8ed-c6341d3292bc",
+      "deliveryArtifactId": "420a691c-b445-4500-84aa-1450daa273b9",
+      "checks": {
+        "sameCandidate": true,
+        "distinctRoles": true,
+        "realExitZero": true,
+        "formalDelivery": true
+      },
+      "output": {
+        "exitCode": 0,
+        "stopped": true,
+        "sourceDirectoryModified": false,
+        "stdout": "MET154_RC3_M5_CANDIDATE_OK\n",
+        "imageDigest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+      },
+      "singleExecution": true,
+      "singleRouteAttempt": true,
+      "timing": {
+        "activeMs": 163799,
+        "waitingMs": 13451,
+        "remainingMs": 1636201,
+        "phase": "terminal",
+        "wallMs": 177250,
+        "timeoutMs": 1800000,
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "deadlineAt": "2026-09-23T17:33:47.639Z",
+        "calls": {
+          "modelRequests": 20,
+          "toolCalls": 20,
+          "pending": 0
+        }
+      },
+      "usage": {
+        "inputTokens": 137959,
+        "outputTokens": 5735,
+        "complete": true,
+        "cacheUsageKnown": false
+      },
+      "approvalRecovery": {
+        "offlineRefresh": true,
+        "sameApprovalId": true,
+        "approvedExecutions": 1
+      },
+      "preflightFailure": {
+        "beforeTaskSubmission": true,
+        "reason": "Original application singleton prevented candidate launch; verified exact candidate app/core processes before submission."
+      }
     }
   },
   "oldSessionCopy": {
@@ -182,7 +259,8 @@
       "workbench": "1"
     },
     "originalJournalsCompared": 124,
-    "allOriginalJournalBytesUnchanged": true
+    "allOriginalJournalBytesUnchanged": true,
+    "scope": "Core rollout before temporary MET-144 acceptance; see developmentRestoration for final restored state."
   },
   "admin": {
     "authenticated": true,
@@ -191,11 +269,39 @@
     "pageErrors": [],
     "deniedApiResponses": []
   },
-  "pending": [
-    {
-      "id": "met144-real-development-delivery",
-      "status": "not-run",
-      "reason": "Temporary Dev/Snow/M5 capability activation awaits confirmation; prior M5 SSH channel authentication unavailable."
+  "pending": [],
+  "developmentRestoration": {
+    "at": "2026-09-23T17:12:26.944Z",
+    "restoredPublishedRevision": 56,
+    "restoredPublishedRevisionId": "487e86aa-ef85-4d84-850b-5b64879ae29e",
+    "restorationTestRunId": "7b13af1b-ca34-4153-a42f-83eb90d28be2",
+    "originalDraftContentPreserved": true,
+    "currentDraftId": "f18ee67e-2d0b-4115-a172-501094355243",
+    "publishedTools": 22,
+    "assistantsEnabled": false,
+    "policySemanticsRestored": true,
+    "otherWorkspacePoliciesUnchanged": true,
+    "otherWorkspaceBindingsUnchanged": true,
+    "quotaRowsUnchanged": true,
+    "membershipRowsUnchanged": true,
+    "devPlistsRestored": true,
+    "environmentFileUnchanged": true,
+    "prodConfigurationAndPidsUnchanged": true,
+    "originalAppRestored": true,
+    "originalAppUnmodified": true,
+    "deviceGrantsUnchanged": true,
+    "pairingUnchanged": true,
+    "deviceSandboxEnabled": false,
+    "sourceFilesUnchanged": true,
+    "sampleProjectRecoverablyArchived": true,
+    "activeJobs": 0,
+    "activeOperationLeases": 0,
+    "originalFacts": {
+      "at": "2026-09-23T17:15:23.948Z",
+      "originalJsonlCount": 124,
+      "originalJsonlBytesUnchanged": true,
+      "historicalUnresolvedAssistantsUnchanged": true,
+      "historicalRunningChildrenUnchanged": true
     }
-  ]
+  }
 }
