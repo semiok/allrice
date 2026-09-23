@@ -30,3 +30,12 @@ Reused third-party code must follow the repository's provenance and license
 rules. The pull request must record the source repository, commit, path,
 license, dependencies, and modifications. Untraceable source copying is
 rejected.
+
+For every DSH upgrade or adapter/patch addition or removal, update the
+[DSH reuse and replacement decisions](docs/architecture/dsh-reuse-and-replacement.md)
+in the same PR. Record the exact upstream revision, compatibility evidence,
+retirement conditions and rollback boundary; an unchanged decision still needs
+the new review version and reason. Use the
+[upstream governance procedure](docs/operations/dsh-upstream-governance.md)
+and run `pnpm dsh:golden-replay`. Keep historical replay fixtures immutable;
+generating new fixtures from the candidate does not prove old-session compatibility.

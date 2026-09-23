@@ -85,6 +85,36 @@
       "id": "compaction",
       "testFile": "apps/worker/src/harness/dsh-adapter.test.ts",
       "testName": "uses DSH native compaction without replacing the live session"
+    },
+    {
+      "id": "legacy-tool-history",
+      "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
+      "testName": "resumes historical tool messages without re-executing their callbacks"
+    },
+    {
+      "id": "legacy-question-adoption",
+      "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
+      "testName": "adopts the exact answer from %s and continues once"
+    },
+    {
+      "id": "legacy-continuation-no-replay",
+      "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
+      "testName": "does not replay a continuation already dispatched by the historical runtime"
+    },
+    {
+      "id": "legacy-format-refusal",
+      "testFile": "apps/worker/test/p25/dsh-legacy-replay.test.ts",
+      "testName": "refuses %s without rewriting the journal or dispatching a model"
+    },
+    {
+      "id": "durable-question-restart",
+      "testFile": "apps/worker/test/p25/task-wait-native.integration.test.ts",
+      "testName": "releases the original process, adopts the exact answer after restart and dispatches the continuation once"
+    },
+    {
+      "id": "native-progress-decision",
+      "testFile": "apps/worker/test/p25/task-progress-native.integration.test.ts",
+      "testName": "pauses after actual repeated tool errors and handles %s"
     }
   ]
 }
