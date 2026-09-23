@@ -668,7 +668,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page.getByRole('button', { name: '工具', exact: true }).click();
       await page
         .getByRole('button', {
-          name: '补齐开发协作工具（仅修改草稿）',
+          name: '添加开发协作工具',
           exact: true,
         })
         .click();

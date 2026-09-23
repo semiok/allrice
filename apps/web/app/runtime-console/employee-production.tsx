@@ -1048,9 +1048,7 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p>
-          目录来源于实际 Tool Broker
-          契约。可配置不代表已授权运行：平台开关、租户策略、环境和设备授权会独立检查。Changeset
-          是交付物提案，不新增 changeset.create/apply 工具。
+          选择员工可使用的工具。保存并发布后生效，实际运行仍需满足租户策略和设备授权。
         </p>
         <Checks
           items={(
@@ -1065,23 +1063,9 @@ export function EmployeeProduction() {
           selected={draft.capabilities.toolNames}
           onChange={(value) => update(['capabilities', 'toolNames'], value)}
         />
-        <p>
-          任意宿主 Shell / PTY 未实现，不提供虚假开关。内部执行动作（如
-          local.fs.changeset）只在精确批准后由执行系统调用。
-        </p>
-        <section aria-label="开发协作配置指引" className={styles.notice}>
-          <h3>受控开发协作 · MET-144</h3>
-          <p>
-            完整链路：提案 → 固定候选 SHA → 沙箱测试 → 独立审查 → Rice
-            汇总交付。不是 Boost 或 Teamwork。
-          </p>
-          <p>
-            尚缺工具：
-            {developmentWorkflowToolNames
-              .filter((name) => !draft.capabilities.toolNames.includes(name))
-              .join('、') || '工具已配齐；仍需核对策略与本人设备环境'}
-          </p>
+        <div className={styles.actions}>
           <button
+            className={styles.button}
             type="button"
             disabled={busy}
             onClick={() =>
@@ -1096,15 +1080,22 @@ export function EmployeeProduction() {
               )
             }
           >
-            补齐开发协作工具（仅修改草稿）
+            添加开发协作工具
           </button>
+        </div>
+        <p className={styles.muted}>
+          仅修改当前草稿；保存并发布后生效，本地操作仍需授权。
+        </p>
+        <details className={styles.muted}>
+          <summary>配置帮助</summary>
           <p>
-            随后保存、试用并预检发布。在租户管理中选择实际成员，检查能力授权与执行策略：允许
-            assistant.delegate，本地命令与文件修改分别审批。员工 Bridge
-            需受控读写，设备主人仍须在 Bridge
-            确认目录和独立沙箱；不会提升成员角色或自动放开权限。
+            添加后，先保存草稿并完成试用，再检查并发布。发布检查会提示开发协作所需的工具缺项。
           </p>
-        </section>
+          <p>
+            在租户管理中确认使用成员拥有助手委派权限；本地命令和文件修改分别审批。员工的
+            Rice Bridge 需设为受控读写，并由设备主人确认工作目录和独立沙箱。
+          </p>
+        </details>
       </>
     );
   } else if (tab === 'security') {
