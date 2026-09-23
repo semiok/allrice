@@ -100,8 +100,9 @@ export class DshProtocolClient {
     nativeSkills?: DshNativeSkillSnapshot[];
     maxTokens?: number;
     expectedVersion?: string;
+    requireTaskProgress?: boolean;
   }) {
-    const { expectedVersion, ...params } = input;
+    const { expectedVersion, requireTaskProgress, ...params } = input;
     const result = await this.request('initialize', params);
     const serverInfo = record(result.serverInfo);
     if (
@@ -125,6 +126,15 @@ export class DshProtocolClient {
         false,
       );
     }
+    if (
+      requireTaskProgress &&
+      record(result.capabilities)?.taskProgress !== true
+    )
+      throw new HandlerError(
+        'DSH_PROGRESS_GUARD_UNAVAILABLE',
+        'DSH runtime did not activate the required progress guard',
+        false,
+      );
     return { name: serverInfo.name, version: serverInfo.version };
   }
 

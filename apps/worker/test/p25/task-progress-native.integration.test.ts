@@ -89,6 +89,7 @@ describe('MET153 actual native progress wire', () => {
           model: 'native-progress',
           nativeTools: ['local.fs.list'],
           expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+          requireTaskProgress: true,
         });
         await client.prompt(
           session,

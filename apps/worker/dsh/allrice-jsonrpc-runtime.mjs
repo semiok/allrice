@@ -818,6 +818,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           process.env.DSH_DISTRIBUTION_VERSION ?? 'unapproved-development',
       },
       capabilities: {
+        taskProgress: !!this.taskProgress,
         interrupt: true,
         steer: true,
         compact: true,

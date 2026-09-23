@@ -912,6 +912,18 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it('refuses an old runtime before dispatch when required progress protection is not acknowledged', async () => {
+    const adapter = createAdapter();
+    const input = executionInput({
+      prompt: 'must not start',
+      provider: { ...snapshot('openai-compatible'), model: 'legacy-progress' },
+    });
+    input.progress = async () => ({ paused: false });
+    await expect(adapter.execute(input)).rejects.toThrow(
+      'required progress guard',
+    );
+  });
+
   it('uses DSH native compaction without replacing the live session', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;

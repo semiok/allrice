@@ -386,6 +386,7 @@ export class DshRuntimePool {
           input.input.maxOutputTokens ??
           (input.input.assistants ? 16_000 : undefined),
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        requireTaskProgress: !!input.input.progress,
       });
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true };

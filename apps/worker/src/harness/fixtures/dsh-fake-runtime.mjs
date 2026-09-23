@@ -149,6 +149,11 @@ lines.on('line', (line) => {
         name: 'deepseek-harness-sdk-runtime',
         version: '0.1.1-rc.2-fake',
       },
+      capabilities: {
+        taskProgress:
+          process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1' &&
+          frame.params.model !== 'legacy-progress',
+      },
     });
     return;
   }
