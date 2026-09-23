@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-23T17:13:09.096Z",
+  "status": "dev-accepted",
+  "release": {
+    "candidate": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+    "previous": "add83cbbbf5df2c78578596ed0070af5e3d30e76",
+    "integratedMain": "c3d44e1404c8b3f6b75c26bfc76df429a4649e50",
+    "integratedTreeEqualsCandidate": true,
+    "buildId": "G1dSX-EJbAn3nGp2PT-ty",
+    "generation": "dsh-0.1.5-rc.3-a4c74a9",
+    "channel": "candidate",
+    "prodChanged": false
+  },
+  "publication": {
+    "revision": 52,
+    "revisionId": "2015c5d1-9e94-4e6e-95c4-de362bc1ed8d",
+    "packageChecksum": "sha256:36bbcd201821016375a3bdefcb8a64da37d36ab9fdde98ab959973e3218f7d1f",
+    "testRunId": "bf449219-c17d-4369-8539-06f98d852312",
+    "assignedWorkspaceCount": 2,
+    "tools": 22,
+    "skills": 10,
+    "originalDraftPreserved": true,
+    "originalDraftRevision": 51,
+    "restoredDraftRevision": 53,
+    "definitionUnchanged": true,
+    "allowedPackageDifferences": [
+      "packageVersion",
+      "runtimeManifest.distributionGeneration",
+      "checksum",
+      "capabilityFingerprint"
+    ]
+  },
+  "realModel": {
+    "ordinary": {
+      "runId": "5c21d8c2-c5cc-4e7a-9de7-1c853af94236",
+      "sessionId": "9a3a1815-84c0-4015-b5a1-52a857b45ec5",
+      "sha": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+      "timing": {
+        "activeMs": 5661,
+        "waitingMs": 0,
+        "wallMs": 5661,
+        "timeoutMs": 1800000,
+        "remainingMs": 1794339,
+        "phase": "terminal",
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "calls": {
+          "modelRequests": 1,
+          "toolCalls": 0,
+          "pending": 0
+        }
+      },
+      "generation": "dsh-0.1.5-rc.3-a4c74a9"
+    },
+    "oldSession": {
+      "runId": "586b9d3b-d560-4bab-ac5b-615b34c4398f",
+      "sessionId": "e970e469-b3ef-4f2b-824f-422f3fd2e005",
+      "sha": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+      "timing": {
+        "activeMs": 7077,
+        "waitingMs": 0,
+        "wallMs": 7077,
+        "timeoutMs": 1800000,
+        "remainingMs": 1792923,
+        "phase": "terminal",
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "calls": {
+          "modelRequests": 1,
+          "toolCalls": 0,
+          "pending": 0
+        }
+      },
+      "generation": "dsh-0.1.5-rc.3-a4c74a9"
+    },
+    "waitRestart": {
+      "runId": "c9ddb9fb-9d88-45c1-ab38-cdd83d830868",
+      "sessionId": "f5d4c663-64c0-4cfc-bf77-68f84b2d640b",
+      "timing": {
+        "activeMs": 14001,
+        "waitingMs": 50011,
+        "remainingMs": 1785999,
+        "phase": "terminal",
+        "wallMs": 64012,
+        "timeoutMs": 1800000,
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "deadlineAt": "2026-09-23T16:59:17.343Z",
+        "calls": {
+          "modelRequests": 2,
+          "toolCalls": 1,
+          "pending": 0
+        }
+      },
+      "dispatches": [
+        {
+          "attempt": 1,
+          "state": "parked"
+        },
+        {
+          "attempt": 2,
+          "state": "completed"
+        }
+      ],
+      "activeMsBeforeRestart": 8253,
+      "activeMsAfterRestart": 8253,
+      "followup": {
+        "id": "15c9d618-73a9-4480-a22c-152f91328e22",
+        "state": "canceled",
+        "error_code": "STEER_CONSUMED",
+        "cancel_reason": "consumed_by_active_turn",
+        "route_decisions": 0,
+        "native_adoption_proofs": 1
+      }
+    },
+    "development": {
+      "at": "2026-09-23T17:06:31.698Z",
+      "sha": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+      "runId": "caeb71a9-2b58-4ae8-bbe2-9d8aa90edbc4",
+      "sessionId": "1a864c1e-002e-4d48-8f35-f85e78f549be",
+      "status": "succeeded",
+      "realModel": true,
+      "device": "M5 arm64",
+      "syntheticProject": true,
+      "bridgeCoreSha256": "74fdeb7279c59b1af3c72a45c235e7949a166e1ab1886b37678d6f25de82c0fe",
+      "bridgeCodeUnchangedSinceMet144": true,
+      "temporaryPublishedRevision": 54,
+      "temporaryTools": 28,
+      "candidate": {
+        "id": "557d6475-7574-4feb-a5ff-2385bd594f8a",
+        "digest": "sha256:74adc5eb37651e94c74fe1d3816d19c5888f36ab239b0b4408ee17a2f6870a2e"
+      },
+      "actors": {
+        "coordinator": "caeb71a9-2b58-4ae8-bbe2-9d8aa90edbc4",
+        "editor": "89915e81-0023-4dbe-b28a-bf39b0043e48",
+        "tester": "64df0e7d-4412-4d6b-95fe-ad5ddbd75e00",
+        "reviewer": "547820c2-a283-4340-a69d-a610a25ba49a"
+      },
+      "operationId": "53504361-d79a-48cb-a11a-d372d7f4e16e",
+      "reviewId": "417b0994-20c6-4bfb-a8ed-c6341d3292bc",
+      "deliveryArtifactId": "420a691c-b445-4500-84aa-1450daa273b9",
+      "checks": {
+        "sameCandidate": true,
+        "distinctRoles": true,
+        "realExitZero": true,
+        "formalDelivery": true
+      },
+      "output": {
+        "exitCode": 0,
+        "stopped": true,
+        "sourceDirectoryModified": false,
+        "stdout": "MET154_RC3_M5_CANDIDATE_OK\n",
+        "imageDigest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+      },
+      "singleExecution": true,
+      "singleRouteAttempt": true,
+      "timing": {
+        "activeMs": 163799,
+        "waitingMs": 13451,
+        "remainingMs": 1636201,
+        "phase": "terminal",
+        "wallMs": 177250,
+        "timeoutMs": 1800000,
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "deadlineAt": "2026-09-23T17:33:47.639Z",
+        "calls": {
+          "modelRequests": 20,
+          "toolCalls": 20,
+          "pending": 0
+        }
+      },
+      "usage": {
+        "inputTokens": 137959,
+        "outputTokens": 5735,
+        "complete": true,
+        "cacheUsageKnown": false
+      },
+      "approvalRecovery": {
+        "offlineRefresh": true,
+        "sameApprovalId": true,
+        "approvedExecutions": 1
+      },
+      "preflightFailure": {
+        "beforeTaskSubmission": true,
+        "reason": "Original application singleton prevented candidate launch; verified exact candidate app/core processes before submission."
+      }
+    }
+  },
+  "oldSessionCopy": {
+    "sourceRelease": "add83cbbbf5df2c78578596ed0070af5e3d30e76",
+    "candidate": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+    "at": "2026-09-23T16:09:50.850Z",
+    "sessionId": "dsh-e970e469-b3ef-4f2b-824f-422f3fd2e005",
+    "sourceSha256": "939bbee943a79209802129df5fd23860fff83896261e11db4374e6733963198c",
+    "sourceBytes": 77642,
+    "sourceFormat": 0,
+    "targetFormat": 3,
+    "privateFacts": 4,
+    "sourceUnchanged": true,
+    "readOnlyResumeRequests": 0,
+    "explicitSyntheticRequests": 1,
+    "sameGenerationRecovery": true,
+    "newMessageId": "61893077-e687-4a64-b200-99983c1f9ea8",
+    "binaryDowngradeSafe": false,
+    "reason": "rc.2 retained v0 has no new v3 message; recover with candidate, never replay the stale file",
+    "modelEndpoint": "synthetic-loopback",
+    "realModelProof": "realModel.oldSession"
+  },
+  "backupRecovery": {
+    "databaseArchiveSha256": "b1c5a8b58229ab95caf545af254fbbea8d7efd219def9b79a6e42ca24a01e1b9",
+    "restoredIntoIsolatedDatabase": true,
+    "restoredOriginalDatabase": false,
+    "modelsInvoked": 0,
+    "toolsInvoked": 0,
+    "temporaryDatabaseStopped": true,
+    "restoredCounts": {
+      "allrice_jobs": 244,
+      "allrice_employee_runs": 222,
+      "allrice_task_clocks": 9,
+      "allrice_native_question_waits": 3,
+      "allrice_native_task_dispatches": 6,
+      "allrice_assistant_instances": 45,
+      "allrice_runtime_operations": 18
+    },
+    "oldGenerationAssignments": 2,
+    "binaryDowngradeSafe": false,
+    "afterWriteRecovery": "same rc3 generation / forward repair"
+  },
+  "finalInventory": {
+    "activeJobs": 0,
+    "activeOperationLeases": 0,
+    "unresolvedHistoricalAssistants": 10,
+    "runningHistoricalChildRows": 3,
+    "historicalUnresolvedRowsPreserved": true,
+    "rolesQuotasPoliciesUnchanged": true,
+    "environmentFileUnchanged": true,
+    "prodConfigurationAndPidsUnchanged": true,
+    "sourceSessionUnchanged": true,
+    "flags": {
+      "assistants": "0",
+      "workbench": "1"
+    },
+    "originalJournalsCompared": 124,
+    "allOriginalJournalBytesUnchanged": true,
+    "scope": "Core rollout before temporary MET-144 acceptance; see developmentRestoration for final restored state."
+  },
+  "admin": {
+    "authenticated": true,
+    "nativeUnauthenticatedStatus": 401,
+    "authenticatedApiStatus": 404,
+    "pageErrors": [],
+    "deniedApiResponses": []
+  },
+  "pending": [],
+  "developmentRestoration": {
+    "at": "2026-09-23T17:12:26.944Z",
+    "restoredPublishedRevision": 56,
+    "restoredPublishedRevisionId": "487e86aa-ef85-4d84-850b-5b64879ae29e",
+    "restorationTestRunId": "7b13af1b-ca34-4153-a42f-83eb90d28be2",
+    "originalDraftContentPreserved": true,
+    "currentDraftId": "f18ee67e-2d0b-4115-a172-501094355243",
+    "publishedTools": 22,
+    "assistantsEnabled": false,
+    "policySemanticsRestored": true,
+    "otherWorkspacePoliciesUnchanged": true,
+    "otherWorkspaceBindingsUnchanged": true,
+    "quotaRowsUnchanged": true,
+    "membershipRowsUnchanged": true,
+    "devPlistsRestored": true,
+    "environmentFileUnchanged": true,
+    "prodConfigurationAndPidsUnchanged": true,
+    "originalAppRestored": true,
+    "originalAppUnmodified": true,
+    "deviceGrantsUnchanged": true,
+    "pairingUnchanged": true,
+    "deviceSandboxEnabled": false,
+    "sourceFilesUnchanged": true,
+    "sampleProjectRecoverablyArchived": true,
+    "activeJobs": 0,
+    "activeOperationLeases": 0,
+    "originalFacts": {
+      "at": "2026-09-23T17:15:23.948Z",
+      "originalJsonlCount": 124,
+      "originalJsonlBytesUnchanged": true,
+      "historicalUnresolvedAssistantsUnchanged": true,
+      "historicalRunningChildrenUnchanged": true
+    }
+  }
+}
