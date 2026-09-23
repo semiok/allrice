@@ -74,7 +74,6 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
         return { text: 'Parent received and compared the two summaries.' };
       },
       undefined,
-      200,
       { p25: true, callback: bridge.handle },
     );
     const client = native.launch();
@@ -183,7 +182,6 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
         return { text: 'Late response' };
       },
       undefined,
-      200,
       { p25: true, callback: bridge.handle },
     );
     const client = native.launch();
@@ -231,7 +229,6 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
         return { text: 'Synthetic native result' };
       },
       undefined,
-      200,
       { p25: true, callback: bridge.handle },
     );
     const client = native.launch();
@@ -312,7 +309,6 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
         return { text: 'Late uncertain model response' };
       },
       undefined,
-      200,
       {
         p25: true,
         callback: async (method, params) => {

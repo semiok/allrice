@@ -157,6 +157,7 @@ export const EmployeeKernelRequestSchema = z
       .string()
       .regex(/^sha256:[a-f0-9]{64}$/)
       .optional(),
+    runtimeDistributionGeneration: z.string().min(1).max(240).optional(),
     imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
   })
   .strict();

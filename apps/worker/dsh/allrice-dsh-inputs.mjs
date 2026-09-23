@@ -3,7 +3,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';
 import { structuredUserQuestionAnswer } from './allrice-dsh-runtime-compatibility.mjs';
 
-// Pinned 0.1.1-rc.2 has no downstream event registration API yet. Extend only
+// Pinned rc.3 has no downstream event registration API. Extend only
 // this private vocabulary; never suppress the unknown-event recovery guard.
 for (const type of ['allrice/input/request', 'allrice/input/answered'])
   KNOWN_SESSION_EVENT_TYPES.add(type);
@@ -18,9 +18,9 @@ const digest = (input) =>
     .digest('hex')}`;
 
 /** Read actual native journal facts; inbox admission alone is not step adoption.
- * Uses pinned DSH 0.1.1-rc.2 events, not a model's promise or guessed timing. */
+ * Uses pinned native DSH events, not a model's promise or guessed timing. */
 export function inspectDshInput(agent, input) {
-  const events = agent.session.events;
+  const events = agent.session.snapshotEvents();
   const bound = events.findLast(
     (e) =>
       e.type === 'allrice/input/request' && e.data.inputId === input.inputId,
@@ -104,8 +104,9 @@ export async function deliverDshInput(
     await flush();
     return previous;
   }
-  const turn = agent.session.events.findLast((e) => e.type === 'turn/start')
-    ?.data.turn;
+  const turn = agent.session
+    .snapshotEvents()
+    .findLast((e) => e.type === 'turn/start')?.data.turn;
   if (
     agent.status !== (suspended ? 'idle' : 'running') ||
     input.turnId !== `${sessionId}:turn:${turn}`
@@ -168,7 +169,8 @@ export async function deliverDshInput(
 /** Do not let an old turn's unadopted correction leak into a later turn. */
 export function discardPendingDshInputs(agent) {
   const ownIds = new Set(
-    agent.session.events
+    agent.session
+      .snapshotEvents()
       .filter((e) => e.type === 'allrice/input/request')
       .map((e) => e.data.messageId),
   );

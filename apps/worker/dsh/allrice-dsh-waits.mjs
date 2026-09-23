@@ -8,14 +8,16 @@ for (const type of ['allrice/wait/checkpoint', 'allrice/wait/continued'])
   KNOWN_SESSION_EVENT_TYPES.add(type);
 
 export function pendingNativeWait(agent) {
-  const checkpoint = agent.session.events.findLast(
-    (e) => e.type === 'allrice/wait/checkpoint',
-  );
+  const checkpoint = agent.session
+    .snapshotEvents()
+    .findLast((e) => e.type === 'allrice/wait/checkpoint');
   if (!checkpoint) return null;
   if (
-    agent.session.events.some(
-      (e) => e.seq > checkpoint.seq && e.type === 'allrice/wait/continued',
-    )
+    agent.session
+      .snapshotEvents()
+      .some(
+        (e) => e.seq > checkpoint.seq && e.type === 'allrice/wait/continued',
+      )
   )
     return null;
   return { ...checkpoint.data, sequence: checkpoint.seq };
@@ -30,7 +32,7 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   // because the root is asking a question.
   if (server.ctx.agents.list().some((a) => a !== agent)) return null;
   const open = new Map();
-  for (const e of agent.session.events) {
+  for (const e of agent.session.snapshotEvents()) {
     if (e.type === 'tool/call') open.set(e.data.callId, e.data.name);
     if (e.type === 'tool/result') {
       const b = e.data.message?.content?.find((b) => b.type === 'tool-result');
@@ -47,8 +49,9 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   await server.taskProgress?.flush();
   // A user answer can race the preceding flush.
   if (server.pendingUserQuestions.get(sessionId) !== question) return null;
-  const turn = agent.session.events.findLast((e) => e.type === 'turn/start')
-    ?.data.turn;
+  const turn = agent.session
+    .snapshotEvents()
+    .findLast((e) => e.type === 'turn/start')?.data.turn;
   if (turn === undefined) return null;
   const data = {
     sessionId,

@@ -43,7 +43,6 @@ export async function p24Fixture(
     index: number,
   ) => Promise<ModelReply> = async () => ({ text: 'Synthetic completed.' }),
   proposal: ProposalHandler = async () => ({ status: 'not_configured' }),
-  writeBatchMaxDelayMs = 200,
   extension?: {
     p25: true;
     callback: (
@@ -143,7 +142,6 @@ export async function p24Fixture(
     DSH_HOME: root,
     DSH_SESSION_ROOT: join(root, 'sessions'),
     DSH_CREDENTIALS_PATH: join(root, 'credentials.yaml'),
-    P24_WRITE_BATCH_MS: String(writeBatchMaxDelayMs),
     OPENAI_COMPATIBLE_API_KEY: 'synthetic-only',
     OPENAI_COMPATIBLE_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
   };

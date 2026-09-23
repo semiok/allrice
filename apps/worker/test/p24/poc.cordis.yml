@@ -14,23 +14,60 @@
         baseURL: !!js process.env.OPENAI_COMPATIBLE_BASE_URL
         models:
           - id: p24-synthetic
-- id: spine
-  name: '@deepseek-ai/dsh-agent-spine-demo'
+- id: timer
+  name: '@deepseek-ai/cordis-plugin-timer'
+
+- id: llm-core
+  name: '@deepseek-ai/dsh-llm'
+
+- id: session
+  name: '@deepseek-ai/dsh-session'
+
+- id: session-title
+  name: '@deepseek-ai/dsh-session-title'
+  config:
+    fallbackMaxWords: 5
+    fallbackMaxBytes: 40
+    maxTitleBytes: 80
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
   config:
     includeHarnessIdentity: false
     includeRuntimeContext: false
-    persona: Synthetic P24 test. No real credentials, filesystem or shell tools.
-    workspaceContext: false
-    skills:
-      enabled: false
-    toolBash: false
-    toolJobs: false
+    personaPrefix: Synthetic P24 test. No real credentials, filesystem or shell tools.
+
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent'
+
+- id: invariants
+  name: '@deepseek-ai/dsh-invariants'
+
+- id: session-invariant
+  name: '@deepseek-ai/dsh-session/invariant'
+
+- id: agent-invariant
+  name: '@deepseek-ai/dsh-agent/invariant'
+
+- id: scope-invariant
+  name: '@deepseek-ai/dsh-scope/invariant'
+
+- id: agent-loop-invariant
+  name: '@deepseek-ai/dsh-agent-loop/invariant'
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+  config:
+    agents: []
+
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:
     root: !!js process.env.DSH_SESSION_ROOT
     compression: none
-    writeBatchMaxDelayMs: !!js Number(process.env.P24_WRITE_BATCH_MS ?? 200)
 - id: checkpoints
   name: '@deepseek-ai/dsh-session-checkpoint-policy'
 - id: projections
@@ -39,6 +76,11 @@
   name: '@deepseek-ai/dsh-user-approval'
   config:
     policy: ask
+- id: session-query
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  config:
+    path: ':memory:'
+    openAt: never
 - id: subagents
   name: '@deepseek-ai/dsh-subagent'
 - id: spawn

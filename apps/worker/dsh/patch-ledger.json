@@ -4,7 +4,7 @@
     {
       "id": "allrice-durable-native-question-wait-v1",
       "issue": "MET-153",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-dsh-waits.mjs",
       "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
@@ -12,7 +12,7 @@
     {
       "id": "allrice-durable-progress-guard-v1",
       "issue": "MET-153",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-task-progress.mjs",
       "reason": "Native middleware records request/tool receipts and pauses repeated failures through the root Ask User transport. Verified new subscription Runs observe call counts instead of fixed task caps. Durable Worker port preserves ownership, lease, cancellation, bounded state and unknown-side-effect no-replay; no extra Agent loop, LLM judge or implicit approval."
@@ -20,7 +20,7 @@
     {
       "id": "allrice-durable-task-clock-v1",
       "issue": "MET-153",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
       "reason": "Report actual coordinator idle for the durable root clock; join waits under Worker lease/cancel supervision, while single requests and tools retain bounded lifetimes. No second agent loop or implicit authority."
@@ -28,7 +28,7 @@
     {
       "id": "allrice-development-workflow-v1",
       "issue": "MET-144",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
       "reason": "Bounded native development coordination: pre-dispatch assignments, real attributed proposals, exact-version tests and independent reviews; no new loop, implicit tools, direct file writes or approval."
@@ -36,7 +36,7 @@
     {
       "id": "allrice-assistant-required-delivery-v1",
       "issue": "MET-151",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
       "reason": "Describe required explicit assistant.report permission and exact artifact/output result schema. Worker rejects an undeliverable child before provisioning and returns correctable validation errors without ending the child turn; no implicit tool grant, fabricated evidence or native-idle success."
@@ -44,7 +44,7 @@
     {
       "id": "allrice-workbench-native-changeset-v1",
       "issue": "MET-147",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-workbench-native-tools.mjs",
       "reason": "Expose the existing Broker changeset proposal schema to the actual native model; preserve server target binding, exact approval and file CAS. Contract tests keep native/Broker artifact and format enums aligned."
@@ -52,7 +52,7 @@
     {
       "id": "allrice-bounded-native-search-v1",
       "issue": "MET-150",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "Route ordinary native web_search through the tenant Tool Broker for audited bounded results and durable full-result files; keep upstream DSH unchanged."
@@ -60,7 +60,7 @@
     {
       "id": "allrice-jsonrpc-lifecycle-v1",
       "issue": "MET-85",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "Expose native session lifecycle and report the approved distribution version without modifying upstream packages."
@@ -68,10 +68,18 @@
     {
       "id": "dsh-admin-webui-private-entrypoint-v1",
       "issue": "MET-100",
-      "upstreamVersion": "0.1.1-rc.2",
+      "upstreamVersion": "0.1.5-rc.3",
       "kind": "private-entrypoint-adapter",
       "path": "apps/dsh-admin/dsh-webui-compatibility.mjs",
-      "reason": "Keep the DSH WebUI private executable path and required Node launch flags behind one explicit, tested compatibility boundary."
+      "reason": "Keep the private WebUI launch contract and native authenticatedUrl IPC exchange behind the authenticated administrator gateway; native cookies stay server-side, with Host and Origin checks before proxying."
+    },
+    {
+      "id": "allrice-private-session-migration-v1",
+      "issue": "MET-154",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "upstream-source-patch",
+      "path": "patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch",
+      "reason": "Classify four exact AllRice log-only events across the native v0-to-v3 migration; validate payloads, retain IDs/digests, and preserve native sequence/reference remapping. The JSONL verifier bundle receives the identical vocabulary and validator. Unknown events remain refused."
     }
   ]
 }

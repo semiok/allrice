@@ -361,6 +361,20 @@ describe('DshHarnessAdapter', () => {
     expect(second.threadId).toBe(threadId);
   });
 
+  it('refuses an old frozen runtime generation before credentials or native dispatch', async () => {
+    const resolve = vi.fn(async () => ({ apiKey: 'must-not-read' }));
+    const adapter = new DshHarnessAdapter({ credentialResolver: { resolve } });
+    adapters.push(adapter);
+    const input = executionInput({ prompt: 'old frozen Run' });
+    input.kernel.runtimeDistributionGeneration = 'dsh-0.1.1-rc.2-b150a55';
+    await expect(adapter.execute(input)).rejects.toMatchObject({
+      code: 'DSH_GENERATION_MISMATCH',
+      retryable: false,
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(adapter.runtimeInventory()).toEqual([]);
+  });
+
   it('rotates the DSH runtime when the immutable employee package changes', async () => {
     const adapter = createAdapter();
     let threadId: string | null = null;

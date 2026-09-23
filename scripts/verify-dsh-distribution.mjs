@@ -47,19 +47,27 @@ const [
   ),
 ]);
 
+const installedChannel = distribution.installedChannel ?? 'current';
+assert(
+  ['current', 'candidate'].includes(installedChannel),
+  'invalid installed DSH channel',
+);
+const installed = distribution[installedChannel];
+assert(installed, 'installed DSH generation is required');
+
 assert(distribution.schemaVersion === 1, 'distribution schema must be v1');
 assert(distribution.current, 'a current DSH generation is required');
 assert(
-  distribution.current.version === upstream.version,
-  'current version must match upstream manifest',
+  installed.version === upstream.version,
+  'installed version must match upstream manifest',
 );
 assert(
-  distribution.current.commit === upstream.commit,
-  'current commit must match upstream manifest',
+  installed.commit === upstream.commit,
+  'installed commit must match upstream manifest',
 );
 assert(
-  distribution.current.sourceArchiveSha256 === upstream.sourceArchiveSha256,
-  'current archive checksum must match upstream manifest',
+  installed.sourceArchiveSha256 === upstream.sourceArchiveSha256,
+  'installed archive checksum must match upstream manifest',
 );
 assert(upstream.license === 'MIT', 'approved DSH distribution must be MIT');
 assert(
@@ -67,10 +75,10 @@ assert(
   'DSH must never promote automatically to production',
 );
 assert(
-  runtimePin.includes(`'${distribution.current.version}'`) &&
+  runtimePin.includes(`'${installed.version}'`) &&
     runtimePin.includes('PLATFORM_EMPLOYEE_DSH_DISTRIBUTION') &&
-    platformEmployeeContract.includes(`'${distribution.current.generation}'`),
-  'runtime version guard must match the approved current distribution',
+    platformEmployeeContract.includes(`'${installed.generation}'`),
+  'runtime version guard must match the installed distribution',
 );
 assert(
   ledger.schemaVersion === 1 && Array.isArray(ledger.patches),
@@ -86,7 +94,7 @@ assert(
   ledger.patches.some(
     (patch) =>
       patch.id === 'allrice-jsonrpc-lifecycle-v1' &&
-      patch.upstreamVersion === distribution.current.version,
+      patch.upstreamVersion === installed.version,
   ),
   'AllRice protocol extension must be recorded against the approved upstream',
 );
@@ -105,7 +113,7 @@ assert(
   'compatibility manifest must point at the governed runtime profile',
 );
 assert(
-  compatibility.sessionFormat.endsWith(`@${distribution.current.version}`),
+  compatibility.sessionFormat.endsWith(`@${installed.version}`),
   'session format must be recorded against the approved DSH version',
 );
 assert(
@@ -131,7 +139,7 @@ assert(
   ledger.patches.some(
     (patch) =>
       patch.id === 'dsh-admin-webui-private-entrypoint-v1' &&
-      patch.upstreamVersion === distribution.current.version &&
+      patch.upstreamVersion === installed.version &&
       patch.path === adminPrivateInterface.adapter,
   ),
   'DSH Admin private WebUI entrypoint must be recorded against the approved upstream',
@@ -185,28 +193,64 @@ for (const [name, version] of Object.entries(
 )) {
   if (!name.startsWith('@deepseek-ai/dsh-')) continue;
   assert(
-    version === distribution.current.version,
-    `${name} must be pinned to ${distribution.current.version}`,
+    version === installed.version,
+    `${name} must be pinned to ${installed.version}`,
   );
 }
 
-for (const boundary of [
-  'workspaceContext: false',
-  'enabled: false',
-  'toolBash: false',
-  'toolJobs: false',
-]) {
+const allowedProfilePackages = new Set(
+  [
+    'credentials-local',
+    'authorization',
+    'attachment-local',
+    'llm-pi-ai',
+    'llm-deepseek',
+    'llm',
+    'session',
+    'session-title',
+    'system-prompt',
+    'tools',
+    'agent',
+    'invariants',
+    'session/invariant',
+    'agent/invariant',
+    'scope/invariant',
+    'agent-loop/invariant',
+    'agent-loop',
+    'skill',
+    'tool-skill',
+    'session-persistence-jsonl',
+    'session-checkpoint-policy',
+    'llm-retry',
+    'tool-call-timeout-policy',
+    'repeat-tool-reminder',
+    'user-questions',
+    'tool-ask-user',
+    'tool-todo',
+    'session-projection',
+    'token-meter',
+    'compaction-tool-result-pruner',
+    'compaction-basic',
+  ].map((name) => `@deepseek-ai/dsh-${name}`),
+);
+allowedProfilePackages.add('@deepseek-ai/cordis-plugin-timer');
+for (const match of profile.matchAll(/^\s+name: '([^']+)'$/gm)) {
   assert(
-    profile.includes(boundary),
-    `restricted profile is missing ${boundary}`,
+    allowedProfilePackages.has(match[1]),
+    `unapproved restricted plugin: ${match[1]}`,
   );
 }
+assert(
+  profile.includes('agents: []'),
+  'the restricted loop must not create automatic agents',
+);
 
 console.log(
   JSON.stringify({
     status: 'ok',
-    generation: distribution.current.generation,
-    version: distribution.current.version,
+    installedChannel,
+    generation: installed.generation,
+    version: installed.version,
     patches: ledger.patches.length,
     candidate: distribution.candidate?.generation ?? null,
     rollback: distribution.rollback?.generation ?? null,

@@ -6,7 +6,7 @@ import { HarnessEventSchema } from './harness.ts';
 import { employeeModelPolicyProblem } from './employee-model-settings.ts';
 
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
-  'dsh-0.1.1-rc.2-b150a55' as const;
+  'dsh-0.1.5-rc.3-a4c74a9' as const;
 export const PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS = [
   '@deepseek-ai/dsh-llm-retry',
   '@deepseek-ai/dsh-tool-call-timeout-policy',
@@ -119,7 +119,7 @@ export const PlatformEmployeeRuntimeProfileSchema = z
     schemaVersion: z.literal(1),
     harness: z.literal('dsh'),
     distributionGeneration: z
-      .literal(PLATFORM_EMPLOYEE_DSH_DISTRIBUTION)
+      .enum([PLATFORM_EMPLOYEE_DSH_DISTRIBUTION, 'dsh-0.1.1-rc.2-b150a55'])
       .default(PLATFORM_EMPLOYEE_DSH_DISTRIBUTION),
     approvedPluginIds: z
       .array(z.enum(PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS))

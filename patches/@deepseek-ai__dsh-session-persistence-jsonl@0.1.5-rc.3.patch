@@ -1,0 +1,67 @@
+diff --git a/lib/worker.cjs b/lib/worker.cjs
+index 52784e08175bca7002eab09363fd7755fb433a65..75849a488b1bc4252ec55db3fc4ccd50cb7d01a8 100644
+--- a/lib/worker.cjs
++++ b/lib/worker.cjs
+@@ -2363,6 +2363,12 @@ function SessionLogOffset(value) {
+ * `.agents/notes/implemented/architecture/2026-08-30-retain-ignorable-external-session-events.md`.
+ */
+ const KNOWN_SESSION_EVENT_TYPES = new Set([
++	// AllRice MET-154: identical private vocabulary in the isolated verifier.
++	"allrice/wait/checkpoint",
++	"allrice/wait/continued",
++	"allrice/input/request",
++	"allrice/input/answered",
++
+ 	"agent-preset/selected",
+ 	"agent/inbox/spliced",
+ 	"approval/asked",
+@@ -6210,6 +6216,12 @@ const disposition = defineReleasedPayloadDisposition;
+ * unknown variants as owner-opaque JSON.
+ */
+ const RELEASED_V0_EVENT_DISPOSITIONS = Object.freeze({
++	// AllRice MET-154: exact, log-only private vocabulary. Payloads contain IDs,
++	// never Session seq references; upstream stages retain and resequence them.
++	"allrice/wait/checkpoint": disposition(["sessionId", "questionId", "turnId", "questions"], [], ["questions"]),
++	"allrice/input/request": disposition(["inputId", "digest", "messageId", "turnId"]),
++	"allrice/input/answered": disposition(["inputId", "questionId", "turnId"]),
++	"allrice/wait/continued": disposition(["questionId", "inputId"]),
+ 	"agent-preset/selected": disposition(["agentPreset"]),
+ 	"agent/inbox/spliced": disposition([
+ 		"target",
+@@ -6455,6 +6467,36 @@ function assertReleasedV0Keys(record, required, optional = [], label) {
+ function assertReleasedPayloadSemantics(event, version) {
+ 	const data = releasedV0Record(event.data, `${event.type} ${event.seq} data`);
+ 	const label = `${event.type} ${event.seq}`;
++	// Reject malformed private payloads before any migrated generation can publish.
++	if (Object.hasOwn(RELEASED_V0_EVENT_DISPOSITIONS, event.type) && event.type.startsWith("allrice/")) {
++		for (const key of RELEASED_V0_EVENT_DISPOSITIONS[event.type].required) {
++			if (key !== "questions") nonEmptyString(data[key], `${label} ${key}`);
++		}
++		if (data.inputId !== void 0 && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(data.inputId)) throw new SessionFormatError(`${label} invalid inputId`);
++		if (data.digest !== void 0 && !/^sha256:[0-9a-f]{64}$/.test(data.digest)) throw new SessionFormatError(`${label} invalid digest`);
++		if (data.turnId !== void 0 && !/:turn:[1-9][0-9]*$/.test(data.turnId)) throw new SessionFormatError(`${label} invalid turnId`);
++		if (event.type === "allrice/wait/checkpoint") {
++			if (!data.turnId.startsWith(`${data.sessionId}:turn:`)) throw new SessionFormatError(`${label} wrong session binding`);
++			arrayValue(data.questions, `${label} questions`, (value) => {
++				const question = exactRecord(value, `${label} question`, ["id", "question"], ["header", "detail", "options", "multiSelect", "intent"]);
++				nonEmptyString(question.id, `${label} question id`);
++				nonEmptyString(question.question, `${label} question text`);
++				for (const key of ["header", "detail"]) if (question[key] !== void 0) stringValue(question[key], `${label} question ${key}`);
++				if (question.intent !== void 0) {
++					const intent = exactRecord(question.intent, `${label} intent`, ["kind", "approve"], []);
++					if (intent.kind !== "plan-review" || typeof question.detail !== "string" || !question.options?.some((option) => option.label === intent.approve)) throw new SessionFormatError(`${label} invalid intent`);
++				}
++				if (question.multiSelect !== void 0 && typeof question.multiSelect !== "boolean") throw new SessionFormatError(`${label} invalid multiSelect`);
++				if (question.options !== void 0) arrayValue(question.options, `${label} options`, (option) => {
++					const item = exactRecord(option, `${label} option`, ["label"], ["description"]);
++					nonEmptyString(item.label, `${label} option label`);
++					if (item.description !== void 0) stringValue(item.description, `${label} option description`);
++				});
++			});
++			if (data.questions.length === 0) throw new SessionFormatError(`${label} empty questions`);
++		}
++		return;
++	}
+ 	switch (event.type) {
+ 		case "agent-preset/selected":
+ 			stringValue(data["agentPreset"], `${label} agentPreset`);
