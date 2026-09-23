@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-23T16:37:41.383Z",
+  "status": "dev-core-passed-met144-pending",
+  "release": {
+    "candidate": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+    "previous": "add83cbbbf5df2c78578596ed0070af5e3d30e76",
+    "integratedMain": "c3d44e1404c8b3f6b75c26bfc76df429a4649e50",
+    "integratedTreeEqualsCandidate": true,
+    "buildId": "G1dSX-EJbAn3nGp2PT-ty",
+    "generation": "dsh-0.1.5-rc.3-a4c74a9",
+    "channel": "candidate",
+    "prodChanged": false
+  },
+  "publication": {
+    "revision": 52,
+    "revisionId": "2015c5d1-9e94-4e6e-95c4-de362bc1ed8d",
+    "packageChecksum": "sha256:36bbcd201821016375a3bdefcb8a64da37d36ab9fdde98ab959973e3218f7d1f",
+    "testRunId": "bf449219-c17d-4369-8539-06f98d852312",
+    "assignedWorkspaceCount": 2,
+    "tools": 22,
+    "skills": 10,
+    "originalDraftPreserved": true,
+    "originalDraftRevision": 51,
+    "restoredDraftRevision": 53,
+    "definitionUnchanged": true,
+    "allowedPackageDifferences": [
+      "packageVersion",
+      "runtimeManifest.distributionGeneration",
+      "checksum",
+      "capabilityFingerprint"
+    ]
+  },
+  "realModel": {
+    "ordinary": {
+      "runId": "5c21d8c2-c5cc-4e7a-9de7-1c853af94236",
+      "sessionId": "9a3a1815-84c0-4015-b5a1-52a857b45ec5",
+      "sha": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+      "timing": {
+        "activeMs": 5661,
+        "waitingMs": 0,
+        "wallMs": 5661,
+        "timeoutMs": 1800000,
+        "remainingMs": 1794339,
+        "phase": "terminal",
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "calls": {
+          "modelRequests": 1,
+          "toolCalls": 0,
+          "pending": 0
+        }
+      },
+      "generation": "dsh-0.1.5-rc.3-a4c74a9"
+    },
+    "oldSession": {
+      "runId": "586b9d3b-d560-4bab-ac5b-615b34c4398f",
+      "sessionId": "e970e469-b3ef-4f2b-824f-422f3fd2e005",
+      "sha": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+      "timing": {
+        "activeMs": 7077,
+        "waitingMs": 0,
+        "wallMs": 7077,
+        "timeoutMs": 1800000,
+        "remainingMs": 1792923,
+        "phase": "terminal",
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "calls": {
+          "modelRequests": 1,
+          "toolCalls": 0,
+          "pending": 0
+        }
+      },
+      "generation": "dsh-0.1.5-rc.3-a4c74a9"
+    },
+    "waitRestart": {
+      "runId": "c9ddb9fb-9d88-45c1-ab38-cdd83d830868",
+      "sessionId": "f5d4c663-64c0-4cfc-bf77-68f84b2d640b",
+      "timing": {
+        "activeMs": 14001,
+        "waitingMs": 50011,
+        "remainingMs": 1785999,
+        "phase": "terminal",
+        "wallMs": 64012,
+        "timeoutMs": 1800000,
+        "sources": [
+          {
+            "scope": "user",
+            "timeoutMs": 1800000
+          }
+        ],
+        "deadlineAt": "2026-09-23T16:59:17.343Z",
+        "calls": {
+          "modelRequests": 2,
+          "toolCalls": 1,
+          "pending": 0
+        }
+      },
+      "dispatches": [
+        {
+          "attempt": 1,
+          "state": "parked"
+        },
+        {
+          "attempt": 2,
+          "state": "completed"
+        }
+      ],
+      "activeMsBeforeRestart": 8253,
+      "activeMsAfterRestart": 8253,
+      "followup": {
+        "id": "15c9d618-73a9-4480-a22c-152f91328e22",
+        "state": "canceled",
+        "error_code": "STEER_CONSUMED",
+        "cancel_reason": "consumed_by_active_turn",
+        "route_decisions": 0,
+        "native_adoption_proofs": 1
+      }
+    }
+  },
+  "oldSessionCopy": {
+    "sourceRelease": "add83cbbbf5df2c78578596ed0070af5e3d30e76",
+    "candidate": "9e6ccca4b9475e0fd945c1151e9ac3241cb97485",
+    "at": "2026-09-23T16:09:50.850Z",
+    "sessionId": "dsh-e970e469-b3ef-4f2b-824f-422f3fd2e005",
+    "sourceSha256": "939bbee943a79209802129df5fd23860fff83896261e11db4374e6733963198c",
+    "sourceBytes": 77642,
+    "sourceFormat": 0,
+    "targetFormat": 3,
+    "privateFacts": 4,
+    "sourceUnchanged": true,
+    "readOnlyResumeRequests": 0,
+    "explicitSyntheticRequests": 1,
+    "sameGenerationRecovery": true,
+    "newMessageId": "61893077-e687-4a64-b200-99983c1f9ea8",
+    "binaryDowngradeSafe": false,
+    "reason": "rc.2 retained v0 has no new v3 message; recover with candidate, never replay the stale file",
+    "modelEndpoint": "synthetic-loopback",
+    "realModelProof": "realModel.oldSession"
+  },
+  "backupRecovery": {
+    "databaseArchiveSha256": "b1c5a8b58229ab95caf545af254fbbea8d7efd219def9b79a6e42ca24a01e1b9",
+    "restoredIntoIsolatedDatabase": true,
+    "restoredOriginalDatabase": false,
+    "modelsInvoked": 0,
+    "toolsInvoked": 0,
+    "temporaryDatabaseStopped": true,
+    "restoredCounts": {
+      "allrice_jobs": 244,
+      "allrice_employee_runs": 222,
+      "allrice_task_clocks": 9,
+      "allrice_native_question_waits": 3,
+      "allrice_native_task_dispatches": 6,
+      "allrice_assistant_instances": 45,
+      "allrice_runtime_operations": 18
+    },
+    "oldGenerationAssignments": 2,
+    "binaryDowngradeSafe": false,
+    "afterWriteRecovery": "same rc3 generation / forward repair"
+  },
+  "finalInventory": {
+    "activeJobs": 0,
+    "activeOperationLeases": 0,
+    "unresolvedHistoricalAssistants": 10,
+    "runningHistoricalChildRows": 3,
+    "historicalUnresolvedRowsPreserved": true,
+    "rolesQuotasPoliciesUnchanged": true,
+    "environmentFileUnchanged": true,
+    "prodConfigurationAndPidsUnchanged": true,
+    "sourceSessionUnchanged": true,
+    "flags": {
+      "assistants": "0",
+      "workbench": "1"
+    },
+    "originalJournalsCompared": 124,
+    "allOriginalJournalBytesUnchanged": true
+  },
+  "admin": {
+    "authenticated": true,
+    "nativeUnauthenticatedStatus": 401,
+    "authenticatedApiStatus": 404,
+    "pageErrors": [],
+    "deniedApiResponses": []
+  },
+  "pending": [
+    {
+      "id": "met144-real-development-delivery",
+      "status": "not-run",
+      "reason": "Temporary Dev/Snow/M5 capability activation awaits confirmation; prior M5 SSH channel authentication unavailable."
+    }
+  ]
+}
