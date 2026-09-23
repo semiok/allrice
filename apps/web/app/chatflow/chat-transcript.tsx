@@ -4,6 +4,7 @@ import { useState, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
   type WorkbenchArtifact,
+  type InteractionStatus,
 } from '@allrice/contracts';
 import type { AssistantTreeView } from '@allrice/database';
 
@@ -33,12 +34,14 @@ import { LocalMcpPanel } from './local-mcp-panel';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
+import { ChatRunTiming } from './run-timing';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
   assistantTrees?: Record<string, AssistantTreeView>;
+  runTimings?: InteractionStatus['runTimings'];
   onAssistantChanged?: () => void;
   messages: Message[];
   recoverableRunView?: RunView;
@@ -60,6 +63,7 @@ export function ChatTranscript({
   localCommandsEnabled = false,
   localMcpEnabled = false,
   assistantTrees = {},
+  runTimings = [],
   onAssistantChanged,
   messages,
   recoverableRunView,
@@ -78,6 +82,9 @@ export function ChatTranscript({
   const [browserRevisions, setBrowserRevisions] = useState<
     Record<string, number>
   >({});
+  const timingByRun = new Map(
+    runTimings.map((entry) => [entry.runId, entry.timing]),
+  );
   return (
     <div className={chatUi.root}>
       <div className={chatUi.scroll} data-chat-scroll>
@@ -96,6 +103,9 @@ export function ChatTranscript({
                 : null;
               const trace = message.runId
                 ? runTraces[message.runId]
+                : undefined;
+              const timing = message.runId
+                ? timingByRun.get(message.runId)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
               const nativeExperience = projectNativeExperience(traceEvents);
@@ -197,11 +207,16 @@ export function ChatTranscript({
                         {messageIsRunning ? (
                           <>
                             <span className={styles.runningDot} />
-                            <span>正在工作</span>
+                            <span>
+                              {timing?.phase === 'waiting'
+                                ? '等待处理'
+                                : '正在工作'}
+                            </span>
                           </>
                         ) : null}
                         <time>{formatTime(message.createdAt)}</time>
                       </div>
+                      {timing ? <ChatRunTiming timing={timing} /> : null}
                       {message.runId &&
                       (nativeExperience.length > 0 ||
                         messageIsRunning ||

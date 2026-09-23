@@ -98,11 +98,17 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         native.presentation === 'search' || name === 'web.search'
           ? 'search'
           : 'tool';
-      const status = event.type.endsWith('.started')
-        ? 'started'
-        : event.type.endsWith('.failed')
-          ? 'failed'
-          : 'completed';
+      // The native question callback is canceled only after its checkpoint is
+      // flushed. Keep the raw failure receipt, while presenting that controlled
+      // suspension as waiting rather than a failed task or successful tool.
+      const status =
+        native.questionWait === true && name === 'ask_user_question'
+          ? 'info'
+          : event.type.endsWith('.started')
+            ? 'started'
+            : event.type.endsWith('.failed')
+              ? 'failed'
+              : 'completed';
       const query = text(native.query);
       items.set(key, {
         id: key,

@@ -149,6 +149,11 @@ lines.on('line', (line) => {
         name: 'deepseek-harness-sdk-runtime',
         version: '0.1.1-rc.2-fake',
       },
+      capabilities: {
+        taskProgress:
+          process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1' &&
+          frame.params.model !== 'legacy-progress',
+      },
     });
     return;
   }
@@ -220,6 +225,24 @@ lines.on('line', (line) => {
     model: 'fake',
     contextWindow: 128000,
   });
+  if (prompt.includes('crash after acknowledgement')) {
+    event(sessionId, 'assistant/chunk', {
+      turn,
+      step: 0,
+      chunk: { type: 'text-delta', index: 0, text: 'retained partial output' },
+    });
+    event(sessionId, 'assistant/message', {
+      turn,
+      step: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'retained partial output' }],
+      },
+      usage: { inputTokens: 11, cacheReadTokens: 3, outputTokens: 5 },
+    });
+    setImmediate(() => process.kill(process.pid, 'SIGKILL'));
+    return;
+  }
   if (prompt.includes('hang forever')) return;
   let text;
   if (prompt.includes('inspect-images')) {

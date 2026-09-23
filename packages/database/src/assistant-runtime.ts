@@ -25,6 +25,8 @@ import { refreshTaskClock, readTaskClock } from './task-clock.ts';
 import {
   observesRootTokens,
   isTokenMetric,
+  isCallMetric,
+  observesRootCalls,
 } from './subscription-token-accounting.ts';
 
 type Tx = RuntimeLedgerTransaction;
@@ -95,6 +97,7 @@ export interface AssistantAuthorityInput {
 }
 interface Root {
   observeTokens: boolean;
+  observeCalls: boolean;
   root_run_id: string;
   task: RuntimeTaskRef;
   deadline_at: Date;
@@ -216,10 +219,16 @@ export function createAssistantRuntime(
       root.task,
       runtimeLedgerInputDigest,
     );
+    root.observeCalls = await observesRootCalls(
+      tx,
+      root.task,
+      runtimeLedgerInputDigest,
+    );
     return root;
   }
   const observesMetric = (root: Root, metric: string) =>
-    root.observeTokens && isTokenMetric(metric);
+    (root.observeTokens && isTokenMetric(metric)) ||
+    (root.observeCalls && isCallMetric(metric));
 
   async function unsettledUsage(tx: Tx, root: Root, runId?: string) {
     const rows = await tx<{ blocking: boolean }[]>`
@@ -535,7 +544,7 @@ export function createAssistantRuntime(
         )
           fail('limit_exceeded');
         const [budget] =
-          await tx`select 1 from allrice_runtime_budgets where root_run_id=${root.root_run_id} and metric='model_calls' and capacity>spent+reserved`;
+          await tx`select 1 from allrice_runtime_budgets where root_run_id=${root.root_run_id} and metric='model_calls' and (${root.observeCalls} or capacity>spent+reserved)`;
         if (!budget) fail('budget_exhausted');
         const runId = randomUUID(),
           nativeId = randomUUID();
@@ -554,7 +563,7 @@ export function createAssistantRuntime(
         // Reserve launch before materializing a native child. The first model
         // dispatch atomically transfers this hold into its exact call vector.
         const [hold] =
-          await tx`update allrice_runtime_budgets set reserved=reserved+1 where root_run_id=${root.root_run_id} and metric='model_calls' and spent+reserved+1<=capacity returning metric`;
+          await tx`update allrice_runtime_budgets set reserved=reserved+1 where root_run_id=${root.root_run_id} and metric='model_calls' and (${root.observeCalls} or spent+reserved+1<=capacity) returning metric`;
         if (!hold) fail('budget_exhausted');
         await tx`insert into allrice_assistant_usage(call_id,run_id,root_run_id,metric,amount) values(${input.delegationId},${runId},${root.root_run_id},'model_calls',1)`;
         await assertLease(tx, root, input.worker);

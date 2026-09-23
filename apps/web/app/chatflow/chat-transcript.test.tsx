@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatTranscript } from './chat-transcript';
 import type { Message } from './chatflow-types';
+import type { InteractionStatus } from '@allrice/contracts';
 
 const panels = vi.hoisted(() => ({ local: vi.fn(), cloud: vi.fn() }));
 vi.mock('./local-command-panel', () => ({ LocalCommandPanel: panels.local }));
@@ -18,7 +19,11 @@ const messages: Message[] = Array.from({ length: 20 }, (_, index) => ({
   runId: `run-${index}`,
   createdAt: '2026-09-08T11:00:00Z',
 }));
-function render(enabled?: boolean, shownMessages = messages) {
+function render(
+  enabled?: boolean,
+  shownMessages = messages,
+  runTimings?: InteractionStatus['runTimings'],
+) {
   panels.local.mockReturnValue(null);
   panels.cloud.mockReturnValue(null);
   return renderToStaticMarkup(
@@ -26,6 +31,7 @@ function render(enabled?: boolean, shownMessages = messages) {
       atBottom
       localCommandsEnabled={enabled}
       messages={shownMessages}
+      runTimings={runTimings}
       runTraces={{}}
       runViews={{}}
       tenantHeaders={{}}
@@ -39,6 +45,65 @@ function render(enabled?: boolean, shownMessages = messages) {
 }
 describe('historical transcript capability gating', () => {
   afterEach(() => vi.clearAllMocks());
+
+  it('shows server timing for an ordinary Run without any assistant tree and preserves unknown calls', () => {
+    const html = render(
+      false,
+      [messages[0]!],
+      [
+        {
+          runId: 'run-0',
+          timing: {
+            activeMs: 12460,
+            waitingMs: 2400000,
+            wallMs: 2412460,
+            timeoutMs: 0,
+            remainingMs: null,
+            phase: 'waiting',
+            sources: [{ scope: 'user', timeoutMs: 0 }],
+            calls: null,
+          },
+        },
+      ],
+    );
+    for (const text of [
+      '本轮运行时间',
+      '0 分 12 秒',
+      '40 分 0 秒',
+      '运行计时暂停',
+      '不限制',
+      '用户',
+      '调用统计尚无记录',
+    ])
+      expect(html).toContain(text);
+    expect(html).not.toContain('模型请求尝试 0');
+    expect(html).not.toContain('助手任务');
+  });
+
+  it('does not borrow another Run clock or invent timing for historical Runs', () => {
+    expect(render(false, [messages[0]!])).not.toContain('本轮运行时间');
+    expect(
+      render(
+        false,
+        [messages[0]!],
+        [
+          {
+            runId: 'another-run',
+            timing: {
+              activeMs: 1,
+              waitingMs: 0,
+              wallMs: 1,
+              timeoutMs: 3600000,
+              remainingMs: 3599999,
+              phase: 'active',
+              sources: [],
+              calls: null,
+            },
+          },
+        ],
+      ),
+    ).not.toContain('本轮运行时间');
+  });
 
   it.each(['failed', 'completed'] as const)(
     'keeps the answer and only explains a recovered historical failure (%s)',

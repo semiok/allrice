@@ -41,6 +41,7 @@ export class DshProtocolClient {
   private readonly lines: Interface;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(value: DshNotification) => void>();
+  private readonly failureListeners = new Set<(error: Error) => void>();
   private readonly closed: Promise<void>;
   private inboundRequestHandler: DshInboundRequestHandler | null = null;
   private requestId = 0;
@@ -58,6 +59,15 @@ export class DshProtocolClient {
     // Drain stderr without surfacing it: an upstream runtime must never be
     // able to smuggle credential-bearing diagnostics into job errors.
     this.child.stderr.resume();
+    this.child.stdin.on('error', () =>
+      this.fail(
+        new HandlerError(
+          'DSH_RUNTIME_CLOSED',
+          'DSH runtime input stream closed',
+          false,
+        ),
+      ),
+    );
     this.closed = new Promise((resolve) => {
       this.child.once('error', (error) => {
         this.fail(
@@ -69,15 +79,13 @@ export class DshProtocolClient {
         );
       });
       this.child.once('close', (code, signal) => {
-        if (!this.closing || this.pending.size > 0) {
-          this.fail(
-            new HandlerError(
-              'DSH_RUNTIME_CLOSED',
-              `DSH runtime closed (${signal ?? code ?? 'unknown'})`,
-              !this.closing,
-            ),
-          );
-        }
+        this.fail(
+          new HandlerError(
+            'DSH_RUNTIME_CLOSED',
+            `DSH runtime closed (${signal ?? code ?? 'unknown'})`,
+            !this.closing,
+          ),
+        );
         resolve();
       });
     });
@@ -86,6 +94,14 @@ export class DshProtocolClient {
   subscribe(listener: (value: DshNotification) => void) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Prompt acknowledgement is not turn completion. Notify idle waiters too,
+   * including listeners installed after a process has already terminated. */
+  onFailure(listener: (error: Error) => void) {
+    if (this.terminalError) listener(this.terminalError);
+    else this.failureListeners.add(listener);
+    return () => this.failureListeners.delete(listener);
   }
 
   setRequestHandler(handler: DshInboundRequestHandler | null) {
@@ -100,8 +116,15 @@ export class DshProtocolClient {
     nativeSkills?: DshNativeSkillSnapshot[];
     maxTokens?: number;
     expectedVersion?: string;
+    requireTaskProgress?: boolean;
+    requireDurableQuestions?: boolean;
   }) {
-    const { expectedVersion, ...params } = input;
+    const {
+      expectedVersion,
+      requireTaskProgress,
+      requireDurableQuestions,
+      ...params
+    } = input;
     const result = await this.request('initialize', params);
     const serverInfo = record(result.serverInfo);
     if (
@@ -125,6 +148,24 @@ export class DshProtocolClient {
         false,
       );
     }
+    if (
+      requireTaskProgress &&
+      record(result.capabilities)?.taskProgress !== true
+    )
+      throw new HandlerError(
+        'DSH_PROGRESS_GUARD_UNAVAILABLE',
+        'DSH runtime did not activate the required progress guard',
+        false,
+      );
+    if (
+      requireDurableQuestions &&
+      record(result.capabilities)?.durableQuestions !== true
+    )
+      throw new HandlerError(
+        'DSH_DURABLE_WAIT_UNAVAILABLE',
+        'DSH runtime does not support durable question waits',
+        false,
+      );
     return { name: serverInfo.name, version: serverInfo.version };
   }
 
@@ -150,6 +191,34 @@ export class DshProtocolClient {
 
   async interrupt(sessionId: string) {
     return this.request('session/interrupt', { sessionId }, 10_000);
+  }
+
+  async parkQuestion(sessionId: string, questionId: string) {
+    return this.request(
+      'session/park-question',
+      { sessionId, questionId },
+      15_000,
+    );
+  }
+
+  async answerWait(input: {
+    sessionId: string;
+    questionId: string;
+    turnId: string;
+    inputId: string;
+    text: string;
+  }) {
+    return this.request('session/answer-wait', input, 15_000);
+  }
+
+  async continueWait(input: {
+    sessionId: string;
+    questionId: string;
+    turnId: string;
+    inputId: string;
+    text: string;
+  }) {
+    return this.request('session/continue-wait', input, 15_000);
   }
 
   async steer(
@@ -400,10 +469,12 @@ export class DshProtocolClient {
         );
       }
       const result = await this.inboundRequestHandler(method, params);
+      if (this.terminalError || !this.child.stdin.writable) return;
       this.child.stdin.write(
         `${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`,
       );
     } catch (error) {
+      if (this.terminalError || !this.child.stdin.writable) return;
       const message =
         error instanceof HandlerError
           ? error.message
@@ -426,5 +497,7 @@ export class DshProtocolClient {
       pending.reject(error);
     }
     this.pending.clear();
+    for (const listener of this.failureListeners) listener(error);
+    this.failureListeners.clear();
   }
 }

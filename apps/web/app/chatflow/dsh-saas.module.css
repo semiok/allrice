@@ -2078,6 +2078,22 @@ main.shell {
   opacity: 0.55;
 }
 
+.runTiming {
+  margin: 6px 0 12px;
+  color: var(--text-secondary, #666);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.runTiming summary {
+  cursor: pointer;
+}
+
+.runTiming p {
+  margin: 4px 0;
+}
+
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: 57px minmax(0, 1fr) !important;

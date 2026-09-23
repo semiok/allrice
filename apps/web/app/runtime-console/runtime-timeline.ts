@@ -20,6 +20,7 @@ export interface RuntimeTimelineEvent {
 
 export interface RuntimeTimelineTurn {
   usage?: RuntimeRunUsage | null;
+  timing?: TaskRuntimeTiming | null;
   run: {
     id: string;
     status: string;
@@ -126,4 +127,4 @@ export function aggregateRuntimeTimelineEvents(
 
   return result;
 }
-import type { RuntimeRunUsage } from '@allrice/contracts';
+import type { RuntimeRunUsage, TaskRuntimeTiming } from '@allrice/contracts';

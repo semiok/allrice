@@ -913,6 +913,9 @@ export function ChatFlowClient({
                     </button>
                   </p>
                 ) : null}
+                {!workbenchEnabled && interactions.error ? (
+                  <p role="status">{interactions.error}</p>
+                ) : null}
                 {workbenchEnabled && assistants.hasMore ? (
                   <button
                     type="button"
@@ -926,6 +929,7 @@ export function ChatFlowClient({
                   localCommandsEnabled={localCommandsEnabled}
                   localMcpEnabled={localMcpEnabled}
                   assistantTrees={assistants.trees}
+                  runTimings={interactions.data?.runTimings}
                   onAssistantChanged={assistants.reload}
                   messages={history?.messages ?? []}
                   onLoadRunTrace={loadRunTrace}

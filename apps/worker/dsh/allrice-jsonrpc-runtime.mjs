@@ -36,6 +36,12 @@ import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
+import { installTaskProgress } from './allrice-task-progress.mjs';
+import {
+  checkpointNativeQuestion,
+  answerNativeWait,
+  continueNativeWait,
+} from './allrice-dsh-waits.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
@@ -671,7 +677,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   installUserQuestionProvider() {
     if (!this.ctx.userQuestions) return;
     this.ctx.userQuestions.registerProvider({
-      ask: (request) => {
+      ask: async (request) => {
         const session = [...this.sessions.entries()].find(
           ([, record]) => record.handle.agent === request.agent,
         );
@@ -681,15 +687,32 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           );
         }
         const [sessionId] = session;
-        if (this.pendingUserQuestions.has(sessionId)) {
-          throw new Error(
-            'A user question is already pending for this Session',
-          );
+        // A child progress pause may arrive while Rice is asking an ordinary
+        // question. Serialize them; never replace or accidentally answer it.
+        while (this.pendingUserQuestions.has(sessionId)) {
+          request.signal?.throwIfAborted();
+          const pending = this.pendingUserQuestions.get(sessionId);
+          await new Promise((resolveWait, rejectWait) => {
+            const abort = () => rejectWait(request.signal.reason);
+            request.signal?.addEventListener('abort', abort, { once: true });
+            pending.done.then(() => {
+              request.signal?.removeEventListener('abort', abort);
+              resolveWait();
+            });
+          });
         }
+        request.signal?.throwIfAborted();
+        if (!this.sessions.has(sessionId))
+          throw Error('INPUT_SESSION_NOT_LIVE');
         const questionId = `question-${randomUUID()}`;
+        let markDone;
+        const done = new Promise((resolveDone) => {
+          markDone = resolveDone;
+        });
         return new Promise((resolveQuestion, rejectQuestion) => {
           const abort = () => {
             this.pendingUserQuestions.delete(sessionId);
+            markDone();
             rejectQuestion(
               new Error(
                 'ask_user_question was aborted before the user answered',
@@ -698,14 +721,17 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           };
           request.signal?.addEventListener('abort', abort, { once: true });
           this.pendingUserQuestions.set(sessionId, {
+            done,
             questionId,
             questions: request.questions,
             resolve: (answer) => {
               request.signal?.removeEventListener('abort', abort);
+              markDone();
               resolveQuestion(answer);
             },
             reject: (error) => {
               request.signal?.removeEventListener('abort', abort);
+              markDone();
               rejectQuestion(error);
             },
           });
@@ -782,6 +808,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         },
       );
     }
+    if (this.progressBridge && !this.taskProgress)
+      this.taskProgress = installTaskProgress(this.ctx, this.progressBridge);
     const requestedSkills = Array.isArray(params?.nativeSkills)
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];
@@ -795,6 +823,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           process.env.DSH_DISTRIBUTION_VERSION ?? 'unapproved-development',
       },
       capabilities: {
+        durableQuestions: true,
+        taskProgress: !!this.taskProgress,
         interrupt: true,
         steer: true,
         compact: true,
@@ -1504,6 +1534,20 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       return this.governedAssistants[action](params);
     }
     switch (method) {
+      case 'session/park-question':
+        return {
+          checkpoint: await checkpointNativeQuestion(
+            this,
+            requiredSessionId(params),
+            params.questionId,
+          ),
+        };
+      case 'session/answer-wait':
+        requiredSessionId(params);
+        return answerNativeWait(this, params);
+      case 'session/continue-wait':
+        requiredSessionId(params);
+        return continueNativeWait(this, params);
       case 'session/interrupt':
         return this.interrupt(params);
       case 'session/steer':
@@ -1565,6 +1609,9 @@ if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
     transport.request(`allrice/assistant/${method}`, params, signal);
 server.toolBrokerRequest = (params, signal) =>
   transport.request('allrice/tool-call', params, signal);
+if (process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1')
+  server.progressBridge = (params, signal) =>
+    transport.request('allrice/progress', params, signal);
 server.authorizationNotify = (notice) =>
   transport.notify('provider.authorization', {
     provider: 'openai-codex',

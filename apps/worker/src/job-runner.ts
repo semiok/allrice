@@ -14,6 +14,7 @@ import { HarnessEventBatcher } from './harness/delta-batcher.js';
 import { normalizeHarnessRunEvent } from './harness/runtime-contract.js';
 import { prepareExecutionIsolation } from './isolation.js';
 import { WorkflowPaused } from './workflow-engine.js';
+import { NativeQuestionParked } from './harness/dsh/native-question-wait.js';
 
 export interface ClaimedJobRunnerInput {
   workerId: string;
@@ -177,6 +178,7 @@ export async function runClaimedJob(
     });
   } catch (error) {
     if (error instanceof WorkflowPaused) return;
+    if (error instanceof NativeQuestionParked && error.persisted) return;
     if (controller.signal.aborted || input.stopping() || isLeaseLoss(error)) {
       return;
     }

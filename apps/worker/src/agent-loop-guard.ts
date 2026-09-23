@@ -18,6 +18,11 @@ export class AgentLoopGuard {
   private toolCalls = 0;
   private readonly signatures = new Map<string, number>();
   private readonly startedAt = Date.now();
+  private callsObserved = false;
+  private windowStart = Date.now();
+  observeCallsOnly() {
+    this.callsObserved = true;
+  }
 
   constructor(
     private readonly limits: {
@@ -35,6 +40,11 @@ export class AgentLoopGuard {
   ) {}
 
   observe(event: HarnessEvent, now = Date.now()) {
+    // Protect event throughput, not the accumulated lifetime of a healthy task.
+    if (this.callsObserved && now - this.windowStart >= 60000) {
+      this.events = 0;
+      this.windowStart = now;
+    }
     this.events += 1;
     if (this.events > this.limits.maxEvents) {
       throw new AgentLoopGuardError('AGENT_EVENT_LIMIT_EXCEEDED');
@@ -47,6 +57,7 @@ export class AgentLoopGuard {
     }
     if (event.type !== 'tool.started') return;
     this.toolCalls += 1;
+    if (this.callsObserved) return;
     if (this.toolCalls > this.limits.maxToolCalls) {
       throw new AgentLoopGuardError('AGENT_TOOL_LOOP_DETECTED');
     }

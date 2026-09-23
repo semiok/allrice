@@ -7,6 +7,13 @@ export function modelGovernanceFailureText(
   code: string | null | undefined,
 ): string | null {
   switch (code) {
+    case 'DSH_EXECUTION_OUTCOME_UNKNOWN':
+      return '执行进程已中断，结果不明的操作没有自动重跑。已产生的内容与执行记录保留，请先核对操作结果。';
+    case 'NATIVE_WAIT_RECOVERY_REJECTED':
+      return '等待恢复未得到确认，任务没有自动重跑。请查看保留的内容与执行记录。';
+    case 'NATIVE_WAIT_AUTHORITY_CHANGED':
+    case 'NATIVE_WAIT_CONFIGURATION_CHANGED':
+      return '等待期间的授权或配置已变更，未恢复执行。请重新确认后发起任务；已有内容与执行记录保留。';
     case 'MODEL_OUTPUT_BUDGET_EXCEEDED':
       return '本次任务达到平台内部输出 Token 预算，不代表 Codex 订阅周额度已用完。';
     case 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED':

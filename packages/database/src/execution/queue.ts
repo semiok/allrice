@@ -27,6 +27,7 @@ import type postgres from 'postgres';
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { wakeNativeQuestionWaits } from '../task-native-wait.ts';
 import {
   isTerminalJobStatus,
   isTerminalRunEventType,
@@ -1149,10 +1150,16 @@ export async function startClaimedJob(
     });
     const running = updated[0];
     if (!running) throw new Error('job start failed');
-    // Native question IDs belong to the previous live process/turn. A new
-    // owner must re-emit a question before it can suspend this attempt.
+    // Only a persisted quiescent checkpoint can keep its original question
+    // across owners. Transient native callbacks are still not recoverable.
     if (await refreshTaskClock(transaction, job.run_id)) {
-      await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
+      const [waits] =
+        await transaction`select to_regclass(format('%I.allrice_native_question_waits',current_schema())) is not null as available`;
+      if (waits?.available)
+        await transaction`update allrice_task_questions q set pending=false where q.run_id=${job.run_id} and q.pending
+        and not exists(select 1 from allrice_native_question_waits w where w.run_id=q.run_id and w.question_id=q.question_id and w.state='ready')`;
+      else
+        await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
     }
     const clock = await refreshTaskClock(transaction, job.run_id);
     if (clock) running.timeout_at = clock.deadlineAt;
@@ -1386,6 +1393,7 @@ export async function maintainQueue(limit = 100) {
   }
   const now = new Date();
   const sql = getDatabase();
+  await wakeNativeQuestionWaits(limit, sql);
   const rows = await sql<JobRow[]>`
       select * from allrice_jobs
       where status in ('queued', 'claimed', 'running', 'retry_wait')

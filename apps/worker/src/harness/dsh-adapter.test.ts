@@ -10,6 +10,7 @@ import type { HarnessExecutionInput } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError } from '../errors.js';
+import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import {
   DshHarnessAdapter,
@@ -137,6 +138,39 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('settles an acknowledged turn when its process dies, preserving output without retrying', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({
+      prompt: 'crash after acknowledgement',
+      events,
+    });
+    const error = await adapter.execute(input).catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: 'DSH_EXECUTION_OUTCOME_UNKNOWN',
+      retryable: false,
+    });
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'assistant.delta' && e.text === 'retained partial output',
+      ),
+    ).toBe(true);
+    expect(events.some((e) => e.type === 'assistant.completed')).toBe(false);
+    expect(adapter.runtimeInventory()).toEqual([]);
+    expect(
+      getAssistantFailureUsage(
+        error,
+        input.executionEnvironment.ALLRICE_RUN_ID!,
+        input.attempt,
+      ),
+    ).toEqual({
+      usage: { inputTokens: 11, cachedInputTokens: 3, outputTokens: 5 },
+      usageComplete: false,
+      cacheUsageKnown: false,
+    });
+  }, 5000);
+
   it.each([
     { fresh: true, matchingRoot: true, known: true },
     { fresh: false, matchingRoot: true, known: false },
@@ -893,6 +927,35 @@ describe('DshHarnessAdapter', () => {
       executionInput({ prompt: 'after recovery', threadId }),
     );
     expect(recovered.answer).toBe('turn-1');
+  });
+
+  it.each([false, true])(
+    'never reports an empty success when canceled before dispatch (progress %s)',
+    async (progress) => {
+      const adapter = createAdapter(),
+        controller = new AbortController();
+      const input = executionInput({
+        prompt: 'must not start',
+        signal: controller.signal,
+      });
+      if (progress) input.progress = async () => ({ paused: false });
+      input.onThreadBound = async () => {
+        controller.abort();
+      };
+      await expect(adapter.execute(input)).rejects.toThrow('interrupted');
+    },
+  );
+
+  it('refuses an old runtime before dispatch when required progress protection is not acknowledged', async () => {
+    const adapter = createAdapter();
+    const input = executionInput({
+      prompt: 'must not start',
+      provider: { ...snapshot('openai-compatible'), model: 'legacy-progress' },
+    });
+    input.progress = async () => ({ paused: false });
+    await expect(adapter.execute(input)).rejects.toThrow(
+      'required progress guard',
+    );
   });
 
   it('uses DSH native compaction without replacing the live session', async () => {

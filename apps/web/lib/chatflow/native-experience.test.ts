@@ -37,6 +37,31 @@ function event(
 }
 
 describe('projectNativeExperience', () => {
+  it('presents a checkpointed question suspension without hiding unrelated tool failures', () => {
+    const rows = projectNativeExperience([
+      event(
+        1,
+        'tool.failed',
+        {
+          toolCallId: 'question',
+          name: 'ask_user_question',
+          summary: '提问已挂起，等待你的回答',
+        },
+        { questionWait: true },
+      ),
+      event(
+        2,
+        'tool.failed',
+        { toolCallId: 'write', name: 'file.write' },
+        { questionWait: true },
+      ),
+    ]);
+    expect(rows[0]).toMatchObject({
+      status: 'info',
+      detail: '提问已挂起，等待你的回答',
+    });
+    expect(rows[1]).toMatchObject({ status: 'failed' });
+  });
   it('hides internal context and replaces a reasoning block in place', () => {
     const projected = projectNativeExperience([
       event(

@@ -7,6 +7,7 @@ import {
   WorkbenchArtifactSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
+  type InteractionStatus,
 } from '@allrice/contracts';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
@@ -213,6 +214,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
+      runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
+      timingError: false,
       delay: null as null | Promise<void>,
     };
     let finishStream!: () => void;
@@ -323,7 +326,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       if (path === '/api/v1/runtime/assistants')
         return answer({ trees: [], nextCursor: null });
       if (path.endsWith('/interactions'))
-        return answer({ runtime: null, pendingActions: [], inputs: [] });
+        return answer(
+          {
+            runtime: null,
+            pendingActions: [],
+            inputs: [],
+            runTimings: path.includes(A) ? state.runTimings : [],
+          },
+          state.timingError ? 503 : 200,
+        );
+      if (path.endsWith('/timings'))
+        return answer(
+          { runTimings: path.includes(A) ? state.runTimings : [] },
+          state.timingError ? 503 : 200,
+        );
       if (path.endsWith('/events')) {
         if (url.searchParams.get('format') === 'json' || !options.running)
           return answer({ events: [] });
@@ -464,6 +480,67 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([false, true])(
+    'shows ordinary task timing on mobile with workbench disabled=%s, refreshes server waits and recovers from a failed read',
+    async (disabled) => {
+      const f = await fixture({ width: 390, disabled });
+      try {
+        f.state.runTimings = [
+          {
+            runId: run,
+            timing: {
+              activeMs: 12460,
+              waitingMs: 10532,
+              wallMs: 22992,
+              timeoutMs: 3600000,
+              remainingMs: 3587540,
+              phase: 'waiting',
+              sources: [{ scope: 'user', timeoutMs: 3600000 }],
+              calls: { modelRequests: 2, toolCalls: 1, pending: 1 },
+            },
+          },
+        ];
+        await f.page.reload();
+        const timing = f.page.getByLabel('本轮运行时间', { exact: true });
+        await timing.waitFor();
+        await timing.locator('summary').click();
+        expect(await timing.innerText()).toContain('已运行 0 分 12 秒');
+        expect(await timing.innerText()).toContain('用户 60 分钟');
+        expect(await timing.innerText()).toContain('回执未完成，用量待核对');
+        f.state.runTimings[0]!.timing.waitingMs = 2400000;
+        f.state.runTimings[0]!.timing.wallMs = 2412460;
+        await expect
+          .poll(() => timing.innerText(), { timeout: 5000 })
+          .toContain('等待 40 分 0 秒');
+        expect(await timing.innerText()).toContain('已运行 0 分 12 秒');
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        f.state.timingError = true;
+        await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
+        await f.page
+          .getByText(disabled ? '运行时间暂不可用' : '交互状态暂不可用', {
+            exact: true,
+          })
+          .waitFor();
+        f.state.timingError = false;
+        await timing.waitFor();
+        await f.page.reload();
+        await timing.waitFor();
+        expect(await timing.locator('summary').innerText()).toContain(
+          '等待 40 分 0 秒',
+        );
+        f.state.runTimings = [];
+        await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
 
   it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
     const f = await fixture({ artifacts: true });

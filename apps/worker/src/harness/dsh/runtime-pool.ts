@@ -227,6 +227,8 @@ export class DshRuntimePool {
           snapshot: input.snapshot,
           runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
           systemInstructions: input.systemInstructions,
+          taskProgress: !!input.input.progress,
+          durableQuestions: !!input.input.questionWait,
           ...(input.input.assistants
             ? { assistantRootRunId: input.input.assistants.rootRunId }
             : {}),
@@ -329,6 +331,7 @@ export class DshRuntimePool {
           16_000,
       ),
       ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
+      ...(input.input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
     };
     if (input.snapshot.route === 'openai-codex') {
       // The DSH credential service resolves and refreshes the platform OAuth
@@ -384,6 +387,8 @@ export class DshRuntimePool {
           input.input.maxOutputTokens ??
           (input.input.assistants ? 16_000 : undefined),
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        requireTaskProgress: !!input.input.progress,
+        requireDurableQuestions: !!input.input.questionWait,
       });
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true };
