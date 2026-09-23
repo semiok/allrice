@@ -49,6 +49,12 @@ import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 import { prepareChangesetAction } from '../changeset-service.ts';
 import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
+import { unboundedTaskDeadline } from '../task-runtime-policy.ts';
+import {
+  refreshTaskClock,
+  refreshTaskClockForJob,
+  recordTaskQuestion,
+} from '../task-clock.ts';
 
 export { queueMaintenanceAction } from '../queue/policy.ts';
 export type { MaintenanceAction } from '../queue/policy.ts';
@@ -298,15 +304,24 @@ export async function enqueueRun(
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
+  const taskPolicy =
+    options.employeeBinding?.executionSnapshot.schemaVersion === 2
+      ? options.employeeBinding.executionSnapshot.taskRuntimePolicy
+      : undefined;
+  if (submission.timeoutMs === 0 && taskPolicy?.timeoutMs !== 0)
+    throw new QueueError('policy_denied');
   const ownerId = requireUser(context);
   const workspaceId = await resolveWorkspaceId(context, submission.workspaceId);
   await requireExecutionMembership(context, workspaceId);
   let availableAt = submission.availableAt
     ? new Date(submission.availableAt)
     : new Date();
-  let timeoutAt = new Date(
-    Math.max(Date.now(), availableAt.getTime()) + submission.timeoutMs,
-  );
+  let timeoutAt =
+    submission.timeoutMs === 0
+      ? unboundedTaskDeadline
+      : new Date(
+          Math.max(Date.now(), availableAt.getTime()) + submission.timeoutMs,
+        );
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
     await transaction`
@@ -422,10 +437,18 @@ export async function enqueueRun(
         expectedTurnId = exactTurn ? runtime.active_turn_id : null;
         expectedGeneration = exactTurn ? runtime.thread_generation : null;
         availableAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        timeoutAt = new Date(availableAt.getTime() + submission.timeoutMs);
+        timeoutAt =
+          submission.timeoutMs === 0
+            ? unboundedTaskDeadline
+            : new Date(availableAt.getTime() + submission.timeoutMs);
       }
     }
-    const policyExpiresAt = new Date(timeoutAt.getTime() + 24 * 60 * 60 * 1000);
+    // Authorization expiry is independent of an unlimited execution budget.
+    const policyExpiresAt = new Date(
+      availableAt.getTime() +
+        Math.max(submission.timeoutMs, 3_600_000) +
+        24 * 60 * 60 * 1000,
+    );
 
     await transaction`select id from allrice_users where id = ${ownerId} for update`;
     const versions = await transaction<{ version: number }[]>`
@@ -531,13 +554,19 @@ export async function enqueueRun(
       ) values (
         ${context.organizationId}, ${workspaceId}, ${ownerId}, ${run.id}, 'queued',
         ${submission.idempotencyKey}, ${submission.priority},
-        ${submission.maxAttempts}, ${availableAt}, ${timeoutAt},
+        ${submission.maxAttempts}, ${availableAt}, ${taskPolicy ? unboundedTaskDeadline : timeoutAt},
         ${transaction.json(toJsonValue(payload))}
       )
       returning id
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (taskPolicy) {
+      if (taskPolicy.timeoutMs !== submission.timeoutMs)
+        throw new QueueError('conflict');
+      await transaction`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+        values(${run.id},${context.organizationId},${workspaceId},${transaction.json(toJsonValue(taskPolicy))})`;
+    }
     if (options.changesetAction && options.conversationDelivery) {
       const action = options.changesetAction;
       await transaction`insert into allrice_changeset_runs(run_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,restore_of)
@@ -840,6 +869,7 @@ async function transitionTerminal(
     }, updated_at = now(), completed_at = now()
     where id = ${job.run_id}
   `;
+  await refreshTaskClock(transaction, job.run_id);
   await transaction`
     update allrice_conversation_followups
     set state = ${input.runStatus === 'succeeded' ? 'consumed' : 'canceled'},
@@ -981,6 +1011,7 @@ export async function startClaimedJob(
   const now = new Date();
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
+    await refreshTaskClockForJob(transaction, jobId);
     const jobs = await transaction<JobRow[]>`
       select * from allrice_jobs where id = ${jobId} for update
     `;
@@ -1118,6 +1149,13 @@ export async function startClaimedJob(
     });
     const running = updated[0];
     if (!running) throw new Error('job start failed');
+    // Native question IDs belong to the previous live process/turn. A new
+    // owner must re-emit a question before it can suspend this attempt.
+    if (await refreshTaskClock(transaction, job.run_id)) {
+      await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
+    }
+    const clock = await refreshTaskClock(transaction, job.run_id);
+    if (clock) running.timeout_at = clock.deadlineAt;
     return {
       execution: {
         context,
@@ -1137,6 +1175,7 @@ async function lockedLeasedJob(
   jobId: string,
   leaseToken: string,
 ) {
+  await refreshTaskClockForJob(transaction, jobId);
   const rows = await transaction<JobRow[]>`
     select * from allrice_jobs where id = ${jobId} for update
   `;
@@ -1211,6 +1250,8 @@ export async function appendJobEvent(input: {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
+    if (input.type === 'harness.native')
+      await recordTaskQuestion(transaction, job.run_id, input.payload);
     return appendEvent(transaction, {
       organizationId: job.organization_id,
       workspaceId: job.workspace_id,
@@ -1306,6 +1347,7 @@ export async function failJob(input: {
         update allrice_employee_runs set status = 'queued'
         where run_id = ${job.run_id}
       `;
+      await refreshTaskClock(transaction, job.run_id);
       await appendEvent(transaction, {
         organizationId: job.organization_id,
         workspaceId: job.workspace_id,
@@ -1344,8 +1386,7 @@ export async function maintainQueue(limit = 100) {
   }
   const now = new Date();
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const rows = await transaction<JobRow[]>`
+  const rows = await sql<JobRow[]>`
       select * from allrice_jobs
       where status in ('queued', 'claimed', 'running', 'retry_wait')
         and (
@@ -1355,26 +1396,36 @@ export async function maintainQueue(limit = 100) {
           or (status in ('claimed', 'running') and lease_expires_at <= ${now})
         )
       order by updated_at, id
-      for update skip locked
       limit ${limit}
     `;
-    const counts: Record<Exclude<MaintenanceAction, 'none'>, number> = {
-      promote_retry: 0,
-      cancel: 0,
-      timeout: 0,
-      recover_lease: 0,
-      dead_letter: 0,
-    };
-    for (const job of rows) {
-      const action = queueMaintenanceAction(job, now);
-      if (action === 'none') continue;
+  const counts: Record<Exclude<MaintenanceAction, 'none'>, number> = {
+    promote_retry: 0,
+    cancel: 0,
+    timeout: 0,
+    recover_lease: 0,
+    dead_letter: 0,
+  };
+  for (const candidate of rows) {
+    // Same root -> clock -> job order as dispatch; one root per transaction.
+    await sql.begin(async (transaction) => {
+      await refreshTaskClockForJob(transaction, candidate.id);
+      const [job] = await transaction<
+        JobRow[]
+      >`select * from allrice_jobs where id=${candidate.id} for update`;
+      if (
+        !job ||
+        !['queued', 'claimed', 'running', 'retry_wait'].includes(job.status)
+      )
+        return;
+      const action = queueMaintenanceAction(job, new Date());
+      if (action === 'none') return;
       counts[action] += 1;
       if (action === 'promote_retry') {
         await transaction`
           update allrice_jobs set status = 'queued', updated_at = ${now}
           where id = ${job.id}
         `;
-        continue;
+        return;
       }
       if (action === 'cancel') {
         await transitionTerminal(transaction, job, {
@@ -1383,7 +1434,7 @@ export async function maintainQueue(limit = 100) {
           eventType: 'run.canceled',
           payload: { reason: job.cancel_reason ?? 'user_requested' },
         });
-        continue;
+        return;
       }
       if (action === 'timeout') {
         await transitionTerminal(transaction, job, {
@@ -1394,7 +1445,7 @@ export async function maintainQueue(limit = 100) {
           message: 'Job execution timed out',
           payload: { code: 'JOB_TIMEOUT', attempt: job.attempt },
         });
-        continue;
+        return;
       }
       if (action === 'dead_letter') {
         await transitionTerminal(transaction, job, {
@@ -1405,7 +1456,7 @@ export async function maintainQueue(limit = 100) {
           message: 'Worker lease expired after the final attempt',
           payload: { code: 'LEASE_EXHAUSTED', attempt: job.attempt },
         });
-        continue;
+        return;
       }
       await settleManagedBrowserTasksForJobAttempt(transaction, job, {
         status: 'failed',
@@ -1437,9 +1488,10 @@ export async function maintainQueue(limit = 100) {
           attempt: job.attempt,
         },
       });
-    }
-    return counts;
-  });
+      await refreshTaskClock(transaction, job.run_id);
+    });
+  }
+  return counts;
 }
 
 export async function queueSummary() {

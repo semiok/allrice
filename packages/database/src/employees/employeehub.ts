@@ -48,6 +48,7 @@ import {
 } from './employee-config.ts';
 import { getDatabase } from '../core/client.ts';
 import { freezeSessionModelSnapshot } from '../providers/model-pool.ts';
+import { freezeTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import {
   ensureDefaultEmployee,
   resolveWorkspaceId,
@@ -1225,6 +1226,21 @@ export async function prepareEmployeeRunBinding(input: {
         ? null
         : modelSnapshot.baseUrl,
   });
+  const taskRuntimePolicy =
+    modelSnapshot.authMode === 'chatgpt_subscription' &&
+    ['codex', 'openai-codex'].includes(modelSnapshot.provider) &&
+    modelSnapshot.baseUrl === null &&
+    modelSnapshot.credentialReference
+      ? await freezeTaskRuntimePolicy(
+          {
+            organizationId: input.context.organizationId,
+            userId: actorId,
+            employeeId: assignment.employee_id,
+            connectionId: modelSnapshot.connectionId,
+          },
+          sql,
+        )
+      : undefined;
   const selectedRuntimePolicy = EmployeeRuntimePolicySchema.parse({
     ...runtimePolicy(manifest.data),
     harness: 'dsh',
@@ -1244,7 +1260,8 @@ export async function prepareEmployeeRunBinding(input: {
         ? null
         : modelSnapshot.baseUrl,
     fallbackModels: [],
-    timeoutMs: modelSnapshot.runLimits.timeoutMs,
+    timeoutMs:
+      taskRuntimePolicy?.timeoutMs ?? modelSnapshot.runLimits.timeoutMs,
   });
   const nativeSkills = nativeSkillRows.map((skill) =>
     validateFrozenSkill({
@@ -1329,6 +1346,7 @@ export async function prepareEmployeeRunBinding(input: {
         assignedAt: assignment.assigned_at.toISOString(),
       },
       runtimePolicy: selectedRuntimePolicy,
+      ...(taskRuntimePolicy ? { taskRuntimePolicy } : {}),
       modelSnapshot,
       capabilitySnapshot: {
         declaredCapabilities: manifest.data.capabilities,

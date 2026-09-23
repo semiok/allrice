@@ -17,6 +17,7 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import { taskDeadlineOpen, linkTaskOperationCall } from './task-clock.ts';
 import {
   getWorkbenchArtifact,
   readArtifactBytes,
@@ -301,11 +302,17 @@ export async function createLocalCommandOperation(
       amount: metric === 'tool_calls' ? 1 : 0,
     })),
   });
+  await linkTaskOperationCall(
+    database,
+    operationId,
+    input.callId,
+    input.assistant?.runId,
+  );
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
       ledger.policyOptions,
       binding,
-      600_000,
+      undefined,
       database,
     );
   return {
@@ -476,7 +483,13 @@ export async function waitLocalCommandOperation(
       });
     }
   };
-  while (Date.now() < Date.parse(created.deadlineAt)) {
+  while (
+    await taskDeadlineOpen(
+      database,
+      created.snapshot.binding.task.rootRunId,
+      created.deadlineAt,
+    )
+  ) {
     if (signal?.aborted) await cancel();
     await created.ledger.expireLeases(
       scope,

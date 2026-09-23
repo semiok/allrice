@@ -14,7 +14,7 @@ export interface DshNotification {
 interface PendingRequest {
   resolve(value: Record<string, unknown>): void;
   reject(error: Error): void;
-  timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout | undefined;
 }
 
 export type DshInboundRequestHandler = (
@@ -211,7 +211,10 @@ export class DshProtocolClient {
     return this.request(
       `allrice/assistant/${action}`,
       params,
-      action === 'diagnostics' ? 2_000 : undefined,
+      // Join waits for owned background agents, including human approval. Its
+      // lifetime is governed by Worker lease/cancel and the durable task clock,
+      // not the short protocol acknowledgement timeout.
+      action === 'diagnostics' ? 2_000 : action === 'join' ? 0 : undefined,
     );
   }
 
@@ -291,16 +294,19 @@ export class DshProtocolClient {
     if (this.terminalError) return Promise.reject(this.terminalError);
     const id = ++this.requestId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
-          new HandlerError(
-            'DSH_REQUEST_TIMEOUT',
-            `DSH ${method} request timed out`,
-            true,
-          ),
-        );
-      }, timeoutMs);
+      const timer =
+        timeoutMs === 0
+          ? undefined
+          : setTimeout(() => {
+              this.pending.delete(id);
+              reject(
+                new HandlerError(
+                  'DSH_REQUEST_TIMEOUT',
+                  `DSH ${method} request timed out`,
+                  true,
+                ),
+              );
+            }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.child.stdin.write(
         `${JSON.stringify({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) })}\n`,

@@ -1,0 +1,275 @@
+/** Real production approval/ledger/heartbeat calls over an isolated schema.
+ * Backdating the persisted checkpoint simulates elapsed wall time without a
+ * 40-minute sleep; operation states are changed only by production entrypoints. */
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
+import * as client from './core/client.ts';
+import {
+  heartbeatJob,
+  maintainQueue,
+  appendJobEvent,
+} from './execution/queue.ts';
+import {
+  refreshTaskClock,
+  readTaskClock,
+  taskDeadlineOpen,
+} from './task-clock.ts';
+import {
+  resolveTaskRuntimePolicy,
+  freezeTaskRuntimePolicy,
+} from './task-runtime-policy.ts';
+import { createLocalCommandOperation } from './local-command-service.ts';
+const suite =
+  process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
+    ? describe.sequential
+    : describe.skip;
+suite(
+  'MET-153 durable clock, real PostgreSQL/approval/Worker heartbeat',
+  () => {
+    let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    beforeAll(async () => {
+      for (const flag of [
+        'ALLRICE_ASSISTANTS_ENABLED',
+        'ALLRICE_LOCAL_COMMAND_ENABLED',
+        'ALLRICE_RUNTIME_POLICY_ENABLED',
+        'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
+      ])
+        vi.stubEnv(flag, '1');
+      fixture = await createAssistantFixtureDatabase();
+      vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    }, 120000);
+    afterAll(async () => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      await fixture?.close();
+    });
+    async function setup() {
+      const f = await createAssistantLocalCommandFixture(
+        fixture.db,
+        'ask',
+        false,
+        { skipChild: true },
+      );
+      await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+      await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
+      return f;
+    }
+    it('does not kill a 40-minute approval wait; resume keeps the accumulated wait and bounded command lease', async () => {
+      const f = await setup();
+      const c = await createLocalCommandOperation(
+        { context: f.context, arguments: f.args, callId: randomUUID() },
+        f.db,
+      );
+      expect(c.snapshot.status).toBe('waiting_user');
+      const read = () => f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
+      expect((await read())?.phase).toBe('waiting');
+      await f.db`update allrice_task_clocks set changed_at=clock_timestamp()-interval '40 minutes',started_at=clock_timestamp()-interval '50 minutes',active_ms=600000 where run_id=${f.rootRunId}`;
+      expect(
+        await heartbeatJob(
+          f.worker.workerId,
+          f.worker.jobId,
+          f.worker.leaseToken,
+          30000,
+        ),
+      ).toEqual({ active: true, canceled: false });
+      const waiting = await read();
+      expect(waiting!.activeMs).toBe(600000);
+      expect(waiting!.waitingMs).toBeGreaterThanOrEqual(2400000);
+      expect(
+        await taskDeadlineOpen(f.db, f.rootRunId, new Date(0).toISOString()),
+      ).toBe(true);
+      const op = c.snapshot.binding.attempt.operationId;
+      const approval = await f.approvalFor(op);
+      expect(Date.parse(approval.expiresAt) - Date.now()).toBeGreaterThan(
+        3500000,
+      );
+      await f.approve(approval);
+      const lease = await f.freshLedger().dispatch({
+        scope: f.task.scope,
+        operationId: op,
+        leaseOwner: randomUUID(),
+        leaseMs: 15000,
+      });
+      const resumed = await read();
+      expect(resumed!.phase).toBe('active');
+      expect(resumed!.waitingMs).toBeGreaterThanOrEqual(waiting!.waitingMs);
+      expect(Date.parse(lease.leaseExpiresAt) - Date.now()).toBeLessThanOrEqual(
+        15000,
+      );
+      // A fresh client/runtime read cannot erase historic waiting after dispatch.
+      await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
+      expect((await read())!.waitingMs).toBe(resumed!.waitingMs);
+    });
+    it('heartbeat and maintenance agree on exhausted active time without deadlock', async () => {
+      const f = await setup();
+      await f.db`update allrice_jobs set available_at=clock_timestamp()-interval '2 hours',created_at=clock_timestamp()-interval '2 hours' where id=${f.worker.jobId}`;
+      await f.db`update allrice_task_clocks set changed_at=clock_timestamp()-interval '61 minutes' where run_id=${f.rootRunId}`;
+      await f.db`update allrice_jobs set timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      const outcomes = await Promise.allSettled([
+        heartbeatJob(
+          f.worker.workerId,
+          f.worker.jobId,
+          f.worker.leaseToken,
+          30000,
+        ),
+        maintainQueue(),
+      ]);
+      expect(outcomes.some((r) => r.status === 'fulfilled')).toBe(true);
+      for (const result of outcomes)
+        if (result.status === 'rejected')
+          expect(result.reason).toMatchObject({ code: 'lease_lost' });
+      const [run] =
+        await f.db`select state,error_code from allrice_runs where id=${f.rootRunId}`;
+      expect(run).toMatchObject({ state: 'failed', error_code: 'JOB_TIMEOUT' });
+      expect(
+        (await f.db.begin((tx) => readTaskClock(tx, f.rootRunId)))!.phase,
+      ).toBe('terminal');
+    });
+    it('does not pause a concurrent read just because the same agent has a blocked proposal', async () => {
+      const f = await setup();
+      const amounts = {
+        model_calls: 0,
+        tool_calls: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+      };
+      const proposalId = randomUUID(),
+        readId = randomUUID();
+      const nativeId = randomUUID();
+      await f.runtime.reserveUsage({
+        ...f.base,
+        runId: f.rootRunId,
+        callId: proposalId,
+        kind: 'tool',
+        tool: 'local.process.execute',
+        proposal: true,
+        amounts,
+        nativeCall: {
+          id: nativeId,
+          argumentsDigest: `sha256:${'a'.repeat(64)}`,
+        },
+      });
+      await createLocalCommandOperation(
+        { context: f.context, arguments: f.args, callId: nativeId },
+        f.db,
+      );
+      const read = () => f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
+      expect((await read())!.phase).toBe('waiting');
+      await f.runtime.reserveUsage({
+        ...f.base,
+        runId: f.rootRunId,
+        callId: readId,
+        kind: 'tool',
+        tool: 'web.fetch',
+        amounts,
+        nativeCall: {
+          id: randomUUID(),
+          argumentsDigest: `sha256:${'b'.repeat(64)}`,
+        },
+      });
+      expect((await read())!.phase).toBe('active');
+      await f.runtime.settleUsage({
+        ...f.base,
+        runId: f.rootRunId,
+        callId: readId,
+        amounts,
+      });
+      expect((await read())!.phase).toBe('waiting');
+    });
+    it('counts a working coordinator, pauses only after native idle, and resumes on model preparation', async () => {
+      const f = await createAssistantLocalCommandFixture(fixture.db);
+      await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+        values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+      await f.db.begin((tx) => refreshTaskClock(tx, f.rootRunId));
+      const c = await f.create();
+      expect(c.snapshot.status).toBe('waiting_user');
+      const read = () => f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
+      expect((await read())!.phase).toBe('active');
+      await f.runtime.markNativeIdle({ ...f.base, runId: f.rootRunId });
+      expect((await read())!.phase).toBe('waiting');
+      await f.db`update allrice_task_clocks set changed_at=clock_timestamp()-interval '40 minutes' where run_id=${f.rootRunId}`;
+      await f.runtime.prepareModelUsage({
+        ...f.base,
+        runId: f.rootRunId,
+        callId: randomUUID(),
+        requestedOutputTokens: 100,
+      });
+      expect((await read())!.phase).toBe('active');
+      expect((await read())!.waitingMs).toBeGreaterThanOrEqual(2400000);
+      await f.runtime.markNativeIdle({ ...f.base, runId: f.rootRunId });
+      expect((await read())!.phase).toBe('active');
+    });
+    it('still rejects a revoked local grant after an excluded approval wait', async () => {
+      const f = await setup();
+      const c = await createLocalCommandOperation(
+        { context: f.context, arguments: f.args, callId: randomUUID() },
+        f.db,
+      );
+      const op = c.snapshot.binding.attempt.operationId;
+      await f.approve(await f.approvalFor(op));
+      await f.db`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where device_id=${f.device.id}`;
+      await expect(
+        f.freshLedger().dispatch({
+          scope: f.task.scope,
+          operationId: op,
+          leaseOwner: randomUUID(),
+          leaseMs: 15000,
+        }),
+      ).rejects.toThrow();
+      expect(
+        await f.db`select 1 from allrice_runtime_operations where id=${op} and lease_owner is not null`,
+      ).toHaveLength(0);
+    });
+    it('persists Ask User waits through the lease-checked event entry and never reopens a answered ID', async () => {
+      const f = await setup();
+      const send = (answered: boolean) =>
+        appendJobEvent({
+          ...f.worker,
+          type: 'harness.native',
+          payload: {
+            source: 'dsh',
+            sourceEventType: answered
+              ? 'session/user-question-answered'
+              : 'session/user-question',
+            nativePayload: { questionId: 'q1' },
+          },
+        });
+      await send(false);
+      expect(
+        (await f.db.begin((tx) => readTaskClock(tx, f.rootRunId)))!.phase,
+      ).toBe('waiting');
+      await f.db`update allrice_task_clocks set changed_at=clock_timestamp()-interval '40 minutes' where run_id=${f.rootRunId}`;
+      await send(true);
+      await send(false);
+      const clock = await f.db.begin((tx) => readTaskClock(tx, f.rootRunId));
+      expect(clock!.phase).toBe('active');
+      expect(clock!.waitingMs).toBeGreaterThanOrEqual(2400000);
+    });
+    it('resolves explicit admin policies for new Runs without rewriting an existing clock', async () => {
+      const f = await setup(),
+        input = {
+          organizationId: f.org,
+          userId: f.user,
+          employeeId: randomUUID(),
+          connectionId: randomUUID(),
+        };
+      expect((await freezeTaskRuntimePolicy(input, f.db)).timeoutMs).toBe(
+        3600000,
+      );
+      await f.db`insert into allrice_model_resource_limits(id,scope_type,scope_id,organization_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms)
+        values(${randomUUID()},'user',${f.user},${f.org},2000,5000000,3,0)`;
+      expect((await freezeTaskRuntimePolicy(input, f.db)).timeoutMs).toBe(0);
+      expect(
+        (await f.db.begin((tx) => readTaskClock(tx, f.rootRunId)))!.timeoutMs,
+      ).toBe(3600000);
+      await f.db`insert into allrice_model_resource_limits(id,scope_type,scope_id,organization_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms)
+        values(${randomUUID()},'tenant',${f.org},${f.org},2000,5000000,3,1800000)`;
+      expect((await freezeTaskRuntimePolicy(input, f.db)).timeoutMs).toBe(
+        1800000,
+      );
+    });
+  },
+);

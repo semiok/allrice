@@ -240,7 +240,9 @@ const brokerNativeTools = [
   {
     canonicalName: 'local.process.execute',
     wireName: 'local_process_execute',
-    timeoutMs: 670_000,
+    // Approval can wait one hour; the execution payload retains its own short
+    // command/CPU timeout. This is only the outer approval + receipt envelope.
+    timeoutMs: 3_700_000,
     description:
       'Run an explicitly approved Node/npm command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional diagnostics is read-only fixed Node with empty args; optional dependencies performs bounded locked npm preparation; optional background is a finite originating-Run-owned service. These three modes are mutually exclusive. Supply current SHA-256 for every input file. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
     parameters: {
@@ -1084,7 +1086,21 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             },
             render: (_args, value) => [{ type: 'text', text: value.content }],
           },
-          timeoutMs: tool.timeoutMs ?? 65_000,
+          // These facades wait for an exact user approval, then delegate to a
+          // separately bounded process/browser/MCP executor. Do not spend the
+          // short execution timeout while the human is deciding.
+          timeoutMs: [
+            'local.process.execute',
+            'cloud.process.execute',
+            'cloud.mcp.call',
+            'local.mcp.call',
+            'local.mcp.discover',
+            'local.browser.workspace',
+            'browser.workspace',
+            'local.preview.open',
+          ].includes(tool.canonicalName)
+            ? 3_800_000
+            : (tool.timeoutMs ?? 65_000),
           isConcurrencySafe: () =>
             tool.isConcurrencySafe ??
             tool.canonicalName !== 'local.process.execute',

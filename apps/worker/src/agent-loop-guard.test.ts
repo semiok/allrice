@@ -27,6 +27,12 @@ function toolEvent(order: number, payload: Record<string, unknown> = {}) {
 }
 
 describe('agent loop guard', () => {
+  it('does not reintroduce a wall-clock cap when the durable task clock owns elapsed time', () => {
+    const guard = new AgentLoopGuard(undefined, 'durable');
+    expect(() =>
+      guard.observe(toolEvent(1), Date.now() + 86400000),
+    ).not.toThrow();
+  });
   it('allows distinct tool work and blocks identical repetition', () => {
     const guard = new AgentLoopGuard({
       maxEvents: 20,

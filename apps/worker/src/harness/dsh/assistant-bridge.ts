@@ -125,6 +125,10 @@ export function createAssistantWorkerBridge(
           : { adoptedSeq: natural.parse(p.adoptedSeq) }),
       });
     }
+    if (method === 'native-idle') {
+      await runtime.markNativeIdle({ ...base, runId: instance.runId });
+      return { recorded: true };
+    }
     if (method === 'model-prepare') {
       await options.beforeModelDispatch?.();
       return runtime.prepareModelUsage({

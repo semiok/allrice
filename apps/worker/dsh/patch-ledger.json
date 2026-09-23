@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-durable-task-clock-v1",
+      "issue": "MET-153",
+      "upstreamVersion": "0.1.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
+      "reason": "Report actual coordinator idle for the durable root clock; join waits under Worker lease/cancel supervision, while single requests and tools retain bounded lifetimes. No second agent loop or implicit authority."
+    },
+    {
       "id": "allrice-development-workflow-v1",
       "issue": "MET-144",
       "upstreamVersion": "0.1.1-rc.2",

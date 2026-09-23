@@ -31,6 +31,7 @@ export class AgentLoopGuard {
       maxIdenticalToolCalls: 4,
       maxRuntimeMs: 3_600_000,
     },
+    private readonly clock: 'wall' | 'durable' = 'wall',
   ) {}
 
   observe(event: HarnessEvent, now = Date.now()) {
@@ -38,7 +39,10 @@ export class AgentLoopGuard {
     if (this.events > this.limits.maxEvents) {
       throw new AgentLoopGuardError('AGENT_EVENT_LIMIT_EXCEEDED');
     }
-    if (now - this.startedAt > this.limits.maxRuntimeMs) {
+    if (
+      this.clock === 'wall' &&
+      now - this.startedAt > this.limits.maxRuntimeMs
+    ) {
       throw new AgentLoopGuardError('AGENT_RUNTIME_LIMIT_EXCEEDED');
     }
     if (event.type !== 'tool.started') return;

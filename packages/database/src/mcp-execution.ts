@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { linkTaskOperationCall } from './task-clock.ts';
 import { z } from 'zod';
 import {
   FrozenMcpToolSchema,
@@ -245,11 +246,16 @@ export async function createMcpRuntimeOperation(
               : 0,
     })),
   });
+  await linkTaskOperationCall(
+    database,
+    binding.attempt.operationId,
+    input.callId,
+  );
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
       ledger.policyOptions,
       binding,
-      600000,
+      undefined,
       database,
     );
   return {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { linkTaskOperationCall } from './task-clock.ts';
 import {
   CloudCommandInputSchema,
   CloudCommandSchema,
@@ -289,11 +290,16 @@ export async function createCloudCommandOperation(
               : 0,
     })),
   });
+  await linkTaskOperationCall(
+    database,
+    binding.attempt.operationId,
+    input.callId,
+  );
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
       ledger.policyOptions,
       binding,
-      600_000,
+      undefined,
       database,
     );
   return {

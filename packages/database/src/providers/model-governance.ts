@@ -71,7 +71,7 @@ export const defaultResourceLimits = {
     monthlyRunLimit: 2_000,
     monthlyTokenLimit: 2_000_000,
     concurrentRunLimit: 3,
-    maxRuntimeMs: 1_800_000,
+    maxRuntimeMs: 3_600_000,
   },
   employee: {
     monthlyRunLimit: 5_000,
@@ -240,7 +240,10 @@ export function assertQuotaAvailable(
   billingMode: 'token_metered' | 'subscription' = 'token_metered',
   requestedTokens = 0,
 ) {
-  if (quota.usedRuns >= quota.monthlyRunLimit) {
+  if (
+    billingMode !== 'subscription' &&
+    quota.usedRuns >= quota.monthlyRunLimit
+  ) {
     throw new ModelGovernanceError('MODEL_RUN_QUOTA_EXCEEDED');
   }
   // Missing receipts remain unknown in the ledger, not an account-wide lock.
@@ -503,6 +506,7 @@ export async function resourceStatus(
     concurrentRunLimit:
       limits?.concurrent_run_limit ?? defaults.concurrentRunLimit,
     maxRuntimeMs: limits?.max_runtime_ms ?? defaults.maxRuntimeMs,
+    runtimeLimitExplicit: !!limits,
     usedRuns: usage[0]?.used_runs ?? 0,
     usedTokens: Number(usage[0]?.used_tokens ?? 0),
     activeRuns: active[0]?.count ?? 0,
@@ -588,9 +592,13 @@ export function assertModelResourceAvailable(input: {
   requestedTokens: number;
   requestedRuntimeMs: number;
   billingMode?: 'token_metered' | 'subscription';
+  frozenTaskClock?: boolean;
 }) {
   for (const resource of input.resources) {
-    if (resource.usedRuns >= resource.monthlyRunLimit) {
+    if (
+      input.billingMode !== 'subscription' &&
+      resource.usedRuns >= resource.monthlyRunLimit
+    ) {
       throw new ModelGovernanceError(
         'MODEL_REQUEST_QUOTA_EXCEEDED',
         resource.scope,
@@ -611,7 +619,14 @@ export function assertModelResourceAvailable(input: {
         resource.scope,
       );
     }
-    if (input.requestedRuntimeMs > resource.maxRuntimeMs) {
+    if (
+      !(input.billingMode === 'subscription' && input.frozenTaskClock) &&
+      (input.billingMode !== 'subscription' ||
+        resource.runtimeLimitExplicit !== false) &&
+      resource.maxRuntimeMs > 0 &&
+      (input.requestedRuntimeMs === 0 ||
+        input.requestedRuntimeMs > resource.maxRuntimeMs)
+    ) {
       throw new ModelGovernanceError(
         'MODEL_RUNTIME_LIMIT_EXCEEDED',
         resource.scope,
@@ -671,6 +686,7 @@ export async function admitModelExecution(input: {
   connectionId: string;
   requestedTokens: number;
   requestedRuntimeMs: number;
+  runId?: string;
 }) {
   const values = {
     organizationId: UuidSchema.parse(input.organizationId),
@@ -732,6 +748,15 @@ export async function admitModelExecution(input: {
         billing?.subscription === true ? 'subscription' : 'token_metered',
       requestedTokens: values.requestedTokens,
       requestedRuntimeMs: values.requestedRuntimeMs,
+      frozenTaskClock:
+        billing?.subscription === true && input.runId !== undefined
+          ? !!(
+              await transaction`select 1 from allrice_task_clocks c join allrice_runs r on r.id=c.run_id
+            where c.run_id=${UuidSchema.parse(input.runId)} and c.organization_id=${values.organizationId}
+              and c.workspace_id=${values.workspaceId} and r.owner_id=${values.userId}
+              and (c.policy->>'timeoutMs')::bigint=${values.requestedRuntimeMs}`
+            )[0]
+          : false,
     });
     const releases = await transaction<
       {

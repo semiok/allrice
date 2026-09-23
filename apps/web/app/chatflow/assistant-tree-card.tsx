@@ -39,6 +39,23 @@ export function AssistantTreeCard({
         <span className={ui.meta}>本任务模式：日常</span>
       </div>
       <p className={ui.meta}>{state.summary}</p>
+      {tree.timing ? (
+        <p className={ui.meta}>
+          活跃 {Math.floor(tree.timing.activeMs / 60000)} 分钟 · 等待{' '}
+          {Math.floor(tree.timing.waitingMs / 60000)} 分钟 · 总历时{' '}
+          {Math.floor(tree.timing.wallMs / 60000)} 分钟
+          {' · '}任务时限{' '}
+          {tree.timing.timeoutMs === 0
+            ? '不限制'
+            : `${tree.timing.timeoutMs / 60000} 分钟`}
+          {tree.timing.phase === 'waiting'
+            ? '（整项任务等待中，活跃计时暂停）'
+            : ''}
+          {tree.timing.sources.length
+            ? ` · 策略来源：${tree.timing.sources.map((s) => `${({ tenant: '租户', user: '用户', employee: '员工', provider: '模型连接' } as Record<string, string>)[s.scope] ?? s.scope} ${s.timeoutMs === 0 ? '不限制' : `${s.timeoutMs / 60000} 分钟`}`).join('、')}`
+            : ' · 来源：平台默认'}
+        </p>
+      ) : null}
       {error ? (
         <p className={ui.alert} role="alert">
           {error}

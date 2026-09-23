@@ -6,6 +6,7 @@ import {
   getDatabase,
   mcpStableId,
   runtimePolicyDigest,
+  taskDeadlineOpen,
   type McpStore,
 } from '@allrice/database';
 import {
@@ -73,7 +74,9 @@ export async function runMcpRuntimeOperation(
   >`select lease_token,result from allrice_mcp_execution_attempts where operation_id=${operationId}`;
   let leaseToken = prior?.lease_token;
   if (!leaseToken) {
-    while (Date.now() < Date.parse(created.deadlineAt)) {
+    while (
+      await taskDeadlineOpen(db, binding.task.rootRunId, created.deadlineAt)
+    ) {
       if (options.signal?.aborted) {
         await ledger.cancelRoot(scope, binding.task.rootRunId, randomUUID());
         return response(

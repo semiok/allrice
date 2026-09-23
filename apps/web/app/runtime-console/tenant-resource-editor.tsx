@@ -338,7 +338,7 @@ function Quotas({
       <h3>用量统计与资源限制</h3>
       <p>
         {data?.subscription.tokenPolicy === 'observe'
-          ? 'Codex 订阅不按内部 Token 限额拦截。下方保留 API 额度配置；并发、运行时长和请求次数限制仍用于保护服务。'
+          ? 'Codex 订阅的 Token 和月请求次数仅统计，不因内部月额度拦截。下方月限额仅用于 API；并发与任务活跃时长仍用于运行保护。'
           : '组织总额度、租户资源限额和用户限额共同约束新任务；提高用户额度不会绕过组织额度。员工/Provider 限额仍由原运行准入检查。'}
       </p>
       <button
@@ -373,6 +373,8 @@ function Quotas({
                   </th>
                   <th>已记录总量 / 其中缓存</th>
                   <th>未知用量 / 风险预留</th>
+                  <th>月路由请求数（非原生模型调用数）</th>
+                  <th>本层任务活跃时限</th>
                 </tr>
               </thead>
               <tbody>
@@ -404,6 +406,16 @@ function Quotas({
                     <td>
                       {q.unknownUsageRuns} 笔 /{' '}
                       {q.reservedTokens.toLocaleString()} Token
+                    </td>
+                    <td>{q.usedRuns.toLocaleString()}</td>
+                    <td>
+                      {q.scope === 'organization'
+                        ? '不设置任务时限'
+                        : q.source === 'platform_default'
+                          ? '继承（无显式策略时默认 1 小时）'
+                          : q.effective.maxRuntimeMs === 0
+                            ? '不限制'
+                            : `${q.effective.maxRuntimeMs / 60000} 分钟`}
                     </td>
                   </tr>
                 ))}
@@ -466,20 +478,47 @@ function Quotas({
                     与调用次数；组织美分限额保持原值，订阅不据此推算费用。
                   </p>
                 )}
+                {scope !== 'organization' ? (
+                  <label>
+                    任务活跃时限（新任务生效）
+                    <select
+                      aria-label="任务活跃时限"
+                      value={limits.maxRuntimeMs}
+                      disabled={inherit}
+                      onChange={(e) => {
+                        setLimits({
+                          ...limits,
+                          maxRuntimeMs: Number(e.target.value),
+                        });
+                        setDirty(true);
+                      }}
+                    >
+                      <option value={1800000}>30 分钟</option>
+                      <option value={3600000}>1 小时（默认）</option>
+                      <option value={0}>不限制</option>
+                      {![0, 1800000, 3600000].includes(limits.maxRuntimeMs) ? (
+                        <option value={limits.maxRuntimeMs}>
+                          原自定义值：{limits.maxRuntimeMs / 60000} 分钟
+                        </option>
+                      ) : null}
+                    </select>
+                    <small>
+                      仅整项任务已确认挂起的审批/设备等待暂停计时；仍在工作的助手继续计时。不限制不解除单次工具超时、并发或官方额度限制。多个显式策略取最严格值，移除覆盖才会继承。
+                    </small>
+                  </label>
+                ) : null}
                 {(
                   [
                     'monthlyTokenLimit',
                     'monthlyRunLimit',
-                    ...(scope === 'organization'
-                      ? []
-                      : ['concurrentRunLimit', 'maxRuntimeMs']),
+                    ...(scope === 'organization' ? [] : ['concurrentRunLimit']),
                   ] as (keyof TenantQuotaLimits)[]
                 ).map((key) => (
                   <label key={key}>
                     {
                       {
                         monthlyTokenLimit: '月 Token 上限',
-                        monthlyRunLimit: '月模型调用次数上限',
+                        monthlyRunLimit: '月路由请求次数上限（API）',
                         concurrentRunLimit: '并发运行上限',
                         maxRuntimeMs: '单次运行最长毫秒数',
                       }[key]
@@ -488,7 +527,7 @@ function Quotas({
                       aria-label={
                         {
                           monthlyTokenLimit: '月 Token 上限',
-                          monthlyRunLimit: '月模型调用次数上限',
+                          monthlyRunLimit: '月路由请求次数上限（API）',
                           concurrentRunLimit: '并发运行上限',
                           maxRuntimeMs: '单次运行最长毫秒数',
                         }[key]

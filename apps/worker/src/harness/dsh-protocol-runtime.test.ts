@@ -19,6 +19,37 @@ afterEach(async () => {
 });
 
 describe('AllRice DSH protocol runtime', () => {
+  it('long-lived join ignores acknowledgement timeout but process exit still rejects it', async () => {
+    const client = new DshProtocolClient({
+      command: process.execPath,
+      args: [
+        '-e',
+        `require('node:readline').createInterface({input:process.stdin}).on('line', line=>{const r=JSON.parse(line); if(r.method==='allrice/assistant/inspect') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{ready:true}})+'\\n');});`,
+      ],
+      cwd: process.cwd(),
+      environment: {},
+      requestTimeoutMs: 50,
+    });
+    clients.push(client);
+    let settled = false;
+    const joining = client.assistant('join', {}).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(settled).toBe(false);
+    await expect(client.assistant('flush', {})).rejects.toMatchObject({
+      code: 'DSH_REQUEST_TIMEOUT',
+    });
+    await client.close();
+    expect(await joining).toMatchObject({ code: 'DSH_RUNTIME_CLOSED' });
+  });
   it('initializes the actual Gemini API composition and legacy model alias without a model call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'allrice-gemini-protocol-'));
     roots.push(root);
