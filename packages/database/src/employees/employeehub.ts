@@ -148,7 +148,13 @@ export function resolveEmployeeCapabilities(
       nativeSkillCapabilityGrants(skill.requiredToolRefs),
     ),
     ...allRiceToolManifest
-      .filter((tool) => explicitTools.has(tool.canonicalName))
+      // MCP credential capability is activated below from actual tenant
+      // connections; selecting a tool cannot create a credential binding.
+      .filter(
+        (tool) =>
+          explicitTools.has(tool.canonicalName) &&
+          tool.capability !== 'secret:use',
+      )
       .map((tool) => tool.capability),
   ]);
   return employeeCapabilities.filter(

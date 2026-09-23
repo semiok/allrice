@@ -38,6 +38,14 @@ describe('Rice capability intersection', () => {
         ['unknown.tool'],
       ),
     ).toEqual(['model:invoke']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'secret:use'],
+        [],
+        [],
+        ['cloud.mcp.call', 'local.mcp.call'],
+      ),
+    ).toEqual(['model:invoke']);
   });
 
   it('keeps core employee capabilities but gates network behind a bound skill', () => {
