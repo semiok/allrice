@@ -145,11 +145,7 @@ export function ConnectedApps({
           </div>
           <p>
             {new URL(c.endpoint).hostname} ·{' '}
-            {c.shared
-              ? '工作区共享'
-              : c.credentialConfigured
-                ? '个人连接'
-                : '公共服务'}
+            {c.shared ? '工作区共享' : '个人连接'}
           </p>
           <div className={styles.actions}>
             {c.managed &&
