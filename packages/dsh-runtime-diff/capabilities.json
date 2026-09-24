@@ -1,0 +1,100 @@
+{
+  "reviewedVersion": "0.1.5-rc.3",
+  "groups": [
+    {
+      "id": "integrated",
+      "title": "已接入 AllRice",
+      "description": "随当前版本提供；标为按租户启用的能力可从员工配置开始试用。",
+      "items": [
+        {
+          "id": "native-images",
+          "name": "原生图片与附件处理",
+          "detail": "复用 DSH 原生附件准入，保留图片名称、顺序和会话恢复。",
+          "status": "随版本生效"
+        },
+        {
+          "id": "assistants",
+          "name": "并行助手",
+          "detail": "Rice 可分派子助手、交换消息并汇总报告，共享任务时限和用量统计。",
+          "status": "按租户启用",
+          "action": "employees"
+        },
+        {
+          "id": "development",
+          "name": "开发协作",
+          "detail": "编辑提案、同版沙箱测试、独立审查和正式交付已完成真实 M5 验收。",
+          "status": "按租户启用",
+          "action": "employees"
+        },
+        {
+          "id": "durable-wait",
+          "name": "等待暂停与重启续接",
+          "detail": "等待用户回答时暂停运行计时，Worker 重启后继续原任务；调用次数仅统计。",
+          "status": "随版本生效"
+        },
+        {
+          "id": "session-recovery",
+          "name": "旧会话与上下文恢复",
+          "detail": "已验证旧日志副本迁移、原生压缩和会话重启，保留历史任务事实。",
+          "status": "随版本生效"
+        }
+      ]
+    },
+    {
+      "id": "upstream",
+      "title": "当前 DSH 的可复用能力",
+      "description": "当前版本已有源码或原生入口，默认列出供探索；租户接入进度在每项中说明。",
+      "items": [
+        {
+          "id": "agent-team",
+          "name": "Agent Team",
+          "detail": "原生团队消息、任务版本和事件等待；可用于改进协作派发，租户 Teamwork 尚待接入。",
+          "status": "原生能力 · 待接入"
+        },
+        {
+          "id": "plan-goal",
+          "name": "Plan / Goal",
+          "detail": "规划与目标推进能力，可探索 SOP 和持续任务表达。",
+          "status": "原生能力 · 待接入"
+        },
+        {
+          "id": "session-reference",
+          "name": "Session Reference",
+          "detail": "引用其他会话内容，可用于改进跨会话资料检索。",
+          "status": "原生能力 · 待接入"
+        },
+        {
+          "id": "code-mode",
+          "name": "Code Mode",
+          "detail": "代码式工具展示，可评估复杂工具调用的表达效率。",
+          "status": "原生能力 · 待接入"
+        },
+        {
+          "id": "landlock",
+          "name": "Linux 文件访问限制",
+          "detail": "原生 bwrap / Landlock 方案，可评估增强已有 Linux 沙箱的文件范围控制。",
+          "status": "运行环境适配待完成"
+        }
+      ]
+    },
+    {
+      "id": "preview",
+      "title": "上游前瞻",
+      "description": "以下来自已复核的 0.1.7-alpha.2，不属于当前已安装版本。",
+      "items": [
+        {
+          "id": "office",
+          "name": "Office Skill",
+          "detail": "文档、表格和演示文稿的工作方法与检查资源，可优先评估复用。",
+          "status": "alpha.2 · 待验证"
+        },
+        {
+          "id": "ptc",
+          "name": "PTC Workflow",
+          "detail": "程序化工具编排，可评估重复工作流的执行效率。",
+          "status": "alpha.2 · 待验证"
+        }
+      ]
+    }
+  ]
+}

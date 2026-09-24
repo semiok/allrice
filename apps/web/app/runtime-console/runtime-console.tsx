@@ -7,11 +7,18 @@ import { TenantAdministration } from './tenant-administration';
 import { RunUsageSummary } from './run-usage';
 import { RunTimingSummary } from './run-timing';
 import {
-  dshRuntimeCoreComponents,
   runtimeCapabilityCatalog,
   type RuntimeCapabilityCatalogGroup,
 } from './runtime-capability-catalog';
 import { EmployeeProduction } from './employee-production';
+import {
+  runtimeCapabilityFacts,
+  type RuntimeCapabilityResponse,
+} from './runtime-capability-facts';
+import {
+  DshReleaseSummary,
+  DshUpgradeCapabilities,
+} from './dsh-upgrade-capabilities';
 import {
   aggregateRuntimeTimelineEvents,
   type RuntimeTimelineEvent,
@@ -101,17 +108,6 @@ interface RuntimeTimelineResponse {
     run: { id: string; status: string } | null;
     turns: RuntimeTimelineTurn[];
   };
-}
-
-interface PlatformNativeSkillSummary {
-  id: string;
-  name: string;
-  description: string;
-  checksum: string;
-  requiredToolRefs: string[];
-  enabled: boolean;
-  version: string;
-  reviewStatus: 'draft' | 'reviewed' | 'rejected';
 }
 
 function time(value: string | null) {
@@ -340,6 +336,10 @@ export function RuntimeConsole() {
         </div>
       </header>
 
+      <DshReleaseSummary
+        onOpenCapabilities={() => selectView('capabilities')}
+      />
+
       <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
         <button
           aria-current={view === 'tenants' ? 'page' : undefined}
@@ -363,7 +363,7 @@ export function RuntimeConsole() {
           aria-current={view === 'capabilities' ? 'page' : undefined}
           onClick={() => selectView('capabilities')}
         >
-          能力来源
+          版本与能力
         </button>
         <button
           aria-current={view === 'governance' ? 'page' : undefined}
@@ -850,57 +850,65 @@ function CapabilityGroupCard(props: { group: RuntimeCapabilityCatalogGroup }) {
 
 function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
   const [coreOpen, setCoreOpen] = useState(false);
-  const [skills, setSkills] = useState<PlatformNativeSkillSummary[]>([]);
+  const [inventory, setInventory] = useState<RuntimeCapabilityResponse | null>(
+    null,
+  );
   const [skillsLoading, setSkillsLoading] = useState(true);
   const [skillsError, setSkillsError] = useState('');
-  const dshPlugins = runtimeCapabilityCatalog.find(
-    (group) => group.source === 'dsh-plugin',
-  );
   const allrice = runtimeCapabilityCatalog.find(
     (group) => group.source === 'allrice',
   );
   const blocked = runtimeCapabilityCatalog.find(
     (group) => group.source === 'blocked',
   );
-  const availableSkills = skills.filter(
-    (skill) => skill.enabled && skill.reviewStatus === 'reviewed',
-  );
+  const facts = runtimeCapabilityFacts(inventory);
+  const { availableSkills } = facts;
 
   useEffect(() => {
     let active = true;
-    const loadSkills = async () => {
-      const response = await fetch('/api/v1/admin/platform-employees', {
-        cache: 'no-store',
-      });
-      if (response.status === 401) {
-        window.location.assign(
-          `/login?next=${encodeURIComponent('/runtime-console?view=capabilities')}`,
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try {
+        const response = await fetch(
+          '/api/v1/admin/runtime-console/capabilities',
+          {
+            cache: 'no-store',
+            signal: AbortSignal.any([
+              controller.signal,
+              AbortSignal.timeout(8_000),
+            ]),
+          },
         );
-        return;
-      }
-      const body = (await response.json().catch(() => null)) as {
-        skills?: PlatformNativeSkillSummary[];
-        error?: { message?: string };
-      } | null;
-      if (!response.ok) {
-        throw new Error(
-          body?.error?.message ?? `业务 Skill 加载失败（${response.status}）`,
+        if (response.status === 401) {
+          window.location.assign(
+            `/login?next=${encodeURIComponent('/runtime-console?view=capabilities')}`,
+          );
+          return;
+        }
+        if (!response.ok) throw Error(`能力状态读取失败（${response.status}）`);
+        const body = (await response.json()) as RuntimeCapabilityResponse;
+        if (!active) return;
+        setInventory(body);
+        setSkillsError('');
+      } catch (error) {
+        if (!active) return;
+        setInventory(null);
+        setSkillsError(
+          error instanceof Error ? error.message : '能力状态读取失败',
         );
+      } finally {
+        if (active) {
+          setSkillsLoading(false);
+          timer = setTimeout(() => void refresh(), 10_000);
+        }
       }
-      if (!active) return;
-      setSkills(body?.skills ?? []);
-      setSkillsError('');
-      setSkillsLoading(false);
     };
-    void loadSkills().catch((reason: unknown) => {
-      if (!active) return;
-      setSkillsError(
-        reason instanceof Error ? reason.message : '业务 Skill 加载失败',
-      );
-      setSkillsLoading(false);
-    });
+    void refresh();
     return () => {
       active = false;
+      clearTimeout(timer);
+      controller.abort();
     };
   }, []);
 
@@ -917,24 +925,39 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
     <section className={styles.capabilityPage}>
       <header className={styles.capabilityHeader}>
         <div>
-          <p>Runtime 组件、Tool 与 Skill 边界</p>
-          <h1>能力来源</h1>
+          <p>DSH 升级与 AllRice 能力</p>
+          <h1>版本与能力</h1>
           <span>
-            DSH 提供 Agent 执行引擎，AllRice 负责租户权限、Tool 与业务 Skill
-            发布。DSH Lab 中手动安装的内容不会自动进入租户 Runtime。
+            按当前 Worker 安装与配置、平台 Skill 目录和租户员工发布版本展示。每
+            10 秒刷新。
           </span>
         </div>
         <aside>
-          <strong>{dshRuntimeCoreComponents.length}</strong>
-          <span>DSH 基础组件</span>
-          <strong>{dshPlugins?.items.length ?? 0}</strong>
-          <span>准入增强插件</span>
-          <strong>{skillsLoading ? '—' : availableSkills.length}</strong>
+          <strong>{facts.componentCount}</strong>
+          <span>已安装配置组件 / Worker</span>
+          <strong>{facts.enhancementCount}</strong>
+          <span>其中增强插件 / Worker</span>
+          <strong>{inventory ? availableSkills.length : '—'}</strong>
           <span>可绑定业务 Skill</span>
-          <strong>{blocked?.items.length ?? 0}</strong>
-          <span>默认禁止能力</span>
+          <strong>{inventory ? facts.publishedSkillIds.size : '—'}</strong>
+          <span>租户员工已发布 Skill</span>
         </aside>
       </header>
+
+      <p
+        className={styles.capabilityStatus}
+        data-error={skillsError || !facts.measured ? 'true' : undefined}
+        role="status"
+      >
+        {skillsLoading
+          ? '正在读取实际能力状态…'
+          : skillsError ||
+            `${facts.workers.length} 个在线 Worker · 数据更新于 ${time(inventory?.checkedAt ?? null)}${!facts.measured ? ' · 运行配置未知或心跳已过期' : ''}`}
+      </p>
+      <DshUpgradeCapabilities
+        onOpenEmployees={props.onOpenEmployees}
+        inventory={inventory}
+      />
 
       <div className={styles.capabilityTaxonomy}>
         <article>
@@ -958,26 +981,62 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
       <section className={styles.coreOverview}>
         <div>
           <span>DSH Restricted Runtime</span>
-          <h2>{dshRuntimeCoreComponents.length} 个基础组件正在装载使用</h2>
+          <h2>{facts.componentCount} 个已安装配置组件 / Worker</h2>
           <p>
-            包括 Agent Loop、Provider 路由、Session 持久化、Token
-            计量、基础压缩和受控 Skill
-            加载机制。部分组件每轮必经，部分按条件触发。
+            读取 Worker 当前配置文件和本机安装包版本；表示新任务的组件配置，
+            不等同于空闲时已有 DSH 进程装载。增强插件包含在组件总数内。
           </p>
         </div>
         <button type="button" onClick={() => setCoreOpen(true)}>
-          查看基础组件
+          查看实际组件
         </button>
       </section>
 
       <div className={styles.capabilityGroups}>
-        {dshPlugins ? <CapabilityGroupCard group={dshPlugins} /> : null}
+        <article className={styles.capabilityGroup}>
+          <header>
+            <div>
+              <h2>租户员工实际发布</h2>
+              <p>
+                统计当前生效的用户分配版本；Skill 数量按 ID
+                去重。已发布仍需在任务内校验成员权限、设备连接和具体操作授权。
+              </p>
+            </div>
+          </header>
+          <ul>
+            {inventory?.publications.map((item) => (
+              <li
+                key={`${item.workspaceId}:${item.employeeName}:${item.version}`}
+              >
+                <div>
+                  <strong>
+                    {item.workspaceName} · {item.employeeName} v{item.version}
+                  </strong>
+                  <p>
+                    {item.skillIds.length} 个 Skill · {item.toolNames.length}{' '}
+                    个工具
+                  </p>
+                </div>
+                <span>
+                  {item.policyEnabled && item.policyMode === 'execute'
+                    ? '执行策略已开启'
+                    : '执行策略未开启'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {!inventory?.publications.length ? (
+            <p className={styles.capabilityStatus}>
+              {inventory ? '暂无生效的租户员工发布' : '发布状态未知'}
+            </p>
+          ) : null}
+        </article>
         {allrice ? <CapabilityGroupCard group={allrice} /> : null}
 
         <article className={styles.capabilityGroup} data-source="skills">
           <header>
             <div>
-              <h2>AllRice 审核发布的业务 Skill</h2>
+              <h2>平台业务 Skill 目录</h2>
               <p>
                 Skill 是给 Employee 的工作方法，不是 DSH
                 插件。这里显示平台已审核且可用的目录；只有绑定并发布给 Employee
@@ -1014,7 +1073,11 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
                         : ' 不依赖额外 Tool。'}
                     </p>
                   </div>
-                  <span>平台已准入 · 按员工绑定</span>
+                  <span>
+                    {facts.publishedSkillIds.has(skill.id)
+                      ? '已发布到租户员工'
+                      : '目录可用 · 尚未发布'}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -1029,9 +1092,8 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
       </div>
 
       <footer className={styles.capabilityFooter}>
-        正式路径：DSH Lab 发现候选 → 管理端验证 → 安全与许可证审核 → 固定版本 →
-        AllRice 发布 → 绑定 Employee → 下一次 Run 冻结生效。DSH Lab
-        的手动安装不会直接进入生产租户。
+        测试阶段升级能力默认开放，发现问题及时修复。此页如实显示当前安装、配置与发布状态，
+        “未开启”或“未发布”代表仍需落实的开放项。
       </footer>
 
       {coreOpen ? (
@@ -1051,31 +1113,60 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
             <header>
               <div>
                 <span>DSH Restricted Runtime</span>
-                <h2 id="dsh-core-title">正在使用的基础组件</h2>
+                <h2 id="dsh-core-title">Worker 实际配置组件</h2>
                 <p>
-                  以下组件固定编入当前 Runtime。它们是执行机制，不是业务 Skill。
+                  逐个 Worker
+                  显示安装版本和配置状态；停用、条件加载及缺失的组件不计入已配置总数。
                 </p>
               </div>
               <button
-                aria-label="关闭基础组件弹窗"
+                aria-label="关闭实际组件弹窗"
                 type="button"
                 onClick={() => setCoreOpen(false)}
               >
                 ×
               </button>
             </header>
-            <ul>
-              {dshRuntimeCoreComponents.map((component) => (
-                <li key={component.id}>
-                  <div>
-                    <strong>{component.name}</strong>
-                    <code>{component.packageName}</code>
-                    <p>{component.detail}</p>
-                  </div>
-                  <span>{component.policy}</span>
-                </li>
-              ))}
-            </ul>
+            {inventory?.workers.map((worker) => (
+              <div key={worker.workerId}>
+                <p className={styles.capabilityStatus}>
+                  Worker {worker.workerId.slice(0, 8)} · DSH{' '}
+                  {worker.version ?? '未知'} ·{' '}
+                  {worker.online ? '在线' : '心跳过期'} ·{' '}
+                  {time(worker.observedAt)} ·{' '}
+                  {worker.releaseSha?.slice(0, 7) ?? '构建未知'}
+                </p>
+                {worker.profileStatus !== 'read' ? (
+                  <p className={styles.capabilityStatus}>当前配置无法核实</p>
+                ) : null}
+                <ul>
+                  {worker.components.map((component) => (
+                    <li key={component.id}>
+                      <div>
+                        <strong>{component.id}</strong>
+                        <code>
+                          {component.packageName} ·{' '}
+                          {component.version ?? '未安装'}
+                        </code>
+                      </div>
+                      <span>
+                        {!worker.online
+                          ? '历史记录'
+                          : {
+                              configured: '已安装 · 已配置',
+                              disabled: '配置已停用',
+                              conditional: '条件加载 · 待运行核实',
+                              missing: '安装包缺失',
+                            }[component.state]}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+            {!inventory?.workers.length ? (
+              <p className={styles.capabilityStatus}>暂无 Worker 上报</p>
+            ) : null}
           </section>
         </div>
       ) : null}

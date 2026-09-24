@@ -1331,3 +1331,84 @@
     max-height: calc(100vh - 136px);
   }
 }
+
+.releaseSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 24px;
+  border-bottom: 1px solid #303236;
+  background: #1d2923;
+  color: #a8deba;
+  font-size: 13px;
+}
+.releaseSummary button,
+.upgradeCards button {
+  border: 0;
+  padding: 4px 0;
+  background: transparent;
+  color: #a8deba;
+  font: inherit;
+  cursor: pointer;
+}
+.upgradeCatalog {
+  display: grid;
+  gap: 24px;
+  padding: 24px;
+  border: 1px solid #42604d;
+  border-radius: 16px;
+  background: #1c2520;
+}
+.upgradeCatalog > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.upgradeCatalog h2,
+.upgradeCatalog h3,
+.upgradeCatalog h4 {
+  margin: 8px 0;
+}
+.upgradeCatalog h2 {
+  font-size: 22px;
+}
+.upgradeCatalog h3 {
+  font-size: 16px;
+}
+.upgradeCatalog h4 {
+  font-size: 15px;
+}
+.upgradeCatalog p {
+  margin: 8px 0;
+  color: #a4ada8;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.upgradeCatalog > header span,
+.upgradeCatalog > a {
+  color: #a8deba;
+  font-size: 12px;
+}
+.upgradeCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.upgradeCards article {
+  padding: 16px;
+  border: 1px solid #3b4940;
+  border-radius: 12px;
+  background: #202824;
+}
+.upgradeCards article > span {
+  color: #b8cabe;
+  font-size: 11px;
+}
+.upgradeCards button {
+  font-size: 12px;
+}

@@ -153,6 +153,21 @@ describe('portal authentication response boundary', () => {
     ).toBe(401);
   });
 
+  it('exempts only the exact status sync route for its own token handler', () => {
+    const host = 'allrice-dsh.bplabs.xyz';
+    const route = '/api/v1/internal/runtime-capabilities';
+    const make = (path: string) =>
+      new NextRequest(`https://${host}${path}`, { headers: { host } });
+    expect(proxy(make(route)).status).toBe(200);
+    for (const path of [
+      route + '/extra',
+      route + '-extra',
+      '/api/v1/admin/runtime-console/capabilities',
+    ]) {
+      expect(proxy(make(path)).status).toBe(401);
+    }
+  });
+
   it('redirects anonymous tenant navigation but keeps its initial API failure as JSON', async () => {
     const origin = 'https://allrice-snow.bplabs.xyz';
     const headers = { host: 'allrice-snow.bplabs.xyz' };

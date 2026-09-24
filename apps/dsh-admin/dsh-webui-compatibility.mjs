@@ -29,6 +29,9 @@ export function createDshWebUiInvocation({
   nodeExecutable = process.execPath,
   moduleUrl = import.meta.url,
 }) {
+  const nativeEnvironment = { ...inheritedEnvironment };
+  delete nativeEnvironment.ALLRICE_CAPABILITY_SYNC_TOKEN;
+  delete nativeEnvironment.ALLRICE_CAPABILITY_SYNC_BASE_URL;
   return {
     executable: nodeExecutable,
     args: [
@@ -54,7 +57,7 @@ export function createDshWebUiInvocation({
       // not be forwarded to the gateway's public stdout.
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
       env: {
-        ...inheritedEnvironment,
+        ...nativeEnvironment,
         DSH_HOME: adminHome,
         DSH_CREDENTIALS_PATH: credentialsPath,
       },

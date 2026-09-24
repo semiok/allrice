@@ -1,13 +1,23 @@
 /* global Buffer, URL, URLSearchParams, console, fetch, process */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import httpProxy from 'http-proxy';
 
+import {
+  createNativeCapabilityObserver,
+  readAllriceCapabilities,
+} from './runtime-capabilities.mjs';
 import { spawnDshWebUi } from './dsh-webui-compatibility.mjs';
 import {
   createUpstreamAuthentication,
@@ -30,6 +40,26 @@ const cookieName = 'allrice_dsh_admin_session';
 const secureCookie = process.env.ALLRICE_DSH_ADMIN_SECURE_COOKIE !== '0';
 const trustedAdminMeta =
   '<meta name="allrice-dsh-admin" content="authenticated">';
+const capabilityCatalog = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../packages/dsh-runtime-diff/capabilities.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+);
+const pinnedDsh = JSON.parse(
+  readFileSync(
+    new URL('./node_modules/@deepseek-ai/dsh/package.json', import.meta.url),
+    'utf8',
+  ),
+);
+const nativeCapabilities = createNativeCapabilityObserver({
+  version: process.env.ALLRICE_DSH_COMMAND?.trim() ? null : pinnedDsh.version,
+  releaseSha: process.env.ALLRICE_RELEASE_SHA ?? null,
+});
+const capabilityMeta = `<meta name="allrice-dsh-capabilities" content="${encodeURIComponent(JSON.stringify({ ...capabilityCatalog, version: pinnedDsh.version }))}">`;
 const allowedHosts = new Set(
   (
     process.env.ALLRICE_DSH_ADMIN_ALLOWED_HOSTS ??
@@ -195,8 +225,8 @@ async function serveTrustedAdminShell(request, response) {
     let body = await upstreamResponse.text();
     if (contentType.includes('text/html') && !body.includes(trustedAdminMeta)) {
       body = body.includes('</head>')
-        ? body.replace('</head>', `${trustedAdminMeta}</head>`)
-        : `${trustedAdminMeta}${body}`;
+        ? body.replace('</head>', `${trustedAdminMeta}${capabilityMeta}</head>`)
+        : `${trustedAdminMeta}${capabilityMeta}${body}`;
     }
     response.writeHead(upstreamResponse.status, {
       'cache-control': 'no-store',
@@ -311,6 +341,25 @@ const server = createServer((request, response) => {
     send(response, 403, 'Untrusted administrator origin');
     return;
   }
+  if (url.pathname === '/api/allrice/capabilities') {
+    if (request.method !== 'GET') {
+      send(response, 405, 'Method not allowed', { allow: 'GET' });
+      return;
+    }
+    void readAllriceCapabilities().then((allrice) => {
+      send(
+        response,
+        200,
+        JSON.stringify({
+          checkedAt: new Date().toISOString(),
+          native: nativeCapabilities.read(),
+          allrice,
+        }),
+        { 'content-type': 'application/json; charset=utf-8' },
+      );
+    });
+    return;
+  }
   if (
     request.method === 'GET' &&
     String(request.headers.accept ?? '').includes('text/html')
@@ -395,7 +444,7 @@ const dsh = spawnDshWebUi({
 });
 dsh.on('message', (message) => {
   try {
-    upstreamAuth.accept(message);
+    if (!nativeCapabilities.accept(message)) upstreamAuth.accept(message);
   } catch {
     console.error('Invalid native administrator authentication message');
   }

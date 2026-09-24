@@ -63,8 +63,8 @@ Worker is prohibited.
 
 ## Runtime difference view
 
-The official settings dialog includes an AllRice-owned, read-only
-`Runtime 差异` section. It is registered through DSH's native
+The official settings dialog includes an AllRice-owned
+`版本与能力` section. It is registered through DSH's native
 `settings.section` slot, so it follows the upstream dialog layout, theme and
 scroll behavior instead of maintaining a second settings shell.
 
@@ -75,10 +75,77 @@ The section records three explicit sets:
 - capabilities supplied only by AllRice, such as ChatFlow, Tool Broker,
   Employee capability assembly and Rice Bridge.
 
-This first version is a reviewed architecture snapshot, not a live publish
-button. It deliberately cannot enable a plugin or mutate a Worker. A future
-sync bridge can replace the snapshot with inventory data and drift status,
-but promotion must still follow the review and immutable-bundle path above.
+Both administrator surfaces share the version-reviewed descriptions in
+`packages/dsh-runtime-diff/capabilities.json`. The Lab gateway reads its own
+installed DSH package version into authenticated HTML. AllRice's header labels
+its build version; the capability page reads live Worker versions and facts
+from the administrator-only, uncached `/api/v1/admin/runtime-console/capabilities`.
+The descriptions distinguish integrated features, upstream reuse candidates
+and alpha-only previews; mismatched Worker versions mark the review as stale.
+
+Workers report every five seconds into `allrice_runtime_metadata`, under a
+worker-specific `dsh-worker-capabilities:` key. Reports contain installed
+package versions, the actual Cordis composition digest and entry states, and
+the existing tool-availability checks evaluated in the Worker process. No
+config values, credentials or filesystem paths are published. Upstream's YAML
+parser preserves `!!js` expressions without evaluating them. Unsupported
+custom executables or unreadable profiles report unknown; disabled, conditional
+and missing entries are excluded from the configured count. These facts describe
+the composition for new tasks, not currently loaded idle processes.
+
+The API expires heartbeats after 20 seconds using database time, preserves
+separate Worker reports, and reads actual tenant versions assigned to active
+members rather than platform drafts. It returns published Skill IDs and tools
+alongside the current enabled/reviewed Skill catalog. The page refreshes every
+10 seconds, shows per-Worker count ranges for mixed deployments, and reports
+unknown on failed reads instead of substituting static counts or zeroes.
+Integrated capability cards check both Worker and Web tool switches and tenant
+publication/execute-policy state; task-time member, action and device checks
+still apply. An installed package or a published Skill alone is not a claim
+that every tenant can execute every tool.
+
+Integrated optional capabilities link to the existing employee configuration,
+trial and tenant publication flow. Native experiments remain in the Lab;
+execution and file changes continue through their existing approval paths.
+
+## Live Lab state and AllRice sync
+
+The Lab's native `版本与能力` section now polls its authenticated same-origin
+`/api/allrice/capabilities` endpoint every ten seconds. Its two panels remain
+independent:
+
+- **DSH 实际运行状态** comes from the running native loader, sent over private
+  parent/child IPC every five seconds. It lists each non-group plugin and its
+  active, disabled, pending, failed or unknown state. Counts therefore describe
+  actual loaded plugins, unlike the Worker's installed configuration count.
+  The gateway timestamps receipt, expires reports after twenty seconds, and
+  reports an unknown version for a custom executable. No configs, errors,
+  credentials or local module paths cross this telemetry boundary.
+- **AllRice 实际接入状态** comes from the same inventory and projection used by
+  the AllRice console: online Workers, engine/build versions, configured
+  components, enhancements, available/published Skills and tenant employee
+  versions. Integrated capability badges use actual Worker/Web gates and
+  tenant publication/execute policies. Unavailable data is shown as unknown;
+  failure on one side does not hide successful facts on the other.
+
+Configure a random `ALLRICE_CAPABILITY_SYNC_TOKEN` (at least 32 characters) in
+both **Web and the Lab gateway**, and set the gateway's
+`ALLRICE_CAPABILITY_SYNC_BASE_URL` to the corresponding Web origin (Compose:
+`http://web:3000`; local Dev Web: `http://127.0.0.1:3001`). Use the private
+service network or HTTPS between hosts. The fixed read-only
+`/api/v1/internal/runtime-capabilities` endpoint accepts only this token and
+exports aggregate facts, never tenant names/IDs or employee manifests. The
+exact route bypasses portal cookies but validates its token before any reads;
+other APIs retain their existing authentication. The token is removed from
+the native DSH subprocess environment and never returned to the browser.
+Redirects, responses over 64 KiB, invalid schemas and snapshots older than
+30 seconds fail to unknown. Requests time out after four seconds.
+
+`@allrice/dsh-admin` now consumes the built contracts package. Build contracts
+before starting the gateway locally (`pnpm --filter @allrice/contracts build`);
+the Docker image and root test command do this automatically. Shared capability
+descriptions and architecture comparisons remain documentation, not evidence
+that a plugin is currently running or a tenant may execute it.
 
 ## Temporary portals
 

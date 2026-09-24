@@ -54,6 +54,8 @@ export function proxy(request: NextRequest) {
   }
 
   if (
+    // This exact read-only endpoint authenticates its own scoped sync token.
+    request.nextUrl.pathname === '/api/v1/internal/runtime-capabilities' ||
     publicPaths.has(request.nextUrl.pathname) ||
     isBridgeDeviceApiPath(request.nextUrl.pathname)
   ) {
