@@ -2,9 +2,11 @@ import {
   listPlatformNativeSkills,
   listEmployeeToolAvailability,
   readRuntimeCapabilityInventory,
+  workbenchEnabled,
 } from '@allrice/database';
 import { AllriceCapabilitySummarySchema } from '@allrice/contracts';
 import capabilityCatalog from '../../../packages/dsh-runtime-diff/capabilities.json';
+import webUi from '../app/dsh-upstream/upstream.json';
 import {
   integratedCapabilityStatus,
   runtimeCapabilityFacts,
@@ -18,6 +20,13 @@ export async function readRuntimeCapabilityResponse(): Promise<RuntimeCapability
   ]);
   return {
     ...inventory,
+    webUi: {
+      components: webUi.componentSets.map(({ id, version }) => ({
+        id,
+        version,
+      })),
+      workbenchEnabled: workbenchEnabled(),
+    },
     skills,
     webTools: listEmployeeToolAvailability().map((tool) => ({
       name: tool.canonicalName,
@@ -45,7 +54,7 @@ export function summarizeRuntimeCapabilities(data: RuntimeCapabilityResponse) {
     publishedSkills: facts.publishedSkillIds.size,
     publications: data.publications.length,
     capabilities: capabilityCatalog.groups
-      .filter((group) => group.id === 'integrated')
+      .filter((group) => group.id === 'integrated' || group.id === 'web-ui')
       .flatMap((group) => group.items)
       .map(({ id }) => ({
         id,

@@ -29,6 +29,7 @@ import {
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { ChatSidebar } from './chat-sidebar';
 import { EmployeePickerDialog } from './employee-picker-dialog';
+import { employeeAccent, employeeIntroduction } from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
 import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
@@ -43,6 +44,7 @@ import { AttachmentPreviewDialog } from './attachment-preview-dialog';
 import type { Attachment, Message, QueuedMessage } from './chatflow-types';
 import {
   employeeForSession,
+  providerForEmployee,
   providerForSession,
   readJson,
   resizeComposerTextarea,
@@ -111,6 +113,7 @@ export function ChatFlowClient({
     history,
     loadHistory,
     loadWorkspace,
+    prefetchHistory,
     manifest,
     setActiveId,
     setHistory,
@@ -161,10 +164,6 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
-  const resize = useWorkbenchResize(
-    layout.panelWidth,
-    sidebarCollapsed ? 57 : 240,
-  );
   const workbenchRequested = workbenchEnabled && layout.open;
   const workbenchEntry = useRef<HTMLButtonElement>(null);
   const workbench = useArtifactWorkbench({
@@ -186,14 +185,36 @@ export function ChatFlowClient({
     workbench.artifacts.length > 0 ||
     workbench.selectedId !== null;
   const workbenchOpen = workbenchRequested && hasWorkbenchContent;
+  const resize = useWorkbenchResize(
+    layout.panelWidth,
+    layout.sidebarWidth,
+    sidebarCollapsed || layout.compact,
+    workbenchOpen && !workbenchNarrow,
+  );
   // New completed turns can add artifacts; opening the panel does not execute tools.
+  const artifactHistoryRevision = useRef({ scope: '', revision: '' });
   useEffect(() => {
-    if (workbenchEnabled) void workbench.reload();
+    const revision = history
+      ? `${history.messages.length}/${history.messages.at(-1)?.status}`
+      : '';
+    const previous = artifactHistoryRevision.current;
+    artifactHistoryRevision.current = { scope: workbench.scope, revision };
+    // The hook already reads on selection. Don't restart that request when
+    // the initial transcript arrives; refresh only subsequent turn changes.
+    if (
+      workbenchEnabled &&
+      previous.scope === workbench.scope &&
+      previous.revision &&
+      revision &&
+      previous.revision !== revision
+    )
+      void workbench.reload();
   }, [
     workbenchEnabled,
     history?.messages.length,
     history?.messages.at(-1)?.status,
     workbench.reload,
+    workbench.scope,
   ]);
 
   const {
@@ -214,21 +235,9 @@ export function ChatFlowClient({
   });
 
   useEffect(() => {
-    if (!activeId) {
-      setHistory(null);
-      return;
-    }
-    // createSession seeds an authoritative empty History before sendMessage
-    // appends the optimistic first turn. Fetching that same Session here races
-    // the message POST and can replace the optimistic turn with an empty
-    // response, producing a blank active conversation until the next refresh.
-    if (history?.session.id === activeId) return;
     followTranscript.current = true;
     setAtTranscriptBottom(true);
-    loadHistory(activeId).catch((cause) =>
-      setError(cause instanceof Error ? cause.message : '会话加载失败'),
-    );
-  }, [activeId, history?.session.id, loadHistory, setHistory]);
+  }, [activeId]);
 
   useEffect(() => {
     const scrollRegion = conversationScroll.current;
@@ -702,7 +711,7 @@ export function ChatFlowClient({
         ),
       );
       if (result.delivery !== 'steer_pending') {
-        throw new Error('这个确认请求已经失效，请在聊天框中重新告诉 Rice。');
+        throw new Error('这个确认请求已经失效，请在聊天框中重新发送。');
       }
       retry.confirmed();
       if (!action.current()) return;
@@ -763,6 +772,9 @@ export function ChatFlowClient({
     activeEmployeeProfile?.name ??
     activeSession?.employeeName ??
     'AI 员工';
+  const activeProviderLabel = activeSession
+    ? providerForSession(workspace, activeSession)
+    : providerForEmployee(activeEmployee);
   const employeeAssistantAvailability = assistantEligibility({
     enabled: assistantsEnabled,
     sessionId: activeId,
@@ -791,7 +803,9 @@ export function ChatFlowClient({
         : left.occurredAt.localeCompare(right.occurredAt),
     )
     .at(-1);
+  const historyLoading = activeId !== null && history === null;
   const isEmptyConversation =
+    !historyLoading &&
     !history?.messages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
@@ -808,6 +822,7 @@ export function ChatFlowClient({
 
   const renderComposer = (hero = false) => (
     <ChatComposer
+      employeeName={activeEmployeeName}
       attachmentMenuOpen={attachmentMenuOpen}
       busy={busy}
       assistantModeControl={
@@ -851,7 +866,7 @@ export function ChatFlowClient({
       onUploadAttachments={uploadAttachments}
       onUploadVisibilityChange={setUploadVisibility}
       pendingAttachments={pendingAttachments}
-      providerLabel={providerForSession(workspace, activeSession)}
+      providerLabel={activeProviderLabel}
       uploadVisibility={uploadVisibility}
     />
   );
@@ -888,7 +903,7 @@ export function ChatFlowClient({
         if (!busy) uploadAttachments(event.dataTransfer.files);
       }}
       style={{
-        gridTemplateColumns: `${sidebarCollapsed ? '57px' : '240px'} minmax(0, 1fr)${workbenchOpen && !workbenchNarrow ? ` ${resize.width}px` : ''}`,
+        gridTemplateColumns: `${resize.sidebarWidth}px minmax(0, 1fr) ${workbenchOpen && !workbenchNarrow ? resize.width : 0}px`,
       }}
     >
       {imageDragActive ? (
@@ -936,6 +951,7 @@ export function ChatFlowClient({
           }
           selectSession(sessionId);
         }}
+        onPrepareSession={prefetchHistory}
         sessions={sessions.map((session) =>
           session.id !== activeId
             ? session
@@ -952,7 +968,10 @@ export function ChatFlowClient({
         workspace={workspace}
       />
 
-      <section className={frameUi.centerCol}>
+      <section
+        className={`${frameUi.centerCol} ${styles.employeeConversation}`}
+        data-employee-accent={employeeAccent(activeEmployeeName)}
+      >
         <div
           className={conversationUi.root}
           data-phase={isEmptyConversation ? 'hero' : 'active'}
@@ -1009,7 +1028,7 @@ export function ChatFlowClient({
                           scope: fileScope,
                           revision: previous.revision + 1,
                         }));
-                        layout.show();
+                        workbench.show(undefined, true);
                       }}
                     >
                       工作区文件
@@ -1036,21 +1055,54 @@ export function ChatFlowClient({
                   ) : null}
                   <span className={styles.runtimePill}>
                     <i />
-                    {providerForSession(workspace, activeSession)}
+                    {activeProviderLabel}
                   </span>
                 </div>
               </div>
             </header>
           }
 
-          {isEmptyConversation ? (
+          {historyLoading ? (
+            <div className={conversationUi.scrollBody}>
+              <div
+                className={styles.historyLoading}
+                role="status"
+                aria-live="polite"
+              >
+                {error || '正在加载会话…'}
+                {error ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void loadHistory(activeId!).catch((cause) =>
+                        setError(
+                          cause instanceof Error
+                            ? cause.message
+                            : '会话加载失败',
+                        ),
+                      )
+                    }
+                  >
+                    重试
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : isEmptyConversation ? (
             <div className={conversationUi.scrollBody}>
               <section className={styles.emptyStage}>
                 <div className={styles.heroStack}>
                   <div className={styles.heroHeadline}>
-                    <span className={styles.heroMark}>R</span>
-                    <h1>与 Rice 工作</h1>
-                    <p>把目标交给 Rice，过程和结果会留在同一个 Session 里。</p>
+                    <span className={styles.heroMark} aria-hidden="true">
+                      {activeEmployeeName.slice(0, 1)}
+                    </span>
+                    <h1>与 {activeEmployeeName} 工作</h1>
+                    <p>
+                      {employeeIntroduction(
+                        activeEmployee,
+                        activeEmployeeProfile,
+                      )}
+                    </p>
                   </div>
                   {renderComposer(true)}
                 </div>
@@ -1165,9 +1217,13 @@ export function ChatFlowClient({
         </div>
       </section>
 
-      {workbenchOpen ? (
+      {workbenchEnabled && hasWorkbenchContent ? (
         <ArtifactWorkbench
-          key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
+          open={workbenchOpen}
+          width={resize.width}
+          selectionRequest={workbench.selectionRequest}
+          onBrowseFiles={() => workbench.show(undefined, true)}
+          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
@@ -1196,6 +1252,18 @@ export function ChatFlowClient({
         />
       ) : null}
 
+      {!sidebarCollapsed && !layout.compact ? (
+        <WorkbenchSplitter
+          key={`sidebar/${workspace.viewerId ?? ''}/${workspace.workspaceId}`}
+          side="sidebar"
+          width={resize.sidebarWidth}
+          min={resize.sidebarMin}
+          max={resize.sidebarMax}
+          onChange={layout.setSidebarWidth}
+          onDraggingChange={resize.setDragging}
+        />
+      ) : null}
+
       {workbenchOpen && !workbenchNarrow ? (
         <WorkbenchSplitter
           key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}`}
@@ -1213,7 +1281,7 @@ export function ChatFlowClient({
       />
       {capabilitiesOpen ? (
         <CapabilityPanel
-          key={`${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+          key={`capabilities/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
           data={readiness.data}
           loading={readiness.loading}
           error={readiness.error}

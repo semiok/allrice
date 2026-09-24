@@ -4,6 +4,7 @@ import type { Session, Workspace } from './chatflow-types';
 import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
 import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
 import {
+  employeeAccent,
   employeeGroups,
   employeePreferenceKey,
   employeeTranslate,
@@ -16,16 +17,16 @@ export function EmployeeSidebar({
   sessions,
   activeId,
   collapsed,
-  onNewSession,
   onSelectSession,
+  onPrepareSession,
   onDetails,
 }: {
   workspace: Workspace;
   sessions: Session[];
   activeId: string | null;
   collapsed: boolean;
-  onNewSession: (assignmentId: string) => void;
   onSelectSession: (id: string) => void;
+  onPrepareSession: (id: string) => void;
   onDetails: (assignmentId: string) => void;
 }) {
   const key = employeePreferenceKey(workspace);
@@ -52,11 +53,19 @@ export function EmployeeSidebar({
     [workspace, sessions, activeId, expansion],
   );
   if (!groups.length) return <p className={css.empty}>当前没有可用员工</p>;
+  const prepareSession = (target: EventTarget) => {
+    if (!(target instanceof Element)) return;
+    const key = target.closest('[data-row-key]')?.getAttribute('data-row-key');
+    if (key?.startsWith('session:'))
+      onPrepareSession(key.slice('session:'.length));
+  };
   return (
     <div
       className={css.root}
       role="tree"
       aria-label="员工与工作"
+      onPointerOver={(event) => prepareSession(event.target)}
+      onFocusCapture={(event) => prepareSession(event.target)}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && rail) {
           event.stopPropagation();
@@ -72,6 +81,7 @@ export function EmployeeSidebar({
           (item) => item.assignmentId === group.key,
         );
         const role = profile?.identity.role;
+        const accent = employeeAccent(group.label);
         const history = sessions.filter(
           (session) => session.employeeAssignmentId === group.key,
         );
@@ -97,6 +107,7 @@ export function EmployeeSidebar({
               <button
                 type="button"
                 className={css.avatar}
+                data-accent={accent}
                 aria-label={group.label}
                 aria-expanded={rail === group.key}
                 onFocus={() => setRail(group.key)}
@@ -112,18 +123,12 @@ export function EmployeeSidebar({
                 >
                   <strong>{group.label}</strong>
                   <small>{role}</small>
-                  {employee && (
-                    <button
-                      type="button"
-                      onClick={() => onNewSession(group.key)}
-                    >
-                      ＋ 新建工作
-                    </button>
-                  )}
                   {history.slice(0, 3).map((session) => (
                     <button
                       type="button"
                       key={session.id}
+                      onPointerEnter={() => onPrepareSession(session.id)}
+                      onFocus={() => onPrepareSession(session.id)}
                       onClick={() => {
                         setRail(null);
                         onSelectSession(session.id);
@@ -147,35 +152,50 @@ export function EmployeeSidebar({
             className={css.group}
             aria-label={group.label}
           >
-            <ProjectRowItem
-              group={group}
-              leading={
-                <span className={css.initial}>{group.label.slice(0, 1)}</span>
-              }
-              onToggle={() =>
-                setExpansion((current) => ({
-                  ...current,
-                  [group.key]: !group.expanded,
-                }))
-              }
-              onCreate={employee ? () => onNewSession(group.key) : undefined}
-              t={employeeTranslate}
-            />
-            <div className={css.meta}>
-              <span>
-                {role}
-                {employee?.isDefault ? ' · 默认' : ''} · {group.sessionCount}{' '}
-                个工作
-              </span>
-              {profile && (
-                <button
-                  type="button"
-                  aria-label={`查看${group.label}详情`}
-                  onClick={() => onDetails(group.key)}
-                >
-                  详情
-                </button>
-              )}
+            <div
+              className={css.employeeCard}
+              data-accent={accent}
+              data-active={group.containsCurrent || undefined}
+            >
+              <div className={css.header}>
+                <ProjectRowItem
+                  group={group}
+                  leading={
+                    <span className={css.initial}>
+                      {group.label.slice(0, 1)}
+                    </span>
+                  }
+                  onToggle={() =>
+                    setExpansion((current) => ({
+                      ...current,
+                      [group.key]: !group.expanded,
+                    }))
+                  }
+                  t={employeeTranslate}
+                />
+                {profile && (
+                  <button
+                    type="button"
+                    className={css.info}
+                    aria-label={`查看${group.label}详情`}
+                    title={`${group.label}介绍`}
+                    onClick={() => onDetails(group.key)}
+                  >
+                    ⓘ
+                  </button>
+                )}
+              </div>
+              <div className={css.meta}>
+                <span>
+                  {[
+                    role,
+                    employee?.isDefault ? '默认' : null,
+                    `${group.sessionCount} 个工作`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
+              </div>
             </div>
             {group.expanded && (
               <div
@@ -194,7 +214,7 @@ export function EmployeeSidebar({
                   />
                 ))}
                 {group.sessionCount === 0 && (
-                  <span className={css.empty}>暂无工作，点击 ＋ 发起</span>
+                  <span className={css.empty}>从顶部「新的工作」开始</span>
                 )}
                 {group.sessions.length > rows.length && (
                   <button

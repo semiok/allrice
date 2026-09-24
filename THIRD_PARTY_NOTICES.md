@@ -93,7 +93,8 @@ notice applies to these additional upstream sources.
 
 MET-160 native Dock integration directly depends on the MIT-licensed
 `@deepseek-ai/dsh-client-ui-dockkit@0.1.7-rc.1` package. The native
-`ui-sidebar-right` stores, persistence, and seed contract are retained under
+`ui-sidebar-right` stores, persistence, seed contract, and original SidebarRight
+slide stylesheet are retained under
 `apps/web/app/chatflow/dsh-upstream/dock/`, from the same upstream commit
 `46a7f68b0922371ce7144b668b90e377d8e799f4`. Local patches and checksums are
 recorded in the existing WebUI upstream ledger. The DeepSeek MIT notice above
@@ -106,3 +107,9 @@ unaltered published `ui-sidebar-documentpreview/lib/client.pdf.js` chunk lazily;
 its bundled PDF.js/font license notices remain included. CodeBlock is consumed
 through the official ui-primitives package. Existing Allrice Office conversion
 and Markdown rendering remain the content adapters.
+
+MET-160 settings integration consumes the published ui-primitives Modal and
+icons. The ui-settings-general SettingsRoot panel/navigation and stylesheet
+from the same 0.1.7-rc.1 commit are adapted under
+`apps/web/app/chatflow/dsh-upstream/settings/`; source and patch checksums are
+recorded in the WebUI ledger. The DeepSeek MIT notice above also applies.

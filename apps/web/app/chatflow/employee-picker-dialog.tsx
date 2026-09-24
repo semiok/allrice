@@ -2,6 +2,7 @@
 import { useEffect } from 'react';
 import type { Workspace } from './chatflow-types';
 import { DshDialog } from './dsh-upstream/Dialog';
+import { employeeAccent, employeeIntroduction } from './employee-navigation';
 import css from './employee-sidebar.module.css';
 
 export function EmployeePickerDialog({
@@ -43,7 +44,10 @@ export function EmployeePickerDialog({
   return (
     <DshDialog
       ariaLabel="选择 AI 员工"
-      title="选择处理这项工作的 AI 员工"
+      eyebrow="新的工作"
+      title="这次和谁一起工作？"
+      className={css.pickerDialog}
+      bodyClassName={css.pickerBody}
       onClose={onClose}
       initialFocusSelector="[data-default-employee='true']"
     >
@@ -52,11 +56,14 @@ export function EmployeePickerDialog({
           const profile = workspace.employeeProfiles.find(
             (item) => item.assignmentId === employee.id,
           );
+          const manifest = employee.currentVersion.manifest;
+          const description = employeeIntroduction(employee, profile);
           return (
             <button
               type="button"
               key={employee.id}
-              className={css.card}
+              className={css.pickerCard}
+              data-accent={employeeAccent(manifest.name)}
               data-default-employee={
                 employee.isDefault ||
                 (!workspace.employees.some((item) => item.isDefault) &&
@@ -64,26 +71,28 @@ export function EmployeePickerDialog({
               }
               onClick={() => onSelect(employee.id)}
             >
-              <strong>
-                {employee.currentVersion.manifest.name}
-                {employee.isDefault ? ' · 默认员工' : ''}
-              </strong>
-              <span>
-                {profile?.identity.role ??
-                  employee.currentVersion.manifest.description}
+              <span className={css.pickerCardTop}>
+                <span className={css.pickerInitial} aria-hidden="true">
+                  {manifest.name.slice(0, 1)}
+                </span>
+                {employee.isDefault ? (
+                  <span className={css.pickerBadge}>默认员工</span>
+                ) : null}
               </span>
-              {profile?.skills.length ? (
-                <small>
-                  擅长：{profile.skills.map((skill) => skill.name).join('、')}
-                </small>
-              ) : null}
-              <small>{index < 9 ? `${index + 1} · ` : ''}开始工作</small>
+              <strong className={css.pickerName}>{manifest.name}</strong>
+              <span className={css.pickerDescription}>{description}</span>
+              <span className={css.pickerAction} aria-hidden="true">
+                开始工作 <span>↗</span>
+              </span>
             </button>
           );
         })}
       </div>
       <p className={css.hint}>
-        按数字键 1–9 快速选择，Enter 确认当前选项，Esc 取消。
+        <span>选择一位员工，开始新的工作</span>
+        <span className={css.pickerShortcuts}>
+          <kbd>1–9</kbd> 快选 <kbd>Esc</kbd> 关闭
+        </span>
       </p>
     </DshDialog>
   );

@@ -1,14 +1,53 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
+import {
+  IconThinkOutlineRegular,
+  IconSearchOutlineRegular,
+  IconGlobeOutlineRegular,
+  IconBrowseOutlineRegular,
+  IconEditOutlineRegular,
+  IconCodeOutlineRegular,
+  IconApiOutlineRegular,
+  IconAgentPresetOutlineRegular,
+  IconPlanOutlineRegular,
+  IconQuestionOutlineRegular,
+  IconSparkleRegular,
+  IconFolderOpenOutlineRegular,
+  IconDataOutlineRegular,
+  IconRefreshOutlineRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TaskRuntimeTiming } from '@allrice/contracts';
 import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
-import { summarizeWorkProcess } from '../../lib/chatflow/work-process';
+import {
+  summarizeWorkProcess,
+  type WorkProcessCategory,
+} from '../../lib/chatflow/work-process';
 import { DisclosureRow } from './dsh-upstream/DisclosureRow';
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
-import { ChatRunTiming, formatRunDuration } from './run-timing';
+import { formatRunDuration } from './run-timing';
 import styles from './dsh-saas.module.css';
+
+const stepIcons: Record<WorkProcessCategory, ReactNode> = {
+  think: <IconThinkOutlineRegular />,
+  search: <IconSearchOutlineRegular />,
+  market: <IconGlobeOutlineRegular />,
+  analyze: <IconDataOutlineRegular />,
+  read: <IconBrowseOutlineRegular />,
+  find: <IconFolderOpenOutlineRegular />,
+  write: <IconEditOutlineRegular />,
+  edit: <IconCodeOutlineRegular />,
+  execute: <IconApiOutlineRegular />,
+  browse: <IconBrowseOutlineRegular />,
+  skill: <IconSparkleRegular />,
+  collaborate: <IconAgentPresetOutlineRegular />,
+  question: <IconQuestionOutlineRegular />,
+  organize: <IconRefreshOutlineRegular />,
+  plan: <IconPlanOutlineRegular />,
+  tool: <IconSparkleRegular />,
+};
+const noop = () => {};
 
 /** DSH's native disclosure/Think chrome over Allrice's public event summary. */
 export function WorkProcess({
@@ -59,21 +98,10 @@ export function WorkProcess({
     traceStatus === 'loading',
   );
   if (!expandable && !microStatus) return null;
-  const otherFailures = items.filter(
-    (item) =>
-      item.status === 'failed' &&
-      item.kind !== 'tool' &&
-      item.kind !== 'search',
-  );
   const summary = [
-    process.failed + otherFailures.length
-      ? `${process.failed + otherFailures.length} 次未成功`
-      : undefined,
+    process.failed ? `${process.failed} 次未成功` : undefined,
     traceStatus === 'failed' ? '过程加载失败' : undefined,
     microStatus && !waiting ? process.active : undefined,
-    timing ? `总耗时 ${formatRunDuration(timing.wallMs)}` : undefined,
-    process.total ? `${process.total} 次操作` : undefined,
-    !running && process.pending ? `${process.pending} 次结果未确认` : undefined,
     assistantCount
       ? `${assistantCount} 个助手${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
       : undefined,
@@ -101,70 +129,95 @@ export function WorkProcess({
         open={expanded}
         expandable={expandable}
         expandOnRowClick
+        keepContentWhenOpen
         rowClassName={reasoning.row}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}
         onToggle={() => setExpanded((value) => !value)}
         collapsedContent={
-          summary ? (
-            <>
-              <span className={reasoning.separator} aria-hidden />
-              <span className={reasoning.summary} title={summary}>
-                {summary}
-              </span>
-            </>
-          ) : undefined
+          <>
+            {timing ? (
+              <>
+                <span className={reasoning.separator} aria-hidden />
+                <span
+                  className={styles.processTiming}
+                  aria-label="本轮运行时间"
+                >
+                  总耗时 {formatRunDuration(timing.wallMs)}
+                </span>
+              </>
+            ) : null}
+            {summary ? (
+              <>
+                <span className={reasoning.separator} aria-hidden />
+                <span className={reasoning.summary} title={summary}>
+                  {summary}
+                </span>
+              </>
+            ) : null}
+          </>
         }
       >
-        {timing ? <ChatRunTiming timing={timing} /> : null}
         <div className={styles.processDetails}>
-          {process.groups.length ? (
-            <ul className={styles.processGroups} aria-label="操作分类">
-              {process.groups.map((group) => (
-                <li key={group.key} data-failed={group.failed > 0 || undefined}>
-                  <span>
-                    {group.label} · {group.count} 次
-                  </span>
-                  <small>
-                    {[
-                      group.failed ? `${group.failed} 次未成功` : undefined,
-                      group.pending
-                        ? `${group.pending} 次${running ? '进行中' : '结果未确认'}`
-                        : undefined,
-                      group.waiting ? '等待处理' : undefined,
-                      group.completed === group.count ? '已完成' : undefined,
-                      group.durationMs !== null
-                        ? `累计 ${formatRunDuration(group.durationMs)}`
-                        : undefined,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </small>
-                  {group.errors.map((error) => (
-                    <small className={styles.processError} key={error}>
-                      {error}
-                    </small>
-                  ))}
-                </li>
-              ))}
+          {process.steps.length ? (
+            <ul className={styles.processSteps} aria-label="工作步骤">
+              {process.steps.map((step) => {
+                const pending =
+                  ['started', 'updated'].includes(step.status) &&
+                  step.category !== 'plan';
+                const status =
+                  step.status === 'failed'
+                    ? `未成功${step.error ? `：${step.error}` : ''}`
+                    : step.status === 'info'
+                      ? '等待处理'
+                      : pending
+                        ? running
+                          ? '进行中'
+                          : '结果未确认'
+                        : undefined;
+                return (
+                  <li
+                    key={step.id}
+                    data-category={step.category}
+                    data-failed={step.status === 'failed' || undefined}
+                  >
+                    <DisclosureRow
+                      icon={
+                        <span
+                          className={
+                            pending && running ? styles.processPulse : undefined
+                          }
+                          aria-hidden
+                        >
+                          {stepIcons[step.category]}
+                        </span>
+                      }
+                      title={step.label}
+                      open={false}
+                      expandable={false}
+                      onToggle={noop}
+                      rowClassName={styles.processStepRow}
+                      titleClassName={styles.processStepLabel}
+                      collapsedContent={
+                        <>
+                          <span className={reasoning.separator} aria-hidden />
+                          <span className={styles.processStepDescription}>
+                            {step.description}
+                          </span>
+                        </>
+                      }
+                    />
+                    {status ? (
+                      <small className={styles.processStepStatus}>
+                        {status}
+                      </small>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
-          {process.hasThinking ? (
-            <p>{microStatus && !process.active ? '思考中…' : '已进行思考'}</p>
-          ) : null}
-          {process.hasCompaction ? (
-            <p>
-              {otherFailures.some((item) => item.kind === 'compaction')
-                ? '对话记录整理未完成'
-                : '整理对话记录'}
-            </p>
-          ) : null}
-          {otherFailures
-            .filter((item) => item.kind !== 'compaction')
-            .map((item) => (
-              <p key={item.id}>{item.title}：未完成</p>
-            ))}
           {traceStatus === 'failed' ? (
             <button
               className={styles.nativeTraceRetry}

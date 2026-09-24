@@ -12,7 +12,9 @@ import styles from './workbench.module.css';
  */
 export function useWorkbenchResize(
   preference: number | null,
-  sidebarWidth = 240,
+  sidebarPreference: number | null = null,
+  sidebarCollapsed = false,
+  panelDocked = false,
 ) {
   const [frame, setFrame] = useState<HTMLElement | null>(null);
   const [size, setSize] = useState({ frame: 0, viewport: 0 });
@@ -41,6 +43,20 @@ export function useWorkbenchResize(
     };
   }, [frame]);
   const min = 340;
+  const sidebarMin = 240;
+  // Reserve both the conversation and an open dock before granting sidebar
+  // width. The measured frame can be narrower than matchMedia's viewport when
+  // classic scrollbars or an embedding container consume horizontal space.
+  const sidebarMax = Math.max(
+    sidebarMin,
+    Math.min(420, size.frame - 340 - (panelDocked ? min : 0)),
+  );
+  const sidebarWidth = sidebarCollapsed
+    ? 57
+    : Math.min(
+        sidebarMax,
+        Math.max(sidebarMin, Math.round(sidebarPreference ?? 240)),
+      );
   const max = Math.max(
     min,
     Math.round(Math.min(size.frame - sidebarWidth - 340, size.viewport * 0.8)),
@@ -49,7 +65,17 @@ export function useWorkbenchResize(
     max,
     Math.max(min, Math.round(preference ?? size.frame * 0.38)),
   );
-  return { frameRef: setFrame, width, min, max, dragging, setDragging };
+  return {
+    frameRef: setFrame,
+    width,
+    min,
+    max,
+    sidebarWidth,
+    sidebarMin,
+    sidebarMax,
+    dragging,
+    setDragging,
+  };
 }
 
 export function WorkbenchSplitter({
@@ -58,13 +84,18 @@ export function WorkbenchSplitter({
   max,
   onChange,
   onDraggingChange,
+  side = 'details',
 }: {
   width: number;
   min: number;
   max: number;
   onChange: (width: number | null) => void;
   onDraggingChange: (dragging: boolean) => void;
+  side?: 'sidebar' | 'details';
 }) {
+  const sidebar = side === 'sidebar';
+  const targetId = sidebar ? 'chat-sidebar' : 'artifact-workbench';
+  const direction = sidebar ? 1 : -1;
   const [dragging, setDragging] = useState(false);
   const origin = useRef(0),
     latest = useRef(0),
@@ -94,13 +125,13 @@ export function WorkbenchSplitter({
   return (
     <div
       className={`${frameUi.handle} ${styles.splitter}`}
-      style={{ left: `calc(100% - ${width}px)` }}
-      data-side="details"
+      style={{ left: sidebar ? width : `calc(100% - ${width}px)` }}
+      data-side={side}
       data-dragging={dragging || undefined}
       role="separator"
-      aria-label="调整交付成果宽度"
+      aria-label={sidebar ? '调整员工侧栏宽度' : '调整交付成果宽度'}
       aria-orientation="vertical"
-      aria-controls="artifact-workbench"
+      aria-controls={targetId}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={width}
@@ -115,8 +146,8 @@ export function WorkbenchSplitter({
         origin.current = latest.current = event.clientX;
         // Read the rendered box, including any in-flight grid transition.
         base.current =
-          document.getElementById('artifact-workbench')?.getBoundingClientRect()
-            .width ?? width;
+          document.getElementById(targetId)?.getBoundingClientRect().width ??
+          width;
         setDragging(true);
         onDraggingChange(true);
       }}
@@ -125,12 +156,12 @@ export function WorkbenchSplitter({
         latest.current = event.clientX;
         frame.current ??= requestAnimationFrame(() => {
           frame.current = null;
-          apply(base.current - (latest.current - origin.current));
+          apply(base.current + direction * (latest.current - origin.current));
         });
       }}
       onPointerUp={(event) => {
         if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-        apply(base.current - (event.clientX - origin.current));
+        apply(base.current + direction * (event.clientX - origin.current));
         event.currentTarget.releasePointerCapture(event.pointerId);
         stop();
       }}
@@ -150,7 +181,8 @@ export function WorkbenchSplitter({
           event.preventDefault();
           apply(
             width +
-              (event.key === 'ArrowLeft' ? 1 : -1) *
+              (event.key === 'ArrowRight' ? 1 : -1) *
+                direction *
                 (event.shiftKey ? 100 : 20),
           );
         }

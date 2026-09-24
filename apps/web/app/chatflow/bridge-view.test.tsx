@@ -23,6 +23,7 @@ function render(devices: BridgeDevice[], known = true) {
   const view = projectBridgeView(devices, known);
   const noop = () => {};
   const props: ComponentProps<typeof ChatComposer> = {
+    employeeName: 'Rice',
     attachmentMenuOpen: false,
     busy: false,
     composerInput: { current: null },

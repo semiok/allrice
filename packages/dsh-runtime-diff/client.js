@@ -317,7 +317,7 @@ window.__ModuleLoader__.load({
                           children: [
                             jsx('strong', { children: item.name }),
                             jsx('span', {
-                              children: `${group.id === 'integrated' ? (status?.allrice?.data?.capabilities.find((capability) => capability.id === item.id)?.status ?? 'AllRice 接入状态未知') : item.status} · ${item.detail}`,
+                              children: `${group.id === 'integrated' || group.id === 'web-ui' ? (status?.allrice?.data?.capabilities.find((capability) => capability.id === item.id)?.status ?? 'AllRice 接入状态未知') : item.status} · ${item.detail}`,
                             }),
                           ],
                         },

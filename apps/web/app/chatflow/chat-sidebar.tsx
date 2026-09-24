@@ -1,10 +1,9 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
-import { MonthlyQuota } from './monthly-quota';
+import { SidebarSettings } from './sidebar-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 
 import type { Session, Workspace } from './chatflow-types';
@@ -26,6 +25,7 @@ interface ChatSidebarProps {
   onNewSession: (assignmentId?: string) => void;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onPrepareSession: (sessionId: string) => void;
 }
 
 export function ChatSidebar({
@@ -40,6 +40,7 @@ export function ChatSidebar({
   onNewSession,
   onOpenEmployeeDetails,
   onSelectSession,
+  onPrepareSession,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -56,6 +57,7 @@ export function ChatSidebar({
 
   return (
     <aside
+      id="chat-sidebar"
       ref={sidebar}
       tabIndex={overlay ? -1 : undefined}
       role={overlay ? 'dialog' : undefined}
@@ -63,7 +65,8 @@ export function ChatSidebar({
       aria-modal={overlay ? true : undefined}
       className={`${frameUi.sidebarCol} ${overlay ? styles.sidebarOverlay : ''}`}
       onKeyDown={(event) => {
-        if (!overlay) return;
+        if (!overlay || !event.currentTarget.contains(event.target as Node))
+          return;
         if (event.key === 'Escape') {
           event.stopPropagation();
           onCollapsedChange(true);
@@ -169,43 +172,23 @@ export function ChatSidebar({
             sessions={sessions}
             activeId={activeId}
             collapsed={collapsed}
-            onNewSession={onNewSession}
             onSelectSession={onSelectSession}
+            onPrepareSession={onPrepareSession}
             onDetails={onOpenEmployeeDetails}
           />
         </div>
 
         <div className={sidebarUi.footArea}>
-          {!collapsed ? (
-            <>
-              <nav className={styles.saasNavigation}>
-                {manifest.roles.includes('tenant_admin') ? (
-                  <>
-                    <Link href="/workspace/mcp">
-                      <span aria-hidden="true">↔</span>MCP 连接管理
-                    </Link>
-                    <Link href="/workspace/browser">
-                      <span aria-hidden="true">▣</span>云端浏览器授权
-                    </Link>
-                    <Link href="/workspace/local-browser">
-                      <span aria-hidden="true">▣</span>本地浏览器授权
-                    </Link>
-                  </>
-                ) : null}
-                {manifest.surfaces.includes('platform_admin') ? (
-                  <Link href="/runtime-console?view=governance">
-                    <span aria-hidden="true">⚙</span>
-                    平台管理
-                  </Link>
-                ) : null}
-              </nav>
-              <MonthlyQuota
-                data={monthlyQuota.data}
-                failed={monthlyQuota.failed}
-                onRefresh={() => void monthlyQuota.reload()}
-              />
-            </>
-          ) : null}
+          <SidebarSettings
+            key={
+              employeePreferenceKey(workspace) ??
+              `${workspace.organizationId}:${workspace.workspaceId}`
+            }
+            collapsed={collapsed}
+            manifest={manifest}
+            workspaceId={workspace.workspaceId}
+            monthlyQuota={monthlyQuota}
+          />
         </div>
       </div>
     </aside>

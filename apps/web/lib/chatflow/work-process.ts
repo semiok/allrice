@@ -47,74 +47,126 @@ export function toolActivityLabel(name: string, search = false) {
   return '执行工具操作';
 }
 
-export interface WorkProcessGroup {
-  key: string;
+export type WorkProcessCategory =
+  | 'think'
+  | 'search'
+  | 'market'
+  | 'analyze'
+  | 'read'
+  | 'find'
+  | 'write'
+  | 'edit'
+  | 'execute'
+  | 'browse'
+  | 'skill'
+  | 'collaborate'
+  | 'question'
+  | 'organize'
+  | 'plan'
+  | 'tool';
+
+export interface WorkProcessStep {
+  id: string;
+  category: WorkProcessCategory;
   label: string;
-  count: number;
-  completed: number;
-  failed: number;
-  pending: number;
-  waiting: number;
-  durationMs: number | null;
-  lastSequence: number;
-  errors: string[];
+  description: string;
+  status: NativeExperienceItem['status'];
+  error?: string;
+}
+
+/** Only tenant-facing summaries, never raw reasoning, argument JSON or output. */
+function readableSummary(value?: string) {
+  if (
+    !value ||
+    !/[\u3400-\u9fff]/u.test(value) ||
+    /```|[\r\n]|^\s*[[{]/u.test(value)
+  )
+    return undefined;
+  const summary = value.trim();
+  if (/^(工具执行|搜索(?:完成|失败)|Skill (?:已|加载))/.test(summary))
+    return undefined;
+  return summary.length > 120 ? `${summary.slice(0, 119)}…` : summary;
+}
+
+function classification(
+  item: NativeExperienceItem,
+): [WorkProcessCategory, string] {
+  if (item.kind === 'think') return ['think', '思考'];
+  if (item.kind === 'compaction') return ['organize', '整理'];
+  if (item.kind === 'todo') return ['plan', '计划'];
+  const name = item.toolName ?? item.title;
+  if (item.kind === 'search' || /search|grep|glob/.test(name))
+    return ['search', '搜索'];
+  if (name === 'market.history') return ['analyze', '分析'];
+  if (name.startsWith('market.')) return ['market', '行情'];
+  if (/browser/.test(name)) return ['browse', '浏览'];
+  if (/read|fetch/.test(name)) return ['read', '阅读'];
+  if (/list/.test(name)) return ['find', '查找'];
+  if (/export|write/.test(name)) return ['write', '生成'];
+  if (/edit|changeset/.test(name)) return ['edit', '修改'];
+  if (/memory/.test(name)) return ['organize', '记忆'];
+  if (name === 'skill') return ['skill', '技能'];
+  if (name === 'ask_user_question') return ['question', '确认'];
+  if (/assistant\.|subagent/.test(name)) return ['collaborate', '协作'];
+  if (/process|service|bash|run_code/.test(name)) return ['execute', '执行'];
+  return ['tool', '工具'];
 }
 
 export function summarizeWorkProcess(items: NativeExperienceItem[]) {
-  const groups = new Map<string, WorkProcessGroup>();
-  for (const item of items) {
-    if (item.kind !== 'tool' && item.kind !== 'search') continue;
-    const label = toolActivityLabel(
-      item.toolName ?? item.title,
-      item.kind === 'search',
-    );
-    const group = groups.get(label) ?? {
-      key: label,
-      label,
-      count: 0,
-      completed: 0,
-      failed: 0,
-      pending: 0,
-      waiting: 0,
-      durationMs: 0,
-      lastSequence: 0,
-      errors: [],
-    };
-    group.count++;
-    if (item.status === 'failed') {
-      group.failed++;
-      if (item.detail && !group.errors.includes(item.detail))
-        group.errors.push(item.detail);
-    } else if (item.status === 'completed') group.completed++;
-    else if (item.status === 'info') group.waiting++;
-    else group.pending++;
-    const start = Date.parse(item.startedAt ?? '');
-    const end = Date.parse(item.finishedAt ?? '');
-    // The sum is cumulative tool time, not wall time: parallel calls overlap.
-    // Incomplete event pairs remain unknown instead of inventing zero seconds.
-    group.durationMs =
-      group.durationMs !== null &&
-      Number.isFinite(start) &&
-      Number.isFinite(end) &&
-      end >= start
-        ? group.durationMs + end - start
-        : null;
-    group.lastSequence = Math.max(
-      group.lastSequence,
-      item.lastSequence ?? item.sequence,
-    );
-    groups.set(label, group);
-  }
-  const list = [...groups.values()];
+  const steps: WorkProcessStep[] = [...items]
+    .sort((a, b) => a.sequence - b.sequence)
+    .filter((item) =>
+      ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
+    )
+    .map((item) => {
+      const [category, label] = classification(item);
+      const fallback =
+        item.kind === 'think'
+          ? '分析任务与处理步骤'
+          : item.kind === 'compaction'
+            ? '整理会话记录'
+            : item.kind === 'todo'
+              ? '更新工作计划'
+              : toolActivityLabel(
+                  item.toolName ?? item.title,
+                  item.kind === 'search',
+                );
+      return {
+        id: item.id,
+        category,
+        label,
+        status: item.status,
+        // Reasoning events expose lifecycle only. Do not infer or quote private thoughts.
+        description:
+          item.kind === 'think'
+            ? fallback
+            : (readableSummary(item.activityDetail) ??
+              (item.status !== 'failed'
+                ? readableSummary(item.detail)
+                : undefined) ??
+              fallback),
+        ...(item.status === 'failed'
+          ? { error: readableSummary(item.detail) }
+          : {}),
+      };
+    });
+  const active = [...items]
+    .filter(
+      (item) =>
+        ['tool', 'search'].includes(item.kind) &&
+        ['started', 'updated'].includes(item.status),
+    )
+    .sort(
+      (a, b) => (b.lastSequence ?? b.sequence) - (a.lastSequence ?? a.sequence),
+    )[0];
   return {
-    groups: list,
-    total: list.reduce((sum, group) => sum + group.count, 0),
-    failed: list.reduce((sum, group) => sum + group.failed, 0),
-    pending: list.reduce((sum, group) => sum + group.pending, 0),
-    active: list
-      .filter((group) => group.pending > 0)
-      .sort((a, b) => b.lastSequence - a.lastSequence)[0]?.label,
-    hasThinking: items.some((item) => item.kind === 'think'),
-    hasCompaction: items.some((item) => item.kind === 'compaction'),
+    steps,
+    failed: steps.filter((step) => step.status === 'failed').length,
+    active: active
+      ? toolActivityLabel(
+          active.toolName ?? active.title,
+          active.kind === 'search',
+        )
+      : undefined,
   };
 }

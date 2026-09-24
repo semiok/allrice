@@ -10,14 +10,19 @@ export function MonthlyQuota({
   data,
   failed,
   onRefresh,
+  expanded = false,
 }: {
   data: UserMonthlyQuota | null;
   failed: boolean;
   onRefresh: () => void;
+  expanded?: boolean;
 }) {
   const observing = data?.codexTokenPolicy === 'observe';
   return (
-    <details className={styles.quota}>
+    <details
+      className={`${styles.quota} ${expanded ? styles.expanded : ''}`}
+      open={expanded || undefined}
+    >
       <summary
         aria-label={observing ? '账号使用情况' : '账号月额度'}
         title={

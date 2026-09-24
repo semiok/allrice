@@ -1,4 +1,9 @@
-import type { Session, Workspace } from './chatflow-types';
+import type {
+  Employee,
+  EmployeeProfile,
+  Session,
+  Workspace,
+} from './chatflow-types';
 import { deriveGroups } from './dsh-upstream/workspace/tree';
 import type {
   SessionListState,
@@ -7,6 +12,32 @@ import type {
 } from './dsh-upstream/workspace/contracts';
 import { zh } from './dsh-upstream/workspace/locales';
 import type { WorkspaceBrowserProps } from './dsh-upstream/workspace/contracts';
+
+export function employeeAccent(name: string) {
+  return /office/i.test(name) ? 'orange' : 'blue';
+}
+
+export function employeeIntroduction(
+  employee?: Employee,
+  profile?: EmployeeProfile,
+) {
+  const introduction = [
+    profile?.description,
+    employee?.currentVersion.manifest.description,
+  ].find((value) => value?.trim() && !/平台管理员草稿/.test(value));
+  const officeOnly =
+    profile?.skills.length === 1 &&
+    profile.skills[0]?.name.toLowerCase() === 'office';
+  return (
+    introduction?.trim() ||
+    (officeOnly ? '阅读和整理文档，制作报告、表格与演示文稿。' : '') ||
+    profile?.identity.mission?.trim() ||
+    profile?.identity.role?.trim() ||
+    '告诉我你的目标，一起把工作完成。'
+  )
+    .split(/\r?\n|(?<=[。！？])/u)[0]!
+    .trim();
+}
 
 export const employeeTranslate: WorkspaceBrowserProps['t'] = (key, params) => {
   const copy =
