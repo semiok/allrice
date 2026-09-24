@@ -37,6 +37,18 @@ function event(
 }
 
 describe('projectNativeExperience', () => {
+  it('does not describe a historical skill argument as a search query', () => {
+    const [row] = projectNativeExperience([
+      event(
+        1,
+        'tool.started',
+        { toolCallId: 'skill-1', name: 'skill' },
+        { presentation: 'tool', query: 'market-data' },
+      ),
+    ]);
+    expect(row).toMatchObject({ kind: 'tool', toolName: 'skill' });
+    expect(row?.activityDetail).toBeUndefined();
+  });
   it('deduplicates native and normalized receipts by call ID and retains the start time', () => {
     const start = event(
       1,
@@ -137,7 +149,11 @@ describe('projectNativeExperience', () => {
         4,
         'tool.started',
         { toolCallId: 'search-1', name: 'web.search' },
-        { presentation: 'search', query: 'NVIDIA stock price' },
+        {
+          presentation: 'search',
+          query: 'NVIDIA stock price',
+          activityDetail: '搜索资料：NVIDIA stock price',
+        },
       ),
       event(
         5,
@@ -156,12 +172,13 @@ describe('projectNativeExperience', () => {
         status: 'completed',
         title: 'Search · NVIDIA stock price',
         detail: '找到 5 条结果',
+        activityDetail: '搜索资料：NVIDIA stock price',
         sequence: 4,
       }),
     ]);
   });
 
-  it('matches the DSH completed view with one search and the final think', () => {
+  it('preserves thinking steps and searches in chronological order', () => {
     const projected = projectNativeExperience([
       event(
         1,
@@ -217,7 +234,11 @@ describe('projectNativeExperience', () => {
       ),
     ]);
 
-    expect(projected.map((item) => item.kind)).toEqual(['search', 'think']);
-    expect(projected.map((item) => item.sequence)).toEqual([3, 5]);
+    expect(projected.map((item) => item.kind)).toEqual([
+      'think',
+      'search',
+      'think',
+    ]);
+    expect(projected.map((item) => item.sequence)).toEqual([2, 3, 5]);
   });
 });

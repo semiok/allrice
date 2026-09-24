@@ -355,12 +355,38 @@
   background: #4678e933;
 }
 
+/* Animate the panel's shared offset, not each tab's hidden → visible lifecycle. */
+@property --allrice-workbench-offset {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 0px;
+}
+
 /* Native Dock owns tabs, splits and floating. Match the existing 56px chat chrome. */
 .nativeDock {
+  --allrice-workbench-offset: var(--dsh-sidebar-width);
   position: absolute;
-  /* Native SidebarRight slides the docked hosts, leaving floating panes free. */
   background: transparent;
   border: 0;
+  transition: --allrice-workbench-offset var(--ds-transition-duration-slow)
+    var(--ds-ease-in-out);
+}
+.nativeDock[data-sidebar-right-open] {
+  --allrice-workbench-offset: 0px;
+}
+/* Keep the native host tree and visibility rules. Only docked hosts inherit the
+   opening offset; floating panes remain free of transformed ancestors. */
+.panel.nativeDock :global([data-dockkit-host='dock']),
+.panel.nativeDock :global([data-dockkit-empty]),
+.panel.nativeDock :global([data-dockkit-divider]) {
+  transform: none;
+  translate: var(--allrice-workbench-offset) 0;
+  transition: visibility 0s linear var(--ds-transition-duration-slow);
+}
+.panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-host='dock']),
+.panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-empty]),
+.panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-divider]) {
+  transition: none;
 }
 .nativeDock:global([data-fullscreen]) {
   position: fixed;
@@ -372,24 +398,21 @@
   flex: 1;
   min-height: 0;
 }
-/* A newly discovered session mounts with an open panel. Give the native slide
-   its offscreen starting frame as well as its normal open/close transition. */
+/* A newly discovered session may mount open. Its one parent gets the entrance,
+   so later tab selections cannot restart it or accumulate independent slides. */
 @starting-style {
-  .panel.nativeDock[data-sidebar-right-open]
-    :global([data-dockkit-host='dock']),
-  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-empty]),
-  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-divider]) {
-    transform: translateX(var(--dsh-sidebar-width));
+  .nativeDock[data-sidebar-right-open] {
+    --allrice-workbench-offset: var(--dsh-sidebar-width);
   }
 }
 .nativeDock :global([data-dockkit-host='dock']) {
   border-left: 1px solid var(--dsw-alias-border-l2, #ddd);
 }
 @media (prefers-reduced-motion: reduce) {
-  .panel.nativeDock[data-sidebar-right-open]
-    :global([data-dockkit-host='dock']),
-  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-empty]),
-  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-divider]) {
+  .nativeDock,
+  .panel.nativeDock :global([data-dockkit-host='dock']),
+  .panel.nativeDock :global([data-dockkit-empty]),
+  .panel.nativeDock :global([data-dockkit-divider]) {
     transition: none;
   }
 }

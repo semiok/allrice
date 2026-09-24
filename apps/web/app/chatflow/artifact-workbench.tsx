@@ -172,9 +172,8 @@ export function ArtifactWorkbench(props: Props) {
   }
   useEffect(() => {
     if (
-      !props.selectedId ||
-      (previousSelection.current === props.selectedId &&
-        previousRequest.current === (props.selectionRequest ?? 0))
+      previousSelection.current === props.selectedId &&
+      previousRequest.current === (props.selectionRequest ?? 0)
     )
       return;
     const restoring =
@@ -186,6 +185,8 @@ export function ArtifactWorkbench(props: Props) {
     previousSelection.current = props.selectedId;
     previousRequest.current = props.selectionRequest ?? 0;
     if (props.selectedId && !restoring) openArtifact(props.selectedId);
+    else if (!props.selectedId && props.selectionRequest)
+      dock.open(GUIDE_KIND, pageAddress(GUIDE_KIND), '交付成果');
   });
   const lastFilesRequest = useRef(0);
   useEffect(() => {

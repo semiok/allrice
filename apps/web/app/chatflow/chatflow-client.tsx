@@ -29,6 +29,7 @@ import {
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { ChatSidebar } from './chat-sidebar';
 import { EmployeePickerDialog } from './employee-picker-dialog';
+import { employeeAccent, employeeIntroduction } from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
 import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
@@ -43,6 +44,7 @@ import { AttachmentPreviewDialog } from './attachment-preview-dialog';
 import type { Attachment, Message, QueuedMessage } from './chatflow-types';
 import {
   employeeForSession,
+  providerForEmployee,
   providerForSession,
   readJson,
   resizeComposerTextarea,
@@ -717,7 +719,7 @@ export function ChatFlowClient({
         ),
       );
       if (result.delivery !== 'steer_pending') {
-        throw new Error('这个确认请求已经失效，请在聊天框中重新告诉 Rice。');
+        throw new Error('这个确认请求已经失效，请在聊天框中重新发送。');
       }
       retry.confirmed();
       if (!action.current()) return;
@@ -778,6 +780,9 @@ export function ChatFlowClient({
     activeEmployeeProfile?.name ??
     activeSession?.employeeName ??
     'AI 员工';
+  const activeProviderLabel = activeSession
+    ? providerForSession(workspace, activeSession)
+    : providerForEmployee(activeEmployee);
   const employeeAssistantAvailability = assistantEligibility({
     enabled: assistantsEnabled,
     sessionId: activeId,
@@ -825,6 +830,7 @@ export function ChatFlowClient({
 
   const renderComposer = (hero = false) => (
     <ChatComposer
+      employeeName={activeEmployeeName}
       attachmentMenuOpen={attachmentMenuOpen}
       busy={busy}
       assistantModeControl={
@@ -868,7 +874,7 @@ export function ChatFlowClient({
       onUploadAttachments={uploadAttachments}
       onUploadVisibilityChange={setUploadVisibility}
       pendingAttachments={pendingAttachments}
-      providerLabel={providerForSession(workspace, activeSession)}
+      providerLabel={activeProviderLabel}
       uploadVisibility={uploadVisibility}
     />
   );
@@ -979,7 +985,10 @@ export function ChatFlowClient({
         workspace={workspace}
       />
 
-      <section className={frameUi.centerCol}>
+      <section
+        className={`${frameUi.centerCol} ${styles.employeeConversation}`}
+        data-employee-accent={employeeAccent(activeEmployeeName)}
+      >
         <div
           className={conversationUi.root}
           data-phase={isEmptyConversation ? 'hero' : 'active'}
@@ -1063,7 +1072,7 @@ export function ChatFlowClient({
                   ) : null}
                   <span className={styles.runtimePill}>
                     <i />
-                    {providerForSession(workspace, activeSession)}
+                    {activeProviderLabel}
                   </span>
                 </div>
               </div>
@@ -1101,9 +1110,16 @@ export function ChatFlowClient({
               <section className={styles.emptyStage}>
                 <div className={styles.heroStack}>
                   <div className={styles.heroHeadline}>
-                    <span className={styles.heroMark}>R</span>
-                    <h1>与 Rice 工作</h1>
-                    <p>把目标交给 Rice，过程和结果会留在同一个 Session 里。</p>
+                    <span className={styles.heroMark} aria-hidden="true">
+                      {activeEmployeeName.slice(0, 1)}
+                    </span>
+                    <h1>与 {activeEmployeeName} 工作</h1>
+                    <p>
+                      {employeeIntroduction(
+                        activeEmployee,
+                        activeEmployeeProfile,
+                      )}
+                    </p>
                   </div>
                   {renderComposer(true)}
                 </div>
@@ -1224,7 +1240,7 @@ export function ChatFlowClient({
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
           onBrowseFiles={() => workbench.show(undefined, true)}
-          key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
+          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
@@ -1282,7 +1298,7 @@ export function ChatFlowClient({
       />
       {capabilitiesOpen ? (
         <CapabilityPanel
-          key={`${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+          key={`capabilities/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
           data={readiness.data}
           loading={readiness.loading}
           error={readiness.error}
