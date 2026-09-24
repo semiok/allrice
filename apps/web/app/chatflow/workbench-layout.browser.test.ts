@@ -754,6 +754,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByText('第 1 项工作：分析文档', { exact: true })
         .waitFor();
       expect(await tooltip.innerText()).toContain('第 1 项答复');
+      expect(
+        await tooltip.evaluate((node) => getComputedStyle(node).boxShadow),
+      ).not.toBe('none');
+      expect(
+        await tooltip
+          .locator('> div')
+          .first()
+          .evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('13px');
       await first.click();
       await expect.poll(() => first.getAttribute('aria-current')).toBe('true');
       const targetTop = () =>

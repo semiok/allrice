@@ -1,6 +1,6 @@
 --- a/packages/client/ui-chat/src/client/chat/TurnNavigator.tsx
 +++ b/packages/client/ui-chat/src/client/chat/TurnNavigator.tsx
-@@ -4,8 +4,7 @@
+@@ -4,9 +4,9 @@
    type CSSProperties, type ForwardedRef,
  } from 'react'
  import { defaultRangeExtractor, elementScroll, observeElementOffset, useVirtualizer, type Range } from '@tanstack/react-virtual'
@@ -8,9 +8,11 @@
 -import type { TurnRailItem } from './turn-rail-items.ts'
 +import type { TurnRailItem, TurnNavigatorTranslator } from '../../turn-navigation-model'
  import css from './TurnNavigator.module.css'
++import theme from './theme.module.css'
  
  interface TurnNavigatorProps {
-@@ -14,7 +13,7 @@
+   readonly items: readonly TurnRailItem[]
+@@ -14,7 +14,7 @@
    /** Turn whose jump is still paging history in; its mark pulses. */
    readonly busyTurn: number | null
    readonly onNavigate: (item: TurnRailItem) => void
@@ -19,3 +21,12 @@
  }
  
  /** Imperative controls for known turns; unknown turn numbers are ignored. */
+@@ -231,7 +231,7 @@
+   if (scrollTop > 1) fadeClasses.push(css.fadeTop)
+   if (scrollTop < virtualizer.getTotalSize() - viewHeight - 1) fadeClasses.push(css.fadeBottom)
+   return (
+-    <div className={css.slot}>
++    <div className={`${css.slot} ${theme.tokens}`}>
+       <nav
+         className={css.frame}
+         aria-label={t('chat.turnNavigation.label')}

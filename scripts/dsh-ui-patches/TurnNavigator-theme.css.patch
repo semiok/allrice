@@ -1,0 +1,37 @@
+--- a/packages/client/ui-theme/src/styles/gradient-shadow-text.css
++++ b/packages/client/ui-theme/src/styles/gradient-shadow-text.css
+@@ -1,4 +1,4 @@
+-body {
++.tokens {
+   --dsw-linear-gradient-think: linear-gradient(180deg, #fff 20.19%, rgba(255, 255, 255, 0) 100%);
+   --dsw-linear-think-select: linear-gradient(180deg, #f5f6f7 20.19%, rgba(245, 246, 247, 0) 100%);
+   /* 阴影 */
+@@ -24,8 +24,8 @@
+    已替换完 var() 的值，组件重绑 --dsw-elevation-stroke-color 将无法进入
+    var(--dsw-elevation-*)；逐元素声明让每个元素按自己看到的描边色重新替换
+    （同 scrollbar.css 对 --dsh-scrollbar-thumb 的处理）。 */
+-body,
+-body * {
++.tokens,
++.tokens * {
+   --dsw-elevation-stroke: 0 0 0 0.5px var(--dsw-elevation-stroke-color);
+   --dsw-elevation-panel:
+     var(--dsw-elevation-stroke), 0 3px 8px 0 rgba(0, 0, 0, 0.03), 0 0 16px 0 rgba(0, 0, 0, 0.02);
+@@ -35,7 +35,7 @@
+     var(--dsw-elevation-stroke), 0 4px 16px 0 rgba(0, 0, 0, 0.03), 0 0 24px 0 rgba(0, 0, 0, 0.03);
+ }
+ 
+-body[data-ds-dark-theme] {
++:global(body[data-ds-dark-theme]) .tokens {
+   --dsw-linear-gradient-think: linear-gradient(180deg, #151517 20.19%, rgba(21, 21, 23, 0) 100%);
+   --dsw-linear-think-select: linear-gradient(180deg, #232325 20.19%, rgba(35, 35, 37, 0) 100%);
+ }
+@@ -52,7 +52,7 @@
+    设置值 −2（12→11、13→12、14→13、15→13、16→14、17→15）。式中
+    max(13px,·) 的作用是让低设置取 −1 而非 −2，不是结果下限——12 设置下
+    层级触底 11px。small、code 属于密集次级文本，保持固定。 */
+-body {
++.tokens {
+   --dsh-content-font-delta: calc(var(--dsh-content-font-size, 14px) - 14px);
+   --dsh-content-font-size-secondary: min(calc(var(--dsh-content-font-size, 14px) - 1px), max(13px, calc(var(--dsh-content-font-size, 14px) - 2px)));
+   --dsh-content-font-delta-secondary: calc(var(--dsh-content-font-size-secondary) - 13px);
