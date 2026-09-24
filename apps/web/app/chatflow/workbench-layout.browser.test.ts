@@ -1648,8 +1648,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await dragTo(1400);
       await expect.poll(panelWidth).toBe(340);
       await dragTo(30);
-      await expect.poll(panelWidth).toBe(852); // Leave 340px of chat beside the 240px sidebar (1432px frame).
-      expect(await splitter.getAttribute('aria-valuenow')).toBe('852');
+      await expect
+        .poll(panelWidth)
+        .toBe(
+          Math.round((await f.page.locator('main').boundingBox())!.width) -
+            240 -
+            340,
+        );
+      expect(await splitter.getAttribute('aria-valuenow')).toBe(
+        String(
+          Math.round((await f.page.locator('main').boundingBox())!.width) -
+            240 -
+            340,
+        ),
+      );
       const center = (await f.page.locator('main > section').boundingBox())!;
       for (const control of [
         f.page.getByRole('button', { name: '添加文件', exact: true }),
@@ -1725,11 +1737,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.setViewportSize({ width: 1200, height: 950 });
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('620');
+        .toBe(
+          String(
+            Math.round((await f.page.locator('main').boundingBox())!.width) -
+              240 -
+              340,
+          ),
+        );
       await f.page.setViewportSize({ width: 1440, height: 950 });
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('860');
+        .toBe(
+          String(
+            Math.round((await f.page.locator('main').boundingBox())!.width) -
+              240 -
+              340,
+          ),
+        );
       await f.page.setViewportSize({ width: 390, height: 950 });
       await expect.poll(() => splitter.count()).toBe(0);
       expect(await f.panel.getAttribute('role')).toBe('dialog');
