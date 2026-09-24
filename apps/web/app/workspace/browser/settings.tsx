@@ -195,7 +195,11 @@ export function BrowserControlSettings({
                 {data.members.find((m) => m.id === g.ownerId)?.name ??
                   g.ownerId}
               </h2>
-              <p>{g.profile.origins.join('、')}</p>
+              <p>
+                {g.profile.network === 'public_https'
+                  ? '公网网站'
+                  : g.profile.origins.join('、')}
+              </p>
               <p>
                 {g.revokedAt
                   ? '授权已撤销'

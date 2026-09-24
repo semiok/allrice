@@ -36,7 +36,7 @@ import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
 import { platformSkillReplacements } from '../platform-content/replacements.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
-import { enablePublishedDevelopmentCloud } from './development-cloud-grants.ts';
+import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
 import {
   buildEmployeeRuntimePackage,
@@ -1584,73 +1584,31 @@ export async function materializePlatformEmployeeRevision(
     const tenantVersionId = versions[0]?.id;
     if (!tenantVersionId) throw new Error('tenant_employee_version_failed');
     await transaction`
-      update allrice_employee_assignments
-      set employee_version_id = ${tenantVersionId}, active = true, updated_at = now()
-      where organization_id = ${workspace.organization_id}
-        and workspace_id = ${workspace.id}
-        and employee_id = ${tenantEmployeeId}
-    `;
-    await transaction`
-      insert into allrice_employee_assignments (
-        organization_id, workspace_id, employee_id, employee_version_id,
-        user_id, is_default, active, assigned_by
+      insert into allrice_platform_employee_tenant_assignments (
+        employee_id, revision_id, organization_id, workspace_id,
+        tenant_employee_id, tenant_employee_version_id, active, is_default,
+        assigned_by_label
+      ) values (
+        ${input.employeeId}, ${input.revision.id}, ${workspace.organization_id},
+        ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
+        not exists(select 1 from allrice_platform_employee_tenant_assignments current_default
+          where current_default.organization_id=${workspace.organization_id} and current_default.workspace_id=${workspace.id}
+            and current_default.active and current_default.is_default),
+        ${input.actorLabel}
       )
-      select ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
-        ${tenantVersionId}, member.user_id,
-        not exists (select 1 from allrice_employee_assignments existing_default
-          where existing_default.organization_id=${workspace.organization_id} and existing_default.workspace_id=${workspace.id}
-            and existing_default.user_id=member.user_id and existing_default.active and existing_default.is_default), true, ${actorId}
-      from (
-        select distinct membership.user_id
-        from allrice_memberships membership
-        join allrice_users member_user on member_user.id = membership.user_id
-        where membership.organization_id = ${workspace.organization_id}
-          and (membership.workspace_id is null or membership.workspace_id = ${workspace.id})
-          and membership.active and member_user.status = 'active'
-      ) member
-      on conflict (organization_id, workspace_id, user_id, employee_id)
-      do update set employee_version_id = excluded.employee_version_id,
-        active = true, assigned_by = excluded.assigned_by,
+      on conflict (employee_id, workspace_id) do update set
+        revision_id = excluded.revision_id,
+        tenant_employee_id = excluded.tenant_employee_id,
+        tenant_employee_version_id = excluded.tenant_employee_version_id,
+        is_default = (allrice_platform_employee_tenant_assignments.active and allrice_platform_employee_tenant_assignments.is_default) or excluded.is_default,
+        active = true, assigned_by_label = excluded.assigned_by_label,
         assigned_at = now(), updated_at = now()
     `;
-    if (
-      rapidEmployeeIterationEnabled() &&
-      input.definition.capabilities.toolNames.includes('cloud.process.execute')
-    ) {
-      const grants = await enablePublishedDevelopmentCloud(transaction, {
-        organizationId: workspace.organization_id,
-        workspaceId: workspace.id,
-        employeeId: tenantEmployeeId,
-      });
-      if (grants.length)
-        await recordPlatformEmployeeAuditInTransaction(transaction, {
-          employeeId: input.employeeId,
-          action: 'employee.cloud.enabled',
-          actorLabel: input.actorLabel,
-          details: {
-            workspaceId: workspace.id,
-            revisionId: input.revision.id,
-            grants,
-          },
-        });
-    }
-    // Publishing a new tenant revision must be transparent to existing chats.
-    // Runs that are already queued keep their immutable execution snapshot; the
-    // next Run created for each Session uses the newly materialized version.
-    await transaction`
-      update allrice_chat_sessions session
-      set employee_version_id = assignment.employee_version_id,
-        updated_at = now()
-      from allrice_employee_assignments assignment
-      where assignment.id = session.employee_assignment_id
-        and assignment.organization_id = ${workspace.organization_id}
-        and assignment.workspace_id = ${workspace.id}
-        and assignment.employee_id = ${tenantEmployeeId}
-        and assignment.active
-        and session.organization_id = assignment.organization_id
-        and session.workspace_id = assignment.workspace_id
-        and session.employee_version_id <> assignment.employee_version_id
-    `;
+
+    await synchronizeTenantEmployeeAccess(transaction, {
+      organizationId: workspace.organization_id,
+      workspaceId: workspace.id,
+    });
     await transaction`
       delete from allrice_employee_dsh_skill_bindings
       where organization_id = ${workspace.organization_id}
@@ -1689,27 +1647,6 @@ export async function materializePlatformEmployeeRevision(
         )
       `;
     }
-    await transaction`
-      insert into allrice_platform_employee_tenant_assignments (
-        employee_id, revision_id, organization_id, workspace_id,
-        tenant_employee_id, tenant_employee_version_id, active, is_default,
-        assigned_by_label
-      ) values (
-        ${input.employeeId}, ${input.revision.id}, ${workspace.organization_id},
-        ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
-        not exists(select 1 from allrice_platform_employee_tenant_assignments current_default
-          where current_default.organization_id=${workspace.organization_id} and current_default.workspace_id=${workspace.id}
-            and current_default.active and current_default.is_default),
-        ${input.actorLabel}
-      )
-      on conflict (employee_id, workspace_id) do update set
-        revision_id = excluded.revision_id,
-        tenant_employee_id = excluded.tenant_employee_id,
-        tenant_employee_version_id = excluded.tenant_employee_version_id,
-        is_default = (allrice_platform_employee_tenant_assignments.active and allrice_platform_employee_tenant_assignments.is_default) or excluded.is_default,
-        active = true, assigned_by_label = excluded.assigned_by_label,
-        assigned_at = now(), updated_at = now()
-    `;
   }
 }
 

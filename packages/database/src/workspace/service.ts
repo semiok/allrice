@@ -237,10 +237,13 @@ export async function resolveWorkspaceId(
   const sql = getDatabase();
   const rows = requested
     ? await sql<{ id: string }[]>`
-        select id from allrice_workspaces
-        where organization_id = ${context.organizationId}
-          and id = ${requested}
-          and archived_at is null
+        select w.id from allrice_workspaces w
+        join allrice_organizations o on o.id=w.organization_id and o.archived_at is null
+        where w.organization_id = ${context.organizationId}
+          and w.id = ${requested} and w.archived_at is null
+          and exists(select 1 from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active'
+            where m.organization_id=w.organization_id and m.user_id=${requireUser(context)} and m.active
+              and (m.workspace_id is null or m.workspace_id=w.id))
       `
     : await sql<{ id: string }[]>`
         select w.id

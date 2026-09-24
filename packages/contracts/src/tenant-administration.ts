@@ -17,7 +17,7 @@ export const TenantMemberChangeSchema = z
     expectedVersion: z.string().regex(/^[a-f0-9]{32}$/),
     role: RoleSchema,
     active: z.boolean(),
-    reason: z.string().trim().min(5).max(500),
+    reason: z.string().trim().max(500).default(''),
   })
   .strict();
 

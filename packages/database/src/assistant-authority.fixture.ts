@@ -42,6 +42,7 @@ export async function createAssistantAuthorityFixture(
     ) => unknown;
     deniedModel?: boolean;
     configure?: boolean;
+    memberRole?: 'admin' | 'member';
     /** Frozen at fixture creation; never rewrite an immutable published version. */
     runtimePolicy?: EmployeeRuntimePolicy;
     runtimePackage?: EmployeeRuntimePackage;
@@ -112,6 +113,8 @@ export async function createAssistantAuthorityFixture(
       digest: runtimePolicyDigest(executionSpec),
     },
   };
+  const memberRole = options.memberRole ?? 'admin';
+  await db`update allrice_memberships set role=${memberRole} where id=${membership!.id}`;
   const frozenPolicy = {
     memberships: [
       {
@@ -119,7 +122,7 @@ export async function createAssistantAuthorityFixture(
         userId: user,
         organizationId: org,
         workspaceId: workspace,
-        role: 'admin',
+        role: memberRole,
         active: true,
       },
     ],

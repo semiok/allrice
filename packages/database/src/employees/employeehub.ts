@@ -1086,6 +1086,10 @@ export async function prepareEmployeeRunBinding(input: {
       and a.organization_id = ${input.context.organizationId}
       and a.workspace_id = ${UuidSchema.parse(input.workspaceId)}
       and a.user_id = ${actorId} and a.active
+      and e.status='active'
+      and exists(select 1 from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active'
+        where m.organization_id=a.organization_id and m.user_id=a.user_id and m.active and m.role in ('admin','member')
+          and (m.workspace_id is null or m.workspace_id=a.workspace_id))
       and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.organization_id=a.organization_id
         and d.workspace_id=a.workspace_id and d.tenant_employee_id=a.employee_id and not d.active)
   `;

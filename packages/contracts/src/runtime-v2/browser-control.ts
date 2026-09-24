@@ -50,6 +50,10 @@ export const BrowserUrlSchema = z
 export const BrowserProfileSchema = z
   .object({
     version: z.literal(1),
+    /** Platform-prepared cloud browsers can browse public HTTPS without a
+     * tenant-maintained website list. Existing exact-origin profiles retain
+     * their semantics; the cloud driver still pins public IPs per connection. */
+    network: z.literal('public_https').optional(),
     origins: z
       .array(
         BrowserUrlSchema.refine((s) => {
@@ -60,7 +64,6 @@ export const BrowserProfileSchema = z
           }
         }),
       )
-      .min(1)
       .max(8),
     allowUploads: z.boolean().default(false),
     allowDownloads: z.boolean().default(false),
@@ -69,7 +72,8 @@ export const BrowserProfileSchema = z
     maximumFileBytes: z.number().int().min(1).max(2000000).default(1000000),
   })
   .strict()
-  .refine((p) => new Set(p.origins).size === p.origins.length);
+  .refine((p) => new Set(p.origins).size === p.origins.length)
+  .refine((p) => p.network === 'public_https' || p.origins.length > 0);
 export type BrowserProfile = z.infer<typeof BrowserProfileSchema>;
 export const BrowserElementSchema = z
   .object({
@@ -225,6 +229,8 @@ export function browserObservationCurrent(
 export function browserOriginAllowed(url: string, profile: BrowserProfile) {
   const parsed = BrowserUrlSchema.safeParse(url);
   return (
-    parsed.success && profile.origins.includes(new URL(parsed.data).origin)
+    parsed.success &&
+    (profile.network === 'public_https' ||
+      profile.origins.includes(new URL(parsed.data).origin))
   );
 }

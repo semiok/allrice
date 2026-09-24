@@ -158,9 +158,11 @@ suite('MET-151 policy and exact employee publication administration', () => {
       const review = await f.review();
       expect(review.valid).toBe(true);
       expect(review.policyVersions[f.workspaceId]).toBe(before.version);
-      await expect(f.publish(review)).rejects.toThrow(
-        'cloud_runner_unavailable',
-      );
+      const result = await f.publish(review);
+      expect(result.valid).toBe(true);
+      expect(
+        await fixture.db`select id from allrice_cloud_execution_grants where workspace_id=${f.workspaceId}`,
+      ).toHaveLength(0);
       const profile = CloudExecutionProfileSchema.parse({
         ...Object.fromEntries(
           Object.entries(CloudExecutionProfileSchema.shape)
@@ -175,8 +177,14 @@ suite('MET-151 policy and exact employee publication administration', () => {
       await fixture.db`insert into allrice_execution_targets
         (organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
         values (${f.organizationId},${f.workspaceId},'test-installed-cloud','cloud_sandbox','Synthetic installed sandbox','online','["process.execute"]',${fixture.db.json({ managedBy: 'allrice', profile })})`;
-      const result = await f.publish(review);
-      expect(result.valid).toBe(true);
+      const { synchronizeTenantEmployeeAccess } =
+        await import('./tenant-employee-access.ts');
+      await fixture.db.begin((tx) =>
+        synchronizeTenantEmployeeAccess(tx, {
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+        }),
+      );
       const policy = await f.read();
       expect(policy.controls).toMatchObject({ enabled: true, mode: 'execute' });
       const [cloud] =

@@ -119,8 +119,10 @@ export async function assertAssistantAuthority(
       and (m.workspace_id is null or m.workspace_id=${task.scope.workspaceId}) and m.active and m.role in ('admin','member') for share of m,u,o,w`;
   requireAuthority(member);
   const [employee] = await tx`
-    select id from allrice_employees where id=${identity.employee_id} and organization_id=${task.scope.organizationId}
-      and workspace_id=${task.scope.workspaceId} and status='active' for share`;
+    select e.id from allrice_employees e where e.id=${identity.employee_id} and e.organization_id=${task.scope.organizationId}
+      and e.workspace_id=${task.scope.workspaceId} and e.status='active'
+      and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.tenant_employee_id=e.id
+        and d.organization_id=e.organization_id and d.workspace_id=e.workspace_id and not d.active) for share of e`;
   requireAuthority(employee);
 
   const [root] = await tx<

@@ -986,14 +986,13 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   }, 60000);
-  it('saves an explicit role via the real HTTP/DB path, refreshes it, and does not grant platform membership', async () => {
+  it('saves a member role without a mandatory note, refreshes it, and does not grant platform membership', async () => {
     const { page, context } = await pageFor();
     try {
       await page
         .getByRole('button', { name: '编辑 Snow fixture', exact: true })
         .click();
       await page.getByLabel('成员角色').selectOption('viewer');
-      await page.getByLabel('修改原因').fill('Synthetic browser acceptance');
       await page
         .getByRole('button', { name: '确认保存授权', exact: true })
         .click();
@@ -1038,7 +1037,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page
         .getByRole('button', { name: '编辑 Snow fixture', exact: true })
         .click();
-      await page.getByLabel('修改原因').fill('Do not leak this draft');
+      await page.getByLabel('成员备注（可选）').fill('Do not leak this draft');
       page.once('dialog', (dialog) => dialog.dismiss());
       await page.getByLabel('管理租户').selectOption(other.organizationId);
       expect(await page.getByLabel('管理租户').inputValue()).toBe(
@@ -1049,7 +1048,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page
         .getByRole('button', { name: '编辑 Other fixture', exact: true })
         .waitFor();
-      expect(await page.getByLabel('修改原因').count()).toBe(0);
+      expect(await page.getByLabel('成员备注（可选）').count()).toBe(0);
       expect(await page.getByText('Do not leak this draft').count()).toBe(0);
       expect(
         await page.evaluate(
@@ -1068,7 +1067,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button', { name: '编辑 Snow fixture', exact: true })
         .click();
       await page.getByLabel('成员角色').selectOption('member');
-      await page.getByLabel('修改原因').fill('Synthetic unavailable save');
+      await page
+        .getByLabel('成员备注（可选）')
+        .fill('Synthetic unavailable save');
       const before = requests.filter((r) => r.startsWith('PATCH')).length;
       await page.route('**/members/*', (route) =>
         route.fulfill({

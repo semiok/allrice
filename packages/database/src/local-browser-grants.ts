@@ -54,7 +54,7 @@ export async function assertCurrentLocalBrowserDevice(
 export const LocalBrowserGrantInputSchema = z
   .object({
     deviceId: UuidSchema,
-    profile: BrowserProfileSchema,
+    profile: BrowserProfileSchema.refine((p) => p.network === undefined),
     persistLogin: z.boolean().default(false),
   })
   .strict();

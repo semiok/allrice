@@ -162,7 +162,7 @@ export async function createCloudCommandOperation(
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
   const [grant] = await database<
     { id: string; version: number; target_id: string; profile: unknown }[]
-  >`select g.id,g.version,g.target_id,g.profile from allrice_cloud_execution_grants g join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id where g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${owner} and g.enabled and g.revoked_at is null and t.state='online' and t.kind='cloud_sandbox' order by g.created_at desc limit 1`;
+  >`select g.id,g.version,g.target_id,g.profile from allrice_cloud_execution_grants g join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id where g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${owner} and g.enabled and g.revoked_at is null and t.state='online' and t.kind='cloud_sandbox' and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp()) order by g.created_at desc limit 1`;
   if (!grant) throw new RuntimePolicyError('cloud_runner_unavailable');
   const profile = CloudExecutionProfileSchema.parse(grant.profile),
     payload = CloudCommandSchema.parse({

@@ -18,6 +18,10 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import {
+  synchronizeTenantMembershipAccess,
+  lockTenantEmployeeWorkspaces,
+} from './tenant-employee-access.ts';
 
 const passwordParameters = { N: 16_384, r: 8, p: 1 } as const;
 const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;
@@ -307,6 +311,10 @@ export async function acceptInvitation(input: unknown) {
     if (!user || user.status === 'disabled') {
       throw new IdentityError('invitation_invalid');
     }
+    await lockTenantEmployeeWorkspaces(transaction, {
+      organizationId: invitation.organization_id,
+      workspaceId: invitation.workspace_id,
+    });
     await transaction`
       insert into allrice_memberships (
         organization_id, workspace_id, user_id, role, active
@@ -317,6 +325,10 @@ export async function acceptInvitation(input: unknown) {
       on conflict (organization_id, workspace_id, user_id)
       do update set role = excluded.role, active = true, updated_at = now()
     `;
+    await synchronizeTenantMembershipAccess(transaction, {
+      organizationId: invitation.organization_id,
+      workspaceId: invitation.workspace_id,
+    });
     await transaction`
       update allrice_invitations set accepted_at = now() where id = ${invitation.id}
     `;
@@ -391,7 +403,7 @@ export async function ensureBootstrapPortalPrincipal(
     const existingUsers = await transaction<UserRow[]>`
       select id, email, display_name, password_hash, status
       from allrice_users where email = ${email}
-      for update
+      for share
     `;
     let user = existingUsers[0];
     if (!user) {
@@ -423,6 +435,12 @@ export async function ensureBootstrapPortalPrincipal(
         and user_id=${user.id} and active
         and (workspace_id is null or workspace_id=${workspace.id}) limit 1`;
     if (!membership) throw new IdentityError('authorization_denied');
+    // Only bootstrap events provision inheritance; repeat login is not a grant writer.
+    if (!existingUsers.length || organizations.length)
+      await synchronizeTenantMembershipAccess(transaction, {
+        organizationId: organization.id,
+        workspaceId: null,
+      });
 
     return {
       user: {
