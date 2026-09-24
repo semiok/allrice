@@ -18,6 +18,7 @@ export async function nativeBrokerRoundtrip(input: {
   args: Record<string, unknown>;
   brokerArgs?: Record<string, unknown>;
   invalidArgs: Record<string, unknown>;
+  inspectSchema?: (schema: Record<string, unknown>) => void;
   onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-native-broker-'));
@@ -159,9 +160,15 @@ export async function nativeBrokerRoundtrip(input: {
     await client.prompt(session, 'Invoke the selected native tool.');
     await expect.poll(() => requests.length, { timeout: 15000 }).toBe(2);
     await expect.poll(() => completed, { timeout: 15000 }).toBe(1);
-    const tools = requests[0]!.tools as { function?: { name?: string } }[];
+    const tools = requests[0]!.tools as {
+      function?: { name?: string; parameters?: Record<string, unknown> };
+    }[];
     expect(tools.some((tool) => tool.function?.name === input.wireName)).toBe(
       true,
+    );
+    input.inspectSchema?.(
+      tools.find((tool) => tool.function?.name === input.wireName)!.function!
+        .parameters!,
     );
     expect(received).toHaveLength(1);
     expect(JSON.stringify(requests[1])).toContain(

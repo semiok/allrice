@@ -114,7 +114,8 @@ export const allRiceToolManifest = [
     canonicalName: 'workspace.file.list',
     capability: 'storage:read',
     risk: 'read_only',
-    transport: 'envelope',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_file_list',
   },
   {
     canonicalName: 'workspace.file.read',

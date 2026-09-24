@@ -89,6 +89,18 @@ const brokerNativeTools = [
     },
   },
   {
+    canonicalName: 'workspace.file.list',
+    wireName: 'workspace_file_list',
+    description:
+      'List files readable by the current user in this workspace. Use the returned object id with workspace_document_read; a filename is not an object id.',
+    parameters: {
+      limit: {
+        type: 'integer',
+        description: 'Maximum number of files, from 1 to 50; defaults to 20.',
+      },
+    },
+  },
+  {
     canonicalName: 'workspace.document.read',
     wireName: 'workspace_document_read',
     description:
@@ -102,6 +114,11 @@ const brokerNativeTools = [
       maxCharacters: {
         type: 'integer',
         description: 'Maximum extracted characters from 1000 to 300000.',
+      },
+      includeStructure: {
+        type: 'boolean',
+        description:
+          'For Office template edits, set true to inspect sheets/cells, slides and paragraphs with the source checksum. Use the returned id and checksum in office.kind=edit; never reconstruct the template from extracted text.',
       },
     },
   },
@@ -1081,7 +1098,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       this.ctx.systemPrompt.section({
         name: 'tool:allrice_exports',
         order: 115,
-        text: 'When the user explicitly asks for a report or downloadable deliverable, use workspace_export_create with the complete final content and include the returned downloadUrl as a Markdown link in the final answer. Choose DOCX for formal documents, XLSX for tabular data, PPTX for presentations, PDF for fixed-layout delivery, and Markdown when editability matters. When revising an existing AllRice deliverable, pass its object ID as parentObjectId and summarize the revision in changeSummary so the immutable version lineage is preserved. Do not create a file for an ordinary chat answer.',
+        text: 'When the user explicitly asks for a report or downloadable deliverable, use workspace_export_create and include its actual downloadUrl as a Markdown link. Supply either content for text-based exports or office for structured DOCX/XLSX/PPTX creation and source-preserving edits. Read the Office Skill resources for the typed structures. For template edits, first list and read the source with includeStructure=true, then use office.kind=edit with its actual object id, checksum and targeted changes. When revising an existing deliverable, preserve the immutable version lineage and summarize the revision in changeSummary. Do not create a file for an ordinary chat answer.',
       });
     }
     if (

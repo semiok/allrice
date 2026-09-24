@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-office-native-v1",
+      "issue": "MET-157",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-workbench-native-tools.mjs",
+      "reason": "Expose structured Office creation/edit arguments and document structure reads to the actual native model; move authorized file listing into the same native loop. Broker validation, source checksums and tenant permissions remain authoritative. Real pinned-DSH transport tests cover all three formats and edits."
+    },
+    {
       "id": "allrice-durable-native-question-wait-v1",
       "issue": "MET-153",
       "upstreamVersion": "0.1.5-rc.3",

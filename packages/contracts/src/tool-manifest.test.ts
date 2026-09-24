@@ -82,7 +82,6 @@ describe('AllRice tool manifest', () => {
       },
     ]);
     expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
-      'workspace.file.list',
       'workspace.file.read',
       'web.fetch',
     ]);

@@ -35,9 +35,14 @@ export const workbenchNativeTools = [
       },
       content: {
         type: 'string',
-        required: true,
         description:
-          'Complete final file content, or the changeset JSON proposal.',
+          'Complete final text content, or the changeset JSON proposal. Supply exactly one of content or office.',
+      },
+      office: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'Structured Office payload instead of content. Read the Office Skill references for complete schemas. Create kind=docx with title and blocks, kind=xlsx with sheets (typed cells and formulas), or kind=pptx with title and slides (native tables/charts/notes). To preserve an uploaded template, use kind=edit with sourceObjectId, sourceChecksum and changes returned/guided by workspace_document_read(includeStructure=true); changes are replace-text or set-cell. The Broker validates the complete discriminated payload and preserves the original file.',
       },
       parentObjectId: {
         type: 'string',
