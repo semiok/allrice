@@ -185,7 +185,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
               : '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0;background:#101216"><div id="root"></div><script src="/app.js"></script></body></html>',
         );
       } catch (e) {
-        failures.push(e instanceof Error ? e.name : 'fixture_error');
+        failures.push(
+          e instanceof Error ? (e.stack ?? e.message) : 'fixture_error',
+        );
         res.writeHead(500);
         res.end('{}');
       }
@@ -224,7 +226,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     ]);
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
-    page.on('pageerror', (e) => failures.push(e.name));
+    page.on('pageerror', (e) => failures.push(e.stack ?? e.message));
     await page.goto(origin);
     await page.getByLabel('管理租户').selectOption(snow.organizationId);
     await page
