@@ -164,6 +164,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   async function fixture(
     options: {
+      tenantAdmin?: boolean;
       employeeCount?: number;
       employeeHistory?: boolean;
       width?: number;
@@ -358,7 +359,36 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   ? [session(B)]
                   : [session(A), session(B)],
             sessionModels: [],
-            employeeProfiles: [],
+            employeeProfiles: options.employeeHistory
+              ? [
+                  {
+                    assignmentId: id(7),
+                    employeeId: id(9),
+                    name: 'Rice',
+                    description: '负责研究、分析与文件交付',
+                    identity: {
+                      role: '研究助理',
+                      mission: '帮助完成研究',
+                      workStyle: '按步骤交付',
+                      behaviorRules: [],
+                      safetyBoundaries: [],
+                    },
+                    skills: [
+                      {
+                        id: 'office',
+                        name: 'Office',
+                        description: '阅读和交付文档',
+                      },
+                    ],
+                    model: {
+                      harness: 'dsh',
+                      provider: 'codex',
+                      model: 'configured-model',
+                      reasoningEffort: 'medium',
+                    },
+                  },
+                ]
+              : [],
             employees:
               options.employeeCount === 0
                 ? []
@@ -403,12 +433,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return answer({
           capabilities: {
             schemaVersion: 1,
-            roles: ['member'],
+            roles: options.tenantAdmin
+              ? ['member', 'tenant_admin']
+              : ['member'],
             surfaces: ['chatflow'],
             actions: [],
             features: { chatFlowV3: true, nativeHarnessEvents: true },
           },
         });
+      if (
+        [
+          '/api/v1/admin/mcp',
+          '/api/v1/admin/local-mcp',
+          '/api/v1/admin/browser-control',
+          '/api/v1/admin/local-browser',
+        ].includes(path)
+      ) {
+        expect(options.tenantAdmin).toBe(true);
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        return answer({
+          enabled: true,
+          connections: [],
+          employees: [],
+          devices: [],
+          targets: [],
+          members: [],
+          grants: [],
+          humanCredentialsConfigured: false,
+        });
+      }
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
       if (path === '/api/v1/workspace/monthly-quota') {
         expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
@@ -641,6 +694,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
     try {
       const rice = f.page.locator('[data-row-key="workspace:' + id(7) + '"]');
+      await f.page
+        .getByRole('button', { name: '查看Rice详情', exact: true })
+        .click();
+      const intro = f.page.getByRole('dialog', {
+        name: 'Rice员工详情',
+        exact: true,
+      });
+      await intro
+        .getByText('负责研究、分析与文件交付', { exact: true })
+        .waitFor();
+      await intro.getByText('Office', { exact: true }).waitFor();
+      await intro.getByRole('button', { name: '关闭', exact: true }).click();
+
       if ((await rice.getAttribute('aria-expanded')) !== 'true')
         await rice.click();
       await f.page.getByRole('button', { name: /展开其余/ }).click();
@@ -984,23 +1050,127 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('shows the current member monthly balance alongside the workbench', async () => {
+  it('shows the current member monthly balance inside native settings', async () => {
     const f = await fixture();
     try {
+      const settings = f.page.getByRole('button', {
+        name: '设置',
+        exact: true,
+      });
+      expect(
+        await f.page.locator('summary[aria-label="账号月额度"]').count(),
+      ).toBe(0);
+      await settings.click();
       const quota = f.page.locator('summary[aria-label="账号月额度"]');
       await quota.getByText('Synthetic member', { exact: true }).waitFor();
       await quota.getByText('剩余 43%', { exact: true }).waitFor();
-      await quota.click();
       await f.page.getByText('本月已记录', { exact: false }).waitFor();
       expect(
         await f.page.locator('details').filter({ has: quota }).innerText(),
       ).toContain('5,000,000');
       await f.page.reload();
+      await settings.click();
       await quota.getByText('剩余 43%', { exact: true }).waitFor();
     } finally {
       await f.close();
     }
   });
+
+  it.each([390, 1440])(
+    'MET160 native settings holds account and connection screens, preserves drafts and restores focus at width %s',
+    async (width) => {
+      const f = await fixture({ width, tenantAdmin: true });
+      try {
+        const composer = f.page.getByRole('textbox', { name: '消息' });
+        await composer.fill('保留聊天草稿');
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        const trigger = f.page.getByRole('button', {
+          name: '设置',
+          exact: true,
+        });
+        expect(
+          await f.page.getByRole('link', { name: 'MCP 连接管理' }).count(),
+        ).toBe(0);
+        await trigger.click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await dialog.getByText('Synthetic member', { exact: true }).waitFor();
+        await f.page.screenshot({
+          path: `/tmp/met160-settings-account-${width}.png`,
+        });
+        await dialog
+          .getByRole('button', { name: 'MCP 连接', exact: true })
+          .click();
+        await dialog
+          .getByRole('heading', { name: '云端 MCP', exact: true })
+          .waitFor();
+        const name = dialog
+          .getByRole('textbox', { name: '连接名称', exact: true })
+          .first();
+        await name.fill('尚未保存的连接');
+        await dialog
+          .getByRole('button', { name: '云端浏览器', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '创建精确站点授权' })
+          .waitFor();
+        await dialog
+          .getByRole('button', { name: '本地浏览器', exact: true })
+          .click();
+        await dialog
+          .getByRole('region', { name: '本地浏览器授权', exact: true })
+          .waitFor();
+        expect(
+          await dialog.getByRole('link', { name: '返回工作台' }).count(),
+        ).toBe(0);
+        await dialog
+          .getByRole('button', { name: 'MCP 连接', exact: true })
+          .click();
+        expect(await name.inputValue()).toBe('尚未保存的连接');
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `/tmp/met160-settings-connections-${width}.png`,
+        });
+        const focusables = dialog.locator(
+          'button:not(:disabled):visible,input:not(:disabled):visible',
+        );
+        await focusables.last().focus();
+        await f.page.keyboard.press('Tab');
+        expect(
+          await dialog.evaluate((e) => e.contains(document.activeElement)),
+        ).toBe(true);
+        await f.page.keyboard.press('Escape');
+        expect(await dialog.count()).toBe(0);
+        expect(
+          await trigger.evaluate((e) => e === document.activeElement),
+        ).toBe(true);
+        if (width < 600) {
+          expect(
+            await f.page.getByRole('dialog', { name: '任务与历史' }).count(),
+          ).toBe(1);
+          await f.page.keyboard.press('Escape');
+        }
+        expect(await composer.inputValue()).toBe('保留聊天草稿');
+        if (width >= 600)
+          await f.page
+            .getByRole('button', { name: '收起侧边栏', exact: true })
+            .click();
+        await f.page.getByRole('button', { name: '设置', exact: true }).click();
+        await dialog.waitFor();
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([false, true])(
     'shows ordinary task timing on mobile with workbench disabled=%s, refreshes server waits and recovers from a failed read',
@@ -2054,8 +2224,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
       await f.page.getByRole('dialog', { name: '任务与历史' }).waitFor();
-      const quota = f.page.locator('summary[aria-label="账号月额度"]');
-      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+      const quota = f.page.getByRole('button', { name: '设置', exact: true });
       await quota.focus();
       await f.page.keyboard.press('Tab');
       expect(

@@ -75,6 +75,12 @@
           "name": "PDF 与文档缩放",
           "detail": "PDF 使用官方发布组件与 Worker，代码使用官方高亮，Office 既有渲染结果接入原生缩放；未启用上游交互工作表。",
           "status": "读取 Web 构建状态"
+        },
+        {
+          "id": "ui-native-settings",
+          "name": "原生设置入口",
+          "detail": "复用官方 Modal 和设置双栏导航；账号用量与既有 MCP、浏览器设置集中在一个弹窗。",
+          "status": "读取 Web 构建状态"
         }
       ]
     },

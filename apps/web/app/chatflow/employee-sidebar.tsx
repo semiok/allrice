@@ -147,35 +147,39 @@ export function EmployeeSidebar({
             className={css.group}
             aria-label={group.label}
           >
-            <ProjectRowItem
-              group={group}
-              leading={
-                <span className={css.initial}>{group.label.slice(0, 1)}</span>
-              }
-              onToggle={() =>
-                setExpansion((current) => ({
-                  ...current,
-                  [group.key]: !group.expanded,
-                }))
-              }
-              onCreate={employee ? () => onNewSession(group.key) : undefined}
-              t={employeeTranslate}
-            />
+            <div className={css.header}>
+              <ProjectRowItem
+                group={group}
+                leading={
+                  <span className={css.initial}>{group.label.slice(0, 1)}</span>
+                }
+                onToggle={() =>
+                  setExpansion((current) => ({
+                    ...current,
+                    [group.key]: !group.expanded,
+                  }))
+                }
+                onCreate={employee ? () => onNewSession(group.key) : undefined}
+                t={employeeTranslate}
+              />
+              {profile && (
+                <button
+                  type="button"
+                  className={css.info}
+                  aria-label={`查看${group.label}详情`}
+                  title={`${group.label}介绍`}
+                  onClick={() => onDetails(group.key)}
+                >
+                  ⓘ
+                </button>
+              )}
+            </div>
             <div className={css.meta}>
               <span>
                 {role}
                 {employee?.isDefault ? ' · 默认' : ''} · {group.sessionCount}{' '}
                 个工作
               </span>
-              {profile && (
-                <button
-                  type="button"
-                  aria-label={`查看${group.label}详情`}
-                  onClick={() => onDetails(group.key)}
-                >
-                  详情
-                </button>
-              )}
             </div>
             {group.expanded && (
               <div

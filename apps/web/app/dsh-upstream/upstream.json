@@ -93,7 +93,14 @@
         {
           "name": "@deepseek-ai/dsh-client-ui-primitives",
           "version": "0.1.7-rc.1",
-          "exports": ["Button", "CodeBlock", "Menu", "languageForPath"]
+          "exports": [
+            "Button",
+            "CodeBlock",
+            "Menu",
+            "languageForPath",
+            "Modal",
+            "IconSettingsOutlineMedium"
+          ]
         },
         {
           "name": "@deepseek-ai/cordis",
@@ -283,6 +290,32 @@
           "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/types.ts",
           "upstreamSha256": "aee361914c9687c510d588e658bd09d545b7b043378ed445049298874111820b",
           "sha256": "aee361914c9687c510d588e658bd09d545b7b043378ed445049298874111820b"
+        }
+      ]
+    },
+    {
+      "id": "native-settings",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "official-modal-and-native-settings-panel-adapter",
+      "packages": [],
+      "files": [
+        {
+          "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
+          "upstreamSha256": "6a0fe6d492ab2aeed06123d7bc1ae6fe78b6c76a26e9d1611a9c8c79dfcc7603",
+          "sha256": "c2c7b53da9de653a19c95d00e589ece2e984a8db2a0d8af131ba507107486e55",
+          "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.tsx.patch",
+          "patchSha256": "3e468d145f904006d4cffa642a1f17684a9c14ff3c8ad497238aa0556f7d3212"
+        },
+        {
+          "source": "packages/client/ui-settings-general/src/client/SettingsRoot.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.module.css",
+          "upstreamSha256": "db40d7e1cc98ac9df2b4bdf9cac5d217315eb6bcd945ab0bdc66ce5a7c3697b1",
+          "sha256": "fb9b79548356cb256e7915e6c7526ab7349b4d425a8c0dd31ddc4f879b076def",
+          "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.module.css.patch",
+          "patchSha256": "d2de4ef12801ab58a3c2c8cfc3bd4238a40c3194ba7fbf0a27630e5cc2589b97"
         }
       ]
     }

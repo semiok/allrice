@@ -82,7 +82,10 @@ export function integratedCapabilityStatus(
       (item) => item.id === id.slice(3),
     );
     if (!component) return 'Web 界面接入状态未知';
-    if (id !== 'ui-employee-workspace' && !data!.webUi!.workbenchEnabled)
+    if (
+      !['ui-employee-workspace', 'ui-native-settings'].includes(id) &&
+      !data!.webUi!.workbenchEnabled
+    )
       return `UI ${component.version} 已安装 · 工作台已显式关闭`;
     return `UI ${component.version} · 当前 Web 已接入`;
   }

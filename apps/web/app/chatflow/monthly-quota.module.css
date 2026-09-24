@@ -57,3 +57,25 @@
   padding: 4px 8px;
   cursor: pointer;
 }
+.quota.expanded {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 14px;
+}
+.expanded .detail {
+  max-height: none;
+  overflow: visible;
+  font-size: 13px;
+}
+.expanded .label {
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .expanded summary {
+    flex-wrap: wrap;
+  }
+  .expanded .balance {
+    white-space: normal;
+  }
+}

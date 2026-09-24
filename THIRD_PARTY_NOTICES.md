@@ -106,3 +106,9 @@ unaltered published `ui-sidebar-documentpreview/lib/client.pdf.js` chunk lazily;
 its bundled PDF.js/font license notices remain included. CodeBlock is consumed
 through the official ui-primitives package. Existing Allrice Office conversion
 and Markdown rendering remain the content adapters.
+
+MET-160 settings integration consumes the published ui-primitives Modal and
+icons. The ui-settings-general SettingsRoot panel/navigation and stylesheet
+from the same 0.1.7-rc.1 commit are adapted under
+`apps/web/app/chatflow/dsh-upstream/settings/`; source and patch checksums are
+recorded in the WebUI ledger. The DeepSeek MIT notice above also applies.

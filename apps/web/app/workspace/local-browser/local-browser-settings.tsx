@@ -21,7 +21,13 @@ type Grant = {
   cleanupConfirmed: boolean;
   cleanupErrorCode: string | null;
 };
-export function LocalBrowserSettings({ workspaceId }: { workspaceId: string }) {
+export function LocalBrowserSettings({
+  workspaceId,
+  embedded = false,
+}: {
+  workspaceId: string;
+  embedded?: boolean;
+}) {
   const [grants, setGrants] = useState<Grant[]>([]),
     [devices, setDevices] = useState<BridgeDevice[]>([]),
     [enabled, setEnabled] = useState(false),
@@ -136,7 +142,7 @@ export function LocalBrowserSettings({ workspaceId }: { workspaceId: string }) {
     <section className={styles.root} aria-label="本地浏览器授权">
       <header>
         <div>
-          <h1>本地浏览器授权</h1>
+          {!embedded && <h1>本地浏览器授权</h1>}
           <p>在 Bridge 设备上使用专属浏览器，和个人 Chrome 分开。</p>
         </div>
         <button
@@ -317,9 +323,7 @@ export function LocalBrowserSettings({ workspaceId }: { workspaceId: string }) {
           </div>
         </article>
       ))}
-      <p>
-        <Link href="/chatflow">返回工作台</Link>
-      </p>
+      <p>{!embedded && <Link href="/chatflow">返回工作台</Link>}</p>
     </section>
   );
 }

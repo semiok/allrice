@@ -13,6 +13,7 @@ it('reports Web UI independently from Worker availability and honors the actual 
   inventory.webUi = {
     components: [
       { id: 'native-dock', version: '0.1.7-rc.1' },
+      { id: 'native-settings', version: '0.1.7-rc.1' },
       { id: 'employee-workspace', version: '0.1.7-rc.1' },
     ],
     workbenchEnabled: true,
@@ -27,6 +28,9 @@ it('reports Web UI independently from Worker availability and honors the actual 
   expect(
     integratedCapabilityStatus('ui-employee-workspace', inventory),
   ).toContain('已接入');
+  expect(integratedCapabilityStatus('ui-native-settings', inventory)).toContain(
+    '已接入',
+  );
   expect(integratedCapabilityStatus('ui-native-files', inventory)).toContain(
     '未知',
   );

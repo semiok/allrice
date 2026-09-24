@@ -4,6 +4,27 @@
 .group {
   margin-bottom: 12px;
 }
+.header {
+  display: flex;
+  align-items: center;
+}
+.header > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.info {
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font-size: 16px;
+}
+.info:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
 .meta {
   display: flex;
   justify-content: space-between;
@@ -12,7 +33,6 @@
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
 }
-.meta button,
 .more {
   border: 0;
   background: transparent;

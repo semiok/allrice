@@ -54,6 +54,8 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 ### MET-160：官方 UI 复用与后续同步
 
+设置入口复用官方 `Modal` 与 `SettingsRoot` 双栏导航：账号用量、MCP 与浏览器配置统一进入设置。完整设置插件绑定 DSH 宿主 `remote.settings` / ConfigForm / onboarding，故保留原生面板源码并接 Allrice 既有业务组件；不复制宿主模型/插件配置为无效租户开关。来源与补丁纳入同一 UI 同步账本。
+
 固定 Web 组件版本 `0.1.7-rc.1` / `46a7f68b0922371ce7144b668b90e377d8e799f4`；Worker 引擎仍为 `0.1.5-rc.3`。官方 DockLayout、PDF 发布组件、CodeBlock 直接使用；员工树因原生 WorkspaceBrowser 固定工作区管理菜单和缺少员工轨配置，文件树因宿主 cwd/RPC 接口不适用于对象存储，取原生组件源码并记录最小适配。原生 store、折叠、标签/分栏、目录生命周期与缩放不另写一套。完整插件验证、实际文件结果、边界与回退见 [工作台复用记录](../features/native-workbench/README.md)。
 
 已替换旧扁平员工会话展示和单成果固定容器；既有 Office 渲染、文件权限/版本、Diff/反馈及 Markdown 仍承担业务责任，不能因接入原生容器而删除。新入口默认展示，无新增管理员开关。`pnpm dsh-ui:verify` 校验 UI 来源/依赖/导出，`pnpm dsh-ui:sync` 从固定官方提交重放补丁；今后每次升级先检查官方是否已提供可替换这些适配的配置。测试夹具保留生产的 ESM 懒加载边界，依赖安装必须能从锁文件完整复现。
