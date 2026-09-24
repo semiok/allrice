@@ -88,7 +88,16 @@ export interface Message {
   attachments?: Attachment[];
 }
 
+export interface QueuedMessage {
+  id: string;
+  runId: string;
+  text: string;
+  attachments?: Attachment[];
+  createdAt: string;
+}
+
 export interface History {
+  queuedMessages?: QueuedMessage[];
   session: Session;
   messages: Message[];
   contextStatus: {

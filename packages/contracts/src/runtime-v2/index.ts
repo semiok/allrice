@@ -16,6 +16,7 @@ export * from './project-diagnostics.ts';
 export * from './dependency-preparation.ts';
 export * from './artifact-review.ts';
 export * from './input-status.ts';
+export * from './queued-messages.ts';
 export * from './browser-control.ts';
 export * from './local-browser.ts';
 export * from './local-preview.ts';

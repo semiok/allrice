@@ -6,6 +6,7 @@ import {
 import { readTaskClocks } from '../task-clock.ts';
 import type postgres from 'postgres';
 import { z } from 'zod';
+import { releaseNextConversationFollowup } from './queued-messages.ts';
 import { cancelUnadoptedSteers } from './conversation-input.ts';
 
 import { getDatabase } from '../core/client.ts';
@@ -1067,30 +1068,7 @@ export async function releaseConversationRuntime(input: {
         and state in ('pending', 'claimed')
     `;
     await cancelUnadoptedSteers(transaction, values.sessionId);
-    const next = await transaction<{ run_id: string }[]>`
-      select run_id from allrice_conversation_followups
-      where organization_id = ${values.organizationId}
-        and workspace_id = ${values.workspaceId}
-        and session_id = ${values.sessionId}
-        and state = 'queued'
-        and mode <> 'steer_only'
-      order by created_at, run_id
-      for update skip locked
-      limit 1
-    `;
-    if (next[0]) {
-      await transaction`
-        update allrice_conversation_followups
-        set state = 'released', released_at = now()
-        where run_id = ${next[0].run_id}
-      `;
-      await transaction`
-        update allrice_jobs
-        set available_at = now(), timeout_at = now() + interval '5 minutes',
-            updated_at = now()
-        where run_id = ${next[0].run_id} and status = 'queued'
-      `;
-    }
+    await releaseNextConversationFollowup(transaction, values.sessionId);
     return mapBinding(rows[0]!);
   });
 }

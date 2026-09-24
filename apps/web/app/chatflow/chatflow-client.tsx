@@ -15,6 +15,7 @@ import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
 
 import { ChatComposer } from './chat-composer';
+import { QueuedMessagesDock } from './queued-messages-dock';
 import { AssistantModeControl } from './assistant-mode-control';
 import {
   assistantEligibility,
@@ -38,7 +39,7 @@ import { CapabilityPanel } from './capability-panel';
 import { capabilityLabels } from './capability-catalog';
 import workbenchUi from './workbench.module.css';
 import { AttachmentPreviewDialog } from './attachment-preview-dialog';
-import type { Attachment, Message } from './chatflow-types';
+import type { Attachment, Message, QueuedMessage } from './chatflow-types';
 import {
   employeeForSession,
   providerForSession,
@@ -77,9 +78,6 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
-  const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
-    'follow_up',
-  );
   const [busy, setBusy] = useState(false);
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
@@ -342,7 +340,24 @@ export function ChatFlowClient({
       (view) => view.status === 'running' || view.status === 'connecting',
     ),
   });
-  useEffect(() => setInputMode('follow_up'), [activeId]);
+  // Observe server transitions, including another tab's queue and the worker's
+  // automatic FIFO release. The browser never dispatches the next task itself.
+  const inputRevision = interactions.data?.inputs
+    .map((i) => `${i.inputId}:${i.status}`)
+    .join(',');
+  const runtimeRevision = interactions.data?.runtime?.runId;
+  useEffect(() => {
+    if (activeId && !busy && inputRevision !== undefined)
+      void loadHistory(activeId).catch(() => {});
+  }, [activeId, busy, inputRevision, runtimeRevision, loadHistory]);
+  const hasQueuedMessages = Boolean(history?.queuedMessages?.length);
+  useEffect(() => {
+    if (!activeId || !hasQueuedMessages || busy) return;
+    const timer = window.setInterval(() => {
+      void loadHistory(activeId).catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeId, hasQueuedMessages, busy, loadHistory]);
   useEffect(() => {
     const hash = window.location.hash.slice(1);
     if (!/^(message|operation)-[a-f0-9-]{36}$/.test(hash)) return;
@@ -382,10 +397,7 @@ export function ChatFlowClient({
       if (!sessionId) return;
       if (!activeId && !action.adoptCreatedSession(sessionId)) return;
       if (!action.current()) return;
-      const mode = workbenchEnabled ? inputMode : 'auto';
-      const current = interactions.data?.runtime;
-      if (mode === 'steer' && (!current?.turnId || current.state !== 'running'))
-        throw new Error('当前回合已变化，请刷新后重新选择发送方式。');
+      const mode = 'follow_up' as const;
       const uploadResults = await Promise.allSettled(
         draftAttachments.map((attachment) =>
           persistPendingAttachment(attachment, sessionId),
@@ -415,12 +427,6 @@ export function ChatFlowClient({
         attachmentIds: messageAttachments.map((item) => item.id),
         deliveryMode: mode,
         ...(assistantPreference ? { assistantPreference } : {}),
-        ...(mode === 'steer'
-          ? {
-              expectedTurnId: current!.turnId,
-              expectedGeneration: current!.generation,
-            }
-          : {}),
       };
       const retry = await inputRetry(
         `${workspace.organizationId}/${sessionId}`,
@@ -430,33 +436,34 @@ export function ChatFlowClient({
       clientMessageId = retry.id;
       setDraft('');
       const createdAt = new Date().toISOString();
-      setHistory((current) =>
-        current && current.session.id === sessionId
-          ? {
-              ...current,
-              messages: [
-                ...current.messages,
-                {
-                  id: optimisticUserId,
-                  role: 'user',
-                  content: { text },
-                  status: 'completed',
-                  runId: null,
-                  createdAt,
-                  attachments: messageAttachments,
-                },
-                {
-                  id: optimisticAssistantId,
-                  role: 'assistant',
-                  content: { text: 'Rice 正在处理…' },
-                  status: 'pending',
-                  runId: null,
-                  createdAt,
-                },
-              ],
-            }
-          : current,
-      );
+      if (!isRunning)
+        setHistory((current) =>
+          current && current.session.id === sessionId
+            ? {
+                ...current,
+                messages: [
+                  ...current.messages,
+                  {
+                    id: optimisticUserId,
+                    role: 'user',
+                    content: { text },
+                    status: 'completed',
+                    runId: null,
+                    createdAt,
+                    attachments: messageAttachments,
+                  },
+                  {
+                    id: optimisticAssistantId,
+                    role: 'assistant',
+                    content: { text: 'Rice 正在处理…' },
+                    status: 'pending',
+                    runId: null,
+                    createdAt,
+                  },
+                ],
+              }
+            : current,
+        );
       const result = await readJson<{
         run: { id: string };
         fallbackRunId: string | null;
@@ -479,26 +486,46 @@ export function ChatFlowClient({
       retry.confirmed();
       if (!action.current()) return;
       clearPendingAttachments();
-      const assistantRunId =
-        result.delivery === 'immediate' ? result.run.id : result.fallbackRunId;
-      setHistory((current) =>
-        current && current.session.id === sessionId
-          ? {
-              ...current,
-              messages: current.messages.map((message) =>
-                message.id === optimisticUserId
-                  ? result.userMessage
-                  : message.id === optimisticAssistantId
-                    ? {
-                        ...result.assistantMessage,
-                        runId: assistantRunId,
-                      }
-                    : message,
-              ),
-            }
-          : current,
-      );
-      void streamRun(result.run.id, sessionId);
+      setHistory((current) => {
+        if (!current || current.session.id !== sessionId) return current;
+        const messages = current.messages.filter(
+          (m) =>
+            ![
+              optimisticUserId,
+              optimisticAssistantId,
+              result.userMessage.id,
+              result.assistantMessage.id,
+            ].includes(m.id),
+        );
+        if (result.delivery === 'immediate') {
+          return {
+            ...current,
+            messages: [
+              ...messages,
+              result.userMessage,
+              { ...result.assistantMessage, runId: result.run.id },
+            ],
+          };
+        }
+        return {
+          ...current,
+          messages,
+          queuedMessages: [
+            ...(current.queuedMessages ?? []).filter(
+              (m) => m.id !== result.userMessage.id,
+            ),
+            {
+              id: result.userMessage.id,
+              runId: result.fallbackRunId ?? result.run.id,
+              text,
+              attachments: messageAttachments,
+              createdAt: result.userMessage.createdAt,
+            },
+          ],
+        };
+      });
+      if (result.delivery === 'immediate')
+        void streamRun(result.run.id, sessionId);
       void loadHistory(sessionId);
       void interactions.reload();
     } catch (cause) {
@@ -517,6 +544,81 @@ export function ChatFlowClient({
       );
       setDraft(text);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
+    } finally {
+      if (action.finish()) setBusy(false);
+    }
+  }
+
+  async function updateQueue(
+    item: QueuedMessage,
+    kind: 'edit' | 'remove' | 'steer',
+  ) {
+    if (!workspace || !activeId) return;
+    if (kind === 'edit' && (draft.trim() || pendingAttachments.length))
+      throw new Error('请先发送或清空当前草稿，再编辑排队消息。');
+    const action = sessionActions.begin('composer');
+    if (!action) return;
+    const sessionId = activeId;
+    const scope = captureSelection();
+    const target = interactions.data?.runtime;
+    setBusy(true);
+    setError('');
+    try {
+      if (kind === 'steer' && (!target?.turnId || target.state !== 'running'))
+        throw new Error('当前回合已变化，消息仍保留在队列中。');
+      await readJson(
+        await fetch(
+          `/api/v1/sessions/${sessionId}/queued-messages/${item.id}?workspaceId=${workspace.workspaceId}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...tenantHeaders },
+            body: JSON.stringify({
+              action: kind,
+              ...(kind === 'steer'
+                ? {
+                    expectedTurnId: target!.turnId,
+                    expectedGeneration: target!.generation,
+                  }
+                : {}),
+            }),
+          },
+        ),
+      );
+      if (!action.current()) return;
+      setHistory((current) =>
+        current?.session.id === sessionId
+          ? {
+              ...current,
+              queuedMessages: current.queuedMessages?.filter(
+                (m) => m.id !== item.id,
+              ),
+            }
+          : current,
+      );
+      if (kind === 'edit') {
+        setDraft(item.text);
+        setPendingAttachments(
+          (item.attachments ?? []).map((a) => ({
+            ...a,
+            persistedId: a.id,
+            status: 'ready',
+            visibility: uploadVisibility,
+          })),
+        );
+        requestAnimationFrame(() => {
+          if (scope.current() && composerInput.current) {
+            composerInput.current.focus();
+            resizeComposerTextarea(composerInput.current);
+          }
+        });
+      }
+      await loadHistory(sessionId);
+      void interactions.reload();
+    } catch (cause) {
+      if (action.current()) {
+        void loadHistory(sessionId).catch(() => {});
+        throw cause;
+      }
     } finally {
       if (action.finish()) setBusy(false);
     }
@@ -642,7 +744,9 @@ export function ChatFlowClient({
     )
     .at(-1);
   const isEmptyConversation =
-    !history?.messages.length && Object.keys(runViews).length === 0;
+    !history?.messages.length &&
+    !hasQueuedMessages &&
+    Object.keys(runViews).length === 0;
   const recoverableRunView = [...(history?.messages ?? [])]
     .reverse()
     .map((message) => (message.runId ? runViews[message.runId] : undefined))
@@ -663,7 +767,7 @@ export function ChatFlowClient({
           <AssistantModeControl
             busy={busy}
             isRunning={isRunning}
-            steering={isRunning && inputMode === 'steer'}
+            steering={false}
           />
         ) : undefined
       }
@@ -674,11 +778,6 @@ export function ChatFlowClient({
       fileInput={fileInput}
       hero={hero}
       isRunning={isRunning}
-      inputMode={inputMode}
-      canSteer={
-        interactions.data?.runtime?.state === 'running' && !pendingUserQuestion
-      }
-      onInputModeChange={workbenchEnabled ? setInputMode : undefined}
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
       bridgeConnectionState={bridgeConnectionState}
@@ -950,9 +1049,21 @@ export function ChatFlowClient({
                 />
               </div>
               <div
-                className={`${conversationUi.composerSeat} ${styles.composerDock}`}
+                className={`${conversationUi.composerSeat} ${conversationUi.composerStack} ${styles.composerDock}`}
                 data-composer-seat
               >
+                <QueuedMessagesDock
+                  key={`${workspace.organizationId}/${activeId}`}
+                  items={history?.queuedMessages ?? []}
+                  busy={busy}
+                  canEdit={!draft.trim() && pendingAttachments.length === 0}
+                  canSteer={Boolean(
+                    interactions.data?.runtime?.turnId &&
+                    interactions.data.runtime.state === 'running' &&
+                    !pendingUserQuestion,
+                  )}
+                  updateQueue={updateQueue}
+                />
                 {pendingUserQuestion ? (
                   <UserQuestionComposer
                     busy={questionBusy}
@@ -1041,7 +1152,6 @@ export function ChatFlowClient({
             setDraft((current) =>
               current.trim() ? `${current}\n\n${prompt}` : prompt,
             );
-            setInputMode('follow_up');
             setCapabilitiesOpen(false);
             requestAnimationFrame(() => composerInput.current?.focus());
           }}

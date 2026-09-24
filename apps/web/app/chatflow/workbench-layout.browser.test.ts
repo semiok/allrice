@@ -10,6 +10,7 @@ import {
   type InteractionStatus,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
+import type { QueuedMessage, Message } from './chatflow-types';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -163,6 +164,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       noSession?: boolean;
       noStorage?: boolean;
       running?: boolean;
+      queue?: boolean;
     } = {},
   ) {
     const context = await browser.newContext({
@@ -174,6 +176,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      queue: [] as QueuedMessage[],
+      queuedStarted: [] as Message[],
+      queueError: false,
+      queueDelay: null as Promise<void> | null,
+      queueActions: [] as Array<{
+        action: string;
+        expectedTurnId?: string;
+        expectedGeneration?: number;
+      }>,
+      messageInputs: [] as Array<{ text: string; attachmentIds: string[] }>,
       readinessError: false,
       readinessWrongScope: false,
       readinessDelay: null as Promise<void> | null,
@@ -242,6 +254,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
+      if (options.queue && route.request().method() === 'POST') {
+        if (path.endsWith('/messages')) {
+          const body = route.request().postDataJSON();
+          state.messageInputs.push(body);
+          const messageId = id(300 + state.messageInputs.length);
+          const queued: QueuedMessage = {
+            id: messageId,
+            runId: id(400 + state.messageInputs.length),
+            text: body.text,
+            attachments: (body.attachmentIds ?? []).map((value: string) => ({
+              id: value,
+              fileName: 'inputs.txt',
+              mediaType: 'text/plain',
+              sizeBytes: 10,
+            })),
+            createdAt: now,
+          };
+          state.queue.push(queued);
+          return answer({
+            delivery: 'follow_up',
+            fallbackRunId: queued.runId,
+            run: { id: queued.runId },
+            userMessage: {
+              id: messageId,
+              role: 'user',
+              content: { text: body.text },
+              status: 'completed',
+              runId: null,
+              createdAt: now,
+            },
+            assistantMessage: {
+              id: id(500 + state.messageInputs.length),
+              role: 'assistant',
+              content: { text: 'Rice 正在处理…' },
+              status: 'pending',
+              runId: queued.runId,
+              createdAt: now,
+            },
+          });
+        }
+        if (path.includes('/queued-messages/')) {
+          const action = route.request().postDataJSON();
+          state.queueActions.push(action);
+          if (state.queueDelay) await state.queueDelay;
+          if (state.queueError)
+            return answer(
+              { error: { message: '这条消息已开始处理，不能再从队列修改。' } },
+              409,
+            );
+          state.queue = state.queue.filter(
+            (item) => item.id !== path.split('/').at(-1),
+          );
+          return answer({ ok: true });
+        }
+      }
       if (route.request().method() !== 'GET') {
         writes.push(path);
         return answer({}, 500);
@@ -330,7 +397,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       if (path.endsWith('/interactions'))
         return answer(
           {
-            runtime: null,
+            runtime: options.queue
+              ? {
+                  state: 'running',
+                  runId: run,
+                  turnId: 'native-turn:1',
+                  generation: 3,
+                  configChecksum: 'queue-test',
+                  currentVersionId: id(8),
+                  nextVersionId: null,
+                }
+              : null,
             pendingActions: [],
             inputs: [],
             runTimings: path.includes(A) ? state.runTimings : [],
@@ -402,6 +479,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return answer({
           history: {
             session: session(path.endsWith(A) ? A : B),
+            queuedMessages: path.endsWith(A) ? state.queue : [],
             messages: path.endsWith(A)
               ? [
                   {
@@ -415,6 +493,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     },
                     createdAt: now,
                   },
+                  ...state.queuedStarted,
                 ]
               : [],
             contextStatus: {
@@ -468,6 +547,155 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it.each([390, 1440])(
+    'QueueDock persists two sends outside transcript, edits with attachments and revokes on the server at width %i',
+    async (width) => {
+      const f = await fixture({ running: true, queue: true, width });
+      try {
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        await expect.poll(() => f.state.streamRequests).toBe(1);
+        expect(
+          await f.page
+            .getByRole('combobox', { name: '运行中输入意图' })
+            .count(),
+        ).toBe(0);
+        for (const text of ['queued one', 'queued two']) {
+          await input.fill(text);
+          await input.press('Enter');
+          await expect.poll(() => input.isEnabled()).toBe(true);
+        }
+        await f.page.getByRole('button', { name: /排队消息 · 2/ }).click();
+        const dock = f.page.locator('[data-queue-dock]');
+        expect(await dock.locator('li').count()).toBe(2);
+        if (process.env.ALLRICE_QUEUE_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_QUEUE_SCREENSHOT}-${width}.png`,
+          });
+        const box = await dock.boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+        expect(
+          await f.page
+            .locator('[id^="message-"]')
+            .filter({ hasText: 'queued one' })
+            .count(),
+        ).toBe(0);
+        expect(f.state.streamRequests).toBe(1); // No SSE for pending queue Runs.
+        f.state.queue[0]!.attachments = [
+          {
+            id: id(800),
+            fileName: 'inputs.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 10,
+          },
+        ];
+        await f.page.reload();
+        await f.page.getByRole('button', { name: /排队消息 · 2/ }).click();
+        await dock.getByText(/inputs.txt/).waitFor();
+        expect(
+          await dock
+            .getByRole('button', { name: '立即引导' })
+            .first()
+            .isDisabled(),
+        ).toBe(true);
+        await dock.getByRole('button', { name: '重新编辑' }).first().click();
+        await expect.poll(() => input.inputValue()).toBe('queued one');
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        expect(f.state.queue.map((m) => m.text)).toEqual(['queued two']);
+        expect(
+          await dock.getByRole('button', { name: '重新编辑' }).isDisabled(),
+        ).toBe(true); // preserve current draft
+        await input.fill('edited with attachment');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(3);
+        expect(f.state.messageInputs[2]!.attachmentIds).toEqual([id(800)]);
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        const header = dock.getByRole('button', { name: /排队消息 · 2/ });
+        if ((await header.getAttribute('aria-expanded')) === 'false')
+          await header.click();
+        await dock.getByRole('button', { name: '撤回消息' }).first().click();
+        await expect.poll(() => f.state.queue.length).toBe(1);
+        expect(f.state.queue[0]!.text).toBe('edited with attachment');
+        expect(f.state.queueActions.map((a) => a.action)).toEqual([
+          'edit',
+          'remove',
+        ]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  it('QueueDock preserves rejected actions and steers once at the exact current turn', async () => {
+    const f = await fixture({ running: true, queue: true });
+    try {
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await input.fill('correct current task');
+      await input.press('Enter');
+      const dock = f.page.locator('[data-queue-dock]');
+      await dock.getByText('correct current task').waitFor();
+      f.state.queueError = true;
+      await dock.getByRole('button', { name: '撤回消息' }).click();
+      await dock.getByRole('alert').waitFor();
+      expect(f.state.queue).toHaveLength(1);
+      f.state.queueError = false;
+      await dock.getByRole('button', { name: '立即引导' }).click();
+      await expect.poll(() => f.state.queue.length).toBe(0);
+      expect(f.state.queueActions[1]).toEqual({
+        action: 'steer',
+        expectedTurnId: 'native-turn:1',
+        expectedGeneration: 3,
+      });
+      expect(f.state.messageInputs).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
+  it('QueueDock follows worker FIFO without sending again and cannot restore an edited draft into another session', async () => {
+    const f = await fixture({ running: true, queue: true });
+    try {
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await input.fill('next real turn');
+      await input.press('Enter');
+      await f.page
+        .locator('[data-queue-dock]')
+        .getByText('next real turn')
+        .waitFor();
+      const item = f.state.queue.shift()!;
+      f.state.queuedStarted.push({
+        id: item.id,
+        role: 'user',
+        content: { text: item.text },
+        status: 'completed',
+        runId: null,
+        createdAt: now,
+      });
+      await expect
+        .poll(() => f.page.locator('[data-queue-dock]').count(), {
+          timeout: 5000,
+        })
+        .toBe(0);
+      expect(f.state.messageInputs).toHaveLength(1);
+      await input.fill('edit delayed');
+      await input.press('Enter');
+      await f.page
+        .locator('[data-queue-dock]')
+        .getByText('edit delayed')
+        .waitFor();
+      let finish!: () => void;
+      f.state.queueDelay = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      await f.page.getByRole('button', { name: '重新编辑' }).click();
+      await f.page.getByText('研究任务 B', { exact: true }).click();
+      finish();
+      await expect.poll(() => f.state.queue.length).toBe(0);
+      expect(await input.inputValue()).toBe('');
+      expect(await input.isEnabled()).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
 
   it.each([390, 1440])(
     'places the daily mode pill between attachment and visibility controls at width %i',

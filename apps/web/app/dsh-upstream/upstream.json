@@ -15,7 +15,9 @@
     "packages/client/ui-conversation/src/client/chat/MessageItem.module.css",
     "packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css",
     "packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css",
-    "packages/client/ui-conversation/src/client/skeleton/InputBar.module.css"
+    "packages/client/ui-conversation/src/client/skeleton/InputBar.module.css",
+    "packages/client/ui-conversation/src/client/queue/QueueDock.module.css",
+    "packages/client/ui-primitives/src/icons/index.tsx (six QueueDock glyphs)"
   ],
   "adaptations": [
     {
@@ -23,6 +25,12 @@
       "target": "apps/web/app/chatflow/workbench-splitter.tsx",
       "reuse": "DragHandle pointer capture, animation-frame throttling, frozen drag origin and frame ResizeObserver; native AppFrame handle/detailsCol CSS",
       "productChanges": "360px–70vw width bounds, scoped width preferences, cancellation cleanup, keyboard resizing and double-click reset"
+    },
+    {
+      "source": "packages/client/ui-conversation/src/client/queue/QueueDock.tsx",
+      "target": "apps/web/app/chatflow/queued-messages-dock.tsx",
+      "reuse": "Native single-row / collapsed count list, awaited actions, unmodified QueueDock CSS and six native icons",
+      "productChanges": "PostgreSQL authoritative inbox instead of local runtime store; edit returns text and attachments to composer; tenant-scoped remove/steer; no browser scheduler"
     }
   ]
 }

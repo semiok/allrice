@@ -125,6 +125,9 @@ interface MessageRow {
   completed_at: Date | null;
   run_id?: string | null;
   question_answer_payload?: string | null;
+  queued_run_id?: string | null;
+  queued_created_at?: Date | null;
+  hide_from_transcript?: boolean;
 }
 
 interface AttachmentRow {
@@ -694,9 +697,19 @@ export async function getChatSessionHistory(
   const sql = getDatabase();
   const messages = await sql<MessageRow[]>`
     select m.*, er.run_id,
+      queued.created_at as queued_created_at,
+      case when queued.mode='follow_up' and queued.state in ('queued','released')
+        and queued_job.status='queued' and queued_input.kind in ('message','queue_next')
+        then queued.run_id end as queued_run_id,
+      (queued_run.error_code in ('QUEUED_MESSAGE_EDITED','QUEUED_MESSAGE_REMOVED')
+        or (m.role='assistant' and queued.mode='steer_only' and m.status='pending')) as hide_from_transcript,
       question_command.message as question_answer_payload
     from allrice_messages m
     left join allrice_employee_runs er on er.assistant_message_id = m.id
+    left join allrice_conversation_followups queued on queued.user_message_id=coalesce(m.reply_to_id,m.id)
+    left join allrice_jobs queued_job on queued_job.run_id=queued.run_id
+    left join allrice_runs queued_run on queued_run.id=queued.run_id
+    left join allrice_chat_input_requests queued_input on queued_input.user_message_id=queued.user_message_id
     left join allrice_conversation_followups question_followup
       on question_followup.user_message_id = m.id
       and question_followup.organization_id = m.organization_id
@@ -791,24 +804,43 @@ export async function getChatSessionHistory(
     session: mapSession(row),
     contextStatus,
     nativeContextStatus,
-    messages: messages.map((message) => {
-      const mapped = mapMessage(
-        context,
-        message,
-        attachments.get(message.id) ?? [],
-      );
-      const text = recovered.get(message.run_id ?? '');
-      if (text)
-        mapped.content = {
-          ...mapped.content,
-          text,
-          budgetWarning:
-            message.error_code === 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
-              ? 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
-              : 'MODEL_OUTPUT_BUDGET_EXCEEDED',
+    queuedMessages: messages
+      .filter((m) => m.role === 'user' && m.queued_run_id)
+      .sort(
+        (a, b) =>
+          a.queued_created_at!.getTime() - b.queued_created_at!.getTime() ||
+          a.queued_run_id!.localeCompare(b.queued_run_id!),
+      )
+      .map((m) => {
+        const mapped = mapMessage(context, m, attachments.get(m.id) ?? []);
+        return {
+          id: m.id,
+          runId: m.queued_run_id!,
+          text: mapped.content.text,
+          attachments: mapped.attachments,
+          createdAt: mapped.createdAt,
         };
-      return mapped;
-    }),
+      }),
+    messages: messages
+      .filter((m) => !m.queued_run_id && !m.hide_from_transcript)
+      .map((message) => {
+        const mapped = mapMessage(
+          context,
+          message,
+          attachments.get(message.id) ?? [],
+        );
+        const text = recovered.get(message.run_id ?? '');
+        if (text)
+          mapped.content = {
+            ...mapped.content,
+            text,
+            budgetWarning:
+              message.error_code === 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
+                ? 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
+                : 'MODEL_OUTPUT_BUDGET_EXCEEDED',
+          };
+        return mapped;
+      }),
   };
 }
 
@@ -1270,12 +1302,17 @@ export async function sendChatMessage(
     if (retries[0]) result.assistantMessage = retries[0];
   }
   const historyRows = await sql<MessageRow[]>`
-    select * from allrice_messages
+    select m.* from allrice_messages m
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and session_id = ${session.id}
       and status = 'completed'
       and id <> ${result.userMessage.id}
+      and not exists (
+        select 1 from allrice_conversation_followups f
+        where f.user_message_id=coalesce(m.reply_to_id,m.id)
+          and f.state in ('queued','released','canceled')
+      )
     order by created_at, id
   `;
   const attachmentRows =
