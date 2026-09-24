@@ -12,6 +12,8 @@ Use native python-docx/openpyxl/pandas/python-pptx features rather than adding o
 
 See [the exact upstream version, licenses and adaptation boundary](../../../skills/office/references/provenance.md). The package is `@deepseek-ai/dsh-skill-office@0.1.7-alpha.2`; the runtime engine is unchanged. The three upstream guides are internal resources of one Skill. Original bytes are frozen in the bundle; tasks never fetch mutable upstream resources.
 
+Latest native-workflow evidence: [native acceptance](native-validation.md). Earlier PR validation is historical.
+
 ## Existing employees and sessions
 
 `skills/catalog.json` declares `office.replaces` for `document-analysis` and `structured-deliverable`. Content synchronization retains their original rows, versions, checksums and source files, while disabling them for new selection. The administrator directory presents Office as their replacement. The catalog's replacement graph rejects missing, active, self-referencing and ambiguous sources.
@@ -42,7 +44,7 @@ The service limits input to 8 MB, expanded OOXML to 64 MiB, formulas to 10,000, 
 
 ## Deployment and rollback
 
-Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; development bootstrap compiles the shared contracts before starting plain Node DSH subprocesses; Office bundle 1.3.0 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
+Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; development bootstrap compiles the shared contracts before starting plain Node DSH subprocesses; Office bundle 1.3.1 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
 
 For PR2 rollback, restore the PR1 application and Office 1.0.0 catalog together and roll affected employees back to their previous published revision. Stored files, lineage and source audits remain readable. To undo the earlier legacy-entry migration entirely, restore the pre-Office application and catalog together. The old catalog re-enables the two legacy entries and removes replacement metadata. Because synchronization intentionally retains unmanaged content, the Office row may remain available after a code rollback; published Office employees require an explicit employee revision rollback when withdrawing that capability. Do not delete frozen content, historical bundle versions or source artifacts.
 

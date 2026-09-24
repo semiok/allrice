@@ -2,6 +2,7 @@ name: allrice
 
 services:
   office-renderer:
+    init: true
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.office-renderer

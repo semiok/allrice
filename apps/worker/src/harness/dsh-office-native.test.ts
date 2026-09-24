@@ -27,8 +27,10 @@ it('passes native Python Office work through the DSH broker without a typed edit
       inputs: python.inputs,
     },
     inspectSchema: (schema) => {
-      expect(schema.properties?.python).toMatchObject({
-        properties: { script: { type: 'string' }, inputs: { type: 'array' } },
+      expect(schema.properties).toMatchObject({
+        python: {
+          properties: { script: { type: 'string' }, inputs: { type: 'array' } },
+        },
       });
       expect(schema.required).not.toContain('content');
     },
