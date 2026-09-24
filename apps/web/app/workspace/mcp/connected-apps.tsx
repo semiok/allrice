@@ -15,6 +15,7 @@ export function ConnectedApps({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [credentialId, setCredentialId] = useState('');
   const [credential, setCredential] = useState('');
   const refresh = useCallback(
@@ -97,6 +98,23 @@ export function ConnectedApps({
       <p>
         让员工连接你需要的应用，在这里查看和管理。断开共享应用只影响你自己。
       </p>
+      <button
+        type="button"
+        disabled={loading || refreshing || !!busy}
+        onClick={async () => {
+          setRefreshing(true);
+          setError('');
+          try {
+            await refresh();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : '暂时无法读取应用连接');
+          } finally {
+            setRefreshing(false);
+          }
+        }}
+      >
+        {refreshing ? '正在刷新…' : '刷新连接状态'}
+      </button>
       {error && <p role="alert">{error}</p>}
       {loading ? (
         <p>正在读取应用连接…</p>

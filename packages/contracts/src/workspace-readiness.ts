@@ -53,6 +53,7 @@ export const WorkspaceCapabilitySchema = z
       'target_unavailable',
       'grant_missing',
       'connection_missing',
+      'connection_on_demand',
       'connection_unverified',
       'connection_grant_missing',
       'invalid_configuration',

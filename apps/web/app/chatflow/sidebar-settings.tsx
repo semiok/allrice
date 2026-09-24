@@ -4,10 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { IconSettingsOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { SaasCapabilityManifest } from '@allrice/contracts';
-import { McpSettings } from '../runtime-console/mcp-settings';
-import { LocalMcpSettings } from '../runtime-console/local-mcp-settings';
-import { BrowserControlSettings } from '../workspace/browser/settings';
-import { LocalBrowserSettings } from '../workspace/local-browser/local-browser-settings';
+import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
 import { MonthlyQuota } from './monthly-quota';
@@ -19,29 +16,28 @@ export function SidebarSettings({
   manifest,
   workspaceId,
   monthlyQuota,
+  section,
+  onSectionChange,
+  onBridge,
 }: {
   collapsed: boolean;
   manifest: SaasCapabilityManifest;
   workspaceId: string;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
+  section: string | null;
+  onSectionChange: (section: string | null) => void;
+  onBridge: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [activeId, setActiveId] = useState('account');
   const [visited, setVisited] = useState(() => new Set(['account']));
   const rows = [
     { id: 'account', label: '账号与用量' },
-    ...(manifest.roles.includes('tenant_admin')
-      ? [
-          { id: 'mcp', label: 'MCP 连接' },
-          { id: 'cloud-browser', label: '云端浏览器' },
-          { id: 'local-browser', label: '本地浏览器' },
-        ]
-      : []),
+    { id: 'apps', label: '已连接应用' },
+    { id: 'computer', label: '我的电脑' },
     ...(manifest.surfaces.includes('platform_admin')
       ? [{ id: 'platform', label: '平台管理' }]
       : []),
   ];
-  const close = () => setOpen(false);
+  const close = () => onSectionChange(null);
   return (
     <>
       <div
@@ -53,9 +49,9 @@ export function SidebarSettings({
           aria-label="设置"
           title="设置"
           aria-haspopup="dialog"
-          aria-expanded={open}
+          aria-expanded={section !== null}
           onClick={() => {
-            setOpen(true);
+            onSectionChange('account');
             void monthlyQuota.reload();
           }}
         >
@@ -63,13 +59,13 @@ export function SidebarSettings({
           {!collapsed && <span className={native.triggerLabel}>设置</span>}
         </button>
       </div>
-      {open && (
+      {section !== null && (
         <SettingsPanel
           rows={rows}
-          activeId={activeId}
+          activeId={section}
           onSelect={(id) => {
-            setActiveId(id);
-            setVisited((current) => new Set([...current, id]));
+            setVisited((current) => new Set([...current, section, id]));
+            onSectionChange(id);
           }}
           onClose={close}
           renderSlot={(name, _props, options) => {
@@ -77,7 +73,7 @@ export function SidebarSettings({
             if (name === 'settings.close') return '关闭设置';
             if (name !== 'settings.section') return null;
             return rows
-              .filter((row) => visited.has(row.id))
+              .filter((row) => visited.has(row.id) || row.id === section)
               .map((row) => (
                 <div
                   key={row.id}
@@ -93,17 +89,28 @@ export function SidebarSettings({
                       onRefresh={() => void monthlyQuota.reload()}
                     />
                   )}
-                  {row.id === 'mcp' && (
+                  {row.id === 'apps' && (
+                    <ConnectedApps workspaceId={workspaceId} />
+                  )}
+                  {row.id === 'computer' && (
                     <>
-                      <McpSettings workspaceId={workspaceId} />
-                      <LocalMcpSettings workspaceId={workspaceId} />
+                      <p>
+                        处理电脑里的文件时，安装并连接
+                        Bridge，再选择需要交给员工的文件夹。浏览器和计算环境会自动准备。
+                      </p>
+                      <p>
+                        云端工作无需连接电脑。你可以随时在 Bridge 中暂停或断开。
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          close();
+                          onBridge();
+                        }}
+                      >
+                        连接与管理电脑
+                      </button>
                     </>
-                  )}
-                  {row.id === 'cloud-browser' && (
-                    <BrowserControlSettings workspaceId={workspaceId} />
-                  )}
-                  {row.id === 'local-browser' && (
-                    <LocalBrowserSettings workspaceId={workspaceId} embedded />
                   )}
                   {row.id === 'platform' && (
                     <Link href="/runtime-console?view=governance">

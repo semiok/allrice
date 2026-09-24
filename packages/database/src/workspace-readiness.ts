@@ -211,9 +211,12 @@ async function readWorkspaceReadiness(
         tool_allowed: boolean;
         local_ready: boolean;
         local_device_id: string | null;
+        credential_ready: boolean;
       }[]
     >`
       select c.transport,c.discovery_state,l.device_id as local_device_id,
+        (c.transport <> 'streamable_http' or (c.auth_kind='none' and c.oauth_envelope is null)
+          or ${/^[a-f0-9]{64}$/i.test(process.env.ALLRICE_MCP_CREDENTIAL_KEY ?? '')}) as credential_ready,
         exists(select 1 from allrice_employee_mcp_bindings e where e.connector_binding_id=c.binding_id
           and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id
           and e.employee_version_id=${employee?.id ?? null} and e.enabled) as employee_allowed,
@@ -234,12 +237,20 @@ async function readWorkspaceReadiness(
       left join allrice_local_mcp_config l on l.binding_id=c.binding_id
         and l.organization_id=c.organization_id and l.workspace_id=c.workspace_id
       where c.organization_id=${organizationId} and c.workspace_id=${workspaceId}
-        and (c.transport='streamable_http' or l.owner_id=${subjectId})`;
+        and (c.transport='streamable_http' or l.owner_id=${subjectId})
+        and (c.managed_by is null or c.managed_by=${subjectId})
+        and not exists(select 1 from allrice_mcp_member_connections x
+          where x.binding_id=c.binding_id and x.user_id=${subjectId} and not x.connected)`;
     function mcpStatus(transport: string): ReadinessFacts['cloudMcp'] {
       const list = connections.filter((c) => c.transport === transport);
       if (!list.length) return 'missing';
       const verified = list.filter((c) => {
-        if (c.discovery_state !== 'ready' || !c.local_ready) return false;
+        if (
+          c.discovery_state !== 'ready' ||
+          !c.local_ready ||
+          !c.credential_ready
+        )
+          return false;
         if (transport === 'streamable_http') return true;
         const device = devices.find((d) => d.id === c.local_device_id);
         const profile = RuntimeLocalCommandProfileSchema.safeParse(
@@ -325,11 +336,7 @@ async function readWorkspaceReadiness(
               )
             ? 'ready'
             : 'invalid',
-      cloudMcp:
-        mcpStatus('streamable_http') === 'ready' &&
-        !/^[a-f0-9]{64}$/i.test(process.env.ALLRICE_MCP_CREDENTIAL_KEY ?? '')
-          ? 'unverified'
-          : mcpStatus('streamable_http'),
+      cloudMcp: mcpStatus('streamable_http'),
       localMcp: mcpStatus('local_stdio'),
       cloudMcpPolicy: mcpEmployeeEligibility(employee?.manifest).length === 0,
       localMcpPolicy:

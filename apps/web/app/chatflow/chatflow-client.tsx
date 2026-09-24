@@ -84,6 +84,10 @@ export function ChatFlowClient({
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const [settings, setSettings] = useState<{
+    scope: string;
+    section: string;
+  } | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
@@ -118,6 +122,10 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  useEffect(() => {
+    setSettings(null);
+  }, [settingsScope]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
@@ -918,6 +926,15 @@ export function ChatFlowClient({
         />
       )}
       <ChatSidebar
+        settingsSection={
+          settings?.scope === settingsScope ? settings.section : null
+        }
+        onSettingsSectionChange={(section) =>
+          setSettings(
+            section === null ? null : { scope: settingsScope, section },
+          )
+        }
+        onBridge={() => void loadBridgeDevices(true)}
         monthlyQuota={monthlyQuota}
         activeId={activeId}
         collapsed={sidebarCollapsed}
@@ -1272,6 +1289,10 @@ export function ChatFlowClient({
           busy={busy}
           onClose={() => setCapabilitiesOpen(false)}
           onRefresh={() => void readiness.reload()}
+          onConnections={() => {
+            setCapabilitiesOpen(false);
+            setSettings({ scope: settingsScope, section: 'apps' });
+          }}
           onBridge={() => {
             setCapabilitiesOpen(false);
             void loadBridgeDevices(true);

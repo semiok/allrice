@@ -21,6 +21,9 @@ interface ChatSidebarProps {
   sessions: Session[];
   workspace: Workspace;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
+  settingsSection: string | null;
+  onSettingsSectionChange: (section: string | null) => void;
+  onBridge: () => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onNewSession: (assignmentId?: string) => void;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
@@ -36,6 +39,9 @@ export function ChatSidebar({
   sessions,
   workspace,
   monthlyQuota,
+  settingsSection,
+  onSettingsSectionChange,
+  onBridge,
   onCollapsedChange,
   onNewSession,
   onOpenEmployeeDetails,
@@ -188,6 +194,9 @@ export function ChatSidebar({
             manifest={manifest}
             workspaceId={workspace.workspaceId}
             monthlyQuota={monthlyQuota}
+            section={settingsSection}
+            onSectionChange={onSettingsSectionChange}
+            onBridge={onBridge}
           />
         </div>
       </div>
