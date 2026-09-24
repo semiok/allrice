@@ -208,6 +208,42 @@ suite('P22 real PostgreSQL device browser authority', () => {
     ).rejects.toThrow('browser_authority_unavailable');
   });
 
+  it('heartbeat waits for browser authority without holding its device lock', async () => {
+    const f = await fixture();
+    let heartbeat: Promise<unknown> | undefined;
+    try {
+      await db.begin(async (tx) => {
+        const [reader] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        await tx`select id from allrice_execution_targets where target_key=${`bridge.${f.device.id}`} for share`;
+        heartbeat = heartbeatBridgeDevice(f.token, {
+          protocolVersion: 2,
+          capabilities: ['local.fs.list'],
+        });
+        // Observe the actual wait, not an assumed scheduler delay.
+        const until = Date.now() + 3000;
+        let waiting = false;
+        while (Date.now() < until) {
+          const rows =
+            await db`select pid from pg_stat_activity where ${reader!.pid}=any(pg_blocking_pids(pid))`;
+          if (rows.length) {
+            waiting = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        expect(
+          (await currentBrowserWorkspace(tx, f.context, f.browser!.w.id)).id,
+        ).toBe(f.browser!.w.id);
+      });
+      await heartbeat;
+    } finally {
+      await heartbeat;
+    }
+  });
+
   it('orders artifact quota locks before observation identity locks under deterministic concurrent admission', async () => {
     const f = await fixture(),
       b = f.browser!;

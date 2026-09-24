@@ -484,6 +484,11 @@ export async function heartbeatBridgeDevice(token: string, input?: unknown) {
     : null;
   const sql = getDatabase();
   return sql.begin(async (tx) => {
+    // Browser authority locks target before device. Take the same order; a
+    // no-key lock still permits foreign-key checks when installing own grants.
+    await tx`select id from allrice_execution_targets
+      where organization_id=${device.organization_id} and workspace_id=${device.workspace_id}
+        and target_key=${`bridge.${device.id}`} and kind='rice_bridge' for no key update`;
     const rows = await tx<DeviceRow[]>`
       update allrice_bridge_devices set
         protocol_version = ${advertised?.protocolVersion ?? device.protocol_version},
