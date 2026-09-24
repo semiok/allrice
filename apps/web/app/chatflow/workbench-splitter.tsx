@@ -10,7 +10,10 @@ import styles from './workbench.module.css';
  * Reuses native pointer capture, rAF throttling, frozen drag origin and handle CSS.
  * Allrice adds scoped preferences, cancellation cleanup, keyboard access and reset.
  */
-export function useWorkbenchResize(preference: number | null) {
+export function useWorkbenchResize(
+  preference: number | null,
+  sidebarWidth = 240,
+) {
   const [frame, setFrame] = useState<HTMLElement | null>(null);
   const [size, setSize] = useState({ frame: 0, viewport: 0 });
   const [dragging, setDragging] = useState(false);
@@ -37,10 +40,10 @@ export function useWorkbenchResize(preference: number | null) {
       if (raf !== null) cancelAnimationFrame(raf);
     };
   }, [frame]);
-  const min = 360;
+  const min = 340;
   const max = Math.max(
     min,
-    Math.round(Math.min(size.frame, size.viewport * 0.7)),
+    Math.round(Math.min(size.frame - sidebarWidth - 340, size.viewport * 0.8)),
   );
   const width = Math.min(
     max,

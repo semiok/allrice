@@ -161,7 +161,10 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
-  const resize = useWorkbenchResize(layout.panelWidth);
+  const resize = useWorkbenchResize(
+    layout.panelWidth,
+    sidebarCollapsed ? 57 : 240,
+  );
   const workbenchRequested = workbenchEnabled && layout.open;
   const workbenchEntry = useRef<HTMLButtonElement>(null);
   const workbench = useArtifactWorkbench({
@@ -1144,6 +1147,7 @@ export function ChatFlowClient({
       {workbenchOpen ? (
         <ArtifactWorkbench
           key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
+          dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
           workspaceId={workspace.workspaceId}
           tenantHeaders={tenantHeaders}

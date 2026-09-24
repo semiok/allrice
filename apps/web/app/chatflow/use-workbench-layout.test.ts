@@ -36,7 +36,7 @@ describe('workbench layout preferences', () => {
     ).toEqual({ panelOpen: false, sidebarCollapsed: true, panelWidth: null });
   });
   it('reads prior preferences without a width and rejects malformed widths', () => {
-    for (const panelWidth of [null, '600', -1, 0, 359])
+    for (const panelWidth of [null, '600', -1, 0, 339])
       expect(
         parseLayoutPreferences(JSON.stringify({ panelWidth })).panelWidth,
       ).toBeNull();

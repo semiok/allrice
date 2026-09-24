@@ -4,6 +4,10 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Transform official UI ESM dependencies so Node suites stub their CSS modules.
+    server: {
+      deps: { inline: [/@deepseek-ai\/dsh-client-ui-(dockkit|primitives)/] },
+    },
     exclude: [
       '**/node_modules/**',
       '**/dist/**',

@@ -1,0 +1,44 @@
+--- a/packages/client/ui-sidebar-right/src/client/persistence.ts
++++ b/packages/client/ui-sidebar-right/src/client/persistence.ts
+@@ -61,10 +61,9 @@
+  * @returns the saved surface, or undefined when absent, inaccessible or invalid.
+  */
+ export function readSidebarLayout(sessionId: string): SurfaceState | undefined {
+-  if (typeof localStorage === 'undefined') return undefined
+   let raw: string | null
+   try { raw = localStorage.getItem(`${sidebarPersistence}.${sessionId}`) }
+-  catch (_storageUnavailable) { return undefined }
++  catch { return undefined }
+   if (raw === null) return undefined
+   try {
+     const saved = envelope.parse(JSON.parse(raw)).bySession[sessionId]
+@@ -72,7 +71,7 @@
+     const parsed = surface.parse(saved)
+     validateReferences(parsed)
+     return { layout: parsed.layout as unknown as LayoutState, minted: parsed.minted, history: EMPTY_HISTORY }
+-  } catch (_invalidLayout) {
++  } catch {
+     clearSidebarLayout(sessionId)
+     return undefined
+   }
+@@ -84,10 +83,9 @@
+  * @param surface - current in-memory surface.
+  */
+ export function writeSidebarLayout(sessionId: string, surface: SurfaceState): void {
+-  if (typeof localStorage === 'undefined') return
+   const saved = { bySession: { [sessionId]: { layout: surface.layout, minted: surface.minted } } }
+   try { localStorage.setItem(`${sidebarPersistence}.${sessionId}`, JSON.stringify(saved)) }
+-  catch (error) { console.error('Sidebar layout persistence failed:', error) }
++  catch { /* Keep the native in-memory layout in private/blocked storage. */ }
+ }
+ 
+ /**
+@@ -95,7 +93,6 @@
+  * @param sessionId - storage scope to discard.
+  */
+ export function clearSidebarLayout(sessionId: string): void {
+-  if (typeof localStorage === 'undefined') return
+   try { localStorage.removeItem(`${sidebarPersistence}.${sessionId}`) }
+-  catch (_storageUnavailable) { /* The invalid layout is still excluded from this window. */ }
++  catch { /* The invalid layout is still excluded from this window. */ }
+ }

@@ -1,0 +1,15 @@
+--- a/packages/client/ui-sidebar-right/src/client/contract/seed.ts
++++ b/packages/client/ui-sidebar-right/src/client/contract/seed.ts
+@@ -10,7 +10,11 @@
+  * type would use — the guide is not special in the machinery, only in being
+  * always available.
+  */
+-import type { SidebarRightTabRegistry } from '../tab-registry.ts'
++// Host type-only seam; registry assembly stays outside the native store.
++interface SidebarRightTabRegistry {
++  guide(): readonly { kind: string }[]
++  get(kind: string): { title(address: string): string } | undefined
++}
+ 
+ /** One pane's initial page, resolved from the current registered guide entries. */
+ export interface SidebarRightSeed {

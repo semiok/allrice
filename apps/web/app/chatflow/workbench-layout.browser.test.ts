@@ -1597,7 +1597,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({ artifacts: true });
     try {
       // Classic scrollbars / embedded frames can make the frame narrower than
-      // the viewport. Reset uses 38% of that frame, while the cap remains 70vw.
+      // the viewport. Reset uses 38% of that frame; cap leaves usable chat width.
       await f.page.addStyleTag({
         content: 'main { width: calc(100% - 8px) !important; }',
       });
@@ -1616,7 +1616,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .querySelector('main > section header')!
             .getBoundingClientRect();
           const right = document
-            .querySelector('#artifact-workbench > header')!
+            .querySelector('#artifact-workbench [data-dockkit-strip]')!
             .getBoundingClientRect();
           return {
             left: left.height,
@@ -1626,9 +1626,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
       expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
       expect(
-        await f.panel
-          .getByRole('heading', { name: '交付成果', exact: true })
-          .count(),
+        await f.panel.getByRole('tab', { name: /^交付成果/ }).count(),
       ).toBe(1);
       expect(await f.entry.textContent()).toMatch(/交付成果.*1/);
       const panelWidth = async () =>
@@ -1648,10 +1646,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBeNull();
       }
       await dragTo(1400);
-      await expect.poll(panelWidth).toBe(360);
+      await expect.poll(panelWidth).toBe(340);
       await dragTo(30);
-      await expect.poll(panelWidth).toBe(1008); // 70vw at 1440px.
-      expect(await splitter.getAttribute('aria-valuenow')).toBe('1008');
+      await expect
+        .poll(panelWidth)
+        .toBe(
+          Math.round((await f.page.locator('main').boundingBox())!.width) -
+            240 -
+            340,
+        );
+      expect(await splitter.getAttribute('aria-valuenow')).toBe(
+        String(
+          Math.round((await f.page.locator('main').boundingBox())!.width) -
+            240 -
+            340,
+        ),
+      );
       const center = (await f.page.locator('main > section').boundingBox())!;
       for (const control of [
         f.page.getByRole('button', { name: '添加文件', exact: true }),
@@ -1727,11 +1737,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.setViewportSize({ width: 1200, height: 950 });
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('840');
+        .toBe(
+          String(
+            Math.round((await f.page.locator('main').boundingBox())!.width) -
+              240 -
+              340,
+          ),
+        );
       await f.page.setViewportSize({ width: 1440, height: 950 });
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('1008');
+        .toBe(
+          String(
+            Math.round((await f.page.locator('main').boundingBox())!.width) -
+              240 -
+              340,
+          ),
+        );
       await f.page.setViewportSize({ width: 390, height: 950 });
       await expect.poll(() => splitter.count()).toBe(0);
       expect(await f.panel.getAttribute('role')).toBe('dialog');
@@ -1811,6 +1833,80 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it('MET160 native Dock preserves reviews across tabs, split, fullscreen, close and restored layout', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      const note =
+        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
+      await note.fill('保留第一份成果的意见');
+      f.state.items.push(artifact(11));
+      await f.reloadList();
+      await f.panel
+        .getByRole('button', { name: '全屏查看', exact: true })
+        .click();
+      await f.panel
+        .getByRole('button', { name: '并排查看', exact: true })
+        .click();
+      await expect
+        .poll(() => f.panel.locator('[data-dockkit-pane]').count())
+        .toBe(2);
+      await f.panel
+        .getByRole('button', { name: 'report-11.md · v1', exact: true })
+        .click();
+      await expect
+        .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
+        .toBe(2);
+      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
+      await note.nth(1).fill('第二份独立意见');
+      const divider = f.panel.locator('[data-dockkit-divider]');
+      const box = (await divider.boundingBox())!;
+      await f.page.mouse.move(box.x, box.y + 120);
+      await f.page.mouse.down();
+      await f.page.mouse.move(box.x + 100, box.y + 120, { steps: 6 });
+      await f.page.mouse.up();
+      const panes = await f.panel.locator('[data-dockkit-pane]').all();
+      expect((await panes[0]!.boundingBox())!.width).toBeGreaterThan(
+        (await panes[1]!.boundingBox())!.width,
+      );
+      await f.panel
+        .getByRole('button', { name: '退出全屏', exact: true })
+        .click();
+      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
+      expect(await note.nth(1).inputValue()).toBe('第二份独立意见');
+      const firstTab = f.panel.getByRole('tab', { name: /^report-10.md/ });
+      f.page.once('dialog', (dialog) => dialog.dismiss());
+      await firstTab
+        .getByRole('button', { name: '关闭标签', exact: true })
+        .click();
+      expect(await firstTab.count()).toBe(1);
+      await f.panel
+        .getByRole('button', { name: '全屏查看', exact: true })
+        .click();
+      await f.page.screenshot({ path: '/tmp/allrice-met160-dock-split.png' });
+      // Leave the reviews clean before exercising persistence across reload.
+      await note.first().fill('');
+      await note.nth(1).fill('');
+      await f.page.reload();
+      await expect
+        .poll(() => f.panel.locator('[data-dockkit-pane]').count())
+        .toBe(2);
+      expect(await f.panel.getAttribute('data-fullscreen')).toBe('true');
+      await expect
+        .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
+        .toBe(2);
+      await f.panel
+        .getByRole('tab', { name: /^report-11.md/ })
+        .getByRole('button', { name: '关闭标签', exact: true })
+        .click();
+      expect(
+        await f.panel.getByRole('tab', { name: /^report-11.md/ }).count(),
+      ).toBe(0);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
 
   it('protects review drafts and explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });

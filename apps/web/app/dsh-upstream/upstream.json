@@ -85,6 +85,47 @@
           "sha256": "0e434ce035e0d75a97af98e892e739a4669eb149bf4be370628ba1f4ee963795"
         }
       ]
+    },
+    {
+      "id": "native-dock",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "official-package-and-native-source-adapter",
+      "packages": [
+        {
+          "name": "@deepseek-ai/dsh-client-ui-dockkit",
+          "version": "0.1.7-rc.1",
+          "exports": [
+            "DockLayout",
+            "dockPaneIds",
+            "findPaneContentTab",
+            "findTabPane"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "source": "packages/client/ui-sidebar-right/src/client/stores.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/dock/stores.ts",
+          "upstreamSha256": "9adc4b39544414892db24978b3fa0168c73e2e7b2f834a9f991d41cb4544ef49",
+          "sha256": "9adc4b39544414892db24978b3fa0168c73e2e7b2f834a9f991d41cb4544ef49"
+        },
+        {
+          "source": "packages/client/ui-sidebar-right/src/client/persistence.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/dock/persistence.ts",
+          "upstreamSha256": "b080ae7b49ce1a609d4ad9fe0561a9450c88eef69928db9bad8d89f057dcf7c6",
+          "sha256": "dfcda85264cbe31ebdf50c439a306e5b60479e0c8775b506678c1f564e29c41a",
+          "patch": "scripts/dsh-ui-patches/native-dock-persistence.ts.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-right/src/client/contract/seed.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/dock/contract/seed.ts",
+          "upstreamSha256": "28c2cd8e27288df34f0953c507086c779c2ae326b47766756203b3561c513240",
+          "sha256": "c48fe2e0515042ddd7c1add806411202aaf8d36c7bdcaaa3eca6c074f6a3ed05",
+          "patch": "scripts/dsh-ui-patches/native-dock-seed.ts.patch"
+        }
+      ]
     }
   ]
 }
