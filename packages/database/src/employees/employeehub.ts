@@ -1204,6 +1204,7 @@ export async function prepareEmployeeRunBinding(input: {
     organizationId: input.context.organizationId,
     workspaceId: input.workspaceId,
     sessionId: input.sessionId,
+    employeeVersionId: assignment.id,
   });
   // Read compatibility does not authorize a new Run under an unimplemented
   // historical OAuth mode. Do not silently convert it into an API credential.

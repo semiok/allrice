@@ -48,7 +48,7 @@ export function employeeHubErrorResponse(error: unknown) {
     } else {
       status = 422;
       code = 'PROVIDER_INVALID';
-      message = 'This employee version cannot execute with Codex';
+      message = '当前员工的模型与认证配置不匹配，请检查已发布版本的模型设置。';
     }
   } else if (error instanceof Error && !isRequestValidationError(error)) {
     console.error('Unhandled EmployeeHub request error', {

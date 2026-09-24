@@ -3,6 +3,7 @@ import type postgres from 'postgres';
 
 import {
   EmployeeModelPolicySchema,
+  EmployeeManifestSchema,
   ModelCatalogEntrySchema,
   ModelConnectionSchema,
   ModelProviderSchema,
@@ -13,6 +14,7 @@ import {
   UpsertEmployeeModelPolicyInputSchema,
   UpsertModelConnectionInputSchema,
   type EmployeeModelPolicy,
+  type SessionModelSnapshot,
   type ModelCatalogEntry,
   type ModelConnection,
   type ModelProvider,
@@ -25,6 +27,46 @@ import { getDatabase } from '../core/client.ts';
 const defaultProviderId = '51000000-0000-4000-8000-000000000001';
 const defaultConnectionId = '52000000-0000-4000-8000-000000000001';
 const defaultModelId = '53000000-0000-4000-8000-000000000001';
+
+// Platform publication updates a session's employee version. Its old model
+// cache must not override the published model; queued Runs keep their own copy.
+function publishedSessionModel(manifestInput: unknown) {
+  const parsed = EmployeeManifestSchema.safeParse(manifestInput);
+  if (
+    !parsed.success ||
+    parsed.data.schemaVersion !== 2 ||
+    !parsed.data.runtimePackage
+  )
+    return null;
+  const provider = parsed.data.provider;
+  if (provider.provider !== 'dsh') return null;
+  return {
+    provider: provider.route,
+    model: provider.model,
+    reasoningEffort: provider.reasoningEffort,
+    authMode:
+      provider.route === 'openai-codex'
+        ? ('chatgpt_subscription' as const)
+        : ('api_key' as const),
+    credentialReference: provider.credentialReference,
+    baseUrl: provider.baseUrl,
+  };
+}
+
+function matchesPublishedModel(
+  snapshot: SessionModelSnapshot,
+  published: NonNullable<ReturnType<typeof publishedSessionModel>>,
+) {
+  return (
+    (snapshot.provider === 'codex' ? 'openai-codex' : snapshot.provider) ===
+      published.provider &&
+    snapshot.model === published.model &&
+    snapshot.reasoningEffort === published.reasoningEffort &&
+    snapshot.authMode === published.authMode &&
+    snapshot.credentialReference === published.credentialReference &&
+    snapshot.baseUrl === published.baseUrl
+  );
+}
 
 interface ProviderRow {
   id: string;
@@ -696,11 +738,13 @@ async function resolveFrozenTarget(input: {
     // a peer Codex Harness.
     harness: 'dsh',
     provider:
-      selection.provider_key === 'codex'
+      selection.provider_key === 'codex' ||
+      selection.provider_key === 'openai-codex'
         ? 'openai-codex'
         : selection.provider_key === 'gemini'
           ? 'gemini'
-          : selection.provider_key === 'deepseek'
+          : selection.provider_key === 'deepseek' ||
+              selection.provider_key === 'deepseek-official'
             ? 'deepseek-official'
             : 'openai-compatible',
     authMode: selection.auth_mode,
@@ -715,6 +759,7 @@ export async function freezeSessionModelSnapshot(input: {
   organizationId: string;
   workspaceId: string;
   sessionId: string;
+  employeeVersionId?: string;
 }) {
   const sql = getDatabase();
   const existing = await sql<{ snapshot: unknown }[]>`
@@ -723,16 +768,25 @@ export async function freezeSessionModelSnapshot(input: {
       and workspace_id = ${input.workspaceId}
       and session_id = ${input.sessionId}
   `;
-  if (existing[0])
-    return SessionModelSnapshotSchema.parse(existing[0].snapshot);
-
-  const sessions = await sql<{ employee_id: string; owner_id: string }[]>`
-    select a.employee_id, s.owner_id
+  const sessions = await sql<
+    {
+      employee_id: string;
+      owner_id: string;
+      version_id: string;
+      manifest: unknown;
+    }[]
+  >`
+    select a.employee_id, s.owner_id, v.id as version_id, v.manifest
     from allrice_chat_sessions s
     join allrice_employee_assignments a
       on a.id = s.employee_assignment_id
       and a.organization_id = s.organization_id
       and a.workspace_id = s.workspace_id
+    join allrice_employee_versions v
+      on v.id = coalesce(${input.employeeVersionId ?? null}::uuid, s.employee_version_id)
+      and v.employee_id = a.employee_id
+      and v.organization_id = s.organization_id
+      and v.workspace_id = s.workspace_id
     where s.organization_id = ${input.organizationId}
       and s.workspace_id = ${input.workspaceId}
       and s.id = ${input.sessionId}
@@ -740,17 +794,53 @@ export async function freezeSessionModelSnapshot(input: {
   `;
   const session = sessions[0];
   if (!session) throw new DataAccessError('not_found');
+  const published = publishedSessionModel(session.manifest);
+  if (existing[0]) {
+    const cached = SessionModelSnapshotSchema.parse(existing[0].snapshot);
+    if (!published || matchesPublishedModel(cached, published)) return cached;
+  }
   const policy = await ensureDefaultPolicy({
     organizationId: input.organizationId,
     workspaceId: input.workspaceId,
     employeeId: session.employee_id,
     actorId: session.owner_id,
   });
+  let connectionId = policy.connectionId;
+  let modelCatalogEntryId = policy.modelCatalogEntryId;
+  if (published) {
+    const providerKeys =
+      published.provider === 'openai-codex'
+        ? ['codex', 'openai-codex']
+        : published.provider === 'deepseek-official'
+          ? ['deepseek', 'deepseek-official']
+          : [published.provider];
+    const targets = await sql<{ connection_id: string; model_id: string }[]>`
+      select c.id as connection_id, m.id as model_id
+      from allrice_model_connections c
+      join allrice_model_providers p on p.id = c.provider_id
+      join allrice_model_catalog_entries m on m.provider_id = p.id
+      where ${
+        published.provider === 'openai-compatible'
+          ? sql`p.provider_key not in ('codex','openai-codex','gemini','deepseek','deepseek-official')`
+          : sql`p.provider_key in ${sql(providerKeys)}`
+      }
+        and p.auth_mode = ${published.authMode}
+        and m.model = ${published.model}
+        and c.credential_reference = ${published.credentialReference}
+        and c.base_url is not distinct from ${published.baseUrl}
+        and (c.scope = 'platform' or c.organization_id = ${input.organizationId})
+        and c.status = 'ready' and p.enabled and m.enabled
+      order by c.priority, c.id, m.id limit 1
+    `;
+    if (!targets[0]) throw new DataAccessError('grant_invalid');
+    connectionId = targets[0].connection_id;
+    modelCatalogEntryId = targets[0].model_id;
+  }
   const selection = await resolveFrozenTarget({
     organizationId: input.organizationId,
-    connectionId: policy.connectionId,
-    modelCatalogEntryId: policy.modelCatalogEntryId,
-    reasoningEffort: policy.reasoningEffort,
+    connectionId,
+    modelCatalogEntryId,
+    reasoningEffort: published?.reasoningEffort ?? policy.reasoningEffort,
   });
   const resolvedFallbacks = await Promise.all(
     policy.fallbackTargets.map((fallback) =>
@@ -773,7 +863,7 @@ export async function freezeSessionModelSnapshot(input: {
     provider: selection.provider,
     authMode: selection.authMode,
     model: selection.model,
-    reasoningEffort: policy.reasoningEffort,
+    reasoningEffort: selection.reasoningEffort,
     credentialReference: selection.credentialReference,
     baseUrl: selection.baseUrl,
     fallbackPolicy: policy.fallbackPolicy,
@@ -790,12 +880,35 @@ export async function freezeSessionModelSnapshot(input: {
       frozen_at
     ) values (
       ${input.sessionId}, ${input.organizationId}, ${input.workspaceId},
-      ${session.employee_id}, ${policy.revision}, ${policy.connectionId},
-      ${policy.modelCatalogEntryId}, ${sql.json(snapshot)},
+      ${session.employee_id}, ${policy.revision}, ${connectionId},
+      ${modelCatalogEntryId}, ${sql.json(snapshot)},
       ${new Date(snapshot.frozenAt)}
     ) on conflict (session_id) do update
-      set session_id = excluded.session_id
+      set connection_id = excluded.connection_id,
+        model_catalog_entry_id = excluded.model_catalog_entry_id,
+        policy_revision = excluded.policy_revision,
+        snapshot = excluded.snapshot, frozen_at = excluded.frozen_at
+      where ${Boolean(published)}
+        and exists (
+          select 1 from allrice_chat_sessions s
+          where s.id = excluded.session_id
+            and s.organization_id = excluded.organization_id
+            and s.workspace_id = excluded.workspace_id
+            and s.employee_version_id = ${session.version_id}
+        )
     returning snapshot
   `;
-  return SessionModelSnapshotSchema.parse(inserted[0]?.snapshot);
+  // A concurrent publication may advance the Session while an already-bound
+  // Run is being prepared. Return its selected version, without rewinding the cache.
+  return SessionModelSnapshotSchema.parse(
+    inserted[0]?.snapshot ??
+      (published
+        ? snapshot
+        : (existing[0]?.snapshot ??
+          (
+            await sql<
+              { snapshot: unknown }[]
+            >`select snapshot from allrice_session_model_snapshots where session_id=${input.sessionId} and organization_id=${input.organizationId} and workspace_id=${input.workspaceId}`
+          )[0]?.snapshot)),
+  );
 }

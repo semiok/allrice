@@ -29,6 +29,8 @@ import {
 import { skillBundleChecksum, skillBytesChecksum } from './skill-bundles.ts';
 import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
+import { freezeSessionModelSnapshot } from './providers/model-pool.ts';
+import { getEmployeeWorkspace } from './workspace/service.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -247,6 +249,106 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     if (admin && /^p18_publish_[a-f0-9]{32}$/.test(schema))
       await admin.unsafe(`drop schema "${schema}" cascade`);
     await admin?.end({ timeout: 5 });
+  });
+  it('uses the published model in existing chats, repairs stale provider/auth caches, and keeps previously frozen snapshots intact', async () => {
+    const f = await fixture();
+    await f.preview();
+    expect((await f.publish()).valid).toBe(true);
+    const [assignment] =
+      await db`select * from allrice_employee_assignments where workspace_id=${f.workspaceId} and user_id=${f.ownerId}`;
+    const sessionId = randomUUID();
+    await db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+      values(${sessionId},${f.organizationId},${f.workspaceId},${f.ownerId},'Synthetic existing chat',${assignment!.id},${assignment!.employee_version_id})`;
+    const scope = {
+      organizationId: f.organizationId,
+      workspaceId: f.workspaceId,
+      sessionId,
+    };
+    const original = await freezeSessionModelSnapshot(scope);
+    const legacy = {
+      ...original,
+      provider: 'gemini',
+      model: '3.8flash',
+      authMode: 'chatgpt_subscription',
+    };
+    await db`update allrice_session_model_snapshots set snapshot=${db.json(legacy)} where session_id=${sessionId}`;
+    const repaired = await freezeSessionModelSnapshot(scope);
+    expect(repaired).toMatchObject({
+      provider: 'openai-codex',
+      model: f.definition.modelPolicy.model,
+      authMode: 'chatgpt_subscription',
+      reasoningEffort: 'xhigh',
+    });
+    expect(legacy).toMatchObject({ provider: 'gemini', model: '3.8flash' });
+
+    const changed = {
+      ...f.definition,
+      modelPolicy: {
+        ...f.definition.modelPolicy,
+        reasoningEffort: 'high' as const,
+      },
+    };
+    await savePlatformEmployeeDraft(f.employeeId, { definition: changed });
+    await f.preview();
+    expect((await f.publish()).valid).toBe(true);
+    const context = {
+      actor: { type: 'user' as const, id: f.ownerId },
+      organizationId: f.organizationId,
+      workspaceId: f.workspaceId,
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      authenticatedAt: new Date().toISOString(),
+      memberships: [
+        {
+          id: randomUUID(),
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+          userId: f.ownerId,
+          role: 'admin' as const,
+          active: true,
+        },
+      ],
+    };
+    const workspace = await getEmployeeWorkspace(context, f.workspaceId);
+    expect(
+      workspace.sessionModels.find((x) => x.sessionId === sessionId),
+    ).toMatchObject({ provider: 'openai-codex', reasoningEffort: 'high' });
+    const next = await freezeSessionModelSnapshot(scope);
+    expect(next.reasoningEffort).toBe('high');
+    expect(original.reasoningEffort).toBe('xhigh');
+    // Preparing a Run already bound to the prior employee version cannot rewind
+    // the current Session's model cache after a concurrent publication.
+    const boundOld = await freezeSessionModelSnapshot({
+      ...scope,
+      employeeVersionId: assignment!.employee_version_id,
+    });
+    expect(boundOld.reasoningEffort).toBe('xhigh');
+    const [current] =
+      await db`select snapshot from allrice_session_model_snapshots where session_id=${sessionId}`;
+    expect(current!.snapshot.reasoningEffort).toBe('high');
+    await expect(
+      freezeSessionModelSnapshot({ ...scope, workspaceId: randomUUID() }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    // Non-platform legacy employees keep their explicit frozen route, including
+    // unsupported historical auth (which still cannot authorize execution).
+    const plain = workspace.employees.find(
+      (employee) => employee.id !== assignment!.id,
+    )!;
+    const legacyId = randomUUID();
+    await db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+      values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Synthetic legacy chat',${plain.id},${plain.currentVersion.id})`;
+    const legacyScope = { ...scope, sessionId: legacyId };
+    const legacySnapshot = {
+      ...(await freezeSessionModelSnapshot(legacyScope)),
+      provider: 'gemini',
+      model: '3.8flash',
+      authMode: 'chatgpt_subscription',
+    };
+    await db`update allrice_session_model_snapshots set snapshot=${db.json(legacySnapshot)} where session_id=${legacyId}`;
+    expect(await freezeSessionModelSnapshot(legacyScope)).toEqual(
+      legacySnapshot,
+    );
   });
   it('does not publish resource B using the successful trial for resource A on the same draft', async () => {
     const f = await fixture(),
