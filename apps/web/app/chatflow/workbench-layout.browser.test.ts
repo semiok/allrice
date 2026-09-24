@@ -740,9 +740,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .count(),
       ).toBe(1);
       await rice.hover();
+      expect(
+        await f.page
+          .getByRole('button', { name: '与 Rice 新建工作', exact: true })
+          .count(),
+      ).toBe(0);
       await f.page
-        .getByRole('button', { name: '与 Rice 新建工作', exact: true })
+        .getByRole('button', { name: '新的工作', exact: true })
         .click();
+      await picker.getByRole('button', { name: /Rice/ }).click();
       expect(await picker.count()).toBe(0);
       expect(
         await f.page
@@ -758,6 +764,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page.getByRole('group', { name: '财务员工的工作' }).isVisible(),
       ).toBe(true);
+      expect(
+        await f.page
+          .getByRole('button', { name: '＋ 新建工作', exact: true })
+          .count(),
+      ).toBe(0);
       if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
         await f.page.screenshot({
           path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-rail.png`,

@@ -16,7 +16,6 @@ export function EmployeeSidebar({
   sessions,
   activeId,
   collapsed,
-  onNewSession,
   onSelectSession,
   onDetails,
 }: {
@@ -24,7 +23,6 @@ export function EmployeeSidebar({
   sessions: Session[];
   activeId: string | null;
   collapsed: boolean;
-  onNewSession: (assignmentId: string) => void;
   onSelectSession: (id: string) => void;
   onDetails: (assignmentId: string) => void;
 }) {
@@ -72,6 +70,7 @@ export function EmployeeSidebar({
           (item) => item.assignmentId === group.key,
         );
         const role = profile?.identity.role;
+        const accent = /office/i.test(group.label) ? 'orange' : 'blue';
         const history = sessions.filter(
           (session) => session.employeeAssignmentId === group.key,
         );
@@ -97,6 +96,7 @@ export function EmployeeSidebar({
               <button
                 type="button"
                 className={css.avatar}
+                data-accent={accent}
                 aria-label={group.label}
                 aria-expanded={rail === group.key}
                 onFocus={() => setRail(group.key)}
@@ -112,14 +112,6 @@ export function EmployeeSidebar({
                 >
                   <strong>{group.label}</strong>
                   <small>{role}</small>
-                  {employee && (
-                    <button
-                      type="button"
-                      onClick={() => onNewSession(group.key)}
-                    >
-                      ＋ 新建工作
-                    </button>
-                  )}
                   {history.slice(0, 3).map((session) => (
                     <button
                       type="button"
@@ -149,6 +141,7 @@ export function EmployeeSidebar({
           >
             <div
               className={css.employeeCard}
+              data-accent={accent}
               data-active={group.containsCurrent || undefined}
             >
               <div className={css.header}>
@@ -164,9 +157,6 @@ export function EmployeeSidebar({
                       ...current,
                       [group.key]: !group.expanded,
                     }))
-                  }
-                  onCreate={
-                    employee ? () => onNewSession(group.key) : undefined
                   }
                   t={employeeTranslate}
                 />
@@ -211,7 +201,7 @@ export function EmployeeSidebar({
                   />
                 ))}
                 {group.sessionCount === 0 && (
-                  <span className={css.empty}>暂无工作，点击 ＋ 发起</span>
+                  <span className={css.empty}>从顶部「新的工作」开始</span>
                 )}
                 {group.sessions.length > rows.length && (
                   <button
