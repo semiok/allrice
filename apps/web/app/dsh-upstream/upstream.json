@@ -17,7 +17,10 @@
     "packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css",
     "packages/client/ui-conversation/src/client/skeleton/InputBar.module.css",
     "packages/client/ui-conversation/src/client/queue/QueueDock.module.css",
-    "packages/client/ui-primitives/src/icons/index.tsx (six QueueDock glyphs)"
+    "packages/client/ui-primitives/src/icons/index.tsx (six QueueDock glyphs and Think glyph)",
+    "packages/client/ui-primitives/src/DisclosureRow.tsx",
+    "packages/client/ui-primitives/src/DisclosureRow.module.css",
+    "packages/client/ui-conversation/src/client/chat/ReasoningRow.module.css"
   ],
   "adaptations": [
     {
@@ -31,6 +34,12 @@
       "target": "apps/web/app/chatflow/queued-messages-dock.tsx",
       "reuse": "Native single-row / collapsed count list, awaited actions, unmodified QueueDock CSS and six native icons",
       "productChanges": "PostgreSQL authoritative inbox instead of local runtime store; edit returns text and attachments to composer; tenant-scoped remove/steer; no browser scheduler"
+    },
+    {
+      "source": "packages/client/ui-primitives/src/DisclosureRow.tsx; packages/client/ui-conversation/src/client/chat/ReasoningRow.tsx",
+      "target": "apps/web/app/chatflow/dsh-upstream/DisclosureRow.tsx; apps/web/app/chatflow/work-process.tsx",
+      "reuse": "Native DisclosureRow component, unmodified DisclosureRow and ReasoningRow styles, native Think icon; mouse/keyboard expansion and running sweep animation",
+      "productChanges": "Public Allrice lifecycle events instead of raw reasoning text; Chinese grouped tool counts and cumulative tool duration; authoritative server elapsed time; actual child assistant panels only; first answer token removes microstatus. Imports and string class-name joining adapted without adding clsx."
     }
   ]
 }

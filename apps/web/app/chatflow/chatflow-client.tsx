@@ -455,7 +455,7 @@ export function ChatFlowClient({
                   {
                     id: optimisticAssistantId,
                     role: 'assistant',
-                    content: { text: 'Rice 正在处理…' },
+                    content: { text: '思考中…' },
                     status: 'pending',
                     runId: null,
                     createdAt,
@@ -715,6 +715,13 @@ export function ChatFlowClient({
   const activeEmployeeProfile = workspace.employeeProfiles.find(
     (profile) => profile.assignmentId === activeEmployee?.id,
   );
+  const activeEmployeeName =
+    activeEmployee?.versions.find(
+      (version) => version.id === activeSession?.employeeVersionId,
+    )?.manifest.name ??
+    activeEmployee?.currentVersion.manifest.name ??
+    activeEmployeeProfile?.name ??
+    'AI 员工';
   const employeeAssistantAvailability = assistantEligibility({
     enabled: assistantsEnabled,
     sessionId: activeId,
@@ -855,9 +862,7 @@ export function ChatFlowClient({
       ) : null}
       <ChatSidebar
         monthlyQuota={monthlyQuota}
-        activeEmployeeName={
-          activeEmployee?.currentVersion.manifest.name ?? 'Rice'
-        }
+        activeEmployeeName={activeEmployeeName}
         activeEmployeeProfileName={activeEmployeeProfile?.name}
         activeId={activeId}
         collapsed={sidebarCollapsed}
@@ -1026,6 +1031,7 @@ export function ChatFlowClient({
                   </button>
                 ) : null}
                 <ChatTranscript
+                  employeeName={activeEmployeeName}
                   atBottom={atTranscriptBottom}
                   localCommandsEnabled={localCommandsEnabled}
                   localMcpEnabled={localMcpEnabled}

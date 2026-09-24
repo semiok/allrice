@@ -10,6 +10,10 @@ export interface NativeExperienceItem {
   title: string;
   detail?: string;
   sequence: number;
+  lastSequence?: number;
+  toolName?: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 function text(value: unknown) {
@@ -29,7 +33,7 @@ function nativeKey(event: ChatFlowEventEnvelope, kind: NativeExperienceKind) {
   }
   const callId = text(native.callId);
   if ((kind === 'tool' || kind === 'search') && callId) {
-    return `native-tool:${callId}`;
+    return `tool:${callId}`;
   }
   const compactionId = text(native.compactionId);
   if (kind === 'compaction' && compactionId) {
@@ -86,6 +90,16 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
             ? { detail: previous.detail }
             : {}),
         sequence: previous?.sequence ?? event.sequence,
+        lastSequence: event.sequence,
+        toolName: text(event.sourceEvent?.payload.name) ?? previous?.toolName,
+        startedAt:
+          previous?.startedAt ??
+          (event.payload.status === 'started' ? event.occurredAt : undefined),
+        finishedAt: ['completed', 'failed'].includes(
+          String(event.payload.status),
+        )
+          ? event.occurredAt
+          : previous?.finishedAt,
       });
       continue;
     }
@@ -126,6 +140,14 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
             ? { detail: previous.detail }
             : {}),
         sequence: previous?.sequence ?? event.sequence,
+        lastSequence: event.sequence,
+        toolName: name ?? previous?.toolName,
+        startedAt:
+          previous?.startedAt ??
+          (status === 'started' ? event.occurredAt : undefined),
+        finishedAt: ['completed', 'failed'].includes(status)
+          ? event.occurredAt
+          : previous?.finishedAt,
       });
       continue;
     }

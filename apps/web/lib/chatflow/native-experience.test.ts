@@ -37,6 +37,32 @@ function event(
 }
 
 describe('projectNativeExperience', () => {
+  it('deduplicates native and normalized receipts by call ID and retains the start time', () => {
+    const start = event(
+      1,
+      'harness.native',
+      { presentation: 'tool', status: 'started', label: 'market.quote' },
+      { callId: 'call-1', name: 'market.quote' },
+    );
+    const finish = event(2, 'tool.failed', {
+      toolCallId: 'call-1',
+      name: 'market.quote',
+      summary: '服务超时',
+    });
+    finish.occurredAt = '2026-08-27T00:00:03.000Z';
+    const rows = projectNativeExperience([finish, start]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'tool:call-1',
+      toolName: 'market.quote',
+      status: 'failed',
+      sequence: 1,
+      lastSequence: 2,
+      startedAt: start.occurredAt,
+      finishedAt: finish.occurredAt,
+      detail: '服务超时',
+    });
+  });
   it('presents a checkpointed question suspension without hiding unrelated tool failures', () => {
     const rows = projectNativeExperience([
       event(

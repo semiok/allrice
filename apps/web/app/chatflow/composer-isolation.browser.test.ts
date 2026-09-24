@@ -806,6 +806,10 @@ suite(
       const f = await fixture({ running: true });
       try {
         await f.page
+          .getByRole('region', { name: '工作过程', exact: true })
+          .getByRole('button')
+          .click();
+        await f.page
           .getByRole('button', {
             name: '取消整项任务（含所有助手）',
             exact: true,
@@ -977,8 +981,16 @@ suite(
     it('real reload and offline→online restore persisted assistant status without inventing a stop ACK', async () => {
       const f = await fixture({ running: true });
       try {
+        await f.page
+          .getByRole('region', { name: '工作过程', exact: true })
+          .getByRole('button')
+          .click();
         await f.page.getByText(/已请求停止不代表进程已退出/).waitFor();
         await f.page.reload();
+        await f.page
+          .getByRole('region', { name: '工作过程', exact: true })
+          .getByRole('button')
+          .click();
         await f.page.getByText(/已请求停止不代表进程已退出/).waitFor();
         await f.context.setOffline(true);
         f.disconnect();
@@ -1006,6 +1018,10 @@ suite(
     it('an expanded assistant panel recovers after exhausting offline retries, with an authoritative stop ACK', async () => {
       const f = await fixture({ running: true });
       try {
+        await f.page
+          .getByRole('region', { name: '工作过程', exact: true })
+          .getByRole('button')
+          .click();
         await f.page.getByText(/已请求停止不代表进程已退出/).waitFor();
         await f.page.getByText('分工、结果与消耗', { exact: true }).click();
         await expect

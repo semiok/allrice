@@ -28,6 +28,7 @@ export function AssistantTreeCard({
   onArtifact: (id: string) => void;
 }) {
   const state = presentAssistantTree(tree);
+  if (!state.children.length) return null;
   return (
     <section
       className={ui.panel}
@@ -39,26 +40,6 @@ export function AssistantTreeCard({
         <span className={ui.meta}>本任务模式：日常</span>
       </div>
       <p className={ui.meta}>{state.summary}</p>
-      {tree.timing ? (
-        <p className={ui.meta}>
-          活跃 {Math.floor(tree.timing.activeMs / 60000)} 分钟 · 等待{' '}
-          {Math.floor(tree.timing.waitingMs / 60000)} 分钟 · 总历时{' '}
-          {Math.floor(tree.timing.wallMs / 60000)} 分钟
-          {' · '}任务时限{' '}
-          {tree.timing.timeoutMs === 0
-            ? '不限制'
-            : `${tree.timing.timeoutMs / 60000} 分钟`}
-          {tree.timing.phase === 'waiting'
-            ? '（整项任务等待中，活跃计时暂停）'
-            : ''}
-          {tree.timing.calls
-            ? ` · 原生模型请求尝试 ${tree.timing.calls.modelRequests} 次 / 工具 ${tree.timing.calls.toolCalls} 次（仅统计）`
-            : ''}
-          {tree.timing.sources.length
-            ? ` · 策略来源：${tree.timing.sources.map((s) => `${({ tenant: '租户', user: '用户', employee: '员工', provider: '模型连接' } as Record<string, string>)[s.scope] ?? s.scope} ${s.timeoutMs === 0 ? '不限制' : `${s.timeoutMs / 60000} 分钟`}`).join('、')}`
-            : ' · 来源：平台默认'}
-        </p>
-      ) : null}
       {error ? (
         <p className={ui.alert} role="alert">
           {error}
@@ -135,7 +116,7 @@ export function AssistantTreeCard({
                   独立任务 {child.runId.slice(0, 8)} · 第 {child.depth} 层
                   {child.parentRunId !== tree.rootRunId
                     ? ` · 上级 ${child.parentRunId?.slice(0, 8)}`
-                    : ' · 由 Rice 统筹'}
+                    : ' · 由主任务统筹'}
                   {child.stoppedAt ? ' · 执行端已确认停止' : ''}
                 </p>
                 {results.map((result) => (
@@ -151,8 +132,8 @@ export function AssistantTreeCard({
                     ) : null}
                     <p className={ui.meta}>
                       {result.parentAdoptedSeq === null
-                        ? '已收到汇报；主 Rice 尚未确认采用'
-                        : `主 Rice 已采用 · 原生记录 #${result.parentAdoptedSeq}`}
+                        ? '已收到汇报；主任务 尚未确认采用'
+                        : `主任务 已采用 · 原生记录 #${result.parentAdoptedSeq}`}
                       {result.usageComplete
                         ? ''
                         : ' · 消耗尚未结清，不能视作零消耗'}
