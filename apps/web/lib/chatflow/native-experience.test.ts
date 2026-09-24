@@ -37,6 +37,18 @@ function event(
 }
 
 describe('projectNativeExperience', () => {
+  it('does not describe a historical skill argument as a search query', () => {
+    const [row] = projectNativeExperience([
+      event(
+        1,
+        'tool.started',
+        { toolCallId: 'skill-1', name: 'skill' },
+        { presentation: 'tool', query: 'market-data' },
+      ),
+    ]);
+    expect(row).toMatchObject({ kind: 'tool', toolName: 'skill' });
+    expect(row?.activityDetail).toBeUndefined();
+  });
   it('deduplicates native and normalized receipts by call ID and retains the start time', () => {
     const start = event(
       1,

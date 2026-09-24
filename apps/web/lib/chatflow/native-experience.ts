@@ -149,7 +149,7 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         activityDetail:
           text(native.activityDetail) ??
           previous?.activityDetail ??
-          (query ? `搜索资料：${query}` : undefined),
+          (kind === 'search' && query ? `搜索资料：${query}` : undefined),
         startedAt:
           previous?.startedAt ??
           (status === 'started' ? event.occurredAt : undefined),
