@@ -2226,7 +2226,7 @@ export async function getEmployeeWorkspace(
     from allrice_chat_sessions s
     join allrice_employee_versions v on v.id=s.employee_version_id
       and v.organization_id=s.organization_id and v.workspace_id=s.workspace_id
-    where s.organization_id=${context.organizationId} and s.workspace_id=${assignment.workspaceId}
+    where s.organization_id=${context.organizationId} and s.workspace_id=${workspaceId}
       and s.id in ${sql(sessionIds)}
   `;
   const sidebarById = new Map(sidebarRows.map((row) => [row.session_id, row]));
