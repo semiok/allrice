@@ -68,21 +68,6 @@ export async function executeRiceTool(
       false,
     );
   }
-  if (
-    input.call.name === 'cloud.mcp.call' &&
-    !input.frozenMcpTools?.some(
-      (tool) =>
-        tool.employeeAuthorization &&
-        tool.connectionId === input.call.arguments.connectionId &&
-        tool.name === input.call.arguments.tool,
-    )
-  ) {
-    throw new HandlerError(
-      'TOOL_CAPABILITY_DENIED',
-      '当前 Run 未冻结此员工版本的 MCP 连接授权',
-      false,
-    );
-  }
   const args = objectValue(input.call.arguments);
   if (
     ['local.mcp.discover', 'local.mcp.call'].includes(input.call.name) &&

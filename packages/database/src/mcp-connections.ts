@@ -43,6 +43,15 @@ type ConnectionRow = {
   enabled: boolean;
   credential_reference: string;
   credential_envelope: unknown;
+  managed_by: string | null;
+  auth_kind: 'none' | 'bearer';
+  client_kind: 'sdk' | 'dsh';
+  disconnected: boolean;
+  removed: boolean;
+  member_revision: number;
+  oauth_envelope: unknown;
+  oauth_stage:
+    'none' | 'preparing' | 'redirect' | 'exchanging' | 'connected' | 'error';
   discovery_state: 'idle' | 'queued' | 'running' | 'ready' | 'error';
   discovery_code: string | null;
   checked_at: Date | null;
@@ -65,12 +74,13 @@ const envelopeSchema = z
     ciphertext: z
       .string()
       .regex(/^[a-f0-9]+$/)
-      .max(8192),
+      .max(131072),
   })
   .strict();
 function workspaceAdminScope(
   context: RequestContext,
   workspaceInput: string,
+  member = false,
 ): McpScope {
   const workspaceId = UuidSchema.parse(workspaceInput);
   if (
@@ -81,7 +91,7 @@ function workspaceAdminScope(
         m.userId === context.actor.id &&
         m.organizationId === context.organizationId &&
         (m.workspaceId === null || m.workspaceId === workspaceId) &&
-        m.role === 'admin',
+        (m.role === 'admin' || (member && m.role === 'member')),
     )
   )
     throw new McpError('MCP_DENIED');
@@ -96,11 +106,15 @@ function encryptionKey(value: string | undefined) {
     throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
   return Buffer.from(value, 'hex');
 }
-async function workspaceCurrentAdmin(tx: Database | Tx, scope: McpScope) {
+async function workspaceCurrentAdmin(
+  tx: Database | Tx,
+  scope: McpScope,
+  member = false,
+) {
   const [row] =
     await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id
     join allrice_organizations o on o.id=m.organization_id join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
-    where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and m.role='admin'
+    where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and (m.role='admin' or (${member} and m.role='member'))
     and (m.workspace_id is null or m.workspace_id=${scope.workspaceId}) and u.status='active' and o.archived_at is null and w.archived_at is null
     for share of m,u,o,w`;
   if (!row) throw new McpError('MCP_DENIED');
@@ -110,20 +124,21 @@ function aad(scope: McpScope, bindingId: string, revision: number) {
     `${scope.organizationId}:${scope.workspaceId}:${bindingId}:${revision}`,
   );
 }
-function seal(value: string, key: Buffer, associated: Buffer) {
+function seal(value: string, key: Buffer, associated: Buffer, json = false) {
+  if (Buffer.byteLength(value) > 65536) throw new McpError('MCP_LIMIT');
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   cipher.setAAD(associated);
   return {
     iv: iv.toString('hex'),
     ciphertext: Buffer.concat([
-      cipher.update(McpBearerSchema.parse(value)),
+      cipher.update(json ? value : McpBearerSchema.parse(value)),
       cipher.final(),
     ]).toString('hex'),
     tag: cipher.getAuthTag().toString('hex'),
   };
 }
-function unseal(value: unknown, key: Buffer, associated: Buffer) {
+function unseal(value: unknown, key: Buffer, associated: Buffer, json = false) {
   try {
     const envelope = envelopeSchema.parse(value);
     const cipher = createDecipheriv(
@@ -133,12 +148,11 @@ function unseal(value: unknown, key: Buffer, associated: Buffer) {
     );
     cipher.setAAD(associated);
     cipher.setAuthTag(Buffer.from(envelope.tag, 'hex'));
-    return McpBearerSchema.parse(
-      Buffer.concat([
-        cipher.update(Buffer.from(envelope.ciphertext, 'hex')),
-        cipher.final(),
-      ]).toString('utf8'),
-    );
+    const plaintext = Buffer.concat([
+      cipher.update(Buffer.from(envelope.ciphertext, 'hex')),
+      cipher.final(),
+    ]).toString('utf8');
+    return json ? plaintext : McpBearerSchema.parse(plaintext);
   } catch {
     throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
   }
@@ -160,6 +174,17 @@ export interface McpDiscoveryLease {
   scope: McpScope;
   endpoint: string;
   credentialReference: string;
+  clientKind: 'sdk' | 'dsh';
+}
+export interface McpOAuthSession {
+  state: string;
+  redirectUrl: string;
+  clientInformation?: Record<string, unknown>;
+  tokens?: Record<string, unknown>;
+  discovery?: Record<string, unknown>;
+  verifier?: string;
+  authorizationUrl?: string;
+  authorizationCode?: string;
 }
 /** No call execution claim is provided here. Runtime policy + operation ledger
  * own approval, dispatch and uncertainty. This adapter only authenticates the
@@ -169,17 +194,18 @@ export function createMcpStore(
     database?: Database;
     credentialKey?: string;
     administration?: TenantManagementOptions;
+    memberManaged?: boolean;
   } = {},
 ) {
   const db = () => options.database ?? getDatabase();
   const adminScope = (context: RequestContext, workspaceId: string) =>
     options.administration
       ? tenantManagementScope(context, workspaceId, options.administration)
-      : workspaceAdminScope(context, workspaceId);
+      : workspaceAdminScope(context, workspaceId, options.memberManaged);
   const currentAdmin = (tx: Database | Tx, scope: McpScope) =>
     options.administration
       ? checkTenantManagement(tx, options.administration, scope)
-      : workspaceCurrentAdmin(tx, scope);
+      : workspaceCurrentAdmin(tx, scope, options.memberManaged);
   const audit = (
     tx: Tx,
     scope: McpScope,
@@ -209,8 +235,9 @@ export function createMcpStore(
   ) {
     const [row] = await tx<
       ConnectionRow[]
-    >`select b.id,b.connector_id as definition_id,b.organization_id,b.workspace_id,d.name,c.endpoint,c.revision,(b.enabled and d.enabled) as enabled,b.credential_reference,c.credential_envelope,c.discovery_state,c.discovery_code,c.checked_at from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and b.id=${UuidSchema.parse(bindingId)} and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId}`;
-    if (!row) throw new McpError('MCP_DENIED');
+    >`select b.id,b.connector_id as definition_id,b.organization_id,b.workspace_id,d.name,c.endpoint,c.revision,c.managed_by,c.auth_kind,c.client_kind,c.oauth_envelope,c.oauth_stage,exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and not x.connected) as disconnected,exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and x.removed) as removed,coalesce((select x.revision from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId}),0) as member_revision,(b.enabled and d.enabled) as enabled,b.credential_reference,c.credential_envelope,c.discovery_state,c.discovery_code,c.checked_at from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and b.id=${UuidSchema.parse(bindingId)} and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId}`;
+    if (!row || (row.managed_by !== null && row.managed_by !== scope.actorId))
+      throw new McpError('MCP_DENIED');
     return row;
   }
   async function tools(
@@ -238,7 +265,13 @@ export function createMcpStore(
       endpoint: row.endpoint,
       enabled: row.enabled,
       revision: row.revision,
-      credentialConfigured: true,
+      credentialConfigured:
+        row.auth_kind === 'bearer' || row.oauth_stage === 'connected',
+      managed: row.managed_by !== null,
+      shared: row.managed_by === null,
+      disconnected: row.disconnected,
+      removed: row.removed,
+      loginState: row.oauth_stage,
       credentialReference: row.credential_reference,
       discoveryState: row.discovery_state,
       discoveryCode: row.discovery_code,
@@ -272,6 +305,8 @@ export function createMcpStore(
     };
     if (
       !connection.enabled ||
+      connection.disconnected ||
+      connection.member_revision !== (frozen.memberRevision ?? 0) ||
       connection.revision !== frozen.connectionRevision ||
       connection.credential_reference !== frozen.credentialReference ||
       !current?.available ||
@@ -285,6 +320,7 @@ export function createMcpStore(
       throw new McpError('MCP_DENIED');
     return {
       endpoint: connection.endpoint,
+      clientKind: connection.client_kind,
       credentialReference: connection.credential_reference,
     };
   }
@@ -295,31 +331,39 @@ export function createMcpStore(
       const bindingId = randomUUID();
       const definitionId = randomUUID();
       const reference = `mcp:${bindingId}:r1`;
-      const encrypted = seal(
-        creation.bearerToken,
-        key(),
-        aad(scope, bindingId, 1),
-      );
+      const encrypted = creation.bearerToken
+        ? seal(creation.bearerToken, key(), aad(scope, bindingId, 1))
+        : {};
+      let existingId: string | undefined;
       await db().begin(async (tx) => {
         await tx`select id from allrice_workspaces where id=${scope.workspaceId} and organization_id=${scope.organizationId} for update`;
         await currentAdmin(tx, scope);
+        if (options.memberManaged) {
+          const [existing] = await tx<
+            { binding_id: string }[]
+          >`select binding_id from allrice_mcp_binding_config where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and managed_by=${scope.actorId} and endpoint=${creation.endpoint}`;
+          if (existing) {
+            existingId = existing.binding_id;
+            return;
+          }
+        }
         const [count] = await tx<
           { count: number }[]
-        >`select count(*)::integer as count from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id where c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled`;
+        >`select count(*)::integer as count from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id where c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and ((${options.memberManaged ?? false} and c.managed_by=${scope.actorId}) or (${!options.memberManaged} and c.managed_by is null)) and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and x.removed)`;
         if ((count?.count ?? 0) >= 16) throw new McpError('MCP_LIMIT');
         await tx`insert into allrice_connector_definitions(id,organization_id,workspace_id,connector_key,name,description,capabilities,input_schema,risk,identity_modes,resource_scopes,created_by) values (${definitionId},${scope.organizationId},${scope.workspaceId},${`mcp.${bindingId}`},${creation.name},'Tenant-governed MCP tools',${tx.json(['network:outbound', 'secret:use'])},${tx.json({})},'write',${tx.json(['service'])},${tx.json(['workspace'])},${scope.actorId})`;
         await tx`insert into allrice_connector_bindings(id,organization_id,workspace_id,connector_id,identity_mode,user_id,credential_reference,resource_scope,created_by) values (${bindingId},${scope.organizationId},${scope.workspaceId},${definitionId},'service',null,${reference},${tx.json({ endpoint: creation.endpoint, transport: 'streamable-http', protocol: '2025-11-25' })},${scope.actorId})`;
-        await tx`insert into allrice_mcp_binding_config(binding_id,organization_id,workspace_id,endpoint,credential_envelope) values (${bindingId},${scope.organizationId},${scope.workspaceId},${creation.endpoint},${tx.json(encrypted)})`;
+        await tx`insert into allrice_mcp_binding_config(binding_id,organization_id,workspace_id,endpoint,credential_envelope,managed_by,auth_kind,client_kind,discovery_state) values (${bindingId},${scope.organizationId},${scope.workspaceId},${creation.endpoint},${tx.json(encrypted)},${options.memberManaged ? scope.actorId : null},${creation.bearerToken ? 'bearer' : 'none'},${options.memberManaged ? 'dsh' : 'sdk'},${options.memberManaged ? 'queued' : 'idle'})`;
         await audit(tx, scope, bindingId, 'mcp.connection.create');
       });
-      return publicConnection(scope, bindingId);
+      return publicConnection(scope, existingId ?? bindingId);
     },
     async list(context: RequestContext, workspaceId: string) {
       const scope = adminScope(context, workspaceId);
       await currentAdmin(db(), scope);
       const rows = await db()<
         { binding_id: string }[]
-      >`select binding_id from allrice_mcp_binding_config where transport='streamable_http' and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} order by binding_id`;
+      >`select binding_id from allrice_mcp_binding_config where transport='streamable_http' and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and (managed_by is null or managed_by=${scope.actorId}) order by binding_id`;
       return Promise.all(
         rows.map((row) => publicConnection(scope, row.binding_id)),
       );
@@ -334,9 +378,11 @@ export function createMcpStore(
         await currentAdmin(tx, scope);
         await tx`select binding_id from allrice_mcp_binding_config where binding_id=${UuidSchema.parse(input.connectionId)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for update`;
         const row = await read(scope, input.connectionId, tx);
-        if (!row.enabled) throw new McpError('MCP_DENIED');
+        if (options.memberManaged && row.managed_by !== scope.actorId)
+          throw new McpError('MCP_DENIED');
+        if (!row.enabled || row.disconnected) throw new McpError('MCP_DENIED');
         const revision = row.revision + 1;
-        await tx`update allrice_mcp_binding_config set revision=${revision},credential_envelope=${tx.json(seal(token, key(), aad(scope, row.id, revision)))},discovery_state='idle',discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${row.id}`;
+        await tx`update allrice_mcp_binding_config set revision=${revision},auth_kind='bearer',oauth_envelope=null,oauth_stage='none',oauth_state_hash=null,oauth_expires_at=null,credential_envelope=${tx.json(seal(token, key(), aad(scope, row.id, revision)))},discovery_state=${options.memberManaged ? 'queued' : 'idle'},discovery_code=null,discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${row.id}`;
         await tx`update allrice_connector_bindings set credential_reference=${`mcp:${row.id}:r${revision}`},updated_at=now() where id=${row.id}`;
         await tx`update allrice_mcp_tool_grants set allowed=false,grant_revision=grant_revision+1 where binding_id=${row.id}`;
         await audit(tx, scope, row.id, 'mcp.credential.rotate', { revision });
@@ -352,6 +398,7 @@ export function createMcpStore(
         await currentAdmin(tx, scope);
         await lockConnection(scope, input.connectionId, tx);
         const row = await read(scope, input.connectionId, tx);
+        if (options.memberManaged) throw new McpError('MCP_DENIED');
         await tx`update allrice_connector_bindings set enabled=false,updated_at=now() where id=${row.id}`;
         await tx`update allrice_mcp_binding_config set revision=revision+1,discovery_state='idle',discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${row.id}`;
         await tx`update allrice_mcp_tool_grants set allowed=false,grant_revision=grant_revision+1 where binding_id=${row.id}`;
@@ -368,7 +415,9 @@ export function createMcpStore(
         await currentAdmin(tx, scope);
         await lockConnection(scope, input.connectionId, tx);
         const row = await read(scope, input.connectionId, tx);
-        if (!row.enabled) throw new McpError('MCP_DENIED');
+        if (options.memberManaged && row.managed_by !== scope.actorId)
+          throw new McpError('MCP_DENIED');
+        if (!row.enabled || row.disconnected) throw new McpError('MCP_DENIED');
         const result =
           await tx`update allrice_mcp_binding_config set discovery_state='queued',discovery_code=null where binding_id=${row.id} and (discovery_state <> 'running' or discovery_lease_expires_at < clock_timestamp()) returning binding_id`;
         if (!result.length) throw new McpError('MCP_UNAVAILABLE');
@@ -389,8 +438,9 @@ export function createMcpStore(
             endpoint: string;
             created_by: string;
             credential_reference: string;
+            client_kind: 'sdk' | 'dsh';
           }[]
-        >`select c.binding_id,c.organization_id,c.workspace_id,c.revision,c.endpoint,b.created_by,b.credential_reference from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and b.enabled and d.enabled and (c.discovery_state='queued' or (c.discovery_state='running' and c.discovery_lease_expires_at < clock_timestamp())) order by c.binding_id for update of c skip locked limit 1`;
+        >`select c.binding_id,c.organization_id,c.workspace_id,c.revision,c.endpoint,c.client_kind,b.created_by,b.credential_reference from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and b.enabled and d.enabled and (c.discovery_state='queued' or (c.discovery_state='running' and c.discovery_lease_expires_at < clock_timestamp())) order by c.binding_id for update of c skip locked limit 1`;
         if (!row) return null;
         await tx`update allrice_mcp_binding_config set discovery_state='running',discovery_owner=${workerId},discovery_token_hash=${hash(token)},discovery_lease_expires_at=clock_timestamp()+interval '60 seconds' where binding_id=${row.binding_id}`;
         return {
@@ -404,14 +454,18 @@ export function createMcpStore(
           },
           endpoint: row.endpoint,
           credentialReference: row.credential_reference,
+          clientKind: row.client_kind,
         };
       });
     },
     async discoveryCredential(lease: McpDiscoveryLease) {
       const row = await read(lease.scope, lease.connectionId);
+      if (row.managed_by) await workspaceCurrentAdmin(db(), lease.scope, true);
       const [valid] =
         await db()`select binding_id from allrice_mcp_binding_config where binding_id=${lease.connectionId} and revision=${lease.revision} and discovery_state='running' and discovery_token_hash=${hash(lease.token)} and discovery_lease_expires_at > clock_timestamp()`;
-      if (!valid || !row.enabled) throw new McpError('MCP_DISCOVERY_STALE');
+      if (!valid || !row.enabled || row.disconnected)
+        throw new McpError('MCP_DISCOVERY_STALE');
+      if (row.auth_kind === 'none') return null;
       return unseal(
         row.credential_envelope,
         key(),
@@ -421,7 +475,8 @@ export function createMcpStore(
     async completeDiscovery(
       lease: McpDiscoveryLease,
       result:
-        { tools: McpDiscoveredTool[] } | { errorCode: 'MCP_DISCOVERY_FAILED' },
+        | { tools: McpDiscoveredTool[] }
+        | { errorCode: 'MCP_DISCOVERY_FAILED' | 'MCP_AUTH_REQUIRED' },
     ) {
       const discovered =
         'tools' in result
@@ -434,7 +489,7 @@ export function createMcpStore(
         throw new McpError('MCP_INVALID_SCHEMA');
       await db().begin(async (tx) => {
         const [valid] =
-          await tx`select c.binding_id from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id where c.binding_id=${lease.connectionId} and c.organization_id=${lease.scope.organizationId} and c.workspace_id=${lease.scope.workspaceId} and c.revision=${lease.revision} and c.discovery_state='running' and c.discovery_token_hash=${hash(lease.token)} and c.discovery_lease_expires_at > clock_timestamp() and b.enabled for update of c`;
+          await tx`select c.binding_id,c.managed_by from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id where c.binding_id=${lease.connectionId} and c.organization_id=${lease.scope.organizationId} and c.workspace_id=${lease.scope.workspaceId} and c.revision=${lease.revision} and c.discovery_state='running' and c.discovery_token_hash=${hash(lease.token)} and c.discovery_lease_expires_at > clock_timestamp() and b.enabled for update of c`;
         if (!valid) throw new McpError('MCP_DISCOVERY_STALE');
         if (discovered) {
           const names = discovered.map((t) => t.name);
@@ -445,10 +500,10 @@ export function createMcpStore(
             const [revision] = await tx<
               { id: string }[]
             >`select id from allrice_mcp_tool_revisions where binding_id=${lease.connectionId} and tool_name=${tool.name} and digest=${digest}`;
-            await tx`insert into allrice_mcp_tool_grants(organization_id,workspace_id,binding_id,tool_name,revision_id) values (${lease.scope.organizationId},${lease.scope.workspaceId},${lease.connectionId},${tool.name},${revision!.id}) on conflict(binding_id,tool_name) do update set revision_id=excluded.revision_id,available=true,allowed=case when allrice_mcp_tool_grants.revision_id=excluded.revision_id and allrice_mcp_tool_grants.available then allrice_mcp_tool_grants.allowed else false end,grant_revision=allrice_mcp_tool_grants.grant_revision+case when allrice_mcp_tool_grants.revision_id<>excluded.revision_id or not allrice_mcp_tool_grants.available then 1 else 0 end,updated_at=now()`;
+            await tx`insert into allrice_mcp_tool_grants(organization_id,workspace_id,binding_id,tool_name,revision_id,allowed,granted_by) values (${lease.scope.organizationId},${lease.scope.workspaceId},${lease.connectionId},${tool.name},${revision!.id},${valid.managed_by !== null},${valid.managed_by ?? null}) on conflict(binding_id,tool_name) do update set revision_id=excluded.revision_id,available=true,allowed=case when ${valid.managed_by !== null} then true when allrice_mcp_tool_grants.revision_id=excluded.revision_id and allrice_mcp_tool_grants.available then allrice_mcp_tool_grants.allowed else ${valid.managed_by !== null} end,grant_revision=allrice_mcp_tool_grants.grant_revision+case when allrice_mcp_tool_grants.revision_id<>excluded.revision_id or not allrice_mcp_tool_grants.available then 1 else 0 end,updated_at=now()`;
           }
         }
-        await tx`update allrice_mcp_binding_config set discovery_state=${discovered ? 'ready' : 'error'},discovery_code=${discovered ? null : 'MCP_DISCOVERY_FAILED'},checked_at=clock_timestamp(),discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${lease.connectionId}`;
+        await tx`update allrice_mcp_binding_config set oauth_stage=case when ${discovered === null} and oauth_stage in ('preparing','exchanging') then 'error' else oauth_stage end,discovery_state=${discovered ? 'ready' : 'error'},discovery_code=${'errorCode' in result ? result.errorCode : null},checked_at=clock_timestamp(),discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${lease.connectionId}`;
         await audit(
           tx,
           lease.scope,
@@ -465,7 +520,9 @@ export function createMcpStore(
         await currentAdmin(tx, scope);
         await lockConnection(scope, grant.connectionId, tx);
         const row = await read(scope, grant.connectionId, tx);
-        if (!row.enabled) throw new McpError('MCP_DENIED');
+        if (options.memberManaged && row.managed_by !== scope.actorId)
+          throw new McpError('MCP_DENIED');
+        if (!row.enabled || row.disconnected) throw new McpError('MCP_DENIED');
         const updated =
           await tx`update allrice_mcp_tool_grants set allowed=${grant.allowed},risk=${grant.risk},grant_revision=grant_revision+1,granted_by=${scope.actorId},updated_at=now() where binding_id=${row.id} and revision_id=${grant.revisionId} and available returning tool_name`;
         if (!updated.length) throw new McpError('MCP_DENIED');
@@ -484,7 +541,7 @@ export function createMcpStore(
       const scope = McpScopeSchema.parse(scopeInput);
       const rows = await db()<
         { binding_id: string }[]
-      >`select c.binding_id from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and d.enabled`;
+      >`select c.binding_id,c.managed_by from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and d.enabled and (c.managed_by is null or c.managed_by=${scope.actorId}) and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and not x.connected)`;
       const frozen: FrozenMcpTool[] = [];
       for (const row of rows) {
         if (connectionIds && !connectionIds.includes(row.binding_id)) continue;
@@ -494,6 +551,9 @@ export function createMcpStore(
             frozen.push(
               FrozenMcpToolSchema.parse({
                 ...tool.definition,
+                ...(c.member_revision
+                  ? { memberRevision: c.member_revision }
+                  : {}),
                 connectionId: c.id,
                 connectionRevision: c.revision,
                 toolRevisionId: tool.id,
@@ -507,6 +567,232 @@ export function createMcpStore(
       if (frozen.length > 128) throw new McpError('MCP_LIMIT');
       return frozen;
     },
+    async beginOAuth(
+      context: RequestContext,
+      input: { workspaceId: string; connectionId: string; redirectUrl: string },
+    ) {
+      const scope = workspaceAdminScope(context, input.workspaceId, true);
+      const redirect = new URL(input.redirectUrl);
+      if (
+        redirect.pathname !== '/api/v1/connections/callback' ||
+        redirect.search ||
+        redirect.hash ||
+        redirect.username ||
+        redirect.password ||
+        (redirect.protocol !== 'https:' &&
+          !(
+            redirect.protocol === 'http:' &&
+            ['localhost', '127.0.0.1'].includes(redirect.hostname)
+          ))
+      )
+        throw new McpError('MCP_DENIED');
+      await db().begin(async (tx) => {
+        await workspaceCurrentAdmin(tx, scope, true);
+        await lockConnection(scope, input.connectionId, tx);
+        const row = await read(scope, input.connectionId, tx);
+        if (
+          !row.enabled ||
+          row.disconnected ||
+          row.managed_by !== scope.actorId
+        )
+          throw new McpError('MCP_DENIED');
+        const revision = row.revision + 1;
+        const data: McpOAuthSession = {
+          state: randomBytes(32).toString('hex'),
+          redirectUrl: redirect.href,
+        };
+        const envelope = seal(
+          JSON.stringify(data),
+          key(),
+          Buffer.from(`oauth:${aad(scope, row.id, revision).toString()}`),
+          true,
+        );
+        await tx`update allrice_mcp_binding_config set revision=${revision},auth_kind='none',credential_envelope='{}',oauth_envelope=${tx.json(envelope)},
+          oauth_stage='preparing',oauth_state_hash=${hash(data.state)},oauth_expires_at=clock_timestamp()+interval '15 minutes',
+          discovery_state='queued',discovery_code=null,discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${row.id}`;
+        await tx`update allrice_connector_bindings set credential_reference=${`mcp:${row.id}:r${revision}`} where id=${row.id}`;
+        await audit(tx, scope, row.id, 'mcp.oauth.start');
+      });
+      return publicConnection(scope, input.connectionId);
+    },
+    async oauthAuthorizationUrl(
+      context: RequestContext,
+      workspaceId: string,
+      connectionId: string,
+    ) {
+      const scope = workspaceAdminScope(context, workspaceId, true);
+      await workspaceCurrentAdmin(db(), scope, true);
+      const row = await read(scope, connectionId);
+      if (
+        !row.enabled ||
+        row.disconnected ||
+        row.managed_by !== scope.actorId ||
+        row.oauth_stage !== 'redirect'
+      )
+        throw new McpError('MCP_DENIED');
+      const data = JSON.parse(
+        unseal(
+          row.oauth_envelope,
+          key(),
+          Buffer.from(`oauth:${aad(scope, row.id, row.revision).toString()}`),
+          true,
+        ),
+      ) as McpOAuthSession;
+      const url = new URL(data.authorizationUrl!);
+      if (url.protocol !== 'https:' || url.username || url.password)
+        throw new McpError('MCP_DENIED');
+      return url.href;
+    },
+    async completeOAuthCallback(
+      context: RequestContext,
+      input: { state: string; code: string },
+    ) {
+      if (
+        !/^[a-f0-9]{64}$/.test(input.state) ||
+        !input.code ||
+        input.code.length > 4096
+      )
+        throw new McpError('MCP_DENIED');
+      const [match] = await db()<
+        { binding_id: string; workspace_id: string }[]
+      >`select binding_id,workspace_id from allrice_mcp_binding_config
+        where organization_id=${context.organizationId} and managed_by=${context.actor.id} and oauth_state_hash=${hash(input.state)}
+          and oauth_stage='redirect' and oauth_expires_at>clock_timestamp()`;
+      if (!match) throw new McpError('MCP_DENIED');
+      const scope = workspaceAdminScope(context, match.workspace_id, true);
+      await db().begin(async (tx) => {
+        await workspaceCurrentAdmin(tx, scope, true);
+        await lockConnection(scope, match.binding_id, tx);
+        const row = await read(scope, match.binding_id, tx);
+        const [current] =
+          await tx`select binding_id from allrice_mcp_binding_config where binding_id=${row.id} and oauth_state_hash=${hash(input.state)} and oauth_stage='redirect' and oauth_expires_at>clock_timestamp()`;
+        if (!current || !row.enabled || row.disconnected)
+          throw new McpError('MCP_DENIED');
+        const data = JSON.parse(
+          unseal(
+            row.oauth_envelope,
+            key(),
+            Buffer.from(`oauth:${aad(scope, row.id, row.revision).toString()}`),
+            true,
+          ),
+        ) as McpOAuthSession;
+        data.authorizationCode = input.code;
+        const envelope = seal(
+          JSON.stringify(data),
+          key(),
+          Buffer.from(`oauth:${aad(scope, row.id, row.revision).toString()}`),
+          true,
+        );
+        await tx`update allrice_mcp_binding_config set oauth_envelope=${tx.json(envelope)},oauth_stage='exchanging',oauth_state_hash=null,discovery_state='queued',discovery_code=null where binding_id=${row.id}`;
+        await audit(tx, scope, row.id, 'mcp.oauth.callback');
+      });
+      return {
+        workspaceId: match.workspace_id,
+        connectionId: match.binding_id,
+      };
+    },
+    async oauthSession(
+      access:
+        { lease: McpDiscoveryLease } | { scope: McpScope; tool: FrozenMcpTool },
+    ) {
+      const scope = 'lease' in access ? access.lease.scope : access.scope;
+      const id =
+        'lease' in access
+          ? access.lease.connectionId
+          : access.tool.connectionId;
+      const revision =
+        'lease' in access
+          ? access.lease.revision
+          : access.tool.connectionRevision;
+      const check = async () => {
+        const row = await read(scope, id);
+        if (row.revision !== revision || !row.enabled || row.disconnected)
+          throw new McpError('MCP_DENIED');
+        if ('lease' in access) {
+          const [lease] =
+            await db()`select binding_id from allrice_mcp_binding_config where binding_id=${id} and revision=${revision}
+            and discovery_state='running' and discovery_token_hash=${hash(access.lease.token)} and discovery_lease_expires_at>clock_timestamp()`;
+          if (!lease) throw new McpError('MCP_DISCOVERY_STALE');
+        } else await assertAuthorized(scope, access.tool);
+        return row;
+      };
+      const row = await check();
+      if (!row.oauth_envelope) return null;
+      const associated = Buffer.from(
+        `oauth:${aad(scope, id, revision).toString()}`,
+      );
+      let currentStage = row.oauth_stage;
+      return {
+        data: JSON.parse(
+          unseal(row.oauth_envelope, key(), associated, true),
+        ) as McpOAuthSession,
+        async save(
+          data: McpOAuthSession,
+          stage?: ConnectionRow['oauth_stage'],
+        ) {
+          await check();
+          const envelope = seal(JSON.stringify(data), key(), associated, true);
+          currentStage = stage ?? currentStage;
+          await db()`update allrice_mcp_binding_config set oauth_envelope=${db().json(envelope)},oauth_stage=${currentStage}
+            where binding_id=${id} and revision=${revision} and oauth_envelope is not null`;
+        },
+      };
+    },
+    async memberConnection(
+      context: RequestContext,
+      workspaceId: string,
+      connectionId: string,
+    ) {
+      const scope = workspaceAdminScope(context, workspaceId, true);
+      await workspaceCurrentAdmin(db(), scope, true);
+      return publicConnection(scope, connectionId);
+    },
+    async setMemberConnected(
+      context: RequestContext,
+      input: {
+        workspaceId: string;
+        connectionId: string;
+        connected: boolean;
+        remove?: boolean;
+      },
+    ) {
+      const scope = workspaceAdminScope(context, input.workspaceId, true);
+      await db().begin(async (tx) => {
+        await workspaceCurrentAdmin(tx, scope, true);
+        await lockConnection(scope, input.connectionId, tx);
+        const row = await read(scope, input.connectionId, tx);
+        await tx`insert into allrice_mcp_member_connections(organization_id,workspace_id,binding_id,user_id,connected,removed)
+          values(${scope.organizationId},${scope.workspaceId},${row.id},${scope.actorId},${input.connected},${input.remove ?? false})
+          on conflict(binding_id,user_id) do update set connected=excluded.connected,removed=excluded.removed,
+            revision=allrice_mcp_member_connections.revision+case when allrice_mcp_member_connections.connected<>excluded.connected or allrice_mcp_member_connections.removed<>excluded.removed then 1 else 0 end`;
+        if (input.connected) {
+          // Only an explicit signed-in Settings action can reconnect. Agent
+          // connect/create never removes this tombstone.
+          if (row.managed_by === scope.actorId && row.enabled)
+            await tx`update allrice_mcp_binding_config set discovery_state='queued',discovery_code=null where binding_id=${row.id} and discovery_state <> 'running'`;
+        } else {
+          if (row.managed_by === scope.actorId)
+            await tx`update allrice_mcp_binding_config set discovery_state='idle',discovery_owner=null,discovery_token_hash=null,discovery_lease_expires_at=null where binding_id=${row.id}`;
+        }
+        if (input.remove && row.managed_by === scope.actorId) {
+          const revision = row.revision + 1;
+          await tx`update allrice_mcp_binding_config set revision=${revision},credential_envelope='{}',auth_kind='none',oauth_envelope=null,
+            oauth_stage='none',oauth_state_hash=null,oauth_expires_at=null where binding_id=${row.id}`;
+          await tx`update allrice_connector_bindings set credential_reference=${`mcp:${row.id}:r${revision}`} where id=${row.id}`;
+        }
+        await audit(
+          tx,
+          scope,
+          row.id,
+          input.connected
+            ? 'mcp.member.reconnect'
+            : input.remove
+              ? 'mcp.member.delete'
+              : 'mcp.member.disconnect',
+        );
+      });
+      return publicConnection(scope, input.connectionId);
+    },
     assertAuthorized,
     /** Display-only service. Caller must first authorize the owning Run. It
      * never returns a credential or silently trusts an unavailable decryption
@@ -517,31 +803,50 @@ export function createMcpStore(
       value: unknown,
     ) {
       let secret: string | null = null;
+      let anonymous = false;
       try {
         const row = await read(scope, connectionId);
         const revision = /^mcp:[a-f0-9-]+:r([0-9]+)$/.exec(
           row.credential_reference,
         )?.[1];
         if (!revision) throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
-        secret = unseal(
-          row.credential_envelope,
-          key(),
-          aad(scope, row.id, Number(revision)),
-        );
+        anonymous = row.auth_kind === 'none' && !row.oauth_envelope;
+        if (row.oauth_envelope) {
+          const session = JSON.parse(
+            unseal(
+              row.oauth_envelope,
+              key(),
+              Buffer.from(
+                `oauth:${aad(scope, row.id, row.revision).toString()}`,
+              ),
+              true,
+            ),
+          ) as McpOAuthSession;
+          const token = session.tokens?.access_token;
+          secret = typeof token === 'string' && token ? token : null;
+        } else if (!anonymous) {
+          secret = unseal(
+            row.credential_envelope,
+            key(),
+            aad(scope, row.id, Number(revision)),
+          );
+        }
       } catch {
         /* Fail closed for parameter strings, not historical visibility. */
       }
       const visit = (entry: unknown, depth = 0): unknown => {
         if (depth > 24) return '[REDACTED: depth limit]';
         if (typeof entry === 'string')
-          return secret === null
-            ? '[REDACTED: credential unavailable]'
-            : entry
-                .replaceAll(secret, '[REDACTED]')
-                .replace(
-                  /(?:Bearer\s+|\bsk-|\bAIza|\bAQ\.)[A-Za-z0-9_./-]{12,}/g,
-                  '[REDACTED]',
-                );
+          return anonymous
+            ? entry
+            : secret === null
+              ? '[REDACTED: credential unavailable]'
+              : entry
+                  .replaceAll(secret, '[REDACTED]')
+                  .replace(
+                    /(?:Bearer\s+|\bsk-|\bAIza|\bAQ\.)[A-Za-z0-9_./-]{12,}/g,
+                    '[REDACTED]',
+                  );
         if (Array.isArray(entry)) return entry.map((v) => visit(v, depth + 1));
         if (entry && typeof entry === 'object')
           return Object.fromEntries(
@@ -563,6 +868,7 @@ export function createMcpStore(
       const row = await read(scope, frozen.connectionId);
       if (row.revision !== frozen.connectionRevision)
         throw new McpError('MCP_DENIED');
+      if (row.auth_kind === 'none') return null;
       return unseal(
         row.credential_envelope,
         key(),

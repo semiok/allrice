@@ -686,10 +686,62 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   nativeToolsRegistered = new Set();
   nativeSkillsRegistered = false;
   pendingUserQuestions = new Map();
+  managedConnectionWaits = new Set();
   userQuestionNotify = () => undefined;
   toolBrokerRequest = async () => {
     throw new Error('AllRice Tool Broker transport is unavailable');
   };
+
+  async waitForApplicationConnection(tool, response, agent, signal) {
+    if (tool !== 'cloud.mcp.call') return { content: response.modelContent };
+    let result;
+    try {
+      result = JSON.parse(response.modelContent);
+    } catch {
+      return { content: response.modelContent };
+    }
+    if (
+      !result.needsLogin ||
+      !/^[a-f0-9-]{36}$/.test(result.requestId ?? '') ||
+      !/^[a-f0-9-]{36}$/.test(result.connection?.id ?? '')
+    )
+      return { content: response.modelContent };
+    const session = [...this.sessions.entries()].find(
+      ([, record]) => record.handle.agent === agent,
+    );
+    if (!session) throw Error('connection_wait_session_missing');
+    const [sessionId] = session;
+    const questionId = `app-connect:${result.requestId}`;
+    this.managedConnectionWaits.add(sessionId);
+    try {
+      const answer = await this.ctx.userQuestions.ask({
+        agent,
+        signal,
+        questions: [
+          {
+            id: questionId,
+            header: '连接应用',
+            question: '完成应用登录后，我会继续当前任务。',
+            detail: `[打开连接页面](${result.loginPath})\n请勿在聊天中填写密码或令牌。连接编号：${result.connection.id}`,
+            options: [{ label: '已连接，继续任务' }, { label: '取消连接' }],
+          },
+        ],
+      });
+      return {
+        content: JSON.stringify({
+          connectionId: result.connection.id,
+          answer,
+          instruction: answer.answers.some((item) =>
+            item.selected.includes('取消连接'),
+          )
+            ? '用户取消本次连接。停止等待和重试此连接，继续处理不依赖它的工作。'
+            : '先使用 action=status 检查连接状态；只有发现完成后才能调用工具。这不是远程操作批准。',
+        }),
+      };
+    } finally {
+      this.managedConnectionWaits.delete(sessionId);
+    }
+  }
 
   installUserQuestionProvider() {
     if (!this.ctx.userQuestions) return;
@@ -1163,7 +1215,12 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
               );
               if (typeof response?.modelContent !== 'string')
                 throw Error('assistant_tool_response_invalid');
-              return { content: response.modelContent };
+              return this.waitForApplicationConnection(
+                tool.canonicalName,
+                response,
+                agent,
+                exec.signal,
+              );
             }
             const response = await this.toolBrokerRequest(
               {
@@ -1180,7 +1237,12 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             ) {
               throw new Error('AllRice Tool Broker returned an invalid result');
             }
-            return { content: response.modelContent };
+            return this.waitForApplicationConnection(
+              tool.canonicalName,
+              response,
+              agent,
+              exec.signal,
+            );
           },
           presentCall: (args) => ({
             card: 'generic',

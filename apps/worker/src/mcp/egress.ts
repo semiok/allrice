@@ -18,16 +18,21 @@ export function validateMcpEndpoint(input: string) {
   return url;
 }
 
-/** SDK networking is confined to one administrator-authorized endpoint.
+/** Each request is confined to its authorized MCP endpoint or SDK-discovered
+ * public OAuth destination.
  * DNS is checked for every request and pinned into the actual TLS connection.
  * There is deliberately no production localhost, proxy or redirect exception. */
 export function createPinnedMcpFetch(input: {
   endpoint: string;
-  bearerToken: string;
+  bearerToken: string | null;
   signal: AbortSignal;
   assertAuthorized: () => Promise<void>;
+  oauthNetwork?: boolean;
 }): typeof fetch {
-  const endpoint = validateMcpEndpoint(input.endpoint);
+  const endpoint = new URL(input.endpoint);
+  const validate = new URL(endpoint);
+  if (input.oauthNetwork) validate.search = '';
+  validateMcpEndpoint(validate.href);
   return async (requestInput, init) => {
     const url = new URL(
       typeof requestInput === 'string'
@@ -51,7 +56,10 @@ export function createPinnedMcpFetch(input: {
     )
       throw new McpError('MCP_SOURCE_DENIED');
     const address = addresses[0]!;
-    const body = init?.body;
+    const body =
+      input.oauthNetwork && init?.body instanceof URLSearchParams
+        ? init.body.toString()
+        : init?.body;
     if (
       body !== undefined &&
       body !== null &&
@@ -59,7 +67,11 @@ export function createPinnedMcpFetch(input: {
     )
       throw new McpError('MCP_LIMIT');
     const headers = new Headers(init?.headers);
-    headers.set('authorization', `Bearer ${input.bearerToken}`);
+    if (!input.oauthNetwork) {
+      if (input.bearerToken)
+        headers.set('authorization', `Bearer ${input.bearerToken}`);
+      else headers.delete('authorization');
+    }
     headers.set('accept-encoding', 'identity');
     headers.delete('host');
     headers.delete('cookie');

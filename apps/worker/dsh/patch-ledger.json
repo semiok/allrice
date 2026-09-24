@@ -88,6 +88,14 @@
       "kind": "upstream-source-patch",
       "path": "patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch",
       "reason": "Classify four exact AllRice log-only events across the native v0-to-v3 migration; validate payloads, retain IDs/digests, and preserve native sequence/reference remapping. The JSONL verifier bundle receives the identical vocabulary and validator. Unknown events remain refused."
+    },
+    {
+      "id": "allrice-managed-native-mcp-v1",
+      "issue": "MET-159",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "upstream-source-patch",
+      "path": "patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch",
+      "reason": "Inject the Worker-owned pinned HTTP fetch and official MCP SDK OAuth provider into the native published client. Reuse native discovery, tool naming, schemas, registry and execution; disable reconnection so uncertain remote writes are not replayed. Existing SDK connections retain frozen-name compatibility until retired."
     }
   ]
 }

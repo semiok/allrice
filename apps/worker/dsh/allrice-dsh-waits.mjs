@@ -43,7 +43,16 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   }
   if (
     open.size > 1 ||
-    [...open.values()].some((name) => name !== 'ask_user_question')
+    [...open.values()].some(
+      (name) =>
+        name !== 'ask_user_question' &&
+        !(
+          name === 'cloud_mcp_call' &&
+          server.managedConnectionWaits?.has(sessionId) &&
+          question.questions.length === 1 &&
+          /^app-connect:[a-f0-9-]{36}$/.test(question.questions[0].id)
+        ),
+    )
   )
     return null;
   await server.taskProgress?.flush();

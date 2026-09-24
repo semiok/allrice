@@ -14,6 +14,7 @@
     "@allrice/browser-control": "workspace:*",
     "@allrice/contracts": "workspace:*",
     "@allrice/database": "workspace:*",
+    "@allrice/office-runtime": "workspace:*",
     "@allrice/storage": "workspace:*",
     "@deepseek-ai/cordis": "4.0.2",
     "@deepseek-ai/cordis-plugin-timer": "1.1.4",
@@ -32,6 +33,7 @@
     "@deepseek-ai/dsh-llm-deepseek": "0.1.5-rc.3",
     "@deepseek-ai/dsh-llm-pi-ai": "0.1.5-rc.3",
     "@deepseek-ai/dsh-llm-retry": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-mcp-client": "0.1.5-rc.3",
     "@deepseek-ai/dsh-repeat-tool-reminder": "0.1.5-rc.3",
     "@deepseek-ai/dsh-scope": "0.1.5-rc.3",
     "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.5-rc.3",
@@ -73,8 +75,7 @@
     "pdfkit": "0.17.2",
     "playwright-core": "1.62.1",
     "pptxgenjs": "4.0.1",
-    "zod": "^4.4.3",
-    "@allrice/office-runtime": "workspace:*"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/pdfkit": "0.17.4"

@@ -3,14 +3,16 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { DataAccessError, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
-import { McpSettings } from '../../runtime-console/mcp-settings';
+import { ConnectedApps } from './connected-apps';
 import { LocalMcpSettings } from '../../runtime-console/local-mcp-settings';
 
 export const dynamic = 'force-dynamic';
 
 export default async function WorkspaceMcpPage({
   searchParams,
-}: { searchParams?: Promise<{ workspaceId?: string }> } = {}) {
+}: {
+  searchParams?: Promise<{ workspaceId?: string; connectionId?: string }>;
+} = {}) {
   const requestHeaders = await headers();
   const context = await getRequestContext(
     new Request('http://localhost/workspace/mcp', { headers: requestHeaders }),
@@ -34,7 +36,7 @@ export default async function WorkspaceMcpPage({
     return (
       <main>
         <Link href="/chatflow">返回工作台</Link>
-        <p role="alert">当前租户没有你可访问的工作区，无法管理 MCP 连接。</p>
+        <p role="alert">当前租户没有你可访问的工作区，无法管理应用连接。</p>
       </main>
     );
   }
@@ -45,21 +47,36 @@ export default async function WorkspaceMcpPage({
         m.userId === context.actor.id &&
         m.organizationId === context.organizationId &&
         (m.workspaceId === null || m.workspaceId === workspaceId) &&
-        m.role === 'admin',
+        ['admin', 'member'].includes(m.role),
     )
   )
     return (
       <main>
         <Link href="/chatflow">返回工作台</Link>
-        <p>只有当前租户管理员可以管理 MCP 连接。</p>
+        <p role="alert">当前账号没有此工作区的应用连接权限。</p>
       </main>
     );
   return (
     <main>
       <Link href="/chatflow">← 返回工作台</Link>
-      <h1>当前租户的 MCP 连接</h1>
-      <McpSettings workspaceId={workspaceId} />
-      <LocalMcpSettings workspaceId={workspaceId} />
+      <h1>已连接应用</h1>
+      <ConnectedApps
+        workspaceId={workspaceId}
+        connectionId={(await searchParams)?.connectionId}
+      />
+      {context.memberships.some(
+        (m) =>
+          m.active &&
+          m.userId === context.actor.id &&
+          m.organizationId === context.organizationId &&
+          (m.workspaceId === null || m.workspaceId === workspaceId) &&
+          m.role === 'admin',
+      ) && (
+        <details>
+          <summary>本地应用高级设置</summary>
+          <LocalMcpSettings workspaceId={workspaceId} />
+        </details>
+      )}
     </main>
   );
 }
