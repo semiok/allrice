@@ -1,0 +1,19 @@
+--- a/apps/web/app/chatflow/dsh-upstream/workspace/tree.ts
++++ b/apps/web/app/chatflow/dsh-upstream/workspace/tree.ts
+@@ -3,15 +3,7 @@
+  * Session order. Unassigned Sessions trail under Ungrouped; only the selected
+  * blank Session remains visible.
+  */
+-import {
+-  type SessionListState, type SessionSearchResultItem, type SessionSummary,
+-} from '@deepseek-ai/dsh-api-session-controller/client'
+-import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+-import type {
+-  SessionStatusSnapshot,
+-} from '@deepseek-ai/dsh-client-ui-session/client'
+-import type {} from '@deepseek-ai/dsh-schedule/client'
+-import type { SessionId } from '@deepseek-ai/dsh-session/types'
++import type { SessionListState, SessionSearchResultItem, SessionSummary, WorkspaceId, WorkspaceView, SessionStatusSnapshot, SessionId } from './contracts';
+ import { assertNever } from '@deepseek-ai/dsh-util-values'
+ import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
+ 

@@ -147,6 +147,7 @@ suite(
         write: false,
         outdir: '/unused-p26-output',
         jsx: 'automatic',
+        loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
         define: {
           'process.env.NODE_ENV': '"development"',
           'process.env': '{}',
@@ -426,11 +427,19 @@ suite(
       });
       const page: Page = await context.newPage();
       page.setDefaultTimeout(4000);
+      // These races deliberately leave the current draft/upload. Accept only
+      // the new, explicit discard warning; unexpected dialogs remain failures.
+      page.on('dialog', async (dialog) => {
+        expect(dialog.message()).toBe(
+          '当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？',
+        );
+        await dialog.accept();
+      });
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       try {
         await page.goto(`${origin}/?session=${A}`);
-        await page.getByRole('button', { name: /^Session B/ }).waitFor();
+        await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
         await page.getByText('Existing A', { exact: true }).waitFor();
@@ -463,7 +472,7 @@ suite(
         },
         async choose(id: string) {
           await page
-            .getByRole('button', {
+            .getByRole('treeitem', {
               name: id === A ? /^Session A/ : /^Session B/,
             })
             .click();

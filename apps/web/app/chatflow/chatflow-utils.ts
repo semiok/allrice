@@ -43,11 +43,7 @@ export async function fileToBase64(file: File) {
 
 export function employeeForSession(workspace: Workspace, session: Session) {
   return workspace.employees.find(
-    (employee) =>
-      employee.id === session.employeeAssignmentId ||
-      employee.versions.some(
-        (version) => version.id === session.employeeVersionId,
-      ),
+    (employee) => employee.id === session.employeeAssignmentId,
   );
 }
 

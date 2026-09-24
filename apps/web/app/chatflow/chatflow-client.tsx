@@ -28,6 +28,7 @@ import {
 } from './interaction-status';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { ChatSidebar } from './chat-sidebar';
+import { EmployeePickerDialog } from './employee-picker-dialog';
 import { useMonthlyQuota } from './use-monthly-quota';
 import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
@@ -106,6 +107,7 @@ export function ChatFlowClient({
     captureSelection,
     createSession,
     newSessionEmployee,
+    setPendingEmployeeAssignmentId,
     history,
     loadHistory,
     loadWorkspace,
@@ -115,6 +117,10 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
+  const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
+    null,
+  );
   const monthlyQuota = useMonthlyQuota({
     workspaceId: workspace?.workspaceId,
     organizationId: workspace?.organizationId,
@@ -703,6 +709,31 @@ export function ChatFlowClient({
     }
   }
 
+  function confirmSessionNavigation() {
+    if (!workbench.confirmNavigation()) return false;
+    return (
+      !(draft.trim() || pendingAttachments.length) ||
+      window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
+    );
+  }
+  function startEmployeeSession(assignmentId: string) {
+    if (
+      !workspace?.employees.some((employee) => employee.id === assignmentId)
+    ) {
+      setError('这位员工已不在当前工作区，请重新选择。');
+      return;
+    }
+    if (layout.compact) setSidebarCollapsed(true);
+    resetRunState();
+    selectSession(null);
+    setHistory(null);
+    setPendingEmployeeAssignmentId(assignmentId);
+    setDraft('');
+    clearPendingAttachments();
+    setEmployeePickerOpen(false);
+    requestAnimationFrame(() => composerInput.current?.focus());
+  }
+
   if (!workspace || !manifest) {
     return <main className={styles.loading}>正在进入 AllRice ChatFlow…</main>;
   }
@@ -721,6 +752,7 @@ export function ChatFlowClient({
     )?.manifest.name ??
     activeEmployee?.currentVersion.manifest.name ??
     activeEmployeeProfile?.name ??
+    activeSession?.employeeName ??
     'AI 员工';
   const employeeAssistantAvailability = assistantEligibility({
     enabled: assistantsEnabled,
@@ -860,32 +892,54 @@ export function ChatFlowClient({
           </div>
         </div>
       ) : null}
+      {employeePickerOpen && (
+        <EmployeePickerDialog
+          workspace={workspace}
+          onClose={() => setEmployeePickerOpen(false)}
+          onSelect={startEmployeeSession}
+        />
+      )}
       <ChatSidebar
         monthlyQuota={monthlyQuota}
-        activeEmployeeName={activeEmployeeName}
-        activeEmployeeProfileName={activeEmployeeProfile?.name}
         activeId={activeId}
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
         manifest={manifest}
         onCollapsedChange={setSidebarCollapsed}
-        onNewSession={() => {
-          if (!workbench.confirmNavigation()) return;
-          if (layout.compact) setSidebarCollapsed(true);
-          resetRunState();
-          selectSession(null);
-          setHistory(null);
-          setDraft('');
-          clearPendingAttachments();
+        onNewSession={(assignmentId) => {
+          if (!confirmSessionNavigation()) return;
+          if (assignmentId) startEmployeeSession(assignmentId);
+          else if (workspace.employees.length === 1)
+            startEmployeeSession(workspace.employees[0]!.id);
+          else if (workspace.employees.length > 1) setEmployeePickerOpen(true);
+          else setError('当前没有可用员工，请先派驻员工。');
         }}
-        onOpenEmployeeDetails={() => setEmployeeDetailsOpen(true)}
+        onOpenEmployeeDetails={(assignmentId) => {
+          setDetailsAssignmentId(assignmentId ?? null);
+          setEmployeeDetailsOpen(true);
+        }}
         onSelectSession={(sessionId) => {
-          if (sessionId !== activeId && !workbench.confirmNavigation()) return;
+          if (sessionId !== activeId && !confirmSessionNavigation()) return;
           if (layout.compact) setSidebarCollapsed(true);
-          if (sessionId !== activeId) clearPendingAttachments();
+          if (sessionId !== activeId) {
+            clearPendingAttachments();
+            setDraft('');
+          }
           selectSession(sessionId);
         }}
-        sessions={sessions}
+        sessions={sessions.map((session) =>
+          session.id !== activeId
+            ? session
+            : {
+                ...session,
+                running: isRunning,
+                pendingInteraction: interactions.data?.pendingActions.length
+                  ? 'approval'
+                  : pendingUserQuestion
+                    ? 'question'
+                    : undefined,
+              },
+        )}
         workspace={workspace}
       />
 
@@ -905,14 +959,13 @@ export function ChatFlowClient({
                       <button
                         className={conversationUi.crumb}
                         onClick={() => {
-                          if (!workbench.confirmNavigation()) return;
-                          resetRunState();
-                          selectSession(null);
-                          setHistory(null);
+                          if (!confirmSessionNavigation()) return;
+                          if (activeEmployee)
+                            startEmployeeSession(activeEmployee.id);
                         }}
                         type="button"
                       >
-                        与 Rice 工作
+                        与 {activeEmployeeName} 工作
                       </button>
                       <span className={conversationUi.crumbSep}>/</span>
                     </span>
@@ -1167,7 +1220,13 @@ export function ChatFlowClient({
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}
         open={employeeDetailsOpen}
-        profile={activeEmployeeProfile ?? null}
+        profile={
+          workspace.employeeProfiles.find(
+            (profile) => profile.assignmentId === detailsAssignmentId,
+          ) ??
+          activeEmployeeProfile ??
+          null
+        }
       />
 
       <WorkspaceFilePickerDialog

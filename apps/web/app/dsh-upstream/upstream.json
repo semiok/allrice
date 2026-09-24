@@ -41,5 +41,50 @@
       "reuse": "Native DisclosureRow component, unmodified DisclosureRow and ReasoningRow styles, native Think icon; mouse/keyboard expansion and running sweep animation",
       "productChanges": "Public Allrice lifecycle events instead of raw reasoning text; Chinese grouped tool counts and cumulative tool duration; authoritative server elapsed time; actual child assistant panels only; first answer token removes microstatus. Imports and string class-name joining adapted without adding clsx."
     }
+  ],
+  "componentSets": [
+    {
+      "id": "employee-workspace",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-source-with-recorded-adapter-patches",
+      "files": [
+        {
+          "source": "packages/client/ui-workspace/src/client/rows/Rows.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx",
+          "upstreamSha256": "2b2f59907bbaf167d96db1af267ac5778a35313d0a8f4199c9666e93485b2a53",
+          "sha256": "93f582f33a80add8b06f1ee9bfdc095d549c30e5d18776f664e51534d452b9c1",
+          "patch": "scripts/dsh-ui-patches/Rows.tsx.patch"
+        },
+        {
+          "source": "packages/client/ui-workspace/src/client/rows/Rows.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.module.css",
+          "upstreamSha256": "8f403afa300439b3be16c507871774c9d65047a81303b66013bbd458558dfdd9",
+          "sha256": "8f403afa300439b3be16c507871774c9d65047a81303b66013bbd458558dfdd9"
+        },
+        {
+          "source": "packages/client/ui-workspace/src/client/tree.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/workspace/tree.ts",
+          "upstreamSha256": "7d8d09208c2959ddadb3a2b17e8f579e4c9f4c2cc58d0f3f939b3144b6de03a5",
+          "sha256": "e09596e03415dad2ff58fa5cd7c30dbcf31b7a96255bad644260b16a8f7bdff5",
+          "patch": "scripts/dsh-ui-patches/tree.ts.patch"
+        },
+        {
+          "source": "packages/client/ui-workspace/src/client/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/workspace/locales.ts",
+          "upstreamSha256": "237b4bb01898993485df5dd5d320533a91ea65d6e72d9e5566d0d534ef350cbb",
+          "sha256": "237b4bb01898993485df5dd5d320533a91ea65d6e72d9e5566d0d534ef350cbb"
+        }
+      ],
+      "excerpts": [
+        {
+          "source": "packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx",
+          "symbol": "collapsedSessionRows",
+          "target": "apps/web/app/chatflow/dsh-upstream/workspace/collapsed-session-rows.ts",
+          "sha256": "0e434ce035e0d75a97af98e892e739a4669eb149bf4be370628ba1f4ee963795"
+        }
+      ]
+    }
   ]
 }

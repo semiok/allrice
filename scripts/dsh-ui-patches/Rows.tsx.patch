@@ -1,0 +1,138 @@
+--- a/apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx
++++ b/apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx
+@@ -11,9 +11,9 @@
+  * session and workspace hover cards are suppressed while a menu is open.
+  */
+ import { useEffect, useMemo, useRef, useState } from 'react'
+-import type { RefObject } from 'react'
++import type { RefObject, ReactNode } from 'react'
+ import clsx from 'clsx'
+-import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
++import type { PropsRenderSlots } from './contracts'
+ import {
+   HoverCard, IconAlarmClockOutlineRegular, IconArchiveOutlineRegular, IconEditOutlineRegular,
+   IconEllipsisOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular,
+@@ -22,8 +22,8 @@
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
+ import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
+-import type { MenuOpenState, WorkspaceBrowserProps } from '../contract/slots.ts'
+-import type { GroupNode, SearchResultNode, SessionNode } from '../tree.ts'
++import type { MenuOpenState, WorkspaceBrowserProps } from './contracts'
++import type { GroupNode, SearchResultNode, SessionNode } from './tree'
+ import css from './Rows.module.css'
+ 
+ /** The standard locale seat, prop-passed from the browser root. */
+@@ -201,11 +201,12 @@
+  * @param props.t - the browser root's locale seat.
+  * @returns the row element.
+  */
+-export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, t }: {
++export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, leading, actions, drag, home, t }: {
+   group: GroupNode
+   containsCurrentDescendant?: boolean
+   onToggle: () => void
+-  onCreate: () => void
++  onCreate?: () => void
++  leading?: ReactNode
+   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
+   actions?: { rename: () => void; delete: () => void } | undefined
+   /** Present only for real Workspace rows in the grouped view. */
+@@ -229,6 +230,12 @@
+       data-row-key={`workspace:${group.key}`}
+       role="treeitem"
+       aria-expanded={row.expanded}
++      tabIndex={0}
++      onKeyDown={(event) => {
++        if (event.target !== event.currentTarget) return
++        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onToggle() }
++        if ((event.key === 'ArrowRight' && !row.expanded) || (event.key === 'ArrowLeft' && row.expanded)) { event.preventDefault(); onToggle() }
++      }}
+       onClick={onToggle}
+       draggable={drag !== undefined}
+       onDragStart={drag === undefined
+@@ -241,7 +248,7 @@
+       onDragEnd={drag?.end}
+     >
+       <span className={clsx(css.slot, css.folder, active && css.folderActive)}>
+-        {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
++        {leading ?? (row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />)}
+       </span>
+       <span className={clsx(css.slot, css.chevron)}>
+         <IconTriangleRightFillRegular className={clsx(css.arrow, row.expanded && css.arrowOpen)} />
+@@ -278,7 +285,7 @@
+             )}
+           />
+         )}
+-        <Tooltip label={t('actions.newSession')} side="bottom" align="end" delayMs={500}>
++        {onCreate && <Tooltip label={t('actions.newSession')} side="bottom" align="end" delayMs={500}>
+           <button
+             type="button"
+             className={css.iconButton}
+@@ -287,7 +294,7 @@
+           >
+             <IconNewChatOutlineRegular />
+           </button>
+-        </Tooltip>
++        </Tooltip>}
+       </span>
+     </div>
+   )
+@@ -471,6 +478,10 @@
+       className={clsx(css.searchResultRow, selected && css.selected, result.archived && css.archived)}
+       role="treeitem"
+       aria-selected={selected}
++      tabIndex={0}
++      onKeyDown={(event) => {
++        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpen(result.id) }
++      }}
+       aria-description={result.archived ? t('toast.archivedNotOpenable') : undefined}
+       onClick={() => { onOpen(result.id) }}
+     >
+@@ -534,7 +545,7 @@
+   now: number
+   onOpen: (id: SessionNode['id']) => void
+   /** Open the rename dialog from a title double-click (id + current title). */
+-  onRenameRequest: (id: SessionNode['id'], currentTitle: string) => void
++  onRenameRequest?: (id: SessionNode['id'], currentTitle: string) => void
+   /** Scroll this row into view after search navigation, then acknowledge it. */
+   onReveal?: (() => void) | undefined
+   /** Present on reorderable-list rows so every row can remain a drop target. */
+@@ -542,7 +553,7 @@
+   /** The row is rendered without a parent Workspace header. */
+   flat?: boolean | undefined
+   t: RowTranslate
+-} & PropsRenderSlots<'sidebar.workspaces.session.menu.item' | 'sidebar.workspaces.session.row.action'>) {
++} & Partial<PropsRenderSlots<'sidebar.workspaces.session.menu.item' | 'sidebar.workspaces.session.row.action'>>) {
+   const row = node
+   const title = displayTitle(node, t)
+   const selected = node.id === currentId
+@@ -577,6 +588,10 @@
+       )}
+       role="treeitem"
+       aria-selected={selected}
++      tabIndex={0}
++      onKeyDown={(event) => {
++        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpen(node.id) }
++      }}
+       aria-description={row.archived ? t('toast.archivedNotOpenable') : undefined}
+       onClick={() => { onOpen(node.id) }}
+       onPointerEnter={marquee.enter}
+@@ -619,7 +634,7 @@
+       <span
+         ref={titleRef}
+         className={css.title}
+-        onDoubleClick={row.blank
++        onDoubleClick={row.blank || !onRenameRequest
+           ? undefined
+           : (e) => { e.stopPropagation(); onRenameRequest(node.id, row.title) }}
+       >
+@@ -644,7 +659,7 @@
+       {/* The strip's clicks stay in the strip: the trigger and every
+           row.action entry act without also opening the row, so an entry's
+           button needs no propagation handling of its own. */}
+-      {!row.blank && (
++      {!row.blank && renderSlot && (
+         <span className={css.rowActions} onClick={(e) => { e.stopPropagation() }}>
+           <Menu
+             open={menuOpen}

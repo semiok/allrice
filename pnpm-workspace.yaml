@@ -9,8 +9,17 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
 
+# Published UI atoms import React but omit its peer declaration. Bind them to
+# the embedding application's React, rather than pnpm's unrelated hoisted 18.x.
+packageExtensions:
+  '@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1':
+    peerDependencies:
+      react: '^18.2.0 || ^19.0.0'
+      react-dom: '^18.2.0 || ^19.0.0'
+
 # Pin formerly auto-resolved peers to the audited rc.3 graph.
 overrides:
+  'zustand@4.4.7>use-sync-external-store': 1.6.0
   '@deepseek-ai/dsh-anonymous-user-id': 0.1.5-rc.3
   '@deepseek-ai/dsh-bash-local': 0.1.5-rc.3
   '@deepseek-ai/dsh-code-runtime': 0.1.5-rc.3

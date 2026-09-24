@@ -13,6 +13,7 @@ interface DshDialogProps {
   onClose: () => void;
   className?: string;
   bodyClassName?: string;
+  initialFocusSelector?: string;
 }
 
 export function DshDialog({
@@ -23,6 +24,7 @@ export function DshDialog({
   onClose,
   className = '',
   bodyClassName = '',
+  initialFocusSelector,
 }: DshDialogProps) {
   const [mounted, setMounted] = useState(false);
   const dialog = useRef<HTMLElement>(null);
@@ -56,7 +58,12 @@ export function DshDialog({
           'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]',
         ),
       ).filter((node) => node.getClientRects().length > 0);
-    (focusable()[0] ?? section).focus();
+    (initialFocusSelector
+      ? (section.querySelector<HTMLElement>(initialFocusSelector) ??
+        focusable()[0] ??
+        section)
+      : (focusable()[0] ?? section)
+    ).focus();
     const trap = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
       const nodes = focusable(),
@@ -88,7 +95,7 @@ export function DshDialog({
       document.removeEventListener('keydown', trap);
       if (previous?.isConnected) previous.focus();
     };
-  }, [mounted]);
+  }, [mounted, initialFocusSelector]);
 
   if (!mounted) return null;
 

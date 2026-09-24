@@ -105,6 +105,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       write: false,
       outdir: '/unused-met147',
       jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: {
         'process.env.NODE_ENV': '"development"',
         'process.env': '{}',
@@ -159,6 +160,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   async function fixture(
     options: {
+      employeeCount?: number;
+      employeeHistory?: boolean;
       width?: number;
       artifacts?: boolean;
       disabled?: boolean;
@@ -323,28 +326,65 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             workspaceId: state.workspace,
             viewerId: state.viewer,
             canAdminister: false,
-            sessions: options.noSession
-              ? []
-              : state.omitSessionA
-                ? [session(B)]
-                : [session(A), session(B)],
+            sessions: options.employeeHistory
+              ? [
+                  ...Array.from({ length: 7 }, (_, n) => ({
+                    ...session(id(600 + n)),
+                    title: `历史工作 ${n + 1}`,
+                  })),
+                  { ...session(B), employeeAssignmentId: id(17) },
+                  {
+                    ...session(id(650)),
+                    employeeAssignmentId: id(99),
+                    employeeName: '旧员工',
+                    title: '已撤回员工的工作',
+                  },
+                ]
+              : options.noSession
+                ? []
+                : state.omitSessionA
+                  ? [session(B)]
+                  : [session(A), session(B)],
             sessionModels: [],
             employeeProfiles: [],
-            employees: [
-              {
-                id: id(7),
-                employeeId: id(9),
-                isDefault: true,
-                versions: [],
-                currentVersion: {
-                  id: id(8),
-                  manifest: {
-                    name: state.employeeName,
-                    runtimePolicy: { harness: 'dsh', provider: 'codex' },
-                  },
-                },
-              },
-            ],
+            employees:
+              options.employeeCount === 0
+                ? []
+                : [
+                    ...(options.employeeCount === 2
+                      ? [
+                          {
+                            id: id(17),
+                            employeeId: id(19),
+                            isDefault: false,
+                            versions: [],
+                            currentVersion: {
+                              id: id(18),
+                              manifest: {
+                                name: '财务员工',
+                                runtimePolicy: {
+                                  harness: 'dsh',
+                                  provider: 'codex',
+                                },
+                              },
+                            },
+                          },
+                        ]
+                      : []),
+                    {
+                      id: id(7),
+                      employeeId: id(9),
+                      isDefault: true,
+                      versions: [],
+                      currentVersion: {
+                        id: id(8),
+                        manifest: {
+                          name: state.employeeName,
+                          runtimePolicy: { harness: 'dsh', provider: 'codex' },
+                        },
+                      },
+                    },
+                  ],
           },
         });
       if (path === '/api/v1/saas/capabilities')
@@ -514,7 +554,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await page.goto(
       `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}`,
     );
-    await page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
+    await page
+      .getByRole('textbox', { name: '给 Rice 的消息' })
+      .waitFor()
+      .catch(async (error) => {
+        console.error(
+          'UI mount',
+          errors,
+          await page.locator('body').innerText(),
+        );
+        throw error;
+      });
     const panel = page.locator('#artifact-workbench');
     const entry = page.getByRole('button', { name: /▤ 交付成果/ });
     return {
@@ -550,6 +600,94 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
+    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+    try {
+      const rice = f.page.locator('[data-row-key="workspace:' + id(7) + '"]');
+      if ((await rice.getAttribute('aria-expanded')) !== 'true')
+        await rice.click();
+      await f.page.getByRole('button', { name: /展开其余/ }).click();
+      expect(
+        await f.page.getByText('历史工作 7', { exact: true }).isVisible(),
+      ).toBe(true);
+      expect(
+        await f.page.getByRole('region', { name: '旧员工（已撤回）' }).count(),
+      ).toBe(1);
+      await f.page
+        .getByRole('button', { name: '新的工作', exact: true })
+        .click();
+      const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
+      await picker.waitFor();
+      await expect
+        .poll(() =>
+          picker
+            .locator('[data-default-employee="true"]')
+            .evaluate((element) => element === document.activeElement),
+        )
+        .toBe(true);
+      if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+        await f.page.screenshot({
+          path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-picker.png`,
+        });
+      await f.page.keyboard.press('1');
+      expect(await picker.count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('button', { name: '与 财务员工 工作', exact: true })
+          .count(),
+      ).toBe(1);
+      await rice.hover();
+      await f.page
+        .getByRole('button', { name: '与 Rice 新建工作', exact: true })
+        .click();
+      expect(await picker.count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('button', { name: '与 Rice 工作', exact: true })
+          .count(),
+      ).toBe(1);
+      await f.page
+        .getByRole('button', { name: '收起侧边栏', exact: true })
+        .click();
+      await f.page
+        .getByRole('button', { name: '财务员工', exact: true })
+        .click();
+      expect(
+        await f.page.getByRole('group', { name: '财务员工的工作' }).isVisible(),
+      ).toBe(true);
+      if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+        await f.page.screenshot({
+          path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-rail.png`,
+        });
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 20_000);
+  it('MET160 zero and single employee new-work entry never uses an invalid assignment', async () => {
+    for (const employeeCount of [0, 1]) {
+      const f = await fixture({ employeeCount, noSession: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        expect(
+          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+        ).toBe(0);
+        if (!employeeCount)
+          expect(
+            await f.page
+              .getByText('当前没有可用员工，请先派驻员工。', { exact: true })
+              .isVisible(),
+          ).toBe(true);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }
+  }, 20_000);
 
   it.each([390, 1440])(
     'QueueDock persists two sends outside transcript, edits with attachments and revokes on the server at width %i',
@@ -1223,7 +1361,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         action: 'guide',
         releaseEnabled: false,
       }));
-      await f.page.getByRole('button', { name: /研究任务 B/ }).click();
+      await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
       await f.page
         .getByRole('button', { name: '能力与环境', exact: true })
         .click();
@@ -1262,7 +1400,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     async () => {
       const f = await fixture({ artifacts: true });
       try {
-        await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+        await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
         await expect
           .poll(() => new URL(f.page.url()).searchParams.get('session'))
           .toBe(B);
@@ -1274,7 +1412,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await f.panel.getByRole('heading', { name: /COIN/ }).count(),
         ).toBe(0);
-        await f.page.getByRole('button', { name: /^研究任务 A/ }).click();
+        await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
         await f.page.reload();
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
         await f.page
@@ -1728,7 +1866,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(0);
       expect(await f.panel.count()).toBe(0);
       expect(await f.entry.count()).toBe(0);
-      await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
       expect(await f.panel.count()).toBe(0);
       expect(await f.entry.count()).toBe(0);
       await f.page
@@ -1750,7 +1888,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release = done;
       });
       await f.entry.click();
-      await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
       await expect.poll(() => f.panel.count()).toBe(0);
       release();
       f.state.delay = null;
@@ -1758,7 +1896,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         0,
       );
       f.state.contentError = true;
-      await f.page.getByRole('button', { name: /^研究任务 A/ }).click();
+      await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
       await f.panel
         .getByRole('button', { name: '重试预览', exact: true })
         .waitFor();

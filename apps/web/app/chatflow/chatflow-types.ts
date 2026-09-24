@@ -18,6 +18,9 @@ export interface Session {
   visibility: Visibility;
   updatedAt: string;
   archivedAt: string | null;
+  employeeName?: string;
+  running?: boolean;
+  pendingInteraction?: 'approval' | 'plan-review' | 'question';
 }
 
 export interface EmployeeVersion {
