@@ -78,3 +78,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## DSH employee workspace UI (MET-160)
+
+DSH `0.1.7-rc.1`, commit `46a7f68b0922371ce7144b668b90e377d8e799f4`,
+https://github.com/deepseek-ai/deepseek-harness, MIT.
+Native workspace Rows/tree/locales and the collapsedSessionRows excerpt are
+preserved under `apps/web/app/chatflow/dsh-upstream/workspace/`. Source hashes
+and minimal host-projection/employee/accessibility patches are recorded in
+`apps/web/app/dsh-upstream/upstream.json` and `scripts/dsh-ui-patches/`.
+The official ui-primitives package and its runtime dependencies are consumed
+through their published package exports. The repository's existing DSH MIT
+notice applies to these additional upstream sources.
+
+MET-160 native Dock integration directly depends on the MIT-licensed
+`@deepseek-ai/dsh-client-ui-dockkit@0.1.7-rc.1` package. The native
+`ui-sidebar-right` stores, persistence, and seed contract are retained under
+`apps/web/app/chatflow/dsh-upstream/dock/`, from the same upstream commit
+`46a7f68b0922371ce7144b668b90e377d8e799f4`. Local patches and checksums are
+recorded in the existing WebUI upstream ledger. The DeepSeek MIT notice above
+applies to those source files.
+
+MET-160 files/document integration retains ui-sidebar-files and documentpreview
+zoom/PDF store sources from the same `0.1.7-rc.1` commit, with the MIT notice
+above and exact source/patch hashes in the WebUI ledger. PDF rendering loads the
+unaltered published `ui-sidebar-documentpreview/lib/client.pdf.js` chunk lazily;
+its bundled PDF.js/font license notices remain included. CodeBlock is consumed
+through the official ui-primitives package. Existing Allrice Office conversion
+and Markdown rendering remain the content adapters.
+
+MET-160 settings integration consumes the published ui-primitives Modal and
+icons. The ui-settings-general SettingsRoot panel/navigation and stylesheet
+from the same 0.1.7-rc.1 commit are adapted under
+`apps/web/app/chatflow/dsh-upstream/settings/`; source and patch checksums are
+recorded in the WebUI ledger. The DeepSeek MIT notice above also applies.

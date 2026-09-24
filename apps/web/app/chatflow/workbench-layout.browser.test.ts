@@ -1,17 +1,21 @@
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { officePreview } from '@allrice/office-runtime';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
+  OfficeRenderResponseSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
   type ChatFlowEventEnvelope,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
-import type { QueuedMessage, Message } from './chatflow-types';
+import type { QueuedMessage, Message, WorkspaceFile } from './chatflow-types';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -105,6 +109,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       write: false,
       outdir: '/unused-met147',
       jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: {
         'process.env.NODE_ENV': '"development"',
         'process.env': '{}',
@@ -159,6 +164,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   async function fixture(
     options: {
+      tenantAdmin?: boolean;
+      employeeCount?: number;
+      employeeHistory?: boolean;
       width?: number;
       artifacts?: boolean;
       disabled?: boolean;
@@ -225,6 +233,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       listError: false,
       contentError: false,
       officePreview: null as ArtifactPreview | null,
+      files: [] as WorkspaceFile[],
+      fileReads: 0,
+      filePreview: {
+        kind: 'text',
+        mediaType: 'text/markdown',
+        text: '# 上传的文件',
+      } as ArtifactPreview,
+      fileDelay: null as Promise<void> | null,
       text: report,
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
@@ -323,40 +339,129 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             workspaceId: state.workspace,
             viewerId: state.viewer,
             canAdminister: false,
-            sessions: options.noSession
-              ? []
-              : state.omitSessionA
-                ? [session(B)]
-                : [session(A), session(B)],
-            sessionModels: [],
-            employeeProfiles: [],
-            employees: [
-              {
-                id: id(7),
-                employeeId: id(9),
-                isDefault: true,
-                versions: [],
-                currentVersion: {
-                  id: id(8),
-                  manifest: {
-                    name: state.employeeName,
-                    runtimePolicy: { harness: 'dsh', provider: 'codex' },
+            sessions: options.employeeHistory
+              ? [
+                  ...Array.from({ length: 7 }, (_, n) => ({
+                    ...session(id(600 + n)),
+                    title: `历史工作 ${n + 1}`,
+                  })),
+                  { ...session(B), employeeAssignmentId: id(17) },
+                  {
+                    ...session(id(650)),
+                    employeeAssignmentId: id(99),
+                    employeeName: '旧员工',
+                    title: '已撤回员工的工作',
                   },
-                },
-              },
-            ],
+                ]
+              : options.noSession
+                ? []
+                : state.omitSessionA
+                  ? [session(B)]
+                  : [session(A), session(B)],
+            sessionModels: [],
+            employeeProfiles: options.employeeHistory
+              ? [
+                  {
+                    assignmentId: id(7),
+                    employeeId: id(9),
+                    name: 'Rice',
+                    description: '负责研究、分析与文件交付',
+                    identity: {
+                      role: '研究助理',
+                      mission: '帮助完成研究',
+                      workStyle: '按步骤交付',
+                      behaviorRules: [],
+                      safetyBoundaries: [],
+                    },
+                    skills: [
+                      {
+                        id: 'office',
+                        name: 'Office',
+                        description: '阅读和交付文档',
+                      },
+                    ],
+                    model: {
+                      harness: 'dsh',
+                      provider: 'codex',
+                      model: 'configured-model',
+                      reasoningEffort: 'medium',
+                    },
+                  },
+                ]
+              : [],
+            employees:
+              options.employeeCount === 0
+                ? []
+                : [
+                    ...(options.employeeCount === 2
+                      ? [
+                          {
+                            id: id(17),
+                            employeeId: id(19),
+                            isDefault: false,
+                            versions: [],
+                            currentVersion: {
+                              id: id(18),
+                              manifest: {
+                                name: '财务员工',
+                                runtimePolicy: {
+                                  harness: 'dsh',
+                                  provider: 'codex',
+                                },
+                              },
+                            },
+                          },
+                        ]
+                      : []),
+                    {
+                      id: id(7),
+                      employeeId: id(9),
+                      isDefault: true,
+                      versions: [],
+                      currentVersion: {
+                        id: id(8),
+                        manifest: {
+                          name: state.employeeName,
+                          runtimePolicy: { harness: 'dsh', provider: 'codex' },
+                        },
+                      },
+                    },
+                  ],
           },
         });
       if (path === '/api/v1/saas/capabilities')
         return answer({
           capabilities: {
             schemaVersion: 1,
-            roles: ['member'],
+            roles: options.tenantAdmin
+              ? ['member', 'tenant_admin']
+              : ['member'],
             surfaces: ['chatflow'],
             actions: [],
             features: { chatFlowV3: true, nativeHarnessEvents: true },
           },
         });
+      if (
+        [
+          '/api/v1/admin/mcp',
+          '/api/v1/admin/local-mcp',
+          '/api/v1/admin/browser-control',
+          '/api/v1/admin/local-browser',
+        ].includes(path)
+      ) {
+        expect(options.tenantAdmin).toBe(true);
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        return answer({
+          enabled: true,
+          connections: [],
+          employees: [],
+          devices: [],
+          targets: [],
+          members: [],
+          grants: [],
+          humanCredentialsConfigured: false,
+        });
+      }
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
       if (path === '/api/v1/workspace/monthly-quota') {
         expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
@@ -454,6 +559,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .join(''),
         });
       }
+      if (path === '/api/dsh-ui/pdf') {
+        const require = createRequire(resolve('apps/web/package.json'));
+        const file = join(
+          dirname(
+            require.resolve('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/package.json'),
+          ),
+          'lib/client.pdf.js',
+        );
+        return route.fulfill({
+          contentType: 'text/javascript',
+          body: await readFile(file),
+        });
+      }
+      if (path === '/api/v1/files') {
+        state.fileReads++;
+        if (state.fileDelay) await state.fileDelay;
+        return answer({ files: state.files });
+      }
+      if (path.startsWith('/api/v1/files/') && path.endsWith('/versions'))
+        return answer({ versions: [] });
+      if (path.startsWith('/api/v1/files/') && path.endsWith('/preview'))
+        return state.files.some((file) => path.includes(file.id))
+          ? answer(state.filePreview)
+          : answer({ error: { message: '文件已不存在' } }, 404);
       if (path.endsWith('/artifacts')) {
         const items = path.includes(A) ? [...state.items] : [];
         if (state.delay && path.includes(A)) await state.delay;
@@ -514,7 +643,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await page.goto(
       `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}`,
     );
-    await page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
+    await page
+      .getByRole('textbox', { name: '给 Rice 的消息' })
+      .waitFor()
+      .catch(async (error) => {
+        console.error(
+          'UI mount',
+          errors,
+          await page.locator('body').innerText(),
+        );
+        throw error;
+      });
     const panel = page.locator('#artifact-workbench');
     const entry = page.getByRole('button', { name: /▤ 交付成果/ });
     return {
@@ -550,6 +689,107 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
+    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+    try {
+      const rice = f.page.locator('[data-row-key="workspace:' + id(7) + '"]');
+      await f.page
+        .getByRole('button', { name: '查看Rice详情', exact: true })
+        .click();
+      const intro = f.page.getByRole('dialog', {
+        name: 'Rice员工详情',
+        exact: true,
+      });
+      await intro
+        .getByText('负责研究、分析与文件交付', { exact: true })
+        .waitFor();
+      await intro.getByText('Office', { exact: true }).waitFor();
+      await intro.getByRole('button', { name: '关闭', exact: true }).click();
+
+      if ((await rice.getAttribute('aria-expanded')) !== 'true')
+        await rice.click();
+      await f.page.getByRole('button', { name: /展开其余/ }).click();
+      expect(
+        await f.page.getByText('历史工作 7', { exact: true }).isVisible(),
+      ).toBe(true);
+      expect(
+        await f.page.getByRole('region', { name: '旧员工（已撤回）' }).count(),
+      ).toBe(1);
+      await f.page
+        .getByRole('button', { name: '新的工作', exact: true })
+        .click();
+      const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
+      await picker.waitFor();
+      await expect
+        .poll(() =>
+          picker
+            .locator('[data-default-employee="true"]')
+            .evaluate((element) => element === document.activeElement),
+        )
+        .toBe(true);
+      if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+        await f.page.screenshot({
+          path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-picker.png`,
+        });
+      await f.page.keyboard.press('1');
+      expect(await picker.count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('button', { name: '与 财务员工 工作', exact: true })
+          .count(),
+      ).toBe(1);
+      await rice.hover();
+      await f.page
+        .getByRole('button', { name: '与 Rice 新建工作', exact: true })
+        .click();
+      expect(await picker.count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('button', { name: '与 Rice 工作', exact: true })
+          .count(),
+      ).toBe(1);
+      await f.page
+        .getByRole('button', { name: '收起侧边栏', exact: true })
+        .click();
+      await f.page
+        .getByRole('button', { name: '财务员工', exact: true })
+        .click();
+      expect(
+        await f.page.getByRole('group', { name: '财务员工的工作' }).isVisible(),
+      ).toBe(true);
+      if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
+        await f.page.screenshot({
+          path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-rail.png`,
+        });
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 20_000);
+  it('MET160 zero and single employee new-work entry never uses an invalid assignment', async () => {
+    for (const employeeCount of [0, 1]) {
+      const f = await fixture({ employeeCount, noSession: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        expect(
+          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+        ).toBe(0);
+        if (!employeeCount)
+          expect(
+            await f.page
+              .getByText('当前没有可用员工，请先派驻员工。', { exact: true })
+              .isVisible(),
+          ).toBe(true);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }
+  }, 20_000);
 
   it.each([390, 1440])(
     'QueueDock persists two sends outside transcript, edits with attachments and revokes on the server at width %i',
@@ -810,23 +1050,127 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('shows the current member monthly balance alongside the workbench', async () => {
+  it('shows the current member monthly balance inside native settings', async () => {
     const f = await fixture();
     try {
+      const settings = f.page.getByRole('button', {
+        name: '设置',
+        exact: true,
+      });
+      expect(
+        await f.page.locator('summary[aria-label="账号月额度"]').count(),
+      ).toBe(0);
+      await settings.click();
       const quota = f.page.locator('summary[aria-label="账号月额度"]');
       await quota.getByText('Synthetic member', { exact: true }).waitFor();
       await quota.getByText('剩余 43%', { exact: true }).waitFor();
-      await quota.click();
       await f.page.getByText('本月已记录', { exact: false }).waitFor();
       expect(
         await f.page.locator('details').filter({ has: quota }).innerText(),
       ).toContain('5,000,000');
       await f.page.reload();
+      await settings.click();
       await quota.getByText('剩余 43%', { exact: true }).waitFor();
     } finally {
       await f.close();
     }
   });
+
+  it.each([390, 1440])(
+    'MET160 native settings holds account and connection screens, preserves drafts and restores focus at width %s',
+    async (width) => {
+      const f = await fixture({ width, tenantAdmin: true });
+      try {
+        const composer = f.page.getByRole('textbox', { name: '消息' });
+        await composer.fill('保留聊天草稿');
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        const trigger = f.page.getByRole('button', {
+          name: '设置',
+          exact: true,
+        });
+        expect(
+          await f.page.getByRole('link', { name: 'MCP 连接管理' }).count(),
+        ).toBe(0);
+        await trigger.click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await dialog.getByText('Synthetic member', { exact: true }).waitFor();
+        await f.page.screenshot({
+          path: `/tmp/met160-settings-account-${width}.png`,
+        });
+        await dialog
+          .getByRole('button', { name: 'MCP 连接', exact: true })
+          .click();
+        await dialog
+          .getByRole('heading', { name: '云端 MCP', exact: true })
+          .waitFor();
+        const name = dialog
+          .getByRole('textbox', { name: '连接名称', exact: true })
+          .first();
+        await name.fill('尚未保存的连接');
+        await dialog
+          .getByRole('button', { name: '云端浏览器', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '创建精确站点授权' })
+          .waitFor();
+        await dialog
+          .getByRole('button', { name: '本地浏览器', exact: true })
+          .click();
+        await dialog
+          .getByRole('region', { name: '本地浏览器授权', exact: true })
+          .waitFor();
+        expect(
+          await dialog.getByRole('link', { name: '返回工作台' }).count(),
+        ).toBe(0);
+        await dialog
+          .getByRole('button', { name: 'MCP 连接', exact: true })
+          .click();
+        expect(await name.inputValue()).toBe('尚未保存的连接');
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `/tmp/met160-settings-connections-${width}.png`,
+        });
+        const focusables = dialog.locator(
+          'button:not(:disabled):visible,input:not(:disabled):visible',
+        );
+        await focusables.last().focus();
+        await f.page.keyboard.press('Tab');
+        expect(
+          await dialog.evaluate((e) => e.contains(document.activeElement)),
+        ).toBe(true);
+        await f.page.keyboard.press('Escape');
+        expect(await dialog.count()).toBe(0);
+        expect(
+          await trigger.evaluate((e) => e === document.activeElement),
+        ).toBe(true);
+        if (width < 600) {
+          expect(
+            await f.page.getByRole('dialog', { name: '任务与历史' }).count(),
+          ).toBe(1);
+          await f.page.keyboard.press('Escape');
+        }
+        expect(await composer.inputValue()).toBe('保留聊天草稿');
+        if (width >= 600)
+          await f.page
+            .getByRole('button', { name: '收起侧边栏', exact: true })
+            .click();
+        await f.page.getByRole('button', { name: '设置', exact: true }).click();
+        await dialog.waitFor();
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([false, true])(
     'shows ordinary task timing on mobile with workbench disabled=%s, refreshes server waits and recovers from a failed read',
@@ -891,6 +1235,246 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
     30000,
+  );
+
+  it('MET160 official file tree lazily reads actual files, opens native tabs, refreshes and handles deletion', async () => {
+    const f = await fixture();
+    try {
+      f.state.files = [
+        {
+          id: id(901),
+          fileName: '上传的说明.md',
+          mediaType: 'text/markdown',
+          sizeBytes: 20,
+          visibility: 'private',
+          ownedByMe: true,
+          category: 'uploads',
+          deliverableVersion: null,
+        },
+      ];
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      const tree = f.panel.locator('[data-files-state="tree"]');
+      await tree.waitFor();
+      expect(f.state.fileReads).toBe(0);
+      await tree.getByRole('button', { name: '上传文件', exact: true }).click();
+      await tree
+        .getByRole('button', { name: '上传的说明.md', exact: true })
+        .click();
+      await f.panel
+        .getByRole('heading', { name: '上传的文件', exact: true })
+        .waitFor();
+      expect(
+        await f.panel
+          .getByRole('link', { name: '下载文件', exact: true })
+          .getAttribute('href'),
+      ).toContain(id(901));
+      f.state.filePreview = {
+        kind: 'text',
+        mediaType: 'application/json',
+        text: '{"native":true}',
+      };
+      await f.panel
+        .getByRole('button', { name: '刷新文件', exact: true })
+        .click();
+      await f.panel
+        .getByRole('button', { name: '复制源码', exact: true })
+        .waitFor();
+      await f.panel.getByText('{"native":true}', { exact: true }).waitFor();
+      await f.panel.getByRole('tab', { name: /^工作区文件/ }).click();
+      expect(
+        await tree
+          .getByRole('button', { name: '上传的说明.md', exact: true })
+          .count(),
+      ).toBe(1);
+      f.state.files = [];
+      await tree.getByRole('button', { name: '重新读取', exact: true }).click();
+      await expect
+        .poll(() =>
+          tree
+            .getByRole('button', { name: '上传的说明.md', exact: true })
+            .count(),
+        )
+        .toBe(0);
+      await tree.getByRole('button', { name: '交付文件', exact: true }).click();
+      await expect
+        .poll(() => tree.getByText('空目录', { exact: true }).count())
+        .toBe(2);
+      await f.panel.getByRole('tab', { name: /^上传的说明/ }).click();
+      await f.panel
+        .getByRole('button', { name: '刷新文件', exact: true })
+        .click();
+      await f.panel.getByRole('alert').waitFor();
+      await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
+      expect(await f.panel.count()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  }, 20_000);
+
+  it('MET160 keeps the chosen files tab when an artifact list arrives late, and honors explicit reopening', async () => {
+    const f = await fixture();
+    let release!: () => void;
+    f.state.delay = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.state.items = [artifact(10)];
+    try {
+      await f.page.reload();
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      const tree = f.panel.locator('[data-files-state="tree"]');
+      await tree.waitFor();
+      release();
+      await expect.poll(() => f.entry.innerText()).toContain('1');
+      expect(await tree.isVisible()).toBe(true);
+      await f.entry.click();
+      await f.panel.getByRole('tab', { name: /^report-10.md/ }).waitFor();
+      expect(await tree.isVisible()).toBe(false);
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      await tree.waitFor();
+      await f.entry.click();
+      expect(await tree.isVisible()).toBe(false);
+    } finally {
+      release();
+      await f.close();
+    }
+  });
+
+  it('MET160 published official PDF chunk renders actual PDF bytes with its bundled worker', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      // A real one-page PDF, with offsets computed from its actual object bytes.
+      const objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      ];
+      const content =
+        'BT /F1 16 Tf 30 350 Td (Allrice native PDF preview) Tj ET';
+      objects.push(
+        `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+      );
+      let pdf = '%PDF-1.4\n';
+      const offsets = [0];
+      objects.forEach((object, index) => {
+        offsets.push(Buffer.byteLength(pdf));
+        pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+      });
+      const xref = Buffer.byteLength(pdf);
+      pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
+        .slice(1)
+        .map((offset) => String(offset).padStart(10, '0') + ' 00000 n ')
+        .join(
+          '\n',
+        )}\ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+      f.state.officePreview = {
+        kind: 'pdf',
+        base64: Buffer.from(pdf).toString('base64'),
+      };
+      await f.page.reload();
+      const canvas = f.panel.getByRole('img', {
+        name: 'PDF 第 1 页',
+        exact: true,
+      });
+      await canvas.waitFor({ timeout: 15000 });
+      await expect
+        .poll(() =>
+          canvas.evaluate((element) => (element as HTMLCanvasElement).width),
+        )
+        .toBeGreaterThan(300);
+      await f.panel
+        .getByText('Allrice native PDF preview', { exact: true })
+        .waitFor();
+      expect(
+        await f.page.evaluate(() => Object.hasOwn(window, '__ModuleLoader__')),
+      ).toBe(false);
+      await f.page.screenshot({ path: '/tmp/allrice-met160-native-pdf.png' });
+    } finally {
+      await f.close();
+    }
+  }, 25_000);
+
+  it
+    .skipIf(!process.env.ALLRICE_OFFICE_PREVIEW_DIR)
+    .each(['docx', 'xlsx', 'pptx'])(
+    'MET160 real %s renderer output opens in native zoom viewport',
+    async (format) => {
+      const rendered = OfficeRenderResponseSchema.parse(
+        JSON.parse(
+          await readFile(
+            join(process.env.ALLRICE_OFFICE_PREVIEW_DIR!, `${format}.json`),
+            'utf8',
+          ),
+        ),
+      );
+      const f = await fixture({ artifacts: true });
+      try {
+        f.state.officePreview = officePreview(rendered);
+        await f.page.reload();
+        await f.entry.click();
+        const preview = f.panel.getByRole('region', {
+          name: 'Office 文档预览',
+        });
+        const page = preview.getByRole('img', { name: 'Office 文档第 1 页' });
+        await page.waitFor();
+        await expect
+          .poll(() =>
+            page.evaluate((element: HTMLImageElement) => element.naturalWidth),
+          )
+          .toBeGreaterThan(500);
+        await preview
+          .locator('[data-document-zoom-frame]')
+          .scrollIntoViewIfNeeded();
+        const frame = await preview
+          .locator('[data-document-zoom-mode]')
+          .boundingBox();
+        expect(frame).not.toBeNull();
+        await f.page.mouse.move(
+          frame!.x + frame!.width / 2,
+          frame!.y + frame!.height - 20,
+        );
+        await preview.getByRole('button', { name: '选择缩放比例' }).click();
+        await f.page
+          .getByRole('menuitem', { name: '150%', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            preview.getByRole('button', { name: '选择缩放比例' }).innerText(),
+          )
+          .toContain('150%');
+        await preview.getByRole('button', { name: '选择缩放比例' }).click();
+        await f.page
+          .getByRole('menuitem', { name: '适应宽度', exact: true })
+          .click();
+        await preview
+          .locator('[data-document-zoom-scrollport]')
+          .evaluate((element) => {
+            element.scrollTop = 0;
+            element.scrollLeft = 0;
+          });
+        await preview.evaluate((element) =>
+          element.scrollIntoView({ block: 'start' }),
+        );
+        await f.page.screenshot({
+          path: `/tmp/allrice-met160-native-${format}.png`,
+        });
+        if (rendered.pages.length > 1) {
+          await preview.getByRole('button', { name: '下一页' }).click();
+          await preview
+            .getByRole('img', { name: 'Office 文档第 2 页' })
+            .waitFor();
+        }
+      } finally {
+        await f.close();
+      }
+    },
+    25_000,
   );
 
   it('shows Office pages and actual formula errors without confusing rendering with layout approval', async () => {
@@ -1223,7 +1807,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         action: 'guide',
         releaseEnabled: false,
       }));
-      await f.page.getByRole('button', { name: /研究任务 B/ }).click();
+      await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
       await f.page
         .getByRole('button', { name: '能力与环境', exact: true })
         .click();
@@ -1262,7 +1846,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     async () => {
       const f = await fixture({ artifacts: true });
       try {
-        await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+        await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
         await expect
           .poll(() => new URL(f.page.url()).searchParams.get('session'))
           .toBe(B);
@@ -1274,7 +1858,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await f.panel.getByRole('heading', { name: /COIN/ }).count(),
         ).toBe(0);
-        await f.page.getByRole('button', { name: /^研究任务 A/ }).click();
+        await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
         await f.page.reload();
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
         await f.page
@@ -1459,7 +2043,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({ artifacts: true });
     try {
       // Classic scrollbars / embedded frames can make the frame narrower than
-      // the viewport. Reset uses 38% of that frame, while the cap remains 70vw.
+      // the viewport. Reset uses 38% of that frame; cap leaves usable chat width.
       await f.page.addStyleTag({
         content: 'main { width: calc(100% - 8px) !important; }',
       });
@@ -1478,7 +2062,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .querySelector('main > section header')!
             .getBoundingClientRect();
           const right = document
-            .querySelector('#artifact-workbench > header')!
+            .querySelector('#artifact-workbench [data-dockkit-strip]')!
             .getBoundingClientRect();
           return {
             left: left.height,
@@ -1488,9 +2072,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
       expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
       expect(
-        await f.panel
-          .getByRole('heading', { name: '交付成果', exact: true })
-          .count(),
+        await f.panel.getByRole('tab', { name: /^交付成果/ }).count(),
       ).toBe(1);
       expect(await f.entry.textContent()).toMatch(/交付成果.*1/);
       const panelWidth = async () =>
@@ -1510,10 +2092,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBeNull();
       }
       await dragTo(1400);
-      await expect.poll(panelWidth).toBe(360);
+      await expect.poll(panelWidth).toBe(340);
       await dragTo(30);
-      await expect.poll(panelWidth).toBe(1008); // 70vw at 1440px.
-      expect(await splitter.getAttribute('aria-valuenow')).toBe('1008');
+      await expect
+        .poll(panelWidth)
+        .toBe(
+          Math.round((await f.page.locator('main').boundingBox())!.width) -
+            240 -
+            340,
+        );
+      expect(await splitter.getAttribute('aria-valuenow')).toBe(
+        String(
+          Math.round((await f.page.locator('main').boundingBox())!.width) -
+            240 -
+            340,
+        ),
+      );
       const center = (await f.page.locator('main > section').boundingBox())!;
       for (const control of [
         f.page.getByRole('button', { name: '添加文件', exact: true }),
@@ -1589,11 +2183,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.setViewportSize({ width: 1200, height: 950 });
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('840');
+        .toBe(
+          String(
+            Math.round((await f.page.locator('main').boundingBox())!.width) -
+              240 -
+              340,
+          ),
+        );
       await f.page.setViewportSize({ width: 1440, height: 950 });
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('1008');
+        .toBe(
+          String(
+            Math.round((await f.page.locator('main').boundingBox())!.width) -
+              240 -
+              340,
+          ),
+        );
       await f.page.setViewportSize({ width: 390, height: 950 });
       await expect.poll(() => splitter.count()).toBe(0);
       expect(await f.panel.getAttribute('role')).toBe('dialog');
@@ -1618,8 +2224,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
       await f.page.getByRole('dialog', { name: '任务与历史' }).waitFor();
-      const quota = f.page.locator('summary[aria-label="账号月额度"]');
-      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+      const quota = f.page.getByRole('button', { name: '设置', exact: true });
       await quota.focus();
       await f.page.keyboard.press('Tab');
       expect(
@@ -1673,6 +2278,80 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it('MET160 native Dock preserves reviews across tabs, split, fullscreen, close and restored layout', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      const note =
+        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
+      await note.fill('保留第一份成果的意见');
+      f.state.items.push(artifact(11));
+      await f.reloadList();
+      await f.panel
+        .getByRole('button', { name: '全屏查看', exact: true })
+        .click();
+      await f.panel
+        .getByRole('button', { name: '并排查看', exact: true })
+        .click();
+      await expect
+        .poll(() => f.panel.locator('[data-dockkit-pane]').count())
+        .toBe(2);
+      await f.panel
+        .getByRole('button', { name: 'report-11.md · v1', exact: true })
+        .click();
+      await expect
+        .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
+        .toBe(2);
+      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
+      await note.nth(1).fill('第二份独立意见');
+      const divider = f.panel.locator('[data-dockkit-divider]');
+      const box = (await divider.boundingBox())!;
+      await f.page.mouse.move(box.x, box.y + 120);
+      await f.page.mouse.down();
+      await f.page.mouse.move(box.x + 100, box.y + 120, { steps: 6 });
+      await f.page.mouse.up();
+      const panes = await f.panel.locator('[data-dockkit-pane]').all();
+      expect((await panes[0]!.boundingBox())!.width).toBeGreaterThan(
+        (await panes[1]!.boundingBox())!.width,
+      );
+      await f.panel
+        .getByRole('button', { name: '退出全屏', exact: true })
+        .click();
+      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
+      expect(await note.nth(1).inputValue()).toBe('第二份独立意见');
+      const firstTab = f.panel.getByRole('tab', { name: /^report-10.md/ });
+      f.page.once('dialog', (dialog) => dialog.dismiss());
+      await firstTab
+        .getByRole('button', { name: '关闭标签', exact: true })
+        .click();
+      expect(await firstTab.count()).toBe(1);
+      await f.panel
+        .getByRole('button', { name: '全屏查看', exact: true })
+        .click();
+      await f.page.screenshot({ path: '/tmp/allrice-met160-dock-split.png' });
+      // Leave the reviews clean before exercising persistence across reload.
+      await note.first().fill('');
+      await note.nth(1).fill('');
+      await f.page.reload();
+      await expect
+        .poll(() => f.panel.locator('[data-dockkit-pane]').count())
+        .toBe(2);
+      expect(await f.panel.getAttribute('data-fullscreen')).toBe('true');
+      await expect
+        .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
+        .toBe(2);
+      await f.panel
+        .getByRole('tab', { name: /^report-11.md/ })
+        .getByRole('button', { name: '关闭标签', exact: true })
+        .click();
+      expect(
+        await f.panel.getByRole('tab', { name: /^report-11.md/ }).count(),
+      ).toBe(0);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
 
   it('protects review drafts and explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
@@ -1728,7 +2407,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(0);
       expect(await f.panel.count()).toBe(0);
       expect(await f.entry.count()).toBe(0);
-      await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
       expect(await f.panel.count()).toBe(0);
       expect(await f.entry.count()).toBe(0);
       await f.page
@@ -1750,7 +2429,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release = done;
       });
       await f.entry.click();
-      await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
       await expect.poll(() => f.panel.count()).toBe(0);
       release();
       f.state.delay = null;
@@ -1758,7 +2437,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         0,
       );
       f.state.contentError = true;
-      await f.page.getByRole('button', { name: /^研究任务 A/ }).click();
+      await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
       await f.panel
         .getByRole('button', { name: '重试预览', exact: true })
         .waitFor();

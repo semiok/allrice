@@ -88,19 +88,28 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       absWorkingDir: process.cwd(),
       entryPoints: ['apps/web/test/tenant-administration-page.tsx'],
       bundle: true,
-      format: 'iife',
+      // Preserve shared eager/lazy dependency initialization as production ESM does.
+      format: 'esm',
+      splitting: true,
       platform: 'browser',
       write: false,
       outdir: '/unused-tenant-admin',
       jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: { 'process.env.NODE_ENV': '"development"', 'process.env': '{}' },
     });
     const js = built.outputFiles.find((f: { path: string }) =>
-        f.path.endsWith('.js'),
+        f.path.endsWith('/tenant-administration-page.js'),
       ).contents,
       css = built.outputFiles.find((f: { path: string }) =>
-        f.path.endsWith('.css'),
+        f.path.endsWith('/tenant-administration-page.css'),
       ).contents;
+    const assets = new Map<string, Uint8Array>(
+      built.outputFiles.map((file: { path: string; contents: Uint8Array }) => [
+        file.path.slice(file.path.lastIndexOf('/')),
+        file.contents,
+      ]),
+    );
     server = createServer(async (req, res) => {
       try {
         const url = new URL(req.url!, origin),
@@ -176,22 +185,24 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           return;
         }
         res.writeHead(200, {
-          'Content-Type':
-            path === '/app.js'
-              ? 'application/javascript'
-              : path === '/app.css'
-                ? 'text/css'
-                : 'text/html',
+          'Content-Type': path.endsWith('.js')
+            ? 'application/javascript'
+            : path === '/app.css'
+              ? 'text/css'
+              : 'text/html',
         });
         res.end(
           path === '/app.js'
             ? js
             : path === '/app.css'
               ? css
-              : '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0;background:#101216"><div id="root"></div><script src="/app.js"></script></body></html>',
+              : (assets.get(path) ??
+                '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0;background:#101216"><div id="root"></div><script type="module" src="/app.js"></script></body></html>'),
         );
       } catch (e) {
-        failures.push(e instanceof Error ? e.name : 'fixture_error');
+        failures.push(
+          e instanceof Error ? (e.stack ?? e.message) : 'fixture_error',
+        );
         res.writeHead(500);
         res.end('{}');
       }
@@ -230,7 +241,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     ]);
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
-    page.on('pageerror', (e) => failures.push(e.name));
+    page.on('pageerror', (e) => failures.push(e.stack ?? e.message));
     await page.goto(origin);
     await page.getByLabel('管理租户').selectOption(snow.organizationId);
     await page.getByRole('button', { name: '成员与角色', exact: true }).click();

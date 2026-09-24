@@ -47,7 +47,7 @@ export function DshUpgradeCapabilities(props: {
             {group.items.map((item) => (
               <article key={item.id}>
                 <span>
-                  {group.id === 'integrated'
+                  {group.id === 'integrated' || group.id === 'web-ui'
                     ? integratedCapabilityStatus(item.id, props.inventory)
                     : item.status}
                 </span>

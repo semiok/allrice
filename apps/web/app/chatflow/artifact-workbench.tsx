@@ -1,4 +1,17 @@
 'use client';
+import {
+  DockLayout,
+  dockPaneIds,
+  findPaneContentTab,
+  findTabPane,
+  type TabId,
+} from '@deepseek-ai/dsh-client-ui-dockkit';
+import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
+import { dockLabels, useNativeDock } from './use-native-dock';
+import { WorkspaceFileTree } from './workspace-file-tree';
+import { WorkspaceFilePreview } from './workspace-file-preview';
+import { NativePdfPreview } from './native-pdf-preview';
+import { NativeImagePreview } from './native-image-preview';
 import { OfficePreview } from './office-preview';
 import { ChangesetPanel } from './changeset-panel';
 import {
@@ -9,6 +22,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useId,
   useState,
 } from 'react';
 import {
@@ -58,6 +72,10 @@ class DiffBoundary extends Component<
 }
 type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
+  dockScope: string;
+  filesRequest?: number;
+  selectionRequest?: number;
+  onBrowseFiles?: () => void;
   sessionId: string | null;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
@@ -80,10 +98,13 @@ export function ArtifactWorkbench(props: Props) {
   const panel = useRef<HTMLElement>(null),
     dirty = useRef(false),
     previousFocus = useRef<HTMLElement | null>(null);
+  const dirtyTabs = useRef(new Set<string>());
   const onDirty = useCallback(
-    (value: boolean) => {
-      dirty.current = value;
-      props.onDirtyChange?.(value);
+    (id: string, value: boolean) => {
+      if (value) dirtyTabs.current.add(id);
+      else dirtyTabs.current.delete(id);
+      dirty.current = dirtyTabs.current.size > 0;
+      props.onDirtyChange?.(dirty.current);
     },
     [props.onDirtyChange],
   );
@@ -94,6 +115,14 @@ export function ArtifactWorkbench(props: Props) {
     )
       props.onClose();
   }, [props.onClose]);
+  const dock = useNativeDock(
+    props.dockScope,
+    (id) =>
+      !dirtyTabs.current.has(id) ||
+      window.confirm('有尚未保存的意见，关闭会丢失这些本地编辑。仍要关闭吗？'),
+    props.onClose,
+  );
+  const fullscreen = props.narrow || dock.surface.layout.mode === 'fullscreen';
   useEffect(() => {
     const element = panel.current;
     const active = document.activeElement;
@@ -102,7 +131,7 @@ export function ArtifactWorkbench(props: Props) {
     if (active instanceof HTMLElement && !element?.contains(active))
       previousFocus.current = active;
     // The persistent desktop panel must never take the composer's focus.
-    if (!props.narrow) return;
+    if (!fullscreen) return;
     element?.focus();
     return () => {
       // Respect an explicit focus destination chosen by the parent onClose.
@@ -113,7 +142,7 @@ export function ArtifactWorkbench(props: Props) {
       )
         previousFocus.current.focus();
     };
-  }, [props.narrow]);
+  }, [fullscreen]);
   useEffect(() => {
     const unload = (e: BeforeUnloadEvent) => {
       if (dirty.current) {
@@ -124,14 +153,43 @@ export function ArtifactWorkbench(props: Props) {
     window.addEventListener('beforeunload', unload);
     return () => window.removeEventListener('beforeunload', unload);
   }, []);
-  const artifactId = props.selectedId;
-  function select(id: string) {
-    if (
-      !dirty.current ||
-      window.confirm('有尚未保存的意见。切换版本前是否放弃这些本地编辑？')
-    )
-      props.onSelect(id);
+  const previousSelection = useRef<string | null | undefined>(undefined);
+  const previousRequest = useRef(0);
+  function openArtifact(id: string, paneId?: Parameters<typeof dock.open>[3]) {
+    const artifact = props.artifacts.find((item) => item.id === id);
+    dock.open(
+      'artifact',
+      id,
+      artifact
+        ? `${artifact.version.fileName} · v${artifact.version.version}`
+        : '所选成果',
+      paneId,
+    );
   }
+  useEffect(() => {
+    if (
+      !props.selectedId ||
+      (previousSelection.current === props.selectedId &&
+        previousRequest.current === (props.selectionRequest ?? 0))
+    )
+      return;
+    const restoring =
+      previousSelection.current === undefined &&
+      !props.selectionRequest &&
+      Object.values(dock.surface.layout.tabs).some(
+        (tab) => tab.kind === 'artifact' && tab.contentId === props.selectedId,
+      );
+    previousSelection.current = props.selectedId;
+    previousRequest.current = props.selectionRequest ?? 0;
+    if (props.selectedId && !restoring) openArtifact(props.selectedId);
+  });
+  const lastFilesRequest = useRef(0);
+  useEffect(() => {
+    if (!props.filesRequest || lastFilesRequest.current === props.filesRequest)
+      return;
+    lastFilesRequest.current = props.filesRequest;
+    dock.open('files', pageAddress('files'), '工作区文件');
+  });
   return (
     <>
       {props.narrow ? (
@@ -141,16 +199,17 @@ export function ArtifactWorkbench(props: Props) {
         id="artifact-workbench"
         ref={panel}
         tabIndex={-1}
-        className={`${styles.panel} ${props.narrow ? styles.drawer : frameUi.detailsCol}`}
-        role={props.narrow ? 'dialog' : 'complementary'}
+        className={`${styles.panel} ${fullscreen ? styles.drawer : frameUi.detailsCol} ${styles.nativeDock}`}
+        role={fullscreen ? 'dialog' : 'complementary'}
         aria-label="交付成果"
-        aria-modal={props.narrow ? true : undefined}
+        aria-modal={fullscreen ? true : undefined}
+        data-fullscreen={fullscreen || undefined}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.stopPropagation();
             close();
           }
-          if (props.narrow && event.key === 'Tab') {
+          if (fullscreen && event.key === 'Tab') {
             const nodes = [
               ...panel.current!.querySelectorAll<HTMLElement>(
                 'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary',
@@ -172,87 +231,226 @@ export function ArtifactWorkbench(props: Props) {
           }
         }}
       >
-        <header className={styles.header}>
-          <h2>交付成果</h2>
-          <button type="button" aria-label="关闭工作台" onClick={close}>
-            ×
-          </button>
-        </header>
-        <div className={styles.body}>
-          {props.noticeId && props.noticeId !== artifactId ? (
-            <p className={styles.notice} role="status">
-              新成果已就绪。
-              <button type="button" onClick={() => select(props.noticeId!)}>
-                查看新成果
-              </button>
-            </p>
-          ) : null}
-          <div className={styles.row}>
-            <label htmlFor="workbench-artifacts">成果版本</label>
-            <button
-              type="button"
-              disabled={props.listLoading || !props.sessionId}
-              onClick={() => void props.onReload()}
-            >
-              刷新列表
-            </button>
-          </div>
-          {props.listError ? (
-            <p className={styles.error} role="alert">
-              {props.listError}
-            </p>
-          ) : null}
-          {artifactId && props.sessionId ? (
-            <>
-              <select
-                id="workbench-artifacts"
-                className={styles.selector}
-                value={artifactId}
-                onChange={(e) => select(e.target.value)}
-              >
-                {!props.artifacts.some((a) => a.id === artifactId) ? (
-                  <option value={artifactId}>所选版本</option>
-                ) : null}
-                {props.artifacts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {artifactKindLabel(a)} · {a.version.fileName} · v
-                    {a.version.version}
-                    {a.stale ? '（旧版）' : ''}
-                  </option>
-                ))}
-              </select>
-              {props.nextCursor ? (
-                <button
-                  type="button"
-                  disabled={props.listLoading}
-                  onClick={() => void props.onReload(props.nextCursor!)}
-                >
-                  加载更早成果
-                </button>
-              ) : null}
-              <ArtifactReview
-                key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
-                artifactId={artifactId}
-                sessionId={props.sessionId}
+        <DockLayout
+          state={dock.surface.layout}
+          intents={{
+            ...dock.intents,
+            focusTab: (id) => {
+              const tab = dock.surface.layout.tabs[id];
+              if (tab?.kind === 'artifact') props.onSelect(tab.contentId);
+              dock.intents.focusTab(id);
+            },
+          }}
+          labels={dockLabels}
+          canSplit={
+            !props.narrow && dockPaneIds(dock.surface.layout).length < 2
+          }
+          hideSplitWhenBlocked
+          dropZones="horizontal"
+          minPaneFraction={0.2}
+          canCloseTab={dock.canCloseTab}
+          canAddTab={(pane) =>
+            !findPaneContentTab(
+              dock.surface.layout,
+              pane,
+              pageAddress(GUIDE_KIND),
+              GUIDE_KIND,
+            )
+          }
+          keepMounted={() => true}
+          renderTab={(tab) =>
+            tab.kind === 'files' ? (
+              <WorkspaceFileTree
+                workspaceId={props.workspaceId}
+                sessionId={props.sessionId ?? 'draft'}
+                tabId={tab.id}
+                tenantHeaders={props.tenantHeaders}
+                onOpen={(file) => {
+                  const artifact = props.artifacts.find(
+                    (item) => item.object.id === file.id,
+                  );
+                  if (artifact)
+                    openArtifact(
+                      artifact.id,
+                      findTabPane(dock.surface.layout, tab.id).id,
+                    );
+                  else
+                    dock.open(
+                      'file',
+                      file.id,
+                      file.fileName,
+                      findTabPane(dock.surface.layout, tab.id).id,
+                    );
+                }}
+              />
+            ) : tab.kind === 'file' ? (
+              <WorkspaceFilePreview
+                objectId={tab.contentId}
+                title={tab.title}
                 workspaceId={props.workspaceId}
                 tenantHeaders={props.tenantHeaders}
-                onDirty={onDirty}
-                onSelect={select}
-                onContinued={props.onContinued}
+                onVersion={(id, title) =>
+                  dock.open(
+                    'file',
+                    id,
+                    title,
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  )
+                }
               />
+            ) : (
+              <ArtifactTabBody
+                {...props}
+                key={tab.id}
+                tabId={tab.id}
+                selectedId={tab.kind === 'artifact' ? tab.contentId : null}
+                onDirty={onDirty}
+                onFiles={() => {
+                  props.onBrowseFiles?.();
+                  dock.open(
+                    'files',
+                    pageAddress('files'),
+                    '工作区文件',
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  );
+                }}
+                onSelect={(id) => {
+                  props.onSelect(id);
+                  openArtifact(id, findTabPane(dock.surface.layout, tab.id).id);
+                }}
+              />
+            )
+          }
+          chrome={
+            <>
+              {!props.narrow ? (
+                <button
+                  type="button"
+                  aria-label={fullscreen ? '退出全屏' : '全屏查看'}
+                  onClick={() => dock.setFullscreen(!fullscreen)}
+                >
+                  {fullscreen ? '↙' : '⛶'}
+                </button>
+              ) : null}
+              <button type="button" aria-label="关闭工作台" onClick={close}>
+                ×
+              </button>
             </>
-          ) : (
-            <p className={styles.muted}>
-              {props.listLoading
-                ? '正在加载成果…'
-                : props.sessionId
-                  ? '这个会话还没有成果。Rice 交付的报告、文件、修改提案与浏览器证据会显示在这里。'
-                  : '开始或选择一项工作，交付物将在这里展示。这里不会自动执行命令或批准修改。'}
-            </p>
-          )}
-        </div>
+          }
+        />
       </aside>
     </>
+  );
+}
+
+function ArtifactTabBody(
+  props: Props & {
+    tabId: TabId;
+    onFiles: () => void;
+    onDirty: (id: string, value: boolean) => void;
+  },
+) {
+  const selectorId = useId();
+  const artifactId = props.selectedId;
+  const dirtyChanged = useCallback(
+    (value: boolean) => props.onDirty(props.tabId, value),
+    [props.onDirty, props.tabId],
+  );
+  const select = props.onSelect;
+  return (
+    <div className={styles.body}>
+      {!artifactId ? (
+        <button type="button" onClick={props.onFiles}>
+          工作区文件
+        </button>
+      ) : null}
+      {props.noticeId && props.noticeId !== artifactId ? (
+        <p className={styles.notice} role="status">
+          新成果已就绪。
+          <button type="button" onClick={() => select(props.noticeId!)}>
+            查看新成果
+          </button>
+        </p>
+      ) : null}
+      <div className={styles.row}>
+        <label htmlFor={selectorId}>成果版本</label>
+        <button
+          type="button"
+          disabled={props.listLoading || !props.sessionId}
+          onClick={() => void props.onReload()}
+        >
+          刷新列表
+        </button>
+      </div>
+      {props.listError ? (
+        <p className={styles.error} role="alert">
+          {props.listError}
+        </p>
+      ) : null}
+      {!artifactId && props.artifacts.length ? (
+        <div className={styles.catalog}>
+          {props.artifacts.map((artifact) => (
+            <button
+              type="button"
+              key={artifact.id}
+              onClick={() => select(artifact.id)}
+            >
+              {artifact.version.fileName} · v{artifact.version.version}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {artifactId && props.sessionId ? (
+        <>
+          <select
+            id={selectorId}
+            className={styles.selector}
+            value={artifactId}
+            onChange={(e) => select(e.target.value)}
+          >
+            {!props.artifacts.some((a) => a.id === artifactId) ? (
+              <option value={artifactId}>所选版本</option>
+            ) : null}
+            {props.artifacts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {artifactKindLabel(a)} · {a.version.fileName} · v
+                {a.version.version}
+                {a.stale ? '（旧版）' : ''}
+              </option>
+            ))}
+          </select>
+          {props.nextCursor ? (
+            <button
+              type="button"
+              disabled={props.listLoading}
+              onClick={() => void props.onReload(props.nextCursor!)}
+            >
+              加载更早成果
+            </button>
+          ) : null}
+          <ArtifactReview
+            key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
+            artifactId={artifactId}
+            sessionId={props.sessionId}
+            workspaceId={props.workspaceId}
+            tenantHeaders={props.tenantHeaders}
+            onDirty={dirtyChanged}
+            onSelect={select}
+            onContinued={props.onContinued}
+          />
+        </>
+      ) : (
+        <p className={styles.muted}>
+          {props.listLoading
+            ? '正在加载成果…'
+            : props.artifacts.length
+              ? '选择一份成果开始查看，可在多个标签或分栏中打开。'
+              : props.sessionId
+                ? '这个会话还没有成果。Rice 交付的报告、文件、修改提案与浏览器证据会显示在这里。'
+                : '开始或选择一项工作，交付物将在这里展示。这里不会自动执行命令或批准修改。'}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -274,6 +472,8 @@ export function ReadOnlyArtifactPreview({
 }: {
   preview: ArtifactPreview;
 }) {
+  if (preview.kind === 'pdf')
+    return <NativePdfPreview base64={preview.base64} />;
   if (preview.kind === 'office')
     return <OfficePreview preview={preview} key={preview.checksum} />;
   if (preview.kind === 'text')
@@ -285,9 +485,8 @@ export function ReadOnlyArtifactPreview({
     );
   if (preview.kind === 'image')
     return (
-      <img
+      <NativeImagePreview
         alt="成果静态证据预览"
-        style={{ maxWidth: '100%' }}
         src={`data:${preview.mediaType};base64,${preview.base64}`}
       />
     );
@@ -431,6 +630,7 @@ function ArtifactReview({
   onSelect: (id: string) => void;
   onContinued?: (runId: string) => void;
 }) {
+  const feedbackId = useId();
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
     [feedback, setFeedback] = useState<ReviewFeedback[]>([]),
     [preview, setPreview] = useState<ArtifactPreview | null>(null);
@@ -990,11 +1190,13 @@ function ArtifactReview({
           ) : preview?.kind === 'image' ? (
             <div className={styles.preview}>
               {/* Static raster only; no remote URL, SVG or HTML insertion. */}
-              <img
+              <NativeImagePreview
                 src={`data:${preview.mediaType};base64,${preview.base64}`}
                 alt={`${artifact.version.fileName} 静态预览`}
               />
             </div>
+          ) : preview?.kind === 'pdf' ? (
+            <NativePdfPreview base64={preview.base64} />
           ) : preview?.kind === 'office' ? (
             <OfficePreview preview={preview} key={preview.checksum} />
           ) : preview?.kind === 'download_only' ? (
@@ -1115,14 +1317,11 @@ function ArtifactReview({
                 </button>
               ) : null}
             </p>
-            <label
-              htmlFor="artifact-feedback-text"
-              className={styles.hiddenLabel}
-            >
+            <label htmlFor={feedbackId} className={styles.hiddenLabel}>
               评论内容
             </label>
             <textarea
-              id="artifact-feedback-text"
+              id={feedbackId}
               ref={composer}
               value={text}
               maxLength={4000}

@@ -17,3 +17,16 @@ apps/web/app/chatflow/dsh-upstream/QueueDock.module.css
 # Native DSH reasoning/disclosure presentation styles.
 apps/web/app/chatflow/dsh-upstream/ReasoningRow.module.css
 apps/web/app/chatflow/dsh-upstream/DisclosureRow.module.css
+
+# Pinned DSH workspace source (source/patch checks in UI provenance).
+apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx
+apps/web/app/chatflow/dsh-upstream/workspace/Rows.module.css
+apps/web/app/chatflow/dsh-upstream/workspace/tree.ts
+apps/web/app/chatflow/dsh-upstream/workspace/locales.ts
+apps/web/app/chatflow/dsh-upstream/workspace/collapsed-session-rows.ts
+
+apps/web/app/chatflow/dsh-upstream/dock/
+
+apps/web/app/chatflow/dsh-upstream/files/
+apps/web/app/chatflow/dsh-upstream/document/
+apps/web/app/chatflow/dsh-upstream/settings/

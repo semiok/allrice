@@ -71,6 +71,7 @@ function Fixture() {
       {open ? (
         <ArtifactWorkbench
           {...input}
+          dockScope={`test/${input.workspaceId}/${input.sessionId}`}
           artifacts={w.artifacts}
           selectedId={w.selectedId}
           nextCursor={w.nextCursor}

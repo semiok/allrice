@@ -14,7 +14,20 @@ import {
 
 /** Only renders verified stored bytes. Caller must authorize before AND after
  * storage IO. Never executes HTML/SVG or remote content in the main document. */
-export async function readStaticArtifactPreview(artifact: WorkbenchArtifact) {
+export async function readStaticArtifactPreview(
+  artifact: Pick<WorkbenchArtifact, 'object' | 'kind'>,
+) {
+  if (
+    artifact.object.mediaType === 'application/pdf' &&
+    artifact.object.sizeBytes <= 8_000_000
+  ) {
+    const bytes = await readArtifactBytes(
+      getStorageAdapter(),
+      artifact.object,
+      8_000_000,
+    );
+    return { kind: 'pdf', base64: bytes.toString('base64') };
+  }
   const format = officeFormat(artifact.object.mediaType);
   if (format && artifact.object.sizeBytes <= 8_000_000) {
     // Use the existing size/deadline/hash checks. The HTTP caller reauthorizes

@@ -32,7 +32,7 @@ export function parseLayoutPreferences(raw: string | null): Preferences {
       panelWidth:
         typeof value?.panelWidth === 'number' &&
         Number.isFinite(value.panelWidth) &&
-        value.panelWidth >= 360
+        value.panelWidth >= 340
           ? value.panelWidth
           : null,
     };

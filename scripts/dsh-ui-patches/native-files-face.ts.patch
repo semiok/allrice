@@ -1,0 +1,90 @@
+--- a/packages/client/ui-sidebar-files/src/client/face.ts
++++ b/packages/client/ui-sidebar-files/src/client/face.ts
+@@ -18,13 +18,10 @@
+  * record goes away the bucket and the tab's listing bookkeeping are forgotten,
+  * so no later settlement writes to it.
+  */
+-import type { ClientRemote, RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
++import type { RemoteResult, SessionId } from './contracts'
+ import type { BoundActions } from '@deepseek-ai/dsh-client-store'
+ import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
+-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+ import type { DirLevel, createFilesStore } from './store.ts'
+-import type { WorkspaceFileWatchFrame } from '@deepseek-ai/dsh-api-workspace-files/types'
+-import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+ import { DirectoryNode } from './directory-node.ts'
+ 
+ /**
+@@ -35,35 +32,6 @@
+  * @returns readiness and invalidation notifications.
+  */
+ export type WatchWorkspaceDirectory = (sessionId: SessionId, path: string, signal: AbortSignal) => AsyncIterable<'ready' | 'change'>
+-
+-/**
+- * Bind directory observation to the Remote stream supervisor.
+- * @param remote - Client Remote with workspace file streams.
+- * @returns a watcher that awaits stream disposal when its node ends.
+- */
+-export function createWatch(remote: ClientRemote): WatchWorkspaceDirectory {
+-  return async function* (sessionId, path, signal) {
+-    const aborted = (): boolean => signal.aborted
+-    if (aborted()) return
+-    const stream = remote.$stream<WorkspaceFileWatchFrame>({
+-      name: `directory ${path}`,
+-      open: lifetime => remote.workspaceFiles.changes(sessionId, path, lifetime),
+-      ended: () => new Error(`Directory watch ended: ${path}`),
+-    })
+-    const abort = (): void => { void stream.dispose() }
+-    signal.addEventListener('abort', abort, { once: true })
+-    try {
+-      for await (const item of stream) {
+-        if (aborted()) return
+-        if (item.value.kind === 'ready') item.accept()
+-        yield item.value.kind
+-      }
+-    } finally {
+-      signal.removeEventListener('abort', abort)
+-      await stream.dispose()
+-    }
+-  }
+-}
+ 
+ /**
+  * One directory listing, bound to a Remote face.
+@@ -77,27 +45,6 @@
+   path: string,
+   signal: AbortSignal,
+ ) => Promise<RemoteResult<DirLevel>>
+-
+-/**
+- * The slice of the Client Remote face this package calls: the `workspaceFiles`
+- * namespace's `list`, exactly as the Host's generated client declares it.
+- */
+-export type WorkspaceFilesListRemote = {
+-  readonly workspaceFiles: Pick<ClientRemote['workspaceFiles'], 'list'>
+-}
+-
+-/**
+- * Bind the listing to one Remote face, keeping only what the tree stores.
+- * @param remote - the Client Remote face carrying the `workspaceFiles` namespace.
+- * @returns the listing the tree's face performs.
+- */
+-export function createList(remote: WorkspaceFilesListRemote): ListWorkspaceDirectory {
+-  return async (sessionId, path, signal) => {
+-    const result = await remote.workspaceFiles.list(sessionId, path, signal)
+-    if (!result.ok) return result
+-    return { ok: true, value: { entries: result.value.entries, truncated: result.value.truncated } }
+-  }
+-}
+ 
+ /**
+  * The absolute path of one child entry.
+@@ -198,7 +145,7 @@
+           (path, lifetime) => load(tabId, path, lifetime),
+           (path, lifetime) => watch(sessionId, path, lifetime),
+           (path, error) => {
+-            if (!signal.aborted) actions.failed(tabId, path, new RemoteError('gateway/internal', error instanceof Error ? error.message : String(error), {}))
++            if (!signal.aborted) actions.failed(tabId, path, { code: 'file/unavailable', message: error instanceof Error ? error.message : String(error) })
+           }, signal,
+         ).open())
+       },

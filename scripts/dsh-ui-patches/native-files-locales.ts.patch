@@ -1,0 +1,18 @@
+--- a/packages/client/ui-sidebar-files/src/client/locales.ts
++++ b/packages/client/ui-sidebar-files/src/client/locales.ts
+@@ -9,15 +9,6 @@
+  * `TranslateNS<'sidebarFiles'>` or `PropsLocale<'sidebarFiles'>` needs only this
+  * file, whichever entry a program loads first.
+  */
+-import type {} from '@deepseek-ai/dsh-client-ui-slots'
+-
+-declare module '@deepseek-ai/dsh-client-ui-slots' {
+-  interface LocaleNamespaceMap {
+-    /** File-tree type name, guide entry, row states, and failure lines. */
+-    sidebarFiles: SidebarFilesKey
+-  }
+-}
+-
+ /** Simplified Chinese dictionary and key-set source of truth. */
+ export const zh = {
+   'type.label': '文件',
