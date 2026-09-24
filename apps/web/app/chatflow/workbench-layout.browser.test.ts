@@ -2201,6 +2201,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const right = f.page.getByRole('separator', { name: '调整交付成果宽度' });
       await right.focus();
       await f.page.keyboard.press('Shift+ArrowLeft');
+      // Reproduce classic Linux scrollbar/embedded-frame space on every host.
+      await f.page.addStyleTag({
+        content: 'main { width: calc(100% - 8px) !important; }',
+      });
       await f.page.setViewportSize({ width: 1101, height: 950 });
       await expect
         .poll(async () =>
@@ -2209,9 +2213,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ),
         )
         .toBeGreaterThanOrEqual(340);
+      const clampedSidebar = await width();
+      expect(clampedSidebar).toBeLessThan(420);
       await splitter.focus();
       await f.page.keyboard.press('ArrowLeft');
-      await expect.poll(width).toBe(400);
+      await expect.poll(width).toBe(clampedSidebar - 20);
       await dragTo(100);
       await expect.poll(width).toBe(240);
       await splitter.focus();

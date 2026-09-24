@@ -162,11 +162,6 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
-  const resize = useWorkbenchResize(
-    layout.panelWidth,
-    layout.sidebarWidth,
-    sidebarCollapsed || layout.compact,
-  );
   const workbenchRequested = workbenchEnabled && layout.open;
   const workbenchEntry = useRef<HTMLButtonElement>(null);
   const workbench = useArtifactWorkbench({
@@ -188,6 +183,12 @@ export function ChatFlowClient({
     workbench.artifacts.length > 0 ||
     workbench.selectedId !== null;
   const workbenchOpen = workbenchRequested && hasWorkbenchContent;
+  const resize = useWorkbenchResize(
+    layout.panelWidth,
+    layout.sidebarWidth,
+    sidebarCollapsed || layout.compact,
+    workbenchOpen && !workbenchNarrow,
+  );
   // New completed turns can add artifacts; opening the panel does not execute tools.
   const artifactHistoryRevision = useRef({ scope: '', revision: '' });
   useEffect(() => {
