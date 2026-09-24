@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   DataAccessError,
   decideRuntimeActionApproval,
@@ -45,7 +46,7 @@ async function handle(
   action: 'read' | 'decide' | 'revoke',
 ) {
   // Server-owned opt-in only. Enabling an endpoint does NOT enable any policy or Runner.
-  if (process.env.ALLRICE_RUNTIME_POLICY_ENABLED !== '1')
+  if (!runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))
     return new Response(null, { status: 404, headers });
   try {
     if (action !== 'read' && !sameOriginBrowserWrite(request))

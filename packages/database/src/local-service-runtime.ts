@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import {
   RuntimeLocalCommandSchema,
@@ -30,7 +31,7 @@ type ServiceActor = Pick<
 const json = (tx: Tx, value: unknown) =>
   tx.json(JSON.parse(JSON.stringify(value)));
 export const localServiceFeatureEnabled = () =>
-  process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_LOCAL_SERVICE_ENABLED');
 interface ServiceRow {
   operation_id: string;
   hard_deadline_at: Date;

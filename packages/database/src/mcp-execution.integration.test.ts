@@ -205,9 +205,16 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     expect(after.capabilitySnapshot.grantedCapabilities).toContain(
       'secret:use',
     );
-    expect(after.capabilitySnapshot.grantedCapabilities).not.toContain(
+    // web.fetch is explicitly selected in this employee. It is available
+    // before binding MCP and does not require an unrelated Skill.
+    expect(before.capabilitySnapshot.grantedCapabilities).toContain(
       'network:outbound',
     );
+    expect(
+      after.capabilitySnapshot.grantedCapabilities.filter(
+        (capability) => capability !== 'secret:use',
+      ),
+    ).toEqual(before.capabilitySnapshot.grantedCapabilities);
     const visible = (value: typeof after) =>
       riceToolDefinitionsForCapabilities(
         value.capabilitySnapshot.grantedCapabilities,
@@ -218,7 +225,8 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     expect(visible(after).filter((n) => !visible(before).includes(n))).toEqual([
       'cloud.mcp.call',
     ]);
-    expect(visible(after)).not.toContain('web.fetch');
+    expect(visible(before)).toContain('web.fetch');
+    expect(visible(after)).toContain('web.fetch');
     expect(
       after.mcpTools?.every(
         (t) => t.employeeAuthorization?.id === f.employeeGrant.id,

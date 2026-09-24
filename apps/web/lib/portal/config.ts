@@ -134,3 +134,23 @@ export function portalPublicView(portal: PortalDefinition) {
     homePath: portal.homePath,
   };
 }
+
+/** Link to a configured tenant portal; identity is established by that portal. */
+export function tenantTrialPortal(organizationSlug: string, origin: string) {
+  const portal = definitions.find(
+    (item) =>
+      item.kind === 'tenant' &&
+      item.principal.organizationSlug === organizationSlug,
+  );
+  if (!portal) return null;
+  const source = new URL(origin);
+  const family = source.hostname.endsWith('.bplabs.xyz')
+    ? '.bplabs.xyz'
+    : source.hostname.endsWith('.traditionow.ai')
+      ? '.traditionow.ai'
+      : null;
+  const host = family
+    ? portal.hosts.find((host) => host.endsWith(family))
+    : null;
+  return host ? `https://${host}/chatflow` : null;
+}

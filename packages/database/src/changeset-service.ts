@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -32,10 +33,10 @@ import {
 
 type Database = ReturnType<typeof getDatabase>;
 export const changesetFeatureEnabled = () =>
-  process.env.ALLRICE_CHANGESET_ENABLED === '1' &&
-  process.env.ALLRICE_WORKBENCH_ENABLED === '1' &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-  process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_CHANGESET_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED');
 function fail(code: string): never {
   throw new ArtifactReviewError(code);
 }

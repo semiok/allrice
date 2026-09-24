@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import type {
   BrowserObservation,
@@ -24,7 +25,7 @@ export async function publishBrowserObservationArtifact(
   storage: StoragePort,
   db = getDatabase(),
 ) {
-  if (process.env.ALLRICE_WORKBENCH_ENABLED !== '1') return null;
+  if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED')) return null;
   const obs = BrowserObservationSchema.parse(observation),
     bytes = Buffer.from(
       JSON.stringify({

@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -311,10 +312,10 @@ export function createGovernedBridgePolicyOptions(
           !profile.success ||
           !profile.data.available ||
           (mcp &&
-            (process.env.ALLRICE_LOCAL_MCP_ENABLED !== '1' ||
+            (!runtimeFeatureEnabled('ALLRICE_LOCAL_MCP_ENABLED') ||
               !profile.data.features?.includes('local_mcp'))) ||
           (command?.arguments.background &&
-            (process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '1' ||
+            (!runtimeFeatureEnabled('ALLRICE_LOCAL_SERVICE_ENABLED') ||
               !profile.data.features?.includes('background_services'))) ||
           (command?.arguments.dependencies &&
             !profile.data.features?.includes('npm_dependencies')) ||
@@ -454,8 +455,8 @@ export function createGovernedBridgePolicyOptions(
           select artifact_id,checksum,restore_of,session_id from allrice_changeset_runs where run_id=${run.id}
           and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and actor_id=${device.ownerId}`;
         if (
-          process.env.ALLRICE_CHANGESET_ENABLED !== '1' ||
-          process.env.ALLRICE_WORKBENCH_ENABLED !== '1' ||
+          !runtimeFeatureEnabled('ALLRICE_CHANGESET_ENABLED') ||
+          !runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') ||
           !application ||
           !frozen.success ||
           frozen.data.schemaVersion !== 2 ||

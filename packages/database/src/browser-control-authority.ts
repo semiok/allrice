@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import type postgres from 'postgres';
 import {
   BrowserCommandSchema,
@@ -23,8 +24,8 @@ import { getDatabase } from './core/client.ts';
 import { currentLocalPreviewAuthority } from './local-preview-authority.ts';
 
 export const browserControlEnabled = () =>
-  process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_BROWSER_CONTROL_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
 
 /** Browser admission and its read-only projections must enter the ledger's
  * root lock before policy controls, browser rows or parent-operation checks.
@@ -217,7 +218,7 @@ export async function currentBrowserWorkspace(
   w.device_id = null;
   if (w.transport === 'local') {
     if (
-      process.env.ALLRICE_LOCAL_BROWSER_ENABLED !== '1' ||
+      !runtimeFeatureEnabled('ALLRICE_LOCAL_BROWSER_ENABLED') ||
       w.target_kind !== 'rice_bridge' ||
       w.task_id !== null
     )

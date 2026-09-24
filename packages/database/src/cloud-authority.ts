@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   CloudCommandSchema,
   CloudExecutionProfileSchema,
@@ -14,8 +15,8 @@ import {
 } from './runtime-policy.ts';
 
 export const cloudExecutionEnabled = () =>
-  process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
 export function cloudCommandBinding(
   payload: ReturnType<typeof CloudCommandSchema.parse>,
 ) {

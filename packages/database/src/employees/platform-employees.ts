@@ -4,6 +4,9 @@ import type postgres from 'postgres';
 
 import {
   PlatformEmployeeDefinitionSchema,
+  assembleEmployeeCapabilities,
+  rapidEmployeeIterationEnabled,
+  employeePublicationPolicy,
   PlatformEmployeeAuditEventSchema,
   PlatformEmployeeRevisionSchema,
   PlatformEmployeeRuntimeProfileSchema,
@@ -30,6 +33,8 @@ import {
 import { employeeManifest } from './employee-config.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
+import { listEmployeeToolAvailability } from '../employee-administration.ts';
+import { enablePublishedDevelopmentCloud } from './development-cloud-grants.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
 import {
   buildEmployeeRuntimePackage,
@@ -335,6 +340,7 @@ export async function listPlatformEmployeeWorkspaces() {
       id: string;
       organizationId: string;
       organizationName: string;
+      organizationSlug: string;
       slug: string;
       name: string;
       assigned: boolean;
@@ -345,7 +351,7 @@ export async function listPlatformEmployeeWorkspaces() {
     }[]
   >`
     select workspace.id, workspace.organization_id as "organizationId",
-      organization.name as "organizationName", workspace.slug, workspace.name,
+      organization.name as "organizationName", organization.slug as "organizationSlug", workspace.slug, workspace.name,
       false as assigned,
       coalesce(bridge.last_seen_at >= now() - interval '45 seconds', false)
         as "bridgeOnline",
@@ -1047,7 +1053,7 @@ export async function disablePlatformEmployee(
       `;
       await transaction`
         update allrice_employees
-        set status = 'disabled', updated_at = now()
+        set status = 'archived', updated_at = now()
         where organization_id = ${assignment.organization_id}
           and workspace_id = ${assignment.workspace_id}
           and id = ${assignment.tenant_employee_id}
@@ -1103,9 +1109,20 @@ export async function savePlatformEmployeeDraft(
   actorLabel = 'platform-admin',
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
-  const { definition, expectedRevisionId } =
+  const { definition: rawDefinition, expectedRevisionId } =
     UpdatePlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
+  const skills = rawDefinition.capabilities.nativeSkillIds.length
+    ? await sql<{ id: string; requiredToolRefs: string[] }[]>`
+        select id, required_tool_refs as "requiredToolRefs" from allrice_platform_dsh_skills
+        where id in ${sql(rawDefinition.capabilities.nativeSkillIds)}`
+    : [];
+  const definition = PlatformEmployeeDefinitionSchema.parse({
+    ...assembleEmployeeCapabilities(rawDefinition, skills),
+    // An explicit security edit must not be silently undone by a server save.
+    // Interactive tool/Skill selection updates these fields together in the UI.
+    securityPolicy: rawDefinition.securityPolicy,
+  });
   await sql.begin(async (transaction) => {
     const employees = await transaction<
       { id: string; current_draft_revision_id: string | null }[]
@@ -1449,7 +1466,7 @@ async function materializePlatformEmployeeRevision(
     )
   )
     throw Error('platform_employee_frozen_skill_mismatch');
-  for (const workspaceId of input.workspaceIds) {
+  for (const workspaceId of [...input.workspaceIds].sort()) {
     const workspaces = await transaction<
       { id: string; organization_id: string }[]
     >`
@@ -1472,6 +1489,43 @@ async function materializePlatformEmployeeRevision(
     const actorId = actors[0]?.id;
     if (!actorId)
       throw new Error(`workspace_has_no_active_member:${workspaceId}`);
+    if (
+      rapidEmployeeIterationEnabled() &&
+      input.definition.capabilities.toolNames.length
+    ) {
+      await transaction`select pg_advisory_xact_lock(hashtextextended(${`runtime-policy:${workspace.organization_id}:${workspace.id}`},0))`;
+      const [previous] = await transaction<
+        { version: number; controls: unknown }[]
+      >`
+        select version, controls from allrice_runtime_policy_controls
+        where organization_id=${workspace.organization_id} and workspace_id=${workspace.id} for update`;
+      const controls = employeePublicationPolicy(
+        previous?.controls,
+        input.definition.capabilities.toolNames,
+        (previous?.version ?? 0) + 1,
+      );
+      const unchanged =
+        previous &&
+        checksum({ ...controls, version: previous.version }) ===
+          checksum(previous.controls);
+      if (!unchanged) {
+        await transaction`
+          insert into allrice_runtime_policy_controls (organization_id, workspace_id, version, controls)
+          values (${workspace.organization_id},${workspace.id},${controls.version},${transaction.json(controls)})
+          on conflict (organization_id,workspace_id) do update set version=excluded.version,controls=excluded.controls,updated_at=clock_timestamp()`;
+        await recordPlatformEmployeeAuditInTransaction(transaction, {
+          employeeId: input.employeeId,
+          action: 'employee.capabilities.enabled',
+          actorLabel: input.actorLabel,
+          details: {
+            workspaceId: workspace.id,
+            revisionId: input.revision.id,
+            previousControls: previous?.controls ?? null,
+            controls,
+          },
+        });
+      }
+    }
     const tenantKey =
       input.definition.key === 'rice'
         ? 'default-assistant'
@@ -1538,6 +1592,27 @@ async function materializePlatformEmployeeRevision(
         active = true, assigned_by = excluded.assigned_by,
         assigned_at = now(), updated_at = now()
     `;
+    if (
+      rapidEmployeeIterationEnabled() &&
+      input.definition.capabilities.toolNames.includes('cloud.process.execute')
+    ) {
+      const grants = await enablePublishedDevelopmentCloud(transaction, {
+        organizationId: workspace.organization_id,
+        workspaceId: workspace.id,
+        employeeId: tenantEmployeeId,
+      });
+      if (grants.length)
+        await recordPlatformEmployeeAuditInTransaction(transaction, {
+          employeeId: input.employeeId,
+          action: 'employee.cloud.enabled',
+          actorLabel: input.actorLabel,
+          details: {
+            workspaceId: workspace.id,
+            revisionId: input.revision.id,
+            grants,
+          },
+        });
+    }
     // Publishing a new tenant revision must be transparent to existing chats.
     // Runs that are already queued keep their immutable execution snapshot; the
     // next Run created for each Session uses the newly materialized version.
@@ -1685,6 +1760,7 @@ export async function publishPlatformEmployee(
   actorLabel = 'platform-admin',
   administrationContext?: RequestContext,
 ) {
+  const rapidIteration = rapidEmployeeIterationEnabled();
   const employeeId = UuidSchema.parse(employeeIdInput);
   const parsed = PublishPlatformEmployeeInputSchema.parse(input);
   const { workspaceIds } = parsed;
@@ -1706,6 +1782,21 @@ export async function publishPlatformEmployee(
     });
     return compilation;
   }
+  if (rapidIteration) {
+    const unavailable = listEmployeeToolAvailability().filter(
+      (tool) =>
+        compilation.runtimeProfile?.toolNames.includes(tool.canonicalName) &&
+        !tool.released,
+    );
+    if (unavailable.length)
+      return {
+        ...compilation,
+        valid: false,
+        errors: unavailable.map(
+          (tool) => `${tool.label}：执行服务当前已暂停，恢复后即可发布使用。`,
+        ),
+      };
+  }
   const sql = getDatabase();
   const packageChecksum = compilation.runtimeProfile?.runtimePackage?.checksum;
   if (!packageChecksum)
@@ -1724,7 +1815,7 @@ export async function publishPlatformEmployee(
       and completed_at >= clock_timestamp() - interval '24 hours'
     order by completed_at desc limit 1
   `;
-  if (!successfulTests[0]) {
+  if (!rapidIteration && !successfulTests[0]) {
     const rejected = {
       ...compilation,
       valid: false,
@@ -1773,21 +1864,42 @@ export async function publishPlatformEmployee(
     });
     return rejected;
   }
-  if (compilation.runtimeProfile?.provider === 'openai-codex') {
-    const statuses = await sql<{ status: string; checked_at: Date | null }[]>`
+  if (!rapidIteration) {
+    if (compilation.runtimeProfile?.provider === 'openai-codex') {
+      const statuses = await sql<{ status: string; checked_at: Date | null }[]>`
       select status, checked_at from allrice_provider_status
       where provider = 'codex'
     `;
-    const provider = statuses[0];
-    if (
-      provider?.status !== 'connected' ||
-      !provider.checked_at ||
-      provider.checked_at.getTime() < Date.now() - 120_000
-    ) {
+      const provider = statuses[0];
+      if (
+        provider?.status !== 'connected' ||
+        !provider.checked_at ||
+        provider.checked_at.getTime() < Date.now() - 120_000
+      ) {
+        const rejected = {
+          ...compilation,
+          valid: false,
+          errors: ['Codex 订阅 Provider 当前不可用或健康状态已过期。'],
+        };
+        await recordPlatformEmployeeAudit({
+          employeeId,
+          action: 'employee.publish_rejected',
+          actorLabel,
+          details: {
+            revisionId: compilation.revisionId,
+            workspaceIds: uniqueWorkspaceIds,
+            errors: rejected.errors,
+          },
+        });
+        return rejected;
+      }
+    } else {
       const rejected = {
         ...compilation,
         valid: false,
-        errors: ['Codex 订阅 Provider 当前不可用或健康状态已过期。'],
+        errors: [
+          `Provider ${compilation.runtimeProfile?.provider ?? 'unknown'} 尚未通过平台生产健康门禁。`,
+        ],
       };
       await recordPlatformEmployeeAudit({
         employeeId,
@@ -1801,25 +1913,6 @@ export async function publishPlatformEmployee(
       });
       return rejected;
     }
-  } else {
-    const rejected = {
-      ...compilation,
-      valid: false,
-      errors: [
-        `Provider ${compilation.runtimeProfile?.provider ?? 'unknown'} 尚未通过平台生产健康门禁。`,
-      ],
-    };
-    await recordPlatformEmployeeAudit({
-      employeeId,
-      action: 'employee.publish_rejected',
-      actorLabel,
-      details: {
-        revisionId: compilation.revisionId,
-        workspaceIds: uniqueWorkspaceIds,
-        errors: rejected.errors,
-      },
-    });
-    return rejected;
   }
   const published = await sql.begin(async (transaction) => {
     if (administrationContext)
@@ -1899,15 +1992,19 @@ export async function publishPlatformEmployee(
           throw new Error('platform_employee_publish_policy_changed');
       }
     }
-    const providers = await transaction<{ checked_at: Date }[]>`
+    let assertFreshPublication = async () => {};
+    if (!rapidIteration) {
+      const providers = await transaction<{ checked_at: Date }[]>`
       select checked_at from allrice_provider_status
       where provider = 'codex' and status = 'connected'
         and checked_at >= clock_timestamp() - interval '120 seconds'
       for share
     `;
-    if (profile.provider !== 'openai-codex' || !providers[0])
-      throw new Error('platform_employee_publish_provider_unavailable');
-    const exactTests = await transaction<{ id: string; completed_at: Date }[]>`
+      if (profile.provider !== 'openai-codex' || !providers[0])
+        throw new Error('platform_employee_publish_provider_unavailable');
+      const exactTests = await transaction<
+        { id: string; completed_at: Date }[]
+      >`
       select id, completed_at from allrice_platform_employee_test_runs
       where id = ${successfulTests[0]!.id} and employee_id = ${employeeId}
         and revision_id = ${revision.id} and frozen_package_checksum = ${packageChecksum}
@@ -1915,21 +2012,23 @@ export async function publishPlatformEmployee(
         and completed_at >= clock_timestamp() - interval '24 hours'
       for share
     `;
-    if (!exactTests[0])
-      throw new Error('platform_employee_publish_test_unavailable');
-    const assertFreshPublication = async () => {
-      // WHERE predicates can have been evaluated before a row-lock wait.
-      // Read the DB wall clock after all locks, and again before committing.
-      const [clock] = await transaction<
-        { at: Date }[]
-      >`select clock_timestamp() as at`;
-      const at = clock!.at.getTime();
-      if (providers[0]!.checked_at.getTime() < at - 120_000)
-        throw new Error('platform_employee_publish_provider_unavailable');
-      if (exactTests[0]!.completed_at.getTime() < at - 86_400_000)
+      if (!exactTests[0])
         throw new Error('platform_employee_publish_test_unavailable');
-    };
-    await assertFreshPublication();
+      assertFreshPublication = async () => {
+        // WHERE predicates can have been evaluated before a row-lock wait.
+        // Read the DB wall clock after all locks, and again before committing.
+        const [clock] = await transaction<
+          { at: Date }[]
+        >`select clock_timestamp() as at`;
+        const at = clock!.at.getTime();
+        if (providers[0]!.checked_at.getTime() < at - 120_000)
+          throw new Error('platform_employee_publish_provider_unavailable');
+        if (exactTests[0]!.completed_at.getTime() < at - 86_400_000)
+          throw new Error('platform_employee_publish_test_unavailable');
+      };
+      await assertFreshPublication();
+    }
+
     await materializePlatformEmployeeRevision(transaction, {
       employeeId,
       revision,
@@ -1956,16 +2055,23 @@ export async function publishPlatformEmployee(
       details: {
         revisionId: revision.id,
         workspaceIds: uniqueWorkspaceIds,
-        testRunId: successfulTests[0]!.id,
+        testRunId: successfulTests[0]?.id ?? null,
         packageChecksum,
       },
     });
     await assertFreshPublication();
+    const trialTargets = await transaction<
+      { workspaceId: string; employeeId: string }[]
+    >`
+      select workspace_id as "workspaceId", tenant_employee_id as "employeeId"
+      from allrice_platform_employee_tenant_assignments where employee_id=${employeeId}
+        and revision_id=${revision.id} and active and workspace_id in ${transaction(uniqueWorkspaceIds)}`;
     return {
       valid: true,
       employeeId,
       revisionId: revision.id,
       workspaceIds: uniqueWorkspaceIds,
+      trialTargets,
       runtimeProfile: PlatformEmployeeRuntimeProfileSchema.parse(
         revision.runtime_profile,
       ),

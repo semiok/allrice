@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import {
   AssistantMessageRequestSchema,
@@ -54,7 +55,7 @@ const terminal = new Set<AssistantStatus>([
   'canceled',
 ]);
 export const assistantRuntimeEnabled = () =>
-  process.env.ALLRICE_ASSISTANTS_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED');
 export class AssistantRuntimeError extends Error {
   constructor(
     public readonly code:

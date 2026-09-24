@@ -60,7 +60,8 @@ export function useSession({ setError }: UseSessionOptions) {
       ),
     ]);
     const nextWorkspace = workspaceResult.workspace;
-    const linked = new URLSearchParams(window.location.search).get('session');
+    const params = new URLSearchParams(window.location.search);
+    const linked = params.get('session');
     const requested = scope.sessionId ?? linked;
     // The sidebar is only the first page (30 Sessions), not an authorization
     // index. A valid old deep link must be read through the normal scoped
@@ -119,6 +120,10 @@ export function useSession({ setError }: UseSessionOptions) {
       ) {
         return;
       }
+      if (params.has('employee') && !linked) {
+        setActiveId(null, true);
+        return;
+      }
       setActiveId(
         workspaceResult.workspace.sessions.find(
           (session) => !session.archivedAt,
@@ -167,10 +172,17 @@ export function useSession({ setError }: UseSessionOptions) {
     async (title: string) => {
       if (!workspace) return null;
       const scope = selection.capture();
-      const employee =
-        workspace.employees.find((item) => item.isDefault) ??
-        workspace.employees[0];
-      if (!employee) throw new Error('当前没有可用的 AI 员工');
+      const requestedEmployee = new URLSearchParams(window.location.search).get(
+        'employee',
+      );
+      const employee = requestedEmployee
+        ? workspace.employees.find(
+            (item) => item.employeeId === requestedEmployee,
+          )
+        : (workspace.employees.find((item) => item.isDefault) ??
+          workspace.employees[0]);
+      if (!employee)
+        throw new Error('当前账号未分配此员工，请检查登录账号和发布目标');
       const result = await readJson<{ session: Session }>(
         await fetch('/api/v1/sessions', {
           method: 'POST',
@@ -225,7 +237,16 @@ export function useSession({ setError }: UseSessionOptions) {
     [selection],
   );
 
+  const requestedEmployee =
+    typeof window === 'undefined'
+      ? null
+      : new URLSearchParams(window.location.search).get('employee');
+  const newSessionEmployee = requestedEmployee
+    ? workspace?.employees.find((item) => item.employeeId === requestedEmployee)
+    : (workspace?.employees.find((item) => item.isDefault) ??
+      workspace?.employees[0]);
   return {
+    newSessionEmployee,
     activeId,
     captureSelection: selection.capture,
     createSession,

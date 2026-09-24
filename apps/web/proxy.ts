@@ -94,6 +94,15 @@ export function proxy(request: NextRequest) {
     return authenticationRequiredProblem();
   }
   const login = new URL('/login', request.url);
+  if (
+    request.nextUrl.pathname === '/chatflow' &&
+    request.nextUrl.searchParams.has('employee')
+  ) {
+    login.searchParams.set(
+      'next',
+      request.nextUrl.pathname + request.nextUrl.search,
+    );
+  }
   return NextResponse.redirect(login);
 }
 

@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import {
   employeeToolCatalog,
+  assembleEmployeeCapabilities,
   allRiceToolManifest,
   employeeToolConfigurationErrors,
   runtimePolicyActionDecision,
+  CloudExecutionProfileSchema,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -29,6 +31,7 @@ import {
   publishPlatformEmployee,
   savePlatformEmployeeDraft,
   rollbackPlatformEmployee,
+  archivePlatformEmployee,
 } from './employees/platform-employees.ts';
 
 const suite =
@@ -81,7 +84,9 @@ suite('MET-151 policy and exact employee publication administration', () => {
       );
     const write = (
       expectedVersion: number | null,
-      rules = [{ action: 'local.process.execute', effect: 'allow' as const }],
+      rules: { action: string; effect: 'allow' | 'deny' | 'ask' }[] = [
+        { action: 'local.process.execute', effect: 'allow' },
+      ],
     ) =>
       setPlatformRuntimePolicyControls(
         context,
@@ -118,6 +123,102 @@ suite('MET-151 policy and exact employee publication administration', () => {
       );
     return { ...f, context, session, target, read, write, review, publish };
   }
+  it('publishes selected development tools without a preview, enables matching policy atomically, and preserves immutable tenant bindings', async () => {
+    const oldEnvironment = process.env.ALLRICE_ENV;
+    process.env.ALLRICE_ENV = 'development';
+    try {
+      const f = await setup();
+      const definition = assembleEmployeeCapabilities(
+        {
+          ...f.definition,
+          capabilities: {
+            ...f.definition.capabilities,
+            toolNames: [
+              'local.process.execute',
+              'assistant.delegate',
+              'web.search',
+              'workspace.skill.read',
+              'cloud.process.execute',
+            ],
+          },
+        },
+        [],
+      );
+      const saved = await savePlatformEmployeeDraft(f.employeeId, {
+        definition,
+        expectedRevisionId: f.revisionId,
+      });
+      const compilation = await compilePlatformEmployee(f.employeeId);
+      expect(compilation.valid).toBe(true);
+      await fixture.db`delete from allrice_platform_employee_test_runs where employee_id=${f.employeeId}`;
+      await fixture.db`update allrice_provider_status set checked_at=clock_timestamp()-interval '1 hour' where provider='codex'`;
+      const before = await f.write(null, [
+        { action: 'assistant.delegate', effect: 'deny' },
+      ]);
+      const review = await f.review();
+      expect(review.valid).toBe(true);
+      expect(review.policyVersions[f.workspaceId]).toBe(before.version);
+      await expect(f.publish(review)).rejects.toThrow(
+        'cloud_runner_unavailable',
+      );
+      const profile = CloudExecutionProfileSchema.parse({
+        ...Object.fromEntries(
+          Object.entries(CloudExecutionProfileSchema.shape)
+            .filter(([key]) => key !== 'maximumConcurrency')
+            .map(([key, schema]) => [
+              key,
+              'value' in schema ? schema.value : undefined,
+            ]),
+        ),
+        maximumConcurrency: 1,
+      });
+      await fixture.db`insert into allrice_execution_targets
+        (organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
+        values (${f.organizationId},${f.workspaceId},'test-installed-cloud','cloud_sandbox','Synthetic installed sandbox','online','["process.execute"]',${fixture.db.json({ managedBy: 'allrice', profile })})`;
+      const result = await f.publish(review);
+      expect(result.valid).toBe(true);
+      const policy = await f.read();
+      expect(policy.controls).toMatchObject({ enabled: true, mode: 'execute' });
+      const [cloud] =
+        await fixture.db`select count(*)::int n from allrice_cloud_execution_grants
+        where workspace_id=${f.workspaceId} and enabled and revoked_at is null`;
+      expect(cloud?.n).toBeGreaterThan(0);
+      expect(
+        runtimePolicyActionDecision(policy.controls, 'assistant.delegate')
+          .effect,
+      ).toBe('allow');
+      expect(
+        runtimePolicyActionDecision(policy.controls, 'local.process.execute')
+          .effect,
+      ).toBe('ask');
+      const [assigned] =
+        await fixture.db`select a.employee_version_id,v.manifest from allrice_employee_assignments a join allrice_employee_versions v on v.id=a.employee_version_id where a.workspace_id=${f.workspaceId} and a.active`;
+      expect(assigned?.manifest.capabilityBindings.toolNames).toEqual(
+        expect.arrayContaining([
+          'local.process.execute',
+          'assistant.delegate',
+          'web.search',
+        ]),
+      );
+      const [audit] =
+        await fixture.db`select count(*)::int n from allrice_platform_employee_audit_events where employee_id=${f.employeeId} and action='employee.capabilities.enabled'`;
+      expect(audit?.n).toBe(1);
+      expect(saved!.currentDraft!.id).toBe(review.revisionId);
+      await archivePlatformEmployee(
+        f.employeeId,
+        { reason: 'Acceptance complete' },
+        f.context.actor.id,
+      );
+      const [remaining] =
+        await fixture.db`select count(*)::int n from allrice_employee_assignments
+        where workspace_id=${f.workspaceId} and active`;
+      expect(remaining?.n).toBe(0);
+    } finally {
+      if (oldEnvironment === undefined) delete process.env.ALLRICE_ENV;
+      else process.env.ALLRICE_ENV = oldEnvironment;
+    }
+  });
+
   it('uses the canonical Broker catalog and rejects impossible employee tool policies', async () => {
     const f = await setup();
     expect(employeeToolCatalog.map((t) => t.canonicalName)).toEqual(
@@ -301,7 +402,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
     expect(r.diff.length).toBeGreaterThan(0);
     expect(r.targets[0]!.actions.every((a) => a.effect === 'deny')).toBe(true);
     expect(r.warnings.join()).toContain('策略禁止');
-    expect(r.warnings.join()).toContain('尚未登记 cloud_sandbox 执行目标');
+    expect(r.warnings.join()).toContain('云端执行环境，请在租户管理中配置环境');
     expect(r.policyVersions[f.workspaceId]).toBeNull();
     expect(await f.assigned()).toBe(0);
     expect((await f.read()).controls).toBeNull();

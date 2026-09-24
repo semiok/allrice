@@ -13,6 +13,49 @@ describe('Rice capability intersection', () => {
     requiredToolRefs: ['web.search'],
   };
 
+  it('honors explicitly selected tools without requiring an unrelated Skill, and keeps explicit denials', () => {
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:write', 'network:outbound'],
+        [],
+        [],
+        ['local.process.execute', 'web.search'],
+      ),
+    ).toEqual(['model:invoke', 'storage:write', 'network:outbound']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:write'],
+        [],
+        ['storage:write'],
+        ['local.process.execute'],
+      ),
+    ).toEqual(['model:invoke']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:write', 'secret:use'],
+        [],
+        [],
+        ['local.mcp.call'],
+      ),
+    ).toEqual(['model:invoke', 'storage:write']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'storage:write'],
+        [],
+        [],
+        ['unknown.tool'],
+      ),
+    ).toEqual(['model:invoke']);
+    expect(
+      resolveEmployeeCapabilities(
+        ['model:invoke', 'secret:use'],
+        [],
+        [],
+        ['cloud.mcp.call', 'local.mcp.call'],
+      ),
+    ).toEqual(['model:invoke']);
+  });
+
   it('keeps core employee capabilities but gates network behind a bound skill', () => {
     expect(
       resolveEmployeeCapabilities(

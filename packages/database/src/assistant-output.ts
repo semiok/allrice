@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -57,7 +58,7 @@ export async function publishAssistantOutput(
   const deliveryId = z.uuid().parse(input.deliveryId);
   const output = outputSchema.parse(input.output);
   if (
-    process.env.ALLRICE_WORKBENCH_ENABLED !== '1' ||
+    !runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') ||
     !context.workspaceId ||
     context.delegatedBy.type !== 'user' ||
     context.policySnapshot.subjectId !== context.delegatedBy.id ||
@@ -112,7 +113,7 @@ export async function publishAssistantOutput(
         await tx`select run_id from allrice_assistant_instances where run_id=${childRunId} and root_run_id=${context.runId} for update`;
       if (!authorityRoot || !child) fail();
       async function admit() {
-        if (process.env.ALLRICE_WORKBENCH_ENABLED !== '1') fail();
+        if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED')) fail();
         const lineage = await tx<
           {
             status: string;

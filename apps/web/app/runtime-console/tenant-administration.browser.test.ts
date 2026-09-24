@@ -631,7 +631,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   });
-  it('requires an explicit draft-only safety change for a denied MCP capability, never silently lifting it when selecting the tool', async () => {
+  it('assembles selected MCP capabilities in the draft and preserves subsequent explicit security edits without publishing', async () => {
     const f = await createEmployeeAdministrationFixture(fixture.db);
     await fixture.db`update allrice_workspaces set name='MCP safety fixture workspace' where id=${f.workspaceId}`;
     await savePlatformEmployeeDraft(f.employeeId, {
@@ -689,9 +689,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page.getByRole('button', { name: '安全', exact: true }).click();
       expect(
         await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
-      ).toBe(true);
+      ).toBe(false);
       expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
-        false,
+        true,
       );
       const save = async () => {
         const response = page.waitForResponse(
@@ -714,11 +714,6 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .toBe(true);
         return result.json();
       };
-      const denied = await save();
-      expect(denied.validation.valid).toBe(false);
-      expect(denied.validation.errors.join(' ')).toContain('secret:use');
-      await page.getByLabel('禁止 secret:use', { exact: true }).uncheck();
-      await page.getByLabel('允许连接器身份 service').check();
       const permitted = await save();
       expect(permitted.validation.valid).toBe(true);
       const current = await directory();
@@ -839,7 +834,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .isDisabled(),
       ).toBe(true);
       await page
-        .getByRole('button', { name: '预检发布与版本差异', exact: true })
+        .getByRole('button', { name: '查看发布检查与版本差异', exact: true })
         .click();
       await page.getByRole('region', { name: '发布预检' }).waitFor();
       await page.getByText(/browser.observe 当前策略禁止/).waitFor();
@@ -878,7 +873,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .waitFor();
       expect(await f.assigned()).toBe(0);
       await page
-        .getByRole('button', { name: '预检发布与版本差异', exact: true })
+        .getByRole('button', { name: '查看发布检查与版本差异', exact: true })
         .click();
       await page
         .getByLabel('我已确认版本差异、发布范围及尚未满足的运行条件', {

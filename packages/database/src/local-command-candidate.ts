@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -50,7 +51,7 @@ export async function assertLocalCommandCandidate(
     }
     return;
   }
-  if (process.env.ALLRICE_WORKBENCH_ENABLED !== '1')
+  if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))
     throw new RuntimePolicyError('bridge_authority_changed');
   const [version] = await tx`select v.id from allrice_deliverable_versions v
     join allrice_storage_objects o on o.id=v.object_id

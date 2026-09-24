@@ -152,9 +152,8 @@ export async function createLocalMcpFixture(
     },
   });
   await db`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p17','P17')`;
-  // A declared capability is not an authorization. Use the existing published
-  // Skill + employee assignment authority to activate workspace write access.
-  // The local MCP grant itself must never mint generic storage:write access.
+  // The published tool selection authorizes workspace writes independently of
+  // this optional Skill. Device binding and exact-operation approval still apply.
   const skill = options.skill === false ? null : randomUUID();
   if (skill) {
     const content =

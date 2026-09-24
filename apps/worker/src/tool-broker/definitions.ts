@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
@@ -573,60 +574,60 @@ export function riceToolDefinitionsForCapabilities(
       (!allowed || allowed.has(definition.name)) &&
       (!definition.name.startsWith('assistant.') ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_ASSISTANTS_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED'))) &&
       (!['local.mcp.discover', 'local.mcp.call'].includes(definition.name) ||
         (allowed?.has(definition.name) &&
           capabilities.includes('storage:write') &&
-          process.env.ALLRICE_LOCAL_MCP_ENABLED === '1' &&
-          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1' &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_MCP_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_COMMAND_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED') &&
           (definition.name === 'local.mcp.discover'
             ? (localMcp?.connections.length ?? 0) > 0
             : (localMcp?.tools.length ?? 0) > 0))) &&
       (definition.name !== 'local.preview.open' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_LOCAL_PREVIEW_ENABLED === '1' &&
-          process.env.ALLRICE_LOCAL_BROWSER_ENABLED === '1' &&
-          process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
-          process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
-          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_PREVIEW_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_BROWSER_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BROWSER_CONTROL_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_COMMAND_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_SERVICE_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'))) &&
       (definition.name !== 'local.browser.workspace' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_LOCAL_BROWSER_ENABLED === '1' &&
-          process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_BROWSER_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BROWSER_CONTROL_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
       (definition.name !== 'browser.workspace' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_BROWSER_CONTROL_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_BROWSER_CONTROL_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
       (definition.name !== 'workspace.reconciliation.export' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
-          process.env.ALLRICE_WORKBENCH_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))) &&
       (definition.name !== 'cloud.mcp.call' ||
         (allowed?.has(definition.name) &&
           frozenMcpTools.some((tool) => Boolean(tool.employeeAuthorization)) &&
-          process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
       (definition.name !== 'cloud.process.execute' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_CLOUD_RUNNER_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
       (!['local.process.status', 'local.process.stop'].includes(
         definition.name,
       ) ||
-        (process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
-          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1')) &&
+        (runtimeFeatureEnabled('ALLRICE_LOCAL_SERVICE_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_COMMAND_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'))) &&
       (definition.name !== 'local.process.execute' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1' &&
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1')) &&
+          runtimeFeatureEnabled('ALLRICE_LOCAL_COMMAND_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'))) &&
       capabilities.includes(toolCapabilities[definition.name]!),
   );
 }

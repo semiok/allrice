@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type postgres from 'postgres';
@@ -18,8 +19,8 @@ import {
 import { connectorInputDigest } from './capabilities/connector-broker.ts';
 
 export const mcpExecutionEnabled = () =>
-  process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
 export function mcpStableId(key: string) {
   const h = createHash('sha256').update(key).digest('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;

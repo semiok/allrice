@@ -1,7 +1,9 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 
 import {
   AssignEmployeeVersionInputSchema,
+  allRiceToolManifest,
   CreateEmployeeInputSchema,
   DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
@@ -137,13 +139,30 @@ export function resolveEmployeeCapabilities(
   employeeCapabilities: SkillCapability[],
   nativeSkills: readonly { requiredToolRefs: readonly string[] }[],
   deniedCapabilities: SkillCapability[] = [],
+  selectedToolNames?: readonly string[],
 ) {
   const denied = new Set(deniedCapabilities);
-  const nativeSkillGranted = new Set(
-    nativeSkills.flatMap((skill) =>
+  const explicitTools = new Set(selectedToolNames ?? []);
+  const nativeSkillGranted = new Set([
+    // Local MCP runs inside the granted device workspace. Its executor needs
+    // write capability; the tool allowlist still limits which tools can use it.
+    ...(explicitTools.has('local.mcp.call') ||
+    explicitTools.has('local.mcp.discover')
+      ? ['storage:write' as const]
+      : []),
+    ...nativeSkills.flatMap((skill) =>
       nativeSkillCapabilityGrants(skill.requiredToolRefs),
     ),
-  );
+    ...allRiceToolManifest
+      // MCP credential capability is activated below from actual tenant
+      // connections; selecting a tool cannot create a credential binding.
+      .filter(
+        (tool) =>
+          explicitTools.has(tool.canonicalName) &&
+          tool.capability !== 'secret:use',
+      )
+      .map((tool) => tool.capability),
+  ]);
   return employeeCapabilities.filter(
     (capability) =>
       !denied.has(capability) &&
@@ -1142,6 +1161,9 @@ export async function prepareEmployeeRunBinding(input: {
     manifest.data.schemaVersion === 2
       ? manifest.data.securityPolicy.deniedCapabilities
       : [],
+    manifest.data.schemaVersion === 2
+      ? manifest.data.capabilityBindings.toolNames
+      : undefined,
   );
   const profiles = await sql<{ profile: unknown; display_name: string }[]>`
     select coalesce(p.profile, jsonb_build_object(
@@ -1279,7 +1301,7 @@ export async function prepareEmployeeRunBinding(input: {
     }),
   );
   const mcpEnabled =
-    process.env.ALLRICE_CLOUD_MCP_ENABLED === '1' &&
+    runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
     manifest.data.schemaVersion === 2 &&
     manifest.data.capabilityBindings.toolNames.includes('cloud.mcp.call');
   const mcpTools =

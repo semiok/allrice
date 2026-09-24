@@ -1,3 +1,5 @@
+import { tenantTrialPortal } from '../../../../../lib/portal/config';
+import { rapidEmployeeIterationEnabled } from '@allrice/contracts';
 import {
   createPlatformEmployeeDraft,
   listPlatformEmployees,
@@ -20,8 +22,22 @@ export async function GET(request: Request) {
       listPlatformNativeSkills(),
       listPlatformEmployeeWorkspaces(),
     ]);
+    const origin = new URL(request.url);
+    origin.host = request.headers.get('host') ?? origin.host;
     return Response.json(
-      { employees, skills, workspaces, tools: listEmployeeToolAvailability() },
+      {
+        employees,
+        skills,
+        workspaces: workspaces.map((workspace) => ({
+          ...workspace,
+          trialUrl: tenantTrialPortal(
+            workspace.organizationSlug,
+            origin.toString(),
+          ),
+        })),
+        tools: listEmployeeToolAvailability(),
+        rapidIteration: rapidEmployeeIterationEnabled(),
+      },
       { headers: { 'Cache-Control': 'private, no-store' } },
     );
   } catch (error) {

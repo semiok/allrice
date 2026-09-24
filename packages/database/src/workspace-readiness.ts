@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   BrowserProfileSchema,
   CloudExecutionProfileSchema,
@@ -260,8 +261,9 @@ async function readWorkspaceReadiness(
         controls.success && controls.data.version === control?.version
           ? controls.data
           : null,
-      governedLocalReads:
-        process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1',
+      governedLocalReads: runtimeFeatureEnabled(
+        'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
+      ),
       bridge: !devices.length
         ? 'missing'
         : devices.some((d) => d.online)
@@ -301,8 +303,8 @@ async function readWorkspaceReadiness(
       flags: {
         report: workbenchEnabled(),
         local_files:
-          process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED !== '1' ||
-          process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1',
+          !runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED') ||
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),
         changeset: changesetFeatureEnabled(),
         local_command: localCommandFeatureEnabled(),
         cloud_command: cloudExecutionEnabled(),

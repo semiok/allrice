@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   createMcpStore,
   createEmployeeMcpBindingStore,
@@ -85,7 +86,7 @@ async function body(request: Request) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 function requireEnabled() {
-  if (process.env.ALLRICE_CLOUD_MCP_ENABLED !== '1')
+  if (!runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED'))
     throw new McpError('MCP_UNAVAILABLE');
 }
 export async function GET(request: Request) {
@@ -96,7 +97,7 @@ export async function GET(request: Request) {
     );
     return Response.json(
       {
-        enabled: process.env.ALLRICE_CLOUD_MCP_ENABLED === '1',
+        enabled: runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED'),
         protocol: '2025-11-25',
         auth: 'tenant_bearer',
         connections: await createMcpStore().list(context, workspaceId),

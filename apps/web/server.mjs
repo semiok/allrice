@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import console from 'node:console';
 import { Server } from 'node:http';
 import process from 'node:process';
@@ -59,12 +60,12 @@ export async function startAllRiceWeb({
       res.end('Internal Server Error');
     });
   });
-  if (process.env.ALLRICE_BRIDGE_WSS_ENABLED === '1') {
+  if (runtimeFeatureEnabled('ALLRICE_BRIDGE_WSS_ENABLED')) {
     server.bridgeGateway = await createBridgeSocketGateway({
       authority: createBridgeConnectionAuthority(),
       enabled: () =>
-        process.env.ALLRICE_BRIDGE_WSS_ENABLED === '1' &&
-        process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1',
+        runtimeFeatureEnabled('ALLRICE_BRIDGE_WSS_ENABLED') &&
+        runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'),
       dispatch: createBridgeLoopbackDispatch(port),
     });
   }

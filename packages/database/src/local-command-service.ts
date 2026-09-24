@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -51,8 +52,8 @@ function id(key: string) {
 }
 export const localCommandFeatureEnabled = () =>
   localCommandEnabled() &&
-  process.env.ALLRICE_RUNTIME_POLICY_ENABLED === '1' &&
-  process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+  runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED');
 
 /** Trusted Worker entry point. No browser-supplied binding, device or image. */
 export async function createLocalCommandOperation(
@@ -133,7 +134,7 @@ export async function createLocalCommandOperation(
     { artifactId: string; checksum: string; content: string } | undefined;
   let candidateTargetId: string | null = null;
   if (ref) {
-    if (!input.storage || process.env.ALLRICE_WORKBENCH_ENABLED !== '1')
+    if (!input.storage || !runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))
       throw new RuntimePolicyError('runtime_policy_disabled');
     const artifact = await getWorkbenchArtifact(
       {

@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   AssistantRunConfigurationSchema,
   EmployeeExecutionSnapshotSchema,
@@ -41,7 +42,8 @@ export async function assertAssistantAuthority(
   input: AssistantAuthorityInput,
 ): Promise<void> {
   requireAuthority(
-    process.env.ALLRICE_ASSISTANTS_ENABLED === '1' && phases.has(input.phase),
+    runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') &&
+      phases.has(input.phase),
   );
   const parsedTask = RuntimeTaskRefSchema.safeParse(input.task),
     parsedTools = toolsSchema.safeParse(input.tools);
@@ -335,6 +337,6 @@ export async function assertAssistantAuthority(
       root.deadline_at > clock.now &&
       root.lease_expires_at > clock.now &&
       root.timeout_at > clock.now &&
-      process.env.ALLRICE_ASSISTANTS_ENABLED === '1',
+      runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED'),
   );
 }

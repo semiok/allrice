@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import {
   ChangesetDocumentSchema,
@@ -39,7 +40,7 @@ export type WorkbenchPrincipal = Pick<
   'actor' | 'organizationId' | 'workspaceId'
 >;
 export const workbenchEnabled = () =>
-  process.env.ALLRICE_WORKBENCH_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED');
 export class ArtifactReviewError extends Error {
   constructor(readonly code: string) {
     super(code);
@@ -451,7 +452,10 @@ export async function publishWorkbenchChangesetProposal(
   storage: StoragePort,
   db: Database = getDatabase(),
 ) {
-  if (!workbenchEnabled() || process.env.ALLRICE_CHANGESET_ENABLED !== '1')
+  if (
+    !workbenchEnabled() ||
+    !runtimeFeatureEnabled('ALLRICE_CHANGESET_ENABLED')
+  )
     fail('feature_disabled');
   const ctx = ExecutionContextSchema.parse(input.context);
   const proposal = ChangesetProposalSchema.parse(input.proposal);

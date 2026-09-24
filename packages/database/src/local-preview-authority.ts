@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import type postgres from 'postgres';
 import {
   BridgeDeviceSchema,
@@ -29,7 +30,7 @@ export const localPreviewEnabled = () =>
   localBrowserEnabled() &&
   localCommandFeatureEnabled() &&
   localServiceFeatureEnabled() &&
-  process.env.ALLRICE_LOCAL_PREVIEW_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_LOCAL_PREVIEW_ENABLED');
 
 /** Read the current service under its existing immutable operation identity.
  * Deliberately no operation/root/policy write locks: browser admission can run

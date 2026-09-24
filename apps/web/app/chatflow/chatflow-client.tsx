@@ -107,6 +107,7 @@ export function ChatFlowClient({
     activeId,
     captureSelection,
     createSession,
+    newSessionEmployee,
     history,
     loadHistory,
     loadWorkspace,
@@ -604,8 +605,7 @@ export function ChatFlowClient({
   const activeSession = sessions.find((session) => session.id === activeId);
   const activeEmployee = activeSession
     ? employeeForSession(workspace, activeSession)
-    : (workspace.employees.find((employee) => employee.isDefault) ??
-      workspace.employees[0]);
+    : newSessionEmployee;
   const activeEmployeeProfile = workspace.employeeProfiles.find(
     (profile) => profile.assignmentId === activeEmployee?.id,
   );

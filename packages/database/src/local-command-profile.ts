@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   RuntimeLocalCommandProfileSchema,
   isLocalCommandProfileForPlatform,
@@ -9,7 +10,7 @@ import { getDatabase } from './core/client.ts';
 import { RuntimePolicyError, runtimePolicyDigest } from './runtime-policy.ts';
 
 export const localCommandEnabled = () =>
-  process.env.ALLRICE_LOCAL_COMMAND_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_LOCAL_COMMAND_ENABLED');
 
 /** Device reports availability, not authorization or third-party attestation. */
 export async function reportLocalCommandProfile(

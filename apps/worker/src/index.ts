@@ -1,3 +1,4 @@
+import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -116,7 +117,7 @@ function mcpDiscoveryTick() {
     mcpDiscoveryTask ||
     stopping ||
     !databaseReady ||
-    process.env.ALLRICE_CLOUD_MCP_ENABLED !== '1'
+    !runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED')
   )
     return;
   mcpDiscoveryTask = executeNextMcpDiscovery({
