@@ -12,6 +12,7 @@ import {
   UuidSchema,
   runtimeContractEqual,
   WorkbenchCursorSchema,
+  type ArtifactSourceFile,
   type WorkbenchArtifact,
   type ReviewDraftInput,
   type ExecutionContext,
@@ -26,6 +27,7 @@ import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   createToolBrokerExportObject,
   registerToolBrokerExport,
+  assertToolBrokerSourceFile,
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
@@ -531,6 +533,7 @@ export async function publishWorkbenchArtifact(
     bytes: Uint8Array;
     mediaType: string;
     parentObjectId?: string;
+    sourceFile?: ArtifactSourceFile;
     changeSummary?: string;
     /** Server-only deterministic renderer input; never accepted by generic export HTTP/tool arguments. */
     trustedCloudDerivation?: {
@@ -567,6 +570,11 @@ export async function publishWorkbenchArtifact(
     (input.format !== 'json' || input.mediaType !== 'application/json')
   )
     fail('invalid_publication');
+  if (
+    input.sourceFile &&
+    (input.kind !== 'document' || input.trustedCloudDerivation)
+  )
+    fail('invalid_publication');
   const principal: WorkbenchPrincipal = {
     actor: { type: 'user', id: owner },
     organizationId: context.organizationId,
@@ -584,6 +592,7 @@ export async function publishWorkbenchArtifact(
       mediaType: input.mediaType,
       parentObjectId: input.parentObjectId ?? null,
       changeSummary: input.changeSummary ?? null,
+      ...(input.sourceFile ? { sourceFile: input.sourceFile } : {}),
     });
   // Cleanup only this newly generated object after a rolled-back registration, never a previous version.
   let created: StorageObject | undefined;
@@ -596,6 +605,21 @@ export async function publishWorkbenchArtifact(
       );
       await development?.admit(tx);
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
+      const source = input.sourceFile
+        ? await assertToolBrokerSourceFile(
+            tx,
+            context,
+            input.sourceFile,
+            input.sessionId,
+          )
+        : undefined;
+      if (
+        source &&
+        input.parentObjectId &&
+        input.parentObjectId !== source.parentObjectId
+      )
+        fail('version_changed');
+      const parentObjectId = source?.parentObjectId ?? input.parentObjectId;
       let derivedSource: WorkbenchArtifact | null = null;
       if (input.trustedCloudDerivation) {
         if (
@@ -651,10 +675,10 @@ export async function publishWorkbenchArtifact(
           derivedSource.provenance.operationId!,
         );
       let parent: WorkbenchArtifact | null = null;
-      if (input.parentObjectId) {
+      if (parentObjectId) {
         const [p] = await tx<
           { id: string }[]
-        >`select id from allrice_deliverable_versions where object_id=${UuidSchema.parse(input.parentObjectId)} and session_id=${input.sessionId}
+        >`select id from allrice_deliverable_versions where object_id=${UuidSchema.parse(parentObjectId)} and session_id=${input.sessionId}
         and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and owner_id=${owner}`;
         if (!p) fail('artifact_not_found');
         parent = await readArtifact(tx, principal, input.sessionId, p.id);
@@ -690,9 +714,8 @@ export async function publishWorkbenchArtifact(
           fileName: input.fileName,
           format: input.format,
           object: created,
-          ...(input.parentObjectId
-            ? { parentObjectId: input.parentObjectId }
-            : {}),
+          ...(source ? { sourceFile: source.source } : {}),
+          ...(parentObjectId ? { parentObjectId } : {}),
           ...(input.changeSummary
             ? { changeSummary: input.changeSummary }
             : {}),

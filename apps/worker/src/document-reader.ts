@@ -112,6 +112,8 @@ async function parseXlsx(bytes: Buffer, maximumCharacters: number) {
               if ('text' in value && typeof value.text === 'string') {
                 return value.text;
               }
+              if ('formula' in value || 'sharedFormula' in value)
+                return `=${'formula' in value ? value.formula : `[共享公式 ${value.sharedFormula}]`}${'result' in value && value.result !== undefined ? `（缓存：${value.result}）` : '（未计算）'}`;
               if ('result' in value) return String(value.result ?? '');
               if ('richText' in value && Array.isArray(value.richText)) {
                 return value.richText

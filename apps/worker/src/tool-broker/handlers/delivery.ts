@@ -13,6 +13,7 @@ import {
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 
+import { generateOfficeExport } from '../../office/export.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { HandlerError } from '../../errors.js';
 import { stringValue } from '../input-values.js';
@@ -30,7 +31,24 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   }
   const format = DeliveryFormatSchema.parse(stringValue(args.format, 'format'));
-  const content = stringValue(args.content, 'content');
+  const hasOffice = args.office !== undefined;
+  if (hasOffice === (args.content !== undefined))
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'content 与 office 必须且只能提供一个',
+      false,
+    );
+  if (
+    hasOffice &&
+    args.artifactKind !== undefined &&
+    args.artifactKind !== 'document'
+  )
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'Office 输入仅用于文档交付',
+      false,
+    );
+  const content = hasOffice ? '' : stringValue(args.content, 'content');
   if (content.length > 200_000) {
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
@@ -38,7 +56,27 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       false,
     );
   }
-  const generated = await generateDeliverable({ format, content });
+  const generated = hasOffice
+    ? await generateOfficeExport(input, format, args.office)
+    : {
+        ...(await generateDeliverable({ format, content })),
+        sourceFile: undefined,
+        warnings: undefined,
+        changes: undefined,
+      };
+  if (generated.bytes.byteLength > 8_000_000)
+    throw new HandlerError(
+      'TOOL_FILE_TOO_LARGE',
+      '交付文件超过 8 MB，请拆分内容',
+      false,
+    );
+  const officeResult = hasOffice
+    ? {
+        sourceFile: generated.sourceFile,
+        changes: generated.changes,
+        warnings: generated.warnings,
+      }
+    : {};
   let fileName = [...stringValue(args.fileName, 'fileName')]
     .map((character) =>
       '\\/:*?"<>|'.includes(character) || character.charCodeAt(0) < 32
@@ -74,6 +112,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       sessionId: input.sessionId,
       callId: input.call.id,
       fileName,
+      ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
@@ -102,6 +141,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
           );
     return {
       modelContent: JSON.stringify({
+        ...officeResult,
         artifactId: artifact.id,
         // This is the checksum of the persisted, server-normalized object,
         // not a model-computed hash of its input proposal.
@@ -146,6 +186,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         : {}),
       fileName,
       format,
+      ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
@@ -156,6 +197,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     });
     return {
       modelContent: JSON.stringify({
+        ...officeResult,
         objectId: object.id,
         fileName,
         mediaType: object.mediaType,

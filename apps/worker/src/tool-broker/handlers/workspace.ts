@@ -8,6 +8,8 @@ import {
 import type { ExecutionContext, RequestContext } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 
+import { inspectOffice } from '../../office/inspect.js';
+import { officeMediaTypes, type OfficeFormat } from '../../office/package.js';
 import { parseDocument } from '../../document-reader.js';
 import { HandlerError } from '../../errors.js';
 import {
@@ -172,17 +174,24 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
     reader.releaseLock();
   }
   const maximumCharacters = limitValue(args.maxCharacters, 120_000, 300_000);
-  const parsed = await parseDocument({
-    bytes: Buffer.concat(chunks),
-    mediaType: file.object.mediaType,
-    fileName: file.fileName,
-    maximumCharacters,
-  });
+  const format = (Object.keys(officeMediaTypes) as OfficeFormat[]).find(
+    (format) => officeMediaTypes[format] === file.object.mediaType,
+  );
+  const parsed =
+    args.includeStructure === true && format
+      ? await inspectOffice(Buffer.concat(chunks), format, maximumCharacters)
+      : await parseDocument({
+          bytes: Buffer.concat(chunks),
+          mediaType: file.object.mediaType,
+          fileName: file.fileName,
+          maximumCharacters,
+        });
   return {
     modelContent: JSON.stringify({
       id: file.object.id,
       fileName: file.fileName,
       mediaType: file.object.mediaType,
+      checksum: file.object.checksum,
       ...parsed,
     }),
     summary: `已解析 ${file.fileName} · ${parsed.units.length} 个内容单元`,

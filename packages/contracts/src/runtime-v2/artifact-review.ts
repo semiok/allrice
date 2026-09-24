@@ -69,6 +69,13 @@ export const ChangesetDocumentSchema = z
       });
   });
 export type ChangesetDocument = z.infer<typeof ChangesetDocumentSchema>;
+export const ArtifactSourceFileSchema = z
+  .object({
+    objectId: UuidSchema,
+    checksum: ChecksumSchema,
+  })
+  .strict();
+export type ArtifactSourceFile = z.infer<typeof ArtifactSourceFileSchema>;
 export const ArtifactProvenanceSchema = z
   .object({
     kind: z.enum(['model_proposal', 'tool_result', 'legacy_deliverable']),

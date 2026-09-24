@@ -968,6 +968,209 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     });
     return { ...f, root, storage, publish, draft };
   }
+  async function officeFixture() {
+    const f = await artifactFixture();
+    f.execution.policySnapshot.grants.push({
+      resourceType: 'storage_object',
+      action: 'resource:read',
+      workspaceId: f.context.workspaceId!,
+    });
+    await database`update allrice_policy_snapshots set payload=${database.json({ memberships: f.execution.policySnapshot.memberships, grants: f.execution.policySnapshot.grants })} where id=${f.policy}`;
+    return f;
+  }
+  it('MET-157 preserves source provenance and version lineage across publication retries and fresh readers', async () => {
+    const f = await officeFixture(),
+      original = await f.publish();
+    const sourceFile = {
+      objectId: original.object.id,
+      checksum: original.object.checksum,
+    };
+    const input = {
+      context: f.execution,
+      sessionId: f.sessionId,
+      callId: 'office-edit',
+      kind: 'document' as const,
+      fileName: 'revised.txt',
+      format: 'text' as const,
+      bytes: Buffer.from('revised'),
+      mediaType: 'text/plain',
+      sourceFile,
+    };
+    const revised = await publishWorkbenchArtifact(input, f.storage, database);
+    expect(revised.version).toMatchObject({
+      version: 2,
+      seriesId: original.version.seriesId,
+      parentObjectId: original.object.id,
+    });
+    expect(revised.provenance).not.toHaveProperty('sourceFile'); // Preserve the stored v1 shape for application rollback.
+    expect(await readArtifactBytes(f.storage, original.object)).toEqual(
+      Buffer.from('first line\nsecond line'),
+    );
+    expect(
+      await publishWorkbenchArtifact(
+        input,
+        new LocalStorageAdapter(f.root),
+        database,
+      ),
+    ).toEqual(revised);
+    const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+    url.searchParams.set('options', `-csearch_path=${schema},public`);
+    const recovered = postgres(url.toString(), { max: 1, onnotice: () => {} });
+    try {
+      const artifact = await getWorkbenchArtifact(
+        f.context,
+        f.sessionId,
+        revised.id,
+        recovered,
+      );
+      expect(artifact.version.parentObjectId).toBe(sourceFile.objectId);
+      expect(
+        await readArtifactBytes(
+          new LocalStorageAdapter(f.root),
+          artifact.object,
+        ),
+      ).toEqual(Buffer.from('revised'));
+      const audits =
+        await recovered`select metadata from allrice_audit_events where resource_id=${revised.id} and action='artifact.source'`;
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.metadata.sourceFile).toEqual(sourceFile);
+    } finally {
+      await recovered.end();
+    }
+    const withoutRead = structuredClone(input.context);
+    withoutRead.policySnapshot.grants =
+      withoutRead.policySnapshot.grants.filter(
+        (grant) => grant.action !== 'resource:read',
+      );
+    await expect(
+      publishWorkbenchArtifact(
+        { ...input, context: withoutRead },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('authorization_denied');
+  });
+  it('MET-157 rejects wrong checksums, another workspace/private owner and mismatched parents before storing edited bytes', async () => {
+    const f = await officeFixture(),
+      original = await f.publish();
+    const input = {
+      context: f.execution,
+      sessionId: f.sessionId,
+      callId: 'office-deny',
+      kind: 'document' as const,
+      fileName: 'revised.txt',
+      format: 'text' as const,
+      bytes: Buffer.from('revised'),
+      mediaType: 'text/plain',
+      sourceFile: {
+        objectId: original.object.id,
+        checksum: original.object.checksum,
+      },
+    };
+    const put = vi.spyOn(f.storage, 'put');
+    await expect(
+      publishWorkbenchArtifact(
+        {
+          ...input,
+          sourceFile: { ...input.sourceFile, checksum: digest('wrong') },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('source_file_changed');
+    await expect(
+      publishWorkbenchArtifact(
+        { ...input, parentObjectId: randomUUID() },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('version_changed');
+    const other = await officeFixture(),
+      privateSource = await other.publish();
+    await expect(
+      publishWorkbenchArtifact(
+        {
+          ...input,
+          sourceFile: {
+            objectId: privateSource.object.id,
+            checksum: privateSource.object.checksum,
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('not_found');
+    const privateId = randomUUID();
+    await database`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable)
+      values(${privateId},${f.context.organizationId},${f.context.workspaceId},${other.context.actor.id},${original.object.key + '-private'},'uploads','text/plain',${original.object.sizeBytes},${original.object.checksum},'private','ready',false)`;
+    await expect(
+      publishWorkbenchArtifact(
+        {
+          ...input,
+          sourceFile: {
+            objectId: privateId,
+            checksum: original.object.checksum,
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('authorization_denied');
+    expect(put).not.toHaveBeenCalled();
+  });
+  it('MET-157 starts a new series from a template with no deliverable version and rolls back failed registrations', async () => {
+    const f = await officeFixture();
+    const bytes = Buffer.from('uploaded template'),
+      source = createToolBrokerExportObject({
+        context: f.execution,
+        mediaType: 'text/plain',
+        sizeBytes: bytes.length,
+        checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      });
+    await f.storage.put(source, new Blob([bytes]).stream());
+    await database`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable)
+      values(${source.id},${source.organizationId},${source.workspaceId},${source.ownerId},${source.key},'uploads',${source.mediaType},${source.sizeBytes},${source.checksum},'private','ready',false)`;
+    const input = {
+      context: f.execution,
+      sessionId: f.sessionId,
+      callId: 'office-template',
+      kind: 'document' as const,
+      fileName: 'result.txt',
+      format: 'text' as const,
+      bytes: Buffer.from('result'),
+      mediaType: 'text/plain',
+      sourceFile: { objectId: source.id, checksum: source.checksum },
+    };
+    const result = await publishWorkbenchArtifact(input, f.storage, database);
+    expect(result.version).toMatchObject({ version: 1, parentObjectId: null });
+    const [audit] =
+      await database`select metadata from allrice_audit_events where resource_id=${result.id} and action='artifact.source'`;
+    expect(audit!.metadata.sourceFile).toEqual(input.sourceFile);
+    const original = await readArtifactBytes(f.storage, source);
+    expect(original).toEqual(bytes);
+    const failedObject = createToolBrokerExportObject({
+      context: f.execution,
+      mediaType: 'text/plain',
+      sizeBytes: 5,
+      checksum: digest('other'),
+    });
+    await expect(
+      registerToolBrokerExport(
+        {
+          context: f.execution,
+          sessionId: f.sessionId,
+          fileName: 'failed.txt',
+          format: 'text',
+          object: failedObject,
+          sourceFile: { objectId: source.id, checksum: digest('stale') },
+        },
+        database,
+      ),
+    ).rejects.toThrow('source_file_changed');
+    expect(
+      await database`select id from allrice_storage_objects where id=${failedObject.id}`,
+    ).toHaveLength(0);
+  });
   it.each([
     'restore',
     'partial',

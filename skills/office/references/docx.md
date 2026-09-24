@@ -1,17 +1,54 @@
 # Word documents
 
-Adapted from DeepSeek Harness Office DOCX guidance; source and MIT notice are in `references/provenance.md` and `references/LICENSE.dsh` in this bundle.
+Adapted from pinned DSH Office guidance; provenance and MIT notice are bundled alongside this resource.
 
-## Available workflow
+## Create a native document
 
-- Read a source DOCX with `workspace_document_read`; extracted text does not preserve the original document model.
-- For a new DOCX, call `workspace_export_create` with `format: "docx"` and complete text. Prefix heading lines with `#`, `##` or `###` to produce Word heading styles. Other lines become editable paragraphs.
-- Include a clear title, purpose, source-backed sections and a concise conclusion or action list. Review names, dates, units and Chinese punctuation before export.
-- The current generator does not turn Markdown pipe tables into native Word tables. Do not promise complex tables, embedded media, page numbering or template fidelity through this text input.
-- For a revised generated artifact, use `parentObjectId` and `changeSummary`. This preserves version history, not the source file's binary formatting.
+Use `workspace_export_create` with `format: "docx"` and `office` (omit `content`):
 
-## Principles for richer editing
+```json
+{
+  "kind": "docx",
+  "title": "项目汇报",
+  "header": "内部材料",
+  "footer": "稻米公司",
+  "blocks": [
+    { "type": "heading", "text": "本月结果", "level": "1" },
+    { "type": "paragraph", "text": "已核验的数据如下。" },
+    {
+      "type": "table",
+      "headers": ["项目", "金额"],
+      "rows": [["服务费", 1200]]
+    },
+    { "type": "bullets", "items": ["下月复核回款"] },
+    { "type": "page-break" },
+    { "type": "paragraph", "text": "数据来源与口径", "bold": true }
+  ]
+}
+```
 
-Upstream recommends inspecting paragraphs/runs, tables, sections, headers and footers before editing an existing document. Targeted run changes preserve formatting better than replacing whole paragraphs. Heading styles and East Asian font settings matter for Chinese documents. Track changes, fields and unsupported features must not be silently discarded.
+Tables are editable Word tables, headings use native styles, and the footer includes a page-number field. Use concise cells and source-backed values. Each table row must match its header width. For simple output, the existing `content` path still supports heading lines and paragraphs; Markdown pipe tables do not become Word tables through that path.
 
-Those principles guide subsequent AllRice editing support. The current tools cannot inspect all those structures or render Word pages; do not report template preservation or visual verification based only on extracted text and a successful export.
+## Edit an existing document or template
+
+Read `workspace_document_read` with `includeStructure: true`. Copy its `id` and `checksum` into `office.sourceObjectId` and `sourceChecksum`. Example `office` input:
+
+```json
+{
+  "kind": "edit",
+  "sourceObjectId": "<returned id>",
+  "sourceChecksum": "<returned checksum>",
+  "changes": [
+    {
+      "type": "replace-text",
+      "find": "{{客户}}",
+      "replace": "稻米公司",
+      "expectedOccurrences": 1
+    }
+  ]
+}
+```
+
+Matching spans text runs inside a paragraph, including table paragraphs; replacement inherits the first matching run's style. Original surrounding text keeps its runs. Set the exact expected match count from the read result; a mismatch fails without delivering a partially edited document. Do not guess the count after a truncated read.
+
+Edits preserve untouched package members such as headers, footers, styles, images and relationships. This operation does not edit header/footer text, fields, comments, tracked deletions or page geometry. Do not use it to replace whole documents, add sections or claim all Word features are editable. Use structured creation for a new layout. A successful edit is not rendered page inspection.

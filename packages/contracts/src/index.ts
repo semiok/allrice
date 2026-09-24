@@ -48,6 +48,7 @@ export * from './saas.ts';
 export * from './knowledge.ts';
 export * from './models.ts';
 export * from './operations.ts';
+export * from './office.ts';
 export * from './provider-auth.ts';
 export * from './platform-employees.ts';
 export * from './runtime-capabilities.ts';

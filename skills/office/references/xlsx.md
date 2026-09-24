@@ -1,18 +1,48 @@
 # Excel workbooks
 
-Adapted from DeepSeek Harness Office XLSX guidance; source and MIT notice are in `references/provenance.md` and `references/LICENSE.dsh` in this bundle.
+Adapted from pinned DSH Office guidance; provenance and MIT notice are bundled alongside this resource.
 
-## Available workflow
+## Create typed, formatted sheets
 
-- Read a source XLSX with `workspace_document_read` and retain worksheet names, cell labels and any truncation notice. A formula and its cached value are different evidence; a cache may be stale or absent.
-- For a new XLSX, call `workspace_export_create` with `format: "xlsx"`. Set `content` to a JSON array of row objects. Keys become column headers; numbers and booleans retain their types. Example: `[{"项目":"服务费","数量":2,"单价":15,"金额":30}]`.
-- Keep account numbers, document identifiers and values with leading zeroes as strings. Keep money units and precision explicit. Never replace missing data with invented zeroes.
-- The current generator creates one worksheet with a header row. Plain text becomes line/value columns, so prefer JSON row objects for business tables.
-- Formula objects supported by the writer are not a calculation engine. Do not invent cached results or claim recalculation. Use independently verified values when no actual formula calculation is available. Deterministic financial reconciliation stays in business-reconciliation and its dedicated export tool.
-- Use `parentObjectId` and `changeSummary` for revisions of generated workbooks. This creates a new workbook version; it does not preserve source workbook styles, macros, charts or untouched sheets.
+Use `workspace_export_create` with `format: "xlsx"` and `office` (omit `content`):
 
-## Principles for richer editing
+```json
+{
+  "kind": "xlsx",
+  "sheets": [
+    {
+      "name": "明细",
+      "columns": [
+        { "header": "编号", "width": 18 },
+        { "header": "金额", "numberFormat": "#,##0.00" },
+        { "header": "含税金额", "numberFormat": "#,##0.00" }
+      ],
+      "rows": [["00123", 100, { "formula": "B2*1.06" }]]
+    }
+  ]
+}
+```
 
-Upstream distinguishes formula-preserving workbook edits from dataframe round trips, which can lose workbook features. Read formula expressions and values separately, change only intended ranges, preserve types and verify totals independently. Structural validation does not prove formula accuracy. Never relabel legacy XLS, XLSB or macro-enabled files as XLSX or silently remove unsupported content.
+Up to ten sheets, each with one header row, frozen header, filter and column formats. Data begins at row 2. Sheet names must be unique; every row must match its columns. Numbers and booleans remain typed; identifiers and leading zeroes must remain strings. An explicit `{ "formula": "..." }` creates a formula; a string beginning with `=` remains text. The service does not accept invented formula caches or calculate formulas.
 
-These principles guide subsequent AllRice editing and calculation support; the current text reader/exporter cannot claim full workbook fidelity or rendered visual inspection.
+The legacy `content` path still accepts a JSON array of row objects for simple single-sheet output. Specialized business reconciliation continues to use its deterministic Skill and export tool.
+
+## Edit workbook inputs without rebuilding the template
+
+Read with `includeStructure: true` for exact sheet names, cell addresses, formula expressions and source checksum. Use `office.kind: "edit"`, returned `sourceObjectId`/`sourceChecksum`, and changes such as:
+
+```json
+[
+  { "type": "set-cell", "sheet": "明细", "cell": "B2", "value": 120 },
+  {
+    "type": "set-cell",
+    "sheet": "明细",
+    "cell": "C2",
+    "value": { "formula": "B2*1.06" }
+  }
+]
+```
+
+Only the selected cells change value; existing cell styles and untouched package parts remain. `null` clears a cell's content. Merged cells can only be changed at the top-left anchor; shared/array formulas cannot be partially overwritten. This does not insert/delete rows, rewrite tables or change charts.
+
+All worksheet formula caches and the calculation chain are invalidated, and automatic full recalculation is requested on open. Formulas are preserved, including those on other sheets. Open in Excel/LibreOffice to calculate results; the runtime has not verified totals, external data refresh, chart/pivot caches or rendered layout. Explain this when material to the requested delivery. Never report stale cached numbers as new results, or rename XLS/XLSB/XLSM files as XLSX.

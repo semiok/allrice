@@ -1,4 +1,4 @@
-import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { OfficeExportSchema, runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
@@ -155,6 +155,11 @@ export const riceToolDefinitions = [
       properties: {
         objectId: { type: 'string', format: 'uuid' },
         maxCharacters: { type: 'integer', minimum: 1000, maximum: 300000 },
+        includeStructure: {
+          type: 'boolean',
+          description:
+            'Office 编辑前设为 true，返回段落、实际页序或工作表坐标与公式，以及源文件 checksum。',
+        },
       },
       required: ['objectId'],
       additionalProperties: false,
@@ -377,6 +382,11 @@ export const riceToolDefinitions = [
           ],
         },
         content: { type: 'string', minLength: 1, maxLength: 200000 },
+        office: {
+          ...z.toJSONSchema(OfficeExportSchema),
+          description:
+            '与 content 二选一。结构化创建 Office 表格、图表、公式；kind=edit 用读取返回的 sourceObjectId/sourceChecksum 修改原文件副本，保留模板，自动记录来源与版本。',
+        },
         parentObjectId: {
           type: 'string',
           format: 'uuid',
@@ -388,7 +398,8 @@ export const riceToolDefinitions = [
           description: '相对上一版的简短变更说明。',
         },
       },
-      required: ['fileName', 'format', 'content'],
+      required: ['fileName', 'format'],
+      oneOf: [{ required: ['content'] }, { required: ['office'] }],
       additionalProperties: false,
     },
   },

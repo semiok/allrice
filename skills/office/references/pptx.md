@@ -1,17 +1,64 @@
 # PowerPoint presentations
 
-Adapted from DeepSeek Harness Office PPTX guidance; source and MIT notice are in `references/provenance.md` and `references/LICENSE.dsh` in this bundle.
+Adapted from pinned DSH Office guidance; provenance and MIT notice are bundled alongside this resource.
 
-## Available workflow
+## Create native editable slides
 
-- Read a source PPTX with `workspace_document_read` and preserve slide labels. Text extraction does not inspect positioning, animation, embedded workbooks or visual balance.
-- For a new PPTX, call `workspace_export_create` with `format: "pptx"`. Set complete text in `content`; `#` and `##` headings start slides, with following lines used as the slide body.
-- Plan one main point per slide. Keep titles concise, bodies readable, and Chinese punctuation and numeric units consistent. Keep sources and unverified assumptions explicit.
-- The current generator supports text slides, up to 50 slides and 5,000 body characters per slide. Stay well below those limits; do not silently lose content. Native charts, tables, media and preserved templates are not supplied by this text export.
-- Return the actual download link after export. Use `parentObjectId` and `changeSummary` to version a revised generated deck. A new version is not a binary-preserving edit of the old deck.
+Use `workspace_export_create` with `format: "pptx"` and `office` (omit `content`):
 
-## Principles for richer editing
+```json
+{
+  "kind": "pptx",
+  "title": "月度汇报",
+  "accentColor": "2563EB",
+  "slides": [
+    {
+      "title": "本月结论",
+      "body": ["收入稳步增长", "下月跟进回款"],
+      "notes": "统计口径与来源"
+    },
+    {
+      "title": "收入趋势",
+      "chart": {
+        "type": "bar",
+        "labels": ["八月", "九月"],
+        "series": [{ "name": "收入", "values": [12, 20] }]
+      }
+    },
+    {
+      "title": "区域明细",
+      "table": {
+        "headers": ["区域", "收入"],
+        "rows": [
+          ["华东", 12],
+          ["华南", 8]
+        ]
+      }
+    }
+  ]
+}
+```
 
-Upstream recommends inspecting slide shapes, layouts and related parts before targeted edits. Preserve runs where possible, use native editable charts/tables for new content, and keep chart data consistent with embedded workbooks. Rebuilding a deck can discard animation, SmartArt, notes and other features.
+Create at most 50 slides. Choose body text, table or chart per slide; put supplementary detail in `notes` or another slide. Tables use native editable cells (at most 12 data rows and 8 columns per slide). Native bar/line/pie charts retain their editable embedded workbook. Every series must have one value per label; a pie chart has one series. Keep units, labels and sources explicit. Use short titles and compact cells; fit-to-box is not proof of readable layout.
 
-Render and inspect slides before claiming visual quality when a renderer becomes available. At present, tool success and extracted text alone do not prove correct spacing, fonts, alignment or absence of overflow.
+The existing `content` path remains available for simple text slides headed by `#`/`##`.
+
+## Revise text in a source presentation
+
+Read `workspace_document_read` with `includeStructure: true`; slide labels follow presentation order, including reordered decks. Export `office.kind: "edit"` with the returned `sourceObjectId`, `sourceChecksum` and changes such as:
+
+```json
+[
+  {
+    "type": "replace-text",
+    "slide": 2,
+    "find": "旧标题",
+    "replace": "收入趋势",
+    "expectedOccurrences": 1
+  }
+]
+```
+
+Omit `slide` only when intentionally matching across the entire deck. Matching spans runs within a paragraph, including table cell text. An unexpected match count aborts the edit. Unchanged parts retain charts and embedded data, images, notes, layouts and relationships. This edits slide text; it does not edit chart values, reorder slides, modify SmartArt or change animation/layout. Create a new chart slide through structured generation when needed.
+
+After publishing, return the real download link and version. Text readback and package preservation do not prove font availability, spacing, alignment or absence of overflow. Rendered slide inspection remains a subsequent capability.

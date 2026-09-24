@@ -40,8 +40,8 @@
         },
         {
           "id": "office",
-          "name": "Office 文档阅读与基础交付",
-          "detail": "一个 Skill 合并文档分析与结构化交付，复用 alpha.2 的 Office 工作方法；支持现有 PDF/Office 阅读和多格式下载。复杂模板编辑、公式与排版验收由 MET-157 后续完成。",
+          "name": "Office 文档阅读、生成与编辑",
+          "detail": "单一 Office Skill 合并阅读与交付；支持 Word 原生表格、Excel 多表与公式、PPT 可编辑图表及原文件文字/单元格修改，保留模板与版本来源。公式重算、视觉检查与真实 Dev 验收仍由 MET-157 PR3 完成。",
           "status": "按租户启用",
           "action": "employees"
         }
