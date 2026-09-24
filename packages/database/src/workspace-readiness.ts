@@ -79,6 +79,8 @@ async function readWorkspaceReadiness(
       join allrice_employees e on e.id=a.employee_id and e.status='active'
       where a.organization_id=${organizationId} and a.workspace_id=${workspaceId}
         and a.user_id=${subjectId} and a.active
+        and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.tenant_employee_id=a.employee_id
+          and d.organization_id=a.organization_id and d.workspace_id=a.workspace_id and not d.active)
         and (${sessionId}::uuid is null or a.id=${assignmentId})
       order by a.is_default desc,e.name,a.id limit 1`;
     const parsed = EmployeeManifestSchema.safeParse(employee?.manifest);
@@ -142,9 +144,9 @@ async function readWorkspaceReadiness(
     };
     const runner = devices.some((d) => runnerAvailable(d));
     const targets = await tx<
-      { id: string; state: string; capabilities: string[] }[]
+      { id: string; state: string; capabilities: string[]; fresh: boolean }[]
     >`
-      select id,state,capabilities from allrice_execution_targets
+      select id,state,capabilities,(metadata->>'healthManaged' is distinct from 'true' or coalesce(last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp(),false)) fresh from allrice_execution_targets
       where organization_id=${organizationId} and workspace_id=${workspaceId} and kind='cloud_sandbox'`;
     const cloudGrants = await tx<{ target_id: string; profile: unknown }[]>`
       select target_id,profile from allrice_cloud_execution_grants
@@ -173,7 +175,7 @@ async function readWorkspaceReadiness(
           Array.isArray(t.capabilities) && t.capabilities.includes(capability),
       );
       if (!candidates.length) return 'missing';
-      const online = candidates.filter((t) => t.state === 'online');
+      const online = candidates.filter((t) => t.state === 'online' && t.fresh);
       if (!online.length) return 'unavailable';
       const own = grants.filter((g) =>
         online.some((t) => t.id === g.target_id),

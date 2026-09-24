@@ -28,7 +28,8 @@ export async function startBrowserControlDriver(
   );
   const resolvePublicAddresses = createManagedBrowserPinnedAddressResolver(
     async (hostname) => {
-      if (!origins.has(hostname)) throw Error('BROWSER_ORIGIN_DENIED');
+      if (options.profile.network !== 'public_https' && !origins.has(hostname))
+        throw Error('BROWSER_ORIGIN_DENIED');
       return resolveManagedBrowserHostnamePublic(hostname);
     },
   );

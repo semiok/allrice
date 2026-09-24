@@ -554,11 +554,9 @@ function Members({
             修改后：{roles[role]} / {active ? '有效' : '停用'}
           </p>
           <label>
-            修改原因
+            备注（可选）
             <textarea
-              aria-label="修改原因"
-              required
-              minLength={5}
+              aria-label="成员备注（可选）"
               maxLength={500}
               disabled={busy}
               value={reason}
@@ -566,10 +564,10 @@ function Members({
             />
           </label>
           <p>
-            不会授予平台管理员身份，不会开启工具、沙箱或本地目录权限。账号停用状态不由此操作恢复。
+            普通成员自动继承工作区已派驻员工及其云端能力。只读成员可以查看，不能执行任务。
           </p>
           <div className={styles.selectors}>
-            <button type="submit" disabled={busy || reason.trim().length < 5}>
+            <button type="submit" disabled={busy}>
               {busy ? '正在保存…' : '确认保存授权'}
             </button>
             <button type="button" disabled={busy} onClick={close}>

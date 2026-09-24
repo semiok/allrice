@@ -492,7 +492,7 @@ integration(
           leaseToken: lease.leaseToken,
           leaseMs: 30000,
         }),
-      ).rejects.toThrow('unavailable');
+      ).rejects.toThrow('employee_access_revoked');
       const [row] =
         await f.db`select snapshot->>'status' as status from allrice_runtime_operations where id=${c.snapshot.binding.attempt.operationId}`;
       expect(row!.status).toBe('dispatched');

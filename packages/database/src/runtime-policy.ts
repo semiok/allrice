@@ -344,6 +344,15 @@ async function checkBindingAuthority(
       binding.task.frozenConfiguration.digest
   )
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+  const [withdrawn] =
+    await transaction`select er.run_id from allrice_employee_runs er
+    left join allrice_employee_assignments a on a.id=er.employee_assignment_id
+    left join allrice_employees e on e.id=a.employee_id
+    where er.run_id=${binding.task.rootRunId} and er.organization_id=${context.organizationId}
+      and er.workspace_id=${context.workspaceId} and (a.id is null or not a.active or e.status<>'active'
+        or exists(select 1 from allrice_platform_employee_tenant_assignments d
+          where d.tenant_employee_id=a.employee_id and d.organization_id=a.organization_id and d.workspace_id=a.workspace_id and not d.active))`;
+  if (withdrawn) throw new RuntimePolicyError('employee_access_revoked');
   const [snapshot] = await transaction<
     { payload: unknown; expires_at: Date; subject_id: string }[]
   >`

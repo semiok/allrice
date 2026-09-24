@@ -76,3 +76,7 @@ export * from './tenant-environments.ts';
 export * from './tenant-management-scope.ts';
 
 export * from './tenant-employees.ts';
+export {
+  recordManagedCloudEnvironment,
+  type ManagedCloudEnvironmentReport,
+} from './tenant-employee-access.ts';

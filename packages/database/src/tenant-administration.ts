@@ -7,6 +7,10 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  synchronizeTenantMembershipAccess,
+  lockTenantEmployeeWorkspaces,
+} from './tenant-employee-access.ts';
 import { DataAccessError } from './data.ts';
 import { isPlatformAdmin } from './providers/model-pool.ts';
 
@@ -141,9 +145,13 @@ export async function updateAdminTenantMember(
     await requireAdministrator(context, tx);
     // Serialize role changes for the tenant so concurrent demotions cannot remove both final admins.
     const [organization] =
-      await tx`select id from allrice_organizations where id=${organizationId} and archived_at is null for update`;
+      await tx`select id from allrice_organizations where id=${organizationId} and archived_at is null for no key update`;
     if (!organization) throw new DataAccessError('not_found');
     await target(tx, organizationId, change.workspaceId);
+    await lockTenantEmployeeWorkspaces(tx, {
+      organizationId,
+      workspaceId: change.workspaceId,
+    });
     const [row] = await tx`
       select m.*,u.status,u.email,u.display_name,md5(to_jsonb(m)::text) as version
       from allrice_memberships m join allrice_users u on u.id=m.user_id
@@ -169,9 +177,13 @@ export async function updateAdminTenantMember(
     const [updated] = await tx`
       update allrice_memberships m set role=${change.role},active=${change.active},updated_at=clock_timestamp()
       where id=${membershipId} returning m.*,md5(to_jsonb(m)::text) as version`;
+    await synchronizeTenantMembershipAccess(tx, {
+      organizationId,
+      workspaceId: row.workspace_id,
+    });
     await tx`
       insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
-      values(${organizationId},${row.workspace_id},${context.actor.id},'tenant.member.updated','membership',${membershipId},'recorded',${change.reason},${context.requestId},
+      values(${organizationId},${row.workspace_id},${context.actor.id},'tenant.member.updated','membership',${membershipId},'recorded',${change.reason || 'tenant_member_updated'},${context.requestId},
         ${tx.json({
           actorOrganizationId: context.organizationId,
           targetUserId: row.user_id,

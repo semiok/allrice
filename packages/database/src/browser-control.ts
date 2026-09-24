@@ -5,6 +5,7 @@ import {
   BrowserObservationSchema,
   browserObservationIsFresh,
   BrowserProfileSchema,
+  browserOriginAllowed,
   LocalPreviewTargetSchema,
   localPreviewOrigin,
   RuntimeActionBindingSchema,
@@ -173,11 +174,18 @@ export async function createBrowserWorkspace(
         profile: BrowserProfile;
         target_id: string;
       }[]
-    >`select id,version,profile,target_id from allrice_browser_control_grants
-      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} and transport='cloud' and enabled and revoked_at is null order by created_at desc limit 1 for share`;
+    >`select g.id,g.version,g.profile,g.target_id from allrice_browser_control_grants g
+      join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id
+      where g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${ctx.actor.id}
+        and g.transport='cloud' and g.enabled and g.revoked_at is null and t.state='online'
+        and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp())
+      order by g.created_at desc limit 1 for share of g,t`;
     if (!g) throw new RuntimePolicyError('browser_grant_unavailable');
     const profile = BrowserProfileSchema.parse(g.profile);
-    if (!profile.origins.includes(new URL(input.url).origin))
+    if (
+      !browserOriginAllowed(input.url, profile) ||
+      browserGrantOriginDenial(input.url)
+    )
       throw new RuntimePolicyError('browser_origin_denied');
     return { ...g, profile };
   });
@@ -188,7 +196,10 @@ export async function createBrowserWorkspace(
       runId: input.context.runId,
       targetId: grant.target_id,
       startUrl: input.url,
-      allowedDomains: grant.profile.origins.map((o) => new URL(o).hostname),
+      allowedDomains:
+        grant.profile.network === 'public_https'
+          ? [new URL(input.url).hostname]
+          : grant.profile.origins.map((o) => new URL(o).hostname),
       steps: [],
       toolCallId: input.callId,
     },

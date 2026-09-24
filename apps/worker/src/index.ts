@@ -31,6 +31,7 @@ import { executeNextMcpDiscovery } from './mcp/lifecycle.js';
 import { recoverMcpRuntimeOperations } from './mcp/executor.js';
 import { recoverCloudCommandOperations } from './cloud-runner/executor.js';
 import { readWorkerCapabilities } from './harness/runtime-capabilities.js';
+import { refreshManagedCloudEnvironments } from './managed-cloud-environments.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -89,6 +90,21 @@ let platformEmployeeTestAborter: AbortController | null = null;
 const mcpDiscoveryAborter = new AbortController();
 let mcpDiscoveryTask: Promise<void> | null = null;
 let cloudRecoveryTask: Promise<void> | null = null;
+let managedCloudTask: Promise<unknown> | null = null;
+function managedCloudTick() {
+  if (
+    managedCloudTask ||
+    stopping ||
+    !databaseReady ||
+    !runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED')
+  )
+    return;
+  managedCloudTask = refreshManagedCloudEnvironments(workerId)
+    .catch(() => console.error('[MET-159] managed cloud preparation failed'))
+    .finally(() => {
+      managedCloudTask = null;
+    });
+}
 let mcpRecoveryTask: Promise<void> | null = null;
 function mcpRecoveryTick() {
   if (mcpRecoveryTask || stopping || !databaseReady) return;
@@ -313,6 +329,7 @@ const dshRuntimeInventoryTimer = setInterval(
 const queueTimer = setInterval(() => void tick(), pollIntervalMs);
 const mcpDiscoveryTimer = setInterval(mcpDiscoveryTick, pollIntervalMs);
 const cloudRecoveryTimer = setInterval(cloudRecoveryTick, 10_000);
+const managedCloudTimer = setInterval(managedCloudTick, 60_000);
 const mcpRecoveryTimer = setInterval(mcpRecoveryTick, 10_000);
 const automationTimer = setInterval(
   () => void automationTick(),
@@ -331,6 +348,7 @@ void automationTick();
 void platformEmployeeTestTick();
 codexAuthorizationBroker.tick();
 void refreshDshRuntimeInventory();
+managedCloudTick();
 
 server.listen(port, '0.0.0.0', () => {
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
@@ -349,6 +367,7 @@ async function shutdown(signal: string) {
   clearInterval(queueTimer);
   clearInterval(mcpDiscoveryTimer);
   clearInterval(cloudRecoveryTimer);
+  clearInterval(managedCloudTimer);
   clearInterval(mcpRecoveryTimer);
   mcpDiscoveryAborter.abort();
   clearInterval(automationTimer);
@@ -360,6 +379,7 @@ async function shutdown(signal: string) {
   await Promise.allSettled(activeExecutions);
   if (mcpDiscoveryTask) await mcpDiscoveryTask;
   if (cloudRecoveryTask) await cloudRecoveryTask;
+  if (managedCloudTask) await managedCloudTask;
   if (mcpRecoveryTask) await mcpRecoveryTask;
   await codexAuthorizationBroker.close();
   await closeHarnessAdapters();

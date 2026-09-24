@@ -51,6 +51,7 @@ integration(
       async (outcome) => {
         const f = await createAssistantAuthorityFixture(database.db, {
           configure: false,
+          memberRole: outcome === 'completed' ? 'member' : 'admin',
           allowedTools: ['assistant.delegate', 'assistant.report'],
         });
         const productSessionId = f.session,

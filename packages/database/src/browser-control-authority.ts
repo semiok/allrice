@@ -299,7 +299,9 @@ export function browserCommandBinding(
         : 'isolated-temporary-browser-profile',
     ),
     effectiveEnvironmentDigest: digest('no-imported-cookies'),
-    networkPolicyDigest: digest(profile.origins),
+    networkPolicyDigest: digest(
+      profile.network ? { network: profile.network } : profile.origins,
+    ),
     toolchainDigest: digest(
       transport === 'local'
         ? 'local-chromium-pinned-proxy-v1'

@@ -70,6 +70,26 @@ describe('P21 cloud and Bridge reusable control envelope', () => {
         .success,
     ).toBe(false);
   });
+  it('platform public HTTPS profiles remove website setup while retaining URL and legacy origin constraints', () => {
+    const profile = BrowserProfileSchema.parse({
+      version: 1,
+      network: 'public_https',
+      origins: [],
+    });
+    for (const url of ['https://example.com/', 'https://example.org/a'])
+      expect(browserOriginAllowed(url, profile)).toBe(true);
+    for (const url of [
+      'http://example.com/',
+      'https://example.com:444/',
+      'https://user:secret@example.com/',
+      'file:///tmp/private',
+    ])
+      expect(browserOriginAllowed(url, profile)).toBe(false);
+    expect(
+      BrowserProfileSchema.safeParse({ version: 1, origins: [] }).success,
+    ).toBe(false);
+    // DNS/public-address pinning is independently exercised in the production cloud driver.
+  });
   it('observation freshness binds profile/fence and cannot be forged by future timestamps', () => {
     const o = BrowserObservationSchema.parse({
       version: 1,
