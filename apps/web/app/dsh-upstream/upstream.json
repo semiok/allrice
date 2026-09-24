@@ -50,7 +50,7 @@
     {
       "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.tsx",
       "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.tsx",
-      "reuse": "Official virtual rail, hover/focus previews, active marks, independent rail scrolling, reduced motion, original stylesheet and bounded preview helper. Component behavior is unchanged; only host type imports are adapted.",
+      "reuse": "Official virtual rail, hover/focus previews, active marks, independent rail scrolling, reduced motion, original stylesheet and bounded preview helper. Component behavior is unchanged; host type imports and a scoped official theme class are adapted.",
       "productChanges": "Map existing Allrice user/assistant messages to loaded turns and Chinese labels; connect transcript anchors, reading position and composer/viewport measurements. Navigating back pauses automatic following. No new endpoint, model call or persisted content."
     }
   ],
@@ -362,15 +362,23 @@
           "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.tsx",
           "upstreamSha256": "be03cfad53e5b0211651ba17a3d5170872139c8f3d7c086e60625f5d38a0998f",
-          "sha256": "0cf26e1752ff95a72dffa99903d777792dc8b85ba56f41c58750c2c9e5b95d81",
+          "sha256": "113152f7b3120014365eff814317928834a80e1d0c65547fc14a32d9b976fd96",
           "patch": "scripts/dsh-ui-patches/TurnNavigator.tsx.patch",
-          "patchSha256": "4e47528498a702dd6eaf12e17eba8c2dbfc9631e26f6865b1ff57c20d87cc5a5"
+          "patchSha256": "c8b26439ccada35b23d2d255118bbf33dd278642663e30c0c25f3fd01105fd21"
         },
         {
           "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.module.css",
           "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.module.css",
           "upstreamSha256": "dc6458bf2248bf32254126f7c77529ab558bf96e9601d3f7eea0c2f5a673ed6c",
           "sha256": "dc6458bf2248bf32254126f7c77529ab558bf96e9601d3f7eea0c2f5a673ed6c"
+        },
+        {
+          "source": "packages/client/ui-theme/src/styles/gradient-shadow-text.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/theme.module.css",
+          "upstreamSha256": "40788bfe79fe35dbb6bdf17a885f931a5d6a5ac1b0ec50d4d2cf060b269588e9",
+          "sha256": "965e38f4a6b136c0043a947c632e21257ed89998c83b2e7af8138a836f622921",
+          "patch": "scripts/dsh-ui-patches/TurnNavigator-theme.css.patch",
+          "patchSha256": "b11c83c985a6db9cdb52741d60a9ca56d0044eb94bb4f099e26e0edce0f7cc2c"
         }
       ],
       "excerpts": [

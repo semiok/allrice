@@ -6,6 +6,7 @@ import {
 import { defaultRangeExtractor, elementScroll, observeElementOffset, useVirtualizer, type Range } from '@tanstack/react-virtual'
 import type { TurnRailItem, TurnNavigatorTranslator } from '../../turn-navigation-model'
 import css from './TurnNavigator.module.css'
+import theme from './theme.module.css'
 
 interface TurnNavigatorProps {
   readonly items: readonly TurnRailItem[]
@@ -230,7 +231,7 @@ function TurnNavigatorRail(
   if (scrollTop > 1) fadeClasses.push(css.fadeTop)
   if (scrollTop < virtualizer.getTotalSize() - viewHeight - 1) fadeClasses.push(css.fadeBottom)
   return (
-    <div className={css.slot}>
+    <div className={`${css.slot} ${theme.tokens}`}>
       <nav
         className={css.frame}
         aria-label={t('chat.turnNavigation.label')}
