@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type SetStateAction,
+} from 'react';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
 
@@ -12,6 +19,17 @@ import { rememberSessionLocation } from './session-location';
 type UseSessionOptions = {
   setError: (message: string) => void;
 };
+
+type CachedHistory = { value: History; prefetched: boolean; loadedAt: number };
+function rememberHistory(
+  cache: Map<string, CachedHistory>,
+  value: History,
+  prefetched = false,
+) {
+  cache.delete(value.session.id);
+  cache.set(value.session.id, { value, prefetched, loadedAt: Date.now() });
+  while (cache.size > 8) cache.delete(cache.keys().next().value!);
+}
 
 export function useSession({ setError }: UseSessionOptions) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -32,6 +50,21 @@ export function useSession({ setError }: UseSessionOptions) {
   const [activeId, updateActiveId] = useState<string | null>(null);
   const [selection] = useState(createSessionSelection);
   const [history, setHistory] = useState<History | null>(null);
+  // Like DSH's retained Session bindings, switch the visible snapshot by ID
+  // synchronously. This adapter reads Allrice's tenant-scoped HTTP history.
+  // Nothing is persisted to browser storage or shared with another viewer.
+  const historyCache = useRef(new Map<string, CachedHistory>());
+  const historyScope = useRef('');
+  const prefetches = useRef(
+    new Map<
+      string,
+      {
+        controller: AbortController;
+        promise: Promise<History | null>;
+      }
+    >(),
+  );
+  const seededSession = useRef<string | null>(null);
   const historyRequestGeneration = useRef(0);
   const historyRequest = useRef<AbortController | null>(null);
   const setActiveId = useCallback(
@@ -42,6 +75,13 @@ export function useSession({ setError }: UseSessionOptions) {
       if (changed || fresh) {
         historyRequestGeneration.current += 1;
         historyRequest.current?.abort();
+        seededSession.current = null;
+        setHistory((current) => {
+          if (current) rememberHistory(historyCache.current, current);
+          return sessionId
+            ? (historyCache.current.get(sessionId)?.value ?? null)
+            : null;
+        });
       }
       updateActiveId(sessionId);
       rememberSessionLocation(sessionId);
@@ -65,14 +105,36 @@ export function useSession({ setError }: UseSessionOptions) {
   const loadWorkspace = useCallback(async () => {
     const scope = selection.capture();
     const [workspaceResult, capabilityResult] = await Promise.all([
-      readJson<{ workspace: Workspace }>(
-        await fetch('/api/v1/workspace', { cache: 'no-store' }),
+      fetch('/api/v1/workspace', { cache: 'no-store' }).then(
+        readJson<{ workspace: Workspace }>,
       ),
-      readJson<{ capabilities: SaasCapabilityManifest }>(
-        await fetch('/api/v1/saas/capabilities', { cache: 'no-store' }),
+      fetch('/api/v1/saas/capabilities', { cache: 'no-store' }).then(
+        readJson<{ capabilities: SaasCapabilityManifest }>,
       ),
     ]);
     const nextWorkspace = workspaceResult.workspace;
+    const nextScope = `${nextWorkspace.organizationId}/${nextWorkspace.workspaceId}/${nextWorkspace.viewerId}`;
+    if (historyScope.current !== nextScope) {
+      historyScope.current = nextScope;
+      historyCache.current.clear();
+      for (const pending of prefetches.current.values())
+        pending.controller.abort();
+      prefetches.current.clear();
+      historyRequestGeneration.current++;
+      historyRequest.current?.abort();
+      setHistory(null);
+    }
+    const authorized = new Set(
+      nextWorkspace.sessions.filter((s) => !s.archivedAt).map((s) => s.id),
+    );
+    for (const id of historyCache.current.keys())
+      if (!authorized.has(id)) historyCache.current.delete(id);
+    for (const [id, pending] of prefetches.current) {
+      if (!authorized.has(id)) {
+        pending.controller.abort();
+        prefetches.current.delete(id);
+      }
+    }
     const params = new URLSearchParams(window.location.search);
     const linked = params.get('session');
     const requested = scope.sessionId ?? linked;
@@ -101,11 +163,13 @@ export function useSession({ setError }: UseSessionOptions) {
           scope.current() &&
           result.history.session.id === requested &&
           !result.history.session.archivedAt
-        )
+        ) {
+          rememberHistory(historyCache.current, result.history, true);
           nextWorkspace.sessions = [
             result.history.session,
             ...nextWorkspace.sessions,
           ];
+        }
       } else if (![403, 404].includes(response.status)) {
         // A transient failure must not silently open a different task.
         await readJson(response);
@@ -145,32 +209,104 @@ export function useSession({ setError }: UseSessionOptions) {
     }
   }, [selection, setActiveId]);
 
+  const prefetchHistory = useCallback(
+    (sessionId: string) => {
+      if (
+        !tenantWorkspaceId ||
+        historyScope.current !== employeeScope ||
+        selection.capture().sessionId === sessionId ||
+        !workspace?.sessions.some((s) => s.id === sessionId && !s.archivedAt) ||
+        historyCache.current.has(sessionId) ||
+        prefetches.current.has(sessionId) ||
+        prefetches.current.size >= 2
+      )
+        return;
+      const controller = new AbortController();
+      const promise = fetch(
+        `/api/v1/sessions/${sessionId}?workspaceId=${tenantWorkspaceId}`,
+        {
+          cache: 'no-store',
+          headers: tenantHeaders,
+          signal: controller.signal,
+        },
+      )
+        .then(readJson<{ history: History }>)
+        .then((result) => {
+          if (
+            controller.signal.aborted ||
+            historyScope.current !== employeeScope ||
+            result.history.session.id !== sessionId
+          )
+            return null;
+          rememberHistory(historyCache.current, result.history, true);
+          return result.history;
+        })
+        .catch(() => null)
+        .finally(() => {
+          if (prefetches.current.get(sessionId)?.controller === controller)
+            prefetches.current.delete(sessionId);
+        });
+      prefetches.current.set(sessionId, { controller, promise });
+    },
+    [
+      employeeScope,
+      selection,
+      tenantHeaders,
+      tenantWorkspaceId,
+      workspace?.sessions,
+    ],
+  );
+
   const loadHistory = useCallback(
     async (sessionId: string) => {
       const scope = selection.capture();
       // An old POST callback must not become the newest history request.
-      if (!tenantWorkspaceId || scope.sessionId !== sessionId) return;
+      if (
+        !tenantWorkspaceId ||
+        scope.sessionId !== sessionId ||
+        historyScope.current !== employeeScope
+      )
+        return;
       const requestGeneration = ++historyRequestGeneration.current;
       historyRequest.current?.abort();
-      const controller = new AbortController();
+      const cached = historyCache.current.get(sessionId);
+      if (cached?.prefetched && Date.now() - cached.loadedAt < 3000) {
+        cached.prefetched = false;
+        setHistory(cached.value);
+        return;
+      }
+      const queued = prefetches.current.get(sessionId);
+      const pending = queued?.controller.signal.aborted ? undefined : queued;
+      const controller = pending?.controller ?? new AbortController();
       historyRequest.current = controller;
       const current = () =>
         scope.current() &&
+        historyScope.current === employeeScope &&
         requestGeneration === historyRequestGeneration.current &&
         !controller.signal.aborted;
       try {
-        const response = await fetch(
-          `/api/v1/sessions/${sessionId}?workspaceId=${tenantWorkspaceId}`,
-          {
-            cache: 'no-store',
-            headers: tenantHeaders,
-            signal: controller.signal,
-          },
-        );
+        let value = pending ? await pending.promise : null;
         if (!current()) return;
-        const result = await readJson<{ history: History }>(response);
-        if (current() && result.history.session.id === sessionId)
-          setHistory(result.history);
+        if (!value) {
+          const response = await fetch(
+            `/api/v1/sessions/${sessionId}?workspaceId=${tenantWorkspaceId}`,
+            {
+              cache: 'no-store',
+              headers: tenantHeaders,
+              signal: controller.signal,
+            },
+          );
+          if (!current()) return;
+          if ([401, 403, 404].includes(response.status)) {
+            historyCache.current.delete(sessionId);
+            setHistory(null);
+          }
+          value = (await readJson<{ history: History }>(response)).history;
+        }
+        if (current() && value.session.id === sessionId) {
+          rememberHistory(historyCache.current, value);
+          setHistory(value);
+        }
       } catch (cause) {
         if (current()) throw cause;
       } finally {
@@ -178,8 +314,37 @@ export function useSession({ setError }: UseSessionOptions) {
           historyRequest.current = null;
       }
     },
-    [selection, tenantHeaders, tenantWorkspaceId],
+    [employeeScope, selection, tenantHeaders, tenantWorkspaceId],
   );
+
+  const updateLocalHistory = useCallback(
+    (update: SetStateAction<History | null>) => {
+      // A background refresh predating a send/queue edit must never erase its receipt.
+      historyRequestGeneration.current++;
+      historyRequest.current?.abort();
+      setHistory(update);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!activeId || seededSession.current === activeId) return;
+    void loadHistory(activeId).catch((cause) =>
+      setError(cause instanceof Error ? cause.message : '会话加载失败'),
+    );
+  }, [activeId, loadHistory, setError]);
+
+  useEffect(() => {
+    if (!history || history.session.id !== activeId) return;
+    // Warm only the nearest two recent conversations after the current one loads.
+    const timer = setTimeout(() => {
+      for (const session of (workspace?.sessions ?? [])
+        .filter((s) => s.id !== activeId && !s.archivedAt)
+        .slice(0, 2))
+        prefetchHistory(session.id);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [activeId, history?.session.id, prefetchHistory, workspace?.sessions]);
 
   const createSession = useCallback(
     async (title: string, targetEmployeeAssignmentId?: string) => {
@@ -224,6 +389,7 @@ export function useSession({ setError }: UseSessionOptions) {
           : current,
       );
       setActiveId(result.session.id);
+      seededSession.current = result.session.id;
       setHistory({
         session: result.session,
         messages: [],
@@ -256,6 +422,10 @@ export function useSession({ setError }: UseSessionOptions) {
     () => () => {
       selection.invalidate();
       historyRequest.current?.abort();
+      for (const pending of prefetches.current.values())
+        pending.controller.abort();
+      prefetches.current.clear();
+      historyCache.current.clear();
     },
     [selection],
   );
@@ -280,12 +450,13 @@ export function useSession({ setError }: UseSessionOptions) {
     activeId,
     captureSelection: selection.capture,
     createSession,
-    history,
+    history: history?.session.id === activeId ? history : null,
     loadHistory,
     loadWorkspace,
+    prefetchHistory,
     manifest,
     setActiveId,
-    setHistory,
+    setHistory: updateLocalHistory,
     tenantHeaders,
     workspace,
   };

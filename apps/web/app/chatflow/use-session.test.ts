@@ -112,7 +112,7 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
     const initial = state.loadWorkspace();
     requests[0]!.result.resolve(Response.json({ workspace }));
     await Promise.resolve();
-    // loadWorkspace starts capability fetch after the workspace fetch resolves.
+    // Workspace and capabilities load concurrently.
     requests[1]!.result.resolve(Response.json({ capabilities: {} }));
     await initial;
     state = render();
@@ -136,6 +136,105 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('clears an uncached selection immediately and restores a visited one without waiting for HTTP', async () => {
+    const state = await ready();
+    state.setHistory(history('A'));
+    state.setActiveId('B');
+    expect(render().history).toBeNull();
+    state.setHistory(history('B'));
+    state.setActiveId('A');
+    expect(render().history?.session.id).toBe('A');
+    const refresh = render().loadHistory('A');
+    expect(render().history?.session.id).toBe('A');
+    state.setHistory((old) => ({
+      ...old!,
+      session: { ...old!.session, title: 'new local receipt' },
+    }));
+    requests[0]!.result.resolve(Response.json({ history: history('A') }));
+    await refresh;
+    expect(render().history?.session.title).toBe('new local receipt');
+  });
+
+  it('adopts the in-flight preload on selection instead of requesting the same history twice', async () => {
+    const state = await ready();
+    state.prefetchHistory('B');
+    state.setActiveId('B');
+    const load = render().loadHistory('B');
+    expect(requests).toHaveLength(1);
+    requests[0]!.result.resolve(Response.json({ history: history('B') }));
+    await load;
+    expect(render().history?.session.id).toBe('B');
+  });
+
+  it('does not adopt an aborted preload after switching away and back', async () => {
+    const state = await ready();
+    state.prefetchHistory('B');
+    state.setActiveId('B');
+    const old = render().loadHistory('B');
+    state.setActiveId('A');
+    state.setActiveId('B');
+    const latest = render().loadHistory('B');
+    expect(requests).toHaveLength(2);
+    requests[1]!.result.resolve(Response.json({ history: history('B') }));
+    await latest;
+    requests[0]!.result.reject(new Error('aborted preload'));
+    await old;
+    expect(render().history?.session.id).toBe('B');
+  });
+
+  it('revalidates an aged preload and removes a snapshot when access is revoked', async () => {
+    const state = await ready();
+    state.prefetchHistory('B');
+    requests[0]!.result.resolve(Response.json({ history: history('B') }));
+    // Drain Response.json parsing and the preload continuation.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 5000);
+    try {
+      state.setActiveId('B');
+      expect(render().history?.session.id).toBe('B');
+      const load = render().loadHistory('B');
+      expect(requests).toHaveLength(2);
+      requests[1]!.result.resolve(
+        Response.json(
+          { error: { message: 'Access removed' } },
+          { status: 403 },
+        ),
+      );
+      await expect(load).rejects.toThrow('Access removed');
+      expect(render().history).toBeNull();
+      state.setActiveId('A');
+      state.setActiveId('B');
+      expect(render().history).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('clears retained history and pending preloads when the viewer changes', async () => {
+    const state = await ready();
+    state.setHistory(history('A'));
+    state.setActiveId('B');
+    state.setActiveId('A');
+    render().prefetchHistory('B');
+    const refresh = render().loadWorkspace();
+    requests[1]!.result.resolve(
+      Response.json({
+        workspace: { ...workspace, viewerId: 'another-viewer' },
+      }),
+    );
+    requests[2]!.result.resolve(Response.json({ capabilities: {} }));
+    await refresh;
+    expect(requests[0]!.init?.signal?.aborted).toBe(true);
+    requests[0]!.result.resolve(Response.json({ history: history('B') }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(render().history).toBeNull();
+    render().setActiveId('B');
+    expect(render().history).toBeNull();
+    render().setActiveId('A');
+    expect(render().history).toBeNull();
   });
 
   it('ignores late A History and refuses an old POST history request while B is selected', async () => {

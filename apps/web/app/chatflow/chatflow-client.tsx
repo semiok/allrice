@@ -111,6 +111,7 @@ export function ChatFlowClient({
     history,
     loadHistory,
     loadWorkspace,
+    prefetchHistory,
     manifest,
     setActiveId,
     setHistory,
@@ -215,21 +216,9 @@ export function ChatFlowClient({
   });
 
   useEffect(() => {
-    if (!activeId) {
-      setHistory(null);
-      return;
-    }
-    // createSession seeds an authoritative empty History before sendMessage
-    // appends the optimistic first turn. Fetching that same Session here races
-    // the message POST and can replace the optimistic turn with an empty
-    // response, producing a blank active conversation until the next refresh.
-    if (history?.session.id === activeId) return;
     followTranscript.current = true;
     setAtTranscriptBottom(true);
-    loadHistory(activeId).catch((cause) =>
-      setError(cause instanceof Error ? cause.message : '会话加载失败'),
-    );
-  }, [activeId, history?.session.id, loadHistory, setHistory]);
+  }, [activeId]);
 
   useEffect(() => {
     const scrollRegion = conversationScroll.current;
@@ -792,7 +781,9 @@ export function ChatFlowClient({
         : left.occurredAt.localeCompare(right.occurredAt),
     )
     .at(-1);
+  const historyLoading = activeId !== null && history === null;
   const isEmptyConversation =
+    !historyLoading &&
     !history?.messages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
@@ -937,6 +928,7 @@ export function ChatFlowClient({
           }
           selectSession(sessionId);
         }}
+        onPrepareSession={prefetchHistory}
         sessions={sessions.map((session) =>
           session.id !== activeId
             ? session
@@ -1044,7 +1036,33 @@ export function ChatFlowClient({
             </header>
           }
 
-          {isEmptyConversation ? (
+          {historyLoading ? (
+            <div className={conversationUi.scrollBody}>
+              <div
+                className={styles.historyLoading}
+                role="status"
+                aria-live="polite"
+              >
+                {error || '正在加载会话…'}
+                {error ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void loadHistory(activeId!).catch((cause) =>
+                        setError(
+                          cause instanceof Error
+                            ? cause.message
+                            : '会话加载失败',
+                        ),
+                      )
+                    }
+                  >
+                    重试
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : isEmptyConversation ? (
             <div className={conversationUi.scrollBody}>
               <section className={styles.emptyStage}>
                 <div className={styles.heroStack}>

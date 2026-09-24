@@ -25,6 +25,7 @@ interface ChatSidebarProps {
   onNewSession: (assignmentId?: string) => void;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onPrepareSession: (sessionId: string) => void;
 }
 
 export function ChatSidebar({
@@ -39,6 +40,7 @@ export function ChatSidebar({
   onNewSession,
   onOpenEmployeeDetails,
   onSelectSession,
+  onPrepareSession,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -171,6 +173,7 @@ export function ChatSidebar({
             activeId={activeId}
             collapsed={collapsed}
             onSelectSession={onSelectSession}
+            onPrepareSession={onPrepareSession}
             onDetails={onOpenEmployeeDetails}
           />
         </div>
