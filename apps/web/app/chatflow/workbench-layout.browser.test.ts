@@ -1444,6 +1444,133 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('switches native dock tabs in place without replaying the panel entrance', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      await f.panel.locator('[data-files-state="tree"]').waitFor();
+      // The initial panel entrance may finish; tab changes below must not animate.
+      await f.page.waitForTimeout(400);
+      const offsets = await f.panel.evaluate(async (panel) => {
+        const samples: number[] = [];
+        for (let i = 0; i < 8; i++) {
+          const host = panel.querySelector<HTMLElement>(
+            '[data-dockkit-host="dock"]:not([hidden])',
+          )!;
+          const tabs = [...host.querySelectorAll<HTMLElement>('[role="tab"]')];
+          const target = tabs.find((t) =>
+            i % 2 === 0
+              ? t.textContent?.includes('report-10')
+              : t.textContent?.includes('工作区文件'),
+          )!;
+          target.click();
+          for (let frame = 0; frame < 3; frame++) {
+            await new Promise(requestAnimationFrame);
+            const active = panel.querySelector<HTMLElement>(
+              '[data-dockkit-host="dock"]:not([hidden])',
+            )!;
+            samples.push(
+              active.getBoundingClientRect().left -
+                panel.getBoundingClientRect().left,
+            );
+          }
+        }
+        return samples;
+      });
+      expect(Math.max(...offsets.map(Math.abs))).toBeLessThan(1);
+      expect(
+        await f.panel.locator('[data-files-state="tree"]').isVisible(),
+      ).toBe(true);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('honors repeated empty-catalog header switches immediately, including behind a modal and a delayed refresh', async () => {
+    const f = await fixture();
+    let release = () => {};
+    try {
+      const files = f.page
+        .locator('header')
+        .getByRole('button', { name: '工作区文件', exact: true });
+      await files.click();
+      await f.panel.locator('[data-files-state="tree"]').waitFor();
+      await f.page.waitForTimeout(400);
+      f.state.delay = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      for (let i = 0; i < 6; i++) {
+        await f.entry.evaluate((button: HTMLButtonElement) => button.click());
+        await expect
+          .poll(() =>
+            f.panel
+              .getByRole('tab', { name: /^交付成果/ })
+              .getAttribute('aria-selected'),
+          )
+          .toBe('true');
+        expect(
+          await f.panel.locator('[data-files-state="tree"]').isVisible(),
+        ).toBe(false);
+        await files.evaluate((button: HTMLButtonElement) => button.click());
+        await expect
+          .poll(() =>
+            f.panel
+              .getByRole('tab', { name: /^工作区文件/ })
+              .getAttribute('aria-selected'),
+          )
+          .toBe('true');
+      }
+      await f.page
+        .getByRole('button', { name: '能力与环境', exact: true })
+        .click();
+      await f.page.getByRole('dialog', { name: '能力与环境' }).waitFor();
+      release();
+      f.state.delay = null;
+      expect(await f.page.locator('#artifact-workbench').count()).toBe(1);
+      const offsets = await f.panel.evaluate(async (panel) => {
+        const samples: number[] = [];
+        const end = performance.now() + 450;
+        do {
+          await new Promise(requestAnimationFrame);
+          const hosts = panel.querySelectorAll<HTMLElement>(
+            '[data-dockkit-host="dock"]:not([hidden])',
+          );
+          if (hosts.length !== 1) throw Error('Unexpected duplicate dock');
+          samples.push(
+            hosts[0]!.getBoundingClientRect().left -
+              panel.getBoundingClientRect().left,
+          );
+        } while (performance.now() < end);
+        return samples;
+      });
+      expect(Math.max(...offsets.map(Math.abs))).toBeLessThan(1);
+      expect(
+        await f.panel.locator('[data-files-state="tree"]').isVisible(),
+      ).toBe(true);
+      await f.page
+        .getByRole('dialog', { name: '能力与环境' })
+        .getByRole('button', { name: '关闭', exact: true })
+        .click();
+      await f.entry.click();
+      expect(
+        await f.panel
+          .getByRole('tab', { name: /^交付成果/ })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+      await files.click();
+      expect(await f.page.locator('#artifact-workbench').count()).toBe(1);
+      expect(f.errors).toEqual([]);
+      expect(f.writes).toEqual([]);
+    } finally {
+      release();
+      await f.close();
+    }
+  });
+
   it('MET160 published official PDF chunk renders actual PDF bytes with its bundled worker', async () => {
     const f = await fixture({ artifacts: true });
     try {

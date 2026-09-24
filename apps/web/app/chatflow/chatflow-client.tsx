@@ -1223,7 +1223,7 @@ export function ChatFlowClient({
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
           onBrowseFiles={() => workbench.show(undefined, true)}
-          key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
+          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
@@ -1281,7 +1281,7 @@ export function ChatFlowClient({
       />
       {capabilitiesOpen ? (
         <CapabilityPanel
-          key={`${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+          key={`capabilities/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
           data={readiness.data}
           loading={readiness.loading}
           error={readiness.error}
