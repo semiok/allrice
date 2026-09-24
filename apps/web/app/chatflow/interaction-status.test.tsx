@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { InteractionStatusPanel } from './interaction-status';
 
-describe('P26 pending approvals remain outside collapsed history', () => {
+describe('P26 pending approvals remain visible without the retired history panel', () => {
   it('keeps precise-action approval visible without treating chat as authorization', () => {
     const operationId = randomUUID();
     const html = renderToStaticMarkup(
@@ -25,12 +25,11 @@ describe('P26 pending approvals remain outside collapsed history', () => {
         }}
       />,
     );
-    expect(html.indexOf('aria-label="待批准动作"')).toBeLessThan(
-      html.indexOf('<details'),
-    );
+    expect(html).toContain('aria-label="待批准动作"');
     expect(html).toContain(`#operation-${operationId}`);
     expect(html).toContain('不会通过聊天或计划认可代替授权');
-    expect(html).not.toContain('<details open');
+    expect(html).not.toContain('<details');
+    expect(html).not.toContain('交互与任务记录');
   });
   it('uses in-page action navigation when wired, without a reload that loses draft/review state', () => {
     const html = renderToStaticMarkup(
