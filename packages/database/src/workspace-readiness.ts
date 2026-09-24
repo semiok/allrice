@@ -4,6 +4,7 @@ import {
   CloudExecutionProfileSchema,
   EmployeeManifestSchema,
   RuntimeLocalCommandProfileSchema,
+  BridgeEnvironmentSchema,
   RuntimePolicyControlsSchema,
   SessionModelSnapshotSchema,
   UuidSchema,
@@ -108,6 +109,7 @@ async function readWorkspaceReadiness(
         online: boolean;
         folder: boolean;
         target_online: boolean;
+        environment: unknown;
         profile: unknown;
         profile_fresh: boolean;
       }[]
@@ -120,6 +122,8 @@ async function readWorkspaceReadiness(
         exists(select 1 from allrice_execution_targets t where t.organization_id=d.organization_id
           and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text
           and t.kind='rice_bridge' and t.state='online') as target_online,
+        (select t.metadata->'environment' from allrice_execution_targets t where t.organization_id=d.organization_id
+          and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge') as environment,
         p.profile,coalesce(p.reported_at between now()-interval '90 seconds' and now(),false) as profile_fresh
       from allrice_bridge_devices d left join allrice_bridge_runtime_profiles p on p.device_id=d.id
         and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
@@ -188,7 +192,16 @@ async function readWorkspaceReadiness(
         g.transport === 'local' && devices.some((d) => d.id === g.device_id),
     );
     const liveBrowser = localBrowserGrants.filter((g) =>
-      devices.some((d) => d.id === g.device_id && d.online && d.target_online),
+      devices.some(
+        (d) =>
+          d.id === g.device_id &&
+          d.online &&
+          d.target_online &&
+          (!d.environment ||
+            (d.environment as { browser?: string }).browser === 'ready') &&
+          (!(g.profile as { network?: string }).network ||
+            (d.environment as { version?: number } | null)?.version === 1),
+      ),
     );
     const connections = await tx<
       {
@@ -250,6 +263,16 @@ async function readWorkspaceReadiness(
     const [time] = await tx<
       { observed_at: Date }[]
     >`select now() as observed_at`;
+    const preparations = devices
+      .filter((d) => d.online)
+      .flatMap((d) => {
+        const parsed = BridgeEnvironmentSchema.safeParse(d.environment);
+        return parsed.success ? [parsed.data] : [];
+      });
+    const preparationStatus = (kind: 'browser' | 'sandbox') =>
+      ['ready', 'preparing', 'unavailable', 'paused'].find((status) =>
+        preparations.some((p) => p[kind] === status),
+      );
     const canAdminister = memberships.some((m) => m.role === 'admin');
     const facts: ReadinessFacts = {
       canAdminister,
@@ -263,6 +286,15 @@ async function readWorkspaceReadiness(
         controls.success && controls.data.version === control?.version
           ? controls.data
           : null,
+      preparation: preparations.length
+        ? {
+            browser: preparationStatus('browser'),
+            sandbox: preparationStatus('sandbox'),
+            paused:
+              preparations.every((p) => p.paused) &&
+              preparations.length === devices.filter((d) => d.online).length,
+          }
+        : undefined,
       governedLocalReads: runtimeFeatureEnabled(
         'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
       ),

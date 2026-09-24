@@ -12,6 +12,7 @@ import {
   BridgeCommandSchema,
   BridgeWorkspaceSelectionRequestSchema,
   PairBridgeDeviceResponseSchema,
+  type BridgeEnvironment,
   type BridgeCommand,
   type BridgeDevice,
   type BridgeFolderGrant,
@@ -37,6 +38,12 @@ import {
   saveSandboxOptIn,
 } from './sandbox-settings.js';
 import { bridgeVersion } from './version.js';
+import {
+  initialBridgeEnvironment,
+  prepareBridgeBrowser,
+  bridgePreviewState,
+  prepareLocalSandbox,
+} from './runtime-preparation.js';
 
 const execFileAsync = promisify(execFile);
 export const defaultBridgeServer =
@@ -102,13 +109,21 @@ export async function pair(args: string[]) {
     }),
   );
   await storeDeviceToken(response.device.id, response.deviceToken);
-  await writeConfig({
+  const paired: BridgeConfig = {
     server,
     deviceId: response.device.id,
     deviceName: response.device.name,
     grants: [],
     journalNamespace: response.device.id,
-  });
+  };
+  await writeConfig(paired);
+  await saveSandboxOptIn(paired, true);
+  await (
+    await import('./local-browser-settings.js')
+  ).saveLocalBrowserOptIn(paired, true);
+  await (
+    await import('./local-preview-settings.js')
+  ).saveLocalPreviewOptIn(paired, true);
   console.info(`Rice Bridge 已连接：${response.device.name}`);
 }
 
@@ -260,9 +275,11 @@ async function completeWorkspaceSelection(
 }
 
 export interface BridgeRuntimeState {
+  environment?: BridgeEnvironment;
   phase: 'connecting' | 'online' | 'offline' | 'stopping' | 'stopped';
   workspaceLabels: string[];
   activeForeground: number;
+  activeBrowsers?: number;
   activeServices: number;
   pendingReceipts: number;
   unknownOperations: number;
@@ -323,6 +340,10 @@ export async function start(
   const updateLifecycle = await import('./desktop-update.js');
   await updateLifecycle.assertBridgeUpdateStartup();
   let { config, token } = await credentials(await readConfig());
+  if (config.paused) {
+    config = { ...config, paused: false };
+    await writeConfig(config);
+  }
   const optedIn = await sandboxOptIn(config).catch(() => {
     console.warn(
       '沙箱设置无效，保持普通文件功能；请运行 sandbox status 检查。',
@@ -330,8 +351,7 @@ export async function start(
     return false;
   });
   const operationLedgerEnabled =
-    (process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED ??
-      (optedIn ? '1' : '0')) === '1';
+    process.env.ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED !== '0';
   const operationModule = operationLedgerEnabled
     ? await import('./operation-client.js')
     : null;
@@ -368,7 +388,12 @@ export async function start(
     : null;
   let stopping = false;
   const commandAbort = new AbortController();
-  const sandboxConfig = optedIn ? nativeSandboxConfig() : undefined;
+  const sandboxConfig =
+    optedIn &&
+    process.platform === 'darwin' &&
+    ['arm64', 'x64'].includes(process.arch)
+      ? nativeSandboxConfig()
+      : undefined;
   const runnerSocket =
     process.env.ALLRICE_LOCAL_DOCKER_SOCKET ?? sandboxConfig?.socketPath;
   const runnerImage =
@@ -399,6 +424,7 @@ export async function start(
     activeServices: 0,
     pendingReceipts: 0,
     unknownOperations: 0,
+    environment: initialBridgeEnvironment(),
   };
   const publish = () =>
     options.onState?.({
@@ -414,6 +440,7 @@ export async function start(
         await import('./local-process-manager.js')
       ).activeLocalProcessCount(journal);
     }
+    state.activeBrowsers = browserHasActiveWork() ? 1 : 0;
     state.workspaceLabels = config.grants.map((grant) => grant.label);
     publish();
   };
@@ -447,6 +474,7 @@ export async function start(
         body: {
           protocolVersion: BridgeProtocolVersion,
           capabilities: BridgeCapabilities,
+          environment: state.environment,
         },
         timeoutMs: 5000,
       });
@@ -454,33 +482,94 @@ export async function start(
       if (!stopping) state.phase = 'online';
       options.onNotice?.('BRIDGE_CONNECTED');
       publish();
-      if (runner) {
-        runnerAvailable = false;
-        try {
-          const profile = await runner.preflight();
-          await bridgeRequest({
-            server: config.server,
-            path: '/api/v1/bridge/device/runtime-profile',
-            method: 'POST',
-            token,
-            body: { contractVersion: 1, ...profile, available: true },
-            maximumResponseBytes: 4096,
-            timeoutMs: 5000,
-          });
-          runnerAvailable = true;
-        } catch {
-          options.onNotice?.('SANDBOX_UNAVAILABLE');
-          /* Existing filesystem capabilities stay available; no implicit execution fallback. */
-        }
-      }
     })().finally(() => {
       heartbeatInFlight = null;
     });
     return heartbeatInFlight;
   };
+  let preparing: Promise<void> | null = null;
+  let lastBrowserProbe = 0;
+  let lastSandboxResume = 0;
+  const prepare = () => {
+    if (
+      stopping ||
+      options.drainSignal?.aborted ||
+      commandAbort.signal.aborted ||
+      preparing
+    )
+      return;
+    preparing = (async () => {
+      const environment = state.environment!;
+      // Preparation cannot hold up file operations or the device heartbeat.
+      await Promise.all([
+        (async () => {
+          if (Date.now() - lastBrowserProbe < 60_000) return;
+          lastBrowserProbe = Date.now();
+          try {
+            environment.browser = await prepareBridgeBrowser(
+              config,
+              commandAbort.signal,
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === 'LOCAL_BROWSER_CLEANUP_PENDING'
+            )
+              browserStopUnconfirmed = true;
+            environment.browser = 'unavailable';
+          }
+        })(),
+        (async () => {
+          runnerAvailable = false;
+          if (!runner) {
+            environment.sandbox = optedIn ? 'unavailable' : 'paused';
+            return;
+          }
+          try {
+            let profile;
+            try {
+              profile = await runner.preflight();
+            } catch (error) {
+              if (Date.now() - lastSandboxResume < 60_000) throw error;
+              lastSandboxResume = Date.now();
+              profile = await prepareLocalSandbox(runner, commandAbort.signal);
+            }
+            commandAbort.signal.throwIfAborted();
+            await bridgeRequest({
+              server: config.server,
+              path: '/api/v1/bridge/device/runtime-profile',
+              method: 'POST',
+              token,
+              body: { contractVersion: 1, ...profile, available: true },
+              maximumResponseBytes: 4096,
+              timeoutMs: 5000,
+              signal: commandAbort.signal,
+            });
+            runnerAvailable = true;
+            environment.sandbox = 'ready';
+          } catch {
+            environment.sandbox = 'unavailable';
+            options.onNotice?.('SANDBOX_UNAVAILABLE');
+          }
+        })(),
+      ]);
+      environment.preview = await bridgePreviewState(config, environment).catch(
+        () => 'unavailable',
+      );
+      if (!stopping && !commandAbort.signal.aborted) {
+        publish();
+        await heartbeat();
+      }
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        preparing = null;
+      });
+  };
   // Long commands must not make the device look offline. Operation permission
   // renewal is a separate, shorter loop inside the supervised runner.
   const heartbeatTimer = setInterval(() => {
+    prepare();
     if (!stopping)
       void heartbeat().catch(() => {
         runnerAvailable = false;
@@ -571,6 +660,7 @@ export async function start(
     if (options.onReady) await options.onReady();
     else await updateLifecycle.acknowledgeBridgeUpdateReadiness(options.signal);
     runtimeReady = true;
+    prepare();
     while (!stopping) {
       if (options.drainSignal?.aborted) {
         // Facts must be readable. A failed delivery alone is not failed stop;
@@ -700,6 +790,10 @@ export async function start(
     clearInterval(heartbeatTimer);
     commandAbort.abort();
     await browserTask;
+    await preparing;
+    await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
+    state.environment = initialBridgeEnvironment(true);
+    await heartbeat().catch(() => undefined);
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
     options.signal?.removeEventListener('abort', stop);
@@ -729,12 +823,13 @@ export async function start(
       await updateFacts().catch(() => undefined);
     }
     await journal?.close();
-    state.phase = 'stopped';
+    state.phase = browserStopUnconfirmed ? 'stopping' : 'stopped';
     state.activeForeground = 0;
     state.activeServices = 0;
-    options.onNotice?.('BRIDGE_STOPPED');
+    if (!browserStopUnconfirmed) options.onNotice?.('BRIDGE_STOPPED');
     publish();
   }
+  if (browserStopUnconfirmed) throw Error('LOCAL_BROWSER_CLEANUP_PENDING');
   console.info('Rice Bridge 已停止');
 }
 
@@ -804,6 +899,10 @@ export async function launch() {
       }
     }
   }
+  if ((await readConfig()).paused) {
+    console.info('Rice Bridge 已暂停，可从菜单恢复连接。');
+    return;
+  }
   await start();
 }
 
@@ -847,13 +946,13 @@ export async function revoke() {
 
 export function help() {
   console.info(
-    `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  local-mcp status|enable|disable\n  local-mcp --help\n  --version\n  revoke\n\n沙箱默认关闭，enable 需要已安装的独立 allrice-b2 VM；不自动安装、不开放宿主 Shell，仍需服务端启用、工作区授权和逐次审批。`,
+    `Rice Bridge ${bridgeVersion}\n\n直接打开 RiceBridge：首次输入配对码，之后自动连接。\n\nCommands:\n  pair --server URL --code XXXX-XXXX [--name NAME]\n  grant PATH [--name NAME]\n  start\n  status\n  sandbox status|enable|disable\n  local-mcp status|enable|disable\n  local-mcp --help\n  --version\n  revoke\n\n配对后自动准备已有独立沙箱；通用计算可由云端承接。选择目录后即可使用文件功能，修改与命令在任务内批准。`,
   );
   console.info(
-    '  browser status|enable|disable\n独立浏览器默认关闭；需要已安装的受信任 Chrome、站点授权和逐次动作审批，不读取日常 Chrome 登录资料，也不要求选中文件工作区。',
+    '  browser status|enable|disable\n配对后自动准备独立浏览器，不需要再次去网页授权；不读取日常 Chrome 登录资料。敏感动作在任务内确认。',
   );
   console.info(
-    '  preview status|enable|disable\n项目预览需独立启用、本地浏览器与沙箱均可用，以及网页批准的运行中服务；不开放本机端口或公共网址。',
+    '  preview status|enable|disable\n项目预览随本地环境自动准备，运行项目服务时在任务内批准；不开放本机端口或公共网址。',
   );
 }
 

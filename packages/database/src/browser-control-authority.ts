@@ -233,6 +233,8 @@ export async function currentBrowserWorkspace(
       where l.browser_workspace_id=${w.id} and l.organization_id=${w.organization_id} and l.workspace_id=${w.workspace_id}
         and l.owner_id=${w.owner_id} and l.grant_id=${w.grant_id} and l.released_at is null and g.cleanup_requested_at is null
         and d.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'
+        and (t.metadata->'environment' is null or t.metadata->'environment'='null'::jsonb or t.metadata->'environment'->>(case when g.purpose='local_preview' then 'preview' else 'browser' end)='ready')
+        and (${BrowserProfileSchema.parse(w.profile).network === 'public_https'}=false or t.metadata->'environment'->>'version'='1')
         and ((l.controller_lease_token is null and ${w.state}='starting') or l.lease_expires_at>clock_timestamp())
       for share of l,g,d`;
     if (!local) throw new RuntimePolicyError('browser_authority_unavailable');

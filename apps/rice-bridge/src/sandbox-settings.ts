@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { localCommandToolchainForPlatform } from '@allrice/contracts';
 import { configPath, type BridgeConfig } from './config.js';
 
-// Local opt-in is not a grant or a server policy. Re-pairing invalidates it.
+// Pairing enables preparation; saved pauses remain bound to their device/server.
 export async function sandboxOptIn(config: BridgeConfig) {
   const path = `${configPath()}.sandbox.json`;
   try {
@@ -19,6 +19,14 @@ export async function sandboxOptIn(config: BridgeConfig) {
     )
       throw Error('UNSAFE_SANDBOX_SETTINGS');
     const value = JSON.parse(await readFile(path, 'utf8'));
+    if (
+      !value ||
+      value.version !== 1 ||
+      typeof value.enabled !== 'boolean' ||
+      typeof value.deviceId !== 'string' ||
+      typeof value.server !== 'string'
+    )
+      throw Error('INVALID_SANDBOX_SETTINGS');
     return (
       value.version === 1 &&
       value.enabled === true &&
@@ -26,7 +34,7 @@ export async function sandboxOptIn(config: BridgeConfig) {
       value.server === config.server
     );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw Error('INVALID_SANDBOX_SETTINGS');
   }
 }

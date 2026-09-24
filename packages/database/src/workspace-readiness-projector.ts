@@ -17,6 +17,7 @@ export interface ReadinessFacts {
   controls: RuntimePolicyControls | null;
   governedLocalReads: boolean;
   bridge: 'missing' | 'offline' | 'online';
+  preparation?: { browser?: string; sandbox?: string; paused?: boolean };
   folder: boolean;
   runner: boolean;
   developmentRunner: boolean;
@@ -207,6 +208,20 @@ export function projectWorkspacePrerequisites(
         add('needs_configuration', 'bridge_missing', 'user', 'bridge');
       if (f.bridge === 'offline')
         add('device_offline', 'bridge_offline', 'user', 'bridge');
+      if (f.preparation?.paused)
+        add('device_offline', 'device_paused', 'user', 'bridge');
+      const preparation =
+        id === 'local_browser'
+          ? f.preparation?.browser
+          : ['local_command', 'development'].includes(id)
+            ? f.preparation?.sandbox
+            : undefined;
+      if (preparation === 'preparing')
+        add('preparing', 'environment_preparing', 'user', 'guide');
+      if (preparation === 'paused')
+        add('device_offline', 'device_paused', 'user', 'bridge');
+      if (id === 'local_browser' && preparation === 'unavailable')
+        add('needs_configuration', 'browser_unavailable', 'user', 'bridge');
       // Local browser is independent of filesystem and command sandbox grants.
       if (id !== 'local_browser' && !f.folder)
         add('needs_configuration', 'folder_missing', 'user', 'bridge');

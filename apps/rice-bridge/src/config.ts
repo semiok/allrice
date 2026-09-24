@@ -32,6 +32,8 @@ export interface BridgeConfig {
   grants: LocalGrant[];
   /** New pairings get an independent journal; existing configs keep their path. */
   journalNamespace?: string;
+  /** User-requested pause persists across restarts and updates. */
+  paused?: boolean;
 }
 
 export function configPath() {
@@ -174,6 +176,9 @@ export async function readConfig() {
       deviceName:
         process.env.ALLRICE_BRIDGE_STATIC_DEVICE_NAME ?? 'Rice Bridge Static',
       grants: existing?.deviceId === staticDeviceId ? existing.grants : [],
+      ...(existing?.deviceId === staticDeviceId && existing.paused !== undefined
+        ? { paused: existing.paused }
+        : {}),
     };
   }
   return JSON.parse(await readFile(configPath(), 'utf8')) as BridgeConfig;

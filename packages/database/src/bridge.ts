@@ -1,4 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
+import { preparePairedBrowserGrant } from './local-browser-grants.ts';
 
 import {
   BridgeCommandPayloadSchema,
@@ -13,6 +15,7 @@ import {
   CreateBridgePairingInputSchema,
   PairBridgeDeviceInputSchema,
   UuidSchema,
+  type BridgeEnvironment,
   type BridgeCapability,
   type BridgeCommand,
   type BridgeCommandPayload,
@@ -179,8 +182,9 @@ function executionTargetCapabilities(capabilities: BridgeCapability[]) {
 async function syncBridgeExecutionTarget(
   device: DeviceRow,
   state: 'online' | 'offline' | 'revoked',
+  sql: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
+  environment?: BridgeEnvironment,
 ) {
-  const sql = getDatabase();
   await sql`
     insert into allrice_execution_targets (
       organization_id, workspace_id, target_key, kind, label, state,
@@ -196,13 +200,14 @@ async function syncBridgeExecutionTarget(
         bridgeDeviceId: device.id,
         platform: device.platform,
         protocolVersion: device.protocol_version,
+        environment: environment ?? null,
       })}
     ) on conflict (organization_id, workspace_id, target_key) do update set
       label = excluded.label, state = excluded.state,
       capabilities = excluded.capabilities,
       last_heartbeat_at = excluded.last_heartbeat_at,
       unavailable_reason = excluded.unavailable_reason,
-      metadata = excluded.metadata, updated_at = now()
+      metadata = allrice_execution_targets.metadata || excluded.metadata, updated_at = now()
   `;
 }
 
@@ -478,18 +483,31 @@ export async function heartbeatBridgeDevice(token: string, input?: unknown) {
     ? HeartbeatBridgeDeviceInputSchema.parse(input)
     : null;
   const sql = getDatabase();
-  const rows = await sql<DeviceRow[]>`
-    update allrice_bridge_devices set
-      protocol_version = ${advertised?.protocolVersion ?? device.protocol_version},
-      capabilities = ${advertised?.capabilities ?? device.capabilities},
-      last_seen_at = now(), updated_at = now()
-    where id = ${device.id} and revoked_at is null
-    returning id, organization_id, workspace_id, owner_id, name, platform,
-      protocol_version, capabilities, last_seen_at, created_at, revoked_at
-  `;
-  const row = rows[0]!;
-  await syncBridgeExecutionTarget(row, 'online');
-  return mapDevice(row);
+  return sql.begin(async (tx) => {
+    const rows = await tx<DeviceRow[]>`
+      update allrice_bridge_devices set
+        protocol_version = ${advertised?.protocolVersion ?? device.protocol_version},
+        capabilities = ${advertised?.capabilities ?? device.capabilities},
+        last_seen_at = now(), updated_at = now()
+      where id = ${device.id} and revoked_at is null
+      returning id, organization_id, workspace_id, owner_id, name, platform,
+        protocol_version, capabilities, last_seen_at, created_at, revoked_at
+    `;
+    const row = rows[0];
+    if (!row) throw new BridgeDataError('device_unauthorized');
+    const environment = advertised?.environment;
+    await syncBridgeExecutionTarget(
+      row,
+      environment?.paused ? 'offline' : 'online',
+      tx,
+      environment,
+    );
+    if (environment && (environment.paused || environment.sandbox !== 'ready'))
+      await tx`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{available}','false'::jsonb),reported_at=clock_timestamp()
+        where device_id=${device.id}`;
+    await preparePairedBrowserGrant(tx, mapDevice(row), environment);
+    return mapDevice(row);
+  });
 }
 
 export async function bridgeDeviceStatus(token: string) {

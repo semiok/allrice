@@ -25,6 +25,7 @@ export async function createLocalBrowserFixture(
   storageRoot: string,
   options: {
     frozen?: boolean;
+    open?: boolean;
     claim?: boolean;
     acknowledge?: boolean;
     origin?: string;
@@ -74,7 +75,10 @@ export async function createLocalBrowserFixture(
   const [job] = await db<
     { attempt: number; lease_token: string }[]
   >`select attempt,lease_token from allrice_jobs where id=${f.execution.jobId}`;
-  const open = (callId = randomUUID(), grantId = grant.grantId) =>
+  const open = (
+    callId: string = randomUUID(),
+    grantId: string = grant.grantId,
+  ) =>
     createLocalBrowserWorkspace(
       {
         context: f.execution,
@@ -86,7 +90,7 @@ export async function createLocalBrowserFixture(
       },
       db,
     );
-  if (options.frozen === false)
+  if (options.frozen === false || options.open === false)
     return {
       ...f,
       device,

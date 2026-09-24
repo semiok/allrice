@@ -40,7 +40,7 @@ type Observation = {
 const observations = new WeakMap<ChildProcessWithoutNullStreams, Observation>();
 const startupWaitMs = 10_000;
 const ordinaryWaitMs = 3_000;
-const shutdownWaitMs = 7_000; // The enabled ledger may flush for up to 5s.
+const shutdownWaitMs = 12_000; // Native browser stop confirmation (6.5s) + final heartbeat (5s).
 const exitWaitMs = 5_000;
 const allowedCodes = new Set([
   'BRIDGE_ALREADY_RUNNING',
@@ -320,15 +320,28 @@ async function fixture(
           ),
         {
           observation,
-          phase:
-            type === 'pause' || type === 'stop' || type === 'drain'
-              ? 'shutdown-request'
-              : 'request',
-          timeoutMs:
-            ledger !== false &&
-            (type === 'pause' || type === 'stop' || type === 'drain')
-              ? shutdownWaitMs
-              : ordinaryWaitMs,
+          phase: [
+            'pause',
+            'stop',
+            'drain',
+            'browser',
+            'preview',
+            'workspace',
+            'prepare',
+          ].includes(type)
+            ? 'shutdown-request'
+            : 'request',
+          timeoutMs: [
+            'pause',
+            'stop',
+            'drain',
+            'browser',
+            'preview',
+            'workspace',
+            'prepare',
+          ].includes(type)
+            ? shutdownWaitMs
+            : ordinaryWaitMs,
         },
       );
       return frames.find(
@@ -530,9 +543,34 @@ it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and
   expect((await app.request('stop')).ok).toBe(true);
   await exited(app.child);
   expect(app.child.exitCode).toBe(0);
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
   expect(app.text()).not.toContain('synthetic-secret-token');
 }, 15_000);
+
+it('explicit pause survives reopening, and resume restores the same pairing', async () => {
+  const f = await fixture();
+  const app = f.launch();
+  await app.waitUntil(() => f.polls() > 0);
+  await app.request('pause');
+  expect(JSON.parse(await readFile(f.path, 'utf8')).paused).toBe(true);
+  await app.request('stop');
+  await exited(app.child);
+  const polls = f.polls(),
+    reopened = f.launch();
+  expect((await reopened.request('status')).data).toMatchObject({
+    mode: 'paused',
+  });
+  await delay(100);
+  expect(f.polls()).toBe(polls);
+  await reopened.request('resume');
+  await reopened.waitUntil(() => f.polls() > polls);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject({
+    ...f.config,
+    paused: false,
+  });
+  await reopened.request('stop');
+  await exited(reopened.child);
+}, 15000);
 
 it('P14 native protocol fails closed without trust, drains acquisition without deleting pairing and resumes', async () => {
   const f = await fixture();
@@ -559,7 +597,7 @@ it('P14 native protocol fails closed without trust, drains acquisition without d
     activeForeground: 0,
     activeServices: 0,
   });
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
   expect((await app.request('resume')).ok).toBe(true);
   await app.waitUntil(() => f.polls() > polls);
   await app.request('stop');
@@ -574,7 +612,7 @@ it.each(['browser', 'preview'])(
     const app = f.launch();
     await app.waitUntil(() => f.polls() > 0);
     expect((await app.request('status')).data).toMatchObject({
-      [`${kind}Enabled`]: false,
+      [`${kind}Enabled`]: true,
     });
     expect((await app.request(kind, { enabled: false })).ok).toBe(true);
     expect((await app.request('status')).data).toMatchObject({
@@ -589,7 +627,7 @@ it.each(['browser', 'preview'])(
       deviceId,
       server: f.config.server,
     });
-    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
     await app.request('stop');
     await exited(app.child);
     const reopened = f.launch();
@@ -630,7 +668,7 @@ it.each([
     expect((await app.request('stop')).ok).toBe(true);
     await exited(app.child);
     expect(app.child.exitCode).toBe(0);
-    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
     expect(app.text()).not.toContain('synthetic-secret-token');
     expect(app.text()).not.toContain(f.root);
   },
@@ -652,7 +690,7 @@ it('rejects a forged credential reason without exporting its content or requesti
   await exited(app.child);
   expect(app.text()).not.toContain('synthetic-secret-forged-reason');
   expect(app.text()).not.toContain('synthetic-secret-token');
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
 }, 15_000);
 
 it('new GUI and CLI cannot double-consume even with operation ledger disabled; crash releases owner', async () => {
@@ -687,7 +725,7 @@ it('EOF stops the owned core and failed server revoke retains pairing with safe 
   await app.waitUntil(() => f.polls() > 0);
   const response = await app.request('revoke', { confirmDeviceId: deviceId });
   expect(response).toMatchObject({ ok: false, code: 'BRIDGE_ACTION_FAILED' });
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
   expect(JSON.stringify(await app.request('diagnostics'))).not.toContain(
     'secret-must-not-be-exported',
   );
@@ -735,7 +773,7 @@ it.each([false, true])(
     });
     expect(await retained.pendingForDelivery()).toHaveLength(1);
     await retained.close();
-    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
     await app.request('stop');
     await exited(app.child);
   },
@@ -842,7 +880,7 @@ it('a failed runtime cannot be relabelled paused or acknowledged as a clean stop
   });
   await exited(app.child);
   expect(app.child.exitCode).toBe(1);
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
 });
 
 it.skipIf(!supportedNativeSandbox)(
@@ -876,42 +914,20 @@ it.skipIf(!supportedNativeSandbox)(
 );
 
 it.skipIf(supportedNativeSandbox)(
-  'saved sandbox opt-in rejects an unsupported native platform without polling or pretending to be paused',
+  'unavailable native sandbox does not disable paired file operations or claim runner readiness',
   async () => {
     expect(() => nativeSandboxConfig()).toThrow('UNSUPPORTED_NATIVE_PLATFORM');
     const f = await fixture(true, null);
-    await writeFile(
-      `${f.path}.sandbox.json`,
-      JSON.stringify({
-        version: 1,
-        enabled: true,
-        deviceId,
-        server: f.config.server,
-      }),
-      { mode: 0o600 },
-    );
     const app = f.launch();
-    await app.waitUntil(() =>
-      app.frames.some(
-        (frame) =>
-          frame.type === 'state' &&
-          (frame.state as { mode?: string })?.mode === 'error',
-      ),
-    );
-    expect(f.operationPolls()).toBe(0);
-    expect(f.polls()).toBe(0);
-    expect((await app.request('status')).data).toMatchObject({ mode: 'error' });
-    expect(await app.request('pause')).toMatchObject({
-      ok: false,
-      code: 'DESKTOP_STOP_UNCONFIRMED',
+    await app.waitUntil(() => f.operationPolls() > 0 && f.polls() > 0);
+    expect((await app.request('status')).data).toMatchObject({
+      mode: 'running',
     });
-    expect(await app.request('stop')).toMatchObject({
-      ok: false,
-      code: 'DESKTOP_STOP_UNCONFIRMED',
-    });
+    expect((await app.request('pause')).ok).toBe(true);
+    expect((await app.request('stop')).ok).toBe(true);
     await exited(app.child);
-    expect(app.child.exitCode).toBe(1);
-    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    expect(app.child.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
   },
   15_000,
 );

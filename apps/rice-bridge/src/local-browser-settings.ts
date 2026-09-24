@@ -4,7 +4,7 @@ import {
   writeCredentialRecordFile,
 } from './credential-files.js';
 
-/** Explicit local opt-in, independent of file workspace and VM/Shell opt-ins. */
+/** Pairing enables available capabilities; an explicit local pause survives upgrades. */
 export async function localBrowserOptIn(
   config: BridgeConfig,
 ): Promise<boolean> {
@@ -13,7 +13,7 @@ export async function localBrowserOptIn(
       `${configPath()}.browser-settings`,
       'opt-in.json',
     );
-    if (text === null) return false;
+    if (text === null) return true;
     const value = JSON.parse(text);
     if (
       !value ||
@@ -75,7 +75,7 @@ export async function localBrowserCli(args: string[]) {
       isolation: 'native-chromium-sandbox',
       personalChrome: false,
       loginStorage: 'private-unencrypted-opt-in',
-      requiresServerGrant: true,
+      requiresManualServerGrant: false,
     }),
   );
 }

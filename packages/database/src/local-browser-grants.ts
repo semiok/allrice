@@ -7,6 +7,7 @@ import {
   LocalBrowserErrorCodeSchema,
   UuidSchema,
   type BridgeDevice,
+  type BridgeEnvironment,
   type RequestContext,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
@@ -35,6 +36,49 @@ export const localBrowserPrincipal = (
   actor: { type: 'user', id: device.ownerId },
   requestId: randomUUID(),
 });
+
+/** The paired owner gets a default public browser after a new client actually
+ * prepares it. Existing grants (including explicit revocations) are authoritative.
+ * The caller holds the device row lock; concurrent heartbeats cannot duplicate it. */
+export async function preparePairedBrowserGrant(
+  tx: postgres.TransactionSql,
+  device: BridgeDevice,
+  environment: BridgeEnvironment | undefined,
+) {
+  if (
+    !environment ||
+    environment.paused ||
+    environment.browser !== 'ready' ||
+    !localBrowserEnabled()
+  )
+    return;
+  // Pairing belongs to an active member, not necessarily a tenant administrator.
+  await browserIdentity(tx, localBrowserPrincipal(device));
+  const [existing] = await tx`select grant_id from allrice_local_browser_grants
+    where device_id=${device.id} and purpose='public' limit 1`;
+  if (existing) return;
+  const [target] = await tx`select id from allrice_execution_targets
+    where organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
+      and target_key=${`bridge.${device.id}`} and kind='rice_bridge' and state='online'`;
+  if (!target) return;
+  const id = randomUUID(),
+    logicalId = randomUUID();
+  const profile = BrowserProfileSchema.parse({
+    version: 1,
+    network: 'public_https',
+    origins: [],
+    allowUploads: true,
+    allowDownloads: true,
+    allowHumanCredentials: true,
+  });
+  await tx`insert into allrice_browser_control_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled,transport)
+    values(${id},${device.organizationId},${device.workspaceId},${device.ownerId},${target.id},1,${tx.json(profile)},true,'local')`;
+  await tx`insert into allrice_local_browser_grants(grant_id,organization_id,workspace_id,owner_id,device_id,logical_profile_id,persist_login)
+    values(${id},${device.organizationId},${device.workspaceId},${device.ownerId},${device.id},${logicalId},false)`;
+  await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+    values(${device.organizationId},${device.workspaceId},${device.ownerId},'local.browser.grant.installed','browser_grant',${id},'recorded','paired_device_prepared',
+      ${tx.json({ deviceId: device.id, clientVersion: environment.clientVersion, persistLogin: false })})`;
+}
 export async function assertCurrentLocalBrowserDevice(
   tx: postgres.TransactionSql,
   device: BridgeDevice,
@@ -54,7 +98,7 @@ export async function assertCurrentLocalBrowserDevice(
 export const LocalBrowserGrantInputSchema = z
   .object({
     deviceId: UuidSchema,
-    profile: BrowserProfileSchema.refine((p) => p.network === undefined),
+    profile: BrowserProfileSchema,
     persistLogin: z.boolean().default(false),
   })
   .strict();
@@ -79,6 +123,8 @@ export async function installLocalBrowserGrant(
   if (!localBrowserEnabled())
     throw new RuntimePolicyError('local_browser_disabled');
   const input = LocalBrowserGrantInputSchema.parse(raw);
+  if (input.profile.network && input.persistLogin)
+    throw new RuntimePolicyError('local_browser_login_scope_required');
   for (const origin of input.profile.origins) {
     const denial = browserGrantOriginDenial(origin);
     if (denial) throw new RuntimePolicyError(denial);
@@ -91,14 +137,16 @@ export async function installLocalBrowserGrant(
   await db.begin(async (tx) => {
     if (administration)
       await requireTenantManagementScope(ctx, administration, tx);
-    else await browserIdentity(tx, ctx, true);
+    else await browserIdentity(tx, ctx);
     const [device] =
-      await tx`select d.id,t.id as target_id from allrice_bridge_devices d
+      await tx`select d.id,t.id as target_id,t.metadata from allrice_bridge_devices d
       join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id
         and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.metadata->>'bridgeDeviceId'=d.id::text
       where d.id=${input.deviceId} and d.organization_id=${organizationId} and d.workspace_id=${workspaceId}
         and d.owner_id=${ownerId} and d.revoked_at is null for update of d`;
     if (!device) throw new RuntimePolicyError('local_browser_device_denied');
+    if (input.profile.network && device.metadata?.environment?.version !== 1)
+      throw new RuntimePolicyError('local_browser_upgrade_required');
     const [count] = await tx<
       { n: number }[]
     >`select count(*)::integer as n from allrice_local_browser_grants l
@@ -121,7 +169,7 @@ export async function listLocalBrowserGrants(
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    await browserIdentity(tx, ctx, true);
+    await browserIdentity(tx, ctx);
     const rows =
       await tx`select l.grant_id,l.device_id,l.logical_profile_id,l.persist_login,g.version,g.profile,g.enabled,g.revoked_at,
       l.cleanup_requested_at,l.cleanup_confirmed_at,l.cleanup_error_code,d.name as device_name,d.last_seen_at,d.revoked_at as device_revoked_at
@@ -162,7 +210,7 @@ export async function revokeLocalBrowserGrant(
       const [current] =
         await tx`select id from allrice_browser_control_grants where id=${UuidSchema.parse(id)} and organization_id=${organizationId} and workspace_id=${workspaceId} and owner_id=${ownerId} and version=${administration.expectedVersion} and enabled and revoked_at is null for update`;
       if (!current) throw new RuntimePolicyError('browser_grant_unavailable');
-    } else await browserIdentity(tx, ctx, true);
+    } else await browserIdentity(tx, ctx);
     const [grant] =
       await tx`select l.grant_id from allrice_local_browser_grants l join allrice_browser_control_grants g on g.id=l.grant_id
       where l.grant_id=${UuidSchema.parse(id)} and l.organization_id=${organizationId} and l.workspace_id=${workspaceId}

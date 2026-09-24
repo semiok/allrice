@@ -2,6 +2,7 @@ import { request } from 'node:http';
 import { lstat, realpath } from 'node:fs/promises';
 
 import { LocalCommandError } from './local-command-inputs.js';
+import { localCommandToolchainImageV1 } from '@allrice/contracts';
 
 /** Fixed local Unix socket only. No remote daemon, shell, CLI config or credential helpers. */
 export class LocalDockerApi {
@@ -15,6 +16,63 @@ export class LocalDockerApi {
     const stat = await lstat(path);
     if (!stat.isSocket() || stat.uid !== process.getuid?.())
       throw new LocalCommandError('UNSAFE_DAEMON_SOCKET');
+  }
+
+  /** Prepare only the release-pinned public image through the existing daemon.
+   * Docker returns NDJSON progress, not the JSON used by its other endpoints. */
+  async prepareToolchain(signal: AbortSignal) {
+    await this.verifySocket();
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const req = request(
+        {
+          socketPath: this.socketPath,
+          method: 'POST',
+          signal,
+          path: `/v1.45/images/create?fromImage=${encodeURIComponent(`node@${localCommandToolchainImageV1}`)}`,
+        },
+        (res) => {
+          let pending = '',
+            bytes = 0;
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => {
+            bytes += Buffer.byteLength(chunk);
+            pending += chunk;
+            if (bytes > 8_000_000 || pending.length > 100_000) {
+              req.destroy(new LocalCommandError('DAEMON_RESPONSE_LIMIT'));
+              return;
+            }
+            while (pending.includes('\n')) {
+              const end = pending.indexOf('\n'),
+                line = pending.slice(0, end);
+              pending = pending.slice(end + 1);
+              if (!line.trim()) continue;
+              try {
+                if (JSON.parse(line).error) throw Error();
+              } catch {
+                req.destroy(
+                  new LocalCommandError('TOOLCHAIN_PREPARATION_FAILED'),
+                );
+                return;
+              }
+            }
+          });
+          res.once('error', reject);
+          res.once('end', () =>
+            res.statusCode === 200 && !pending.trim()
+              ? resolve()
+              : reject(new LocalCommandError('TOOLCHAIN_PREPARATION_FAILED')),
+          );
+        },
+      );
+      const timer = setTimeout(
+        () => req.destroy(new LocalCommandError('DAEMON_TIMEOUT')),
+        120_000,
+      );
+      req.once('close', () => clearTimeout(timer));
+      req.once('error', reject);
+      req.end();
+    });
   }
 
   async json<T>(

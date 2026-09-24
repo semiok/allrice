@@ -157,7 +157,7 @@ export class RuntimeBridgeOperationClient {
               supportsNpmDependencies: true,
               supportsChangesetCandidate: true,
               supportsBackgroundServices:
-                process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1' &&
+                process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0' &&
                 localProcessManager({
                   ...this.input,
                   runner: this.input.runner,
@@ -290,7 +290,7 @@ export class RuntimeBridgeOperationClient {
     if (dispatch.payload.capability === 'local.process.execute') {
       if (dispatch.payload.arguments.background) {
         if (
-          process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '1' ||
+          process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '0' ||
           !this.input.runner
         ) {
           await journal.outcome(operationId, {

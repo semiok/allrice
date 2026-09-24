@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
   BrowserProfileSchema,
+  browserOriginAllowed,
   BrowserUrlSchema,
   LocalBrowserClaimSchema,
   LocalBrowserWorkspaceSchema,
@@ -13,6 +14,7 @@ import {
   type LocalBrowserWorkspace,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { browserGrantOriginDenial } from './browser-control-origin.ts';
 import {
   browserIdentity,
   currentBrowserWorkspace,
@@ -112,10 +114,12 @@ export async function createLocalBrowserWorkspace(
         and g.enabled and g.revoked_at is null and g.transport='local' and l.cleanup_requested_at is null and l.purpose='public'
         and d.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'
         and t.kind='rice_bridge' and t.state='online' and t.target_key='bridge.'||d.id::text
+        and (g.profile->>'network' is null or (t.metadata->'environment'->>'version'='1' and t.metadata->'environment'->>'browser'='ready'))
+        and (t.metadata->'environment' is null or t.metadata->'environment'='null'::jsonb or t.metadata->'environment'->>'browser'='ready')
       for update of g,l`;
     if (!grant) throw new RuntimePolicyError('local_browser_grant_denied');
     const profile = BrowserProfileSchema.parse(grant.profile);
-    if (!profile.origins.includes(new URL(url).origin))
+    if (!browserOriginAllowed(url, profile) || browserGrantOriginDenial(url))
       throw new RuntimePolicyError('browser_origin_denied');
     const [busy] =
       await tx`select browser_workspace_id from allrice_local_browser_workspaces where grant_id=${grantId} and released_at is null limit 1`;

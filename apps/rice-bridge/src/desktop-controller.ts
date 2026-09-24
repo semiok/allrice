@@ -9,6 +9,7 @@ import {
 } from './core.js';
 import {
   readConfig,
+  writeConfig,
   readDeviceCredentials,
   type BridgeConfig,
   type DeviceCredentials,
@@ -122,6 +123,7 @@ export async function runDesktopController() {
     credentialCleanupPending,
     browserEnabled,
     previewEnabled,
+    environment: runtime.environment ?? null,
     update: updater.state,
     connection: runtime.phase,
     workspaceLabels: config
@@ -129,6 +131,7 @@ export async function runDesktopController() {
       : [],
     activeForeground: runtime.activeForeground,
     activeServices: runtime.activeServices,
+    activeBrowsers: runtime.activeBrowsers ?? 0,
     pendingReceipts: runtime.pendingReceipts,
     unknownOperations: runtime.unknownOperations,
   });
@@ -173,6 +176,7 @@ export async function runDesktopController() {
       !/^[a-f0-9-]{36}$/i.test(next.deviceId) ||
       typeof next.deviceName !== 'string' ||
       typeof next.server !== 'string' ||
+      (next.paused !== undefined && typeof next.paused !== 'boolean') ||
       !Array.isArray(next.grants) ||
       next.grants.some(
         (grant) =>
@@ -233,6 +237,10 @@ export async function runDesktopController() {
     await refresh();
     if (closing) return;
     if (!config) throw Error('DESKTOP_PAIRING_REQUIRED');
+    if (config.paused) {
+      config = { ...config, paused: false };
+      await writeConfig(config);
+    }
     mode = 'running';
     errorCode = null;
     runtimeFailed = false;
@@ -276,7 +284,16 @@ export async function runDesktopController() {
       await refresh();
       await resume();
     } else if (request.type === 'resume') await resume();
-    else if (request.type === 'updateStatus') {
+    else if (request.type === 'prepare') {
+      if (
+        runtime.activeForeground ||
+        runtime.activeServices ||
+        runtime.activeBrowsers
+      )
+        throw Error('DESKTOP_BUSY');
+      await halt();
+      await resume();
+    } else if (request.type === 'updateStatus') {
       await updater.check();
       publish();
       reply(request, true, updater.state);
@@ -296,11 +313,6 @@ export async function runDesktopController() {
       reply(request, true, { restart: true });
       return;
     } else if (request.type === 'drain' || request.type === 'installUpdate') {
-      // Browser controller is independent of the foreground queue. Until a
-      // cross-controller drain handshake is validated, require the user's
-      // explicit browser stop; never pretend its omission is quiescence.
-      if (browserEnabled || previewEnabled)
-        throw Error('UPDATE_DRAIN_BROWSER_ACTIVE');
       const requestId =
         request.type === 'installUpdate'
           ? await updater.prepare(request.version)
@@ -321,6 +333,10 @@ export async function runDesktopController() {
         throw Error('UPDATE_DRAIN_UNCONFIRMED');
       }
       mode = config ? 'paused' : 'unpaired';
+      if (config && !requestId) {
+        config = { ...(await readConfig()), paused: true };
+        await writeConfig(config);
+      }
       publish();
       if (requestId) {
         if (closing) throw Error('UPDATE_STOP_UNCONFIRMED');
@@ -332,6 +348,10 @@ export async function runDesktopController() {
       mode = 'pausing';
       publish();
       await halt();
+      if (config) {
+        config = { ...(await readConfig()), paused: true };
+        await writeConfig(config);
+      }
     } else if (request.type === 'workspace') {
       await refresh();
       if (!config) throw Error('DESKTOP_PAIRING_REQUIRED');
@@ -554,8 +574,10 @@ export async function runDesktopController() {
       await refresh();
       await updater.localState();
       await assertBridgeUpdateStartup();
-      if (config) await resume();
+      const stored = config as BridgeConfig | null;
+      if (stored && !stored.paused) await resume();
       else {
+        if (stored?.paused) mode = 'paused';
         await acknowledgeBridgeUpdateReadiness(lifecycle.signal);
         publish();
       }

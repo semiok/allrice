@@ -50,9 +50,9 @@ export const BrowserUrlSchema = z
 export const BrowserProfileSchema = z
   .object({
     version: z.literal(1),
-    /** Platform-prepared cloud browsers can browse public HTTPS without a
+    /** Prepared cloud and supported Bridge browsers can browse public HTTPS without a
      * tenant-maintained website list. Existing exact-origin profiles retain
-     * their semantics; the cloud driver still pins public IPs per connection. */
+     * their semantics; both drivers still pin public IPs per connection. */
     network: z.literal('public_https').optional(),
     origins: z
       .array(

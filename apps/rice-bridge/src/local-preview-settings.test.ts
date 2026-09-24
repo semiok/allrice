@@ -38,9 +38,9 @@ async function fixture() {
   };
 }
 describe('local preview consent', () => {
-  it('starts off, survives reopen, is device/server-bound and can be disabled independently', async () => {
+  it('starts on, survives reopen, is device/server-bound and can be disabled independently', async () => {
     const { config } = await fixture();
-    expect(await localPreviewOptIn(config)).toBe(false);
+    expect(await localPreviewOptIn(config)).toBe(true);
     await saveLocalPreviewOptIn(config, true);
     expect(await localPreviewOptIn({ ...config })).toBe(true);
     expect(await localPreviewOptIn({ ...config, deviceId: randomUUID() })).toBe(

@@ -90,6 +90,7 @@ export const capabilityLabels: Record<
 };
 export const capabilityStateLabels = {
   ready: '可用',
+  preparing: '正在准备',
   needs_configuration: '需要配置',
   needs_authorization: '需要授权',
   device_offline: '设备离线',
@@ -116,10 +117,15 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     bridge_offline:
       '没有在线的已配对设备；请启动 Bridge 后刷新，不自动转为云端执行。',
     folder_missing: 'Bridge 在线，但尚未选择并授权文件工作区。',
+    environment_preparing:
+      'Bridge 正在自动准备环境，稍后刷新即可查看结果；其他已就绪能力可继续使用。',
+    device_paused: '你已暂停此能力。需要使用时，从 Bridge 菜单恢复即可。',
+    browser_unavailable:
+      '独立浏览器暂未准备成功，请从 Bridge 菜单重新检查。缺少 Chrome 时，按提示安装后重试。',
     runner_missing:
-      'Bridge 在线不代表沙箱就绪；尚未收到匹配当前平台的有效 Runner 报告。',
+      '本地计算环境暂不可用。通用计算可交给员工在云端完成；本地项目服务可从 Bridge 菜单重新检查并准备。',
     candidate_runner_missing:
-      '当前设备未报告候选版本测试能力；请更新支持 changeset_candidate 的 Bridge，并在设备端启用独立沙箱。',
+      '当前设备未报告候选版本测试能力；请更新支持 changeset_candidate 的 Bridge，Bridge 会自动检查并准备独立沙箱。',
     target_missing: '尚未配置对应执行环境，请由平台管理员准备隔离运行环境。',
     target_unavailable: '所需执行目标不可用，请恢复对应环境后刷新。',
     grant_missing:
