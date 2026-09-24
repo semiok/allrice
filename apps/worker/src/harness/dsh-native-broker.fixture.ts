@@ -18,6 +18,7 @@ export async function nativeBrokerRoundtrip(input: {
   args: Record<string, unknown>;
   brokerArgs?: Record<string, unknown>;
   invalidArgs: Record<string, unknown>;
+  invalidResultIncludes?: string;
   inspectSchema?: (schema: Record<string, unknown>) => void;
   onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
@@ -177,6 +178,10 @@ export async function nativeBrokerRoundtrip(input: {
     await client.prompt(session, 'Reject invalid arguments before the Broker.');
     await expect.poll(() => requests.length, { timeout: 15000 }).toBe(4);
     await expect.poll(() => completed, { timeout: 15000 }).toBe(2);
+    if (input.invalidResultIncludes)
+      expect(JSON.stringify(requests[3])).toContain(
+        input.invalidResultIncludes,
+      );
     expect(received).toHaveLength(1);
     expect(errors).toEqual([]);
   } finally {

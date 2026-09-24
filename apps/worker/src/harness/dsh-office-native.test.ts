@@ -33,7 +33,10 @@ it.each([
   {
     kind: 'docx',
     title: '客户报告',
-    blocks: [{ type: 'table', headers: ['客户'], rows: [['稻米公司']] }],
+    blocks: [
+      { type: 'heading', text: '客户资料', level: 1 },
+      { type: 'table', headers: ['客户'], rows: [['稻米公司']] },
+    ],
   },
   {
     kind: 'xlsx',
@@ -74,7 +77,16 @@ it.each([
       canonicalName: 'workspace.export.create',
       wireName: 'workspace_export_create',
       args: { fileName: `结果.${format}`, format, office },
-      invalidArgs: { fileName: `结果.${format}`, format, office: 'invalid' },
+      invalidArgs: {
+        fileName: `结果.${format}`,
+        format,
+        office: {
+          kind: 'docx',
+          title: '无效',
+          blocks: [{ type: 'heading', text: '无效层级', level: 4 }],
+        },
+      },
+      invalidResultIncludes: 'office.blocks.0.level',
       inspectSchema: (schema) => {
         expect(schema.properties).toHaveProperty('office');
         expect(schema.required).not.toContain('content');

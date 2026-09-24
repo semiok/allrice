@@ -36,7 +36,9 @@ export const OfficeCreateSchema = z.discriminatedUnion('kind', [
               .object({
                 type: z.literal('heading'),
                 text,
-                level: z.enum(['1', '2', '3']).default('1'),
+                level: z
+                  .union([z.enum(['1', '2', '3']), z.literal([1, 2, 3])])
+                  .default('1'),
               })
               .strict(),
             z
@@ -172,8 +174,8 @@ export const OfficeEditSchema = z
   })
   .strict();
 
-export const OfficeExportSchema = z.union([
-  OfficeCreateSchema,
+export const OfficeExportSchema = z.discriminatedUnion('kind', [
+  ...OfficeCreateSchema.options,
   OfficeEditSchema,
 ]);
 export type OfficeCreate = z.infer<typeof OfficeCreateSchema>;

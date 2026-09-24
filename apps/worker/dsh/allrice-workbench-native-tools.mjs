@@ -1,5 +1,7 @@
 // Model-visible native declarations; publication and execution authority stay
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
+import { OfficeExportSchema } from '@allrice/contracts';
+
 export const workbenchNativeTools = [
   {
     canonicalName: 'workspace.export.create',
@@ -7,6 +9,23 @@ export const workbenchNativeTools = [
     description:
       'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Publishing a proposal does not write to the local device.',
     presentation: 'tool',
+    validateArguments(args) {
+      if ((args.content !== undefined) === (args.office !== undefined))
+        throw new Error('Supply exactly one of content or office.');
+      if (args.office !== undefined) {
+        const parsed = OfficeExportSchema.safeParse(args.office);
+        if (!parsed.success)
+          throw new Error(
+            'Invalid Office payload: ' +
+              parsed.error.issues
+                .slice(0, 5)
+                .map(
+                  (issue) => `office.${issue.path.join('.')}: ${issue.message}`,
+                )
+                .join('; '),
+          );
+      }
+    },
     parameters: {
       artifactKind: {
         type: 'string',
