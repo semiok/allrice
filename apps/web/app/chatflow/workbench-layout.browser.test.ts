@@ -1164,7 +1164,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it('aligns 56px headers and resizes deliverables with native capture, limits, reset and preserved drafts', async () => {
     const f = await fixture({ artifacts: true });
     try {
+      // Classic scrollbars / embedded frames can make the frame narrower than
+      // the viewport. Reset uses 38% of that frame, while the cap remains 70vw.
+      await f.page.addStyleTag({
+        content: 'main { width: calc(100% - 8px) !important; }',
+      });
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      const defaultWidth = Math.round(
+        (await f.page.locator('main').boundingBox())!.width * 0.38,
+      );
       const splitter = f.page.getByRole('separator', {
         name: '调整交付成果宽度',
       });
@@ -1193,7 +1201,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await f.entry.textContent()).toMatch(/交付成果.*1/);
       const panelWidth = async () =>
         Math.round((await f.panel.boundingBox())!.width);
-      await expect.poll(panelWidth).toBe(547);
+      await expect.poll(panelWidth).toBe(defaultWidth);
       async function dragTo(x: number) {
         const box = (await splitter.boundingBox())!;
         await f.page.mouse.move(box.x + box.width / 2, box.y + 100);
@@ -1225,12 +1233,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
       await splitter.dblclick({ position: { x: 4, y: 100 } });
-      await expect.poll(panelWidth).toBe(547);
+      await expect.poll(panelWidth).toBe(defaultWidth);
       await splitter.focus();
       await f.page.keyboard.press('ArrowLeft');
-      await expect.poll(panelWidth).toBe(567);
+      await expect.poll(panelWidth).toBe(defaultWidth + 20);
       await f.page.keyboard.press('Home');
-      await expect.poll(panelWidth).toBe(547);
+      await expect.poll(panelWidth).toBe(defaultWidth);
       // A canceled gesture must release capture and restore grid transitions.
       const box = (await splitter.boundingBox())!;
       await f.page.mouse.move(box.x + 4, box.y + 100);
@@ -1257,21 +1265,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '调整交付成果宽度',
       });
       await splitter.waitFor();
+      const defaultWidth = Math.round(
+        (await f.page.locator('main').boundingBox())!.width * 0.38,
+      );
+      const resizedWidth = String(defaultWidth + 100);
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe(String(defaultWidth));
       await splitter.focus();
       await f.page.keyboard.press('Shift+ArrowLeft');
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('647');
+        .toBe(resizedWidth);
       await f.page
         .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
       await f.entry.click();
-      expect(await splitter.getAttribute('aria-valuenow')).toBe('647');
+      expect(await splitter.getAttribute('aria-valuenow')).toBe(resizedWidth);
       await f.page.reload();
       await splitter.waitFor();
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('647');
+        .toBe(resizedWidth);
       const box = (await splitter.boundingBox())!;
       await f.page.mouse.move(box.x + 4, box.y + 100);
       await f.page.mouse.down();
@@ -1295,7 +1310,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await splitter.waitFor();
       await expect
         .poll(() => splitter.getAttribute('aria-valuenow'))
-        .toBe('547');
+        .toBe(String(defaultWidth));
     } finally {
       await f.close();
     }
