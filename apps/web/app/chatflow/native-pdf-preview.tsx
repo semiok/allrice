@@ -13,6 +13,7 @@ import {
 } from './dsh-upstream/document/pdf/store';
 import { zh, type PdfLocaleKey } from './dsh-upstream/document/pdf/locales';
 import styles from './workbench.module.css';
+import uiSource from '../dsh-upstream/upstream.json';
 
 type NativePdfProps = {
   content: { kind: 'bytes'; data: Uint8Array<ArrayBuffer> };
@@ -60,7 +61,10 @@ function loadPdf(): Promise<PdfModule> {
     };
     Reflect.set(window, '__ModuleLoader__', facade);
     const script = document.createElement('script');
-    script.src = '/api/dsh-ui/pdf?version=0.1.7-rc.1';
+    const version = uiSource.componentSets.find(
+      (group) => group.id === 'native-document',
+    )!.version;
+    script.src = `/api/dsh-ui/pdf?version=${encodeURIComponent(version)}`;
     const restore = () => {
       if (Reflect.get(window, '__ModuleLoader__') === facade) {
         if (previous === undefined)

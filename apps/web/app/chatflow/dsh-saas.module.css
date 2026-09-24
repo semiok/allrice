@@ -55,8 +55,7 @@ main.shell {
 }
 
 .allRiceMark,
-.railMark,
-.accountAvatar {
+.railMark {
   display: inline-grid;
   place-items: center;
   flex: none;
@@ -76,101 +75,6 @@ main.shell {
 .sidebarToggle {
   font-size: 17px;
   line-height: 1;
-}
-
-.sessionSection {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.sessionSection > p {
-  margin: 8px 8px 6px;
-  color: var(--dsw-alias-label-caption);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.sessionSection nav {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 2px;
-  padding-right: 8px;
-  overflow-y: auto;
-}
-
-.sessionSection nav button {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  text-align: left;
-  cursor: pointer;
-}
-
-.sessionSection nav button:hover,
-.sessionSection nav button.activeSession {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.sessionSection nav button span,
-.sessionSection nav button small {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sessionSection nav button span {
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.sessionSection nav button small,
-.emptySessions {
-  color: var(--dsw-alias-label-caption);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.emptySessions {
-  padding: 10px;
-}
-
-.railSessions {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
-  gap: 8px;
-  overflow-y: auto;
-}
-
-.railSessions button {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-}
-
-.railSessions button:hover,
-.railSessions button.activeRailSession {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
 }
 
 .saasNavigation {
@@ -415,78 +319,6 @@ main.shell {
 
 .bridgeOffline {
   background: var(--dsw-alias-label-caption);
-}
-
-.accountRow {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 8px;
-  border-radius: 10px;
-}
-
-.accountRow > span:nth-child(2) {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.employeeDetailsButton {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  flex: none;
-  place-items: center;
-  margin-left: auto;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font-size: 20px;
-  line-height: 1;
-}
-
-.employeeDetailsButton:hover,
-.collapsedEmployeeButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.employeeDetailsButton:disabled,
-.collapsedEmployeeButton:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.accountRow strong,
-.accountRow small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.accountRow strong {
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.accountRow small {
-  color: var(--dsw-alias-label-caption);
-  font-size: 10px;
-  line-height: 15px;
-}
-
-.accountAvatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  font-size: 12px;
-}
-
-.collapsedEmployeeButton {
-  border: 0;
-  cursor: pointer;
 }
 
 .employeeDetailsDialog {
@@ -761,8 +593,7 @@ header.conversationHeader::after {
   font-size: 12px;
 }
 
-.runtimePill i,
-.runningDot {
+.runtimePill i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1498,7 +1329,6 @@ div.composerTools {
   font-size: 12px;
 }
 
-.nativeTraceState,
 .nativeTraceRetry {
   padding: 3px 0;
   border: 0;

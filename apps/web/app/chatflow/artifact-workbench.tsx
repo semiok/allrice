@@ -74,6 +74,8 @@ type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
   dockScope: string;
   filesRequest?: number;
+  selectionRequest?: number;
+  onBrowseFiles?: () => void;
   sessionId: string | null;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
@@ -152,6 +154,7 @@ export function ArtifactWorkbench(props: Props) {
     return () => window.removeEventListener('beforeunload', unload);
   }, []);
   const previousSelection = useRef<string | null | undefined>(undefined);
+  const previousRequest = useRef(0);
   function openArtifact(id: string, paneId?: Parameters<typeof dock.open>[3]) {
     const artifact = props.artifacts.find((item) => item.id === id);
     dock.open(
@@ -164,14 +167,20 @@ export function ArtifactWorkbench(props: Props) {
     );
   }
   useEffect(() => {
-    if (!props.selectedId || previousSelection.current === props.selectedId)
+    if (
+      !props.selectedId ||
+      (previousSelection.current === props.selectedId &&
+        previousRequest.current === (props.selectionRequest ?? 0))
+    )
       return;
     const restoring =
       previousSelection.current === undefined &&
+      !props.selectionRequest &&
       Object.values(dock.surface.layout.tabs).some(
         (tab) => tab.kind === 'artifact' && tab.contentId === props.selectedId,
       );
     previousSelection.current = props.selectedId;
+    previousRequest.current = props.selectionRequest ?? 0;
     if (props.selectedId && !restoring) openArtifact(props.selectedId);
   });
   const lastFilesRequest = useRef(0);
@@ -296,14 +305,15 @@ export function ArtifactWorkbench(props: Props) {
                 tabId={tab.id}
                 selectedId={tab.kind === 'artifact' ? tab.contentId : null}
                 onDirty={onDirty}
-                onFiles={() =>
+                onFiles={() => {
+                  props.onBrowseFiles?.();
                   dock.open(
                     'files',
                     pageAddress('files'),
                     '工作区文件',
                     findTabPane(dock.surface.layout, tab.id).id,
-                  )
-                }
+                  );
+                }}
                 onSelect={(id) => {
                   props.onSelect(id);
                   openArtifact(id, findTabPane(dock.surface.layout, tab.id).id);

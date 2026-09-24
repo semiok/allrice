@@ -47,7 +47,9 @@
     "met62:auth-smoke": "pnpm acceptance:platform-governance",
     "test": "pnpm --filter @allrice/contracts build && vitest run",
     "test:compose": "bash scripts/compose-smoke.sh",
-    "typecheck": "pnpm -r --if-present run typecheck"
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "dsh-ui:verify": "node scripts/dsh-ui.mjs verify",
+    "dsh-ui:sync": "node scripts/dsh-ui.mjs sync"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

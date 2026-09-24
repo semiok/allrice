@@ -1009,7 +1009,7 @@ export function ChatFlowClient({
                           scope: fileScope,
                           revision: previous.revision + 1,
                         }));
-                        layout.show();
+                        workbench.show(undefined, true);
                       }}
                     >
                       工作区文件
@@ -1167,6 +1167,8 @@ export function ChatFlowClient({
 
       {workbenchOpen ? (
         <ArtifactWorkbench
+          selectionRequest={workbench.selectionRequest}
+          onBrowseFiles={() => workbench.show(undefined, true)}
           key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}

@@ -51,6 +51,10 @@ export function useArtifactWorkbench({
       ? `${viewerId ?? ''}/${workspaceId}/${sessionId}`
       : '';
   const [data, setData] = useState<Data>(() => empty(''));
+  const [selectionRequest, setSelectionRequest] = useState({
+    scope: '',
+    revision: 0,
+  });
   const [status, setStatus] = useState({
     scope: '',
     error: '',
@@ -160,18 +164,35 @@ export function useArtifactWorkbench({
     };
   }, [reload]);
   const show = useCallback(
-    (id?: string) => {
+    (id?: string, preserveCurrent = false) => {
       setData((previous) => {
         const current = previous.scope === scope ? previous : empty(scope);
+        const requested =
+          id ??
+          (!preserveCurrent
+            ? (current.selection.id ?? current.artifacts[0]?.id)
+            : undefined);
         return {
           ...current,
-          selection: id ? { id, explicit: true } : current.selection,
+          selection: requested
+            ? {
+                id: requested,
+                explicit: id ? true : current.selection.explicit,
+              }
+            : preserveCurrent
+              ? { ...current.selection, explicit: true }
+              : current.selection,
           noticeId:
-            id || current.selection.id === current.noticeId
+            requested || current.selection.id === current.noticeId
               ? null
               : current.noticeId,
         };
       });
+      if (!preserveCurrent)
+        setSelectionRequest((value) => ({
+          scope,
+          revision: value.revision + 1,
+        }));
       onOpen();
     },
     [scope, onOpen],
@@ -182,6 +203,8 @@ export function useArtifactWorkbench({
     artifacts: current.artifacts,
     nextCursor: current.nextCursor,
     selectedId: current.selection.id,
+    selectionRequest:
+      selectionRequest.scope === scope ? selectionRequest.revision : 0,
     noticeId: current.noticeId,
     error: status.scope === scope ? status.error : '',
     loading: status.scope === scope && status.loading,

@@ -48,6 +48,37 @@
       ]
     },
     {
+      "id": "web-ui",
+      "title": "Allrice 工作台界面",
+      "description": "界面组件版本来自实际 Web 构建，与 Worker 引擎分别记录；接入后默认展示。",
+      "items": [
+        {
+          "id": "ui-employee-workspace",
+          "name": "员工会话树",
+          "detail": "复用 DSH 原生分组行和折叠逻辑；按真实派驻组织会话，提供员工头像轨和新建选择。",
+          "status": "读取 Web 构建状态"
+        },
+        {
+          "id": "ui-native-dock",
+          "name": "多标签与并排成果",
+          "detail": "直接复用官方 Dock；支持标签、分栏、全屏、拖拽和会话内布局恢复，保留现有审查。",
+          "status": "读取 Web 构建状态"
+        },
+        {
+          "id": "ui-native-files",
+          "name": "工作区文件树",
+          "detail": "复用原生目录生命周期，接入现有上传与交付文件；支持懒加载、手动刷新、版本与下载。",
+          "status": "读取 Web 构建状态"
+        },
+        {
+          "id": "ui-native-document",
+          "name": "PDF 与文档缩放",
+          "detail": "PDF 使用官方发布组件与 Worker，代码使用官方高亮，Office 既有渲染结果接入原生缩放；未启用上游交互工作表。",
+          "status": "读取 Web 构建状态"
+        }
+      ]
+    },
+    {
       "id": "upstream",
       "title": "当前 DSH 的可复用能力",
       "description": "当前版本已有源码或原生入口，默认列出供探索；租户接入进度在每项中说明。",

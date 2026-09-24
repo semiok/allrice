@@ -1100,6 +1100,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('link', { name: '下载文件', exact: true })
           .getAttribute('href'),
       ).toContain(id(901));
+      f.state.filePreview = {
+        kind: 'text',
+        mediaType: 'application/json',
+        text: '{"native":true}',
+      };
+      await f.panel
+        .getByRole('button', { name: '刷新文件', exact: true })
+        .click();
+      await f.panel
+        .getByRole('button', { name: '复制源码', exact: true })
+        .waitFor();
+      await f.panel.getByText('{"native":true}', { exact: true }).waitFor();
       await f.panel.getByRole('tab', { name: /^工作区文件/ }).click();
       expect(
         await tree
@@ -1130,6 +1142,38 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   }, 20_000);
+
+  it('MET160 keeps the chosen files tab when an artifact list arrives late, and honors explicit reopening', async () => {
+    const f = await fixture();
+    let release!: () => void;
+    f.state.delay = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.state.items = [artifact(10)];
+    try {
+      await f.page.reload();
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      const tree = f.panel.locator('[data-files-state="tree"]');
+      await tree.waitFor();
+      release();
+      await expect.poll(() => f.entry.innerText()).toContain('1');
+      expect(await tree.isVisible()).toBe(true);
+      await f.entry.click();
+      await f.panel.getByRole('tab', { name: /^report-10.md/ }).waitFor();
+      expect(await tree.isVisible()).toBe(false);
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      await tree.waitFor();
+      await f.entry.click();
+      expect(await tree.isVisible()).toBe(false);
+    } finally {
+      release();
+      await f.close();
+    }
+  });
 
   it('MET160 published official PDF chunk renders actual PDF bytes with its bundled worker', async () => {
     const f = await fixture({ artifacts: true });

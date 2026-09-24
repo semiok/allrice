@@ -63,6 +63,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm dsh:verify
+      - run: pnpm dsh-ui:verify
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck

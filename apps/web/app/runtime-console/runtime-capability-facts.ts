@@ -16,6 +16,10 @@ export interface PlatformNativeSkillSummary {
 }
 
 export interface RuntimeCapabilityResponse extends RuntimeCapabilityInventory {
+  webUi?: {
+    components: { id: string; version: string }[];
+    workbenchEnabled: boolean;
+  };
   skills: PlatformNativeSkillSummary[];
   webTools: { name: string; enabled: boolean }[];
 }
@@ -73,6 +77,15 @@ export function integratedCapabilityStatus(
   id: string,
   data: RuntimeCapabilityResponse | null,
 ): string {
+  if (id.startsWith('ui-')) {
+    const component = data?.webUi?.components.find(
+      (item) => item.id === id.slice(3),
+    );
+    if (!component) return 'Web 界面接入状态未知';
+    if (id !== 'ui-employee-workspace' && !data!.webUi!.workbenchEnabled)
+      return `UI ${component.version} 已安装 · 工作台已显式关闭`;
+    return `UI ${component.version} · 当前 Web 已接入`;
+  }
   const facts = runtimeCapabilityFacts(data);
   if (!facts.measured) return '运行状态未知';
   const office = facts.availableSkills.find((skill) => skill.name === 'office');

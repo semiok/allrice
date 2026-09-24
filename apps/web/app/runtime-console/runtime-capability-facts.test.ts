@@ -4,6 +4,33 @@ import {
   integratedCapabilityStatus,
   type RuntimeCapabilityResponse,
 } from './runtime-capability-facts';
+it('reports Web UI independently from Worker availability and honors the actual workbench setting', () => {
+  const inventory = data();
+  inventory.workers = [];
+  expect(integratedCapabilityStatus('ui-native-dock', inventory)).toContain(
+    '未知',
+  );
+  inventory.webUi = {
+    components: [
+      { id: 'native-dock', version: '0.1.7-rc.1' },
+      { id: 'employee-workspace', version: '0.1.7-rc.1' },
+    ],
+    workbenchEnabled: true,
+  };
+  expect(integratedCapabilityStatus('ui-native-dock', inventory)).toBe(
+    'UI 0.1.7-rc.1 · 当前 Web 已接入',
+  );
+  inventory.webUi.workbenchEnabled = false;
+  expect(integratedCapabilityStatus('ui-native-dock', inventory)).toContain(
+    '显式关闭',
+  );
+  expect(
+    integratedCapabilityStatus('ui-employee-workspace', inventory),
+  ).toContain('已接入');
+  expect(integratedCapabilityStatus('ui-native-files', inventory)).toContain(
+    '未知',
+  );
+});
 const data = (): RuntimeCapabilityResponse => ({
   checkedAt: new Date().toISOString(),
   skills: [],
