@@ -435,7 +435,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       'MCP_DENIED',
     );
     await db`update allrice_memberships set active=false where user_id=${f.user} and organization_id=${f.org}`;
-    await expect(f.prepare()).rejects.toThrow('MCP_DENIED');
+    // Inactive members now fail at employee binding, before MCP preparation.
+    await expect(f.prepare()).rejects.toMatchObject({ code: 'not_found' });
+    expect(f.service.state.calls).toBe(0);
   });
   it('actual DSH native → generic Broker → real PG approval → owned HTTP, without a model key or production localhost bypass', async () => {
     const f = await fixture(),
