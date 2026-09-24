@@ -148,11 +148,11 @@ const manifest = {
   trustedUpdatesEnabled: false,
   finalArchiveVerification: 'pending',
   credentialsEmbedded: false,
-  sandboxDefault: 'disabled',
+  sandboxDefault: 'auto-prepare; explicit pauses preserved',
   browserDefault:
-    'disabled; independent native Chromium sandbox; no personal profile',
+    'auto-prepare after pairing; independent native Chromium sandbox; no personal profile',
   previewDefault:
-    'disabled; approved live container HTTP service only; no host port or public URL',
+    'auto-prepare; approved live container HTTP service only; no host port or public URL',
   sourceArchiveSha256: process.env.ALLRICE_BRIDGE_SOURCE_ARCHIVE_SHA256 ?? null,
 };
 await writeFile(

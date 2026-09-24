@@ -64,11 +64,11 @@ const manifest = {
   ),
   signing: 'ad-hoc; not notarized',
   credentialsEmbedded: false,
-  sandboxDefault: 'disabled',
+  sandboxDefault: 'auto-prepare; explicit pauses preserved',
   browserDefault:
-    'disabled; independent native Chromium sandbox; no personal profile',
+    'auto-prepare after pairing; independent native Chromium sandbox; no personal profile',
   previewDefault:
-    'disabled; approved live container HTTP service only; no host port or public URL',
+    'auto-prepare; approved live container HTTP service only; no host port or public URL',
 };
 await writeFile(
   join(folder, 'release.json'),
