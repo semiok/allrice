@@ -468,6 +468,16 @@ suite(
       expect(
         await fdb.db`select id from allrice_browser_control_grants where owner_id=${joined.user.id}`,
       ).toHaveLength(1);
+      // Health preparation must preserve the existing target's delivery capabilities.
+      await fdb.db`update allrice_execution_targets set capabilities='["browser.navigate","browser.download","artifacts.write"]' where workspace_id=${f.tenant.workspaceId} and capabilities ? 'browser.navigate'`;
+      await report();
+      const [browserTarget] =
+        await fdb.db`select capabilities from allrice_execution_targets where workspace_id=${f.tenant.workspaceId} and capabilities ? 'browser.navigate'`;
+      expect(browserTarget!.capabilities).toEqual([
+        'browser.navigate',
+        'browser.download',
+        'artifacts.write',
+      ]);
       const [controls] =
         await fdb.db`select controls from allrice_runtime_policy_controls where workspace_id=${f.tenant.workspaceId}`;
       expect(

@@ -113,7 +113,7 @@ async function prepareManagedCloudTargets(tx: Tx, scope: Scope) {
     const capability =
       kind === 'compute' ? 'process.execute' : 'browser.navigate';
     const [existing] =
-      await tx`select id,target_key,state,metadata from allrice_execution_targets
+      await tx`select id,target_key,state,capabilities,metadata from allrice_execution_targets
       where organization_id=${organizationId} and workspace_id=${workspaceId} and kind='cloud_sandbox'
         and metadata->>'managedBy'='allrice'
         and (target_key=${`allrice.cloud.${kind}`} or capabilities ? ${capability})
@@ -135,7 +135,7 @@ async function prepareManagedCloudTargets(tx: Tx, scope: Scope) {
         : null,
     };
     await tx`insert into allrice_execution_targets(organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds,last_heartbeat_at,unavailable_reason,metadata)
-      values(${organizationId},${workspaceId},${existing?.target_key ?? `allrice.cloud.${kind}`},'cloud_sandbox',${kind === 'compute' ? '云端计算' : '云端浏览器'},${ready ? 'online' : 'degraded'},${tx.json([capability])},2,300,${report.updated_at},${ready ? null : (evidence.reason ?? 'platform_environment_preparing')},${tx.json(metadata)})
+      values(${organizationId},${workspaceId},${existing?.target_key ?? `allrice.cloud.${kind}`},'cloud_sandbox',${kind === 'compute' ? '云端计算' : '云端浏览器'},${ready ? 'online' : 'degraded'},${tx.json([...new Set([...(existing?.capabilities ?? []), capability])])},2,300,${report.updated_at},${ready ? null : (evidence.reason ?? 'platform_environment_preparing')},${tx.json(metadata)})
       on conflict(organization_id,workspace_id,target_key) do update set state=excluded.state,
         capabilities=excluded.capabilities,last_heartbeat_at=excluded.last_heartbeat_at,unavailable_reason=excluded.unavailable_reason,metadata=excluded.metadata,updated_at=clock_timestamp()
         where allrice_execution_targets.state<>'revoked'`;
