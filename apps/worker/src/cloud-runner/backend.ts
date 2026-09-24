@@ -10,8 +10,11 @@ import type { Duplex } from 'node:stream';
 import {
   cloudToolchainImageV1,
   CloudCommandSchema,
+  CloudCommandInputSchema,
+  type CloudCommandInput,
   type CloudCommand,
 } from '@allrice/contracts';
+import { officeSandboxImage } from '../office/runtime.js';
 
 export class CloudRunnerError extends Error {}
 export type CloudRunResult = {
@@ -48,16 +51,34 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
  * Bounded artifact bytes are retained in daemon logs until durable publication. */
 export const cloudSupervisor = String.raw`
 import fs from 'node:fs'; import cp from 'node:child_process';
-const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>4_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{resolve(JSON.parse(text.slice(0,end)))}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),65000).unref()});
+const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>32_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{resolve(JSON.parse(text.slice(0,end)))}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),65000).unref()});
 fs.mkdirSync('/tmp/work/input',{recursive:true}); fs.mkdirSync('/tmp/work/output');
 for(const file of input.files){ const p='/tmp/work/input/'+file.path; fs.mkdirSync(p.slice(0,p.lastIndexOf('/')),{recursive:true}); fs.writeFileSync(p,Buffer.from(file.contentBase64,'base64'),{mode:0o400}); }
-fs.writeFileSync('/tmp/work/main.mjs',input.script,{mode:0o400});
-const child=cp.spawn('/usr/local/bin/node',['/tmp/work/main.mjs'],{cwd:'/tmp/work',env:{PATH:'/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',HOME:'/tmp/work',TMPDIR:'/tmp'},stdio:['ignore','pipe','pipe']});
+const main=input.office?'/tmp/work/main.py':'/tmp/work/main.mjs';
+fs.writeFileSync(main,input.script,{mode:0o400});
+const child=cp.spawn(input.office?'/opt/office/bin/python':'/usr/local/bin/node',[main],{cwd:'/tmp/work',env:{PATH:'/opt/office/bin:/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',HOME:'/tmp/work',TMPDIR:'/tmp',PYTHONDONTWRITEBYTECODE:'1',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['ignore','pipe','pipe']});
 let bytes=0,overflow=false;
 for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{ bytes+=chunk.length; if(bytes>input.outputBytes){overflow=true; child.kill('SIGKILL');}else console.log(JSON.stringify({type:'output',data:chunk.toString('base64')})); });
 const timer=setTimeout(()=>{child.kill('SIGKILL');process.exit(124)},Math.max(1,input.deadline-Date.now()));
 child.on('error',()=>process.exit(125));
-child.on('close',code=>{try{ let total=0; if(!overflow&&code===0)for(const file of input.outputs){ const p='/tmp/work/output/'+file.path; const s=fs.lstatSync(p);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>input.artifactBytes)throw Error('artifact');const real=fs.realpathSync(p);if(!real.startsWith('/tmp/work/output/'))throw Error('path');const b=fs.readFileSync(p);total+=b.length;if(total>input.artifactBytes)throw Error('limit');console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64')})); } clearTimeout(timer); process.exit(overflow?122:(code??125));}catch{process.exit(123)}});
+child.on('close',code=>{try{
+  let total=0;
+  if(!overflow&&code===0)for(const file of input.outputs){
+    const p='/tmp/work/output/'+file.path, s=fs.lstatSync(p);
+    if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>input.artifactBytes)throw Error('artifact');
+    if(!fs.realpathSync(p).startsWith('/tmp/work/output/'))throw Error('path');
+    if(input.office){
+      const check=cp.spawnSync('/opt/office/bin/python',['/opt/dsh-office/scripts/check_office.py',p],{timeout:Math.max(1,input.deadline-Date.now()),maxBuffer:input.outputBytes,env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8',PYTHONDONTWRITEBYTECODE:'1'}});
+      const report=Buffer.concat([check.stdout??Buffer.alloc(0),check.stderr??Buffer.alloc(0)]);
+      console.log(JSON.stringify({type:'output',data:report.subarray(0,input.outputBytes-bytes).toString('base64')}));
+      bytes+=report.length;
+      if(check.status!==0||bytes>input.outputBytes)throw Error('office_check');
+    }
+    const b=fs.readFileSync(p);total+=b.length;if(total>input.artifactBytes)throw Error('limit');
+    console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64')}));
+  }
+  clearTimeout(timer);process.exit(overflow?122:(code??125));
+}catch{process.exit(123)}});
 `;
 
 function redact(text: string) {
@@ -90,7 +111,7 @@ export class CloudRunnerBackend {
   async call(method: string, path: string, body?: unknown): Promise<Buffer> {
     const bytes =
       body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    if ((bytes?.length ?? 0) > 6_000_000)
+    if ((bytes?.length ?? 0) > 32_000_000)
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
     return new Promise((resolve, reject) => {
       const req = request(
@@ -110,7 +131,7 @@ export class CloudRunnerBackend {
           let size = 0;
           res.on('data', (chunk: Buffer) => {
             size += chunk.length;
-            if (size > 8_000_000)
+            if (size > 12_000_000)
               req.destroy(new CloudRunnerError('CLOUD_RESPONSE_LIMIT'));
             else chunks.push(chunk);
           });
@@ -135,7 +156,9 @@ export class CloudRunnerBackend {
     const data = await this.call(method, path, body);
     return data.length ? (JSON.parse(data.toString()) as T) : (null as T);
   }
-  async preflight() {
+  async preflight(imageDigest = cloudToolchainImageV1) {
+    if (![cloudToolchainImageV1, officeSandboxImage].includes(imageDigest))
+      throw new CloudRunnerError('CLOUD_TOOLCHAIN_CHANGED');
     const stat = await lstat(await realpath(this.socketPath));
     if (!stat.isSocket() || stat.uid !== process.getuid?.())
       throw new CloudRunnerError('CLOUD_UNSAFE_SOCKET');
@@ -166,9 +189,9 @@ export class CloudRunnerBackend {
       Id: string;
       Os: string;
       Architecture: string;
-    }>('GET', `/images/${cloudToolchainImageV1}/json`);
+    }>('GET', `/images/${imageDigest}/json`);
     if (
-      image.Id !== cloudToolchainImageV1 ||
+      image.Id !== imageDigest ||
       image.Os !== 'linux' ||
       image.Architecture !== 'amd64'
     )
@@ -276,7 +299,7 @@ export class CloudRunnerBackend {
   }
   async collect(
     attemptId: string,
-    command: CloudCommand,
+    command: Pick<CloudCommand, 'arguments'>,
     startedAt: number,
     reason: CloudRunResult['reason'] = 'completed',
   ): Promise<CloudRunResult> {
@@ -294,7 +317,7 @@ export class CloudRunnerBackend {
         throw new CloudRunnerError('CLOUD_LOG_INVALID');
       const n = raw.readUInt32BE(at + 4);
       at += 8;
-      if (n > 8_000_000 || at + n > raw.length)
+      if (n > 12_000_000 || at + n > raw.length)
         throw new CloudRunnerError('CLOUD_LOG_INVALID');
       text += raw.subarray(at, at + n).toString();
       at += n;
@@ -366,12 +389,36 @@ export class CloudRunnerBackend {
       onCreated?: (id: string) => Promise<void>;
     },
   ): Promise<CloudRunResult> {
-    const command = CloudCommandSchema.parse(commandInput),
+    const command = CloudCommandSchema.parse(commandInput);
+    return this.executeScript(command.arguments, files, options, false);
+  }
+
+  /** Managed Office export reuses the same isolated execution lifecycle. Its
+   * only effect is returned document bytes; the existing export broker owns
+   * file authorization/publication. No cloud grant or host shell is exposed. */
+  async executeOffice(
+    args: CloudCommandInput,
+    files: { path: string; contentBase64: string }[],
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+  ) {
+    const parsed = CloudCommandInputSchema.parse(args);
+    parsed.limits.artifactBytes = 8_000_000;
+    return this.executeScript(parsed, files, options, true);
+  }
+
+  private async executeScript(
+    args: CloudCommandInput,
+    files: { path: string; contentBase64: string }[],
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    office: boolean,
+  ): Promise<CloudRunResult> {
+    const command = { arguments: args },
       { attemptId } = options,
       startedAt = Date.now();
     if (!uuid.test(attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
-    await this.preflight();
+    const imageDigest = office ? officeSandboxImage : cloudToolchainImageV1;
+    await this.preflight(imageDigest);
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
     let size = 0;
@@ -389,7 +436,7 @@ export class CloudRunnerBackend {
     if (
       files.length !== command.arguments.inputs.length ||
       new Set(files.map((f) => f.path)).size !== files.length ||
-      size > 2_000_000
+      size > (office ? 20_000_000 : 2_000_000)
     )
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
     const deadline = Math.min(
@@ -407,6 +454,7 @@ export class CloudRunnerBackend {
     const encoded =
       JSON.stringify({
         files,
+        office,
         script: command.arguments.script,
         outputs: command.arguments.outputs,
         artifactBytes: limits.artifactBytes,
@@ -417,7 +465,7 @@ export class CloudRunnerBackend {
       'POST',
       `/containers/create?name=allrice-cloud-${attemptId}`,
       {
-        Image: cloudToolchainImageV1,
+        Image: imageDigest,
         Entrypoint: ['/usr/local/bin/node'],
         Cmd: ['--input-type=module', '--eval', cloudSupervisor],
         User: '65532:65532',
@@ -442,11 +490,13 @@ export class CloudRunnerBackend {
           MemorySwap: limits.memoryMiB * 1024 * 1024,
           CpuPeriod: 100_000,
           CpuQuota: limits.cpuMillis * 100,
-          Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777' },
+          Tmpfs: {
+            '/tmp': `rw,nosuid,nodev,noexec,size=${office ? 96 : 32}m,mode=1777`,
+          },
           ShmSize: 8 * 1024 * 1024,
           LogConfig: {
             Type: 'json-file',
-            Config: { 'max-size': '8m', 'max-file': '1' },
+            Config: { 'max-size': office ? '12m' : '8m', 'max-file': '1' },
           },
           RestartPolicy: { Name: 'no' },
           AutoRemove: false,

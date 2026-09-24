@@ -1,6 +1,9 @@
 // Model-visible native declarations; publication and execution authority stay
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
-import { OfficeExportSchema } from '@allrice/contracts';
+import {
+  OfficeExportSchema,
+  NativeOfficeExportSchema,
+} from '@allrice/contracts';
 
 export const workbenchNativeTools = [
   {
@@ -10,8 +13,15 @@ export const workbenchNativeTools = [
       'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Publishing a proposal does not write to the local device.',
     presentation: 'tool',
     validateArguments(args) {
-      if ((args.content !== undefined) === (args.office !== undefined))
-        throw new Error('Supply exactly one of content or office.');
+      if (
+        [args.content, args.office, args.python].filter((v) => v !== undefined)
+          .length !== 1
+      )
+        throw new Error(
+          'Supply exactly one of content, python or legacy office.',
+        );
+      if (args.python !== undefined)
+        NativeOfficeExportSchema.parse(args.python);
       if (args.office !== undefined) {
         const parsed = OfficeExportSchema.safeParse(args.office);
         if (!parsed.success)
@@ -55,13 +65,19 @@ export const workbenchNativeTools = [
       content: {
         type: 'string',
         description:
-          'Complete final text content, or the changeset JSON proposal. Supply exactly one of content or office.',
+          'Complete final text content, or the changeset JSON proposal. Supply exactly one of content, python or legacy office.',
+      },
+      python: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'Default Office workflow: {script: "Python code", inputs?: [{path, objectId, checksum}], sourceObjectId?: "edited input UUID"}. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
       },
       office: {
         type: 'object',
         additionalProperties: true,
         description:
-          'Structured Office payload instead of content. Read the Office Skill references for complete schemas. Create kind=docx with title and blocks, kind=xlsx with sheets (typed cells and formulas), or kind=pptx with title and slides (native tables/charts/notes). To preserve an uploaded template, use kind=edit with sourceObjectId, sourceChecksum and changes returned/guided by workspace_document_read(includeStructure=true); changes are replace-text or set-cell. The Broker validates the complete discriminated payload and preserves the original file.',
+          'Compatibility only for previously frozen employee packages. Current Office workflows use python with native document libraries.',
       },
       parentObjectId: {
         type: 'string',

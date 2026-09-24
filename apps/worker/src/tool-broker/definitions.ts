@@ -1,4 +1,8 @@
-import { OfficeExportSchema, runtimeFeatureEnabled } from '@allrice/contracts';
+import {
+  OfficeExportSchema,
+  NativeOfficeExportSchema,
+  runtimeFeatureEnabled,
+} from '@allrice/contracts';
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
@@ -382,10 +386,15 @@ export const riceToolDefinitions = [
           ],
         },
         content: { type: 'string', minLength: 1, maxLength: 200000 },
+        python: {
+          ...z.toJSONSchema(NativeOfficeExportSchema),
+          description:
+            'Office 默认路径：执行 DSH 原生 Python 文档流程。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
+        },
         office: {
           ...z.toJSONSchema(OfficeExportSchema),
           description:
-            '与 content 二选一。结构化创建 Office 表格、图表、公式；kind=edit 用读取返回的 sourceObjectId/sourceChecksum 修改原文件副本，保留模板，自动记录来源与版本。',
+            '旧版冻结员工包兼容参数。当前 Office 技能使用 python 原生流程。',
         },
         parentObjectId: {
           type: 'string',
@@ -399,7 +408,11 @@ export const riceToolDefinitions = [
         },
       },
       required: ['fileName', 'format'],
-      oneOf: [{ required: ['content'] }, { required: ['office'] }],
+      oneOf: [
+        { required: ['content'] },
+        { required: ['python'] },
+        { required: ['office'] },
+      ],
       additionalProperties: false,
     },
   },

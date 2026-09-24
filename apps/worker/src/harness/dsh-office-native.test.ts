@@ -1,7 +1,42 @@
 import { randomUUID } from 'node:crypto';
-import { OfficeExportSchema } from '@allrice/contracts';
+import {
+  OfficeExportSchema,
+  NativeOfficeExportSchema,
+} from '@allrice/contracts';
 import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+
+it('passes native Python Office work through the DSH broker without a typed editor', async () => {
+  const python = {
+    script:
+      "from openpyxl import Workbook\nWorkbook().save('/tmp/work/output/result.xlsx')",
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.export.create',
+    wireName: 'workspace_export_create',
+    args: { fileName: '原生表格.xlsx', format: 'xlsx', python },
+    invalidArgs: {
+      fileName: '无效.xlsx',
+      format: 'xlsx',
+      python: { script: '', inputs: [] },
+    },
+    inspectSchema: (schema) => {
+      expect(schema.properties).toHaveProperty('python');
+      expect(schema.required).not.toContain('content');
+    },
+    onToolCall: async (call) => {
+      expect(NativeOfficeExportSchema.parse(call.arguments.python).script).toBe(
+        python.script,
+      );
+      return {
+        modelContent: JSON.stringify({
+          downloadUrl: '/api/v1/files/verified/download',
+        }),
+        summary: '已交付原生 Office',
+      };
+    },
+  });
+}, 45_000);
 
 it('lists uploaded files through the native loop and returns object ids to the model', async () => {
   const id = randomUUID();

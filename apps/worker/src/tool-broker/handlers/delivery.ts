@@ -15,6 +15,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import { officeFormat } from '@allrice/office-runtime';
 
 import { generateOfficeExport } from '../../office/export.js';
+import { generateNativeOfficeExport } from '../../office/native.js';
 import { checkOfficeExport } from '../../office/quality.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { HandlerError } from '../../errors.js';
@@ -34,14 +35,18 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   }
   const format = DeliveryFormatSchema.parse(stringValue(args.format, 'format'));
   const hasOffice = args.office !== undefined;
-  if (hasOffice === (args.content !== undefined))
+  const hasPython = args.python !== undefined;
+  if (
+    [hasOffice, hasPython, args.content !== undefined].filter(Boolean)
+      .length !== 1
+  )
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
-      'content 与 office 必须且只能提供一个',
+      'content、python 与旧版 office 必须且只能提供一个',
       false,
     );
   if (
-    hasOffice &&
+    (hasOffice || hasPython) &&
     args.artifactKind !== undefined &&
     args.artifactKind !== 'document'
   )
@@ -50,7 +55,8 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       'Office 输入仅用于文档交付',
       false,
     );
-  const content = hasOffice ? '' : stringValue(args.content, 'content');
+  const content =
+    hasOffice || hasPython ? '' : stringValue(args.content, 'content');
   if (content.length > 200_000) {
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
@@ -58,14 +64,16 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       false,
     );
   }
-  const generated = hasOffice
-    ? await generateOfficeExport(input, format, args.office)
-    : {
-        ...(await generateDeliverable({ format, content })),
-        sourceFile: undefined,
-        warnings: undefined,
-        changes: undefined,
-      };
+  const generated = hasPython
+    ? await generateNativeOfficeExport(input, format, args.python)
+    : hasOffice
+      ? await generateOfficeExport(input, format, args.office)
+      : {
+          ...(await generateDeliverable({ format, content })),
+          sourceFile: undefined,
+          warnings: undefined,
+          changes: undefined,
+        };
   if (generated.bytes.byteLength > 8_000_000)
     throw new HandlerError(
       'TOOL_FILE_TOO_LARGE',
@@ -87,6 +95,9 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         sourceFile: generated.sourceFile,
         changes: generated.changes,
         quality: checked?.quality,
+        ...('nativeExecution' in generated
+          ? { nativeExecution: generated.nativeExecution }
+          : {}),
         warnings: [
           ...(checked?.quality.status === 'checked'
             ? []

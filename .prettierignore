@@ -5,3 +5,8 @@ dist
 coverage
 pnpm-lock.yaml
 apps/web/next-env.d.ts
+
+# Exact upstream DSH Office assets; preserve their byte-level provenance.
+skills/office/references/docx.md
+skills/office/references/xlsx.md
+skills/office/references/pptx.md

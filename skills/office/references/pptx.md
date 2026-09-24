@@ -1,64 +1,70 @@
+---
+name: office-pptx
+description: Create, read, edit, and check PowerPoint presentations (.pptx), including slide text, tables, images, and charts. Use when a PPTX file is an input or requested deliverable.
+---
+
 # PowerPoint presentations
 
-Adapted from pinned DSH Office guidance; provenance and MIT notice are bundled alongside this resource.
+Follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call `load_workspace_dependencies` and use its Python executable and bundled presentation libraries. Do not install npm or pip packages or locate a system interpreter for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
 
-## Create native editable slides
+Keep scripts and output files in the task workspace. The runtime and skill directory contain shared read-only resources. Match the requested slide language and the supplied presentation's design when editing it.
 
-Use `workspace_export_create` with `format: "pptx"` and `office` (omit `content`):
+## Create and edit
 
-```json
-{
-  "kind": "pptx",
-  "title": "月度汇报",
-  "accentColor": "2563EB",
-  "slides": [
-    {
-      "title": "本月结论",
-      "body": ["收入稳步增长", "下月跟进回款"],
-      "notes": "统计口径与来源"
-    },
-    {
-      "title": "收入趋势",
-      "chart": {
-        "type": "bar",
-        "labels": ["八月", "九月"],
-        "series": [{ "name": "收入", "values": [12, 20] }]
-      }
-    },
-    {
-      "title": "区域明细",
-      "table": {
-        "headers": ["区域", "收入"],
-        "rows": [
-          ["华东", 12],
-          ["华南", 8]
-        ]
-      }
-    }
-  ]
-}
+Use `python-pptx` to inspect or modify an existing presentation. Inspect slide layouts, text runs, images, tables, and charts before editing. Change only the requested content, preserve mixed text formatting, and save to a new file unless the user requests an in-place edit. Rebuilding slides can discard unsupported animation, SmartArt, or other extension content.
+
+For a new deck, use `python-pptx` with editable text, tables, and charts. Use local image assets rather than network-dependent image URLs. Set slide dimensions, text sizes, and chart data explicitly.
+
+A minimal editable deck, run with the selected Python executable:
+
+```python
+from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
+from pptx.util import Inches, Pt
+
+presentation = Presentation()
+presentation.slide_width = Inches(13.333)
+presentation.slide_height = Inches(7.5)
+slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+title = slide.shapes.add_textbox(Inches(0.6), Inches(0.4), Inches(12), Inches(0.8))
+run = title.text_frame.paragraphs[0].add_run()
+run.text = "Quarterly report"
+run.font.size = Pt(30)
+data = CategoryChartData()
+data.categories = ["Q1", "Q2"]
+data.add_series("Revenue", [12, 18])
+slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED,
+                       Inches(0.8), Inches(1.6), Inches(11.5), Inches(4.8), data)
+presentation.save("report.pptx")
 ```
 
-Create at most 50 slides. Choose body text, table or chart per slide; put supplementary detail in `notes` or another slide. Tables use native editable cells (at most 12 data rows and 8 columns per slide). Native bar/line/pie charts retain their editable embedded workbook. Every series must have one value per label; a pie chart has one series. Keep units, labels and sources explicit. Use short titles and compact cells; fit-to-box is not proof of readable layout.
+Use `Inches` or `Cm` for positions and sizes and `Pt` for font sizes. To edit a generated title while retaining its other slides and charts:
 
-The existing `content` path remains available for simple text slides headed by `#`/`##`.
+```python
+from pptx import Presentation
 
-## Revise text in a source presentation
-
-Read `workspace_document_read` with `includeStructure: true`; slide labels follow presentation order, including reordered decks. Export `office.kind: "edit"` with the returned `sourceObjectId`, `sourceChecksum` and changes such as:
-
-```json
-[
-  {
-    "type": "replace-text",
-    "slide": 2,
-    "find": "旧标题",
-    "replace": "收入趋势",
-    "expectedOccurrences": 1
-  }
-]
+presentation = Presentation("report.pptx")
+for shape in presentation.slides[0].shapes:
+    if shape.has_text_frame and shape.text == "Quarterly report":
+        shape.text_frame.paragraphs[0].runs[0].text = "Quarterly results"
+presentation.save("report-edited.pptx")
 ```
 
-Omit `slide` only when intentionally matching across the entire deck. Matching spans runs within a paragraph, including table cell text. An unexpected match count aborts the edit. Unchanged parts retain charts and embedded data, images, notes, layouts and relationships. This edits slide text; it does not edit chart values, reorder slides, modify SmartArt or change animation/layout. Create a new chart slide through structured generation when needed.
+Check that text and images fit the slide dimensions, titles form a useful sequence, and chart labels agree with source values. A native chart's embedded workbook is part of the deliverable and must contain the intended data. Library support for writing PPTX is not a rendering engine or a guarantee that every PowerPoint feature survives editing.
 
-After publishing, return the real download link and version. Text readback and package preservation do not prove font availability, spacing, alignment or absence of overflow. The workbench now shows bounded PNG slide previews from an isolated renderer, retaining the original PPTX. Inspect those pages for text clipping and chart legibility; up to eight pages are shown, and remaining slides require download. The export quality status distinguishes rendering success from an actual visual review.
+## Check and deliver
+
+Run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base:
+
+```text
+<python> <skill-directory>/../scripts/check_office.py <presentation.pptx> --out <checks.json>
+```
+
+It checks ZIP/XML integrity and internal relationships and reports slide count and extracted text. Use repeated `--contains TEXT` arguments for required slide text and `--count N` for a requested slide count; `--contains` excludes chart text and speaker notes. Reopen the file to check the requested edits, chart data, and notes. Structural success does not establish text fit, alignment, readable contrast, or rendering fidelity.
+
+If `render_document` is available and visual inspection is useful, call it on the final PPTX, initially omitting `pages` to prepare page 1 and obtain `pageCount`. The tool checks the current main model's actual image capability; do not choose a second model. If `status` is `skipped`, complete structural and content checks and deliver the PPTX, briefly stating that visual layout was not inspected. If ready, call `read_image` on its returned `pages[].imagePath`, then inspect remaining slides in small batches such as `pages: [2, 3, 4]`. Check clipping, alignment, contrast, chart labels, and consistency with the requested design or supplied reference; fix the source and render the affected pages again.
+
+Use the available rendering tool for this check. Inspect `warnings`, especially missing fonts. LibreOffice previews do not certify pixel-identical PowerPoint or Keynote output, animation, or media playback. If the rendering tool is unavailable or fails, retain the usable source and report the inspection limit; do not require the user to install another tool.
+
+Call `present({"files":[{"path":"report-edited.pptx"}]})` with the actual final PPTX path. It exposes the current source file without copying or preserving its bytes, so keep that file in place and leave intermediate images and reports out of delivery unless requested. If `present` is unavailable, use the session's supported file delivery method.

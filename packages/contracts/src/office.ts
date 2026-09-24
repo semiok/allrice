@@ -1,4 +1,24 @@
 import { z } from 'zod';
+import { CloudCommandInputSchema } from './runtime-v2/cloud-command.ts';
+
+/** DSH's native Python Office workflow; Allrice only supplies files/runtime. */
+export const NativeOfficeExportSchema = z
+  .object({
+    script: CloudCommandInputSchema.shape.script,
+    inputs: CloudCommandInputSchema.shape.inputs,
+    sourceObjectId: z.uuid().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.sourceObjectId &&
+      !value.inputs.some((i) => i.objectId === value.sourceObjectId)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'sourceObjectId must identify an input file',
+      });
+  });
 
 const text = z.string().max(20_000);
 const color = z.string().regex(/^[A-Fa-f0-9]{6}$/);

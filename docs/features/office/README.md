@@ -2,15 +2,15 @@
 
 Tracking: [MET-157](https://linear.app/metasnowsky/issue/MET-157), under the DSH Skill adaptation plan MET-156.
 
-## Current delivery: unified Skill with generation, editing and quality feedback (PR3)
+## Current delivery: DSH native Office workflow (1.3)
 
-Administrators select **office** once to provide document reading, rich native Office generation and targeted source-file editing. Selecting it assembles `workspace.file.list`, `workspace.document.read`, `workspace.skill.read` and `workspace.export.create`. Save and publish through the existing employee workflow; no Office environment switch or separate Word/Excel/PowerPoint activation is required.
+Select **office** once. The same four existing tools are assembled automatically; no additional Office toggle or separate Word/Excel/PowerPoint Skill is required. DSH's original format guides and `check_office.py` are reused unchanged, with Python's native document libraries for editing. Allrice supplies tenant files, an isolated execution environment, formula-cache updates, previews, downloads and version history.
 
-The Skill reads PDF, DOCX, XLSX, PPTX, Markdown, JSON, text and native image attachments using existing tools. Chat attachments now accept DOCX/XLSX/PPTX in both the composer picker and API contract, including generic browser MIME fallback. Macro-enabled formats remain unsupported. It exports DOCX, XLSX, PPTX, PDF, Markdown, text, HTML and JSON to tenant storage. Existing artifact cards, download authorization and version history remain the delivery surface. Financial reconciliation continues to use its dedicated deterministic Skill and export path.
+`workspace_export_create.python` takes a Python script and optional input objects (`path`, `objectId`, `checksum`). Inputs appear under `/tmp/work/input`; the script writes `/tmp/work/output/result.<format>`. Set `sourceObjectId` when revising an input file. Each call has a fresh sandbox; intermediate files are temporary. The existing export pipeline checks scoped source access again during publication and never overwrites the source. Python output and upstream checker results are returned as `nativeExecution`; formula/render results remain in `quality`.
 
-The Office bundle adapts the pinned DSH Office document, workbook and presentation guidance into three internal references. These references are not three selectable Skills. See [provenance, dependencies and modifications](../../../skills/office/references/provenance.md) and the preserved [MIT notice](../../../skills/office/references/LICENSE.dsh). All resources are included in the published frozen bundle and read with `workspace.skill.read`; model execution never resolves mutable upstream files.
+Use native python-docx/openpyxl/pandas/python-pptx features rather than adding operation enums. This supports the previously missing Word styles/header edits, Excel conditional formatting/charts, and PowerPoint chart changes/new slides/notes. Preserve document features according to the upstream library guidance; universal preservation is not claimed. Non-Office reading and text/PDF exports keep their existing paths.
 
-The PPTX exporter uses PptxGenJS's declared CommonJS entry so both the `tsx` development loader and compiled Node receive its constructor. A child-process regression test generates and reads a Chinese PPTX through the real development loader; Vitest's module transformation alone did not expose this failure.
+See [the exact upstream version, licenses and adaptation boundary](../../../skills/office/references/provenance.md). The package is `@deepseek-ai/dsh-skill-office@0.1.7-alpha.2`; the runtime engine is unchanged. The three upstream guides are internal resources of one Skill. Original bytes are frozen in the bundle; tasks never fetch mutable upstream resources.
 
 ## Existing employees and sessions
 
@@ -20,21 +20,9 @@ Opening an employee for editing upgrades the editable definition and assembles O
 
 Published revisions, tenant EmployeeVersions, queued trials and existing Runs keep their frozen packages. Publishing the next draft applies Office to new sessions; existing sessions retain the previous employee version. Rollback selects the original immutable employee revision, including its old Skill IDs and exact content. The database integration suite verifies published/queued package preservation and rollback after catalog synchronization.
 
-## Structured creation and template edits
+## Legacy compatibility
 
-`workspace.export.create` accepts exactly one of the existing `content` input or the new typed `office` input. Existing text/non-Office calls keep their behavior. The Office 1.2.0 frozen guides supply executable input shapes for:
-
-- DOCX native tables, headings, lists, page breaks, headers and page-number footers.
-- XLSX typed multisheet data, column formats, filters, frozen headers and explicit formula expressions. Formula caches cannot be supplied by the model.
-- PPTX text, editable native tables, bar/line/pie charts with embedded workbooks, accent color and speaker notes.
-
-For edits, `workspace.document.read(includeStructure=true)` supplies the original checksum and addressable paragraphs, actual presentation-order slides or worksheet cells/formulas. `office.kind=edit` takes that exact source plus bounded text-replacement/cell changes. The worker verifies read capability, scoped file access, source media type, metadata and actual bytes. The publisher rechecks source access/checksum under a database lock before registration and before returning an idempotent retry.
-
-Editing copies the original OOXML package. Unchanged members preserve their uncompressed bytes. Word replacements span ordinary body/table runs while retaining surrounding styles; PowerPoint replacements use visible slide order while retaining media, layouts, charts and notes; Excel cell edits retain styles, formulas and other parts. Exact expected match counts prevent publishing ambiguous partial replacements. A generated source owned by this user in the current session continues its series; an uploaded/shared template starts a new series. An atomic `artifact.source` audit, keyed to the existing deliverable version, retains source object ID/checksum. Workbench's stored v1 provenance shape stays unchanged so a PR1 application rollback can still parse new artifacts. There is no new file library or overwrite path.
-
-Excel worksheet formula caches and the calculation chain are invalidated and a full recalculation on open is requested. The PR3 calculator then evaluates normal/shared formulas on an isolated copy and patches only computed caches back into the original package. Array/spill formulas remain explicitly unchecked. This does not refresh chart/pivot caches or verify business inputs. Text replacement does not edit fields, headers/footers or chart data. Row insertion, slide reordering, macros, encryption, signatures and strict OOXML are outside this edit implementation; supported originals are copied without dropping unknown members. Input is bounded (20 MiB source, 64 MiB expanded package, 8 MiB per parsed XML, 1 million structured input characters, 8 MB published output).
-
-The new XML dependency is pinned to `@xmldom/xmldom@0.9.12`; DTD/entity declarations, duplicate/unsafe ZIP paths and ambiguous input are rejected. Creation and targeted editing execute in the existing worker. Recalculation/rendering use the fixed service described below; no host Shell or upstream Python executor is exposed.
+The old typed `office` input and its fixed create/edit implementation remain only for already frozen Office 1.0–1.2 employee packages. Office 1.3 defaults to `python`; new development does not add typed document operations. Remove the compatibility handler when no published package or running task needs it. Historical stored files, downloads and versions do not require retaining the old editor.
 
 ## Validation
 
@@ -54,10 +42,18 @@ The service limits input to 8 MB, expanded OOXML to 64 MiB, formulas to 10,000, 
 
 ## Deployment and rollback
 
-Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; development bootstrap compiles the shared contracts before starting plain Node DSH subprocesses; Office bundle 1.2.0 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
+Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; development bootstrap compiles the shared contracts before starting plain Node DSH subprocesses; Office bundle 1.3.0 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
 
 For PR2 rollback, restore the PR1 application and Office 1.0.0 catalog together and roll affected employees back to their previous published revision. Stored files, lineage and source audits remain readable. To undo the earlier legacy-entry migration entirely, restore the pre-Office application and catalog together. The old catalog re-enables the two legacy entries and removes replacement metadata. Because synchronization intentionally retains unmanaged content, the Office row may remain available after a code rollback; published Office employees require an explicit employee revision rollback when withdrawing that capability. Do not delete frozen content, historical bundle versions or source artifacts.
 
 Compose starts `office-renderer` by default on a private network; Web and Worker use `ALLRICE_OFFICE_RENDERER_URL=http://office-renderer:3112`. `pnpm dev` starts a loopback renderer at `127.0.0.1:3112` unless an existing private URL is configured. This setting selects infrastructure, not an enable flag. The image contains maintained Debian LibreOffice/UNO/Poppler/font packages; no tenant-side installation is needed. It runs as a non-root user with a read-only root, bounded tmpfs, no app credentials/volumes and no capabilities. Conversion subprocesses inherit a seccomp denial of IP sockets; UNO uses only a local pipe, macros are disabled and document updates are refused. Renderer restarts do not affect original files.
 
 For PR3 rollback restore the PR2 application/catalog and previous employee revision; stop the renderer after removing its callers. Existing files, including genuine cached formula results, remain readable. There is no database rollback or preview-data migration.
+
+## Native sandbox deployment
+
+Build `infra/docker/Dockerfile.office-sandbox` for linux/amd64 in the existing dedicated `colima-allrice-cloud-b4` execution backend. The Worker pins the resulting image digest in `apps/worker/src/office/runtime.ts`. The existing gVisor runtime and independent watchdog must already be installed, as for cloud execution. This deployment currently uses that backend; merely starting the fixed Office renderer does not install a Python execution backend.
+
+The image contains the pinned document libraries and the original checker, but no credentials or host mounts. Each export runs with no network and a read-only image, with temporary files, bounded memory and a 60-second execution deadline. Input total is 20 MB; published output is 8 MB, consistent with the existing Office file boundaries. The generic cloud command policy and its existing limits are unchanged. Managed Office export keeps the existing file tool authorization; administrators need not separately approve each temporary Python script.
+
+Publish a new revision of an existing employee to freeze Office 1.3, then start a new session. Existing sessions retain their original frozen package. Roll back application/catalog/employee revision together. No schema migration is required.

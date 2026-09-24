@@ -1,34 +1,34 @@
-# Office provenance and adaptation
+# Office provenance and integration
 
 Upstream: https://github.com/deepseek-ai/deepseek-harness
 
 Pinned revision: `00102833dfaee1da9f48a3a8eae9d34005a75218`.
 Package: `@deepseek-ai/dsh-skill-office@0.1.7-alpha.2`, MIT.
-The upstream copyright notice is preserved in `references/LICENSE.dsh`.
-AllRice integration and original workflow use Apache-2.0; adapted guidance retains MIT attribution.
+The exact upstream license is preserved in `references/LICENSE.dsh`.
+The DSH engine is unchanged. This package version is explicitly alpha; reuse is verified against real files rather than inferred from its release label.
 
-| AllRice resource     | Upstream path                                             | Upstream file SHA-256                                              |
-| -------------------- | --------------------------------------------------------- | ------------------------------------------------------------------ |
-| `references/docx.md` | `packages/skill/skill-office/assets/office-docx/SKILL.md` | `6ffd5866a8b025dbb02638be193ac5fe9908148f6c2a557dea74347aad5e0dc2` |
-| `references/xlsx.md` | `packages/skill/skill-office/assets/office-xlsx/SKILL.md` | `b8394b54de0d14c90e6377351c7cf871753cede404528c031abf8b056f96880a` |
-| `references/pptx.md` | `packages/skill/skill-office/assets/office-pptx/SKILL.md` | `56c3eb3a6e1a8d9abebd245f6d117c2c7614b9cb87fb73d22939116d8288ceb3` |
+## Reused unchanged
 
-## Modifications
+The package's three `assets/office-{docx,xlsx,pptx}/SKILL.md` files are copied byte-for-byte to `references/{docx,xlsx,pptx}.md`. Its `assets/scripts/check_office.py` is copied byte-for-byte to `scripts/check_office.py` and actually executed after each native export. Resource checksums in the bundle record the exact bytes. These three guides remain internal resources of **one Office Skill**, not three administrator-facing Skills.
 
-The three upstream Skill entry points become internal references of one AllRice Office Skill. The root workflow incorporates AllRice document-analysis 1.0.1 and structured-deliverable 1.2.1, both Apache-2.0. Guidance is rewritten for AllRice's actual document reader, export tool, tenant storage, frozen bundles and artifact versions. Version 1.1.0 adds structured generation and targeted original-package editing; it distinguishes package preservation from formula calculation and rendered visual verification.
+The native workflow uses python-docx 1.2.0, openpyxl 3.1.5, python-pptx 1.0.2 and pandas 2.3.3, installed when building `infra/docker/Dockerfile.office-sandbox`. The image digest is pinned in the Worker. No dependency installation occurs in a document task. Package licenses remain in the image's installed distributions.
 
-No upstream Python script or runtime code is copied or executed in this release. DSH dependency-loading, Shell, render_document and present calls are not available in this integration and are not included as callable instructions. Source downloads were inspected at the pinned revision, not resolved at runtime.
+## Thin Allrice adapter
 
-## Runtime dependencies
+`workspace_export_create.python` maps authorized storage objects into an isolated task workspace and returns the resulting document through the existing export pipeline. It reuses the cloud sandbox's gVisor lifecycle, cancellation, resource limits and watchdog. It exposes no host files, credentials or network. There is no new document operation DSL and no new model or upstream engine fork.
 
-Four existing broker tools: workspace.file.list, workspace.document.read, workspace.skill.read and workspace.export.create. Reading uses the existing PDF/text/image and Mammoth, ExcelJS and JSZip paths. Export uses the existing docx, ExcelJS, PptxGenJS and PDFKit dependencies at pnpm-lock.yaml versions. PR2 adds the pinned `@xmldom/xmldom@0.9.12` dependency (MIT, https://github.com/xmldom/xmldom, tag 0.9.12) for namespace-aware OOXML edits, alongside existing JSZip. The lockfile records its registry integrity. No upstream runtime source is copied. DTD/entity declarations are rejected, and input/member expansion is bounded. PR3 adds an isolated, fixed-purpose LibreOffice/Poppler renderer with Python stdlib + UNO. This is deployment infrastructure, not a model-callable Shell or installation tool. The DSH engine stays unchanged.
+Allrice contributes tenant file authorization, source/version history, downloads, formula-cache updates and page previews. The root Skill explains this environment and the upstream guides' supported fallback paths. It also retains the prior document-reading and non-Office delivery workflows. Generic cloud command execution retains its separate existing policy and ledger; a managed Office export only publishes the requested document through the existing managed-write tool.
 
-## Follow-up and rollback
+Previously frozen Office 1.0–1.2 employee packages retain their legacy export compatibility handler. Current Office 1.3 uses native Python by default. Legacy typed editing is no longer developed as a parallel implementation; compatibility can be removed once no published package or active run refers to it. Historical artifacts are ordinary stored files and need no old editor to view or download.
 
-MET-157 PR2 supplies native Word tables/headers/footers, typed multisheet workbooks, editable PowerPoint charts/tables, original-package text/cell edits and durable source provenance. The tools retain the original template rather than importing and rewriting its whole document model, following upstream guidance. Version 1.2.0 adds actual normal/shared formula evaluation, native-cache patching, error counts and tenant page previews. The renderer has no tenant credentials, host mounts or IP sockets in its conversion children; checks are bound to the input checksum. Array/spill formulas remain explicitly unchecked. Numerical evaluation and rendered pages are not business or visual approval. Structural or text extraction success must not be represented as those checks. Existing published and running packages keep their original Skill IDs, bodies and checksums. Restore the previous catalog and application version together to undo the default draft migration; already published Office packages remain frozen and require an explicit employee revision rollback.
+## Checks and previews
 
-## Renderer dependency provenance (PR3)
+Upstream's checker validates package structure, relationships and requested string/count assertions; it does not calculate formulas or judge appearance. Allrice's existing LibreOffice/Poppler renderer recalculates normal/shared formulas and supplies bounded page previews. It does not certify business accuracy, native Excel appearance, or visual review. Formula errors and unavailable checks are reported honestly. The native workflow adds workbook print-area/scaling instructions to prevent the extra chart page found in the comparison.
 
-`infra/docker/Dockerfile.office-renderer` uses the pinned Node 22.23.2 Bookworm base and Debian's maintained packages for LibreOffice Writer/Calc/Impress, Python 3/UNO, Poppler, libseccomp and Noto CJK/Carlito/Caladea fonts. Package copyright/license notices remain under `/usr/share/doc`; LibreOffice is MPL-2.0, Poppler GPL, Python PSF, libseccomp LGPL, and the bundled fonts have their own OFL notices. No upstream DSH runtime implementation is copied. The live service reports its LibreOffice version in conversion results; container image identity and versions are recorded in deployment evidence. Debian package updates are obtained at image build time, not during document processing.
+The renderer runs conversion copies with macros and external updates disabled and without IP sockets. Formula caches are patched into the workbook; DOCX/PPTX source bytes are retained. Renderer code, download/version UI and the fixed renderer image remain reusable platform integration, not replacement Office editors.
 
-UNO loads copies with `MacroExecutionMode=0` (NEVER_EXECUTE) and `UpdateDocMode=0` (NO_UPDATE): https://api.libreoffice.org/docs/idl/ref/namespacecom_1_1sun_1_1star_1_1document_1_1MacroExecMode.html and https://api.libreoffice.org/docs/idl/ref/namespacecom_1_1sun_1_1star_1_1document_1_1UpdateDocMode.html . An inherited seccomp filter denies IPv4/IPv6 sockets even within the private service network. Temporary profiles are destroyed after each conversion.
+## Verification and rollback
+
+The comparison used the same three source documents and model configuration. Native Office handled Word styling, Excel conditional formatting/charts, and PowerPoint chart/notes changes which the old typed edit interface could not perform. Native formula-cache and print-layout gaps are handled by the existing Allrice quality pipeline and workflow instructions. One comparison is not a statistical speed or reliability claim.
+
+Roll back application and catalog together if needed. Already published employee versions are frozen and must be revised explicitly; neither catalog synchronization nor rollback silently mutates a published snapshot.
