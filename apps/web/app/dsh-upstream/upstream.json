@@ -38,8 +38,8 @@
     {
       "source": "packages/client/ui-primitives/src/DisclosureRow.tsx; packages/client/ui-conversation/src/client/chat/ReasoningRow.tsx",
       "target": "apps/web/app/chatflow/dsh-upstream/DisclosureRow.tsx; apps/web/app/chatflow/work-process.tsx",
-      "reuse": "Native DisclosureRow component, unmodified DisclosureRow and ReasoningRow styles, native Think icon; mouse/keyboard expansion and running sweep animation",
-      "productChanges": "Public Allrice lifecycle events instead of raw reasoning text; Chinese grouped tool counts and cumulative tool duration; authoritative server elapsed time; actual child assistant panels only; first answer token removes microstatus. Imports and string class-name joining adapted without adding clsx."
+      "reuse": "Native DisclosureRow and styles for the group and non-expandable step rows; category icons imported from the installed official ui-primitives 0.1.7-rc.1 package; keyboard expansion and running pulse.",
+      "productChanges": "Chronological Chinese activity descriptions from public lifecycle facts and known tool display fields; no raw reasoning, command bodies or argument JSON. Server wall time appears once in the header, including while expanded. Employee identity and conversation accents follow the selected assignment."
     }
   ],
   "componentSets": [
@@ -99,7 +99,21 @@
             "Menu",
             "languageForPath",
             "Modal",
-            "IconSettingsOutlineMedium"
+            "IconSettingsOutlineMedium",
+            "IconThinkOutlineRegular",
+            "IconSearchOutlineRegular",
+            "IconGlobeOutlineRegular",
+            "IconBrowseOutlineRegular",
+            "IconEditOutlineRegular",
+            "IconCodeOutlineRegular",
+            "IconApiOutlineRegular",
+            "IconAgentPresetOutlineRegular",
+            "IconPlanOutlineRegular",
+            "IconQuestionOutlineRegular",
+            "IconSparkleRegular",
+            "IconFolderOpenOutlineRegular",
+            "IconDataOutlineRegular",
+            "IconRefreshOutlineRegular"
           ]
         },
         {

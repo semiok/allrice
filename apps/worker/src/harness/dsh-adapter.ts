@@ -23,6 +23,7 @@ import {
 } from './dsh/assistant-diagnostics.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import { projectNativeUsage } from './dsh/native-usage.js';
+import { toolActivityDetail } from './dsh/tool-activity.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import type {
   HarnessAdapter,
@@ -501,6 +502,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
           source: 'tool_broker',
           sourceEventType: 'allrice/tool-broker',
           sourcePayload: {
+            activityDetail: toolActivityDetail(
+              toolCall.name,
+              toolCall.arguments,
+            ),
             presentation: isDshSearchTool(toolCall.name) ? 'search' : 'tool',
             status: 'started',
             query:
@@ -983,6 +988,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           ...source,
           sourcePayload: {
             ...source.sourcePayload,
+            activityDetail: toolActivityDetail(name, args),
             presentation: isDshSearchTool(name) ? 'search' : 'tool',
             status: 'started',
             ...(query ? { query } : {}),
@@ -1086,7 +1092,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             type: 'native.event',
             presentation: 'think',
             status: 'started',
-            label: 'Rice 正在思考',
+            label: '正在思考',
             ...source,
           });
         }

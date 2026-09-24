@@ -15,6 +15,7 @@ import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatComposerProps {
+  employeeName: string;
   attachmentMenuOpen: boolean;
   busy: boolean;
   assistantModeControl?: ReactNode;
@@ -46,6 +47,7 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  employeeName,
   attachmentMenuOpen,
   busy,
   assistantModeControl,
@@ -94,7 +96,7 @@ export function ChatComposer({
           />
         ) : null}
         <textarea
-          aria-label="给 Rice 的消息"
+          aria-label={`给 ${employeeName} 的消息`}
           className={styles.composerInput}
           disabled={busy}
           onChange={(event) => {
@@ -135,7 +137,9 @@ export function ChatComposer({
             onUploadAttachments(files);
           }}
           placeholder={
-            hero ? '告诉 Rice 你想完成什么工作' : '继续和 Rice 工作…'
+            hero
+              ? `告诉 ${employeeName} 你想完成什么工作`
+              : `继续和 ${employeeName} 工作…`
           }
           rows={hero ? 3 : 2}
           ref={composerInput}
