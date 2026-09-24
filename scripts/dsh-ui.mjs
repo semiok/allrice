@@ -145,7 +145,7 @@ try {
       const packagePath = require.resolve(`${pkg.name}/package.json`);
       const installed = JSON.parse(await readFile(packagePath, 'utf8'));
       const expected =
-        syncing && source
+        syncing && source && !pkg.external
           ? JSON.parse(
               upstream(
                 commit,

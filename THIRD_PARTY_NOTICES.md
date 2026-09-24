@@ -113,3 +113,10 @@ icons. The ui-settings-general SettingsRoot panel/navigation and stylesheet
 from the same 0.1.7-rc.1 commit are adapted under
 `apps/web/app/chatflow/dsh-upstream/settings/`; source and patch checksums are
 recorded in the WebUI ledger. The DeepSeek MIT notice above also applies.
+
+The conversation turn navigator retains the official `ui-chat/TurnNavigator`
+component, its unmodified stylesheet and bounded preview helper from commit
+`46a7f68b0922371ce7144b668b90e377d8e799f4` (0.1.7-rc.1). Only host type imports
+are patched; the source, excerpt and patch hashes are recorded in the WebUI
+ledger. The DeepSeek MIT notice above applies. It uses the upstream-pinned
+MIT-licensed `@tanstack/react-virtual@3.14.9` package.

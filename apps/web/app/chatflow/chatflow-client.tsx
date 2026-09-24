@@ -32,6 +32,7 @@ import { EmployeePickerDialog } from './employee-picker-dialog';
 import { employeeAccent, employeeIntroduction } from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
 import { ChatTranscript } from './chat-transcript';
+import { ConversationTurnNavigator } from './conversation-turn-navigator';
 import { ArtifactWorkbench } from './artifact-workbench';
 import { useArtifactWorkbench } from './use-artifact-workbench';
 import { useWorkbenchLayout } from './use-workbench-layout';
@@ -106,6 +107,11 @@ export function ChatFlowClient({
     scrollRegion.scrollTop = scrollRegion.scrollHeight;
     followTranscript.current = true;
     setAtTranscriptBottom(true);
+  }, []);
+
+  const pauseTranscriptFollowing = useCallback(() => {
+    followTranscript.current = false;
+    setAtTranscriptBottom(false);
   }, []);
 
   const {
@@ -1131,6 +1137,14 @@ export function ChatFlowClient({
               data-conversation-scroll
               ref={conversationScroll}
             >
+              <ConversationTurnNavigator
+                key={`turns/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
+                messages={history?.messages ?? []}
+                runViews={runViews}
+                scrollRef={conversationScroll}
+                columnRef={transcriptColumn}
+                onNavigateAway={pauseTranscriptFollowing}
+              />
               <div className={conversationUi.viewArea}>
                 {workbenchEnabled && activeId ? (
                   <InteractionStatusPanel
