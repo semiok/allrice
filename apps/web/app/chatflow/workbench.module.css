@@ -350,6 +350,11 @@
   opacity: 1;
 }
 
+.splitter[data-side='sidebar']:hover,
+.splitter[data-side='sidebar'][data-dragging] {
+  background: #4678e933;
+}
+
 /* Native Dock owns tabs, splits and floating. Match the existing 56px chat chrome. */
 .nativeDock {
   position: relative;

@@ -2039,6 +2039,100 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it('resizes the employee sidebar with native capture, preserves scoped width and leaves usable conversation space', async () => {
+    const f = await fixture({
+      artifacts: true,
+      employeeCount: 2,
+      employeeHistory: true,
+    });
+    try {
+      const sidebar = f.page.locator('#chat-sidebar');
+      const splitter = f.page.getByRole('separator', {
+        name: '调整员工侧栏宽度',
+      });
+      const width = async () =>
+        Math.round((await sidebar.boundingBox())!.width);
+      await splitter.waitFor();
+      const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await composer.fill('侧栏拖动不丢草稿');
+      async function dragTo(x: number) {
+        const box = (await splitter.boundingBox())!;
+        await f.page.mouse.move(box.x + box.width / 2, box.y + 150);
+        await f.page.mouse.down();
+        await f.page.mouse.move(x, box.y + 150, { steps: 8 });
+        expect(await f.page.locator('main').getAttribute('data-dragging')).toBe(
+          'true',
+        );
+        await f.page.mouse.up();
+      }
+      await dragTo(360);
+      await expect.poll(width).toBe(360);
+      await f.page
+        .getByRole('button', { name: '收起侧边栏', exact: true })
+        .click();
+      expect(await splitter.count()).toBe(0);
+      await f.page
+        .getByRole('button', { name: '展开侧边栏', exact: true })
+        .click();
+      await expect.poll(width).toBe(360);
+      expect(await composer.inputValue()).toBe('侧栏拖动不丢草稿');
+      await f.page.reload();
+      await splitter.waitFor();
+      await expect.poll(width).toBe(360);
+      await dragTo(900);
+      await expect.poll(width).toBe(420);
+      const right = f.page.getByRole('separator', { name: '调整交付成果宽度' });
+      await right.focus();
+      await f.page.keyboard.press('Shift+ArrowLeft');
+      await f.page.setViewportSize({ width: 1101, height: 950 });
+      await expect
+        .poll(async () =>
+          Math.round(
+            (await f.page.locator('main > section').boundingBox())!.width,
+          ),
+        )
+        .toBeGreaterThanOrEqual(340);
+      await splitter.focus();
+      await f.page.keyboard.press('ArrowLeft');
+      await expect.poll(width).toBe(400);
+      await dragTo(100);
+      await expect.poll(width).toBe(240);
+      await splitter.focus();
+      await f.page.keyboard.press('Shift+ArrowRight');
+      await expect.poll(width).toBe(340);
+      await splitter.dblclick({ position: { x: 4, y: 150 } });
+      await expect.poll(width).toBe(240);
+      await splitter.focus();
+      await f.page.keyboard.press('Shift+ArrowRight');
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      expect(await splitter.count()).toBe(0);
+      await f.page
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await f.page
+        .getByRole('button', { name: '展开侧边栏', exact: true })
+        .click();
+      await f.page.getByRole('dialog', { name: '任务与历史' }).waitFor();
+      expect(
+        await f.page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await f.page.screenshot({ path: '/tmp/met160-employee-blue-mobile.png' });
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      await expect.poll(width).toBe(340);
+      await f.page.screenshot({
+        path: '/tmp/met160-employee-blue-desktop.png',
+      });
+      f.state.viewer = id(50);
+      await f.page.reload();
+      await splitter.waitFor();
+      await expect.poll(width).toBe(240);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('aligns 56px headers and resizes deliverables with native capture, limits, reset and preserved drafts', async () => {
     const f = await fixture({ artifacts: true });
     try {
