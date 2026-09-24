@@ -2187,7 +2187,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('button', { name: '收起侧边栏', exact: true })
         .click();
-      expect(await splitter.count()).toBe(0);
+      await expect.poll(() => splitter.count()).toBe(0);
       await f.page
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
@@ -2213,8 +2213,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ),
         )
         .toBeGreaterThanOrEqual(340);
+      await expect.poll(width).toBeLessThan(420);
       const clampedSidebar = await width();
-      expect(clampedSidebar).toBeLessThan(420);
       await splitter.focus();
       await f.page.keyboard.press('ArrowLeft');
       await expect.poll(width).toBe(clampedSidebar - 20);
@@ -2228,7 +2228,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await splitter.focus();
       await f.page.keyboard.press('Shift+ArrowRight');
       await f.page.setViewportSize({ width: 390, height: 844 });
-      expect(await splitter.count()).toBe(0);
+      // matchMedia delivers its change after the viewport command resolves.
+      await expect.poll(() => splitter.count()).toBe(0);
       await f.page
         .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
