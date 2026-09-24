@@ -4,6 +4,7 @@ import type { Session, Workspace } from './chatflow-types';
 import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
 import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
 import {
+  employeeAccent,
   employeeGroups,
   employeePreferenceKey,
   employeeTranslate,
@@ -80,7 +81,7 @@ export function EmployeeSidebar({
           (item) => item.assignmentId === group.key,
         );
         const role = profile?.identity.role;
-        const accent = /office/i.test(group.label) ? 'orange' : 'blue';
+        const accent = employeeAccent(group.label);
         const history = sessions.filter(
           (session) => session.employeeAssignmentId === group.key,
         );

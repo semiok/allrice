@@ -5,7 +5,8 @@
   margin-bottom: 16px;
 }
 .employeeCard,
-.avatar {
+.avatar,
+.pickerCard {
   --employee-start: #304fb1;
   --employee-end: #3569c6;
   background-color: var(--employee-start);
@@ -20,7 +21,8 @@
     linear-gradient(115deg, var(--employee-start), var(--employee-end));
 }
 .employeeCard[data-accent='orange'],
-.avatar[data-accent='orange'] {
+.avatar[data-accent='orange'],
+.pickerCard[data-accent='orange'] {
   --employee-start: #a7491c;
   --employee-end: #b75a23;
 }
@@ -154,34 +156,190 @@
     pointer-events: auto;
   }
 }
+.pickerDialog {
+  width: min(680px, 100%);
+  border-radius: 24px;
+  color: var(--dsw-alias-label-primary);
+}
+.pickerDialog > header {
+  align-items: center;
+  padding: 26px 28px 22px;
+  border-bottom: 0;
+}
+.pickerDialog > header h2 {
+  margin-top: 6px;
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+.pickerDialog > header p {
+  font-size: 12px;
+  line-height: 18px;
+}
+.pickerDialog > header button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-fill-tertiary);
+}
+.pickerBody {
+  padding: 0 28px 22px;
+}
 .picker {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 16px;
+  padding: 4px;
+  margin: -4px;
 }
-.card {
+.pickerCard {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 208px;
   text-align: left;
-  border: 1px solid var(--dsw-alias-border-l2, #ddd);
-  border-radius: 12px;
-  padding: 16px;
-  background: transparent;
-  color: inherit;
+  border: 1px solid #ffffff14;
+  border-radius: 18px;
+  padding: 22px;
+  color: #fff;
   cursor: pointer;
+  font-family: inherit;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease;
+  box-shadow: 0 4px 12px #13234b0d;
 }
-.card:hover,
-.card:focus-visible {
-  background: var(--dsw-alias-fill-tertiary, #f4f5f6);
+.pickerCard:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px #13234b24;
+}
+.pickerCard:active {
+  transform: translateY(0);
+}
+.pickerCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.pickerInitial {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #ffffff18;
+  border: 1px solid #ffffff26;
+  font-size: 18px;
+  font-weight: 600;
+}
+.pickerBadge {
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: #ffffff18;
+  color: #ffffffeb;
+  font-size: 11px;
+  line-height: 18px;
+}
+.pickerName {
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 26px;
+  overflow-wrap: anywhere;
+}
+.pickerDescription {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 8px;
+  color: #ffffffd9;
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+.pickerAction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 22px;
+  color: #fffffff2;
+  font-size: 12px;
+  line-height: 18px;
+}
+.pickerAction > span {
+  font-size: 20px;
 }
 .hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 0;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.pickerShortcuts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pickerShortcuts kbd {
+  padding: 0 5px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+  font: inherit;
 }
 
-.card:focus-visible,
+.pickerCard:focus-visible {
+  outline: 2px solid var(--employee-end);
+  outline-offset: 3px;
+}
 .avatar:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: -2px;
+}
+@media (max-width: 560px) {
+  .pickerDialog > header {
+    padding: 22px 20px 18px;
+  }
+  .pickerDialog > header h2 {
+    font-size: 20px;
+  }
+  .pickerBody {
+    padding: 0 20px 20px;
+  }
+  .picker {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .pickerCard {
+    min-height: 0;
+    padding: 18px;
+  }
+  .pickerCardTop {
+    margin-bottom: 12px;
+  }
+  .pickerAction {
+    padding-top: 16px;
+  }
+  .pickerShortcuts {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pickerCard {
+    transition: none;
+  }
 }
