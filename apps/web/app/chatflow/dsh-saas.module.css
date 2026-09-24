@@ -577,6 +577,18 @@ header.conversationHeader::after {
   min-height: 0;
 }
 
+/* Scope the employee identity to the conversation, leaving platform branding intact. */
+.employeeConversation[data-employee-accent='orange'] {
+  --dsw-alias-state-business-primary: #b75a23;
+  --dsw-alias-button-info-fill: #b75a23;
+  --dsw-alias-button-info-hover: #a7491c;
+  --dsw-specific-bubble: color-mix(
+    in srgb,
+    #b75a23 10%,
+    var(--dsw-alias-bg-base)
+  );
+}
+
 .emptyStage {
   display: flex;
   flex: 1;
@@ -1884,9 +1896,9 @@ div.composerTools {
   border-radius: 4px;
 }
 .processDetails {
-  max-height: 180px;
+  max-height: 360px;
   overflow-y: auto;
-  padding-left: 22px;
+  padding: 8px 0 0 22px;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 20px;
@@ -1895,25 +1907,49 @@ div.composerTools {
 .processDetails p {
   margin: 4px 0;
 }
-.processGroups {
+.processTiming {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 24px;
+}
+.processSteps {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.processGroups li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0 12px;
-  padding: 3px 0;
+.processSteps li {
+  padding: 4px 0;
 }
-.processGroups small {
-  color: var(--dsw-alias-label-caption);
-  font-size: inherit;
+.processSteps .processStepRow {
+  min-height: 28px;
+  height: auto;
+  align-items: center;
 }
-.processError {
-  flex-basis: 100%;
+.processStepRow > :first-child {
+  align-self: center;
 }
-.processGroups [data-failed] small {
+.processStepLabel {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 400;
+}
+.processStepDescription {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 22px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.processStepStatus {
+  display: block;
+  padding-left: 22px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+}
+.processSteps [data-failed] .processStepStatus {
   color: var(--dsw-alias-state-error-primary);
 }
 .processPulse {

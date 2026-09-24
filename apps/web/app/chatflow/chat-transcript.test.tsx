@@ -140,7 +140,7 @@ describe('historical transcript capability gating', () => {
       expect(html).toContain(text);
     expect(html).not.toContain('模型请求尝试');
     expect(html).not.toContain('策略来源');
-    expect(html).not.toContain('本轮运行时间');
+    expect(html).toContain('本轮运行时间');
     expect(html).not.toContain('助手任务');
   });
 

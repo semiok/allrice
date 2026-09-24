@@ -9,6 +9,7 @@ export interface NativeExperienceItem {
   status: 'started' | 'updated' | 'completed' | 'failed' | 'info';
   title: string;
   detail?: string;
+  activityDetail?: string;
   sequence: number;
   lastSequence?: number;
   toolName?: string;
@@ -92,6 +93,9 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         sequence: previous?.sequence ?? event.sequence,
         lastSequence: event.sequence,
         toolName: text(event.sourceEvent?.payload.name) ?? previous?.toolName,
+        activityDetail:
+          text(event.sourceEvent?.payload.activityDetail) ??
+          previous?.activityDetail,
         startedAt:
           previous?.startedAt ??
           (event.payload.status === 'started' ? event.occurredAt : undefined),
@@ -142,6 +146,10 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         sequence: previous?.sequence ?? event.sequence,
         lastSequence: event.sequence,
         toolName: name ?? previous?.toolName,
+        activityDetail:
+          text(native.activityDetail) ??
+          previous?.activityDetail ??
+          (query ? `搜索资料：${query}` : undefined),
         startedAt:
           previous?.startedAt ??
           (status === 'started' ? event.occurredAt : undefined),
@@ -174,8 +182,5 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
   const projected = [...items.values()]
     .filter((item) => item.kind !== 'context')
     .sort((a, b) => a.sequence - b.sequence);
-  const lastThink = projected.findLast((item) => item.kind === 'think');
-  return projected.filter(
-    (item) => item.kind !== 'think' || item.id === lastThink?.id,
-  );
+  return projected;
 }
