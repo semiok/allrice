@@ -8,6 +8,10 @@ import type {
 import { zh } from './dsh-upstream/workspace/locales';
 import type { WorkspaceBrowserProps } from './dsh-upstream/workspace/contracts';
 
+export function employeeAccent(name: string) {
+  return /office/i.test(name) ? 'orange' : 'blue';
+}
+
 export const employeeTranslate: WorkspaceBrowserProps['t'] = (key, params) => {
   const copy =
     key === 'actions.newSession.aria'
