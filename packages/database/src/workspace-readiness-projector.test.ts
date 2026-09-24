@@ -197,3 +197,28 @@ describe('MET-147 capability matrix: discovery is not authority', () => {
     expect(item(f, 'report').reason).toBe('read_only');
   });
 });
+
+it('projects automatic preparation and explicit pause without blocking independent local files', () => {
+  const facts = readinessFixture();
+  const preparing = projectWorkspaceReadiness({
+    ...facts,
+    runner: false,
+    localBrowser: 'ungranted',
+    preparation: { browser: 'preparing', sandbox: 'preparing' },
+  });
+  expect(preparing.find((c) => c.id === 'local_browser')).toMatchObject({
+    state: 'preparing',
+    responsibleRole: 'user',
+  });
+  expect(preparing.find((c) => c.id === 'local_command')).toMatchObject({
+    state: 'preparing',
+  });
+  expect(preparing.find((c) => c.id === 'local_files')).toMatchObject({
+    state: 'ready',
+  });
+  expect(
+    projectWorkspaceReadiness({ ...facts, preparation: { paused: true } }).find(
+      (c) => c.id === 'local_files',
+    ),
+  ).toMatchObject({ reason: 'device_paused' });
+});

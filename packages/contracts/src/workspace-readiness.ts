@@ -20,6 +20,7 @@ export const WorkspaceCapabilityIdSchema = z.enum(workspaceCapabilityIds);
 export type WorkspaceCapabilityId = z.infer<typeof WorkspaceCapabilityIdSchema>;
 export const WorkspaceCapabilityStateSchema = z.enum([
   'ready',
+  'preparing',
   'needs_configuration',
   'needs_authorization',
   'device_offline',
@@ -43,6 +44,9 @@ export const WorkspaceCapabilitySchema = z
       'bridge_missing',
       'bridge_offline',
       'folder_missing',
+      'environment_preparing',
+      'device_paused',
+      'browser_unavailable',
       'runner_missing',
       'candidate_runner_missing',
       'target_missing',

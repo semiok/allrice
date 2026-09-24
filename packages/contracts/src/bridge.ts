@@ -182,10 +182,24 @@ export const PairBridgeDeviceResponseSchema = z
   })
   .strict();
 
+/** Optional on protocol v2: old clients never advertise default browser access. */
+export const BridgeEnvironmentSchema = z
+  .object({
+    version: z.literal(1),
+    clientVersion: z.string().max(80),
+    browser: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
+    sandbox: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
+    preview: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
+    paused: z.boolean(),
+  })
+  .strict();
+export type BridgeEnvironment = z.infer<typeof BridgeEnvironmentSchema>;
+
 export const HeartbeatBridgeDeviceInputSchema = z
   .object({
     protocolVersion: z.literal(BridgeProtocolVersion),
     capabilities: z.array(BridgeCapabilitySchema).min(1).max(16),
+    environment: BridgeEnvironmentSchema.optional(),
   })
   .strict();
 

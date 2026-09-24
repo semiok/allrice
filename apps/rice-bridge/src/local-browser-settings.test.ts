@@ -29,9 +29,9 @@ async function fixture() {
   };
 }
 describe('P22 normal App persistent opt-in', () => {
-  it('is default off, requires neither selected folder nor a VM, and is revocable while App runs', async () => {
+  it('is default on, requires neither selected folder nor a VM, and is revocable while App runs', async () => {
     const { config, path } = await fixture();
-    expect(await localBrowserOptIn(config)).toBe(false);
+    expect(await localBrowserOptIn(config)).toBe(true);
     await saveLocalBrowserOptIn(config, true);
     expect(await localBrowserOptIn(config)).toBe(true);
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({

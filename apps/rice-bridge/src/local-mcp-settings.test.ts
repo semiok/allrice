@@ -79,7 +79,8 @@ describe('P17 normal App persistent explicit local MCP opt-in', () => {
       expect(await localMcpEnabledForBinding(config)).toBe(false);
     },
   );
-  it('cannot enable MCP by itself or override a saved opt-out using the development flag', async () => {
+  it('cannot override an explicit sandbox pause or saved MCP opt-out using the development flag', async () => {
+    await saveSandboxOptIn(config, false);
     vi.stubEnv('ALLRICE_LOCAL_MCP_ENABLED', '1');
     expect(await localMcpEnabledForBinding(config)).toBe(false);
     await saveSandboxOptIn(config, true);
@@ -108,7 +109,8 @@ describe('P17 normal App persistent explicit local MCP opt-in', () => {
         .deviceId,
     ).toBe(config.deviceId);
   });
-  it('enable requires prior sandbox choice and successful preflight, while status/disable do not touch Docker', async () => {
+  it('enable honors an explicit sandbox pause and requires preflight, while status/disable do not touch Docker', async () => {
+    await saveSandboxOptIn(config, false);
     // This is a settings transaction test, not a native Mac/VM acceptance.
     // Model a supported sandbox explicitly on every test host; Linux must not
     // accidentally reach the real Mac-only config before the preflight mock.

@@ -22,6 +22,7 @@ import {
   revokeBrowserControlGrant,
 } from './browser-control.ts';
 import {
+  listLocalBrowserGrants,
   installLocalBrowserGrant,
   revokeLocalBrowserGrant,
   pendingLocalBrowserRevocations,
@@ -47,6 +48,7 @@ import {
   captureLocalBrowserFile,
   takeLocalBrowserInput,
 } from './local-browser-files.ts';
+import { heartbeatBridgeDevice } from './bridge.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { waitBrowserOperationResult } from '../../../apps/worker/src/browser-control/controller.js';
 import type * as Client from './core/client.ts';
@@ -102,6 +104,146 @@ suite('P22 real PostgreSQL device browser authority', () => {
       await rm(storageRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
+  it('paired member gets one prepared browser, can execute, pause and revoke without an administrator', async () => {
+    const f = await createLocalBrowserFixture(db, storageRoot, { open: false });
+    // Start from a freshly paired device without the legacy explicit fixture grant.
+    await db`delete from allrice_local_browser_grants where grant_id=${f.localGrant.grantId}`;
+    await db`delete from allrice_browser_control_grants where id=${f.localGrant.grantId}`;
+    await db`update allrice_memberships set role='member' where organization_id=${f.org} and workspace_id=${f.workspace} and user_id=${f.user}`;
+    const body = {
+      protocolVersion: 2,
+      capabilities: ['local.fs.list'],
+      environment: {
+        version: 1,
+        clientVersion: '0.6.0-dev.1',
+        paused: false,
+        browser: 'ready',
+        sandbox: 'unavailable',
+        preview: 'unavailable',
+      },
+    };
+    await heartbeatBridgeDevice(f.token, {
+      protocolVersion: 2,
+      capabilities: ['local.fs.list'],
+    });
+    expect(await listLocalBrowserGrants(f.context, db)).toHaveLength(0);
+    await heartbeatBridgeDevice(f.token, {
+      ...body,
+      environment: { ...body.environment, browser: 'preparing' },
+    });
+    expect(await listLocalBrowserGrants(f.context, db)).toHaveLength(0);
+    await Promise.all([
+      heartbeatBridgeDevice(f.token, body),
+      heartbeatBridgeDevice(f.token, body),
+    ]);
+    const grants = await listLocalBrowserGrants(f.context, db);
+    expect(grants).toHaveLength(1);
+    const grant = grants[0]!;
+    expect(grant).toMatchObject({
+      enabled: true,
+      persistLogin: false,
+      profile: { network: 'public_https', origins: [] },
+    });
+    const workspace = await f.open(randomUUID(), grant.grantId);
+    expect(
+      await claimLocalBrowserWorkspace(f.device, randomUUID(), true, db),
+    ).toMatchObject({ workspace: { id: workspace.id } });
+    await heartbeatBridgeDevice(f.token, {
+      ...body,
+      environment: { ...body.environment, paused: true, browser: 'paused' },
+    });
+    await expect(
+      readCurrentBrowserWorkspace(f.context, workspace.id, db),
+    ).rejects.toThrow('browser_authority_unavailable');
+    await heartbeatBridgeDevice(f.token, body);
+    expect((await listLocalBrowserGrants(f.context, db))[0]?.grantId).toBe(
+      grant.grantId,
+    );
+    await revokeLocalBrowserGrant(f.context, grant.grantId, db);
+    await heartbeatBridgeDevice(f.token, body);
+    expect(await listLocalBrowserGrants(f.context, db)).toMatchObject([
+      { grantId: grant.grantId, enabled: false },
+    ]);
+    await expect(f.open(randomUUID(), grant.grantId)).rejects.toThrow(
+      'local_browser_grant_denied',
+    );
+  });
+
+  it('a stopped preparation or old-client heartbeat stops public browser execution; old exact grants keep their scope', async () => {
+    const f = await fixture();
+    const body = {
+      protocolVersion: 2,
+      capabilities: ['local.fs.list'],
+      environment: {
+        version: 1,
+        clientVersion: '0.6.0-dev.1',
+        paused: false,
+        browser: 'ready',
+        sandbox: 'ready',
+        preview: 'ready',
+      },
+    };
+    await heartbeatBridgeDevice(f.token, body);
+    expect(await listLocalBrowserGrants(f.context, db)).toMatchObject([
+      { profile: { origins: ['https://example.com'] } },
+    ]);
+    await db`update allrice_browser_workspaces set profile=profile || '{"network":"public_https"}'::jsonb where id=${f.browser!.w.id}`;
+    await db`update allrice_browser_control_grants set profile=profile || '{"network":"public_https"}'::jsonb where id=${f.localGrant.grantId}`;
+    await readCurrentBrowserWorkspace(f.context, f.browser!.w.id, db);
+    await heartbeatBridgeDevice(f.token, {
+      ...body,
+      environment: { ...body.environment, browser: 'unavailable' },
+    });
+    await expect(
+      readCurrentBrowserWorkspace(f.context, f.browser!.w.id, db),
+    ).rejects.toThrow('browser_authority_unavailable');
+    await heartbeatBridgeDevice(f.token, body);
+    await readCurrentBrowserWorkspace(f.context, f.browser!.w.id, db);
+    await heartbeatBridgeDevice(f.token, {
+      protocolVersion: 2,
+      capabilities: ['local.fs.list'],
+    });
+    await expect(
+      readCurrentBrowserWorkspace(f.context, f.browser!.w.id, db),
+    ).rejects.toThrow('browser_authority_unavailable');
+  });
+
+  it('heartbeat waits for browser authority without holding its device lock', async () => {
+    const f = await fixture();
+    let heartbeat: Promise<unknown> | undefined;
+    try {
+      await db.begin(async (tx) => {
+        const [reader] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        await tx`select id from allrice_execution_targets where target_key=${`bridge.${f.device.id}`} for share`;
+        heartbeat = heartbeatBridgeDevice(f.token, {
+          protocolVersion: 2,
+          capabilities: ['local.fs.list'],
+        });
+        // Observe the actual wait, not an assumed scheduler delay.
+        const until = Date.now() + 3000;
+        let waiting = false;
+        while (Date.now() < until) {
+          const rows =
+            await db`select pid from pg_stat_activity where ${reader!.pid}=any(pg_blocking_pids(pid))`;
+          if (rows.length) {
+            waiting = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        expect(
+          (await currentBrowserWorkspace(tx, f.context, f.browser!.w.id)).id,
+        ).toBe(f.browser!.w.id);
+      });
+      await heartbeat;
+    } finally {
+      await heartbeat;
+    }
+  });
+
   it('orders artifact quota locks before observation identity locks under deterministic concurrent admission', async () => {
     const f = await fixture(),
       b = f.browser!;

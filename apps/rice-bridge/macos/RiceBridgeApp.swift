@@ -211,6 +211,10 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         } else { add(menu, "暂停并停止本地任务", #selector(pause), enabled: paired && !busy) }
         menu.addItem(.separator())
         add(menu, "诊断与日志…", #selector(diagnostics))
+        if (state["environment"] as? [String: Any])?["browser"] as? String == "unavailable" {
+            add(menu, "安装或更新 Chrome…", #selector(installChrome), enabled: !busy)
+        }
+        add(menu, "重新检查并准备环境", #selector(prepareEnvironment), enabled: paired && !busy)
         add(menu, "检查可信更新…", #selector(updateStatus))
         add(menu, "等待任务结束并暂停…", #selector(drainTasks), enabled: paired && !busy)
         add(menu, "撤销设备配对…", #selector(revokeDevice), enabled: paired && !busy)
@@ -242,8 +246,17 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         default: credential = "凭证：尚未配对或暂不可读取"
         }
         var text = "\(title)\n\n设备：\(label(state["deviceName"], fallback: "未配对"))\n版本：\(label(state["version"], fallback: "—")) · \(label(state["architecture"], fallback: "—"))\n本地工作区：\(workspace)\n\n前台任务：\(count("activeForeground"))\n后台任务：\(count("activeServices"))\n待回传记录：\(count("pendingReceipts"))\n结果待核实：\(count("unknownOperations"))\n\n"
-        text += "\(credential)\n\n在线不等于已授权命令执行；沙箱、员工权限和网页审批仍分别控制。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
-        text += "\n\n独立浏览器：\(state["browserEnabled"] as? Bool == true ? "本机已允许，仍需网页授权与审批" : "本机未启用")。使用 Chromium 自身沙箱，不是命令的 Linux VM，不读取个人 Chrome。"
+        text += "\(credential)\n\n配对后自动准备可用能力；需要选择目录或批准具体操作时，会在当前任务中提示。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
+        text += "\n\n独立浏览器：\(state["browserEnabled"] as? Bool == true ? "自动准备已开启" : "已主动暂停")。使用 Chromium 自身沙箱，不是命令的 Linux VM，不读取个人 Chrome。"
+        if let environment = state["environment"] as? [String: Any] {
+            let labels = ["ready": "可用", "preparing": "正在准备", "paused": "已暂停", "unavailable": "暂不可用，可重新检查"]
+            for (key, name) in [("browser", "独立浏览器"), ("sandbox", "本地计算"), ("preview", "项目预览")] {
+                text += "\n\(name)：\(labels[environment[key] as? String ?? ""] ?? "等待检查")"
+            }
+            if environment["sandbox"] as? String == "unavailable" {
+                text += "\n通用计算可交给云端处理。本地项目服务需要本机运行环境；文件读取与独立浏览器可继续使用。"
+            }
+        }
         let update = state["update"] as? [String: Any]
         let updateLabels = ["not-checked": "尚未检查", "trust-unconfigured": "发布者尚未配置，请等待管理员提供受信构建", "checking": "正在检查", "available": "发现已认证的新版本，请从菜单确认", "downloading": "正在下载并验证", "waiting-for-drain": "正在等待任务结束", "restarting": "正在正常退出并交接更新", "recovery-required": "上次更新未完成，请从检查可信更新菜单恢复", "rolled-back": "已恢复旧版本，请等待修正版", "no-newer-release": "暂无更高版本"]
         text += "\n\n可信更新：\(updateLabels[update?["state"] as? String ?? ""] ?? "尚未检查")。更新不迁移或删除凭证；必须通过发布者认证与 Apple 检查。"
@@ -363,7 +376,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     @objc private func drainTasks() {
         let alert = NSAlert()
         alert.messageText = "等待任务结束后暂停连接？"
-        alert.informativeText = "停止领取新任务，等待已领取任务和后台服务自然结束，不强制取消。若独立浏览器或预览已启用，请先明确关闭它们。等待期间仍可安全退出；退出会走原有停止流程。"
+        alert.informativeText = "停止领取新任务，等待已领取任务和后台服务自然结束，不强制取消。浏览器与项目预览会一起等待结束，无需手动关闭功能。等待期间仍可安全退出；退出会走原有停止流程。"
         alert.addButton(withTitle: "等待结束并暂停"); alert.addButton(withTitle: "取消")
         if alert.runModal() == .alertFirstButtonReturn { action("drain") }
     }
@@ -371,7 +384,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         let enabled = state["previewEnabled"] as? Bool != true
         let alert = NSAlert()
         alert.messageText = enabled ? "启用项目预览？" : "关闭项目预览？"
-        alert.informativeText = "切换前会先停止本地任务。启用需要独立浏览器与命令沙箱均已启用，仍须网页明确批准运行中的项目服务。预览使用独立浏览器，不开放本机端口、公共网址或主站身份。不会自动重启旧服务。"
+        alert.informativeText = "切换前会先停止本地任务。预览随独立浏览器与本地沙箱自动准备；运行项目服务时在当前任务内批准。预览使用独立浏览器，不开放本机端口、公共网址或主站身份。不会自动重启旧服务。"
         alert.addButton(withTitle: enabled ? "启用" : "关闭")
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
@@ -381,7 +394,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         let enabled = state["browserEnabled"] as? Bool != true
         let alert = NSAlert()
         alert.messageText = enabled ? "启用独立浏览器？" : "关闭独立浏览器？"
-        alert.informativeText = "更改前会先停止本地任务，再恢复原有连接；已结束的服务不会自动重启。\n\n独立浏览器不使用个人 Chrome 的登录或标签页，不自动安装浏览器、不开放宿主 Shell。启用后仍需网页明确授权、员工权限和逐次审批。关闭不等于撤销已保存的站点登录资料；请在网页撤销对应授权并确认清理。"
+        alert.informativeText = "更改前会先停止本地任务，再恢复原有连接；已结束的服务不会自动重启。\n\n独立浏览器不使用个人 Chrome 的登录或标签页，不自动安装浏览器、不开放宿主 Shell。配对后的网页使用关系自动准备，敏感动作在当前任务中批准。关闭不等于撤销已保存的站点登录资料；请在网页撤销对应授权并确认清理。"
         alert.addButton(withTitle: enabled ? "启用独立浏览器" : "关闭独立浏览器")
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
@@ -400,6 +413,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func installChrome() { NSWorkspace.shared.open(URL(string: "https://www.google.com/chrome/")!) }
+    @objc private func prepareEnvironment() { action("prepare") }
     @objc private func pause() { action("pause") }
     @objc private func resume() { action("resume") }
     @objc private func diagnostics() {

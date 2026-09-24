@@ -31,10 +31,10 @@ async function fixture() {
   await writeFile(path, JSON.stringify(config));
   return path;
 }
-it('defaults off, persists private opt-in, binds pairing and preserves existing config', async () => {
+it('defaults on, persists private opt-in, binds pairing and preserves existing config', async () => {
   const path = await fixture(),
     before = await readFile(path, 'utf8');
-  expect(await sandboxOptIn(config)).toBe(false);
+  expect(await sandboxOptIn(config)).toBe(true);
   await saveSandboxOptIn(config, true);
   expect(await sandboxOptIn(config)).toBe(true);
   expect((await stat(`${path}.sandbox.json`)).mode & 0o777).toBe(0o600);

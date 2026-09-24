@@ -5,6 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import {
   mkdtemp,
   mkdir,
@@ -169,7 +170,11 @@ try {
       true,
     );
     result.freshPairing = true;
-    try {
+    const credential = JSON.parse(
+      await readFile(join(`${path}.credentials`, `${deviceId}.json`), 'utf8'),
+    );
+    assert.equal(credential.deviceId, deviceId);
+    if (credential.storage === 'keychain') {
       const stored = execFileSync(
         '/usr/bin/security',
         [
@@ -184,11 +189,9 @@ try {
       ).trim();
       assert.equal(stored, fixtureToken);
       result.credentialStore = 'keychain';
-    } catch {
-      assert.equal(
-        (await readFile(`${path}.token`, 'utf8')).trim(),
-        fixtureToken,
-      );
+    } else {
+      assert.equal(credential.storage, 'private-file');
+      assert.equal(credential.token, fixtureToken);
       result.credentialStore = 'private-file-fallback';
     }
   }
@@ -267,7 +270,21 @@ try {
   result.duplicateNativeHostExits = true;
   host.child.kill('SIGTERM'); // Only this synthetic app. Core must honor pipe EOF.
   await exited(host.child);
-  await delay(800);
+  // Native browser preparation has its own confirmed cleanup; wait for the
+  // real OS-backed owner lock instead of racing a fixed 800 ms delay.
+  await wait(() => {
+    let lock;
+    try {
+      lock = new DatabaseSync(join(`${path}.runtime-owner`, 'owner.sqlite'));
+      lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE; ROLLBACK;');
+      return true;
+    } catch (error) {
+      if (/locked|busy/i.test(error.message)) return false;
+      throw error;
+    } finally {
+      lock?.close();
+    }
+  });
   const afterHost = launch();
   await wait(() => afterHost.frames.some((frame) => frame.type === 'state'));
   if (fresh) {

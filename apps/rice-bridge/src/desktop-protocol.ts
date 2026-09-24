@@ -10,6 +10,7 @@ export type DesktopRequest = { v: 1; id: string } & (
         | 'status'
         | 'pause'
         | 'resume'
+        | 'prepare'
         | 'diagnostics'
         | 'stop'
         | 'updateStatus'
@@ -43,6 +44,7 @@ export function parseDesktopRequest(bytes: string): DesktopRequest {
     status: [],
     pause: [],
     resume: [],
+    prepare: [],
     diagnostics: [],
     stop: [],
     updateStatus: [],

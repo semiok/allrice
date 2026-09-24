@@ -4,7 +4,7 @@ import {
   writeCredentialRecordFile,
 } from './credential-files.js';
 
-/** Separate local consent: neither enabling Chrome nor enabling the VM grants preview access. */
+/** Preview is prepared with the paired device; an explicit pause remains binding. */
 export async function localPreviewOptIn(
   config: BridgeConfig,
 ): Promise<boolean> {
@@ -13,7 +13,7 @@ export async function localPreviewOptIn(
       `${configPath()}.preview-settings`,
       'opt-in.json',
     );
-    if (text === null) return false;
+    if (text === null) return true;
     const value: unknown = JSON.parse(text);
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw Error();

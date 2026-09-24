@@ -125,7 +125,7 @@ export class LocalCommandRunner {
         'npm_dependencies',
         'changeset_candidate',
         ...((await this.localMcpEnabled()) ? ['local_mcp'] : []),
-        ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED === '1'
+        ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0'
           ? ['background_services']
           : []),
       ],
