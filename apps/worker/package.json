@@ -33,6 +33,7 @@
     "@deepseek-ai/dsh-llm-deepseek": "0.1.5-rc.3",
     "@deepseek-ai/dsh-llm-pi-ai": "0.1.5-rc.3",
     "@deepseek-ai/dsh-llm-retry": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-mcp-client": "0.1.5-rc.3",
     "@deepseek-ai/dsh-repeat-tool-reminder": "0.1.5-rc.3",
     "@deepseek-ai/dsh-scope": "0.1.5-rc.3",
     "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.5-rc.3",

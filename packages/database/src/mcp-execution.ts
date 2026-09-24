@@ -13,7 +13,10 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
-import { assertEmployeeMcpAuthorization } from './mcp-employee-bindings.ts';
+import {
+  assertEmployeeMcpAuthorization,
+  createEmployeeMcpBindingStore,
+} from './mcp-employee-bindings.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
@@ -96,14 +99,16 @@ export async function createMcpRuntimeOperation(
       policy: unknown;
       session_id: string;
       employee_version_id: string;
+      employee_id: string;
       thread_generation: number;
       timeout_at: Date;
       lease_token: string;
     }[]
   >`
-    select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload as policy,e.session_id,e.employee_version_id,c.thread_generation,j.timeout_at,j.lease_token::text
+    select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload as policy,e.session_id,e.employee_version_id,v.employee_id,c.thread_generation,j.timeout_at,j.lease_token::text
     from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
     join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
+    join allrice_employee_versions v on v.id=e.employee_version_id
     join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
     join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id
     where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${owner}
@@ -112,20 +117,35 @@ export async function createMcpRuntimeOperation(
   if (!run || run.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('mcp_run_or_worker_changed');
   const frozen = snapshotSchema.parse(run.execution_snapshot);
-  const matches = frozen.mcpTools.filter(
+  const scope = {
+    organizationId: ctx.organizationId,
+    workspaceId: ctx.workspaceId,
+    actorId: owner,
+  };
+  let matches = frozen.mcpTools.filter(
     (t) => t.connectionId === args.connectionId && t.name === args.tool,
   );
+  if (frozen.capabilitySnapshot.bindings.toolNames.includes('cloud.mcp.call')) {
+    const [managed] =
+      await database`select binding_id from allrice_mcp_binding_config where binding_id=${args.connectionId}
+      and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and managed_by=${owner}`;
+    if (managed)
+      matches = (
+        await createEmployeeMcpBindingStore({ database }).freeze(
+          scope,
+          run.employee_id,
+          run.employee_version_id,
+        )
+      ).filter(
+        (t) => t.connectionId === args.connectionId && t.name === args.tool,
+      );
+  }
   if (
     !frozen.capabilitySnapshot.bindings.toolNames.includes('cloud.mcp.call') ||
     matches.length !== 1
   )
     throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
-  const tool = matches[0]!,
-    scope = {
-      organizationId: ctx.organizationId,
-      workspaceId: ctx.workspaceId,
-      actorId: owner,
-    };
+  const tool = matches[0]!;
   const { endpoint } = await createMcpStore({ database }).assertAuthorized(
     scope,
     tool,

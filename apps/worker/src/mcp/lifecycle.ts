@@ -7,6 +7,7 @@ import {
 } from '@allrice/contracts';
 
 import { createMcpTransport } from './transport.js';
+import { createNativeMcpTransport } from './native-transport.js';
 
 export async function executeNextMcpDiscovery(input: {
   workerId: string;
@@ -21,18 +22,31 @@ export async function executeNextMcpDiscovery(input: {
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(45_000)]);
   try {
     const bearerToken = await store.discoveryCredential(lease);
-    const tools = await (input.transport ?? createMcpTransport()).discover({
+    const oauth = await store.oauthSession({ lease });
+    const tools = await (
+      input.transport ??
+      (lease.clientKind === 'dsh'
+        ? createNativeMcpTransport()
+        : createMcpTransport())
+    ).discover({
       endpoint: lease.endpoint,
       bearerToken,
+      ...(oauth ? { oauth } : {}),
       signal,
       assertAuthorized: async () => {
         await store.discoveryCredential(lease);
       },
     });
     await store.completeDiscovery(lease, { tools });
-  } catch {
+  } catch (error) {
     await store
-      .completeDiscovery(lease, { errorCode: 'MCP_DISCOVERY_FAILED' })
+      .completeDiscovery(lease, {
+        errorCode:
+          error instanceof McpError &&
+          error.code === 'MCP_CREDENTIAL_UNAVAILABLE'
+            ? 'MCP_AUTH_REQUIRED'
+            : 'MCP_DISCOVERY_FAILED',
+      })
       .catch(() => undefined);
   }
   return true;
@@ -58,11 +72,22 @@ export async function invokeFrozenMcpTool(input: {
     await store.assertAuthorized(input.scope, input.tool);
   };
   await assertAuthorized();
-  const { endpoint } = await store.assertAuthorized(input.scope, input.tool);
+  const { endpoint, clientKind } = await store.assertAuthorized(
+    input.scope,
+    input.tool,
+  );
   const bearerToken = await store.executionCredential(input.scope, input.tool);
-  return (input.transport ?? createMcpTransport()).invoke({
+  const oauth = await store.oauthSession({
+    scope: input.scope,
+    tool: input.tool,
+  });
+  return (
+    input.transport ??
+    (clientKind === 'dsh' ? createNativeMcpTransport() : createMcpTransport())
+  ).invoke({
     endpoint,
     bearerToken,
+    ...(oauth ? { oauth } : {}),
     tool: input.tool,
     arguments: input.arguments,
     signal: input.signal,

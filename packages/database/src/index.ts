@@ -23,6 +23,7 @@ export {
 } from './task-native-wait.ts';
 export * from './skill-bundles.ts';
 export * from './mcp-connections.ts';
+export * from './mcp-managed-connections.ts';
 export * from './local-mcp-connections.ts';
 export * from './local-mcp-execution.ts';
 export * from './local-mcp-view.ts';

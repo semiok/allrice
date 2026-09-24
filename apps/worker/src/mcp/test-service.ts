@@ -2,11 +2,14 @@
  * Never started by the production Worker. No third-party accounts or data. */
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 
-export async function startMcpAcceptanceService() {
+export async function startMcpAcceptanceService(
+  options: { anonymous?: boolean; oauth?: boolean } = {},
+) {
   const state = {
     token: 'p16-synthetic-secret-token',
     calls: 0,
@@ -16,10 +19,110 @@ export async function startMcpAcceptanceService() {
     toolError: false,
     rows: [] as string[],
     pending: [] as (() => void)[],
+    oauthEnabled: options.oauth ?? false,
+    registrations: 0,
+    exchanges: 0,
+    refreshes: 0,
+    challenge: '',
+    redirectUri: '',
   };
   const transports = new Set<StreamableHTTPServerTransport>();
   const server = createServer(async (request, response) => {
-    if (request.headers.authorization !== `Bearer ${state.token}`) {
+    const url = new URL(request.url ?? '/', 'https://mcp.example.test');
+    const json = (value: unknown) => {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(value));
+    };
+    if (
+      state.oauthEnabled &&
+      url.pathname.startsWith('/.well-known/oauth-protected-resource')
+    ) {
+      json({
+        resource: 'https://mcp.example.test/mcp',
+        authorization_servers: ['https://mcp.example.test'],
+        scopes_supported: ['records'],
+      });
+      return;
+    }
+    if (
+      state.oauthEnabled &&
+      url.pathname === '/.well-known/oauth-authorization-server'
+    ) {
+      json({
+        issuer: 'https://mcp.example.test',
+        authorization_endpoint: 'https://mcp.example.test/authorize',
+        token_endpoint: 'https://mcp.example.test/token',
+        registration_endpoint: 'https://mcp.example.test/register',
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code', 'refresh_token'],
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none'],
+      });
+      return;
+    }
+    if (state.oauthEnabled && url.pathname === '/register') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const metadata = JSON.parse(Buffer.concat(chunks).toString());
+      state.registrations++;
+      state.redirectUri = metadata.redirect_uris[0];
+      response.statusCode = 201;
+      json({ ...metadata, client_id: 'allrice-fixture' });
+      return;
+    }
+    if (state.oauthEnabled && url.pathname === '/authorize') {
+      state.challenge = url.searchParams.get('code_challenge') ?? '';
+      const callback = new URL(state.redirectUri);
+      callback.searchParams.set('code', 'synthetic-authorization-code');
+      callback.searchParams.set('state', url.searchParams.get('state') ?? '');
+      response.writeHead(302, { location: callback.href });
+      response.end();
+      return;
+    }
+    if (state.oauthEnabled && url.pathname === '/token') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = new URLSearchParams(Buffer.concat(chunks).toString());
+      if (body.get('grant_type') === 'authorization_code') {
+        if (
+          body.get('code') !== 'synthetic-authorization-code' ||
+          createHash('sha256')
+            .update(body.get('code_verifier') ?? '')
+            .digest('base64url') !== state.challenge
+        ) {
+          response.statusCode = 400;
+          json({ error: 'invalid_grant' });
+          return;
+        }
+        state.exchanges++;
+      } else if (
+        body.get('grant_type') === 'refresh_token' &&
+        body.get('refresh_token') === 'synthetic-refresh-token'
+      )
+        state.refreshes++;
+      else {
+        response.statusCode = 400;
+        json({ error: 'invalid_grant' });
+        return;
+      }
+      state.token = `synthetic-oauth-access-${state.exchanges}-${state.refreshes}`;
+      json({
+        access_token: state.token,
+        token_type: 'Bearer',
+        refresh_token: 'synthetic-refresh-token',
+        expires_in: 3600,
+      });
+      return;
+    }
+    if (
+      !options.anonymous &&
+      request.headers.authorization !== `Bearer ${state.token}`
+    ) {
+      if (state.oauthEnabled)
+        response.setHeader(
+          'www-authenticate',
+          'Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"',
+        );
       response.writeHead(401);
       response.end();
       return;
@@ -118,12 +221,22 @@ export async function startMcpAcceptanceService() {
         : input instanceof URL
           ? input.href
           : input.url;
-    if (url !== 'https://mcp.example.test/mcp')
+    if (
+      url !== 'https://mcp.example.test/mcp' &&
+      !(
+        state.oauthEnabled && new URL(url).origin === 'https://mcp.example.test'
+      )
+    )
       throw Error('test-only endpoint mismatch');
-    return fetch(target, { ...init, redirect: 'error' });
+    const mapped = new URL(url);
+    const local = new URL(target);
+    mapped.protocol = local.protocol;
+    mapped.host = local.host;
+    return fetch(mapped, { ...init, redirect: init?.redirect ?? 'error' });
   };
   return {
     state,
+    target,
     fetchOverride,
     endpoint: 'https://mcp.example.test/mcp',
     async close() {

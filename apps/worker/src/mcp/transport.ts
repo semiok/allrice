@@ -8,7 +8,7 @@ import {
   type McpDiscoveredTool,
   type FrozenMcpTool,
 } from '@allrice/contracts';
-import { connectorInputDigest } from '@allrice/database';
+import { connectorInputDigest, type McpStore } from '@allrice/database';
 
 import { createPinnedMcpFetch } from './egress.js';
 
@@ -23,22 +23,28 @@ export function validateMcpSchema<T = unknown>(
   }
 }
 
-type ConnectionInput = {
+export type McpConnectionInput = {
   endpoint: string;
-  bearerToken: string;
+  bearerToken: string | null;
   signal: AbortSignal;
   assertAuthorized: () => Promise<void>;
+  oauth?: NonNullable<Awaited<ReturnType<McpStore['oauthSession']>>>;
 };
-function redact(value: unknown, secret: string, depth = 0): unknown {
+export function redactMcpValue(
+  value: unknown,
+  secret: string | null,
+  depth = 0,
+): unknown {
   if (depth > 24) return '[TRUNCATED]';
-  if (typeof value === 'string') return value.split(secret).join('[REDACTED]');
+  if (typeof value === 'string')
+    return secret ? value.split(secret).join('[REDACTED]') : value;
   if (Array.isArray(value))
-    return value.map((entry) => redact(entry, secret, depth + 1));
+    return value.map((entry) => redactMcpValue(entry, secret, depth + 1));
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
-        key.split(secret).join('[REDACTED]'),
-        redact(item, secret, depth + 1),
+        secret ? key.split(secret).join('[REDACTED]') : key,
+        redactMcpValue(item, secret, depth + 1),
       ]),
     );
   return value;
@@ -49,7 +55,7 @@ export function createMcpTransport(
   dependencies: { fetchOverride?: typeof fetch } = {},
 ) {
   async function withClient<T>(
-    input: ConnectionInput,
+    input: McpConnectionInput,
     action: (client: Client) => Promise<T>,
   ) {
     const transport = new StreamableHTTPClientTransport(
@@ -57,7 +63,9 @@ export function createMcpTransport(
       {
         fetch: dependencies.fetchOverride ?? createPinnedMcpFetch(input),
         requestInit: {
-          headers: { authorization: `Bearer ${input.bearerToken}` },
+          headers: input.bearerToken
+            ? { authorization: `Bearer ${input.bearerToken}` }
+            : {},
         },
         reconnectionOptions: {
           maxRetries: 0,
@@ -99,7 +107,11 @@ export function createMcpTransport(
       await client.close().catch(() => undefined);
     }
   }
-  async function list(client: Client, signal: AbortSignal, secret: string) {
+  async function list(
+    client: Client,
+    signal: AbortSignal,
+    secret: string | null,
+  ) {
     const tools: McpDiscoveredTool[] = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -110,7 +122,7 @@ export function createMcpTransport(
       });
       for (const tool of result.tools) {
         const parsed = McpDiscoveredToolSchema.parse(
-          redact(
+          redactMcpValue(
             {
               name: tool.name,
               description: tool.description ?? '',
@@ -134,7 +146,7 @@ export function createMcpTransport(
     throw new McpError('MCP_LIMIT');
   }
   return {
-    async discover(input: ConnectionInput) {
+    async discover(input: McpConnectionInput) {
       try {
         return await withClient(input, (client) =>
           list(client, input.signal, input.bearerToken),
@@ -147,7 +159,7 @@ export function createMcpTransport(
       }
     },
     async invoke(
-      input: ConnectionInput & {
+      input: McpConnectionInput & {
         tool: FrozenMcpTool;
         arguments: Record<string, unknown>;
       },
@@ -177,7 +189,7 @@ export function createMcpTransport(
           const raw = JSON.stringify(result);
           if (Buffer.byteLength(raw) > 1_048_576)
             throw new McpError('MCP_LIMIT');
-          const safe = redact(result, input.bearerToken) as Record<
+          const safe = redactMcpValue(result, input.bearerToken) as Record<
             string,
             unknown
           >;

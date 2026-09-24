@@ -66,5 +66,6 @@ overrides:
   '@deepseek-ai/dsh-workflow': 0.1.5-rc.3
 patchedDependencies:
   '@deepseek-ai/dsh-client-connection@0.1.5-rc.3': patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch
+  '@deepseek-ai/dsh-mcp-client@0.1.5-rc.3': patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch
   '@deepseek-ai/dsh-session-format-v0-to-v1@0.1.5-rc.3': patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch
   '@deepseek-ai/dsh-session-persistence-jsonl@0.1.5-rc.3': patches/@deepseek-ai__dsh-session-persistence-jsonl@0.1.5-rc.3.patch

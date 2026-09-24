@@ -40,7 +40,7 @@ jobs:
       - name: Verify tenant workspace and composer ownership in Chromium
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts
       - name: Verify tenant management UI, HTTP authorization and PostgreSQL persistence
         # Synthetic principals in disposable schemas, never real tenant permissions.
         env:

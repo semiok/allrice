@@ -156,11 +156,19 @@ export async function checkMcpBindingAuthority(
     .array(FrozenMcpToolSchema)
     .max(128)
     .parse(run.execution_snapshot.mcpTools ?? []);
-  if (!frozen.some((t) => runtimeContractEqual(t, tool)))
-    throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
+  if (!frozen.some((t) => runtimeContractEqual(t, tool))) {
+    // Managed applications may be connected during this very task. The exact
+    // tool was frozen into the operation before approval; its member/employee
+    // and credential revisions remain checked on every dispatch/heartbeat.
+    const [managed] =
+      await tx`select binding_id from allrice_mcp_binding_config where binding_id=${tool.connectionId}
+      and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and managed_by=${context.actor.id}`;
+    if (!managed) throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
+  }
   const [connection] = await tx<
     {
       endpoint: string;
+      member_revision: number;
       revision: number;
       credential_reference: string;
       grant_revision: number;
@@ -169,13 +177,15 @@ export async function checkMcpBindingAuthority(
       definition: unknown;
     }[]
   >`
-    select c.endpoint,c.revision,b.credential_reference,g.grant_revision,g.risk,r.digest,r.definition from allrice_mcp_binding_config c
+    select c.endpoint,c.revision,coalesce((select x.revision from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${context.actor.id}),0) as member_revision,b.credential_reference,g.grant_revision,g.risk,r.digest,r.definition from allrice_mcp_binding_config c
     join allrice_connector_bindings b on b.id=c.binding_id and b.organization_id=c.organization_id and b.workspace_id=c.workspace_id
     join allrice_connector_definitions d on d.id=b.connector_id
     join allrice_mcp_tool_grants g on g.binding_id=c.binding_id and g.organization_id=c.organization_id and g.workspace_id=c.workspace_id
     join allrice_mcp_tool_revisions r on r.id=g.revision_id and r.binding_id=g.binding_id
     where c.binding_id=${tool.connectionId} and c.organization_id=${context.organizationId} and c.workspace_id=${context.workspaceId}
     and b.enabled and d.enabled and b.identity_mode='service' and g.available and g.allowed and g.tool_name=${tool.name} and r.id=${tool.toolRevisionId}
+    and (c.managed_by is null or c.managed_by=${context.actor.id})
+    and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${context.actor.id} and not x.connected)
     for share of c,b,d,g,r`;
   const declared = {
     name: tool.name,
@@ -186,6 +196,7 @@ export async function checkMcpBindingAuthority(
   if (
     !connection ||
     connection.revision !== tool.connectionRevision ||
+    connection.member_revision !== (tool.memberRevision ?? 0) ||
     connection.credential_reference !== tool.credentialReference ||
     connection.grant_revision !== tool.grantRevision ||
     connection.risk !== tool.risk ||

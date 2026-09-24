@@ -42,7 +42,7 @@ export const CreateMcpConnectionInputSchema = z
     workspaceId: UuidSchema,
     name: z.string().trim().min(1).max(120),
     endpoint: McpEndpointSchema,
-    bearerToken: McpBearerSchema,
+    bearerToken: McpBearerSchema.optional(),
   })
   .strict();
 export const McpDiscoveredToolSchema = z
@@ -72,6 +72,20 @@ export const McpConnectionSchema = z
     enabled: z.boolean(),
     revision: z.number().int().positive(),
     credentialConfigured: z.boolean(),
+    managed: z.boolean().default(false),
+    shared: z.boolean().default(true),
+    disconnected: z.boolean().default(false),
+    removed: z.boolean().default(false),
+    loginState: z
+      .enum([
+        'none',
+        'preparing',
+        'redirect',
+        'exchanging',
+        'connected',
+        'error',
+      ])
+      .default('none'),
     credentialReference: z.string(),
     discoveryState: z.enum(['idle', 'queued', 'running', 'ready', 'error']),
     discoveryCode: z.string().nullable(),
@@ -130,6 +144,7 @@ export const FrozenMcpToolSchema = McpDiscoveredToolSchema.extend({
   // Optional for read-only legacy history. New dispatch requires exact tenant
   // employee authorization and its current revocation revision.
   employeeAuthorization: McpEmployeeAuthorizationSchema.optional(),
+  memberRevision: z.number().int().positive().optional(),
   connectionId: UuidSchema,
   connectionRevision: z.number().int().positive(),
   toolRevisionId: UuidSchema,
@@ -146,6 +161,39 @@ export const McpCallInputSchema = z
     arguments: z.record(z.string(), z.unknown()),
   })
   .strict();
+/** Credentials belong in the signed-in connection form, never model inputs. */
+export const McpManagedActionSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('connect'),
+      name: z.string().trim().min(1).max(120),
+      endpoint: McpEndpointSchema,
+    })
+    .strict(),
+  z.object({ action: z.literal('list') }).strict(),
+  z.object({ action: z.literal('status'), connectionId: UuidSchema }).strict(),
+]);
+export const McpAgentInputSchema = z.union([
+  McpCallInputSchema,
+  McpManagedActionSchema,
+]);
+export const MemberConnectionMutationSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.enum(['disconnect', 'reconnect', 'login', 'delete']),
+      workspaceId: UuidSchema,
+      connectionId: UuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('credential'),
+      workspaceId: UuidSchema,
+      connectionId: UuidSchema,
+      bearerToken: McpBearerSchema,
+    })
+    .strict(),
+]);
 /** Only trusted Worker ingress constructs this from the persisted Run snapshot. */
 export const McpExecutionPayloadSchema = z
   .object({

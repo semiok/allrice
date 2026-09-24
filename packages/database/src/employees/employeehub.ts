@@ -1334,11 +1334,10 @@ export async function prepareEmployeeRunBinding(input: {
           assignment.id,
         )
       : { connections: [], tools: [] };
-  // Explicit tenant MCP binding is an additional source for the already
-  // declared secret capability, never a bypass for Deny or a fabricated Skill.
-  // It does not activate network tools or any other capability.
+  // Published MCP capability includes connection setup before any application
+  // exists. Secrets remain scoped to the member-owned connection at dispatch.
   if (
-    (mcpTools.length || localMcp.connections.length) &&
+    (mcpEnabled || localMcp.connections.length) &&
     manifest.data.schemaVersion === 2 &&
     manifest.data.capabilities.includes('secret:use') &&
     !manifest.data.securityPolicy.deniedCapabilities.includes('secret:use') &&
