@@ -132,7 +132,7 @@ export function CloudOperationCard({
             时限 {proposal.limits.timeoutMs / 1000} 秒 · 内存{' '}
             {proposal.limits.memoryMiB} MiB · CPU {proposal.limits.cpuMillis}{' '}
             毫核 · 最多 {proposal.limits.pids} 个进程 · 输出{' '}
-            {proposal.limits.outputBytes} 字节 · 工件{' '}
+            {proposal.limits.outputBytes} 字节 · 成果{' '}
             {proposal.limits.artifactBytes} 字节
           </small>
         </>

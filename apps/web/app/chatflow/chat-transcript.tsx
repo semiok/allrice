@@ -351,7 +351,7 @@ export function ChatTranscript({
                             <>
                               <p>
                                 本轮已交付 {linkedArtifacts.length}{' '}
-                                个工件，可在工作台查看与审查。
+                                项成果，可在交付成果中查看与审查。
                               </p>
                               <details>
                                 <summary>展开完整回复</summary>

@@ -16,5 +16,13 @@
     "packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css",
     "packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css",
     "packages/client/ui-conversation/src/client/skeleton/InputBar.module.css"
+  ],
+  "adaptations": [
+    {
+      "source": "packages/client/ui-layout/src/client/AppFrame.tsx",
+      "target": "apps/web/app/chatflow/workbench-splitter.tsx",
+      "reuse": "DragHandle pointer capture, animation-frame throttling, frozen drag origin and frame ResizeObserver; native AppFrame handle/detailsCol CSS",
+      "productChanges": "360px–70vw width bounds, scoped width preferences, cancellation cleanup, keyboard resizing and double-click reset"
+    }
   ]
 }

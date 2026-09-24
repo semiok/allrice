@@ -12,7 +12,7 @@ export const capabilityLabels: Record<
     description:
       '云端生成可审查、下载和追溯版本的报告、表格或文件。无需 Bridge。',
     prompt:
-      '请围绕【填写研究主题或文件要求】完成研究。区分已核实事实与推断，注明来源和数据日期；使用已有 workspace.export.create 发布 Markdown 报告工件，发布成功后给出摘要与文件入口，失败则明确说明。不要把聊天草稿当作已交付文件。',
+      '请围绕【填写研究主题或文件要求】完成研究。区分已核实事实与推断，注明来源和数据日期；使用已有 workspace.export.create 发布 Markdown 报告成果，发布成功后给出摘要与文件入口，失败则明确说明。不要把聊天草稿当作已交付文件。',
   },
   local_files: {
     title: '本地文件读取',
@@ -44,7 +44,7 @@ export const capabilityLabels: Record<
     description:
       '专属云端浏览器、逐次审批、证据与人工接管，不使用个人 Cookie。',
     prompt:
-      '请使用已授权的云端浏览器访问【填写目标 URL】，核查【填写目标】，记录 URL、时间和证据并交付工件。涉及提交或修改时等待精确审批；需要登录时交给我人工接管。',
+      '请使用已授权的云端浏览器访问【填写目标 URL】，核查【填写目标】，记录 URL、时间和证据并交付成果。涉及提交或修改时等待精确审批；需要登录时交给我人工接管。',
   },
   local_browser: {
     title: '本地独立浏览器',

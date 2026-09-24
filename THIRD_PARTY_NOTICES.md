@@ -38,6 +38,8 @@ commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`:
 
 - `packages/client/ui-theme/src/styles/*`
 - `packages/client/ui-layout/src/client/AppFrame.module.css`
+- `packages/client/ui-layout/src/client/AppFrame.tsx` (drag handle and frame
+  measurement adapted in `apps/web/app/chatflow/workbench-splitter.tsx`)
 - `packages/client/ui-sidebar/src/client/SidebarRoot.module.css`
 - `packages/client/ui-conversation/src/client/**`
 

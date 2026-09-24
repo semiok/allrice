@@ -1,8 +1,16 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 
-type Preferences = { sidebarCollapsed: boolean; panelOpen: boolean };
-const defaults: Preferences = { sidebarCollapsed: false, panelOpen: true };
+type Preferences = {
+  sidebarCollapsed: boolean;
+  panelOpen: boolean;
+  panelWidth: number | null;
+};
+const defaults: Preferences = {
+  sidebarCollapsed: false,
+  panelOpen: true,
+  panelWidth: null,
+};
 export function layoutPreferenceKey(
   viewerId?: string | null,
   organizationId?: string,
@@ -21,6 +29,12 @@ export function parseLayoutPreferences(raw: string | null): Preferences {
           ? value.sidebarCollapsed
           : false,
       panelOpen: typeof value?.panelOpen === 'boolean' ? value.panelOpen : true,
+      panelWidth:
+        typeof value?.panelWidth === 'number' &&
+        Number.isFinite(value.panelWidth) &&
+        value.panelWidth >= 360
+          ? value.panelWidth
+          : null,
     };
   } catch {
     return { ...defaults };
@@ -99,6 +113,7 @@ export function useWorkbenchLayout({
               JSON.stringify({
                 sidebarCollapsed: next.sidebarCollapsed,
                 panelOpen: next.widePanelOpen,
+                panelWidth: next.panelWidth,
               }),
             );
         } catch {
@@ -111,6 +126,10 @@ export function useWorkbenchLayout({
   );
   const show = useCallback(() => update({ panelOpen: true }), [update]);
   const close = useCallback(() => update({ panelOpen: false }), [update]);
+  const setPanelWidth = useCallback(
+    (panelWidth: number | null) => update({ panelWidth }),
+    [update],
+  );
   return {
     narrow: viewport.narrow,
     compact: viewport.compact,
@@ -118,6 +137,8 @@ export function useWorkbenchLayout({
       ? !mobileSidebar
       : current.sidebarCollapsed,
     open: current.panelOpen,
+    panelWidth: current.panelWidth,
+    setPanelWidth,
     show,
     close,
     setSidebarCollapsed: (sidebarCollapsed: boolean) =>

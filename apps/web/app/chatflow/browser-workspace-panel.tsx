@@ -440,7 +440,7 @@ export function BrowserWorkspacePanel({
                           )
                         }
                       >
-                        下载到工件
+                        保存为交付成果
                       </button>
                     )}
                   </form>

@@ -81,7 +81,7 @@ export function useArtifactWorkbench({
       dirty.current.scope !== scope ||
       !dirty.current.value ||
       window.confirm(
-        '有尚未保存的工件意见，离开会丢失这些本地编辑。仍要继续吗？',
+        '有尚未保存的成果意见，离开会丢失这些本地编辑。仍要继续吗？',
       ),
     [scope],
   );
@@ -108,7 +108,7 @@ export function useArtifactWorkbench({
               a.version.workspaceId !== workspaceId,
           )
         )
-          throw Error('工件所属会话不匹配');
+          throw Error('成果所属会话不匹配');
         if (token !== generation.current) return;
         const protectDraft =
           dirty.current.scope === scope && dirty.current.value;
@@ -145,7 +145,7 @@ export function useArtifactWorkbench({
           // Keep the current review mounted, including unsaved opinions, on refresh failure.
           setStatus({
             scope,
-            error: cause instanceof Error ? cause.message : '工件加载失败',
+            error: cause instanceof Error ? cause.message : '成果加载失败',
             loading: false,
           });
       }

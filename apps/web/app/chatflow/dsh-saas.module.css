@@ -690,9 +690,43 @@ main.shell {
   }
 }
 
-.conversationHeader {
-  min-height: 58px;
-  padding-bottom: 9px;
+.shell {
+  --allrice-chat-header-height: 56px;
+}
+
+.shell[data-dragging] {
+  user-select: none;
+  cursor: col-resize;
+}
+
+header.conversationHeader {
+  box-sizing: border-box;
+  flex: 0 0 var(--allrice-chat-header-height);
+  height: var(--allrice-chat-header-height);
+  min-height: var(--allrice-chat-header-height);
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+header.conversationHeader::after {
+  display: none;
+}
+
+.conversationHeader > div {
+  height: 100%;
+  min-width: 0;
+}
+
+.conversationHeader .conversationActions {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow-x: auto;
+}
+
+.conversationActions > * {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .conversationHeader h1 {
@@ -1152,6 +1186,15 @@ main.shell {
   text-overflow: ellipsis;
 }
 
+div.composerTools {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.composerTrailing {
+  max-width: 100%;
+}
+
 .composerStatus {
   display: flex;
   width: 100%;
@@ -1166,9 +1209,10 @@ main.shell {
 
 .composerStatusLeft {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
-  gap: 10px;
+  gap: 2px 10px;
 }
 
 .composerStatus .localWorkspaceStatus {

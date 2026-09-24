@@ -434,7 +434,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     await page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
     const panel = page.locator('#artifact-workbench');
-    const entry = page.getByRole('button', { name: /▤ 工件与审查/ });
+    const entry = page.getByRole('button', { name: /▤ 交付成果/ });
     return {
       context,
       page,
@@ -1047,7 +1047,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toBe(true);
           if (closed) {
             expect(await f.panel.count()).toBe(0);
-            expect(await f.entry.textContent()).toContain('新工件');
+            expect(await f.entry.textContent()).toContain('新成果');
             await f.entry.click();
           }
           await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
@@ -1087,7 +1087,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await composer.focus();
       await expect
         .poll(() =>
-          f.panel.getByRole('combobox', { name: '工件版本' }).inputValue(),
+          f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
         )
         .toBe(id(11));
       expect(await composer.evaluate((e) => e === document.activeElement)).toBe(
@@ -1127,6 +1127,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(JSON.parse(value!)).toEqual({
           sidebarCollapsed: true,
           panelOpen: false,
+          panelWidth: null,
         });
         f.state.viewer = id(50);
         await f.page.reload();
@@ -1159,6 +1160,161 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+
+  it('aligns 56px headers and resizes deliverables with native capture, limits, reset and preserved drafts', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      // Classic scrollbars / embedded frames can make the frame narrower than
+      // the viewport. Reset uses 38% of that frame, while the cap remains 70vw.
+      await f.page.addStyleTag({
+        content: 'main { width: calc(100% - 8px) !important; }',
+      });
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      const defaultWidth = Math.round(
+        (await f.page.locator('main').boundingBox())!.width * 0.38,
+      );
+      const splitter = f.page.getByRole('separator', {
+        name: '调整交付成果宽度',
+      });
+      const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await composer.fill('保留我的聊天草稿');
+      const headerGeometry = () =>
+        f.page.evaluate(() => {
+          const left = document
+            .querySelector('main > section header')!
+            .getBoundingClientRect();
+          const right = document
+            .querySelector('#artifact-workbench > header')!
+            .getBoundingClientRect();
+          return {
+            left: left.height,
+            right: right.height,
+            delta: left.bottom - right.bottom,
+          };
+        });
+      expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
+      expect(
+        await f.panel
+          .getByRole('heading', { name: '交付成果', exact: true })
+          .count(),
+      ).toBe(1);
+      expect(await f.entry.textContent()).toMatch(/交付成果.*1/);
+      const panelWidth = async () =>
+        Math.round((await f.panel.boundingBox())!.width);
+      await expect.poll(panelWidth).toBe(defaultWidth);
+      async function dragTo(x: number) {
+        const box = (await splitter.boundingBox())!;
+        await f.page.mouse.move(box.x + box.width / 2, box.y + 100);
+        await f.page.mouse.down();
+        await f.page.mouse.move(x, box.y + 100, { steps: 8 });
+        expect(await f.page.locator('main').getAttribute('data-dragging')).toBe(
+          'true',
+        );
+        await f.page.mouse.up();
+        expect(
+          await f.page.locator('main').getAttribute('data-dragging'),
+        ).toBeNull();
+      }
+      await dragTo(1400);
+      await expect.poll(panelWidth).toBe(360);
+      await dragTo(30);
+      await expect.poll(panelWidth).toBe(1008); // 70vw at 1440px.
+      expect(await splitter.getAttribute('aria-valuenow')).toBe('1008');
+      const center = (await f.page.locator('main > section').boundingBox())!;
+      for (const control of [
+        f.page.getByRole('button', { name: '添加文件', exact: true }),
+        f.page.getByRole('combobox', { name: '工作模式', exact: true }),
+        f.page.getByRole('combobox', { name: '上传文件可见范围' }),
+        f.page.getByRole('button', { name: '发送', exact: true }),
+      ]) {
+        const box = (await control.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(center.x);
+        expect(box.x + box.width).toBeLessThanOrEqual(center.x + center.width);
+      }
+      expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
+      await splitter.dblclick({ position: { x: 4, y: 100 } });
+      await expect.poll(panelWidth).toBe(defaultWidth);
+      await splitter.focus();
+      await f.page.keyboard.press('ArrowLeft');
+      await expect.poll(panelWidth).toBe(defaultWidth + 20);
+      await f.page.keyboard.press('Home');
+      await expect.poll(panelWidth).toBe(defaultWidth);
+      // A canceled gesture must release capture and restore grid transitions.
+      const box = (await splitter.boundingBox())!;
+      await f.page.mouse.move(box.x + 4, box.y + 100);
+      await f.page.mouse.down();
+      await f.page.mouse.move(box.x - 50, box.y + 100);
+      await splitter.dispatchEvent('pointercancel');
+      await f.page.mouse.up();
+      expect(
+        await f.page.locator('main').getAttribute('data-dragging'),
+      ).toBeNull();
+      expect(await composer.inputValue()).toBe('保留我的聊天草稿');
+      await f.page.screenshot({
+        path: '/tmp/allrice-deliverables-desktop.png',
+      });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('remembers resized width per viewer, clamps on viewport resize and retains the narrow drawer', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      const splitter = f.page.getByRole('separator', {
+        name: '调整交付成果宽度',
+      });
+      await splitter.waitFor();
+      const defaultWidth = Math.round(
+        (await f.page.locator('main').boundingBox())!.width * 0.38,
+      );
+      const resizedWidth = String(defaultWidth + 100);
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe(String(defaultWidth));
+      await splitter.focus();
+      await f.page.keyboard.press('Shift+ArrowLeft');
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe(resizedWidth);
+      await f.page
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await f.entry.click();
+      expect(await splitter.getAttribute('aria-valuenow')).toBe(resizedWidth);
+      await f.page.reload();
+      await splitter.waitFor();
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe(resizedWidth);
+      const box = (await splitter.boundingBox())!;
+      await f.page.mouse.move(box.x + 4, box.y + 100);
+      await f.page.mouse.down();
+      await f.page.mouse.move(10, box.y + 100, { steps: 6 });
+      await f.page.mouse.up();
+      await f.page.setViewportSize({ width: 1200, height: 950 });
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe('840');
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe('1008');
+      await f.page.setViewportSize({ width: 390, height: 950 });
+      await expect.poll(() => splitter.count()).toBe(0);
+      expect(await f.panel.getAttribute('role')).toBe('dialog');
+      await f.page.screenshot({ path: '/tmp/allrice-deliverables-mobile.png' });
+      f.state.viewer = id(50);
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      await f.page.reload();
+      await splitter.waitFor();
+      await expect
+        .poll(() => splitter.getAttribute('aria-valuenow'))
+        .toBe(String(defaultWidth));
+    } finally {
+      await f.close();
+    }
+  });
 
   it('uses a narrow drawer, traps/restores focus, preserves drafts across resize, and has no horizontal overflow', async () => {
     const f = await fixture({ width: 390, artifacts: true });
@@ -1233,9 +1389,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.items.unshift(artifact(11));
       await f.reloadList();
       expect(
-        await f.panel.getByRole('combobox', { name: '工件版本' }).inputValue(),
+        await f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
       ).toBe(id(10));
-      await f.panel.getByRole('button', { name: '查看新工件' }).waitFor();
+      await f.panel.getByRole('button', { name: '查看新成果' }).waitFor();
       expect(await opinion.inputValue()).toBe('需要补充来源');
       f.state.listError = true;
       await f.entry.click();
@@ -1244,18 +1400,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.listError = false;
       await f.reloadList();
       f.page.once('dialog', (d) => d.accept());
-      await f.panel.getByRole('button', { name: '查看新工件' }).click();
+      await f.panel.getByRole('button', { name: '查看新成果' }).click();
       await expect
         .poll(() =>
-          f.panel.getByRole('combobox', { name: '工件版本' }).inputValue(),
+          f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
         )
         .toBe(id(11));
       f.state.items.unshift(artifact(12));
       await f.reloadList();
       expect(
-        await f.panel.getByRole('combobox', { name: '工件版本' }).inputValue(),
+        await f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
       ).toBe(id(11));
-      await f.panel.getByRole('button', { name: '查看新工件' }).waitFor();
+      await f.panel.getByRole('button', { name: '查看新成果' }).waitFor();
     } finally {
       await f.close();
     }
