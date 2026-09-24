@@ -83,13 +83,15 @@ export function CapabilityPanel({
               <header>
                 <h3>{label.title}</h3>
                 <span>
-                  {capability?.reason === 'bridge_missing'
-                    ? '连接电脑'
-                    : capability?.reason === 'folder_missing'
-                      ? '选择文件夹'
-                      : capability?.reason === 'device_paused'
-                        ? '已暂停'
-                        : capabilityStateLabels[state]}
+                  {capability?.reason === 'employee_policy'
+                    ? '员工未提供'
+                    : capability?.reason === 'bridge_missing'
+                      ? '连接电脑'
+                      : capability?.reason === 'folder_missing'
+                        ? '选择文件夹'
+                        : capability?.reason === 'device_paused'
+                          ? '已暂停'
+                          : capabilityStateLabels[state]}
                 </span>
               </header>
               <p>{label.description}</p>

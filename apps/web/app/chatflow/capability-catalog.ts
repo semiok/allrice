@@ -104,9 +104,9 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     release_disabled: '当前部署尚未开放此能力；请联系平台管理员核对发布范围。',
     planned: '此能力仍在后续规划中，当前不可执行。',
     employee_missing:
-      '当前没有可核验的员工配置，请租户管理员检查员工分配或发布版本。',
+      '当前没有可用的员工配置。可在左侧选择已派驻员工，或等待新的员工派驻。',
     employee_policy:
-      '当前员工版本未许可所需工具或明确禁止相关权限，请租户管理员核对员工策略。',
+      '当前员工未提供或已停用此能力。可在左侧选择具备该能力的员工继续处理。',
     policy_missing:
       '工作区缺少有效执行策略，请租户管理员与平台管理员核对策略配置。',
     policy_denied:
