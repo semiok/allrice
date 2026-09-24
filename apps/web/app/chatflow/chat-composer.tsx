@@ -90,7 +90,6 @@ export function ChatComposer({
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
       {error ? <div className={inputUi.notice}>{error}</div> : null}
       <div className={inputUi.card}>
-        {assistantModeControl}
         {isRunning && onInputModeChange ? (
           <label className={inputUi.notice}>
             发送方式：
@@ -231,6 +230,7 @@ export function ChatComposer({
                 type="file"
               />
             </div>
+            {assistantModeControl}
             <select
               aria-label="上传文件可见范围"
               className={inputUi.select}

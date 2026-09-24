@@ -55,7 +55,6 @@ interface ChatTranscriptProps {
   onScrollToBottom: () => void;
   artifacts?: WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
-  onPreviewMessage?: (message: Message) => void;
 }
 
 export function ChatTranscript({
@@ -77,7 +76,6 @@ export function ChatTranscript({
   onScrollToBottom,
   artifacts = [],
   onOpenArtifact,
-  onPreviewMessage,
 }: ChatTranscriptProps) {
   const [browserRevisions, setBrowserRevisions] = useState<
     Record<string, number>
@@ -369,18 +367,6 @@ export function ChatTranscript({
                               artifacts={linkedArtifacts}
                             />
                           )}
-                          {onPreviewMessage &&
-                          !linkedArtifacts.length &&
-                          message.status === 'completed' &&
-                          !messageIsRunning &&
-                          responseText.length > 600 ? (
-                            <button
-                              type="button"
-                              onClick={() => onPreviewMessage(message)}
-                            >
-                              在工作台预览回复（非工件）
-                            </button>
-                          ) : null}
                         </div>
                       )}
                       {message.content.budgetWarning &&

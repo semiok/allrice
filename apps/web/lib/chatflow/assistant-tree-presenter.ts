@@ -59,6 +59,6 @@ export function presentAssistantTree(tree: AssistantTreeView) {
             ? '助手执行已结束，结果采用状态见明细'
             : tree.configuration.allowAssistants
               ? '可按需要进行有限委派'
-              : '本次不使用助手',
+              : '由 Rice 独立处理',
   };
 }

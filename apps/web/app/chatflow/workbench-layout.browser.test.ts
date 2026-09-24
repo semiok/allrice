@@ -446,7 +446,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       entry,
       finishRun() {
         state.messageStatus = 'completed';
-        state.items = [artifact(10)];
+        state.items = [artifact(11)];
         finishStream();
       },
       async reloadList() {
@@ -468,6 +468,57 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it.each([390, 1440])(
+    'places the daily mode pill between attachment and visibility controls at width %i',
+    async (width) => {
+      const f = await fixture({ width });
+      try {
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        const mode = f.page.getByRole('combobox', {
+          name: '工作模式',
+          exact: true,
+        });
+        await mode.waitFor();
+        expect(await mode.inputValue()).toBe('daily');
+        expect(await mode.locator('option:disabled').allTextContents()).toEqual(
+          ['🎯 深入攻关 · 规划中', '👥 团队协作 · 规划中'],
+        );
+        expect(
+          await f.page.getByText('本次不使用助手', { exact: true }).count(),
+        ).toBe(0);
+        expect(await f.page.locator('fieldset').count()).toBe(0);
+        expect(
+          await input.evaluate((element) => element.previousElementSibling),
+        ).toBeNull();
+        const add = await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .boundingBox();
+        const pill = await mode.boundingBox();
+        const visibility = await f.page
+          .getByRole('combobox', { name: '上传文件可见范围' })
+          .boundingBox();
+        const textarea = await input.boundingBox();
+        expect(add!.x + add!.width).toBeLessThan(pill!.x);
+        expect(pill!.x + pill!.width).toBeLessThan(visibility!.x);
+        expect(Math.abs(add!.y - pill!.y)).toBeLessThan(2);
+        expect(Math.abs(visibility!.y - pill!.y)).toBeLessThan(2);
+        expect(pill!.y).toBeGreaterThanOrEqual(textarea!.y + textarea!.height);
+        await input.fill('保留问题和键盘操作');
+        await mode.focus();
+        await f.page.keyboard.press('ArrowDown');
+        expect(await mode.inputValue()).toBe('daily');
+        expect(await input.inputValue()).toBe('保留问题和键盘操作');
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('shows the current member monthly balance alongside the workbench', async () => {
     const f = await fixture();
@@ -973,14 +1024,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     { timeout: 20_000 },
     async () => {
       for (const closed of [false, true]) {
-        const f = await fixture({ running: true });
+        const f = await fixture({ running: true, artifacts: closed });
         try {
           await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
-          await f.panel.getByText(/这个会话还没有工件/).waitFor();
-          if (closed)
+          if (closed) {
+            await f.panel.waitFor();
             await f.page
               .getByRole('button', { name: '关闭工作台', exact: true })
               .click();
+          } else {
+            expect(await f.panel.count()).toBe(0);
+            expect(await f.entry.count()).toBe(0);
+          }
           const composer = f.page.getByRole('textbox', {
             name: '给 Rice 的消息',
           });
@@ -1087,11 +1142,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.workspace = id(51);
         f.state.items = [];
         await f.page.reload();
-        await f.panel.waitFor();
+        await f.page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
+        expect(await f.panel.count()).toBe(0);
       } finally {
         await f.close();
       }
-      const fallback = await fixture({ noStorage: true });
+      const fallback = await fixture({ noStorage: true, artifacts: true });
       try {
         await fallback.panel.waitFor();
         await fallback.page
@@ -1205,32 +1261,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('marks legacy replies as read-only message previews and clears them on session switch; empty work still has an entry', async () => {
+  it('keeps long replies entirely in the transcript and hides the workbench for conversations without artifacts', async () => {
     const f = await fixture();
     try {
-      await f.page
-        .getByRole('button', { name: '在工作台预览回复（非工件）' })
-        .click();
-      await f.panel
-        .getByText('这是会话回复，非已发布工件；没有工件版本或落盘证明。', {
-          exact: true,
-        })
-        .waitFor();
-      expect(await f.panel.getByRole('combobox').count()).toBe(0);
+      await f.page.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(await f.page.getByRole('table').count()).toBe(1);
+      expect(
+        await f.page
+          .getByText('多步研究结果与引用说明。'.repeat(100), { exact: true })
+          .count(),
+      ).toBe(1);
+      expect(
+        await f.page
+          .getByRole('button', { name: '在工作台预览回复（非工件）' })
+          .count(),
+      ).toBe(0);
+      expect(await f.panel.count()).toBe(0);
+      expect(await f.entry.count()).toBe(0);
       await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
-      await f.panel.getByText(/这个会话还没有工件/).waitFor();
-      expect(await f.panel.getByRole('heading', { name: /COIN/ }).count()).toBe(
-        0,
-      );
+      expect(await f.panel.count()).toBe(0);
+      expect(await f.entry.count()).toBe(0);
       await f.page
         .getByRole('button', { name: '新的工作', exact: true })
         .click();
-      await f.panel.getByText(/开始或选择一项工作/).waitFor();
-      await f.page
-        .getByRole('button', { name: '关闭工作台', exact: true })
-        .click();
-      await f.entry.click();
-      await f.panel.getByText(/开始或选择一项工作/).waitFor();
+      expect(await f.panel.count()).toBe(0);
+      expect(await f.entry.count()).toBe(0);
     } finally {
       await f.close();
     }
@@ -1246,7 +1301,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await f.entry.click();
       await f.page.getByRole('button', { name: /^研究任务 B/ }).click();
-      await f.panel.getByText(/这个会话还没有工件/).waitFor();
+      await expect.poll(() => f.panel.count()).toBe(0);
       release();
       f.state.delay = null;
       expect(await f.panel.getByRole('heading', { name: /COIN/ }).count()).toBe(
@@ -1296,7 +1351,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     try {
       f.state.messageStatus = 'pending';
       await f.page.reload();
-      await f.entry.waitFor();
+      await f.page.getByRole('textbox', { name: '给 Rice 的消息' }).waitFor();
+      expect(await f.entry.count()).toBe(0);
       expect(
         await f.page
           .getByRole('button', { name: '在工作台预览回复（非工件）' })

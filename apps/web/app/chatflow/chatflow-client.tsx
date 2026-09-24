@@ -76,7 +76,6 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
-  const [allowAssistants, setAllowAssistants] = useState(true);
   const [inputMode, setInputMode] = useState<'steer' | 'follow_up'>(
     'follow_up',
   );
@@ -157,7 +156,7 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
-  const workbenchOpen = workbenchEnabled && layout.open;
+  const workbenchRequested = workbenchEnabled && layout.open;
   const workbenchEntry = useRef<HTMLButtonElement>(null);
   const workbench = useArtifactWorkbench({
     enabled: workbenchEnabled,
@@ -166,9 +165,12 @@ export function ChatFlowClient({
     tenantHeaders,
     onOpen: layout.show,
     onClose: layout.close,
-    visible: workbenchOpen,
+    visible: workbenchRequested,
     viewerId: workspace?.viewerId,
   });
+  const hasWorkbenchContent =
+    workbench.artifacts.length > 0 || workbench.selectedId !== null;
+  const workbenchOpen = workbenchRequested && hasWorkbenchContent;
   // New completed turns can add artifacts; opening the panel does not execute tools.
   useEffect(() => {
     if (workbenchEnabled) void workbench.reload();
@@ -404,7 +406,7 @@ export function ChatFlowClient({
         enabled: assistantsEnabled,
         deliveryMode: mode,
         eligible: assistantAvailability.eligible,
-        allowAssistants,
+        allowAssistants: true,
       });
       const inputBody = {
         text,
@@ -657,15 +659,9 @@ export function ChatFlowClient({
       assistantModeControl={
         workbenchEnabled ? (
           <AssistantModeControl
-            allowAssistants={allowAssistants}
-            eligible={assistantAvailability.eligible}
-            unavailableReason={assistantAvailability.unavailableReason}
-            readinessState={assistantReady?.state ?? 'unknown'}
             busy={busy}
             isRunning={isRunning}
             steering={isRunning && inputMode === 'steer'}
-            onChange={setAllowAssistants}
-            onShowCapabilities={() => setCapabilitiesOpen(true)}
           />
         ) : undefined
       }
@@ -832,7 +828,7 @@ export function ChatFlowClient({
                       经验沉淀
                     </Link>
                   ) : null}
-                  {workbenchEnabled ? (
+                  {workbenchEnabled && hasWorkbenchContent ? (
                     <button
                       type="button"
                       ref={workbenchEntry}
@@ -945,9 +941,6 @@ export function ChatFlowClient({
                   onOpenArtifact={(id) => {
                     if (workbench.confirmNavigation()) workbench.show(id);
                   }}
-                  onPreviewMessage={
-                    workbenchEnabled ? workbench.previewMessage : undefined
-                  }
                 />
               </div>
               <div
@@ -983,7 +976,6 @@ export function ChatFlowClient({
           nextCursor={workbench.nextCursor}
           listError={workbench.error}
           listLoading={workbench.loading}
-          messagePreview={workbench.messagePreview}
           noticeId={workbench.noticeId}
           narrow={workbenchNarrow}
           onSelect={(id) => workbench.show(id)}
