@@ -14,6 +14,7 @@ export function useWorkbenchResize(
   preference: number | null,
   sidebarPreference: number | null = null,
   sidebarCollapsed = false,
+  panelDocked = false,
 ) {
   const [frame, setFrame] = useState<HTMLElement | null>(null);
   const [size, setSize] = useState({ frame: 0, viewport: 0 });
@@ -41,15 +42,21 @@ export function useWorkbenchResize(
       if (raf !== null) cancelAnimationFrame(raf);
     };
   }, [frame]);
+  const min = 340;
   const sidebarMin = 240;
-  const sidebarMax = Math.max(sidebarMin, Math.min(420, size.frame - 340));
+  // Reserve both the conversation and an open dock before granting sidebar
+  // width. The measured frame can be narrower than matchMedia's viewport when
+  // classic scrollbars or an embedding container consume horizontal space.
+  const sidebarMax = Math.max(
+    sidebarMin,
+    Math.min(420, size.frame - 340 - (panelDocked ? min : 0)),
+  );
   const sidebarWidth = sidebarCollapsed
     ? 57
     : Math.min(
         sidebarMax,
         Math.max(sidebarMin, Math.round(sidebarPreference ?? 240)),
       );
-  const min = 340;
   const max = Math.max(
     min,
     Math.round(Math.min(size.frame - sidebarWidth - 340, size.viewport * 0.8)),
