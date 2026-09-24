@@ -129,11 +129,50 @@ export function employeeToolConfigurationErrors(
 /** Selecting a Skill/tool is the administrator's capability configuration.
  * Resolve its implementation dependencies in the same edit, without granting
  * a device directory, connector credential or individual external operation. */
+export type EmployeeSkillChoice = {
+  id: string;
+  requiredToolRefs: readonly string[];
+  replaces?: readonly string[];
+};
+
+/** Only new drafts are upgraded. Published packages retain their frozen IDs. */
+export function resolveEmployeeSkillIds(
+  selected: readonly string[],
+  skills: readonly EmployeeSkillChoice[],
+) {
+  const replacements = new Map(
+    skills.flatMap((skill) =>
+      (skill.replaces ?? []).map((id) => [id, skill.id] as const),
+    ),
+  );
+  return [...new Set(selected.map((id) => replacements.get(id) ?? id))];
+}
+
+export function upgradeEmployeeSkillBindings(
+  definition: PlatformEmployeeDefinition,
+  skills: readonly EmployeeSkillChoice[],
+): PlatformEmployeeDefinition {
+  const ids = resolveEmployeeSkillIds(
+    definition.capabilities.nativeSkillIds,
+    skills,
+  );
+  if (
+    JSON.stringify(ids) ===
+    JSON.stringify(definition.capabilities.nativeSkillIds)
+  )
+    return definition;
+  return assembleEmployeeCapabilities(definition, skills);
+}
+
 export function assembleEmployeeCapabilities(
   definition: PlatformEmployeeDefinition,
-  skills: readonly { id: string; requiredToolRefs: readonly string[] }[],
+  skills: readonly EmployeeSkillChoice[],
 ): PlatformEmployeeDefinition {
-  const selectedSkills = new Set(definition.capabilities.nativeSkillIds);
+  const nativeSkillIds = resolveEmployeeSkillIds(
+    definition.capabilities.nativeSkillIds,
+    skills,
+  );
+  const selectedSkills = new Set(nativeSkillIds);
   const names = new Set([
     ...definition.capabilities.toolNames,
     ...skills
@@ -165,7 +204,11 @@ export function assembleEmployeeCapabilities(
       : definition.securityPolicy.bridgeAccess;
   return {
     ...definition,
-    capabilities: { ...definition.capabilities, toolNames: [...names] },
+    capabilities: {
+      ...definition.capabilities,
+      nativeSkillIds,
+      toolNames: [...names],
+    },
     securityPolicy: {
       ...definition.securityPolicy,
       bridgeAccess,

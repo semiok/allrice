@@ -58,6 +58,10 @@ describe('Lab read-only capability sync', () => {
       id: 'assistants',
       status: '运行状态未知',
     });
+    expect(body.capabilities).toContainEqual({
+      id: 'office',
+      status: '运行状态未知',
+    });
     expect(JSON.stringify(body)).not.toContain('private-');
     expect(JSON.stringify(body)).not.toContain(token);
   });

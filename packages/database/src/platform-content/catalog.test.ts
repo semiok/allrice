@@ -10,7 +10,7 @@ describe('platform content catalog', () => {
   it('loads every current production Skill from its canonical source file', async () => {
     const catalog = await loadPlatformContentCatalog();
 
-    expect(catalog.skills).toHaveLength(11);
+    expect(catalog.skills).toHaveLength(12);
     expect(catalog.skills.map((skill) => skill.name)).toEqual([
       'business-reconciliation',
       'web-research',
@@ -23,11 +23,67 @@ describe('platform content catalog', () => {
       'governed-memory',
       'workflow-automation',
       'browser-research',
+      'office',
     ]);
     expect(catalog.skills.every((skill) => skill.content.endsWith('\n'))).toBe(
       true,
     );
   });
+
+  it('keeps legacy content available while replacing both choices with one enabled Office bundle', async () => {
+    const catalog = await loadPlatformContentCatalog();
+    const office = catalog.skills.find((skill) => skill.name === 'office')!;
+    const legacy = catalog.skills.filter((skill) =>
+      office.replaces?.includes(skill.id),
+    );
+    expect(office.enabled).toBe(true);
+    expect(legacy.map((skill) => skill.name)).toEqual([
+      'document-analysis',
+      'structured-deliverable',
+    ]);
+    expect(legacy.every((skill) => !skill.enabled)).toBe(true);
+    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(10);
+    expect(office.requiredToolRefs).toEqual(
+      expect.arrayContaining(legacy.flatMap((skill) => skill.requiredToolRefs)),
+    );
+    expect(office.bundle?.resources.map((resource) => resource.path)).toEqual(
+      expect.arrayContaining([
+        'references/docx.md',
+        'references/xlsx.md',
+        'references/pptx.md',
+        'references/provenance.md',
+        'references/LICENSE.dsh',
+      ]),
+    );
+  });
+
+  it.each([
+    'missing',
+    'self',
+    'active-source',
+    'inactive-target',
+    'ambiguous',
+  ] as const)(
+    'rejects %s replacement declarations before accepting a catalog',
+    async (kind) => {
+      const catalog = await loadPlatformContentCatalog();
+      const office = catalog.skills.find((skill) => skill.name === 'office')!;
+      const previous = catalog.skills.find((skill) =>
+        office.replaces?.includes(skill.id),
+      )!;
+      if (kind === 'missing')
+        office.replaces = ['00000000-0000-4000-8000-000000000000'];
+      if (kind === 'self') office.replaces = [office.id];
+      if (kind === 'active-source') previous.enabled = true;
+      if (kind === 'inactive-target') office.enabled = false;
+      if (kind === 'ambiguous') catalog.skills[0]!.replaces = [previous.id];
+      await expect(
+        parsePlatformContentCatalog(catalog, async () => {
+          throw Error('unexpected_asset_read');
+        }),
+      ).rejects.toThrow('platform_skill_catalog_invalid_replacement:');
+    },
+  );
 
   it('canonicalizes harmless outer whitespace before checksumming content', () => {
     const parsed = parseSkillMarkdown(

@@ -6,6 +6,11 @@
 
 ## Product model
 
+MET-157 adds a [unified Office Skill](../office/README.md) for document reading
+and basic file delivery. The employee editor upgrades legacy document-analysis
+and structured-deliverable selections to Office with the required tools. Old
+published revisions and sessions retain their frozen Skill packages.
+
 Rice is currently the only employee. Specialized employees will be created,
 assembled and published from the platform administration plane in MET-93;
 ordinary tenants only use employees assigned to them. Employees have no

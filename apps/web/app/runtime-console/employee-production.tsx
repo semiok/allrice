@@ -15,6 +15,7 @@ import {
   switchEmployeeModelProvider,
   employeeToolCatalog,
   assembleEmployeeCapabilities,
+  upgradeEmployeeSkillBindings,
   developmentWorkflowToolNames,
   SkillCapabilitySchema,
 } from '@allrice/contracts';
@@ -26,6 +27,7 @@ type Employee = PlatformEmployeeSummary;
 
 interface NativeSkill {
   requiredToolRefs: string[];
+  replaces?: string[];
   bundleChecksum?: string | null;
   resourceCount?: number;
   id: string;
@@ -281,7 +283,11 @@ export function EmployeeProduction() {
         const definition =
           employee?.currentDraft?.definition ??
           employee?.currentPublished?.definition;
-        setDraft(definition ? clone(definition) : null);
+        setDraft(
+          definition
+            ? upgradeEmployeeSkillBindings(clone(definition), result.skills)
+            : null,
+        );
         const requestedWorkspace = new URLSearchParams(
           window.location.search,
         ).get('workspaceId');
@@ -392,7 +398,14 @@ export function EmployeeProduction() {
     const definition =
       employee.currentDraft?.definition ??
       employee.currentPublished?.definition;
-    setDraft(definition ? clone(definition) : null);
+    setDraft(
+      definition
+        ? upgradeEmployeeSkillBindings(
+            clone(definition),
+            directory?.skills ?? [],
+          )
+        : null,
+    );
     setSelectedWorkspaces([...employee.assignedWorkspaceIds]);
     setMessage('');
     setError('');

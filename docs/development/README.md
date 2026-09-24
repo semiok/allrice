@@ -67,6 +67,13 @@ For a native local installation, install PostgreSQL 17 and the matching pgvector
 
 ## Environment variables
 
+MET-157 Office content is synchronized by the normal `db:setup` / `content:sync`
+workflow. Deploy its application changes and catalog together: the catalog
+records replacements for the two legacy document Skills, and the employee
+editor/compiler resolves them for new drafts. Existing published packages stay
+frozen. Office adds no environment variable, Python dependency or SQL migration;
+see [Office setup and rollback](../features/office/README.md).
+
 Copy `.env.example` to `.env` only when changing defaults. The bootstrap script loads this root file and passes one consistent environment to migration, Web, and Worker.
 
 | Variable                             | Default               | Purpose                                                         |

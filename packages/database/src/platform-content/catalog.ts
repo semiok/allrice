@@ -38,6 +38,7 @@ const PlatformSkillCatalogEntrySchema = z.object({
   userInvocable: z.boolean(),
   requiredToolRefs: z.array(ToolReferenceSchema),
   enabled: z.boolean(),
+  replaces: z.array(z.uuid()).max(64).optional(),
 });
 
 const PlatformSkillCatalogSchema = z.object({
@@ -120,6 +121,24 @@ export async function parsePlatformContentCatalog(
   readResource?: (path: string) => Promise<Uint8Array>,
 ): Promise<PlatformContentCatalog> {
   const catalog = PlatformSkillCatalogSchema.parse(input);
+  const replacementOwners = new Set<string>();
+  for (const entry of catalog.skills) {
+    for (const previousId of entry.replaces ?? []) {
+      const previous = catalog.skills.find((skill) => skill.id === previousId);
+      if (
+        !entry.enabled ||
+        !previous ||
+        previous.enabled ||
+        previousId === entry.id ||
+        replacementOwners.has(previousId)
+      ) {
+        throw new Error(
+          `platform_skill_catalog_invalid_replacement:${entry.name}:${previousId}`,
+        );
+      }
+      replacementOwners.add(previousId);
+    }
+  }
   const ids = new Set<string>();
   const names = new Set<string>();
   const skills: ResolvedPlatformSkill[] = [];

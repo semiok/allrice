@@ -114,4 +114,49 @@ describe('live capability projection', () => {
       'Worker 功能开关未开启',
     );
   });
+
+  it('reports Office from the synchronized Skill and actual published bindings, not merely existing export tools', () => {
+    const input = data();
+    expect(integratedCapabilityStatus('office', input)).toBe(
+      'Office Skill 尚未同步或已停用',
+    );
+    const required = [
+      'workspace.file.list',
+      'workspace.document.read',
+      'workspace.skill.read',
+      'workspace.export.create',
+    ];
+    input.skills = [
+      {
+        id: 'office-id',
+        name: 'office',
+        description: 'Office',
+        checksum: 'digest',
+        requiredToolRefs: required,
+        enabled: true,
+        version: '1.0.0',
+        reviewStatus: 'reviewed',
+      },
+    ];
+    input.workers[0]!.tools = required.map((name) => ({ name, enabled: true }));
+    input.webTools = input.workers[0]!.tools;
+    input.publications[0]!.toolNames = required;
+    expect(integratedCapabilityStatus('office', input)).toBe(
+      '尚未发布到租户员工',
+    );
+    input.publications[0]!.skillIds = ['office-id'];
+    input.publications[0]!.policyEnabled = false;
+    expect(integratedCapabilityStatus('office', input)).toContain(
+      '已发布到 1 个工作区',
+    );
+    input.webTools = [];
+    expect(integratedCapabilityStatus('office', input)).toBe(
+      'Web 功能开关未开启',
+    );
+    input.webTools = input.workers[0]!.tools;
+    input.workers[0]!.tools = [];
+    expect(integratedCapabilityStatus('office', input)).toBe(
+      'Worker 功能开关未开启',
+    );
+  });
 });

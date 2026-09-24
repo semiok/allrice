@@ -37,6 +37,13 @@
           "name": "旧会话与上下文恢复",
           "detail": "已验证旧日志副本迁移、原生压缩和会话重启，保留历史任务事实。",
           "status": "随版本生效"
+        },
+        {
+          "id": "office",
+          "name": "Office 文档阅读与基础交付",
+          "detail": "一个 Skill 合并文档分析与结构化交付，复用 alpha.2 的 Office 工作方法；支持现有 PDF/Office 阅读和多格式下载。复杂模板编辑、公式与排版验收由 MET-157 后续完成。",
+          "status": "按租户启用",
+          "action": "employees"
         }
       ]
     },
@@ -82,12 +89,6 @@
       "title": "上游前瞻",
       "description": "以下来自已复核的 0.1.7-alpha.2，不属于当前已安装版本。",
       "items": [
-        {
-          "id": "office",
-          "name": "Office Skill",
-          "detail": "文档、表格和演示文稿的工作方法与检查资源，可优先评估复用。",
-          "status": "alpha.2 · 待验证"
-        },
         {
           "id": "ptc",
           "name": "PTC Workflow",

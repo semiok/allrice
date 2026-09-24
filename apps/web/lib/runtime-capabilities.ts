@@ -4,6 +4,7 @@ import {
   readRuntimeCapabilityInventory,
 } from '@allrice/database';
 import { AllriceCapabilitySummarySchema } from '@allrice/contracts';
+import capabilityCatalog from '../../../packages/dsh-runtime-diff/capabilities.json';
 import {
   integratedCapabilityStatus,
   runtimeCapabilityFacts,
@@ -43,15 +44,12 @@ export function summarizeRuntimeCapabilities(data: RuntimeCapabilityResponse) {
     availableSkills: facts.availableSkills.length,
     publishedSkills: facts.publishedSkillIds.size,
     publications: data.publications.length,
-    capabilities: [
-      'native-images',
-      'assistants',
-      'development',
-      'durable-wait',
-      'session-recovery',
-    ].map((id) => ({
-      id,
-      status: integratedCapabilityStatus(id, data),
-    })),
+    capabilities: capabilityCatalog.groups
+      .filter((group) => group.id === 'integrated')
+      .flatMap((group) => group.items)
+      .map(({ id }) => ({
+        id,
+        status: integratedCapabilityStatus(id, data),
+      })),
   });
 }
