@@ -1,4 +1,5 @@
 import styles from './dsh-saas.module.css';
+import { employeeAccent } from './employee-navigation';
 
 export interface EmployeeProfileDetailsData {
   name: string;
@@ -54,7 +55,10 @@ export function EmployeeProfileDetails({
 }: EmployeeProfileDetailsProps) {
   return (
     <>
-      <div className={styles.employeeProfileIntro}>
+      <div
+        className={`${styles.employeeProfileIntro} ${styles.employeeConversation}`}
+        data-employee-accent={employeeAccent(profile.name)}
+      >
         <span className={styles.employeeProfileAvatar}>
           {profile.name.slice(0, 1)}
         </span>
@@ -68,7 +72,7 @@ export function EmployeeProfileDetails({
       <section className={styles.employeeProfileSection}>
         <header>
           <span>人设</span>
-          <small>Rice 如何理解和完成工作</small>
+          <small>{profile.name} 如何理解和完成工作</small>
         </header>
         <dl className={styles.employeePersonaGrid}>
           <div>

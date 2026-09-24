@@ -671,6 +671,11 @@ describe('DshHarnessAdapter', () => {
     const result = await adapter.execute(input);
 
     expect(result.answer).toBe('native-search-finished');
+    expect(events.find((event) => event.type === 'tool.started')).toMatchObject(
+      {
+        sourcePayload: { activityDetail: '搜索资料：NVIDIA price' },
+      },
+    );
     expect(started).toHaveLength(1);
     expect(calls).toEqual([]);
     expect(events.filter((event) => event.type.startsWith('tool.'))).toEqual([
