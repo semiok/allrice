@@ -90,7 +90,7 @@ export function ConnectedApps({
     }
   }
   const visible = connections.filter(
-    (c) => !c.removed || c.id === connectionId,
+    (c) => (!c.removed && (c.enabled || !c.shared)) || c.id === connectionId,
   );
   return (
     <section className={styles.apps} aria-label="已连接应用">
@@ -154,7 +154,7 @@ export function ConnectedApps({
                     : '使用账号登录'}
                 </button>
               ))}
-            {c.disconnected ? (
+            {c.disconnected || !c.enabled ? (
               <button
                 disabled={!!busy || !c.enabled}
                 onClick={() => void mutate(c, 'reconnect')}
