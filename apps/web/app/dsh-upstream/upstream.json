@@ -126,6 +126,129 @@
           "patch": "scripts/dsh-ui-patches/native-dock-seed.ts.patch"
         }
       ]
+    },
+    {
+      "id": "native-files",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "official-package-and-native-source-adapter",
+      "packages": [],
+      "files": [
+        {
+          "source": "packages/client/ui-sidebar-files/src/client/FilesBody.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/FilesBody.tsx",
+          "upstreamSha256": "90fb4be6142e88001b8707da422579b5dc373aa8a3b9e3e2b6193a719ad5ebe2",
+          "sha256": "c285d856da22a9a06e92074db1a66acaa2ce1f72900a8f40107e6a847d602dfb",
+          "patch": "scripts/dsh-ui-patches/native-files-FilesBody.tsx.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-files/src/client/FilesBody.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/FilesBody.module.css",
+          "upstreamSha256": "94671b554de09b517dec96bf98ce8b70f8f78d54dba84145e1bcd8e256667739",
+          "sha256": "94671b554de09b517dec96bf98ce8b70f8f78d54dba84145e1bcd8e256667739"
+        },
+        {
+          "source": "packages/client/ui-sidebar-files/src/client/store.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/store.ts",
+          "upstreamSha256": "e799ba4a770e56670360c485f79c2df8bbc158fc4525720a543dafe5167f410e",
+          "sha256": "1139b3f6591fddb5a5a88bdacf610d53586d97c579e3317372d24c5d70e0fd44",
+          "patch": "scripts/dsh-ui-patches/native-files-store.ts.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-files/src/client/face.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/face.ts",
+          "upstreamSha256": "0ff8c62e4cb940a33afa811838d2c15e57d02f9a44135404c5f0c95106d7594c",
+          "sha256": "8debdb74b0a9fe6cb63c190ca434e7940e1dbe3f85e2becedc081dfccce5f10c",
+          "patch": "scripts/dsh-ui-patches/native-files-face.ts.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-files/src/client/directory-node.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/directory-node.ts",
+          "upstreamSha256": "3da099ed59762f66393727b59d04c9462114fa8ea77d21bdf53e8e33c2f93194",
+          "sha256": "9cbccfc111acb9d6c67ae2639e69007f3b30470acd276324c7b4d43546268e61",
+          "patch": "scripts/dsh-ui-patches/native-files-directory-node.ts.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-files/src/client/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/locales.ts",
+          "upstreamSha256": "defdcc67ce36ccd7c6ca62934adc4fee12981450c6b2c320cc4601138b781ae9",
+          "sha256": "68b7b485de9cb51696680498c3db395cf932525c9cbe416aaea9470af06e2edb",
+          "patch": "scripts/dsh-ui-patches/native-files-locales.ts.patch"
+        }
+      ]
+    },
+    {
+      "id": "native-document",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "official-package-and-native-source-adapter",
+      "packages": [
+        {
+          "name": "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+          "version": "0.1.7-rc.1",
+          "assets": [
+            {
+              "path": "lib/client.pdf.js",
+              "sha256": "9dfd5bef9df99f1bf353575ec840a69f554164554d6742f83dbebb0d3b144324",
+              "exports": ["PdfBody"]
+            }
+          ]
+        }
+      ],
+      "files": [
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/pdf/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/pdf/locales.ts",
+          "upstreamSha256": "f6ce59fdd2d71f03c94650eb7443fdbccb2a8069f7cd4d2a947545783ba8dc19",
+          "sha256": "8765c10f5f280cac72506c25feb64f4878b25fe5ff0e8306022ed80108f8091b",
+          "patch": "scripts/dsh-ui-patches/native-document-locales.ts.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/pdf/store.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/pdf/store.ts",
+          "upstreamSha256": "f4f66954114eb831d09970f4f4e44b75e87a3aa8ba7d233fe16b0be061a80bc2",
+          "sha256": "f4f66954114eb831d09970f4f4e44b75e87a3aa8ba7d233fe16b0be061a80bc2"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/zoom/ZoomControls.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/ZoomControls.module.css",
+          "upstreamSha256": "cbe3f35f34da661351d771de22a7e13b9756ef33207d055263e5595f4519c187",
+          "sha256": "cbe3f35f34da661351d771de22a7e13b9756ef33207d055263e5595f4519c187"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/zoom/ZoomControls.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/ZoomControls.tsx",
+          "upstreamSha256": "47b74d6fee777be7cc030b3b8b8b28482f08891a888e6fc68d5fb4a14b8b076a",
+          "sha256": "47b74d6fee777be7cc030b3b8b8b28482f08891a888e6fc68d5fb4a14b8b076a"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/zoom/ZoomViewport.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/ZoomViewport.module.css",
+          "upstreamSha256": "597acbd5b4b858bc9712b61b5b2b6300d6a9b085adf075ec840116b484c87840",
+          "sha256": "597acbd5b4b858bc9712b61b5b2b6300d6a9b085adf075ec840116b484c87840"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/zoom/ZoomViewport.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/ZoomViewport.tsx",
+          "upstreamSha256": "b7a427c072ae528377aa3740c75ddefae5e9bef9010430e43611649e0b8eb79c",
+          "sha256": "fbd65f91fac87e119c1c9ecacb3c681a708a8995303e618db29cd4ba8420a872",
+          "patch": "scripts/dsh-ui-patches/native-document-ZoomViewport.tsx.patch"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/zoom/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/locales.ts",
+          "upstreamSha256": "05018487040c4bbca548fc89b2e09f1d37e262640707c81a6a8b8d34b97b3eb0",
+          "sha256": "05018487040c4bbca548fc89b2e09f1d37e262640707c81a6a8b8d34b97b3eb0"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/zoom/types.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/types.ts",
+          "upstreamSha256": "aee361914c9687c510d588e658bd09d545b7b043378ed445049298874111820b",
+          "sha256": "aee361914c9687c510d588e658bd09d545b7b043378ed445049298874111820b"
+        }
+      ]
     }
   ]
 }

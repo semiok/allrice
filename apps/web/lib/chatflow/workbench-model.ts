@@ -13,6 +13,7 @@ import {
 
 export type ArtifactPreview =
   | OfficePreview
+  | { kind: 'pdf'; base64: string }
   | { kind: 'text'; text: string; mediaType: string }
   | { kind: 'changeset'; changeset: ChangesetDocument }
   | {
@@ -76,6 +77,14 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
   const v = input as Record<string, unknown>;
   if (!v || typeof v !== 'object') throw Error('预览格式无效');
   if (v.kind === 'office') return OfficePreviewSchema.parse(v);
+  if (
+    v.kind === 'pdf' &&
+    typeof v.base64 === 'string' &&
+    v.base64.length <= 10_666_668 &&
+    /^[A-Za-z0-9+/]*={0,2}$/.test(v.base64) &&
+    v.base64.length % 4 === 0
+  )
+    return { kind: 'pdf', base64: v.base64 };
   if (
     v.kind === 'text' &&
     typeof v.text === 'string' &&

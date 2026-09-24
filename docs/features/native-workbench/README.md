@@ -41,3 +41,15 @@ PR2 接官方 Dock 包及已有成果内容；PR3 接官方文件树 / 预览与
 每份成果在独立标签中使用原有 ArtifactReview，版本、下载、Diff 和反馈继续走原接口。原生 keepMounted 保留切标签/分栏时的未保存意见；关闭对应标签或离开会话才确认。新增标签打开实际成果目录。所有已挂载标签的 dirty 状态汇总给原有导航保护。
 
 PR2 验证：50 个 Chromium 回归用例逐项通过（全量 49/50 后修复新交付与已保存标签的恢复优先级，该用例与分栏用例再次通过）；新增用例验证两份成果并排、独立未保存意见、分隔线拖拽、全屏往返、拒绝关闭及刷新恢复。3 个偏好用例、Web 类型检查、定向 lint 与 Web 构建通过。并排截图已检查；此验证使用合成 HTTP 已有内容，没有重新调用模型。
+
+## PR3：原生文件树与预览
+
+复用 ui-sidebar-files 的 FilesBody、store、DirectoryNode 和 face 生命周期；原生展开、目录刷新、面包屑及请求取消接现有授权文件 API。官方完整插件的 workspaceFilesRemote 绑定宿主 cwd，Allrice 只有对象 ID / 上传与交付分类，因此只替换传输接口和行显示名称，不另造文件系统。工作区文件入口默认显示，目录是实际对象分类，不是宿主路径。现有接口最多返回 100 项，达到上限明确显示截断提示；没有 watch API 时提供原生手动刷新，不宣称实时监听。Bridge 项目文件没有现成目录列表接口，本次不虚构该来源。
+
+PDF 直接加载官方已发布的 client.pdf.js（包括其 PDF.js Worker），未另写渲染器。Allrice 只提供同源静态分发、限定模块注册和已授权文件字节；加载后恢复原 ModuleLoader。缩放容器及状态来自原生源码，因为它们未独立导出。代码展示直接使用官方 CodeBlock；Markdown 保留现有渲染路径：官方 MarkdownText 无关闭外部图片自动读取的配置，不能将租户文档直接换成未经适配的远程图片请求。
+
+Office 继续调用现有 LibreOffice 页面/公式服务，将其结果接入原生缩放视图，保留分页、重算提示、版本、下载和反馈；本次没有重新实现生成、解析或公式引擎，也没有宣称接入上游交互工作表。文件预览复用现有授权与内容服务，读取完成后再次核对文件可见性；快速切换和卸载取消旧请求。
+
+真实文档复核可将现有 `/render` 响应保存为 `docx.json`、`xlsx.json`、`pptx.json`，通过 `ALLRICE_OFFICE_PREVIEW_DIR=<目录> ALLRICE_RUN_BROWSER_INTEGRATION=1 pnpm exec vitest run apps/web/app/chatflow/workbench-layout.browser.test.ts -t 'MET160 real'` 验证真实图像、原生缩放及翻页；不提交租户文件或重新调用模型。常规 CI 使用合成 HTTP 覆盖真实 PDF 字节/Worker、文件目录刷新、删除失效、会话切换与既有 Office 公式/分页行为。
+
+PR3 验证：52 个常规 Chromium 用例、3 个现有真实 Office 渲染结果用例、18 个内容/文件权限用例通过。Next 生产构建和启动实测 PDF 资源 SHA-256 与官方包一致。后台的 10 个真实 PostgreSQL/浏览器用例同时通过；这轮暴露的 Shiki 4.4.3 扫描器初始化问题通过固定上游锁文件的 4.3.1 解决，未改写高亮库。Worker 分发校验确认引擎仍为 0.1.5-rc.3。

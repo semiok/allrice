@@ -139,7 +139,8 @@ describe('authenticated workbench HTTP boundary', () => {
   });
   it('does not inline large or unsupported binaries', async () => {
     for (const object of [
-      { mediaType: 'application/pdf', sizeBytes: 10 },
+      { mediaType: 'application/pdf', sizeBytes: 8_000_001 },
+      { mediaType: 'application/zip', sizeBytes: 10 },
       { mediaType: 'text/plain', sizeBytes: 512_001 },
     ]) {
       ports.get.mockResolvedValue({ id, kind: 'document', object });
@@ -149,6 +150,20 @@ describe('authenticated workbench HTTP boundary', () => {
       ).toBe('download_only');
     }
     expect(ports.read).not.toHaveBeenCalled();
+  });
+  it('returns bounded PDF bytes for the native renderer after rechecking access', async () => {
+    const object = { mediaType: 'application/pdf', sizeBytes: 10 };
+    ports.get.mockResolvedValue({ id, kind: 'document', object });
+    const bytes = Buffer.from('%PDF-1.4\n');
+    ports.read.mockResolvedValue(bytes);
+    const response = await artifactHttp(request(), 'content', sessionId, id);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      kind: 'pdf',
+      base64: bytes.toString('base64'),
+    });
+    expect(ports.read).toHaveBeenCalledWith({}, object, 8_000_000);
+    expect(ports.get).toHaveBeenCalledTimes(2);
   });
   it('rechecks identity after storage IO without returning already-read bytes on revocation', async () => {
     ports.get

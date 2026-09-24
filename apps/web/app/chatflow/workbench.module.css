@@ -405,3 +405,8 @@
   flex-direction: column;
   gap: 8px;
 }
+.zoomPreview {
+  height: min(60vh, 620px);
+  min-height: 240px;
+  min-width: 0;
+}
