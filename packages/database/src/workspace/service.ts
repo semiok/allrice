@@ -126,6 +126,7 @@ interface MessageRow {
   run_id?: string | null;
   question_answer_payload?: string | null;
   queued_run_id?: string | null;
+  queued_created_at?: Date | null;
   hide_from_transcript?: boolean;
 }
 
@@ -696,6 +697,7 @@ export async function getChatSessionHistory(
   const sql = getDatabase();
   const messages = await sql<MessageRow[]>`
     select m.*, er.run_id,
+      queued.created_at as queued_created_at,
       case when queued.mode='follow_up' and queued.state in ('queued','released')
         and queued_job.status='queued' and queued_input.kind in ('message','queue_next')
         then queued.run_id end as queued_run_id,
@@ -804,6 +806,11 @@ export async function getChatSessionHistory(
     nativeContextStatus,
     queuedMessages: messages
       .filter((m) => m.role === 'user' && m.queued_run_id)
+      .sort(
+        (a, b) =>
+          a.queued_created_at!.getTime() - b.queued_created_at!.getTime() ||
+          a.queued_run_id!.localeCompare(b.queued_run_id!),
+      )
       .map((m) => {
         const mapped = mapMessage(context, m, attachments.get(m.id) ?? []);
         return {

@@ -1774,6 +1774,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const first = await f.send('queued first');
     const second = await f.send('queued second');
     const third = await f.send('queued third');
+    // Arrival and enqueue order can differ across tabs/uploads. Show the same
+    // FIFO order that the worker consumes, not the original message timestamps.
+    await database`update allrice_messages set created_at=now()+interval '1 day' where id=${first.userMessage.id}`;
     const history = await f.history();
     expect(history.queuedMessages.map((m) => m.text)).toEqual([
       'queued first',
