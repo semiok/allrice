@@ -491,7 +491,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
       if (path === '/api/v1/workspace/monthly-quota') {
-        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        // A completed turn may still have a read in flight for the old scope.
+        // Model the server denying it after a workspace switch, rather than
+        // throwing inside Playwright's asynchronous route handler.
+        if (url.searchParams.get('workspaceId') !== state.workspace)
+          return answer({ error: { code: 'authorization_denied' } }, 403);
         return answer({
           organizationId: org,
           workspaceId: state.workspace,
