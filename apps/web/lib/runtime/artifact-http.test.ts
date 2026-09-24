@@ -1,3 +1,4 @@
+import type * as OfficeRuntime from '@allrice/office-runtime';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as DatabaseModule from '@allrice/database';
@@ -13,6 +14,11 @@ const ports = vi.hoisted(() => ({
   save: vi.fn(),
   address: vi.fn(),
   read: vi.fn(),
+  render: vi.fn(),
+}));
+vi.mock('@allrice/office-runtime', async (original) => ({
+  ...(await original<typeof OfficeRuntime>()),
+  renderOffice: ports.render,
 }));
 vi.mock('../identity/session', () => ({ getRequestContext: ports.context }));
 vi.mock('../storage/runtime', () => ({ getStorageAdapter: () => ({}) }));
@@ -155,6 +161,47 @@ describe('authenticated workbench HTTP boundary', () => {
     const response = await artifactHttp(request(), 'content', sessionId, id);
     expect(response.status).toBe(403);
     expect(await response.text()).not.toContain('hello');
+  });
+  it('previews the authorized Office version and rechecks access after rendering, including cache hits', async () => {
+    const office = {
+      id,
+      kind: 'document',
+      object: {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        sizeBytes: 600_000,
+      },
+    };
+    const rendered = {
+      checksum: `sha256:${'a'.repeat(64)}`,
+      format: 'xlsx',
+      engine: 'LibreOffice',
+      pageCount: 1,
+      pages: [{ number: 1, base64: 'PRIVATE_PAGE' }],
+      formulas: [],
+    };
+    ports.get.mockResolvedValue(office);
+    ports.render.mockResolvedValue(rendered);
+    const allowed = await artifactHttp(request(), 'content', sessionId, id);
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toMatchObject({
+      kind: 'office',
+      pages: rendered.pages,
+    });
+    expect(ports.read).toHaveBeenCalledWith({}, office.object, 8_000_000);
+    expect(ports.render).toHaveBeenCalledWith(Buffer.from('hello'), 'xlsx');
+    ports.get
+      .mockResolvedValueOnce(office)
+      .mockRejectedValueOnce(new ArtifactReviewError('identity_denied'));
+    const denied = await artifactHttp(request(), 'content', sessionId, id);
+    expect(denied.status).toBe(403);
+    expect(await denied.text()).not.toContain('PRIVATE_PAGE');
+    ports.render.mockRejectedValue(Error('PRIVATE_DIAGNOSTIC'));
+    const unavailable = await artifactHttp(request(), 'content', sessionId, id);
+    expect(await unavailable.json()).toMatchObject({
+      kind: 'download_only',
+      reason: expect.stringContaining('暂不可用'),
+    });
   });
   it('submits feedback through the owner-scoped service and never executes an operation', async () => {
     const input = { artifactId: id, feedbackId: randomUUID() };

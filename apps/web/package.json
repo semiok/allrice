@@ -22,7 +22,8 @@
     "react-dom": "19.2.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "ws": "8.21.3"
+    "ws": "8.21.3",
+    "@allrice/office-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

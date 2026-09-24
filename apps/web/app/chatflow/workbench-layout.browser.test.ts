@@ -9,6 +9,7 @@ import {
   type WorkspaceCapability,
   type InteractionStatus,
 } from '@allrice/contracts';
+import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -210,6 +211,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       contentError: false,
+      officePreview: null as ArtifactPreview | null,
       text: report,
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
@@ -385,7 +387,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (!a) return answer({}, 404);
         if (path.endsWith('/content'))
           return answer(
-            { kind: 'text', mediaType: 'text/markdown', text: state.text },
+            state.officePreview ?? {
+              kind: 'text',
+              mediaType: 'text/markdown',
+              text: state.text,
+            },
             state.contentError ? 503 : 200,
           );
         return answer({ artifact: a, feedback: [] });
@@ -541,6 +547,53 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
     30000,
   );
+
+  it('shows Office pages and actual formula errors without confusing rendering with layout approval', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=';
+      f.state.officePreview = {
+        kind: 'office',
+        checksum: `sha256:${'a'.repeat(64)}`,
+        format: 'xlsx',
+        pageCount: 3,
+        pages: [
+          { number: 1, base64: png },
+          { number: 2, base64: png },
+        ],
+        formulaCount: 2,
+        formulaErrorCount: 1,
+        formulas: [
+          { sheet: '明细', cell: 'C2', formula: 'B2*2', type: 'n', value: 60 },
+          {
+            sheet: '明细',
+            cell: 'D2',
+            formula: '1/0',
+            type: 'e',
+            value: '#DIV/0!',
+          },
+        ],
+      };
+      await f.page.reload();
+      await f.entry.click();
+      const preview = f.panel.getByRole('region', { name: 'Office 文档预览' });
+      await preview.waitFor();
+      expect(await preview.innerText()).toContain('发现 1 个错误');
+      expect(await preview.innerText()).toContain('展示前 2 页');
+      await preview.getByText('查看计算结果', { exact: true }).click();
+      expect(await preview.innerText()).toContain('#DIV/0!');
+      expect(await preview.innerText()).toContain('60');
+      await preview.getByRole('button', { name: '下一页' }).click();
+      await preview.getByRole('img', { name: 'Office 文档第 2 页' }).waitFor();
+      expect(
+        await preview.getByRole('button', { name: '下一页' }).isDisabled(),
+      ).toBe(true);
+      expect(await preview.innerText()).toContain('请检查分页');
+    } finally {
+      await f.close();
+    }
+  });
 
   it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
     const f = await fixture({ artifacts: true });

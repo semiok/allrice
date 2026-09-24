@@ -1,4 +1,5 @@
 'use client';
+import { OfficePreview } from './office-preview';
 import { ChangesetPanel } from './changeset-panel';
 import {
   lazy,
@@ -293,6 +294,8 @@ export function ReadOnlyArtifactPreview({
 }: {
   preview: ArtifactPreview;
 }) {
+  if (preview.kind === 'office')
+    return <OfficePreview preview={preview} key={preview.checksum} />;
   if (preview.kind === 'text')
     return preview.mediaType === 'text/markdown' ||
       preview.mediaType === 'text/plain' ? (
@@ -1012,8 +1015,23 @@ function ArtifactReview({
                 alt={`${artifact.version.fileName} 静态预览`}
               />
             </div>
+          ) : preview?.kind === 'office' ? (
+            <OfficePreview preview={preview} key={preview.checksum} />
           ) : preview?.kind === 'download_only' ? (
-            <p className={styles.muted}>{preview.reason}</p>
+            <div>
+              <p className={styles.muted}>{preview.reason}</p>
+              {['docx', 'xlsx', 'pptx'].includes(artifact.version.format) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreview(null);
+                    setPreviewRetry((n) => n + 1);
+                  }}
+                >
+                  重试预览
+                </button>
+              )}
+            </div>
           ) : !preview ? (
             previewError ? (
               <div role="alert" className={styles.error}>

@@ -1,6 +1,21 @@
 name: allrice
 
 services:
+  office-renderer:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.office-renderer
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: 1
+    pids_limit: 128
+    networks: [office]
+    restart: unless-stopped
+
   postgres:
     image: pgvector/pgvector:pg17
     environment:
@@ -32,14 +47,18 @@ services:
     restart: 'no'
 
   web:
+    networks: [default, office]
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.web
     depends_on:
       migrate:
         condition: service_completed_successfully
+      office-renderer:
+        condition: service_healthy
     environment:
       ALLRICE_ENV: ${ALLRICE_ENV:-production}
+      ALLRICE_OFFICE_RENDERER_URL: http://office-renderer:3112
       ALLRICE_WORKBENCH_ENABLED: ${ALLRICE_WORKBENCH_ENABLED:-1}
       ALLRICE_ASSISTANTS_ENABLED: ${ALLRICE_ASSISTANTS_ENABLED:-1}
       ALLRICE_CHANGESET_ENABLED: ${ALLRICE_CHANGESET_ENABLED:-1}
@@ -117,14 +136,18 @@ services:
       - dsh-platform-data:/var/lib/allrice/dsh-platform
 
   worker:
+    networks: [default, office]
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.worker
     depends_on:
       migrate:
         condition: service_completed_successfully
+      office-renderer:
+        condition: service_healthy
     environment:
       ALLRICE_ENV: ${ALLRICE_ENV:-production}
+      ALLRICE_OFFICE_RENDERER_URL: http://office-renderer:3112
       ALLRICE_WORKBENCH_ENABLED: ${ALLRICE_WORKBENCH_ENABLED:-1}
       ALLRICE_ASSISTANTS_ENABLED: ${ALLRICE_ASSISTANTS_ENABLED:-1}
       ALLRICE_CHANGESET_ENABLED: ${ALLRICE_CHANGESET_ENABLED:-1}
@@ -190,3 +213,7 @@ volumes:
   dsh-admin-data:
   dsh-platform-data:
   dsh-runtime-data:
+
+networks:
+  office:
+    internal: true

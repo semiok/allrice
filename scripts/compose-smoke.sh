@@ -46,6 +46,8 @@ docker compose config --quiet
 docker compose --project-name "${compose_project}" up --build --wait --wait-timeout 300
 
 wait_for_proxy_ready
+docker compose --project-name "${compose_project}" exec -T office-renderer python3 -m unittest test_renderer
+docker compose --project-name "${compose_project}" exec -T worker node scripts/acceptance/office-renderer.mjs
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/live"
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/ready"
 

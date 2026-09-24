@@ -10,7 +10,7 @@ pnpm install
 pnpm dev
 ```
 
-An `.env` file is optional. The default path provisions a private development database, migrates and verifies it, creates local storage, then starts both application processes.
+An `.env` file is optional. The default path provisions a private development database, migrates and verifies it, creates local storage and starts the isolated Office renderer, then starts both application processes.
 
 ## Requirements
 
@@ -61,7 +61,7 @@ pnpm db:setup
 pnpm dev
 ```
 
-With `DATABASE_URL` set, AllRice never starts or stops Docker. `db:setup` applies ordered migrations under a PostgreSQL advisory lock and runs a read-only schema verification. If your managed PostgreSQL provider prevents the application user from creating extensions, ask an administrator to run `CREATE EXTENSION vector;` once.
+With `DATABASE_URL` set, database setup never starts or stops Docker. `pnpm dev` still starts the Office renderer unless `ALLRICE_OFFICE_RENDERER_URL` points to an existing private service. `db:setup` applies ordered migrations under a PostgreSQL advisory lock and runs a read-only schema verification. If your managed PostgreSQL provider prevents the application user from creating extensions, ask an administrator to run `CREATE EXTENSION vector;` once.
 
 For a native local installation, install PostgreSQL 17 and the matching pgvector package using your operating system's package manager, start PostgreSQL, create the user/database, and use the same `DATABASE_URL` flow. Docker remains the reference development path because it pins both versions and is tested in CI.
 
@@ -71,7 +71,10 @@ MET-157 Office content is synchronized by the normal `db:setup` / `content:sync`
 workflow. Deploy its application changes and catalog together: the catalog
 records replacements for the two legacy document Skills, and the employee
 editor/compiler resolves them for new drafts. Existing published packages stay
-frozen. Office adds no environment variable, Python dependency or SQL migration;
+frozen. Office adds no SQL migration. PR3 uses an isolated LibreOffice/UNO/Poppler service,
+started by default in Compose and `pnpm dev`, on loopback port 3112.
+`ALLRICE_OFFICE_RENDERER_URL` selects an existing private renderer when needed;
+it is not an enable switch. Host Python/LibreOffice installation is unnecessary;
 see [Office setup and rollback](../features/office/README.md).
 
 Copy `.env.example` to `.env` only when changing defaults. The bootstrap script loads this root file and passes one consistent environment to migration, Web, and Worker.

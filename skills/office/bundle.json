@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "version": "1.1.0",
-  "contentChecksum": "sha256:d114b672ca996706a9bf478f6b3d680cb6d9c4cc2f1dc78d8ac2ec46a69e00b3",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=d114b672ca996706a9bf478f6b3d680cb6d9c4cc2f1dc78d8ac2ec46a69e00b3",
+  "version": "1.2.0",
+  "contentChecksum": "sha256:5ae056ec42bb0eb810ca7b5a680e61f6a895a521e2d55c5644b50954a24d99e3",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=5ae056ec42bb0eb810ca7b5a680e61f6a895a521e2d55c5644b50954a24d99e3",
   "license": "Apache-2.0 AND MIT",
   "reviewedBy": "MET-157 Office workflow adaptation",
   "resources": [
@@ -15,26 +15,26 @@
     {
       "path": "references/docx.md",
       "mediaType": "text/markdown",
-      "byteLength": 2342,
-      "checksum": "sha256:0ce2ec4bec522d5a2cbd1d47949935a7173354589c5a92fa63a015bcf6216960"
+      "byteLength": 2716,
+      "checksum": "sha256:8ff733696f4a9db39f361e753f516d3b5e073136695c064efc993faf42582921"
     },
     {
       "path": "references/pptx.md",
       "mediaType": "text/markdown",
-      "byteLength": 2554,
-      "checksum": "sha256:4daccaa1af84b4dd97c2954ad736a03fa4f2745cd162ee8a6ed175f296b8d40d"
+      "byteLength": 2818,
+      "checksum": "sha256:8c0ba1e966e1de4ad554e03eaccf94005e4615faf0c67353b37e1eb2d8c09b9e"
     },
     {
       "path": "references/provenance.md",
       "mediaType": "text/markdown",
-      "byteLength": 3526,
-      "checksum": "sha256:fce001de6abc112f62125b987ed817e385c88ae7686209a85931f79609b6042a"
+      "byteLength": 5157,
+      "checksum": "sha256:19472998744d4d41181a635e6f3217a66053a64be362677635602f53960df47e"
     },
     {
       "path": "references/xlsx.md",
       "mediaType": "text/markdown",
-      "byteLength": 2458,
-      "checksum": "sha256:0c213ce9bf457c730a9d8f10094e83c6c121fbd8eaac1089b86de1a5dbeab2c9"
+      "byteLength": 3033,
+      "checksum": "sha256:acdd30b6d2d908bb6002f836689e82b1405afaf5cf6d8fea409917ae4ba1d858"
     }
   ],
   "dependencies": [
@@ -55,5 +55,5 @@
       "name": "workspace.export.create"
     }
   ],
-  "checksum": "sha256:7a17be0517f81659a389b9187b268ceff35b53217b9909bf5fbbfbcba328342c"
+  "checksum": "sha256:55e750cacc473ef13e47ca5b310c02bedffd784a9cc855af8504cd9d2f37899c"
 }

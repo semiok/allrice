@@ -12,8 +12,10 @@ import {
   DeliveryFormatSchema,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
+import { officeFormat } from '@allrice/office-runtime';
 
 import { generateOfficeExport } from '../../office/export.js';
+import { checkOfficeExport } from '../../office/quality.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { HandlerError } from '../../errors.js';
 import { stringValue } from '../input-values.js';
@@ -70,11 +72,27 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       '交付文件超过 8 MB，请拆分内容',
       false,
     );
-  const officeResult = hasOffice
+  const officeType = officeFormat(generated.mediaType);
+  const checked = officeType
+    ? await checkOfficeExport(generated.bytes, officeType)
+    : undefined;
+  if (checked && checked.bytes.length > 8_000_000)
+    throw new HandlerError(
+      'TOOL_FILE_TOO_LARGE',
+      '交付文件超过 8 MB，请拆分内容',
+      false,
+    );
+  const officeResult = officeType
     ? {
         sourceFile: generated.sourceFile,
         changes: generated.changes,
-        warnings: generated.warnings,
+        quality: checked?.quality,
+        warnings: [
+          ...(checked?.quality.status === 'checked'
+            ? []
+            : (generated.warnings ?? [])),
+          ...(checked?.warnings ?? []),
+        ],
       }
     : {};
   let fileName = [...stringValue(args.fileName, 'fileName')]
@@ -88,7 +106,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   if (!fileName.toLowerCase().endsWith(generated.extension)) {
     fileName = `${fileName}${generated.extension}`;
   }
-  const bytes = generated.bytes;
+  const bytes = checked?.bytes ?? generated.bytes;
   const storage = new LocalStorageAdapter(input.storageRoot);
   const kind = args.artifactKind ?? 'document';
   if (

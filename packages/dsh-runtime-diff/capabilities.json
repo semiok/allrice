@@ -40,8 +40,8 @@
         },
         {
           "id": "office",
-          "name": "Office 文档阅读、生成与编辑",
-          "detail": "单一 Office Skill 合并阅读与交付；支持 Word 原生表格、Excel 多表与公式、PPT 可编辑图表及原文件文字/单元格修改，保留模板与版本来源。公式重算、视觉检查与真实 Dev 验收仍由 MET-157 PR3 完成。",
+          "name": "Office 文档阅读、编辑与预览",
+          "detail": "单一 Office Skill 合并阅读与交付；支持 Word 原生表格、Excel 多表与公式、PPT 可编辑图表及原文件文字/单元格修改，保留模板与版本来源。默认重算普通/共享 Excel 公式并显示错误、提供文档页面预览；数组公式/外链数据暂未检查，页面需核对排版。真实 Dev 验收进展见 MET-157。",
           "status": "按租户启用",
           "action": "employees"
         }
