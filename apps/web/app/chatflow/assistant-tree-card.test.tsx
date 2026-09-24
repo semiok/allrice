@@ -74,7 +74,7 @@ describe('P26 actual-state presentation (fixtures are not execution evidence)', 
     tree.instances = tree.instances.slice(0, 1);
     expect(render(tree)).toContain('暂无助手');
     tree.configuration.allowAssistants = false;
-    expect(render(tree)).toContain('本次不使用助手');
+    expect(render(tree)).toContain('由 Rice 独立处理');
   });
   it('keeps pending stops visible outside default-collapsed details', () => {
     const tree = fixture();

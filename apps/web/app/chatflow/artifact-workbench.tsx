@@ -33,7 +33,6 @@ import styles from './workbench.module.css';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { readJson } from './chatflow-utils';
 import { AssistantMarkdown } from './assistant-markdown';
-import type { Message } from './chatflow-types';
 
 const RichDiff = lazy(() =>
   import('./cline-adapter/tool-file-diff').then((m) => ({
@@ -67,7 +66,6 @@ type Props = {
   listError: string;
   listLoading: boolean;
   narrow: boolean;
-  messagePreview?: Message | null;
   noticeId?: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
@@ -203,26 +201,7 @@ export function ArtifactWorkbench(props: Props) {
               {props.listError}
             </p>
           ) : null}
-          {props.messagePreview ? (
-            <section aria-label="消息预览" className={styles.messagePreview}>
-              <h3>消息预览</h3>
-              <p className={styles.muted}>
-                这是会话回复，非已发布工件；没有工件版本或落盘证明。
-              </p>
-              <p className={styles.muted}>
-                Run {props.messagePreview.runId?.slice(0, 8) ?? '未关联'} · 只读
-              </p>
-              <SafeDocument text={props.messagePreview.content.text} />
-              {props.artifacts[0] ? (
-                <button
-                  type="button"
-                  onClick={() => select(props.artifacts[0]!.id)}
-                >
-                  返回工件
-                </button>
-              ) : null}
-            </section>
-          ) : artifactId && props.sessionId ? (
+          {artifactId && props.sessionId ? (
             <>
               <select
                 id="workbench-artifacts"

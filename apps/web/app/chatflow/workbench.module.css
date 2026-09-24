@@ -249,8 +249,7 @@
   border-radius: 6px;
   background: #3474e508;
 }
-.document,
-.messagePreview {
+.document {
   overflow-wrap: anywhere;
   min-width: 0;
 }

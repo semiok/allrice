@@ -7,12 +7,10 @@ import {
   workbenchJson,
   type ArtifactCursor,
 } from '../../lib/chatflow/workbench-model';
-import type { Message } from './chatflow-types';
 
 type Selection = {
   id: string | null;
   explicit: boolean;
-  message: Message | null;
 };
 type Data = {
   scope: string;
@@ -25,7 +23,7 @@ const empty = (scope: string): Data => ({
   scope,
   artifacts: [],
   nextCursor: null,
-  selection: { id: null, explicit: false, message: null },
+  selection: { id: null, explicit: false },
   noticeId: null,
 });
 
@@ -132,7 +130,7 @@ export function useArtifactWorkbench({
             artifacts,
             nextCursor: page.nextCursor,
             selection: automatic
-              ? { id: newest.id, explicit: false, message: null }
+              ? { id: newest.id, explicit: false }
               : current.selection,
             noticeId: arrived
               ? automatic && visibleRef.current
@@ -167,9 +165,7 @@ export function useArtifactWorkbench({
         const current = previous.scope === scope ? previous : empty(scope);
         return {
           ...current,
-          selection: id
-            ? { id, explicit: true, message: null }
-            : current.selection,
+          selection: id ? { id, explicit: true } : current.selection,
           noticeId:
             id || current.selection.id === current.noticeId
               ? null
@@ -180,32 +176,18 @@ export function useArtifactWorkbench({
     },
     [scope, onOpen],
   );
-  const previewMessage = useCallback(
-    (message: Message) => {
-      if (!confirmNavigation()) return;
-      setData((previous) => ({
-        ...(previous.scope === scope ? previous : empty(scope)),
-        selection: { id: null, explicit: true, message },
-        noticeId: null,
-      }));
-      onOpen();
-    },
-    [scope, onOpen, confirmNavigation],
-  );
   const current = data.scope === scope ? data : empty(scope);
   return {
     scope,
     artifacts: current.artifacts,
     nextCursor: current.nextCursor,
     selectedId: current.selection.id,
-    messagePreview: current.selection.message,
     noticeId: current.noticeId,
     error: status.scope === scope ? status.error : '',
     loading: status.scope === scope && status.loading,
     reload,
     show,
     close: onClose,
-    previewMessage,
     noteDirty,
     confirmNavigation,
   };
