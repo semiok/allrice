@@ -2030,7 +2030,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.delay = new Promise<void>((done) => {
         release = done;
       });
+      const bCatalog = f.page.waitForResponse(
+        (r) => new URL(r.url()).pathname === `/api/v1/sessions/${B}/artifacts`,
+      );
       await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
+      await (await bCatalog).finished();
       await expect.poll(() => f.panel.count()).toBe(0);
       await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
       // A's refreshed catalog is blocked. The retained catalog still opens now.
