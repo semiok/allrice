@@ -163,7 +163,8 @@ export function ChatFlowClient({
   } = layout;
   const resize = useWorkbenchResize(
     layout.panelWidth,
-    sidebarCollapsed ? 57 : 240,
+    layout.sidebarWidth,
+    sidebarCollapsed || layout.compact,
   );
   const workbenchRequested = workbenchEnabled && layout.open;
   const workbenchEntry = useRef<HTMLButtonElement>(null);
@@ -888,7 +889,7 @@ export function ChatFlowClient({
         if (!busy) uploadAttachments(event.dataTransfer.files);
       }}
       style={{
-        gridTemplateColumns: `${sidebarCollapsed ? '57px' : '240px'} minmax(0, 1fr)${workbenchOpen && !workbenchNarrow ? ` ${resize.width}px` : ''}`,
+        gridTemplateColumns: `${resize.sidebarWidth}px minmax(0, 1fr)${workbenchOpen && !workbenchNarrow ? ` ${resize.width}px` : ''}`,
       }}
     >
       {imageDragActive ? (
@@ -1195,6 +1196,18 @@ export function ChatFlowClient({
             void streamRun(runId, activeId);
             void interactions.reload();
           }}
+        />
+      ) : null}
+
+      {!sidebarCollapsed && !layout.compact ? (
+        <WorkbenchSplitter
+          key={`sidebar/${workspace.viewerId ?? ''}/${workspace.workspaceId}`}
+          side="sidebar"
+          width={resize.sidebarWidth}
+          min={resize.sidebarMin}
+          max={resize.sidebarMax}
+          onChange={layout.setSidebarWidth}
+          onDraggingChange={resize.setDragging}
         />
       ) : null}
 

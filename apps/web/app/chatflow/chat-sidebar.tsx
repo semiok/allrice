@@ -55,6 +55,7 @@ export function ChatSidebar({
 
   return (
     <aside
+      id="chat-sidebar"
       ref={sidebar}
       tabIndex={overlay ? -1 : undefined}
       role={overlay ? 'dialog' : undefined}
