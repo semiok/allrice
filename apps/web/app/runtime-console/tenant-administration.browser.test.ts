@@ -83,7 +83,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       absWorkingDir: process.cwd(),
       entryPoints: ['apps/web/test/tenant-administration-page.tsx'],
       bundle: true,
-      format: 'iife',
+      // Preserve shared eager/lazy dependency initialization as production ESM does.
+      format: 'esm',
+      splitting: true,
       platform: 'browser',
       write: false,
       outdir: '/unused-tenant-admin',
@@ -92,11 +94,17 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       define: { 'process.env.NODE_ENV': '"development"', 'process.env': '{}' },
     });
     const js = built.outputFiles.find((f: { path: string }) =>
-        f.path.endsWith('.js'),
+        f.path.endsWith('/tenant-administration-page.js'),
       ).contents,
       css = built.outputFiles.find((f: { path: string }) =>
-        f.path.endsWith('.css'),
+        f.path.endsWith('/tenant-administration-page.css'),
       ).contents;
+    const assets = new Map<string, Uint8Array>(
+      built.outputFiles.map((file: { path: string; contents: Uint8Array }) => [
+        file.path.slice(file.path.lastIndexOf('/')),
+        file.contents,
+      ]),
+    );
     server = createServer(async (req, res) => {
       try {
         const url = new URL(req.url!, origin),
@@ -170,19 +178,19 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           return;
         }
         res.writeHead(200, {
-          'Content-Type':
-            path === '/app.js'
-              ? 'application/javascript'
-              : path === '/app.css'
-                ? 'text/css'
-                : 'text/html',
+          'Content-Type': path.endsWith('.js')
+            ? 'application/javascript'
+            : path === '/app.css'
+              ? 'text/css'
+              : 'text/html',
         });
         res.end(
           path === '/app.js'
             ? js
             : path === '/app.css'
               ? css
-              : '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0;background:#101216"><div id="root"></div><script src="/app.js"></script></body></html>',
+              : (assets.get(path) ??
+                '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0;background:#101216"><div id="root"></div><script type="module" src="/app.js"></script></body></html>'),
         );
       } catch (e) {
         failures.push(
