@@ -1,3 +1,4 @@
+import { officeMediaTypes } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import {
   OfficeRenderResponseSchema,
@@ -6,11 +7,7 @@ import {
   type OfficePreview,
 } from '@allrice/contracts';
 
-export const officeMediaTypes = {
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-} as const;
+export { officeMediaTypes } from '@allrice/contracts';
 export function officeFormat(mediaType: string): OfficeFormat | undefined {
   return (Object.keys(officeMediaTypes) as OfficeFormat[]).find(
     (f) => officeMediaTypes[f] === mediaType,

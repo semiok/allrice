@@ -10,11 +10,7 @@ import {
 import { HandlerError } from '../errors.js';
 
 export type OfficeFormat = 'docx' | 'xlsx' | 'pptx';
-export const officeMediaTypes = {
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-} as const;
+export { officeMediaTypes } from '@allrice/contracts';
 export const ns = {
   w: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
   a: 'http://schemas.openxmlformats.org/drawingml/2006/main',

@@ -179,7 +179,9 @@ fi
 # Simulate an ungraceful Worker crash. The expired lease must be recovered by
 # the replacement Worker without browser participation.
 docker compose --project-name "${compose_project}" kill -s SIGKILL worker
-docker compose --project-name "${compose_project}" up --detach --wait --wait-timeout 120 worker
+# Recover only the crashed process. Recreating migrations/renderers spends the
+# job's 30-second deadline on unrelated dependency startup instead of recovery.
+docker compose --project-name "${compose_project}" up --no-deps --detach --wait --wait-timeout 120 worker
 ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \
 ALLRICE_EXECUTION_SMOKE_STATE="${execution_state}" \

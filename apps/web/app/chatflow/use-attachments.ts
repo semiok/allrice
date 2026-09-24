@@ -10,7 +10,7 @@ import {
   type SetStateAction,
 } from 'react';
 
-import type { DeliverableVersion } from '@allrice/contracts';
+import { officeMediaTypes, type DeliverableVersion } from '@allrice/contracts';
 
 import type {
   Attachment,
@@ -217,8 +217,14 @@ export function useAttachments({
       let rejection = '';
       for (const file of selected) {
         const lowerName = file.name.toLowerCase();
+        const officeType = (
+          Object.keys(officeMediaTypes) as Array<keyof typeof officeMediaTypes>
+        ).find((format) => lowerName.endsWith(`.${format}`));
         const mediaType =
-          file.type ||
+          (file.type && file.type !== 'application/octet-stream'
+            ? file.type
+            : '') ||
+          (officeType ? officeMediaTypes[officeType] : '') ||
           (lowerName.endsWith('.md')
             ? 'text/markdown'
             : lowerName.endsWith('.txt')
@@ -241,9 +247,11 @@ export function useAttachments({
           'text/markdown',
           'application/json',
           'application/pdf',
+          ...Object.values(officeMediaTypes),
         ].includes(mediaType);
         if (!supportedImage && !supportedDocument) {
-          rejection = '仅支持 PNG、JPG、WebP、GIF、PDF、TXT、MD 和 JSON。';
+          rejection =
+            '支持 Word（DOCX）、Excel（XLSX）、PPT（PPTX）、PDF、图片、TXT、MD 和 JSON。';
           continue;
         }
         const sizeLimit = supportedImage ? 20 * 1024 * 1024 : 8_000_000;

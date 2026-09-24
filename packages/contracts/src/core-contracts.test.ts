@@ -312,6 +312,28 @@ describe('storage contracts', () => {
     ).toThrow();
   });
 
+  it('accepts native Office chat attachments while rejecting macro-enabled formats', () => {
+    for (const mediaType of [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ])
+      expect(
+        CreateSessionAttachmentInputSchema.parse({
+          fileName: 'template',
+          mediaType,
+          contentBase64: 'UEs=',
+        }).mediaType,
+      ).toBe(mediaType);
+    expect(() =>
+      CreateSessionAttachmentInputSchema.parse({
+        fileName: 'template.xlsm',
+        mediaType: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+        contentBase64: 'UEs=',
+      }),
+    ).toThrow();
+  });
+
   it('allows only workspace attachment MIME types', () => {
     const base = {
       fileName: 'notes.txt',

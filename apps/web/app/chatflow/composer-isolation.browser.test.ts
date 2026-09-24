@@ -663,6 +663,46 @@ suite(
         await f.close();
       }
     }, 15_000);
+    it.each([
+      [
+        'docx',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ],
+      [
+        'xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ],
+      [
+        'pptx',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      ],
+    ])(
+      'uploads %s Office attachments through the actual composer when browser MIME is generic',
+      async (extension, mediaType) => {
+        const f = await fixture({ uploadPending: true });
+        try {
+          const input = f.page.locator('input[type=file]');
+          expect(await input.getAttribute('accept')).toContain(`.${extension}`);
+          await input.setInputFiles({
+            name: `template.${extension}`,
+            mimeType: 'application/octet-stream',
+            buffer: Buffer.from('synthetic binary'),
+          });
+          await f.send('请读取附件');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/attachments');
+          expect(f.pending[0]!.body.mediaType).toBe(mediaType);
+          await f.respond(0);
+          await f.waitPending(2);
+          expect(f.pending[1]!.body.attachmentIds).toEqual([C]);
+          await f.respond(1);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
     it('navigation during attachment persistence does not submit the departed draft', async () => {
       const f = await fixture({ uploadPending: true });
       try {

@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+export const officeMediaTypes = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+} as const;
+
 export const OfficeFormatSchema = z.enum(['docx', 'xlsx', 'pptx']);
 const address = {
   sheet: z.string().min(1).max(31),
