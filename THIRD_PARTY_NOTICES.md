@@ -90,3 +90,11 @@ and minimal host-projection/employee/accessibility patches are recorded in
 The official ui-primitives package and its runtime dependencies are consumed
 through their published package exports. The repository's existing DSH MIT
 notice applies to these additional upstream sources.
+
+MET-160 native Dock integration directly depends on the MIT-licensed
+`@deepseek-ai/dsh-client-ui-dockkit@0.1.7-rc.1` package. The native
+`ui-sidebar-right` stores, persistence, and seed contract are retained under
+`apps/web/app/chatflow/dsh-upstream/dock/`, from the same upstream commit
+`46a7f68b0922371ce7144b668b90e377d8e799f4`. Local patches and checksums are
+recorded in the existing WebUI upstream ledger. The DeepSeek MIT notice above
+applies to those source files.

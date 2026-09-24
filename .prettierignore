@@ -24,3 +24,5 @@ apps/web/app/chatflow/dsh-upstream/workspace/Rows.module.css
 apps/web/app/chatflow/dsh-upstream/workspace/tree.ts
 apps/web/app/chatflow/dsh-upstream/workspace/locales.ts
 apps/web/app/chatflow/dsh-upstream/workspace/collapsed-session-rows.ts
+
+apps/web/app/chatflow/dsh-upstream/dock/

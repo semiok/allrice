@@ -365,3 +365,43 @@
 .splitter:focus-visible::after {
   opacity: 1;
 }
+
+/* Native Dock owns tabs, splits and floating. Match the existing 56px chat chrome. */
+.nativeDock {
+  position: relative;
+}
+.nativeDock:global([data-fullscreen]) {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  width: 100%;
+}
+.nativeDock > div {
+  flex: 1;
+  min-height: 0;
+}
+.nativeDock :global([data-dockkit-strip]) {
+  box-sizing: border-box;
+  height: var(--allrice-chat-header-height, 56px);
+  flex: 0 0 var(--allrice-chat-header-height, 56px);
+  padding-top: 0;
+  align-items: center;
+  border-bottom: 1px solid var(--dsw-alias-border-l2, #ddd);
+}
+.nativeDock :global([data-dockkit-strip]) button {
+  border: 0;
+  padding: 4px;
+  background: transparent;
+}
+.nativeDock :global([data-dockkit-strip]) :global([role='tab']) {
+  padding: 0 8px;
+}
+.nativeDock .body {
+  height: 100%;
+  box-sizing: border-box;
+}
+.catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

@@ -17,7 +17,9 @@
     "@allrice/office-runtime": "workspace:*",
     "@allrice/storage": "workspace:*",
     "@allrice/ui": "workspace:*",
+    "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/dsh-client-store": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-dockkit": "0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.1",
     "@deepseek-ai/dsh-util-values": "0.1.7-rc.1",
     "@deepseek-ai/dsh-util-workspace-path": "0.1.7-rc.1",
@@ -47,8 +49,8 @@
     "shiki": "^4.4.3",
     "simple-icons": "16.31.0",
     "ws": "8.21.3",
-    "zustand": "4.4.7",
-    "@deepseek-ai/cordis": "4.0.4"
+    "zod": "^4.3.6",
+    "zustand": "4.4.7"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",
