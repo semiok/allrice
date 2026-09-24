@@ -10,6 +10,8 @@ The Skill reads PDF, DOCX, XLSX, PPTX, Markdown, JSON, text and native image att
 
 The Office bundle adapts the pinned DSH Office document, workbook and presentation guidance into three internal references. These references are not three selectable Skills. See [provenance, dependencies and modifications](../../../skills/office/references/provenance.md) and the preserved [MIT notice](../../../skills/office/references/LICENSE.dsh). All resources are included in the published frozen bundle and read with `workspace.skill.read`; model execution never resolves mutable upstream files.
 
+The PPTX exporter uses PptxGenJS's declared CommonJS entry so both the `tsx` development loader and compiled Node receive its constructor. A child-process regression test generates and reads a Chinese PPTX through the real development loader; Vitest's module transformation alone did not expose this failure.
+
 ## Existing employees and sessions
 
 `skills/catalog.json` declares `office.replaces` for `document-analysis` and `structured-deliverable`. Content synchronization retains their original rows, versions, checksums and source files, while disabling them for new selection. The administrator directory presents Office as their replacement. The catalog's replacement graph rejects missing, active, self-referencing and ambiguous sources.
@@ -19,6 +21,8 @@ Opening an employee for editing upgrades the editable definition and assembles O
 Published revisions, tenant EmployeeVersions, queued trials and existing Runs keep their frozen packages. Publishing the next draft applies Office to new sessions; existing sessions retain the previous employee version. Rollback selects the original immutable employee revision, including its old Skill IDs and exact content. The database integration suite verifies published/queued package preservation and rollback after catalog synchronization.
 
 ## What follows
+
+PR1 verification generated Chinese DOCX, XLSX and PPTX samples through the existing worker generator and read them back through the document reader. The pinned upstream `packages/skill/skill-office/assets/scripts/check_office.py` passed its package/content checks (one worksheet, two slides). This was a local synthetic compatibility check, not tenant Dev acceptance, formula evaluation or rendered visual inspection; the Python checker is not installed in the employee runtime by this PR.
 
 - **PR2:** richer native Office generation, template handling and targeted binary edits. The current exporter rebuilds from text/row objects; `parentObjectId` means artifact version history, not preservation of an original binary's layout.
 - **PR3:** structural and numerical checks, independent formula verification, rendered visual inspection and real Dev acceptance from upload to downloadable XLSX/DOCX/PPTX. A successful export alone does not prove layout quality or recalculation.
