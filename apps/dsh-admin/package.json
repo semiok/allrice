@@ -8,12 +8,14 @@
     "typecheck": "node --check server.mjs && node --check dsh-webui-compatibility.mjs && node --check dsh-upstream-auth.mjs && node --check native-auth-bridge.mjs && node --check runtime-capabilities.mjs"
   },
   "dependencies": {
+    "@allrice/contracts": "workspace:*",
     "@allrice/dsh-runtime-diff": "workspace:*",
     "@allrice/dsh-web-search-codex": "workspace:*",
     "@deepseek-ai/dsh": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-util-values": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-util-workspace-path": "0.1.5-rc.3",
     "http-proxy": "^1.18.1",
     "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "@allrice/contracts": "workspace:*"
+    "react-dom": "18.3.1"
   }
 }

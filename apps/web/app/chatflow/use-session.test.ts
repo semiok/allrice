@@ -246,6 +246,35 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
     expect(render().history?.messages[0]?.id).toBe('optimistic');
     expect(requests).toHaveLength(2); // no premature empty-history fetch for C
   });
+  it('uses explicit assignment instead of a conflicting URL or default employee', async () => {
+    const state = await ready();
+    state.setActiveId(null, true);
+    window.location.search = '?employee=unavailable';
+    const pending = render().createSession('explicit', 'employee');
+    expect(
+      JSON.parse(String(requests[0]!.init?.body)).employeeAssignmentId,
+    ).toBe('employee');
+    requests[0]!.result.resolve(Response.json({ session: session('C') }));
+    expect(await pending).toBe('C');
+  });
+  it('does not fall back when an explicit employee was withdrawn', async () => {
+    await ready();
+    await expect(
+      render().createSession('no fallback', 'withdrawn'),
+    ).rejects.toThrow('未分配');
+    expect(requests).toHaveLength(0);
+  });
+  it('invalidates a late create when the user chooses another new employee draft', async () => {
+    const state = await ready();
+    state.setActiveId(null, true);
+    const pending = render().createSession('old draft', 'employee');
+    state.setActiveId(null, true);
+    state.setPendingEmployeeAssignmentId('new-target');
+    requests[0]!.result.resolve(Response.json({ session: session('C') }));
+    expect(await pending).toBeNull();
+    expect(render().activeId).toBeNull();
+    expect(render().newSessionEmployee).toBeUndefined();
+  });
   it('preserves current-session history failures instead of swallowing real errors', async () => {
     const state = await ready();
     const pending = state.loadHistory('A');

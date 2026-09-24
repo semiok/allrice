@@ -16,6 +16,19 @@ type UseSessionOptions = {
 export function useSession({ setError }: UseSessionOptions) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
+  const [pendingEmployee, setPendingEmployee] = useState<{
+    scope: string;
+    id: string;
+  } | null>(null);
+  const employeeScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const pendingEmployeeAssignmentId =
+    pendingEmployee?.scope === employeeScope ? pendingEmployee.id : null;
+  const setPendingEmployeeAssignmentId = useCallback(
+    (id: string | null) => {
+      setPendingEmployee(id ? { scope: employeeScope, id } : null);
+    },
+    [employeeScope],
+  );
   const [activeId, updateActiveId] = useState<string | null>(null);
   const [selection] = useState(createSessionSelection);
   const [history, setHistory] = useState<History | null>(null);
@@ -169,18 +182,22 @@ export function useSession({ setError }: UseSessionOptions) {
   );
 
   const createSession = useCallback(
-    async (title: string) => {
+    async (title: string, targetEmployeeAssignmentId?: string) => {
       if (!workspace) return null;
       const scope = selection.capture();
       const requestedEmployee = new URLSearchParams(window.location.search).get(
         'employee',
       );
-      const employee = requestedEmployee
-        ? workspace.employees.find(
-            (item) => item.employeeId === requestedEmployee,
-          )
-        : (workspace.employees.find((item) => item.isDefault) ??
-          workspace.employees[0]);
+      const explicitAssignment =
+        targetEmployeeAssignmentId ?? pendingEmployeeAssignmentId;
+      const employee = explicitAssignment
+        ? workspace.employees.find((item) => item.id === explicitAssignment)
+        : requestedEmployee
+          ? workspace.employees.find(
+              (item) => item.employeeId === requestedEmployee,
+            )
+          : (workspace.employees.find((item) => item.isDefault) ??
+            workspace.employees[0]);
       if (!employee)
         throw new Error('当前账号未分配此员工，请检查登录账号和发布目标');
       const result = await readJson<{ session: Session }>(
@@ -220,7 +237,13 @@ export function useSession({ setError }: UseSessionOptions) {
       });
       return result.session.id;
     },
-    [selection, setActiveId, tenantHeaders, workspace],
+    [
+      selection,
+      setActiveId,
+      tenantHeaders,
+      workspace,
+      pendingEmployeeAssignmentId,
+    ],
   );
 
   useEffect(() => {
@@ -241,12 +264,19 @@ export function useSession({ setError }: UseSessionOptions) {
     typeof window === 'undefined'
       ? null
       : new URLSearchParams(window.location.search).get('employee');
-  const newSessionEmployee = requestedEmployee
-    ? workspace?.employees.find((item) => item.employeeId === requestedEmployee)
-    : (workspace?.employees.find((item) => item.isDefault) ??
-      workspace?.employees[0]);
+  const newSessionEmployee = pendingEmployeeAssignmentId
+    ? workspace?.employees.find(
+        (item) => item.id === pendingEmployeeAssignmentId,
+      )
+    : requestedEmployee
+      ? workspace?.employees.find(
+          (item) => item.employeeId === requestedEmployee,
+        )
+      : (workspace?.employees.find((item) => item.isDefault) ??
+        workspace?.employees[0]);
   return {
     newSessionEmployee,
+    setPendingEmployeeAssignmentId,
     activeId,
     captureSelection: selection.capture,
     createSession,

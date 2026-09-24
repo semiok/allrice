@@ -316,6 +316,17 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     expect((await f.publish()).valid).toBe(true);
     const workspace = await getEmployeeWorkspace(context, f.workspaceId);
     expect(
+      workspace.sessions.find((item) => item.id === sessionId),
+    ).toMatchObject({
+      employeeName: f.definition.name,
+      running: false,
+    });
+    expect(
+      workspace.sessions.find((item) => item.id === sessionId)
+        ?.pendingInteraction,
+    ).toBeUndefined();
+
+    expect(
       workspace.sessionModels.find((x) => x.sessionId === sessionId),
     ).toMatchObject({ provider: 'openai-codex', reasoningEffort: 'high' });
     const next = await freezeSessionModelSnapshot(scope);

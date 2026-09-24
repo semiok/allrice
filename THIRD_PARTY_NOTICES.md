@@ -78,3 +78,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## DSH employee workspace UI (MET-160)
+
+DSH `0.1.7-rc.1`, commit `46a7f68b0922371ce7144b668b90e377d8e799f4`,
+https://github.com/deepseek-ai/deepseek-harness, MIT.
+Native workspace Rows/tree/locales and the collapsedSessionRows excerpt are
+preserved under `apps/web/app/chatflow/dsh-upstream/workspace/`. Source hashes
+and minimal host-projection/employee/accessibility patches are recorded in
+`apps/web/app/dsh-upstream/upstream.json` and `scripts/dsh-ui-patches/`.
+The official ui-primitives package and its runtime dependencies are consumed
+through their published package exports. The repository's existing DSH MIT
+notice applies to these additional upstream sources.
