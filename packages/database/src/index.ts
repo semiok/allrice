@@ -74,3 +74,5 @@ export * from './tenant-quotas.ts';
 export * from './tenant-validation.ts';
 export * from './tenant-environments.ts';
 export * from './tenant-management-scope.ts';
+
+export * from './tenant-employees.ts';
