@@ -530,7 +530,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('heading', { name: '已有平台授权', exact: true })
         .waitFor();
       expect(
-        await page.getByText(/尚未配对你自己的 Bridge/).count(),
+        await page.getByText(/连接电脑后即可处理本地任务/).count(),
       ).toBeGreaterThan(0);
       await page
         .getByText('单次任务审批状态（与环境授权分开）', { exact: true })
