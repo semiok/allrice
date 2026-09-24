@@ -25,9 +25,6 @@ interface ChatComposerProps {
   fileInput: RefObject<HTMLInputElement | null>;
   hero?: boolean;
   isRunning: boolean;
-  inputMode?: 'steer' | 'follow_up';
-  canSteer?: boolean;
-  onInputModeChange?: (mode: 'steer' | 'follow_up') => void;
   localWorkspaceLabel?: string;
   localWorkspaceOnline: boolean;
   bridgeConnectionState: BridgeConnectionState;
@@ -59,9 +56,6 @@ export function ChatComposer({
   fileInput,
   hero = false,
   isRunning,
-  inputMode = 'follow_up',
-  canSteer = false,
-  onInputModeChange,
   localWorkspaceLabel,
   localWorkspaceOnline,
   bridgeConnectionState,
@@ -90,31 +84,6 @@ export function ChatComposer({
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
       {error ? <div className={inputUi.notice}>{error}</div> : null}
       <div className={inputUi.card}>
-        {isRunning && onInputModeChange ? (
-          <label className={inputUi.notice}>
-            发送方式：
-            <select
-              aria-label="运行中输入意图"
-              value={inputMode}
-              onChange={(e) =>
-                onInputModeChange(e.target.value as 'steer' | 'follow_up')
-              }
-            >
-              <option value="follow_up">排队，作为下一轮任务</option>
-              <option
-                value="steer"
-                disabled={!canSteer || pendingAttachments.length > 0}
-              >
-                补充／纠正当前回合
-              </option>
-            </select>
-            <small>
-              {inputMode === 'steer'
-                ? '仅发送到当前回合；失效后不会自动转成新任务。'
-                : '当前任务继续，新消息按顺序处理。'}
-            </small>
-          </label>
-        ) : null}
         {pendingAttachments.length ? (
           <PendingAttachmentRail
             attachments={pendingAttachments}

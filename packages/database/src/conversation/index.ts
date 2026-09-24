@@ -2,6 +2,7 @@
 export * from './notifications.ts';
 export * from './conversation-checkpoint.ts';
 export * from './conversation-input.ts';
+export { updateQueuedMessage } from './queued-messages.ts';
 export * from './conversation-runtime.ts';
 export * from './usage.ts';
 export * from './interaction-status.ts';

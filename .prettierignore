@@ -10,3 +10,6 @@ apps/web/next-env.d.ts
 skills/office/references/docx.md
 skills/office/references/xlsx.md
 skills/office/references/pptx.md
+
+# Preserve the pinned DSH queue stylesheet byte-for-byte below its provenance header.
+apps/web/app/chatflow/dsh-upstream/QueueDock.module.css

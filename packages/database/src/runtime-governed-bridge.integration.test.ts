@@ -57,7 +57,8 @@ import { RuntimeBridgeOperationClient } from '../../../apps/rice-bridge/src/oper
 import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/operation-http.js';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
 import { riceManifest } from './employees/employee-config.ts';
-import { sendChatMessage } from './workspace/service.ts';
+import { updateQueuedMessage } from './conversation/queued-messages.ts';
+import { sendChatMessage, getChatSessionHistory } from './workspace/service.ts';
 import { claimNextJob, cancelRun } from './execution/queue.ts';
 import { runClaimedJob } from '../../../apps/worker/src/job-runner.js';
 import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
@@ -1730,6 +1731,196 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     },
     45000,
   );
+  async function queuedFixture() {
+    const f = await artifactFixture(riceManifest());
+    f.context.memberships = f.policyPayload.memberships;
+    const workerId = f.execution.worker.id;
+    const turnId = `native-${f.sessionId}:turn:1`;
+    await database`update allrice_conversation_runtimes set worker_id=${workerId},active_turn_id=${turnId} where session_id=${f.sessionId}`;
+    return {
+      ...f,
+      workerId,
+      turnId,
+      send: (text: string, attachmentIds: string[] = []) =>
+        sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
+          clientMessageId: randomUUID(),
+          text,
+          attachmentIds,
+          deliveryMode: 'follow_up',
+        }),
+      history: () =>
+        getChatSessionHistory(f.context, f.context.workspaceId!, f.sessionId),
+      change: (messageId: string, action: unknown) =>
+        updateQueuedMessage(
+          f.context,
+          f.context.workspaceId!,
+          f.sessionId,
+          messageId,
+          action,
+        ),
+      release: () =>
+        releaseConversationRuntime({
+          organizationId: f.context.organizationId,
+          workspaceId: f.context.workspaceId!,
+          sessionId: f.sessionId,
+          runId: f.run,
+          workerId,
+          outcome: 'idle',
+        }),
+    };
+  }
+  it('QueueDock persists FIFO, hides future turns, cancels a removed message and releases the next after editing the head', async () => {
+    const f = await queuedFixture();
+    const first = await f.send('queued first');
+    const second = await f.send('queued second');
+    const third = await f.send('queued third');
+    const history = await f.history();
+    expect(history.queuedMessages.map((m) => m.text)).toEqual([
+      'queued first',
+      'queued second',
+      'queued third',
+    ]);
+    expect(
+      history.messages.some((m) => m.content.text.startsWith('queued ')),
+    ).toBe(false);
+    await f.change(second.userMessage.id, { action: 'remove' });
+    await f.change(second.userMessage.id, { action: 'remove' }); // lost response / duplicate click
+    expect((await f.history()).queuedMessages.map((m) => m.text)).toEqual([
+      'queued first',
+      'queued third',
+    ]);
+    const [canceled] =
+      await database`select status from allrice_jobs where run_id=${second.run.id}`;
+    expect(canceled!.status).toBe('canceled');
+    expect(await claimNextJob(randomUUID(), 30_000)).toBeNull();
+    await f.release();
+    await f.change(first.userMessage.id, { action: 'edit' });
+    const claimed = await claimNextJob(randomUUID(), 30_000);
+    expect(claimed).not.toBeNull();
+    const [claimedRow] =
+      await database`select run_id from allrice_jobs where id=${claimed!.id}`;
+    expect(claimedRow!.run_id).toBe(third.run.id);
+    await expect(
+      f.change(third.userMessage.id, { action: 'remove' }),
+    ).rejects.toThrow('queued_message_started');
+    const after = await f.history();
+    expect(after.queuedMessages).toEqual([]);
+    expect(after.messages.some((m) => m.id === third.userMessage.id)).toBe(
+      true,
+    );
+    expect(
+      after.messages.some((m) =>
+        [first.userMessage.id, second.userMessage.id].includes(m.id),
+      ),
+    ).toBe(false);
+  });
+  it('QueueDock races turn completion against withdrawal without losing the next FIFO item', async () => {
+    const f = await queuedFixture();
+    const first = await f.send('remove during completion');
+    const next = await f.send('continue after completion');
+    await Promise.all([
+      f.release(),
+      f.change(first.userMessage.id, { action: 'remove' }),
+    ]);
+    const [row] =
+      await database`select f.state,j.status,j.available_at<=clock_timestamp() as available from allrice_conversation_followups f join allrice_jobs j on j.run_id=f.run_id where f.run_id=${next.run.id}`;
+    expect(row).toMatchObject({
+      state: 'released',
+      status: 'queued',
+      available: true,
+    });
+    await f.change(next.userMessage.id, { action: 'remove' });
+  });
+  it('QueueDock keeps attachments on edit/resend and rejects foreign users, stale turns and attachment steering', async () => {
+    const f = await queuedFixture();
+    const artifact = await f.publish();
+    const first = await f.send('check file', [artifact.object.id]);
+    const [item] = (await f.history()).queuedMessages;
+    expect(item?.attachments?.[0]?.id).toBe(artifact.object.id);
+    await expect(
+      updateQueuedMessage(
+        { ...f.context, actor: { type: 'user', id: randomUUID() } },
+        f.context.workspaceId!,
+        f.sessionId,
+        first.userMessage.id,
+        { action: 'remove' },
+      ),
+    ).rejects.toThrow('artifact_not_found');
+    await expect(
+      f.change(first.userMessage.id, {
+        action: 'steer',
+        expectedTurnId: f.turnId,
+        expectedGeneration: 3,
+      }),
+    ).rejects.toThrow('queued_attachments_require_turn');
+    await f.change(first.userMessage.id, { action: 'edit' });
+    const edited = await f.send('check updated request', [artifact.object.id]);
+    expect((await f.history()).queuedMessages.map((m) => m.id)).toEqual([
+      edited.userMessage.id,
+    ]);
+    const plain = await f.send('later instruction');
+    await expect(
+      f.change(plain.userMessage.id, {
+        action: 'steer',
+        expectedTurnId: 'stale-turn',
+        expectedGeneration: 3,
+      }),
+    ).rejects.toThrow('input_turn_changed');
+    expect((await f.history()).queuedMessages).toHaveLength(2);
+    const [request] =
+      await database`select prompt_snapshot from allrice_employee_runs where run_id=${plain.run.id}`;
+    expect(JSON.stringify(request)).not.toContain('check file');
+    expect(JSON.stringify(request)).not.toContain('check updated request');
+  });
+  it('QueueDock promotes the existing input once and requires native adoption, never a second followup', async () => {
+    const f = await queuedFixture();
+    const sent = await f.send('Use corrected numbers.');
+    const action = {
+      action: 'steer',
+      expectedTurnId: f.turnId,
+      expectedGeneration: 3,
+    };
+    await f.change(sent.userMessage.id, action);
+    await f.change(sent.userMessage.id, action);
+    expect((await f.history()).queuedMessages).toEqual([]);
+    expect(
+      (await f.history()).messages.some(
+        (m) => m.id === sent.assistantMessage.id,
+      ),
+    ).toBe(false);
+    const commands =
+      await database`select id from allrice_conversation_commands where followup_run_id=${sent.run.id}`;
+    expect(commands).toHaveLength(1);
+    const claimed = await claimConversationSteer({
+      organizationId: f.context.organizationId,
+      workspaceId: f.context.workspaceId!,
+      sessionId: f.sessionId,
+      workerId: f.workerId,
+      generation: 3,
+      turnId: f.turnId,
+    });
+    expect(claimed?.message).toBe('Use corrected numbers.');
+    expect(claimed?.followupRunId).toBe(sent.run.id);
+    await consumeConversationSteer({
+      commandId: claimed!.id,
+      workerId: f.workerId,
+      proof: {
+        status: 'adopted',
+        inputId: claimed!.clientUserMessageId,
+        messageId: randomUUID(),
+        turnId: f.turnId,
+        sequence: 5,
+        checkpoint: 'step_user_message',
+      },
+    });
+    expect(
+      (await getInteractionStatus(f.context, f.sessionId)).inputs[0]?.status,
+    ).toBe('adopted');
+    await f.release();
+    const [job] =
+      await database`select status from allrice_jobs where run_id=${sent.run.id}`;
+    expect(job!.status).toBe('canceled');
+  });
   it('P10 persists strict input identity, native adoption and cancels expired steer without creating a later task', async () => {
     const f = await artifactFixture(riceManifest());
     f.context.memberships = f.policyPayload.memberships;
