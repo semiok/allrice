@@ -46,6 +46,12 @@
       "target": "apps/web/app/chatflow/workbench.module.css",
       "reuse": "Unmodified native SidebarRight visibility and host structure, native duration and easing, official DockLayout tabs and floating panes.",
       "productChanges": "Keep the inherited dock opening offset on the panel parent so tab visibility changes never replay the entrance. Only docked hosts inherit translation; floating panes stay independent. Reduced motion remains supported."
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.tsx",
+      "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.tsx",
+      "reuse": "Official virtual rail, hover/focus previews, active marks, independent rail scrolling, reduced motion, original stylesheet and bounded preview helper. Component behavior is unchanged; only host type imports are adapted.",
+      "productChanges": "Map existing Allrice user/assistant messages to loaded turns and Chinese labels; connect transcript anchors, reading position and composer/viewport measurements. Navigating back pauses automatic following. No new endpoint, model call or persisted content."
     }
   ],
   "componentSets": [
@@ -342,6 +348,52 @@
           "sha256": "fb9b79548356cb256e7915e6c7526ab7349b4d425a8c0dd31ddc4f879b076def",
           "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.module.css.patch",
           "patchSha256": "d2de4ef12801ab58a3c2c8cfc3bd4238a40c3194ba7fbf0a27630e5cc2589b97"
+        }
+      ]
+    },
+    {
+      "id": "turn-navigation",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-source-with-recorded-adapter-patches",
+      "files": [
+        {
+          "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.tsx",
+          "upstreamSha256": "be03cfad53e5b0211651ba17a3d5170872139c8f3d7c086e60625f5d38a0998f",
+          "sha256": "0cf26e1752ff95a72dffa99903d777792dc8b85ba56f41c58750c2c9e5b95d81",
+          "patch": "scripts/dsh-ui-patches/TurnNavigator.tsx.patch",
+          "patchSha256": "4e47528498a702dd6eaf12e17eba8c2dbfc9631e26f6865b1ff57c20d87cc5a5"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/TurnNavigator.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.module.css",
+          "upstreamSha256": "dc6458bf2248bf32254126f7c77529ab558bf96e9601d3f7eea0c2f5a673ed6c",
+          "sha256": "dc6458bf2248bf32254126f7c77529ab558bf96e9601d3f7eea0c2f5a673ed6c"
+        }
+      ],
+      "excerpts": [
+        {
+          "source": "packages/client/ui-chat/src/client/conversation-nodes/turn-navigation.ts",
+          "symbol": "preview",
+          "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/preview.ts",
+          "sha256": "e9d2f8a9070c29bcefda575a8c9d7d0836ed6334d7ae979c99a6260db460baed",
+          "upstreamSymbolSha256": "e24f89830310740b4b13a7ce102538b79aa0446a8ecbf089c4d51f3523f7baa9",
+          "requiredDeclaration": "const PROMPT_PREVIEW_LIMIT = 50\nconst RESPONSE_PREVIEW_LIMIT = 120"
+        }
+      ],
+      "packages": [
+        {
+          "name": "@tanstack/react-virtual",
+          "version": "3.14.9",
+          "exports": [
+            "useVirtualizer",
+            "elementScroll",
+            "observeElementOffset",
+            "defaultRangeExtractor"
+          ],
+          "external": true
         }
       ]
     }
