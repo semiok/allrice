@@ -17,6 +17,7 @@ export function EmployeeSidebar({
   activeId,
   collapsed,
   onSelectSession,
+  onPrepareSession,
   onDetails,
 }: {
   workspace: Workspace;
@@ -24,6 +25,7 @@ export function EmployeeSidebar({
   activeId: string | null;
   collapsed: boolean;
   onSelectSession: (id: string) => void;
+  onPrepareSession: (id: string) => void;
   onDetails: (assignmentId: string) => void;
 }) {
   const key = employeePreferenceKey(workspace);
@@ -50,11 +52,19 @@ export function EmployeeSidebar({
     [workspace, sessions, activeId, expansion],
   );
   if (!groups.length) return <p className={css.empty}>当前没有可用员工</p>;
+  const prepareSession = (target: EventTarget) => {
+    if (!(target instanceof Element)) return;
+    const key = target.closest('[data-row-key]')?.getAttribute('data-row-key');
+    if (key?.startsWith('session:'))
+      onPrepareSession(key.slice('session:'.length));
+  };
   return (
     <div
       className={css.root}
       role="tree"
       aria-label="员工与工作"
+      onPointerOver={(event) => prepareSession(event.target)}
+      onFocusCapture={(event) => prepareSession(event.target)}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && rail) {
           event.stopPropagation();
@@ -116,6 +126,8 @@ export function EmployeeSidebar({
                     <button
                       type="button"
                       key={session.id}
+                      onPointerEnter={() => onPrepareSession(session.id)}
+                      onFocus={() => onPrepareSession(session.id)}
                       onClick={() => {
                         setRail(null);
                         onSelectSession(session.id);

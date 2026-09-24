@@ -34,6 +34,17 @@ main.shell {
   background: var(--dsw-alias-bg-base);
 }
 
+.historyLoading {
+  max-width: 800px;
+  margin: 32px auto;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+}
+
 .sidebar,
 .sidebarCollapsed {
   min-width: 0;

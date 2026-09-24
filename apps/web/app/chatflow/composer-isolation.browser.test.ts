@@ -212,12 +212,17 @@ suite(
         uploadPending?: boolean;
         running?: boolean;
         question?: boolean;
+        delayHistoryB?: boolean;
       } = {},
     ) {
       const pending: Pending[] = [];
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
+      let releaseHistoryB!: () => void;
+      const historyBGate = new Promise<void>((done) => {
+        releaseHistoryB = done;
+      });
       let assistantStatus = 'cancel_requested';
       const messages: Record<string, ReturnType<typeof message>[]> = {
         [A]: [message('history-a', 'Existing A')],
@@ -392,6 +397,7 @@ suite(
         }
         const id = path.split('/').at(-1)!;
         if (messages[id]) {
+          if (id === B && options.delayHistoryB) await historyBGate;
           answer(response, {
             history: {
               session: session(id),
@@ -464,6 +470,7 @@ suite(
         reads,
         writes,
         errors,
+        releaseHistoryB,
         setAssistantStatus(value: string) {
           assistantStatus = value;
         },
@@ -566,12 +573,62 @@ suite(
           }
         },
         async close() {
+          releaseHistoryB();
           await context.close();
           server.closeAllConnections();
           await new Promise<void>((done) => server.close(() => done()));
         },
       };
     }
+
+    it('never displays the previous conversation while loading and switches retained histories without HTTP', async () => {
+      const f = await fixture({ delayHistoryB: true });
+      try {
+        await f.choose(B);
+        expect(
+          await f.page.getByText('Existing A', { exact: true }).count(),
+        ).toBe(0);
+        await f.page.getByText('正在加载会话…', { exact: true }).waitFor();
+        f.releaseHistoryB();
+        await f.page.getByText('Existing B', { exact: true }).waitFor();
+        // Both histories are now retained. Even failed refreshes cannot block
+        // the first paint or reveal the other conversation's messages.
+        await f.page.route(/\/api\/v1\/sessions\/[^/?]+\?/, (route) =>
+          route.abort(),
+        );
+        for (const [title, expected, previous] of [
+          ['Session A', 'Existing A', 'Existing B'],
+          ['Session B', 'Existing B', 'Existing A'],
+        ]) {
+          const result = await f.page.evaluate(
+            async ({ title, expected, previous }) => {
+              const row = Array.from(
+                document.querySelectorAll<HTMLElement>('[role=treeitem]'),
+              ).find((el) => el.textContent?.includes(title!));
+              if (!row) throw Error('Missing session row');
+              row.click();
+              await new Promise<void>((done) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => done()),
+                ),
+              );
+              return {
+                expected: document.body.innerText.includes(expected!),
+                previous: document.body.innerText.includes(previous!),
+              };
+            },
+            { title, expected, previous },
+          );
+          expect(result).toEqual({ expected: true, previous: false });
+        }
+        expect(
+          await f.page.getByText('交互与任务记录', { exact: true }).count(),
+        ).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
 
     it('late successful A POST preserves B draft/attachments and never cancels or resumes A', async () => {
       const f = await fixture();
