@@ -96,6 +96,29 @@ function artifact(n: number, sessionId = A) {
   });
 }
 
+function navigationHistory(count: number, paragraphs = 90): Message[] {
+  return Array.from({ length: count }, (_, i) => [
+    {
+      id: id(2000 + i * 2),
+      role: 'user' as const,
+      runId: id(3000 + i),
+      status: 'completed' as const,
+      content: { text: `第 ${i + 1} 项工作：分析文档` },
+      createdAt: now,
+    },
+    {
+      id: id(2001 + i * 2),
+      role: 'assistant' as const,
+      runId: id(3000 + i),
+      status: 'completed' as const,
+      content: {
+        text: `第 ${i + 1} 项答复\n\n${'已有资料的分析结论。'.repeat(paragraphs)}`,
+      },
+      createdAt: now,
+    },
+  ]).flat();
+}
+
 suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   let browser: Browser, server: Server, origin: string;
   beforeAll(async () => {
@@ -200,6 +223,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      messages: null as Message[] | null,
       queue: [] as QueuedMessage[],
       queuedStarted: [] as Message[],
       queueError: false,
@@ -656,7 +680,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             session: listedHistory ?? session(path.endsWith(A) ? A : B),
             queuedMessages: path.endsWith(A) ? state.queue : [],
             messages: path.endsWith(A)
-              ? [
+              ? (state.messages ?? [
                   {
                     id: id(20),
                     role: 'assistant',
@@ -669,7 +693,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     createdAt: now,
                   },
                   ...state.queuedStarted,
-                ]
+                ])
               : [],
             contextStatus: {
               percentage: 0,
@@ -732,6 +756,176 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it('native turn navigation previews, jumps and tracks reading position, and hides when the conversation narrows', async () => {
+    const f = await fixture();
+    try {
+      expect(
+        await f.page.getByRole('navigation', { name: '轮次导航' }).count(),
+      ).toBe(0);
+      f.state.messages = navigationHistory(12);
+      await f.page.reload();
+      const rail = f.page.getByRole('navigation', { name: '轮次导航' });
+      await rail.waitFor();
+      const first = rail.getByRole('button', {
+        name: '跳转到第 1 轮',
+        exact: true,
+      });
+      const scroller = f.page.locator('[data-conversation-scroll]');
+      await expect
+        .poll(() =>
+          rail.locator('[aria-current="true"]').getAttribute('aria-label'),
+        )
+        .toBe('跳转到第 12 轮');
+      await first.hover();
+      const tooltip = rail.getByRole('tooltip');
+      await tooltip
+        .getByText('第 1 项工作：分析文档', { exact: true })
+        .waitFor();
+      expect(await tooltip.innerText()).toContain('第 1 项答复');
+      expect(
+        await tooltip.evaluate((node) => getComputedStyle(node).boxShadow),
+      ).not.toBe('none');
+      expect(
+        await tooltip
+          .locator('> div')
+          .first()
+          .evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('13px');
+      await first.click();
+      await expect.poll(() => first.getAttribute('aria-current')).toBe('true');
+      const targetTop = () =>
+        f.page
+          .locator(`#message-${id(2000)}`)
+          .evaluate(
+            (node) =>
+              node.getBoundingClientRect().top -
+              document
+                .querySelector('[data-conversation-scroll]')!
+                .getBoundingClientRect().top,
+          );
+      await expect.poll(targetTop).toBeGreaterThanOrEqual(15);
+      expect(await targetTop()).toBeLessThan(18);
+      const second = rail.getByRole('button', {
+        name: '跳转到第 2 轮',
+        exact: true,
+      });
+      await second.focus();
+      await tooltip
+        .getByText('第 2 项工作：分析文档', { exact: true })
+        .waitFor();
+      await second.press('Enter');
+      await expect.poll(() => second.getAttribute('aria-current')).toBe('true');
+      await scroller.evaluate(
+        (scroll, targetId) => {
+          scroll.scrollTop +=
+            document.getElementById(targetId)!.getBoundingClientRect().top -
+            scroll.getBoundingClientRect().top;
+        },
+        `message-${id(2012)}`,
+      );
+      await expect
+        .poll(() =>
+          rail.locator('[aria-current="true"]').getAttribute('aria-label'),
+        )
+        .toBe('跳转到第 7 轮');
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      await expect.poll(() => rail.isVisible()).toBe(false);
+      await f.page.setViewportSize({ width: 2200, height: 950 });
+      await rail.waitFor();
+      await f.page.emulateMedia({ reducedMotion: 'reduce' });
+      await first.hover();
+      expect(
+        await tooltip.evaluate((node) => getComputedStyle(node).animationName),
+      ).toBe('none');
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      await expect.poll(() => rail.isVisible()).toBe(false);
+      expect(
+        await f.page
+          .locator('body')
+          .evaluate((body) => body.scrollWidth <= innerWidth),
+      ).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
+  it('native turn rail virtualizes long history and clears previews on session change', async () => {
+    const f = await fixture();
+    try {
+      f.state.messages = navigationHistory(100, 2);
+      await f.page.reload();
+      const rail = f.page.getByRole('navigation', { name: '轮次导航' });
+      const last = rail.getByRole('button', {
+        name: '跳转到第 100 轮',
+        exact: true,
+      });
+      await last.waitFor({ timeout: 15_000 });
+      expect(await rail.getByRole('button').count()).toBeLessThan(55);
+      await rail
+        .locator('> div')
+        .first()
+        .evaluate((node) => {
+          node.scrollTop = 0;
+        });
+      const first = rail.getByRole('button', {
+        name: '跳转到第 1 轮',
+        exact: true,
+      });
+      await first.hover();
+      await rail.getByRole('tooltip').waitFor();
+      await first.click();
+      await expect.poll(() => first.getAttribute('aria-current')).toBe('true');
+      await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
+      await expect.poll(() => rail.count()).toBe(0);
+      expect(await f.page.getByRole('tooltip').count()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
+  it('returning to an old turn holds the reading position when an in-flight answer finishes', async () => {
+    const f = await fixture({ running: true });
+    try {
+      f.state.messages = navigationHistory(5);
+      const pending = f.state.messages.at(-1)!;
+      pending.runId = run;
+      pending.status = 'pending';
+      pending.content.text = '';
+      f.state.messages.at(-2)!.runId = run;
+      await f.page.reload();
+      const rail = f.page.getByRole('navigation', { name: '轮次导航' });
+      const first = rail.getByRole('button', {
+        name: '跳转到第 1 轮',
+        exact: true,
+      });
+      await first.click();
+      await expect.poll(() => first.getAttribute('aria-current')).toBe('true');
+      const scroller = f.page.locator('[data-conversation-scroll]');
+      const before = await scroller.evaluate((node) => node.scrollTop);
+      pending.status = 'completed';
+      pending.content.text = report;
+      f.finishRun();
+      f.state.items = [];
+      await f.page.getByRole('heading', { name: /COIN/ }).waitFor();
+      await expect.poll(() => first.getAttribute('aria-current')).toBe('true');
+      expect(
+        Math.abs((await scroller.evaluate((node) => node.scrollTop)) - before),
+      ).toBeLessThan(2);
+      await f.page
+        .getByRole('button', { name: '回到底部', exact: true })
+        .click();
+      await expect
+        .poll(() =>
+          rail.locator('[aria-current="true"]').getAttribute('aria-label'),
+        )
+        .toBe('跳转到第 5 轮');
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
 
   it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
