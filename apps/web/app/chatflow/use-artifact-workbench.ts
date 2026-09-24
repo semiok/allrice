@@ -46,11 +46,23 @@ export function useArtifactWorkbench({
   visible?: boolean;
   viewerId?: string | null;
 }) {
+  const owner = `${viewerId ?? ''}/${tenantHeaders['x-allrice-organization-id'] ?? ''}/${workspaceId ?? ''}`;
   const scope =
-    enabled && sessionId && workspaceId
-      ? `${viewerId ?? ''}/${workspaceId}/${sessionId}`
-      : '';
+    enabled && sessionId && workspaceId ? `${owner}/${sessionId}` : '';
   const [data, setData] = useState<Data>(() => empty(''));
+  // Retain the last visited session's catalog/selection like the native DSH
+  // session surface. Content bodies still use their authenticated read APIs.
+  const snapshots = useRef(new Map<string, Data>());
+  useEffect(() => {
+    snapshots.current.clear();
+  }, [owner, enabled]);
+  useEffect(() => {
+    if (!data.scope.startsWith(`${owner}/`) || !enabled) return;
+    const cache = snapshots.current;
+    cache.delete(data.scope);
+    cache.set(data.scope, data);
+    while (cache.size > 8) cache.delete(cache.keys().next().value!);
+  }, [data, owner, enabled]);
   const [selectionRequest, setSelectionRequest] = useState({
     scope: '',
     revision: 0,
@@ -69,14 +81,16 @@ export function useArtifactWorkbench({
     (value: boolean) => {
       dirty.current = { scope, value };
       if (value)
-        setData((previous) =>
-          previous.scope === scope
-            ? {
-                ...previous,
-                selection: { ...previous.selection, explicit: true },
-              }
-            : previous,
-        );
+        setData((previous) => {
+          const current =
+            previous.scope === scope
+              ? previous
+              : (snapshots.current.get(scope) ?? empty(scope));
+          return {
+            ...current,
+            selection: { ...current.selection, explicit: true },
+          };
+        });
     },
     [scope],
   );
@@ -117,7 +131,10 @@ export function useArtifactWorkbench({
         const protectDraft =
           dirty.current.scope === scope && dirty.current.value;
         setData((previous) => {
-          const current = previous.scope === scope ? previous : empty(scope);
+          const current =
+            previous.scope === scope
+              ? previous
+              : (snapshots.current.get(scope) ?? empty(scope));
           const artifacts = mergeArtifactPage(
             current.artifacts,
             page.artifacts,
@@ -145,13 +162,22 @@ export function useArtifactWorkbench({
         });
         setStatus({ scope, error: '', loading: false });
       } catch (cause) {
-        if (token === generation.current && !request.signal.aborted)
+        if (token === generation.current && !request.signal.aborted) {
+          if (
+            cause instanceof Error &&
+            'status' in cause &&
+            [401, 403, 404].includes(Number(cause.status))
+          ) {
+            snapshots.current.delete(scope);
+            setData(empty(scope));
+          }
           // Keep the current review mounted, including unsaved opinions, on refresh failure.
           setStatus({
             scope,
             error: cause instanceof Error ? cause.message : '成果加载失败',
             loading: false,
           });
+        }
       }
     },
     [scope, sessionId, workspaceId, tenantHeaders],
@@ -166,7 +192,10 @@ export function useArtifactWorkbench({
   const show = useCallback(
     (id?: string, preserveCurrent = false) => {
       setData((previous) => {
-        const current = previous.scope === scope ? previous : empty(scope);
+        const current =
+          previous.scope === scope
+            ? previous
+            : (snapshots.current.get(scope) ?? empty(scope));
         const requested =
           id ??
           (!preserveCurrent
@@ -194,7 +223,10 @@ export function useArtifactWorkbench({
     },
     [scope, onOpen],
   );
-  const current = data.scope === scope ? data : empty(scope);
+  const current =
+    data.scope === scope
+      ? data
+      : (snapshots.current.get(scope) ?? empty(scope));
   return {
     scope,
     artifacts: current.artifacts,

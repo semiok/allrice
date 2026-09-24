@@ -173,7 +173,10 @@ export async function workbenchJson(
       409: '版本或草稿已变化。请刷新后重新核对；旧意见不会自动批准新内容。',
       413: '文件或评论超过本次大小限制。',
     };
-    throw Error(messages[response.status] ?? '成果服务暂不可用，请重试。');
+    throw Object.assign(
+      Error(messages[response.status] ?? '成果服务暂不可用，请重试。'),
+      { status: response.status },
+    );
   }
   return response.json() as Promise<unknown>;
 }

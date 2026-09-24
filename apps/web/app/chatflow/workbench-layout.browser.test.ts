@@ -244,6 +244,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       deepLinkDenied: false,
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
+      artifactReads: 0,
       contentError: false,
       officePreview: null as ArtifactPreview | null,
       files: [] as WorkspaceFile[],
@@ -585,6 +586,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? answer(state.filePreview)
           : answer({ error: { message: '文件已不存在' } }, 404);
       if (path.endsWith('/artifacts')) {
+        state.artifactReads++;
         const items = path.includes(A) ? [...state.items] : [];
         if (state.delay && path.includes(A)) await state.delay;
         return answer(
@@ -664,7 +666,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         throw error;
       });
-    const panel = page.locator('#artifact-workbench');
+    const panel = page.locator('#artifact-workbench:not([aria-hidden="true"])');
     const entry = page.getByRole('button', { name: /▤ 交付成果/ });
     return {
       context,
@@ -1956,6 +1958,95 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+
+  it('slides the native dock with the conversation track, restores cached catalogs and respects reduced motion', async () => {
+    const f = await fixture({ artifacts: true });
+    let release = () => {};
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      const host = f.panel
+        .locator('[data-dockkit-host="dock"]:not([hidden])')
+        .first();
+      await expect
+        .poll(() => host.evaluate((e) => getComputedStyle(e).transform))
+        .toBe('none');
+      expect(f.state.artifactReads).toBe(1);
+      await f.page
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      expect(await f.panel.count()).toBe(0);
+      await expect
+        .poll(() =>
+          f.page
+            .locator(
+              '#artifact-workbench [data-dockkit-host="dock"]:not([hidden])',
+            )
+            .first()
+            .evaluate((e) => getComputedStyle(e).visibility),
+        )
+        .toBe('hidden');
+      // Read every paint, not a screenshot taken after the motion has finished.
+      const frames = await f.page.evaluate(async () => {
+        const panel = document.querySelector('#artifact-workbench')!;
+        const entry = Array.from(
+          document.querySelectorAll<HTMLButtonElement>('button'),
+        ).find((e) => e.textContent?.includes('▤ 交付成果'))!;
+        const samples: Array<{ x: number; width: number; track: number }> = [];
+        const start = performance.now();
+        entry.click();
+        await new Promise<void>((done) => {
+          const tick = () => {
+            const rect = panel
+              .querySelector<HTMLElement>(
+                '[data-dockkit-host="dock"]:not([hidden])',
+              )!
+              .getBoundingClientRect();
+            const columns = getComputedStyle(
+              document.querySelector('main')!,
+            ).gridTemplateColumns.split(' ');
+            samples.push({
+              x: rect.x,
+              width: rect.width,
+              track: parseFloat(columns[2]!),
+            });
+            if (performance.now() - start > 450) done();
+            else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+        return samples;
+      });
+      const end = frames.at(-1)!;
+      expect(frames.some((f) => f.x > end.x + 20 && f.x < 1440 - 20)).toBe(
+        true,
+      );
+      expect(frames.some((f) => f.track > 20 && f.track < end.track - 20)).toBe(
+        true,
+      );
+      expect(
+        Math.max(...frames.map((f) => f.width)) -
+          Math.min(...frames.map((f) => f.width)),
+      ).toBeLessThan(2);
+      f.state.delay = new Promise<void>((done) => {
+        release = done;
+      });
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
+      await expect.poll(() => f.panel.count()).toBe(0);
+      await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
+      // A's refreshed catalog is blocked. The retained catalog still opens now.
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(await f.panel.count()).toBe(1);
+      release();
+      f.state.delay = null;
+      await f.page.emulateMedia({ reducedMotion: 'reduce' });
+      expect(
+        await host.evaluate((e) => getComputedStyle(e).transitionDuration),
+      ).toBe('0s');
+    } finally {
+      release();
+      await f.close();
+    }
+  });
 
   it('shows a real report in a persistent third column, leaves composer focus alone and summarizes the center', async () => {
     const f = await fixture({ artifacts: true });

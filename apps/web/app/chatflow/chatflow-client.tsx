@@ -189,13 +189,29 @@ export function ChatFlowClient({
     workbench.selectedId !== null;
   const workbenchOpen = workbenchRequested && hasWorkbenchContent;
   // New completed turns can add artifacts; opening the panel does not execute tools.
+  const artifactHistoryRevision = useRef({ scope: '', revision: '' });
   useEffect(() => {
-    if (workbenchEnabled) void workbench.reload();
+    const revision = history
+      ? `${history.messages.length}/${history.messages.at(-1)?.status}`
+      : '';
+    const previous = artifactHistoryRevision.current;
+    artifactHistoryRevision.current = { scope: workbench.scope, revision };
+    // The hook already reads on selection. Don't restart that request when
+    // the initial transcript arrives; refresh only subsequent turn changes.
+    if (
+      workbenchEnabled &&
+      previous.scope === workbench.scope &&
+      previous.revision &&
+      revision &&
+      previous.revision !== revision
+    )
+      void workbench.reload();
   }, [
     workbenchEnabled,
     history?.messages.length,
     history?.messages.at(-1)?.status,
     workbench.reload,
+    workbench.scope,
   ]);
 
   const {
@@ -880,7 +896,7 @@ export function ChatFlowClient({
         if (!busy) uploadAttachments(event.dataTransfer.files);
       }}
       style={{
-        gridTemplateColumns: `${resize.sidebarWidth}px minmax(0, 1fr)${workbenchOpen && !workbenchNarrow ? ` ${resize.width}px` : ''}`,
+        gridTemplateColumns: `${resize.sidebarWidth}px minmax(0, 1fr) ${workbenchOpen && !workbenchNarrow ? resize.width : 0}px`,
       }}
     >
       {imageDragActive ? (
@@ -1184,8 +1200,10 @@ export function ChatFlowClient({
         </div>
       </section>
 
-      {workbenchOpen ? (
+      {workbenchEnabled && hasWorkbenchContent ? (
         <ArtifactWorkbench
+          open={workbenchOpen}
+          width={resize.width}
           selectionRequest={workbench.selectionRequest}
           onBrowseFiles={() => workbench.show(undefined, true)}
           key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
