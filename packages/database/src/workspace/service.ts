@@ -296,6 +296,24 @@ export async function ensureDefaultEmployee(
   const checksum = employeeManifestChecksum(manifest);
   const sql = getDatabase();
   const assignment = await sql.begin(async (transaction) => {
+    await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${context.organizationId}:${workspaceId}`},0))`;
+    const [managed] =
+      await transaction`select id from allrice_platform_employee_tenant_assignments
+      where organization_id=${context.organizationId} and workspace_id=${workspaceId} limit 1`;
+    if (managed) {
+      // A withdrawn deployment is a durable decision. Reads must never recreate
+      // Rice or revive an old personal assignment. An empty roster is valid.
+      const [current] = await transaction<AssignmentRow[]>`
+        select a.id assignment_id,a.employee_id,a.employee_version_id,a.user_id,a.organization_id,a.workspace_id,a.is_default,
+          v.version,v.name,v.model,v.system_prompt,v.capabilities,v.published_at,v.config_checksum
+        from allrice_employee_assignments a join allrice_employees e on e.id=a.employee_id and e.status='active'
+        join allrice_employee_versions v on v.id=a.employee_version_id
+        where a.organization_id=${context.organizationId} and a.workspace_id=${workspaceId} and a.user_id=${userId} and a.active
+          and not exists(select 1 from allrice_platform_employee_tenant_assignments d
+            where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id and d.tenant_employee_id=a.employee_id and not d.active)
+        order by a.is_default desc,a.assigned_at,a.id limit 1`;
+      return current;
+    }
     const employees = await transaction<{ id: string }[]>`
       insert into allrice_employees (
         organization_id, workspace_id, employee_key, name
@@ -381,8 +399,7 @@ export async function ensureDefaultEmployee(
     `;
     return rows[0];
   });
-  if (!assignment) throw new Error('default employee assignment failed');
-  return mapAssignment(assignment);
+  return assignment ? mapAssignment(assignment) : null;
 }
 
 function mapSession(row: SessionRow): ChatSession {
@@ -454,6 +471,7 @@ export async function createChatSession(
   input: unknown,
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
+  const workspaceId = await resolveWorkspaceId(context, parsed.workspaceId);
   const defaultAssignment = await ensureDefaultEmployee(
     context,
     parsed.workspaceId,
@@ -471,12 +489,15 @@ export async function createChatSession(
       join allrice_employee_versions v on v.id = a.employee_version_id
       where a.id = ${parsed.employeeAssignmentId}
         and a.organization_id = ${context.organizationId}
-        and a.workspace_id = ${defaultAssignment.workspaceId}
+        and a.workspace_id = ${workspaceId}
         and a.user_id = ${requireUser(context)} and a.active
+        and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.organization_id=a.organization_id
+          and d.workspace_id=a.workspace_id and d.tenant_employee_id=a.employee_id and not d.active)
     `;
     if (!assignments[0]) throw new DataAccessError('authorization_denied');
     assignment = mapAssignment(assignments[0]);
   }
+  if (!assignment) throw new DataAccessError('not_found');
   // New Sessions always use the assignment's current published version.
   // Browser state can be stale after an administrator updates an employee;
   // accepting its version would silently pin a new Session to old abilities.
@@ -485,7 +506,7 @@ export async function createChatSession(
     select id from allrice_employee_versions
     where id = ${employeeVersionId}
       and organization_id = ${context.organizationId}
-      and workspace_id = ${defaultAssignment.workspaceId}
+      and workspace_id = ${workspaceId}
       and employee_id = ${assignment.employeeId}
       and provider_snapshot ->> 'provider' in ('codex', 'dsh')
   `;
@@ -495,7 +516,7 @@ export async function createChatSession(
       organization_id, workspace_id, owner_id, employee_assignment_id,
       employee_version_id, title, visibility
     ) values (
-      ${context.organizationId}, ${defaultAssignment.workspaceId}, ${requireUser(context)},
+      ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
       ${assignment.id}, ${employeeVersionId}, ${parsed.title}, 'private'
     )
     returning *
@@ -504,7 +525,7 @@ export async function createChatSession(
   if (!row) throw new Error('session creation failed');
   await audit({
     context,
-    workspaceId: defaultAssignment.workspaceId,
+    workspaceId: workspaceId,
     action: 'session.create',
     resourceType: 'chat_session',
     resourceId: row.id,
@@ -2105,15 +2126,16 @@ export async function getEmployeeWorkspace(
   context: RequestContext,
   requestedWorkspaceId?: string,
 ) {
+  const workspaceId = await resolveWorkspaceId(context, requestedWorkspaceId);
   const assignment = await ensureDefaultEmployee(context, requestedWorkspaceId);
   const [sessions, memories] = await Promise.all([
-    listChatSessions(context, assignment.workspaceId, {
+    listChatSessions(context, workspaceId, {
       includeArchived: true,
     }),
-    listWorkspaceMemories(context, assignment.workspaceId),
+    listWorkspaceMemories(context, workspaceId),
   ]);
   const { listEmployeeHub } = await import('../employees/employeehub.ts');
-  const employeeHub = await listEmployeeHub(context, assignment.workspaceId);
+  const employeeHub = await listEmployeeHub(context, workspaceId);
   const assignedEmployeeIds = [
     ...new Set(employeeHub.assignments.map((item) => item.employeeId)),
   ];
@@ -2137,7 +2159,7 @@ export async function getEmployeeWorkspace(
            and skill.workspace_id = binding.workspace_id
            and skill.id = binding.skill_id
           where binding.organization_id = ${context.organizationId}
-            and binding.workspace_id = ${assignment.workspaceId}
+            and binding.workspace_id = ${workspaceId}
             and binding.employee_id in ${sql(assignedEmployeeIds)}
             and binding.enabled and skill.enabled
           order by binding.employee_id, skill.name, skill.id
@@ -2162,7 +2184,7 @@ export async function getEmployeeWorkspace(
           select session_id, snapshot
           from allrice_session_model_snapshots
           where organization_id = ${context.organizationId}
-            and workspace_id = ${assignment.workspaceId}
+            and workspace_id = ${workspaceId}
             and session_id in ${sql(sessionIds)}
         `;
   const cachedModels = new Map(
@@ -2209,7 +2231,7 @@ export async function getEmployeeWorkspace(
   });
   return {
     organizationId: context.organizationId,
-    workspaceId: assignment.workspaceId,
+    workspaceId: workspaceId,
     employee: assignment,
     employees: employeeHub.assignments,
     employeeProfiles: employeeHub.assignments.map((item) => {

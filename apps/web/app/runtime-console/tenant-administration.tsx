@@ -9,6 +9,7 @@ import type {
 import styles from './tenant-administration.module.css';
 import { TenantPolicyEditor } from './tenant-policy-editor';
 import { TenantResourceEditor } from './tenant-resource-editor';
+import { TenantEmployeeEditor } from './tenant-employee-editor';
 
 const roles = { admin: '管理员', member: '成员', viewer: '只读成员' };
 const errors: Record<string, string> = {
@@ -32,8 +33,13 @@ async function json<T>(response: Response): Promise<T> {
 
 export function TenantAdministration() {
   const [view, setView] = useState<
-    'members' | 'policy' | 'environments' | 'quotas' | 'validation'
-  >('members');
+    | 'employees'
+    | 'members'
+    | 'policy'
+    | 'environments'
+    | 'quotas'
+    | 'validation'
+  >('employees');
   const [tenants, setTenants] = useState<AdminTenant[]>([]),
     [next, setNext] = useState<string | null>(null);
   const [organizationId, setOrganizationId] = useState(''),
@@ -86,7 +92,8 @@ export function TenantAdministration() {
               requestedView === 'environments' ||
                 requestedView === 'quotas' ||
                 requestedView === 'validation' ||
-                requestedView === 'members'
+                requestedView === 'members' ||
+                requestedView === 'employees'
                 ? requestedView
                 : 'policy',
             );
@@ -113,9 +120,7 @@ export function TenantAdministration() {
     <section className={styles.panel} aria-label="租户管理">
       <header>
         <h2>租户管理</h2>
-        <p>
-          管理指定租户的成员、执行策略、环境授权和分层额度。管理权限不等于工具使用授权，也不会替设备主人授权本地目录。
-        </p>
+        <p>派驻已有 AI 员工、管理真人成员，并查看工作区配置和用量。</p>
       </header>
       <div className={styles.selectors}>
         <label>
@@ -127,7 +132,10 @@ export function TenantAdministration() {
             onChange={(e) => {
               if (canSwitch()) {
                 setOrganizationId(e.target.value);
-                setWorkspaceId('');
+                setWorkspaceId(
+                  tenants.find((t) => t.id === e.target.value)?.workspaces[0]
+                    ?.id ?? '',
+                );
                 setDirty(false);
               }
             }}
@@ -183,6 +191,18 @@ export function TenantAdministration() {
           </p>
           <div className={styles.selectors}>
             <button
+              disabled={busy || !workspaceId}
+              aria-pressed={view === 'employees'}
+              onClick={() => {
+                if (canSwitch()) {
+                  setView('employees');
+                  setDirty(false);
+                }
+              }}
+            >
+              AI 员工团队
+            </button>
+            <button
               disabled={busy}
               aria-pressed={view === 'members'}
               onClick={() => {
@@ -232,16 +252,24 @@ export function TenantAdministration() {
                   if (!canSwitch()) event.preventDefault();
                 }}
               >
-                配置能力与 Rice 发布 →
+                员工生产后台 →
               </a>
             ) : (
               <span>选择具体工作区后配置策略与发布。</span>
             )}
           </div>
-          {(view === 'environments' ||
-            view === 'quotas' ||
-            view === 'validation') &&
-          workspaceId ? (
+          {view === 'employees' && workspaceId ? (
+            <TenantEmployeeEditor
+              key={`${organizationId}/${workspaceId}`}
+              organizationId={organizationId}
+              workspaceId={workspaceId}
+              onDirty={setDirty}
+              onBusy={setBusy}
+            />
+          ) : (view === 'environments' ||
+              view === 'quotas' ||
+              view === 'validation') &&
+            workspaceId ? (
             <TenantResourceEditor
               key={`${organizationId}/${workspaceId}/${view}`}
               mode={view}
@@ -269,10 +297,7 @@ export function TenantAdministration() {
           )}
         </>
       ) : !loading ? (
-        <p>
-          选择租户后查看其成员。能力、策略、发布与环境管理将在本工单后续 PR
-          接入。
-        </p>
+        <p>选择租户和工作区，查看在岗 AI 员工与真人成员。</p>
       ) : null}
     </section>
   );

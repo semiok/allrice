@@ -30,7 +30,10 @@ import { skillBundleChecksum, skillBytesChecksum } from './skill-bundles.ts';
 import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
 import { freezeSessionModelSnapshot } from './providers/model-pool.ts';
-import { getEmployeeWorkspace } from './workspace/service.ts';
+import {
+  getEmployeeWorkspace,
+  ensureDefaultEmployee,
+} from './workspace/service.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -252,10 +255,30 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
   });
   it('uses the published model in existing chats, repairs stale provider/auth caches, and keeps previously frozen snapshots intact', async () => {
     const f = await fixture();
+    const context = {
+      actor: { type: 'user' as const, id: f.ownerId },
+      organizationId: f.organizationId,
+      workspaceId: f.workspaceId,
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      authenticatedAt: new Date().toISOString(),
+      memberships: [
+        {
+          id: randomUUID(),
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+          userId: f.ownerId,
+          role: 'admin' as const,
+          active: true,
+        },
+      ],
+    };
+    // Preserve an explicitly pre-existing legacy employee; managed workspaces no longer create one on read.
+    await ensureDefaultEmployee(context, f.workspaceId);
     await f.preview();
     expect((await f.publish()).valid).toBe(true);
     const [assignment] =
-      await db`select * from allrice_employee_assignments where workspace_id=${f.workspaceId} and user_id=${f.ownerId}`;
+      await db`select * from allrice_employee_assignments where workspace_id=${f.workspaceId} and user_id=${f.ownerId} and employee_id=(select tenant_employee_id from allrice_platform_employee_tenant_assignments where employee_id=${f.employeeId} and workspace_id=${f.workspaceId})`;
     const sessionId = randomUUID();
     await db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
       values(${sessionId},${f.organizationId},${f.workspaceId},${f.ownerId},'Synthetic existing chat',${assignment!.id},${assignment!.employee_version_id})`;
@@ -291,24 +314,6 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     await savePlatformEmployeeDraft(f.employeeId, { definition: changed });
     await f.preview();
     expect((await f.publish()).valid).toBe(true);
-    const context = {
-      actor: { type: 'user' as const, id: f.ownerId },
-      organizationId: f.organizationId,
-      workspaceId: f.workspaceId,
-      requestId: randomUUID(),
-      sessionId: randomUUID(),
-      authenticatedAt: new Date().toISOString(),
-      memberships: [
-        {
-          id: randomUUID(),
-          organizationId: f.organizationId,
-          workspaceId: f.workspaceId,
-          userId: f.ownerId,
-          role: 'admin' as const,
-          active: true,
-        },
-      ],
-    };
     const workspace = await getEmployeeWorkspace(context, f.workspaceId);
     expect(
       workspace.sessionModels.find((x) => x.sessionId === sessionId),

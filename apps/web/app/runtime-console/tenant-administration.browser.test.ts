@@ -15,6 +15,11 @@ import {
   ensureBootstrapPortalPrincipal,
 } from '../../../../packages/database/src/identity.ts';
 import { tenantAdministrationHttp } from '../../lib/tenant-administration/http';
+import { tenantEmployeesHttp } from '../../lib/tenant-administration/tenant-employees-http';
+import {
+  getEmployeeWorkspace,
+  createChatSession,
+} from '../../../../packages/database/src/workspace/service.ts';
 import { tenantPolicyHttp } from '../../lib/tenant-administration/policy-http';
 import { tenantResourcesHttp } from '../../lib/tenant-administration/resources-http';
 import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
@@ -143,27 +148,29 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
                       parts[6] as
                         'quotas' | 'environments' | 'mcp' | 'local-mcp',
                     )
-                  : parts[6] === 'validation'
-                    ? await tenantValidationHttp(request, parts[5]!)
-                    : parts[6] === 'policy'
-                      ? await tenantPolicyHttp(request, parts[5]!)
-                      : parts[4] === 'tenants' &&
-                          (!parts[6] ||
-                            (parts[6] === 'members' &&
-                              parts[7] &&
-                              parts.length === 8))
-                        ? await tenantAdministrationHttp(
-                            request,
-                            parts[5],
-                            parts[7],
-                          )
-                        : new Response(
-                            '<!DOCTYPE html><title>Not Found</title>',
-                            {
-                              status: 404,
-                              headers: { 'Content-Type': 'text/html' },
-                            },
-                          );
+                  : parts[6] === 'employees'
+                    ? await tenantEmployeesHttp(request, parts[5]!)
+                    : parts[6] === 'validation'
+                      ? await tenantValidationHttp(request, parts[5]!)
+                      : parts[6] === 'policy'
+                        ? await tenantPolicyHttp(request, parts[5]!)
+                        : parts[4] === 'tenants' &&
+                            (!parts[6] ||
+                              (parts[6] === 'members' &&
+                                parts[7] &&
+                                parts.length === 8))
+                          ? await tenantAdministrationHttp(
+                              request,
+                              parts[5],
+                              parts[7],
+                            )
+                          : new Response(
+                              '<!DOCTYPE html><title>Not Found</title>',
+                              {
+                                status: 404,
+                                headers: { 'Content-Type': 'text/html' },
+                              },
+                            );
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -226,11 +233,88 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     page.on('pageerror', (e) => failures.push(e.name));
     await page.goto(origin);
     await page.getByLabel('管理租户').selectOption(snow.organizationId);
+    await page.getByRole('button', { name: '成员与角色', exact: true }).click();
     await page
       .getByRole('button', { name: '编辑 Snow fixture', exact: true })
       .waitFor();
     return { page, context };
   }
+  it('deploys, selects a default and withdraws a published employee through the real UI without a mandatory note', async () => {
+    const source = await createEmployeeAdministrationFixture(fixture.db);
+    await fixture.db`update allrice_workspaces set name='Deployment fixture workspace' where id=${source.workspaceId}`;
+    await source.preview();
+    expect((await source.publish()).valid).toBe(true);
+    const { page, context } = await pageFor(platform, 390);
+    try {
+      await page
+        .getByRole('button', { name: 'AI 员工团队', exact: true })
+        .click();
+      const panel = page.getByRole('region', {
+        name: '在岗 AI 员工',
+        exact: true,
+      });
+      await panel.getByLabel('选择已发布员工').selectOption(source.employeeId);
+      expect(await panel.getByLabel('派驻备注（可选）').inputValue()).toBe('');
+      await panel
+        .getByRole('button', { name: '派驻员工', exact: true })
+        .click();
+      await panel
+        .getByText('员工已派驻，当前普通成员可以开始使用。', { exact: true })
+        .waitFor();
+      const card = panel.getByRole('article', {
+        name: '在岗员工 Synthetic publication',
+        exact: true,
+      });
+      await card.waitFor();
+      expect(await card.innerText()).toContain('已派驻 v1');
+      const member = await authenticateSession(snow.session.token, {
+        organizationId: snow.organizationId,
+        workspaceId: snow.workspaceId,
+      });
+      const available = await getEmployeeWorkspace(member!, snow.workspaceId);
+      const [deployment] =
+        await fixture.db`select tenant_employee_id from allrice_platform_employee_tenant_assignments where employee_id=${source.employeeId} and workspace_id=${snow.workspaceId}`;
+      const employee = available.employees.find(
+        (e) => e.employeeId === deployment!.tenant_employee_id,
+      )!;
+      expect(employee).toBeTruthy();
+      const session = await createChatSession(member!, {
+        workspaceId: snow.workspaceId,
+        employeeAssignmentId: employee.id,
+        title: 'Synthetic browser deployment',
+      });
+      if (await card.getByRole('button', { name: '设为默认员工' }).count())
+        await card.getByRole('button', { name: '设为默认员工' }).click();
+      await expect.poll(() => card.innerText()).toContain('默认员工');
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await card.getByRole('button', { name: '撤回员工', exact: true }).click();
+      await panel
+        .getByText('员工已撤回，历史会话与成果保留。', { exact: true })
+        .waitFor();
+      expect(
+        (await getEmployeeWorkspace(member!, snow.workspaceId)).employees.some(
+          (e) => e.id === employee.id,
+        ),
+      ).toBe(false);
+      expect(
+        await fixture.db`select id from allrice_chat_sessions where id=${session.id}`,
+      ).toHaveLength(1);
+      await page.getByRole('button', { name: '刷新员工', exact: true }).click();
+      await expect.poll(() => card.count()).toBe(0);
+      const response = await context.request.post(
+        `${origin}/api/v1/admin/tenants/${snow.organizationId}/employees`,
+        { headers: { origin: 'https://foreign.invalid' }, data: {} },
+      );
+      expect(response.status()).toBe(403);
+    } finally {
+      await context.close();
+    }
+  });
+
   it('opens scoped validation from a deep link, inspects the real stored Run and never exposes execution controls', async () => {
     const a = await tenantValidationFixture(fixture.db),
       { page, context } = await pageFor();
@@ -613,6 +697,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       ).toBe(400);
       await page.reload();
       await page.getByLabel('管理租户').selectOption(snow.organizationId);
+      await page
+        .getByRole('button', { name: '成员与角色', exact: true })
+        .click();
       await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
       await page.getByRole('button', { name: '执行策略', exact: true }).click();
       await page
@@ -924,6 +1011,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await ensureBootstrapPortalPrincipal(snow.input, fixture.db);
       await page.reload();
       await page.getByLabel('管理租户').selectOption(snow.organizationId);
+      await page
+        .getByRole('button', { name: '成员与角色', exact: true })
+        .click();
       await page
         .getByRole('row')
         .filter({ hasText: 'Snow fixture' })

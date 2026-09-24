@@ -332,11 +332,8 @@ export async function listEmployeeHub(
   context: RequestContext,
   workspaceIdInput?: string,
 ) {
-  const defaultAssignment = await ensureDefaultEmployee(
-    context,
-    workspaceIdInput,
-  );
-  const workspaceId = defaultAssignment.workspaceId;
+  const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
+  await ensureDefaultEmployee(context, workspaceId);
   const canAdminister = canAdministerEmployees(context, workspaceId);
   const sql = getDatabase();
   const assignments = await sql<EmployeeAssignmentRow[]>`
@@ -352,6 +349,8 @@ export async function listEmployeeHub(
       and a.user_id = ${userId(context)}
       and a.active
       and e.status = 'active'
+      and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.organization_id=a.organization_id
+        and d.workspace_id=a.workspace_id and d.tenant_employee_id=a.employee_id and not d.active)
     order by a.is_default desc, e.name, a.id
   `;
   const employeeIds = [...new Set(assignments.map((row) => row.employee_id))];
@@ -1087,6 +1086,8 @@ export async function prepareEmployeeRunBinding(input: {
       and a.organization_id = ${input.context.organizationId}
       and a.workspace_id = ${UuidSchema.parse(input.workspaceId)}
       and a.user_id = ${actorId} and a.active
+      and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.organization_id=a.organization_id
+        and d.workspace_id=a.workspace_id and d.tenant_employee_id=a.employee_id and not d.active)
   `;
   const assignment = rows[0];
   if (!assignment) throw new EmployeeHubError('not_found');

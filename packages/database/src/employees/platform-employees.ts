@@ -1049,7 +1049,7 @@ export async function disablePlatformEmployee(
       }[]
     >`
       update allrice_platform_employee_tenant_assignments
-      set active = false, updated_at = now()
+      set active = false, is_default = false, updated_at = now()
       where employee_id = ${employeeId} and active
       returning organization_id, workspace_id, tenant_employee_id
     `;
@@ -1453,7 +1453,7 @@ function tenantManifest(
   });
 }
 
-async function materializePlatformEmployeeRevision(
+export async function materializePlatformEmployeeRevision(
   transaction: postgres.TransactionSql,
   input: {
     employeeId: string;
@@ -1493,6 +1493,7 @@ async function materializePlatformEmployeeRevision(
     `;
     const workspace = workspaces[0];
     if (!workspace) throw new Error(`workspace_not_found:${workspaceId}`);
+    await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${workspace.organization_id}:${workspace.id}`},0))`;
     const actors = await transaction<{ id: string }[]>`
       select membership.user_id as id
       from allrice_memberships membership
@@ -1596,7 +1597,9 @@ async function materializePlatformEmployeeRevision(
       )
       select ${workspace.organization_id}, ${workspace.id}, ${tenantEmployeeId},
         ${tenantVersionId}, member.user_id,
-        ${input.definition.key === 'rice'}, true, ${actorId}
+        not exists (select 1 from allrice_employee_assignments existing_default
+          where existing_default.organization_id=${workspace.organization_id} and existing_default.workspace_id=${workspace.id}
+            and existing_default.user_id=member.user_id and existing_default.active and existing_default.is_default), true, ${actorId}
       from (
         select distinct membership.user_id
         from allrice_memberships membership
@@ -1689,17 +1692,21 @@ async function materializePlatformEmployeeRevision(
     await transaction`
       insert into allrice_platform_employee_tenant_assignments (
         employee_id, revision_id, organization_id, workspace_id,
-        tenant_employee_id, tenant_employee_version_id, active,
+        tenant_employee_id, tenant_employee_version_id, active, is_default,
         assigned_by_label
       ) values (
         ${input.employeeId}, ${input.revision.id}, ${workspace.organization_id},
         ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
+        not exists(select 1 from allrice_platform_employee_tenant_assignments current_default
+          where current_default.organization_id=${workspace.organization_id} and current_default.workspace_id=${workspace.id}
+            and current_default.active and current_default.is_default),
         ${input.actorLabel}
       )
       on conflict (employee_id, workspace_id) do update set
         revision_id = excluded.revision_id,
         tenant_employee_id = excluded.tenant_employee_id,
         tenant_employee_version_id = excluded.tenant_employee_version_id,
+        is_default = (allrice_platform_employee_tenant_assignments.active and allrice_platform_employee_tenant_assignments.is_default) or excluded.is_default,
         active = true, assigned_by_label = excluded.assigned_by_label,
         assigned_at = now(), updated_at = now()
     `;
