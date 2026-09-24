@@ -60,7 +60,11 @@ class Handler(BaseHTTPRequestHandler):
             if digest != request["checksum"]:
                 raise ValueError("checksum_mismatch")
             Package(data, request["format"])
-            if not conversion.acquire(timeout=2):
+            # A normal three-document export arrives concurrently. Queue and
+            # convert within ONE deadline rather than failing the later files
+            # after two seconds or giving each queued job another 40 seconds.
+            deadline = time.monotonic() + 40
+            if not conversion.acquire(timeout=40):
                 return self.reply(503, {"code": "renderer_busy"})
             try:
                 now = time.monotonic()
@@ -77,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                     process = subprocess.Popen(["python3", "/app/render.py", temp, request["format"]],
                         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     try:
-                        process.wait(timeout=40)
+                        process.wait(timeout=max(0, deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
                         return self.reply(422, {"code": "conversion_timeout"})
                     finally:

@@ -1098,7 +1098,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       this.ctx.systemPrompt.section({
         name: 'tool:allrice_exports',
         order: 115,
-        text: 'When the user explicitly asks for a report or downloadable deliverable, use workspace_export_create and include its actual downloadUrl as a Markdown link. Supply either content for text-based exports or office for structured DOCX/XLSX/PPTX creation and source-preserving edits. Read the Office Skill resources for the typed structures. For template edits, first list and read the source with includeStructure=true, then use office.kind=edit with its actual object id, checksum and targeted changes. When revising an existing deliverable, preserve the immutable version lineage and summarize the revision in changeSummary. Do not create a file for an ordinary chat answer.',
+        text: 'When the user explicitly asks for a report or downloadable deliverable, use workspace_export_create and include its actual downloadUrl as a Markdown link. Supply either content for text-based exports or office for structured DOCX/XLSX/PPTX creation and source-preserving edits. Read the Office Skill resources for the typed structures. For template edits, first list and read the source with includeStructure=true, then use office.kind=edit with its actual object id, checksum and targeted changes. When revising an existing AllRice deliverable, pass its object ID as parentObjectId and summarize the revision in changeSummary so the immutable version lineage is preserved. Do not create a file for an ordinary chat answer.',
       });
     }
     if (

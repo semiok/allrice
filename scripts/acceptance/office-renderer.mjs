@@ -68,42 +68,44 @@ const examples = [
     ],
   },
 ];
-for (const input of examples) {
-  const file = await createOffice(OfficeCreateSchema.parse(input));
-  const checked = await checkOfficeExport(file.bytes, input.kind);
-  assert.equal(
-    checked.quality.status,
-    'checked',
-    JSON.stringify(checked.quality),
-  );
-  if (input.kind === 'xlsx') {
-    assert.equal(checked.quality.formulaErrorCount, 1);
-    assert.equal(checked.quality.formulaCount, 5);
-    const book = new ExcelJS.Workbook();
-    await book.xlsx.load(checked.bytes);
-    assert.equal(book.getWorksheet('明细').getCell('C2').result, 60);
-    assert.equal(book.getWorksheet('汇总').getCell('A2').result, 90);
-    assert.equal(book.getWorksheet('汇总').getCell('B2').result, '已完成');
-    assert.equal(book.getWorksheet('汇总').getCell('C2').result, true);
+await Promise.all(
+  examples.map(async (input) => {
+    const file = await createOffice(OfficeCreateSchema.parse(input));
+    const checked = await checkOfficeExport(file.bytes, input.kind);
     assert.equal(
-      book.getWorksheet('明细').getCell('D2').result.error,
-      '#DIV/0!',
+      checked.quality.status,
+      'checked',
+      JSON.stringify(checked.quality),
     );
-    assert.equal(book.getWorksheet('明细').getCell('A2').value, '00123');
-  } else assert.deepEqual(checked.bytes, file.bytes);
-  // Real stored-file preview, including recalculated XLSX bytes, and cache retry.
-  const preview = await renderOffice(checked.bytes, input.kind);
-  const retry = await renderOffice(checked.bytes, input.kind);
-  assert.deepEqual(retry, preview);
-  assert.ok(preview.pages.length > 0);
-  assert.equal(
-    preview.checksum,
-    'sha256:' + createHash('sha256').update(checked.bytes).digest('hex'),
-  );
-  console.log(
-    `${input.kind}: ${preview.pageCount} pages; formula checks and exact-byte preview passed`,
-  );
-}
+    if (input.kind === 'xlsx') {
+      assert.equal(checked.quality.formulaErrorCount, 1);
+      assert.equal(checked.quality.formulaCount, 5);
+      const book = new ExcelJS.Workbook();
+      await book.xlsx.load(checked.bytes);
+      assert.equal(book.getWorksheet('明细').getCell('C2').result, 60);
+      assert.equal(book.getWorksheet('汇总').getCell('A2').result, 90);
+      assert.equal(book.getWorksheet('汇总').getCell('B2').result, '已完成');
+      assert.equal(book.getWorksheet('汇总').getCell('C2').result, true);
+      assert.equal(
+        book.getWorksheet('明细').getCell('D2').result.error,
+        '#DIV/0!',
+      );
+      assert.equal(book.getWorksheet('明细').getCell('A2').value, '00123');
+    } else assert.deepEqual(checked.bytes, file.bytes);
+    // Real stored-file preview, including recalculated XLSX bytes, and cache retry.
+    const preview = await renderOffice(checked.bytes, input.kind);
+    const retry = await renderOffice(checked.bytes, input.kind);
+    assert.deepEqual(retry, preview);
+    assert.ok(preview.pages.length > 0);
+    assert.equal(
+      preview.checksum,
+      'sha256:' + createHash('sha256').update(checked.bytes).digest('hex'),
+    );
+    console.log(
+      `${input.kind}: ${preview.pageCount} pages; formula checks and exact-byte preview passed`,
+    );
+  }),
+);
 
 const shared = new ExcelJS.Workbook();
 const sheet = shared.addWorksheet('共享公式');
