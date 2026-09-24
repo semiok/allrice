@@ -10,6 +10,8 @@ import {
 import type { AssistantRuntime, AssistantWorkerLease } from '@allrice/database';
 import { runtimePolicyDigest } from '@allrice/database';
 import type { HarnessToolCall, HarnessToolResult } from '../adapter.js';
+import { HandlerError } from '../../errors.js';
+import { riceToolRisk } from '../../tool-broker/definitions.js';
 
 /** UUID derived from native call identity, stable across transport duplicates. */
 function stableId(value: string) {
@@ -268,10 +270,42 @@ export function createAssistantWorkerBridge(
         },
       });
       if (!reserved.reserved) throw Error('assistant_tool_unknown_no_replay');
-      const result = await handler(
-        { id: callId, name, arguments: parameters },
-        instance.runId,
-      );
+      let result: HarnessToolResult;
+      try {
+        result = await handler(
+          { id: callId, name, arguments: parameters },
+          instance.runId,
+        );
+      } catch (error) {
+        // A returned read failure is a completed attempt, not an unknown tool
+        // execution. Keep the failure visible to native DSH so it can recover.
+        // Proposals/writes still need their execution receipts; their exceptions
+        // do not prove whether the external operation happened.
+        if (
+          !isProposal &&
+          (riceToolRisk(name) === 'read_only' ||
+            options.readOnlyTools.has(name))
+        )
+          await runtime.settleUsage({
+            ...base,
+            callId: callUuid,
+            runId: instance.runId,
+            resultDigest: runtimePolicyDigest({
+              outcome: 'failed',
+              code:
+                error instanceof HandlerError
+                  ? error.code
+                  : 'TOOL_EXECUTION_FAILED',
+            }),
+            amounts: {
+              tool_calls: 1,
+              model_calls: 0,
+              input_tokens: 0,
+              output_tokens: 0,
+            },
+          });
+        throw error;
+      }
       await runtime.settleUsage({
         ...base,
         callId: callUuid,

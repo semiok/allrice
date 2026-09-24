@@ -12,6 +12,7 @@ import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
 import type { HarnessToolCall } from '../../src/harness/adapter.js';
 import { riceToolDefinitions } from '../../src/tool-broker.js';
+import { HandlerError } from '../../src/errors.js';
 import { p24Fixture } from '../p24/fixture.js';
 
 const integration =
@@ -71,7 +72,11 @@ integration(
       vi.unstubAllEnvs();
     });
 
-    async function exercise(name: string, read?: (typeof reads)[number]) {
+    async function exercise(
+      name: string,
+      read?: (typeof reads)[number],
+      recoverRoot = false,
+    ) {
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
         allowedTools: ['assistant.delegate', 'assistant.report', name],
@@ -117,6 +122,7 @@ integration(
       let delegated = false;
       const childRequests: string[] = [];
       const calls: HarnessToolCall[] = [];
+      const events: { type: string }[] = [];
       const reply = {
         modelContent:
           'SYNTHETIC_QUERY_RESULT: finite scoped read; no external call',
@@ -125,6 +131,19 @@ integration(
       const model = await p24Fixture(async (request) => {
         const serialized = JSON.stringify(request.messages);
         if (serialized.includes('ROOT_PRIVATE_READ')) {
+          if (recoverRoot) {
+            if (calls.length < 2)
+              return {
+                nativeTool: { name: read!.wire, arguments: read!.args },
+              };
+            expect(serialized).toContain(
+              'Synthetic query temporarily unavailable',
+            );
+            expect(serialized).toContain('SYNTHETIC_QUERY_RESULT');
+            return {
+              text: 'Recovered answer from the available query result.',
+            };
+          }
           if (!delegated) {
             delegated = true;
             return {
@@ -202,9 +221,17 @@ integration(
           maxOutputTokens: 1000,
           threadId: `dsh-${f.session}`,
           tools,
-          onEvent: async () => {},
+          onEvent: async (event) => {
+            events.push(event);
+          },
           onToolCall: async (call) => {
             calls.push(call);
+            if (recoverRoot && calls.length === 1)
+              throw new HandlerError(
+                'MARKET_DATA_NETWORK_ERROR',
+                'Synthetic query temporarily unavailable',
+                true,
+              );
             return reply;
           },
           assistants: productionAssistantController({
@@ -223,6 +250,7 @@ integration(
           reply,
           outcome,
           childRequests,
+          events,
           tree: await f.runtime.getTree(f.context, { runId: f.rootRunId }),
         };
       } finally {
@@ -231,6 +259,57 @@ integration(
         await model.close();
       }
     }
+
+    it.each([
+      { name: 'market.quote', wire: 'market_quote', args: { symbol: 'BOTZ' } },
+      {
+        name: 'market.history',
+        wire: 'market_history',
+        args: { symbol: 'BOTZ', range: '1mo', interval: '1d' },
+      },
+      reads[4]!,
+    ])(
+      'delivers the native answer after a failed root $name query and a successful retry',
+      async (read) => {
+        const { f, calls, outcome, events, tree } = await exercise(
+          read.name,
+          read,
+          true,
+        );
+        expect(calls).toHaveLength(2);
+        expect(
+          events.filter((event) => event.type === 'tool.failed'),
+        ).toHaveLength(1);
+        expect(
+          events.filter((event) => event.type === 'tool.completed'),
+        ).toHaveLength(1);
+        expect(outcome).toMatchObject({
+          answer: 'Recovered answer from the available query result.',
+          assistantStatus: 'completed',
+          usageComplete: true,
+        });
+        expect(tree.instances).toHaveLength(1);
+        expect(tree.instances[0]?.status).toBe('completed');
+        expect(tree.budgets.every((budget) => budget.reserved === 0)).toBe(
+          true,
+        );
+        const rows =
+          await database.db`select metric,settled_amount,result_digest from allrice_assistant_usage where call_id=${stableCallId(f.rootRunId, calls[0]!.id)}`;
+        expect(rows).toHaveLength(4);
+        for (const row of rows) {
+          expect(Number(row.settled_amount)).toBe(
+            row.metric === 'tool_calls' ? 1 : 0,
+          );
+          expect(row.result_digest).toBe(
+            runtimePolicyDigest({
+              outcome: 'failed',
+              code: 'MARKET_DATA_NETWORK_ERROR',
+            }),
+          );
+        }
+      },
+      45000,
+    );
 
     it.each(reads)(
       'dispatches actual child $name and preserves exact native query attribution',

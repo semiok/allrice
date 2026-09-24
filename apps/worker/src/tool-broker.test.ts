@@ -77,6 +77,8 @@ import {
   riceToolDefinitionsForTurn,
   riceToolRisk,
 } from './tool-broker.js';
+import { HandlerError } from './errors.js';
+import * as marketData from './market-data.js';
 
 function executionContext(): ExecutionContext {
   const organizationId = randomUUID();
@@ -139,6 +141,41 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(
       riceToolDefinitionsForCapabilities(['storage:read']),
     ).not.toContainEqual(expect.objectContaining({ name: 'web.search' }));
+  });
+
+  it('records an attributable market error code without private transport details', async () => {
+    const call = {
+      id: randomUUID(),
+      name: 'market.quote',
+      arguments: { symbol: 'BOTZ' },
+    };
+    const error = new HandlerError(
+      'MARKET_DATA_TIMEOUT',
+      'Yahoo Finance 行情请求超时',
+      true,
+    );
+    const market = vi
+      .spyOn(marketData, 'getMarketQuote')
+      .mockRejectedValueOnce(error);
+    await expect(
+      executeRiceTool({
+        context: executionContext(),
+        capabilities: ['network:outbound'],
+        storageRoot: '/unused-synthetic-storage',
+        call,
+      }),
+    ).rejects.toBe(error);
+    market.mockRestore();
+    expect(recordToolBrokerAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'market_data_timeout',
+        metadata: expect.objectContaining({
+          nativeCallId: call.id,
+          errorCode: 'MARKET_DATA_TIMEOUT',
+          retryable: true,
+        }),
+      }),
+    );
   });
 
   it('exposes governed memory writes but excludes them from read-only previews', () => {
