@@ -40,8 +40,14 @@ export function useWorkspaceReadiness(input: {
     requests.current = request;
     const current = () =>
       requests.current === request && latestScope.current === scope;
-    // Do not claim last-known readiness while revalidation is pending.
-    setSnapshot({ scope, data: null, error: '', loading: true });
+    // Keep this scope's last check visible while refreshing the same cards.
+    // A different member, workspace or session must never inherit that result.
+    setSnapshot((previous) => ({
+      scope,
+      data: previous?.scope === scope ? previous.data : null,
+      error: '',
+      loading: true,
+    }));
     const timeout = window.setTimeout(() => request.controller.abort(), 15_000);
     try {
       const query = new URLSearchParams({ workspaceId });
@@ -79,20 +85,17 @@ export function useWorkspaceReadiness(input: {
     }
   }, [workspaceId, organizationId, viewerId, sessionId, scope, headers]);
   useEffect(() => {
+    // The composer also uses readiness while the panel is closed.
     void reload();
-    const focus = () => {
-      if (document.visibilityState === 'visible') void reload();
-    };
-    window.addEventListener('focus', focus);
-    document.addEventListener('visibilitychange', focus);
-    const timer = visible ? window.setInterval(focus, 15_000) : null;
     return () => {
       requests.current?.controller.abort();
       requests.current = null;
-      window.removeEventListener('focus', focus);
-      document.removeEventListener('visibilitychange', focus);
-      if (timer !== null) window.clearInterval(timer);
     };
+  }, [reload]);
+  useEffect(() => {
+    // Check once when opened, sharing any check already running for this scope.
+    // Subsequent updates are explicit; polling/focus refreshes interrupt reading.
+    if (visible && !requests.current) void reload();
   }, [reload, visible]);
   return {
     data: snapshot?.scope === scope ? snapshot.data : null,

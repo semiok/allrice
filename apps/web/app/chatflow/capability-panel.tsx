@@ -106,7 +106,7 @@ export function CapabilityPanel({
               label.prompt ? (
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || loading}
                   onClick={() => onCompose(id)}
                 >
                   准备{label.title}任务
@@ -172,7 +172,7 @@ export function CapabilityPanel({
         })}
       </div>
       <p>
-        “准备任务”只把可编辑指引加入输入框，不会自动发送、安装环境或授予权限。配置页返回后自动重新检查。
+        “准备任务”只把可编辑指引加入输入框，不会自动发送、安装环境或授予权限。打开此面板时检查一次；配置完成后，点击“刷新能力状态”更新。
       </p>
     </DshDialog>
   );

@@ -728,7 +728,72 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('UX01-B revalidates after settings, protects members, and never treats errors or wrong scope as ready', async () => {
+  it('checks once on opening and preserves cards while manually refreshing, without polling or focus refresh', async () => {
+    const f = await fixture();
+    let release!: () => void;
+    try {
+      await f.page.clock.install();
+      const entry = f.page.getByRole('button', {
+        name: '能力与环境',
+        exact: true,
+      });
+      await entry.click();
+      const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
+      const refresh = dialog.getByRole('button', { name: '刷新能力状态' });
+      await expect.poll(() => refresh.isEnabled()).toBe(true);
+      const local = dialog.locator('[data-capability="local_files"]');
+      await local.getByText('查看处理步骤', { exact: true }).click();
+      const before = await dialog
+        .locator('[data-capability]')
+        .allTextContents();
+      const calls = f.state.readinessRequests;
+      await f.page.clock.runFor(31_000);
+      await f.page.evaluate(() => {
+        window.dispatchEvent(new Event('focus'));
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await f.page.waitForTimeout(50);
+      expect(f.state.readinessRequests).toBe(calls);
+      expect(
+        await dialog.locator('[data-capability]').allTextContents(),
+      ).toEqual(before);
+
+      f.state.readinessDelay = new Promise<void>((done) => {
+        release = done;
+      });
+      await refresh.click();
+      await expect.poll(() => f.state.readinessRequests).toBe(calls + 1);
+      expect(
+        await dialog.locator('[data-capability]').allTextContents(),
+      ).toEqual(before);
+      expect(
+        await local.locator('details').getAttribute('open'),
+      ).not.toBeNull();
+      expect(
+        await dialog
+          .getByRole('button', { name: '准备报告与文件交付任务' })
+          .isDisabled(),
+      ).toBe(true);
+      release();
+      f.state.readinessDelay = null;
+      await expect.poll(() => refresh.isEnabled()).toBe(true);
+      expect(
+        await local.locator('details').getAttribute('open'),
+      ).not.toBeNull();
+      await f.page.keyboard.press('Escape');
+      await f.page.waitForTimeout(50);
+      expect(f.state.readinessRequests).toBe(calls + 1);
+      await entry.click();
+      await expect.poll(() => refresh.isEnabled()).toBe(true);
+      expect(f.state.readinessRequests).toBe(calls + 2);
+      expect(f.writes).toEqual([]);
+    } finally {
+      release?.();
+      await f.close();
+    }
+  });
+
+  it('UX01-B explicitly refreshes after settings, protects members, and never treats errors or wrong scope as ready', async () => {
     const f = await fixture();
     try {
       f.state.capabilities = f.state.capabilities.map((c) =>
@@ -762,7 +827,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? { ...c, state: 'ready', reason: 'ready', action: 'compose' }
           : c,
       );
-      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
       await mcp
         .getByRole('button', { name: '准备云端 MCP 连接器任务' })
         .waitFor();
