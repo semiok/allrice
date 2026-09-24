@@ -4,20 +4,39 @@
 .group {
   margin-bottom: 16px;
 }
+.employeeCard,
+.avatar {
+  --employee-start: #304fb1;
+  --employee-end: #3569c6;
+  background-color: var(--employee-start);
+  background-image:
+    radial-gradient(ellipse at 100% 0, #ffffff0c, transparent 65%),
+    repeating-radial-gradient(
+      circle at 110% -40%,
+      transparent 0 22px,
+      #ffffff0a 23px 24px,
+      transparent 25px 47px
+    ),
+    linear-gradient(115deg, var(--employee-start), var(--employee-end));
+}
+.employeeCard[data-accent='orange'],
+.avatar[data-accent='orange'] {
+  --employee-start: #a7491c;
+  --employee-end: #b75a23;
+}
 .employeeCard {
   --dsw-alias-label-primary: #fff;
-  --dsw-alias-label-secondary: #f0f5ff;
-  --dsw-alias-label-tertiary: #e5eeff;
+  --dsw-alias-label-secondary: #fff;
+  --dsw-alias-label-tertiary: #fff;
   --dsw-alias-state-business-primary: #fff;
-  --dsw-alias-interactive-bg-hover: #ffffff1f;
+  --dsw-alias-interactive-bg-hover: transparent;
   margin-bottom: 6px;
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 2px 6px 6px;
-  background: #3569d4;
   color: #fff;
 }
 .employeeCard[data-active] {
-  background: #2459c4;
+  box-shadow: 0 3px 10px #233b781a;
 }
 .header {
   display: flex;
@@ -28,6 +47,9 @@
   min-width: 0;
   height: 52px;
   font-weight: 600;
+}
+.header > :first-child:hover {
+  background: transparent;
 }
 .header [role='treeitem'] > span > span {
   font-size: 16px;
@@ -45,7 +67,8 @@
   height: 32px;
 }
 .info:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: #fff;
+  opacity: 0.8;
 }
 .meta {
   display: flex;
@@ -88,7 +111,6 @@
   height: 32px;
   border: 1px solid var(--dsw-alias-border-l2, #ddd);
   border-radius: 10px;
-  background: #2459c4;
   color: #fff;
   cursor: pointer;
 }

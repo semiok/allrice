@@ -170,7 +170,6 @@ export function ChatSidebar({
             sessions={sessions}
             activeId={activeId}
             collapsed={collapsed}
-            onNewSession={onNewSession}
             onSelectSession={onSelectSession}
             onDetails={onOpenEmployeeDetails}
           />
