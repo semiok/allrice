@@ -77,44 +77,6 @@ main.shell {
   line-height: 1;
 }
 
-.saasNavigation {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
-
-.saasNavigation a,
-.saasNavigation button,
-.saasNavigation > span {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 34px;
-  padding: 6px 10px;
-  border-radius: 9px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 20px;
-  text-decoration: none;
-}
-
-.saasNavigation button {
-  width: 100%;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.saasNavigation a:hover,
-.saasNavigation button:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
 .bridgeDialog {
   max-height: min(720px, calc(100dvh - 48px));
 }
