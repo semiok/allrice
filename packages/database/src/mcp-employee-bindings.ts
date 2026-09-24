@@ -236,6 +236,15 @@ export function createEmployeeMcpBindingStore(
           const [assignment] =
             await tx`select id from allrice_employee_assignments where employee_id=${eid} and employee_version_id=${vid} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and user_id=${scope.actorId} and active for share`;
           if (!assignment) return [];
+          // A member-connected application inherits the published employee's
+          // MCP capability. No manual tool matrix or new employee publication.
+          await tx`insert into allrice_employee_mcp_bindings(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id,enabled,granted_by)
+            select c.organization_id,c.workspace_id,${eid},${vid},c.binding_id,true,${scope.actorId}
+            from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id
+            where c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId}
+              and c.managed_by=${scope.actorId} and b.enabled and c.discovery_state='ready'
+              and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and not x.connected)
+            on conflict(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id) do nothing`;
           const rows = await tx<
             Binding[]
           >`select * from allrice_employee_mcp_bindings where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and employee_id=${eid} and employee_version_id=${vid} and enabled for share`;
@@ -297,4 +306,9 @@ export async function assertEmployeeMcpAuthorization(
       and b.connector_binding_id=${tool.connectionId} and b.enabled and b.grant_revision=${auth.revision}
     for share of b`;
   if (!row) throw new McpError('MCP_DENIED');
+  const [connection] =
+    await tx`select c.binding_id from allrice_mcp_binding_config c
+    where c.binding_id=${tool.connectionId} and (c.managed_by is null or c.managed_by=${scope.actorId})
+      and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and not x.connected)`;
+  if (!connection) throw new McpError('MCP_DENIED');
 }

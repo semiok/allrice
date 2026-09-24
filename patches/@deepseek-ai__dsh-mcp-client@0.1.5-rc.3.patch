@@ -1,0 +1,27 @@
+diff --git a/lib/index.js b/lib/index.js
+index b2f16b4a2b5eaca1ab66b1c4750454daf3e92a90..91e01a582f97243edc9124724a08e198ead42c68 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -45,7 +45,7 @@ function createTransport(config) {
+ 			env: buildChildEnv(config.env),
+ 			cwd: config.cwd
+ 		});
+-		case "streamable-http": return new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } });
++		case "streamable-http": return new StreamableHTTPClientTransport(new URL(config.url), { fetch: config.fetch, authProvider: config.authProvider, requestInit: { headers: config.headers }, reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+ 	}
+ }
+ //#endregion
+diff --git a/lib/types/index.d.ts b/lib/types/index.d.ts
+index f8d553acbab2e8447ac344e960876bc88b2f662f..d53a9154f89a2fff78c63468150d4c3a92fc7076 100644
+--- a/lib/types/index.d.ts
++++ b/lib/types/index.d.ts
+@@ -58,6 +58,9 @@ export interface StreamableHttpConfig {
+     serverName: string;
+     /** MCP endpoint URL. */
+     url: string;
++    /** Host-owned network boundary; never supplied by remote configuration. */
++    fetch?: typeof globalThis.fetch;
++    authProvider?: import('@modelcontextprotocol/sdk/client/auth.js').OAuthClientProvider;
+     /** Additional headers attached to MCP requests. */
+     headers: Record<string, string>;
+     /** Per-tool-call timeout in milliseconds. */

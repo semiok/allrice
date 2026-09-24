@@ -121,7 +121,7 @@
     {
       "id": "durable-question-restart",
       "testFile": "apps/worker/test/p25/task-wait-native.integration.test.ts",
-      "testName": "releases the original process, adopts the exact answer after restart and dispatches the continuation once"
+      "testName": "releases and resumes the native question exactly once (application login=%s)"
     },
     {
       "id": "native-progress-decision",

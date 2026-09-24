@@ -28,6 +28,7 @@ import type postgres from 'postgres';
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { wakeNativeQuestionWaits } from '../task-native-wait.ts';
+import { resumeManagedMcpConnections } from '../mcp-managed-connections.ts';
 import {
   isTerminalJobStatus,
   isTerminalRunEventType,
@@ -1393,6 +1394,7 @@ export async function maintainQueue(limit = 100) {
   }
   const now = new Date();
   const sql = getDatabase();
+  await resumeManagedMcpConnections(limit, sql);
   await wakeNativeQuestionWaits(limit, sql);
   const rows = await sql<JobRow[]>`
       select * from allrice_jobs

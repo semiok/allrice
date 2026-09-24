@@ -45,7 +45,7 @@ describe('P16 explicit MCP visibility is never execution permission', () => {
         .map((t) => t.canonicalName),
     ).toEqual(['local.mcp.discover', 'local.mcp.call', 'cloud.mcp.call']);
   });
-  it('requires a frozen manifest allowlist and secret:use independently', () => {
+  it('requires the published tool and secret:use, while allowing setup before any connection exists', () => {
     enable();
     expect(
       names(riceToolDefinitionsForCapabilities(['secret:use'])),
@@ -55,13 +55,13 @@ describe('P16 explicit MCP visibility is never execution permission', () => {
     ).not.toContain('cloud.mcp.call');
     expect(
       names(riceToolDefinitionsForCapabilities(['secret:use'], granted, [])),
-    ).not.toContain('cloud.mcp.call');
+    ).toContain('cloud.mcp.call');
     const legacy = { ...frozen[0]!, employeeAuthorization: undefined };
     expect(
       names(
         riceToolDefinitionsForCapabilities(['secret:use'], granted, [legacy]),
       ),
-    ).not.toContain('cloud.mcp.call');
+    ).toContain('cloud.mcp.call');
   });
   it.each(['ALLRICE_CLOUD_MCP_ENABLED', 'ALLRICE_RUNTIME_POLICY_ENABLED'])(
     'requires %s even with both frozen allowlist and capability',

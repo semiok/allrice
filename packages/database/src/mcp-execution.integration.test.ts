@@ -21,6 +21,20 @@ import { nativeBrokerRoundtrip } from '../../../apps/worker/src/harness/dsh-nati
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
 import { riceToolDefinitionsForCapabilities } from '../../../apps/worker/src/tool-broker/definitions.js';
 import * as McpExecutor from '../../../apps/worker/src/mcp/executor.js';
+import { createNativeMcpTransport } from '../../../apps/worker/src/mcp/native-transport.js';
+import { executeNextMcpDiscovery } from '../../../apps/worker/src/mcp/lifecycle.js';
+import {
+  managedMcpRunContext,
+  requestManagedMcpLogin,
+  resumeManagedMcpConnections,
+} from './mcp-managed-connections.ts';
+import {
+  parkNativeQuestion,
+  beginNativeTask,
+  wakeNativeQuestionWaits,
+} from './task-native-wait.ts';
+import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
+import { refreshTaskClock } from './task-clock.ts';
 import { updateEmployeeStatus } from './employees/employeehub.ts';
 import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import {
@@ -87,6 +101,313 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     await admin?.end({ timeout: 5 });
     vi.unstubAllEnvs();
   });
+  it('an ordinary member connects an app during a running task, supplies credentials privately and executes through DSH without republishing', async () => {
+    const f = await fixture();
+    await db`update allrice_memberships set role='member' where user_id=${f.user}`;
+    const context = await managedMcpRunContext(f.execution, db);
+    expect(context.memberships[0]?.role).toBe('member');
+    const store = McpConnections.createMcpStore({
+      database: db,
+      memberManaged: true,
+      credentialKey: 'af'.repeat(32),
+    });
+    const native = createNativeMcpTransport({
+      fetchOverride: f.service.fetchOverride,
+    });
+    const connection = await store.create(context, {
+      workspaceId: f.workspace,
+      name: 'My records',
+      endpoint: f.service.endpoint,
+    });
+    await executeNextMcpDiscovery({
+      workerId: f.worker,
+      signal: AbortSignal.timeout(10000),
+      store,
+      transport: native,
+    });
+    expect(
+      (await store.memberConnection(context, f.workspace, connection.id))
+        .discoveryCode,
+    ).toBe('MCP_AUTH_REQUIRED');
+    await store.rotate(context, {
+      workspaceId: f.workspace,
+      connectionId: connection.id,
+      bearerToken: f.service.state.token,
+    });
+    await executeNextMcpDiscovery({
+      workerId: f.worker,
+      signal: AbortSignal.timeout(10000),
+      store,
+      transport: native,
+    });
+    const ready = await store.memberConnection(
+      context,
+      f.workspace,
+      connection.id,
+    );
+    expect(ready.discoveryState).toBe('ready');
+    expect(ready.tools.every((t) => t.allowed)).toBe(true);
+    expect(JSON.stringify(ready)).not.toContain(f.service.state.token);
+    const tool = ready.tools.find(
+      (t) => t.description === 'Append a synthetic record',
+    )!;
+    const created = await f.create('managed-native-write', {
+      connectionId: connection.id,
+      tool: tool.name,
+      arguments: { value: 'same-task' },
+    });
+    await f.decide(created);
+    const result = await McpExecutor.runMcpRuntimeOperation(created, {
+      database: db,
+      store,
+      transport: native,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(f.service.state.rows).toEqual(['same-task']);
+    const [unchanged] =
+      await db`select execution_snapshot from allrice_employee_runs where run_id=${f.run}`;
+    expect(
+      unchanged!.execution_snapshot.mcpTools.some(
+        (t: { connectionId: string }) => t.connectionId === connection.id,
+      ),
+    ).toBe(false);
+    await store.setMemberConnected(context, {
+      workspaceId: f.workspace,
+      connectionId: connection.id,
+      connected: false,
+    });
+    const again = await store.create(context, {
+      workspaceId: f.workspace,
+      name: 'Do not reconnect',
+      endpoint: f.service.endpoint,
+    });
+    expect(again.id).toBe(connection.id);
+    expect(again.disconnected).toBe(true);
+    await expect(
+      f.create('after-disconnect', {
+        connectionId: connection.id,
+        tool: tool.name,
+        arguments: { value: 'blocked' },
+      }),
+    ).rejects.toThrow();
+  }, 15000);
+  it('member disconnect of a shared app preserves other members and reconnect cannot revive old approvals', async () => {
+    const f = await fixture();
+    const operation = await f.create('before-member-disconnect');
+    await f.decide(operation);
+    await f.store.setMemberConnected(f.context, {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+      connected: false,
+    });
+    const [binding] =
+      await db`select enabled from allrice_connector_bindings where id=${f.connection.id}`;
+    expect(binding!.enabled).toBe(true);
+    await f.store.setMemberConnected(f.context, {
+      workspaceId: f.workspace,
+      connectionId: f.connection.id,
+      connected: true,
+    });
+    await expect(
+      f.store.assertAuthorized(
+        { organizationId: f.org, workspaceId: f.workspace, actorId: f.user },
+        f.mcpTools[0]!,
+      ),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await expect(f.execute(operation)).resolves.toMatchObject({
+      code: 'MCP_DISPATCH_DENIED',
+    });
+    expect(f.service.state.calls).toBe(0);
+  });
+  it('reuses SDK OAuth discovery, PKCE callback and token refresh with encrypted member-owned state', async () => {
+    const f = await fixture();
+    f.service.state.oauthEnabled = true;
+    const store = McpConnections.createMcpStore({
+      database: db,
+      memberManaged: true,
+      credentialKey: 'af'.repeat(32),
+    });
+    const transport = createNativeMcpTransport({
+      fetchOverride: f.service.fetchOverride,
+    });
+    const connection = await store.create(f.context, {
+      workspaceId: f.workspace,
+      name: 'OAuth records',
+      endpoint: f.service.endpoint,
+    });
+    await store.beginOAuth(f.context, {
+      workspaceId: f.workspace,
+      connectionId: connection.id,
+      redirectUrl: 'https://allrice.example.test/api/v1/connections/callback',
+    });
+    const discover = () =>
+      executeNextMcpDiscovery({
+        workerId: f.worker,
+        signal: AbortSignal.timeout(10000),
+        store,
+        transport,
+      });
+    await discover();
+    expect(
+      (await store.memberConnection(f.context, f.workspace, connection.id))
+        .loginState,
+    ).toBe('redirect');
+    const url = await store.oauthAuthorizationUrl(
+      f.context,
+      f.workspace,
+      connection.id,
+    );
+    const authorization = await f.service.fetchOverride(url, {
+      redirect: 'manual',
+    });
+    const callback = new URL(authorization.headers.get('location')!);
+    const answer = {
+      state: callback.searchParams.get('state')!,
+      code: callback.searchParams.get('code')!,
+    };
+    await expect(
+      store.completeOAuthCallback(f.context, {
+        ...answer,
+        state: '0'.repeat(64),
+      }),
+    ).rejects.toThrow();
+    await store.completeOAuthCallback(f.context, answer);
+    await expect(
+      store.completeOAuthCallback(f.context, answer),
+    ).rejects.toThrow();
+    await discover();
+    const ready = await store.memberConnection(
+      f.context,
+      f.workspace,
+      connection.id,
+    );
+    expect(ready).toMatchObject({
+      discoveryState: 'ready',
+      loginState: 'connected',
+      credentialConfigured: true,
+    });
+    expect(f.service.state.exchanges).toBe(1);
+    const [encrypted] =
+      await db`select oauth_envelope from allrice_mcp_binding_config where binding_id=${connection.id}`;
+    expect(JSON.stringify(encrypted)).not.toContain('synthetic-refresh-token');
+    expect(JSON.stringify(ready)).not.toContain(f.service.state.token);
+    f.service.state.token = 'simulate-access-token-expiry';
+    const tool = ready.tools.find(
+      (t) => t.description === 'Append a synthetic record',
+    )!;
+    const operation = await f.create('native-oauth-refresh', {
+      connectionId: connection.id,
+      tool: tool.name,
+      arguments: { value: 'oauth-result' },
+    });
+    await f.decide(operation);
+    const result = await McpExecutor.runMcpRuntimeOperation(operation, {
+      database: db,
+      store,
+      transport,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.output).not.toContain(f.service.state.token);
+    expect(f.service.state.refreshes).toBe(1);
+    expect(f.service.state.calls).toBe(1);
+  }, 15000);
+  it('successful login automatically answers the persisted native question and requeues the original task exactly once', async () => {
+    const f = await fixture();
+    const store = McpConnections.createMcpStore({
+      database: db,
+      memberManaged: true,
+      credentialKey: 'af'.repeat(32),
+    });
+    const transport = createNativeMcpTransport({
+      fetchOverride: f.service.fetchOverride,
+    });
+    const connection = await store.create(f.context, {
+      workspaceId: f.workspace,
+      name: 'Resume records',
+      endpoint: f.service.endpoint,
+    });
+    const discover = () =>
+      executeNextMcpDiscovery({
+        workerId: f.worker,
+        signal: AbortSignal.timeout(10000),
+        store,
+        transport,
+      });
+    await discover();
+    const requestId = await requestManagedMcpLogin(
+      f.execution,
+      connection.id,
+      db,
+    );
+    const questionId = `question-${randomUUID()}`,
+      thread = `dsh-${f.session}`,
+      turnId = `${thread}:turn:0`;
+    const questions = [
+      {
+        id: `app-connect:${requestId}`,
+        question: '完成应用登录后继续',
+        multiSelect: false,
+        options: [{ label: '已连接，继续任务' }, { label: '取消连接' }],
+      },
+    ];
+    await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy) values(${f.run},${f.org},${f.workspace},${db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+    await db`insert into allrice_task_questions(run_id,question_id,pending) values(${f.run},${questionId},true)`;
+    await db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+      values(${f.org},${f.workspace},${f.run},0,'harness.native',${db.json({ source: 'dsh', sourceEventType: 'session/user-question', nativePayload: { questionId, questions } })})`;
+    await db`update allrice_jobs set attempt=1 where id=${f.job}`;
+    await db`update allrice_conversation_runtimes set thread_id=${thread},active_turn_id=${turnId} where session_id=${f.session}`;
+    const [job] =
+      await db`select lease_token::text from allrice_jobs where id=${f.job}`;
+    const owner = {
+      context: f.execution,
+      worker: {
+        jobId: f.job,
+        workerId: f.worker,
+        leaseToken: String(job!.lease_token),
+      },
+      configChecksum: digest('p16'),
+      generation: 1,
+    };
+    await db.begin((tx) => refreshTaskClock(tx, f.run));
+    await beginNativeTask({ ...owner, attempt: 1 }, db);
+    await parkNativeQuestion(
+      {
+        ...owner,
+        checkpoint: {
+          sessionId: thread,
+          questionId,
+          turnId,
+          sequence: 20,
+          questions,
+        },
+      },
+      db,
+    );
+    await resumeManagedMcpConnections(20, db);
+    expect(
+      await db`select id from allrice_conversation_commands where session_id=${f.session}`,
+    ).toHaveLength(0);
+    await store.rotate(f.context, {
+      workspaceId: f.workspace,
+      connectionId: connection.id,
+      bearerToken: f.service.state.token,
+    });
+    await discover();
+    await resumeManagedMcpConnections(20, db);
+    await resumeManagedMcpConnections(20, db);
+    const commands =
+      await db`select message,input_kind,expected_turn_id from allrice_conversation_commands where session_id=${f.session}`;
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      input_kind: 'ask_user',
+      expected_turn_id: turnId,
+    });
+    expect(String(commands[0]!.message)).not.toContain(f.service.state.token);
+    await wakeNativeQuestionWaits(20, db);
+    const [resumed] =
+      await db`select status from allrice_jobs where id=${f.job}`;
+    expect(resumed!.status).toBe('queued');
+  }, 15000);
   it('real platform compile/preview/publish permits narrow MCP service policy, never tenant IDs or explicit denials', async () => {
     const f = await fixture();
     await db`update allrice_provider_status set status='connected',checked_at=clock_timestamp() where provider='codex'`;
@@ -194,12 +515,12 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     );
     expect(f.service.state.calls).toBe(0);
   });
-  it('tenant binding activates only the pre-declared MCP tool through real new Run freeze; missing binding never exposes it', async () => {
+  it('published MCP capability exposes connection setup before an app is bound; calls still require database authority', async () => {
     const f = await fixture();
     const before = f.beforeBinding.executionSnapshot,
       after = f.prepared.executionSnapshot;
     expect(before.mcpTools).toEqual([]);
-    expect(before.capabilitySnapshot.grantedCapabilities).not.toContain(
+    expect(before.capabilitySnapshot.grantedCapabilities).toContain(
       'secret:use',
     );
     expect(after.capabilitySnapshot.grantedCapabilities).toContain(
@@ -214,17 +535,19 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       after.capabilitySnapshot.grantedCapabilities.filter(
         (capability) => capability !== 'secret:use',
       ),
-    ).toEqual(before.capabilitySnapshot.grantedCapabilities);
+    ).toEqual(
+      before.capabilitySnapshot.grantedCapabilities.filter(
+        (capability) => capability !== 'secret:use',
+      ),
+    );
     const visible = (value: typeof after) =>
       riceToolDefinitionsForCapabilities(
         value.capabilitySnapshot.grantedCapabilities,
         value.capabilitySnapshot.bindings.toolNames,
         value.mcpTools,
       ).map((t) => t.name);
-    expect(visible(before)).not.toContain('cloud.mcp.call');
-    expect(visible(after).filter((n) => !visible(before).includes(n))).toEqual([
-      'cloud.mcp.call',
-    ]);
+    expect(visible(before)).toContain('cloud.mcp.call');
+    expect(visible(after)).toContain('cloud.mcp.call');
     expect(visible(before)).toContain('web.fetch');
     expect(visible(after)).toContain('web.fetch');
     expect(
@@ -248,10 +571,14 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       executeRiceTool({
         context: f.execution,
         storageRoot: `/tmp/${schema}`,
-        call: { id: 'no-freeze', name: 'cloud.mcp.call', arguments: f.args },
+        call: {
+          id: 'no-freeze',
+          name: 'cloud.mcp.call',
+          arguments: { ...f.args, connectionId: randomUUID() },
+        },
         capabilities: ['secret:use'],
       }),
-    ).rejects.toThrow('当前 Run 未冻结');
+    ).rejects.toThrow();
   });
   it('revoke and regrant cannot revive an old Run or approval, while new Runs freeze the new revision', async () => {
     const f = await fixture(),

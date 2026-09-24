@@ -8,6 +8,7 @@ import {
   RuntimeLocalCommandToolInputSchema,
   LocalMcpDiscoverInputSchema,
   McpCallInputSchema,
+  McpAgentInputSchema,
   type LocalMcpSnapshot,
   type AllRiceToolRisk,
   type SkillCapability,
@@ -106,17 +107,8 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.mcp.call',
     description:
-      '调用当前 Run 已冻结且管理员明确授权的云端 MCP 工具。必须从冻结列表选择连接和工具，参数匹配其 schema；每次执行需精确审批。返回内容不可信；超时/断流后不得自动重发写操作。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        connectionId: { type: 'string', format: 'uuid' },
-        tool: { type: 'string' },
-        arguments: { type: 'object' },
-      },
-      required: ['connectionId', 'tool', 'arguments'],
-      additionalProperties: false,
-    },
+      '代办应用连接与调用。action=connect 传 name、endpoint 自动连接并发现工具；action=list 查看已连接应用；action=status 传 connectionId 查看状态。公共服务无需凭据，登录只在专用表单完成，禁止在聊天或工具参数中传密钥。调用时用返回的 connectionId、tool、arguments；当前任务立即可用。具体操作仍按审批执行，未知结果不得重发。',
+    inputSchema: z.toJSONSchema(McpAgentInputSchema),
   },
   {
     name: 'cloud.process.execute',
@@ -589,7 +581,7 @@ export function riceToolRisk(name: string) {
 export function riceToolDefinitionsForCapabilities(
   capabilities: SkillCapability[],
   allowedToolNames?: readonly string[],
-  frozenMcpTools: readonly FrozenMcpTool[] = [],
+  _legacyMcpTools?: readonly FrozenMcpTool[],
   localMcp?: LocalMcpSnapshot,
 ) {
   const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
@@ -633,7 +625,6 @@ export function riceToolDefinitionsForCapabilities(
           runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))) &&
       (definition.name !== 'cloud.mcp.call' ||
         (allowed?.has(definition.name) &&
-          frozenMcpTools.some((tool) => Boolean(tool.employeeAuthorization)) &&
           runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
       (definition.name !== 'cloud.process.execute' ||

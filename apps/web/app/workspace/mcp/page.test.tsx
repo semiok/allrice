@@ -17,9 +17,9 @@ vi.mock('next/navigation', () => ({ redirect: vi.fn() }));
 vi.mock('../../../lib/identity/session', () => ({
   getRequestContext: vi.fn(),
 }));
-vi.mock('../../runtime-console/mcp-settings', () => ({
-  McpSettings: ({ workspaceId }: { workspaceId: string }) => (
-    <section data-workspace-id={workspaceId}>MCP settings</section>
+vi.mock('./connected-apps', () => ({
+  ConnectedApps: ({ workspaceId }: { workspaceId: string }) => (
+    <section data-workspace-id={workspaceId}>Connected apps</section>
   ),
 }));
 
@@ -102,8 +102,16 @@ describe('workspace MCP page access', () => {
     expect(html).toContain(`data-workspace-id="${workspaceId}"`);
   });
 
+  it('lets ordinary members manage their applications without becoming an admin', async () => {
+    const actor = context();
+    actor.memberships[0]!.role = 'member';
+    vi.mocked(getRequestContext).mockResolvedValue(actor);
+    const html = renderToStaticMarkup(await WorkspaceMcpPage());
+    expect(html).toContain('Connected apps');
+    expect(html).not.toContain('MCP settings');
+  });
+
   it.each([
-    ['member', { role: 'member' as const }],
     ['viewer', { role: 'viewer' as const }],
     ['inactive admin', { active: false }],
     ['other user', { userId: otherId }],
@@ -114,8 +122,8 @@ describe('workspace MCP page access', () => {
     Object.assign(actor.memberships[0]!, patch);
     vi.mocked(getRequestContext).mockResolvedValue(actor);
     const html = renderToStaticMarkup(await WorkspaceMcpPage());
-    expect(html).toContain('只有当前租户管理员可以管理 MCP 连接。');
-    expect(html).not.toContain('MCP settings');
+    expect(html).toContain('当前账号没有此工作区的应用连接权限。');
+    expect(html).not.toContain('Connected apps');
     expect(redirect).not.toHaveBeenCalled();
   });
 
@@ -134,7 +142,7 @@ describe('workspace MCP page access', () => {
     const html = renderToStaticMarkup(await WorkspaceMcpPage());
     expect(html).toContain('当前租户没有你可访问的工作区');
     expect(html).toContain('role="alert"');
-    expect(html).not.toContain('MCP settings');
+    expect(html).not.toContain('Connected apps');
     expect(redirect).not.toHaveBeenCalled();
   });
 

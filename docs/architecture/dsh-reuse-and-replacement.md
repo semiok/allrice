@@ -72,6 +72,16 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 以下记录保留 MET-154 当时的实现与验收事实，其中“本轮不接入”“临时配置已恢复”不构成后续默认关闭的政策。后续升级和能力接入执行上面的“默认开放”原则。
 
+## MET-159 PR4：员工代办应用连接（2026-09-24）
+
+新建的成员应用连接直接使用 `@deepseek-ai/dsh-mcp-client@0.1.5-rc.3`，固定源码 `a4c74a91e06b00fe0b0937bde982170c526cc842`。先用未修改的发布包、真实本地 HTTP MCP 服务跑通匿名发现和 `ctx.tools.execute`，再接入 Allrice；没有另写 MCP 发现器、工具命名器或 Agent 循环。
+
+`allrice-managed-native-mcp-v1` 只向原生 HTTP transport 注入宿主 `fetch` 和官方 MCP SDK `OAuthClientProvider`，并关闭断线重试。DSH 负责原生工具名、schema、注册与执行，官方 SDK 负责登录发现、注册、PKCE、换取及刷新凭据；Allrice 补成员身份、加密保存、网络边界、现有操作账本和普通成员的连接管理。工具输入 schema 原样保留，不能错误地套用 DSH 输出 schema 的较小子集。
+
+员工已配置 `cloud.mcp.call` 即可为当前用户连接应用，不再先要求管理员创建连接、配置工具矩阵或重发员工。登录复用原生 User Questions 和既有持久化等待：完成后续跑原任务，等待释放 Worker，登录答案不等于批准远程写操作。用户可以断开、恢复或删除自己的连接；删除个人连接清除服务端凭据，共享连接只影响当前成员。界面不把排队或发现失败显示为连接成功。
+
+旧 `client_kind=sdk` 连接继续保留原工具名、已冻结任务和审批兼容；新托管连接使用 `dsh`。只有旧连接与在途任务均迁移、名称与摘要对应关系验收后，才删除旧 SDK transport。上游直接提供宿主 fetch/authProvider 与禁重连配置后，移除本补丁。独立「已连接应用」页面与任务内登录已接入；统一 Settings 菜单由 MET-159 PR5 与 MET-160 界面汇合。验收范围及第三方账号限制见 [PR4 记录](allrice-2.0/met159-managed-connections.md)。
+
 ## MET-157 Office 1.3.1：原生流程已接入（2026-09-24）
 
 当前默认复用原样 DSH 格式指南、原样执行的检查脚本，以及 python-docx / openpyxl / pandas / python-pptx 工作流程。Allrice 仅接文件授权、隔离执行、版本下载、公式缓存与页面预览；旧 typed 编辑只保留历史冻结包兼容，不再并行扩写。三个旧切片已收敛为直接面向 main 的 PR #100，#98、#99 关闭并由它取代。

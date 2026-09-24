@@ -107,6 +107,75 @@ suite('P16 tenant MCP authority — actual isolated PostgreSQL', () => {
       await admin.unsafe(`drop schema "${schema}" cascade`);
     await admin?.end({ timeout: 5 });
   });
+  it('keeps personal applications private from other members and deletes credentials without reconnecting on rediscovery', async () => {
+    const f = await fixture();
+    const store = createMcpStore({
+      database: db,
+      credentialKey: key,
+      memberManaged: true,
+    });
+    await db`update allrice_memberships set role='member' where user_id=${f.context.actor.id}`;
+    f.context.memberships[0]!.role = 'member';
+    const connection = await store.create(f.context, {
+      workspaceId: f.scope.workspaceId,
+      name: 'Personal',
+      endpoint: 'https://personal.example.test/mcp',
+      bearerToken: token,
+    });
+    const user = randomUUID();
+    await db`insert into allrice_users(id,email,display_name,password_hash) values(${user},${`${user}@example.test`},'Other member','synthetic')`;
+    await db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.scope.organizationId},${f.scope.workspaceId},${user},'member')`;
+    const other: RequestContext = {
+      ...f.context,
+      actor: { type: 'user', id: user },
+      memberships: f.context.memberships.map((m) => ({ ...m, userId: user })),
+    };
+    expect(
+      (await store.list(other, f.scope.workspaceId)).map((c) => c.id),
+    ).not.toContain(connection.id);
+    await expect(
+      store.memberConnection(other, f.scope.workspaceId, connection.id),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await expect(
+      store.setMemberConnected(other, {
+        workspaceId: f.scope.workspaceId,
+        connectionId: connection.id,
+        connected: false,
+        remove: true,
+      }),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await store.setMemberConnected(f.context, {
+      workspaceId: f.scope.workspaceId,
+      connectionId: connection.id,
+      connected: false,
+      remove: true,
+    });
+    const [removed] =
+      await db`select credential_envelope,oauth_envelope from allrice_mcp_binding_config where binding_id=${connection.id}`;
+    expect(removed).toMatchObject({
+      credential_envelope: {},
+      oauth_envelope: null,
+    });
+    const reused = await store.create(f.context, {
+      workspaceId: f.scope.workspaceId,
+      name: 'Same app',
+      endpoint: connection.endpoint,
+    });
+    expect(reused).toMatchObject({
+      id: connection.id,
+      disconnected: true,
+      removed: true,
+    });
+    await expect(
+      store.queueDiscovery(f.context, {
+        workspaceId: f.scope.workspaceId,
+        connectionId: connection.id,
+      }),
+    ).rejects.toThrow();
+    expect(
+      await f.store.list(other, f.scope.workspaceId).catch(() => []),
+    ).toEqual([]);
+  });
   it('uses existing connector authority, encrypts the tenant credential and never returns it', async () => {
     const f = await fixture();
     const [binding] =
