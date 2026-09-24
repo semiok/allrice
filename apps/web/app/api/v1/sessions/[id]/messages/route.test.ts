@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
-import { ArtifactReviewError } from '@allrice/database';
+import { ArtifactReviewError, EmployeeHubError } from '@allrice/database';
 import { POST } from './route';
 
 const ports = vi.hoisted(() => ({ context: vi.fn(), send: vi.fn() }));
@@ -103,5 +103,14 @@ describe('typed message browser boundary', () => {
       expect((await response.json()).error.code).toBe(error.code);
     }
     expect(ports.send).toHaveBeenCalledTimes(2);
+  });
+  it('reports model configuration failures without falsely identifying Codex', async () => {
+    ports.send.mockRejectedValueOnce(new EmployeeHubError('provider_invalid'));
+    const response = await call();
+    expect(response.status).toBe(422);
+    const { error } = await response.json();
+    expect(error.code).toBe('PROVIDER_INVALID');
+    expect(error.message).toContain('模型与认证配置');
+    expect(error.message).not.toContain('Codex');
   });
 });

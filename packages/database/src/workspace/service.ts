@@ -2128,13 +2128,39 @@ export async function getEmployeeWorkspace(
             and workspace_id = ${assignment.workspaceId}
             and session_id in ${sql(sessionIds)}
         `;
-  const sessionModels = modelRows.flatMap((row) => {
-    const parsed = SessionModelSnapshotSchema.safeParse(row.snapshot);
-    if (!parsed.success) return [];
-    const snapshot = parsed.data;
+  const cachedModels = new Map(
+    modelRows.map((row) => [row.session_id, row.snapshot]),
+  );
+  const publishedModels = new Map(
+    employeeHub.assignments.map((employee) => {
+      // EmployeeHub has already validated and redacted these manifests. Do not
+      // reparse the public projection as a credential-bearing runtime manifest.
+      const manifest = employee.currentVersion.manifest;
+      return [
+        employee.currentVersion.id,
+        manifest.schemaVersion === 2 &&
+        manifest.runtimePackage &&
+        manifest.provider.provider === 'dsh'
+          ? {
+              provider: manifest.provider.route,
+              model: manifest.provider.model,
+              reasoningEffort: manifest.provider.reasoningEffort,
+            }
+          : null,
+      ];
+    }),
+  );
+  const sessionModels = sessions.sessions.flatMap((session) => {
+    const parsed = SessionModelSnapshotSchema.safeParse(
+      cachedModels.get(session.id),
+    );
+    const snapshot =
+      publishedModels.get(session.employeeVersionId) ??
+      (parsed.success ? parsed.data : null);
+    if (!snapshot) return [];
     return [
       {
-        sessionId: row.session_id,
+        sessionId: session.id,
         // Legacy snapshots are readable, but the public SaaS runtime is DSH.
         harness: 'dsh' as const,
         provider:
