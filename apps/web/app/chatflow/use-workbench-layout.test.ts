@@ -16,7 +16,7 @@ describe('workbench layout preferences', () => {
       layoutPreferenceKey('u', 'o:p', 'w'),
     );
   });
-  it('accepts only boolean preferences, with safe defaults for corrupt / unavailable storage', () => {
+  it('accepts typed preferences, with safe defaults for corrupt / unavailable storage', () => {
     for (const raw of [
       null,
       '{',
@@ -27,11 +27,22 @@ describe('workbench layout preferences', () => {
       expect(parseLayoutPreferences(raw)).toEqual({
         panelOpen: true,
         sidebarCollapsed: false,
+        panelWidth: null,
       });
     expect(
       parseLayoutPreferences(
         '{"panelOpen":false,"sidebarCollapsed":true,"token":"ignored"}',
       ),
-    ).toEqual({ panelOpen: false, sidebarCollapsed: true });
+    ).toEqual({ panelOpen: false, sidebarCollapsed: true, panelWidth: null });
+  });
+  it('reads prior preferences without a width and rejects malformed widths', () => {
+    for (const panelWidth of [null, '600', -1, 0, 359])
+      expect(
+        parseLayoutPreferences(JSON.stringify({ panelWidth })).panelWidth,
+      ).toBeNull();
+    expect(
+      parseLayoutPreferences('{"panelWidth":1e999}').panelWidth,
+    ).toBeNull();
+    expect(parseLayoutPreferences('{"panelWidth":640}').panelWidth).toBe(640);
   });
 });

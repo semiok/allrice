@@ -4,18 +4,21 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--dsw-alias-border-l2, #ddd);
   background: var(--dsw-alias-bg-base, #fff);
   color: var(--dsw-alias-label-primary, #20242b);
   font-size: 13px;
   line-height: 1.5;
 }
 .header {
+  box-sizing: border-box;
+  flex: 0 0 var(--allrice-chat-header-height, 56px);
+  height: var(--allrice-chat-header-height, 56px);
+  min-height: var(--allrice-chat-header-height, 56px);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--dsw-alias-border-l2, #ddd);
 }
 .header h2 {
@@ -289,6 +292,7 @@
   background: #0005;
 }
 .drawer {
+  border-left: 1px solid var(--dsw-alias-border-l2, #ddd);
   position: fixed;
   right: 0;
   top: 0;
@@ -351,4 +355,13 @@
   padding: 6px 8px;
   border-bottom: 1px solid var(--dsw-alias-border-l2, #ddd);
   overflow-wrap: anywhere;
+}
+
+.splitter:focus-visible {
+  outline: 2px solid var(--dsw-alias-status-info, #4678e9);
+  outline-offset: -2px;
+}
+
+.splitter:focus-visible::after {
+  opacity: 1;
 }

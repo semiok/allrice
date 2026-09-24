@@ -122,7 +122,7 @@ export function ToolFileDiff({
   if (!canRender)
     return (
       <p role="status">
-        文件过长，已停用富 Diff。可下载精确工件，或按下方行号提交意见。
+        文件过长，已停用富 Diff。可下载此版本文件，或按下方行号提交意见。
       </p>
     );
   if (failed || !diff)
@@ -130,7 +130,7 @@ export function ToolFileDiff({
       <p role="status">
         {before === after
           ? '该文件内容没有差异。'
-          : 'Diff 暂不可用，请使用前后文本视图或下载工件。'}
+          : 'Diff 暂不可用，请使用前后文本视图或下载成果。'}
       </p>
     );
   return (

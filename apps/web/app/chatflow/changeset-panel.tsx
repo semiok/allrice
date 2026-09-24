@@ -227,7 +227,7 @@ export function ChangesetPanel({
                   精确授权范围
                 </summary>
                 <small>
-                  工件 {item.payload.arguments.checksum}
+                  成果 {item.payload.arguments.checksum}
                   。以下前后内容是本次实际动作，恢复任务使用反向变更。
                 </small>
                 <ul>

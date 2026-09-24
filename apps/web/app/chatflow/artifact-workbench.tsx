@@ -30,6 +30,7 @@ import {
   type ArtifactCursor,
 } from '../../lib/chatflow/workbench-model';
 import styles from './workbench.module.css';
+import frameUi from './dsh-upstream/AppFrame.module.css';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { readJson } from './chatflow-utils';
 import { AssistantMarkdown } from './assistant-markdown';
@@ -140,9 +141,9 @@ export function ArtifactWorkbench(props: Props) {
         id="artifact-workbench"
         ref={panel}
         tabIndex={-1}
-        className={`${styles.panel} ${props.narrow ? styles.drawer : ''}`}
+        className={`${styles.panel} ${props.narrow ? styles.drawer : frameUi.detailsCol}`}
         role={props.narrow ? 'dialog' : 'complementary'}
-        aria-label="工件与审查工作台"
+        aria-label="交付成果"
         aria-modal={props.narrow ? true : undefined}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
@@ -172,7 +173,7 @@ export function ArtifactWorkbench(props: Props) {
         }}
       >
         <header className={styles.header}>
-          <h2>工件与审查</h2>
+          <h2>交付成果</h2>
           <button type="button" aria-label="关闭工作台" onClick={close}>
             ×
           </button>
@@ -180,14 +181,14 @@ export function ArtifactWorkbench(props: Props) {
         <div className={styles.body}>
           {props.noticeId && props.noticeId !== artifactId ? (
             <p className={styles.notice} role="status">
-              新工件已就绪。
+              新成果已就绪。
               <button type="button" onClick={() => select(props.noticeId!)}>
-                查看新工件
+                查看新成果
               </button>
             </p>
           ) : null}
           <div className={styles.row}>
-            <label htmlFor="workbench-artifacts">工件版本</label>
+            <label htmlFor="workbench-artifacts">成果版本</label>
             <button
               type="button"
               disabled={props.listLoading || !props.sessionId}
@@ -226,7 +227,7 @@ export function ArtifactWorkbench(props: Props) {
                   disabled={props.listLoading}
                   onClick={() => void props.onReload(props.nextCursor!)}
                 >
-                  加载更早工件
+                  加载更早成果
                 </button>
               ) : null}
               <ArtifactReview
@@ -243,9 +244,9 @@ export function ArtifactWorkbench(props: Props) {
           ) : (
             <p className={styles.muted}>
               {props.listLoading
-                ? '正在加载工件…'
+                ? '正在加载成果…'
                 : props.sessionId
-                  ? '这个会话还没有工件。Rice 交付的报告、文件、修改提案与浏览器证据会显示在这里。'
+                  ? '这个会话还没有成果。Rice 交付的报告、文件、修改提案与浏览器证据会显示在这里。'
                   : '开始或选择一项工作，交付物将在这里展示。这里不会自动执行命令或批准修改。'}
             </p>
           )}
@@ -285,7 +286,7 @@ export function ReadOnlyArtifactPreview({
   if (preview.kind === 'image')
     return (
       <img
-        alt="工件静态证据预览"
+        alt="成果静态证据预览"
         style={{ maxWidth: '100%' }}
         src={`data:${preview.mediaType};base64,${preview.base64}`}
       />
@@ -544,7 +545,7 @@ function ArtifactReview({
           result.artifact.id !== artifactId ||
           result.artifact.version.sessionId !== sessionId
         )
-          throw Error('工件所属会话不匹配');
+          throw Error('成果所属会话不匹配');
         if (token !== generation.current) return;
         setArtifact(result.artifact);
         setFeedback(result.feedback);
@@ -552,7 +553,7 @@ function ArtifactReview({
         setReady(true);
       } catch (cause) {
         if (token === generation.current && !control.signal.aborted) {
-          setError(cause instanceof Error ? cause.message : '工件不可用');
+          setError(cause instanceof Error ? cause.message : '成果不可用');
           setReady(false);
           setArtifact(null);
           setPreview(null);
@@ -752,7 +753,7 @@ function ArtifactReview({
         </p>
       ) : null}
       {!artifact ? (
-        <p role="status">{error ? '工件暂不可用。' : '正在读取版本…'}</p>
+        <p role="status">{error ? '成果暂不可用。' : '正在读取版本…'}</p>
       ) : (
         <>
           <h3>{artifact.version.fileName}</h3>
@@ -825,7 +826,7 @@ function ArtifactReview({
             <details>
               <summary>版本与基线标识</summary>
               <code>
-                工件 {artifact.id}
+                成果 {artifact.id}
                 <br />
                 SHA {artifact.object.checksum}
                 <br />
@@ -977,7 +978,7 @@ function ArtifactReview({
                 <summary>原文与行级审查（分页）</summary>
                 <TextPage
                   text={bodyText}
-                  label="工件正文（只读文本）"
+                  label="成果正文（只读文本）"
                   onLine={
                     supportsLines
                       ? (line) => useLines('after', line, line)

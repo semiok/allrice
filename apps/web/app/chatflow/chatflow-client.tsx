@@ -32,6 +32,7 @@ import { ChatTranscript } from './chat-transcript';
 import { ArtifactWorkbench } from './artifact-workbench';
 import { useArtifactWorkbench } from './use-artifact-workbench';
 import { useWorkbenchLayout } from './use-workbench-layout';
+import { useWorkbenchResize, WorkbenchSplitter } from './workbench-splitter';
 import { useWorkspaceReadiness } from './use-workspace-readiness';
 import { CapabilityPanel } from './capability-panel';
 import { capabilityLabels } from './capability-catalog';
@@ -156,6 +157,7 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
+  const resize = useWorkbenchResize(layout.panelWidth);
   const workbenchRequested = workbenchEnabled && layout.open;
   const workbenchEntry = useRef<HTMLButtonElement>(null);
   const workbench = useArtifactWorkbench({
@@ -709,6 +711,8 @@ export function ChatFlowClient({
 
   return (
     <main
+      ref={resize.frameRef}
+      data-dragging={resize.dragging || undefined}
       className={`${frameUi.frame} ${styles.shell}`}
       data-details-collapsed={
         !workbenchOpen || workbenchNarrow ? true : undefined
@@ -737,7 +741,7 @@ export function ChatFlowClient({
         if (!busy) uploadAttachments(event.dataTransfer.files);
       }}
       style={{
-        gridTemplateColumns: `${sidebarCollapsed ? '57px' : '240px'} minmax(0, 1fr)${workbenchOpen && !workbenchNarrow ? ' minmax(360px, 38%)' : ''}`,
+        gridTemplateColumns: `${sidebarCollapsed ? '57px' : '240px'} minmax(0, 1fr)${workbenchOpen && !workbenchNarrow ? ` ${resize.width}px` : ''}`,
       }}
     >
       {imageDragActive ? (
@@ -811,7 +815,9 @@ export function ChatFlowClient({
                     <h1>{activeSession?.title ?? '新的工作'}</h1>
                   </div>
                 </div>
-                <div className={conversationUi.headerActions}>
+                <div
+                  className={`${conversationUi.headerActions} ${styles.conversationActions}`}
+                >
                   <button
                     type="button"
                     className={workbenchUi.entry}
@@ -840,11 +846,11 @@ export function ChatFlowClient({
                         void workbench.reload();
                       }}
                     >
-                      ▤ 工件与审查
+                      ▤ 交付成果
                       {workbench.artifacts.length
                         ? ` · ${workbench.artifacts.length}`
                         : ''}
-                      {workbench.noticeId && !workbenchOpen ? ' · 新工件' : ''}
+                      {workbench.noticeId && !workbenchOpen ? ' · 新成果' : ''}
                     </button>
                   ) : null}
                   <span className={styles.runtimePill}>
@@ -991,6 +997,17 @@ export function ChatFlowClient({
             void streamRun(runId, activeId);
             void interactions.reload();
           }}
+        />
+      ) : null}
+
+      {workbenchOpen && !workbenchNarrow ? (
+        <WorkbenchSplitter
+          key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}`}
+          width={resize.width}
+          min={resize.min}
+          max={resize.max}
+          onChange={layout.setPanelWidth}
+          onDraggingChange={resize.setDragging}
         />
       ) : null}
 

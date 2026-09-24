@@ -50,7 +50,7 @@ export function parseArtifactList(input: unknown): {
 } {
   const value = input as { artifacts?: unknown[]; nextCursor?: unknown };
   if (!value || !Array.isArray(value.artifacts) || value.artifacts.length > 50)
-    throw Error('工件列表格式无效');
+    throw Error('成果列表格式无效');
   return {
     artifacts: value.artifacts.map((a) => WorkbenchArtifactSchema.parse(a)),
     nextCursor:
@@ -142,7 +142,7 @@ export const reviewAnchorLabel = (
   anchor: ReviewFeedback['comments'][number]['anchor'],
 ) =>
   anchor.kind === 'whole'
-    ? '整个工件'
+    ? '整个成果'
     : `${anchor.path ?? '正文'} · ${anchor.side === 'before' ? '修改前' : '修改后'} L${anchor.startLine}${anchor.endLine === anchor.startLine ? '' : `–${anchor.endLine}`}`;
 export async function workbenchJson(
   url: string,
@@ -160,11 +160,11 @@ export async function workbenchJson(
       400: '提交内容或版本无效，请检查后重试。',
       401: '登录已失效，请重新登录。',
       403: '当前权限已撤销或不允许此操作。',
-      404: '此工件不可访问，或工作台尚未启用。',
+      404: '此成果不可访问，或工作台尚未启用。',
       409: '版本或草稿已变化。请刷新后重新核对；旧意见不会自动批准新内容。',
       413: '文件或评论超过本次大小限制。',
     };
-    throw Error(messages[response.status] ?? '工件服务暂不可用，请重试。');
+    throw Error(messages[response.status] ?? '成果服务暂不可用，请重试。');
   }
   return response.json() as Promise<unknown>;
 }

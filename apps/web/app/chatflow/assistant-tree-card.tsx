@@ -158,14 +158,14 @@ export function AssistantTreeCard({
                         : ' · 消耗尚未结清，不能视作零消耗'}
                     </p>
                     {result.evidence.length ? (
-                      <ul aria-label="结果关联工件">
+                      <ul aria-label="结果关联成果">
                         {result.evidence.map((evidence) => (
                           <li key={`${evidence.id}/${evidence.digest}`}>
                             <button
                               type="button"
                               onClick={() => onArtifact(evidence.id)}
                             >
-                              查看关联工件
+                              查看关联成果
                             </button>{' '}
                             <small className={ui.meta} title={evidence.digest}>
                               版本 {evidence.digest.slice(7, 19)}
@@ -175,12 +175,12 @@ export function AssistantTreeCard({
                       </ul>
                     ) : (
                       <p className={ui.meta}>
-                        此汇报未附可追溯工件，不应视为已完成证据。
+                        此汇报未附可追溯成果，不应视为已完成证据。
                       </p>
                     )}
                     {result.evidence.length ? (
                       <p className={ui.meta}>
-                        工件可追溯不代表内容已独立核实；请查看来源标注与具体内容。
+                        成果可追溯不代表内容已独立核实；请查看来源标注与具体内容。
                       </p>
                     ) : null}
                   </div>
