@@ -70,6 +70,11 @@ export async function ensureStorageDirectory() {
 export async function prepareDevelopmentDatabase() {
   loadDevelopmentEnvironment();
 
+  // Plain Node DSH subprocesses consume the same compiled Office contracts
+  // as production. The Web/Worker tsx aliases do not apply in that process.
+  console.info('[setup] Building shared runtime contracts...');
+  run(pnpmCommand, ['--filter', '@allrice/contracts', 'build']);
+
   if (!process.env.DATABASE_URL) {
     if (!commandWorks('docker', ['compose', 'version'])) {
       throw new Error(
