@@ -177,8 +177,14 @@ export function ChatFlowClient({
     visible: workbenchRequested,
     viewerId: workspace?.viewerId,
   });
+  const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
+  const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
+  const currentFilesRequest =
+    filesRequest.scope === fileScope ? filesRequest.revision : 0;
   const hasWorkbenchContent =
-    workbench.artifacts.length > 0 || workbench.selectedId !== null;
+    currentFilesRequest > 0 ||
+    workbench.artifacts.length > 0 ||
+    workbench.selectedId !== null;
   const workbenchOpen = workbenchRequested && hasWorkbenchContent;
   // New completed turns can add artifacts; opening the panel does not execute tools.
   useEffect(() => {
@@ -994,6 +1000,21 @@ export function ChatFlowClient({
                       经验沉淀
                     </Link>
                   ) : null}
+                  {workbenchEnabled ? (
+                    <button
+                      type="button"
+                      className={workbenchUi.entry}
+                      onClick={() => {
+                        setFilesRequest((previous) => ({
+                          scope: fileScope,
+                          revision: previous.revision + 1,
+                        }));
+                        layout.show();
+                      }}
+                    >
+                      工作区文件
+                    </button>
+                  ) : null}
                   {workbenchEnabled && hasWorkbenchContent ? (
                     <button
                       type="button"
@@ -1147,6 +1168,7 @@ export function ChatFlowClient({
       {workbenchOpen ? (
         <ArtifactWorkbench
           key={`${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
+          filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
           workspaceId={workspace.workspaceId}

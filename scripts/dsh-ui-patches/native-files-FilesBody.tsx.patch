@@ -1,0 +1,71 @@
+--- a/packages/client/ui-sidebar-files/src/client/FilesBody.tsx
++++ b/packages/client/ui-sidebar-files/src/client/FilesBody.tsx
+@@ -11,26 +11,21 @@
+ import { useEffect, useLayoutEffect, useRef } from 'react'
+ import type { ReactNode } from 'react'
+ import clsx from 'clsx'
+-import type { RemoteFailure } from '@deepseek-ai/dsh-api-remotes/client'
+-import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
++import type { RemoteFailure, FilesBodyHostProps, TranslateNS } from './contracts'
+ import {
+   FileTypeIcon, IconFolderCloseRegular, IconFolderOpenRegular, IconRefreshOutlineRegular, classifyFileType,
+   IconPauseOutlineRegular, IconPlayOutlineRegular, PathLabel,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+ import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
+-import type { WorkspaceDirectoryEntry } from '@deepseek-ai/dsh-api-workspace-files/types'
++import type { WorkspaceDirectoryEntry } from './contracts'
+ import { childPath } from './face.ts'
+ import type { FilesInjected } from './face.ts'
+ import type {} from './locales.ts'
+-import type { FilesTabState, createFilesStore } from './store.ts'
++import type { FilesTabState } from './store.ts'
+ import css from './FilesBody.module.css'
+ 
+ /** The body's composed props: the tab it draws, its store, its face, and its copy. */
+-export type FilesBodyProps =
+-  & PropsRuntime<'sidebar.right.pane.tab'>
+-  & PropsStore<ReturnType<typeof createFilesStore>>
+-  & FilesInjected
+-  & PropsLocale<'sidebarFiles'>
++export type FilesBodyProps = FilesBodyHostProps & FilesInjected
+ 
+ /** Natural, case-insensitive name order, so `file2` precedes `file10`. */
+ const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+@@ -45,7 +40,7 @@
+ export function orderEntries(entries: readonly WorkspaceDirectoryEntry[]): WorkspaceDirectoryEntry[] {
+   return [...entries].sort((left, right) => {
+     const group = Number(right.type === 'directory') - Number(left.type === 'directory')
+-    return group !== 0 ? group : byName.compare(left.name, right.name)
++    return group !== 0 ? group : byName.compare(left.displayName ?? left.name, right.displayName ?? right.name)
+   })
+ }
+ 
+@@ -83,7 +78,7 @@
+       <li className={css.item} data-files-entry="directory" data-files-path={path}>
+         <button type="button" className={css.row} aria-expanded={expanded} onClick={() => { tree.onToggle(parent, path) }}>
+           {expanded ? <IconFolderOpenRegular className={css.icon} /> : <IconFolderCloseRegular className={css.icon} />}
+-          <span className={css.name}>{entry.name}</span>
++          <span className={css.name}>{entry.displayName ?? entry.name}</span>
+         </button>
+         {expanded && <ul className={css.level}><Level path={path} tree={tree} /></ul>}
+       </li>
+@@ -93,8 +88,8 @@
+     return (
+       <li className={css.item} data-files-entry="file" data-files-path={path}>
+         <button type="button" className={css.row} onClick={() => { tree.onOpen(path) }}>
+-          <FileTypeIcon kind={classifyFileType(entry.name)} size={16} className={css.fileIcon} />
+-          <span className={css.name}>{entry.name}</span>
++          <FileTypeIcon kind={classifyFileType(entry.displayName ?? entry.name)} size={16} className={css.fileIcon} />
++          <span className={css.name}>{entry.displayName ?? entry.name}</span>
+         </button>
+       </li>
+     )
+@@ -102,7 +97,7 @@
+   return (
+     <li className={css.item} data-files-entry="other" data-files-path={path}>
+       <span className={clsx(css.row, css.other)} aria-disabled="true" title={tree.t('entry.other')}>
+-        <span className={css.name}>{entry.name}</span>
++        <span className={css.name}>{entry.displayName ?? entry.name}</span>
+       </span>
+     </li>
+   )

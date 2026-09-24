@@ -21,6 +21,7 @@
     "@deepseek-ai/dsh-client-store": "0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-dockkit": "0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar-documentpreview": "0.1.7-rc.1",
     "@deepseek-ai/dsh-util-values": "0.1.7-rc.1",
     "@deepseek-ai/dsh-util-workspace-path": "0.1.7-rc.1",
     "@pierre/diffs": "1.4.1",

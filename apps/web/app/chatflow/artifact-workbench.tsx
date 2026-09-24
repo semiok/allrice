@@ -8,6 +8,10 @@ import {
 } from '@deepseek-ai/dsh-client-ui-dockkit';
 import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
 import { dockLabels, useNativeDock } from './use-native-dock';
+import { WorkspaceFileTree } from './workspace-file-tree';
+import { WorkspaceFilePreview } from './workspace-file-preview';
+import { NativePdfPreview } from './native-pdf-preview';
+import { NativeImagePreview } from './native-image-preview';
 import { OfficePreview } from './office-preview';
 import { ChangesetPanel } from './changeset-panel';
 import {
@@ -69,6 +73,7 @@ class DiffBoundary extends Component<
 type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
   dockScope: string;
+  filesRequest?: number;
   sessionId: string | null;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
@@ -169,6 +174,13 @@ export function ArtifactWorkbench(props: Props) {
     previousSelection.current = props.selectedId;
     if (props.selectedId && !restoring) openArtifact(props.selectedId);
   });
+  const lastFilesRequest = useRef(0);
+  useEffect(() => {
+    if (!props.filesRequest || lastFilesRequest.current === props.filesRequest)
+      return;
+    lastFilesRequest.current = props.filesRequest;
+    dock.open('files', pageAddress('files'), '工作区文件');
+  });
   return (
     <>
       {props.narrow ? (
@@ -237,19 +249,68 @@ export function ArtifactWorkbench(props: Props) {
             )
           }
           keepMounted={() => true}
-          renderTab={(tab) => (
-            <ArtifactTabBody
-              {...props}
-              key={tab.id}
-              tabId={tab.id}
-              selectedId={tab.kind === 'artifact' ? tab.contentId : null}
-              onDirty={onDirty}
-              onSelect={(id) => {
-                props.onSelect(id);
-                openArtifact(id, findTabPane(dock.surface.layout, tab.id).id);
-              }}
-            />
-          )}
+          renderTab={(tab) =>
+            tab.kind === 'files' ? (
+              <WorkspaceFileTree
+                workspaceId={props.workspaceId}
+                sessionId={props.sessionId ?? 'draft'}
+                tabId={tab.id}
+                tenantHeaders={props.tenantHeaders}
+                onOpen={(file) => {
+                  const artifact = props.artifacts.find(
+                    (item) => item.object.id === file.id,
+                  );
+                  if (artifact)
+                    openArtifact(
+                      artifact.id,
+                      findTabPane(dock.surface.layout, tab.id).id,
+                    );
+                  else
+                    dock.open(
+                      'file',
+                      file.id,
+                      file.fileName,
+                      findTabPane(dock.surface.layout, tab.id).id,
+                    );
+                }}
+              />
+            ) : tab.kind === 'file' ? (
+              <WorkspaceFilePreview
+                objectId={tab.contentId}
+                title={tab.title}
+                workspaceId={props.workspaceId}
+                tenantHeaders={props.tenantHeaders}
+                onVersion={(id, title) =>
+                  dock.open(
+                    'file',
+                    id,
+                    title,
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  )
+                }
+              />
+            ) : (
+              <ArtifactTabBody
+                {...props}
+                key={tab.id}
+                tabId={tab.id}
+                selectedId={tab.kind === 'artifact' ? tab.contentId : null}
+                onDirty={onDirty}
+                onFiles={() =>
+                  dock.open(
+                    'files',
+                    pageAddress('files'),
+                    '工作区文件',
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  )
+                }
+                onSelect={(id) => {
+                  props.onSelect(id);
+                  openArtifact(id, findTabPane(dock.surface.layout, tab.id).id);
+                }}
+              />
+            )
+          }
           chrome={
             <>
               {!props.narrow ? (
@@ -275,6 +336,7 @@ export function ArtifactWorkbench(props: Props) {
 function ArtifactTabBody(
   props: Props & {
     tabId: TabId;
+    onFiles: () => void;
     onDirty: (id: string, value: boolean) => void;
   },
 ) {
@@ -287,6 +349,11 @@ function ArtifactTabBody(
   const select = props.onSelect;
   return (
     <div className={styles.body}>
+      {!artifactId ? (
+        <button type="button" onClick={props.onFiles}>
+          工作区文件
+        </button>
+      ) : null}
       {props.noticeId && props.noticeId !== artifactId ? (
         <p className={styles.notice} role="status">
           新成果已就绪。
@@ -395,6 +462,8 @@ export function ReadOnlyArtifactPreview({
 }: {
   preview: ArtifactPreview;
 }) {
+  if (preview.kind === 'pdf')
+    return <NativePdfPreview base64={preview.base64} />;
   if (preview.kind === 'office')
     return <OfficePreview preview={preview} key={preview.checksum} />;
   if (preview.kind === 'text')
@@ -406,9 +475,8 @@ export function ReadOnlyArtifactPreview({
     );
   if (preview.kind === 'image')
     return (
-      <img
+      <NativeImagePreview
         alt="成果静态证据预览"
-        style={{ maxWidth: '100%' }}
         src={`data:${preview.mediaType};base64,${preview.base64}`}
       />
     );
@@ -1112,11 +1180,13 @@ function ArtifactReview({
           ) : preview?.kind === 'image' ? (
             <div className={styles.preview}>
               {/* Static raster only; no remote URL, SVG or HTML insertion. */}
-              <img
+              <NativeImagePreview
                 src={`data:${preview.mediaType};base64,${preview.base64}`}
                 alt={`${artifact.version.fileName} 静态预览`}
               />
             </div>
+          ) : preview?.kind === 'pdf' ? (
+            <NativePdfPreview base64={preview.base64} />
           ) : preview?.kind === 'office' ? (
             <OfficePreview preview={preview} key={preview.checksum} />
           ) : preview?.kind === 'download_only' ? (

@@ -98,3 +98,11 @@ MET-160 native Dock integration directly depends on the MIT-licensed
 `46a7f68b0922371ce7144b668b90e377d8e799f4`. Local patches and checksums are
 recorded in the existing WebUI upstream ledger. The DeepSeek MIT notice above
 applies to those source files.
+
+MET-160 files/document integration retains ui-sidebar-files and documentpreview
+zoom/PDF store sources from the same `0.1.7-rc.1` commit, with the MIT notice
+above and exact source/patch hashes in the WebUI ledger. PDF rendering loads the
+unaltered published `ui-sidebar-documentpreview/lib/client.pdf.js` chunk lazily;
+its bundled PDF.js/font license notices remain included. CodeBlock is consumed
+through the official ui-primitives package. Existing Allrice Office conversion
+and Markdown rendering remain the content adapters.

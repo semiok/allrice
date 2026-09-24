@@ -1,5 +1,6 @@
 'use client';
 
+import { NativeImagePreview } from './native-image-preview';
 import { useState } from 'react';
 import type { OfficePreview as Preview } from '@allrice/contracts';
 import styles from './workbench.module.css';
@@ -78,7 +79,8 @@ export function OfficePreview({ preview }: { preview: Preview }) {
           下一页
         </button>
       </div>
-      <img
+      <NativeImagePreview
+        key={page.number}
         alt={`Office 文档第 ${page.number} 页`}
         src={`data:image/png;base64,${page.base64}`}
       />

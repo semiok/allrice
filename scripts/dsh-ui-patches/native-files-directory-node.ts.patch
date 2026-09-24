@@ -1,0 +1,12 @@
+--- a/packages/client/ui-sidebar-files/src/client/directory-node.ts
++++ b/packages/client/ui-sidebar-files/src/client/directory-node.ts
+@@ -117,7 +117,8 @@
+ 
+   private async follow(): Promise<void> {
+     try {
+-      for await (const _event of this.watch(this.path, this.signal)) {
++      for await (const event of this.watch(this.path, this.signal)) {
++        void event
+         this.dirty = true
+         if (!this.initialized || this.automatic) void this.refresh()
+       }

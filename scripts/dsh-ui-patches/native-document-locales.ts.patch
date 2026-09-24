@@ -1,0 +1,13 @@
+--- a/packages/client/ui-sidebar-documentpreview/src/client/pdf/locales.ts
++++ b/packages/client/ui-sidebar-documentpreview/src/client/pdf/locales.ts
+@@ -30,10 +30,3 @@
+   unsupported: 'PDF preview requires the complete file contents.',
+   retry: 'Retry',
+ } satisfies Record<PdfLocaleKey, string>
+-
+-declare module '@deepseek-ai/dsh-client-ui-slots' {
+-  interface LocaleNamespaceMap {
+-    /** PDF page, loading, and failure messages. */
+-    sidebarPdf: PdfLocaleKey
+-  }
+-}

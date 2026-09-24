@@ -1,17 +1,21 @@
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { officePreview } from '@allrice/office-runtime';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
+  OfficeRenderResponseSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
   type ChatFlowEventEnvelope,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
-import type { QueuedMessage, Message } from './chatflow-types';
+import type { QueuedMessage, Message, WorkspaceFile } from './chatflow-types';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -228,6 +232,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       listError: false,
       contentError: false,
       officePreview: null as ArtifactPreview | null,
+      files: [] as WorkspaceFile[],
+      fileReads: 0,
+      filePreview: {
+        kind: 'text',
+        mediaType: 'text/markdown',
+        text: '# 上传的文件',
+      } as ArtifactPreview,
+      fileDelay: null as Promise<void> | null,
       text: report,
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
@@ -494,6 +506,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .join(''),
         });
       }
+      if (path === '/api/dsh-ui/pdf') {
+        const require = createRequire(resolve('apps/web/package.json'));
+        const file = join(
+          dirname(
+            require.resolve('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/package.json'),
+          ),
+          'lib/client.pdf.js',
+        );
+        return route.fulfill({
+          contentType: 'text/javascript',
+          body: await readFile(file),
+        });
+      }
+      if (path === '/api/v1/files') {
+        state.fileReads++;
+        if (state.fileDelay) await state.fileDelay;
+        return answer({ files: state.files });
+      }
+      if (path.startsWith('/api/v1/files/') && path.endsWith('/versions'))
+        return answer({ versions: [] });
+      if (path.startsWith('/api/v1/files/') && path.endsWith('/preview'))
+        return state.files.some((file) => path.includes(file.id))
+          ? answer(state.filePreview)
+          : answer({ error: { message: '文件已不存在' } }, 404);
       if (path.endsWith('/artifacts')) {
         const items = path.includes(A) ? [...state.items] : [];
         if (state.delay && path.includes(A)) await state.delay;
@@ -1029,6 +1065,202 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
     30000,
+  );
+
+  it('MET160 official file tree lazily reads actual files, opens native tabs, refreshes and handles deletion', async () => {
+    const f = await fixture();
+    try {
+      f.state.files = [
+        {
+          id: id(901),
+          fileName: '上传的说明.md',
+          mediaType: 'text/markdown',
+          sizeBytes: 20,
+          visibility: 'private',
+          ownedByMe: true,
+          category: 'uploads',
+          deliverableVersion: null,
+        },
+      ];
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      const tree = f.panel.locator('[data-files-state="tree"]');
+      await tree.waitFor();
+      expect(f.state.fileReads).toBe(0);
+      await tree.getByRole('button', { name: '上传文件', exact: true }).click();
+      await tree
+        .getByRole('button', { name: '上传的说明.md', exact: true })
+        .click();
+      await f.panel
+        .getByRole('heading', { name: '上传的文件', exact: true })
+        .waitFor();
+      expect(
+        await f.panel
+          .getByRole('link', { name: '下载文件', exact: true })
+          .getAttribute('href'),
+      ).toContain(id(901));
+      await f.panel.getByRole('tab', { name: /^工作区文件/ }).click();
+      expect(
+        await tree
+          .getByRole('button', { name: '上传的说明.md', exact: true })
+          .count(),
+      ).toBe(1);
+      f.state.files = [];
+      await tree.getByRole('button', { name: '重新读取', exact: true }).click();
+      await expect
+        .poll(() =>
+          tree
+            .getByRole('button', { name: '上传的说明.md', exact: true })
+            .count(),
+        )
+        .toBe(0);
+      await tree.getByRole('button', { name: '交付文件', exact: true }).click();
+      await expect
+        .poll(() => tree.getByText('空目录', { exact: true }).count())
+        .toBe(2);
+      await f.panel.getByRole('tab', { name: /^上传的说明/ }).click();
+      await f.panel
+        .getByRole('button', { name: '刷新文件', exact: true })
+        .click();
+      await f.panel.getByRole('alert').waitFor();
+      await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
+      expect(await f.panel.count()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  }, 20_000);
+
+  it('MET160 published official PDF chunk renders actual PDF bytes with its bundled worker', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      // A real one-page PDF, with offsets computed from its actual object bytes.
+      const objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      ];
+      const content =
+        'BT /F1 16 Tf 30 350 Td (Allrice native PDF preview) Tj ET';
+      objects.push(
+        `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+      );
+      let pdf = '%PDF-1.4\n';
+      const offsets = [0];
+      objects.forEach((object, index) => {
+        offsets.push(Buffer.byteLength(pdf));
+        pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+      });
+      const xref = Buffer.byteLength(pdf);
+      pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
+        .slice(1)
+        .map((offset) => String(offset).padStart(10, '0') + ' 00000 n ')
+        .join(
+          '\n',
+        )}\ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+      f.state.officePreview = {
+        kind: 'pdf',
+        base64: Buffer.from(pdf).toString('base64'),
+      };
+      await f.page.reload();
+      const canvas = f.panel.getByRole('img', {
+        name: 'PDF 第 1 页',
+        exact: true,
+      });
+      await canvas.waitFor({ timeout: 15000 });
+      await expect
+        .poll(() =>
+          canvas.evaluate((element) => (element as HTMLCanvasElement).width),
+        )
+        .toBeGreaterThan(300);
+      await f.panel
+        .getByText('Allrice native PDF preview', { exact: true })
+        .waitFor();
+      expect(
+        await f.page.evaluate(() => Object.hasOwn(window, '__ModuleLoader__')),
+      ).toBe(false);
+      await f.page.screenshot({ path: '/tmp/allrice-met160-native-pdf.png' });
+    } finally {
+      await f.close();
+    }
+  }, 25_000);
+
+  it
+    .skipIf(!process.env.ALLRICE_OFFICE_PREVIEW_DIR)
+    .each(['docx', 'xlsx', 'pptx'])(
+    'MET160 real %s renderer output opens in native zoom viewport',
+    async (format) => {
+      const rendered = OfficeRenderResponseSchema.parse(
+        JSON.parse(
+          await readFile(
+            join(process.env.ALLRICE_OFFICE_PREVIEW_DIR!, `${format}.json`),
+            'utf8',
+          ),
+        ),
+      );
+      const f = await fixture({ artifacts: true });
+      try {
+        f.state.officePreview = officePreview(rendered);
+        await f.page.reload();
+        await f.entry.click();
+        const preview = f.panel.getByRole('region', {
+          name: 'Office 文档预览',
+        });
+        const page = preview.getByRole('img', { name: 'Office 文档第 1 页' });
+        await page.waitFor();
+        await expect
+          .poll(() =>
+            page.evaluate((element: HTMLImageElement) => element.naturalWidth),
+          )
+          .toBeGreaterThan(500);
+        await preview
+          .locator('[data-document-zoom-frame]')
+          .scrollIntoViewIfNeeded();
+        const frame = await preview
+          .locator('[data-document-zoom-mode]')
+          .boundingBox();
+        expect(frame).not.toBeNull();
+        await f.page.mouse.move(
+          frame!.x + frame!.width / 2,
+          frame!.y + frame!.height - 20,
+        );
+        await preview.getByRole('button', { name: '选择缩放比例' }).click();
+        await f.page
+          .getByRole('menuitem', { name: '150%', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            preview.getByRole('button', { name: '选择缩放比例' }).innerText(),
+          )
+          .toContain('150%');
+        await preview.getByRole('button', { name: '选择缩放比例' }).click();
+        await f.page
+          .getByRole('menuitem', { name: '适应宽度', exact: true })
+          .click();
+        await preview
+          .locator('[data-document-zoom-scrollport]')
+          .evaluate((element) => {
+            element.scrollTop = 0;
+            element.scrollLeft = 0;
+          });
+        await preview.evaluate((element) =>
+          element.scrollIntoView({ block: 'start' }),
+        );
+        await f.page.screenshot({
+          path: `/tmp/allrice-met160-native-${format}.png`,
+        });
+        if (rendered.pages.length > 1) {
+          await preview.getByRole('button', { name: '下一页' }).click();
+          await preview
+            .getByRole('img', { name: 'Office 文档第 2 页' })
+            .waitFor();
+        }
+      } finally {
+        await f.close();
+      }
+    },
+    25_000,
   );
 
   it('shows Office pages and actual formula errors without confusing rendering with layout approval', async () => {
