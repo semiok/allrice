@@ -160,6 +160,12 @@
           "sha256": "c48fe2e0515042ddd7c1add806411202aaf8d36c7bdcaaa3eca6c074f6a3ed05",
           "patch": "scripts/dsh-ui-patches/native-dock-seed.ts.patch",
           "patchSha256": "3c275e694e3875cdbf286f78c05e297ec72be79a420920077b1300377e366c9f"
+        },
+        {
+          "source": "packages/client/ui-sidebar-right/src/client/shell/SidebarRight.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/dock/SidebarRight.module.css",
+          "upstreamSha256": "be8ae09c2c6e69d576501011cd06b545560d4091b39f4d80f3b95d8ad2ac75bf",
+          "sha256": "be8ae09c2c6e69d576501011cd06b545560d4091b39f4d80f3b95d8ad2ac75bf"
         }
       ]
     },

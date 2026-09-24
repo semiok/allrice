@@ -70,6 +70,8 @@ function Fixture() {
       </section>
       {open ? (
         <ArtifactWorkbench
+          open
+          width={600}
           {...input}
           dockScope={`test/${input.workspaceId}/${input.sessionId}`}
           artifacts={w.artifacts}

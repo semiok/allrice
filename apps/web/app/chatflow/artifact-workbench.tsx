@@ -19,6 +19,7 @@ import {
   Component,
   Suspense,
   type ReactNode,
+  type CSSProperties,
   useCallback,
   useEffect,
   useRef,
@@ -44,7 +45,7 @@ import {
   type ArtifactCursor,
 } from '../../lib/chatflow/workbench-model';
 import styles from './workbench.module.css';
-import frameUi from './dsh-upstream/AppFrame.module.css';
+import sidebarUi from './dsh-upstream/dock/SidebarRight.module.css';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { readJson } from './chatflow-utils';
 import { AssistantMarkdown } from './assistant-markdown';
@@ -72,6 +73,8 @@ class DiffBoundary extends Component<
 }
 type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
+  open: boolean;
+  width: number;
   dockScope: string;
   filesRequest?: number;
   selectionRequest?: number;
@@ -111,7 +114,7 @@ export function ArtifactWorkbench(props: Props) {
   const close = useCallback(() => {
     if (
       !dirty.current ||
-      window.confirm('有尚未保存的意见，关闭会丢失这些本地编辑。仍要关闭吗？')
+      window.confirm('有尚未保存的意见，仍要收起成果栏吗？重新打开可继续编辑。')
     )
       props.onClose();
   }, [props.onClose]);
@@ -124,6 +127,7 @@ export function ArtifactWorkbench(props: Props) {
   );
   const fullscreen = props.narrow || dock.surface.layout.mode === 'fullscreen';
   useEffect(() => {
+    if (!props.open) return;
     const element = panel.current;
     const active = document.activeElement;
     // A desktop → drawer resize may happen while editing inside the panel.
@@ -142,7 +146,7 @@ export function ArtifactWorkbench(props: Props) {
       )
         previousFocus.current.focus();
     };
-  }, [fullscreen]);
+  }, [fullscreen, props.open]);
   useEffect(() => {
     const unload = (e: BeforeUnloadEvent) => {
       if (dirty.current) {
@@ -192,14 +196,24 @@ export function ArtifactWorkbench(props: Props) {
   });
   return (
     <>
-      {props.narrow ? (
+      {props.narrow && props.open ? (
         <div className={styles.backdrop} onClick={close} aria-hidden="true" />
       ) : null}
       <aside
         id="artifact-workbench"
         ref={panel}
         tabIndex={-1}
-        className={`${styles.panel} ${fullscreen ? styles.drawer : frameUi.detailsCol} ${styles.nativeDock}`}
+        className={`${styles.panel} ${sidebarUi.panel} ${styles.nativeDock}`}
+        style={
+          {
+            width: fullscreen ? '100%' : props.width,
+            '--dsh-sidebar-width': fullscreen ? '100vw' : `${props.width}px`,
+          } as CSSProperties
+        }
+        data-sidebar-right-open={props.open || undefined}
+        data-sidebar-right-panel={fullscreen ? 'fullscreen' : 'push'}
+        aria-hidden={!props.open || undefined}
+        inert={!props.open}
         role={fullscreen ? 'dialog' : 'complementary'}
         aria-label="交付成果"
         aria-modal={fullscreen ? true : undefined}

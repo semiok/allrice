@@ -357,7 +357,10 @@
 
 /* Native Dock owns tabs, splits and floating. Match the existing 56px chat chrome. */
 .nativeDock {
-  position: relative;
+  position: absolute;
+  /* Native SidebarRight slides the docked hosts, leaving floating panes free. */
+  background: transparent;
+  border: 0;
 }
 .nativeDock:global([data-fullscreen]) {
   position: fixed;
@@ -368,6 +371,27 @@
 .nativeDock > div {
   flex: 1;
   min-height: 0;
+}
+/* A newly discovered session mounts with an open panel. Give the native slide
+   its offscreen starting frame as well as its normal open/close transition. */
+@starting-style {
+  .panel.nativeDock[data-sidebar-right-open]
+    :global([data-dockkit-host='dock']),
+  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-empty]),
+  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-divider]) {
+    transform: translateX(var(--dsh-sidebar-width));
+  }
+}
+.nativeDock :global([data-dockkit-host='dock']) {
+  border-left: 1px solid var(--dsw-alias-border-l2, #ddd);
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel.nativeDock[data-sidebar-right-open]
+    :global([data-dockkit-host='dock']),
+  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-empty]),
+  .panel.nativeDock[data-sidebar-right-open] :global([data-dockkit-divider]) {
+    transition: none;
+  }
 }
 .nativeDock :global([data-dockkit-strip]) {
   box-sizing: border-box;
