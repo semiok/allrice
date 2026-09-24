@@ -57,9 +57,16 @@ export function EmployeePickerDialog({
             (item) => item.assignmentId === employee.id,
           );
           const manifest = employee.currentVersion.manifest;
+          const introduction = [
+            profile?.description,
+            manifest.description,
+          ].find((value) => value?.trim() && !/平台管理员草稿/.test(value));
+          const officeOnly =
+            profile?.skills.length === 1 &&
+            profile.skills[0]?.name.toLowerCase() === 'office';
           const description = (
-            profile?.description?.trim() ||
-            manifest.description?.trim() ||
+            introduction?.trim() ||
+            (officeOnly ? '阅读和整理文档，制作报告、表格与演示文稿。' : '') ||
             profile?.identity.mission?.trim() ||
             profile?.identity.role?.trim() ||
             '告诉我你的目标，一起把工作完成。'
