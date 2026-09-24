@@ -7,7 +7,12 @@ import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 it('passes native Python Office work through the DSH broker without a typed editor', async () => {
+  const objectId = randomUUID();
   const python = {
+    inputs: [
+      { path: 'source.xlsx', objectId, checksum: `sha256:${'a'.repeat(64)}` },
+    ],
+    sourceObjectId: objectId,
     script:
       "from openpyxl import Workbook\nWorkbook().save('/tmp/work/output/result.xlsx')",
   };
@@ -18,10 +23,13 @@ it('passes native Python Office work through the DSH broker without a typed edit
     invalidArgs: {
       fileName: '无效.xlsx',
       format: 'xlsx',
-      python: { script: '', inputs: [] },
+      python,
+      inputs: python.inputs,
     },
     inspectSchema: (schema) => {
-      expect(schema.properties).toHaveProperty('python');
+      expect(schema.properties?.python).toMatchObject({
+        properties: { script: { type: 'string' }, inputs: { type: 'array' } },
+      });
       expect(schema.required).not.toContain('content');
     },
     onToolCall: async (call) => {

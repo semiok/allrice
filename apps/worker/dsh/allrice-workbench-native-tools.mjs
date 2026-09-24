@@ -20,8 +20,13 @@ export const workbenchNativeTools = [
         throw new Error(
           'Supply exactly one of content, python or legacy office.',
         );
-      if (args.python !== undefined)
+      if (args.python !== undefined) {
+        if (args.inputs !== undefined || args.sourceObjectId !== undefined)
+          throw new Error(
+            'Put inputs and sourceObjectId INSIDE python: {script, inputs, sourceObjectId}. Use storage object IDs and checksums returned by workspace_file_list/workspace_document_read, not attachment IDs.',
+          );
         NativeOfficeExportSchema.parse(args.python);
+      }
       if (args.office !== undefined) {
         const parsed = OfficeExportSchema.safeParse(args.office);
         if (!parsed.success)
@@ -69,7 +74,46 @@ export const workbenchNativeTools = [
       },
       python: {
         type: 'object',
-        additionalProperties: true,
+        additionalProperties: false,
+        properties: {
+          script: {
+            type: 'string',
+            required: true,
+            description: 'Python code. Save /tmp/work/output/result.<format>.',
+          },
+          inputs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: {
+                  type: 'string',
+                  required: true,
+                  description:
+                    'Relative input filename, available at /tmp/work/input/<path>.',
+                },
+                objectId: {
+                  type: 'string',
+                  required: true,
+                  description:
+                    'Storage object UUID returned by the file tools; not an attachment ID.',
+                },
+                checksum: {
+                  type: 'string',
+                  required: true,
+                  description:
+                    'Exact sha256 checksum returned by the file tools.',
+                },
+              },
+            },
+          },
+          sourceObjectId: {
+            type: 'string',
+            description:
+              'Object ID of the input file being revised, also listed in python.inputs.',
+          },
+        },
         description:
           'Default Office workflow: {script: "Python code", inputs?: [{path, objectId, checksum}], sourceObjectId?: "edited input UUID"}. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
       },
