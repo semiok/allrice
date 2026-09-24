@@ -88,6 +88,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       write: false,
       outdir: '/unused-tenant-admin',
       jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: { 'process.env.NODE_ENV': '"development"', 'process.env': '{}' },
     });
     const js = built.outputFiles.find((f: { path: string }) =>
