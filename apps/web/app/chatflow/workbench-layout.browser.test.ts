@@ -181,6 +181,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    const employeeHistorySessions = [
+      ...Array.from({ length: 7 }, (_, n) => ({
+        ...session(id(600 + n)),
+        title: `历史工作 ${n + 1}`,
+      })),
+      { ...session(B), employeeAssignmentId: id(17) },
+      {
+        ...session(id(650)),
+        employeeAssignmentId: id(99),
+        employeeName: '旧员工',
+        title: '已撤回员工的工作',
+      },
+    ];
     const errors: string[] = [],
       writes: string[] = [],
       unexpected: string[] = [];
@@ -340,19 +353,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             viewerId: state.viewer,
             canAdminister: false,
             sessions: options.employeeHistory
-              ? [
-                  ...Array.from({ length: 7 }, (_, n) => ({
-                    ...session(id(600 + n)),
-                    title: `历史工作 ${n + 1}`,
-                  })),
-                  { ...session(B), employeeAssignmentId: id(17) },
-                  {
-                    ...session(id(650)),
-                    employeeAssignmentId: id(99),
-                    employeeName: '旧员工',
-                    title: '已撤回员工的工作',
-                  },
-                ]
+              ? employeeHistorySessions
               : options.noSession
                 ? []
                 : state.omitSessionA
@@ -607,10 +608,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
         return answer({ error: { message: 'Not accessible' } }, 403);
-      if (path === `/api/v1/sessions/${A}` || path === `/api/v1/sessions/${B}`)
+      const listedHistory = options.employeeHistory
+        ? employeeHistorySessions.find(
+            (item) => path === `/api/v1/sessions/${item.id}`,
+          )
+        : undefined;
+      if (
+        path === `/api/v1/sessions/${A}` ||
+        path === `/api/v1/sessions/${B}` ||
+        listedHistory
+      )
         return answer({
           history: {
-            session: session(path.endsWith(A) ? A : B),
+            session: listedHistory ?? session(path.endsWith(A) ? A : B),
             queuedMessages: path.endsWith(A) ? state.queue : [],
             messages: path.endsWith(A)
               ? [
@@ -2017,6 +2027,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           sidebarCollapsed: true,
           panelOpen: false,
           panelWidth: null,
+          sidebarWidth: null,
         });
         f.state.viewer = id(50);
         await f.page.reload();
