@@ -21,7 +21,7 @@ export const executeMcpTool: RiceToolHandler = async ({
     const store = createMcpStore({ memberManaged: true });
     if (action.action === 'list') {
       const connections = (await store.list(context, workspaceId))
-        .filter((c) => !c.removed)
+        .filter((c) => !c.removed && (c.enabled || !c.shared))
         .map(
           ({
             id,
