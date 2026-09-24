@@ -36,13 +36,13 @@ Excel worksheet formula caches and the calculation chain are invalidated and a f
 
 The new XML dependency is pinned to `@xmldom/xmldom@0.9.12`; DTD/entity declarations, duplicate/unsafe ZIP paths and ambiguous input are rejected. Creation and targeted editing execute in the existing worker. Recalculation/rendering use the fixed service described below; no host Shell or upstream Python executor is exposed.
 
-## Validation and remaining acceptance
+## Validation
 
 The Office regression suite uses real binaries with styled split Word runs and an embedded image, typed Excel cells and cross-sheet formulas, and reordered PowerPoint slides containing native charts, embedded data and notes. It checks unchanged ZIP members, text/data readback, cache invalidation, source checksums, read denial and malformed input. PostgreSQL coverage exercises version continuation, template sources, private/workspace denial, durable source audits, publication retries and reconstruction using a new database connection and storage adapter.
 
 PR1's local synthetic files passed the pinned upstream `check_office.py` package/content checks. PR2 additionally checked six richer generated/edited packages with the upstream checker, including sheet/slide counts and text. Its XLSX text assertion excludes numeric cells; the worker readback separately verified edited numeric values and formula expressions. Neither constitutes tenant Dev acceptance or rendered visual inspection. The Python checker is not installed in the employee runtime.
 
-PR3 adds real LibreOffice evaluation: tests independently expect `30*2=60`, a cross-sheet sum of 90, typed string/boolean values and detection of division by zero. Original worksheet styles and non-worksheet ZIP members remain intact. Real DOCX/XLSX/PPTX conversion and inherited network denial run in Compose CI. HTTP tests recheck access after conversion/cache retrieval. Browser tests cover pagination and formula errors. Real Dev acceptance remains required before MET-157 closes.
+PR3 adds real LibreOffice evaluation: tests independently expect `30*2=60`, a cross-sheet sum of 90, typed string/boolean values and detection of division by zero. Original worksheet styles and non-worksheet ZIP members remain intact. Real DOCX/XLSX/PPTX conversion and inherited network denial run in Compose CI. HTTP tests recheck access after conversion/cache retrieval. Browser tests cover pagination and formula errors. The real Dev workflow passed on 2026-09-24; see [Dev acceptance and exact evidence](dev-validation.md). MET-157 remains open until the three stacked PRs are merged.
 
 ## Calculation and page preview
 
@@ -54,7 +54,7 @@ The service limits input to 8 MB, expanded OOXML to 64 MiB, formulas to 10,000, 
 
 ## Deployment and rollback
 
-Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; Office bundle 1.2.0 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
+Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; development bootstrap compiles the shared contracts before starting plain Node DSH subprocesses; Office bundle 1.2.0 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
 
 For PR2 rollback, restore the PR1 application and Office 1.0.0 catalog together and roll affected employees back to their previous published revision. Stored files, lineage and source audits remain readable. To undo the earlier legacy-entry migration entirely, restore the pre-Office application and catalog together. The old catalog re-enables the two legacy entries and removes replacement metadata. Because synchronization intentionally retains unmanaged content, the Office row may remain available after a code rollback; published Office employees require an explicit employee revision rollback when withdrawing that capability. Do not delete frozen content, historical bundle versions or source artifacts.
 
