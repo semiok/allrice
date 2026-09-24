@@ -8,6 +8,7 @@ import {
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
+  type ChatFlowEventEnvelope,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type { QueuedMessage, Message } from './chatflow-types';
@@ -228,6 +229,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
+      events: [] as ChatFlowEventEnvelope[],
+      employeeName: 'Rice',
       runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
       timingError: false,
       delay: null as null | Promise<void>,
@@ -336,7 +339,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 currentVersion: {
                   id: id(8),
                   manifest: {
-                    name: 'Rice',
+                    name: state.employeeName,
                     runtimePolicy: { harness: 'dsh', provider: 'codex' },
                   },
                 },
@@ -421,7 +424,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
       if (path.endsWith('/events')) {
         if (url.searchParams.get('format') === 'json' || !options.running)
-          return answer({ events: [] });
+          return answer({ events: state.events });
         state.streamRequests++;
         await streamGate;
         return route.fulfill({
@@ -748,6 +751,65 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it('reuses native keyboard disclosure, groups nine tool calls, retains failures and uses the employee name', async () => {
+    const f = await fixture();
+    try {
+      f.state.employeeName = 'Alan';
+      f.state.events = Array.from({ length: 10 }, (_, i) => ({
+        schemaVersion: 3,
+        eventId: id(700 + i),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 1,
+        sequence: i + 1,
+        cursor: `${run}:${i + 1}`,
+        harness: 'dsh',
+        occurredAt: now,
+        sourceEvent: null,
+        type: i === 8 ? 'tool.failed' : 'tool.completed',
+        payload: {
+          toolCallId: `call-${i}`,
+          name: i === 9 ? 'workspace.export.create' : 'market.quote',
+          ...(i === 8 ? { summary: '行情服务超时' } : {}),
+        },
+      }));
+      await f.page.reload();
+      const process = f.page.getByRole('region', {
+        name: '工作过程',
+        exact: true,
+      });
+      const toggle = process.getByRole('button');
+      await expect.poll(() => toggle.innerText()).toContain('10 次操作');
+      expect(await toggle.innerText()).toContain('1 次未成功');
+      expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(await process.getByRole('list').count()).toBe(0);
+      await toggle.focus();
+      await f.page.keyboard.press('Enter');
+      const groups = process.getByRole('list', { name: '操作分类' });
+      expect(await groups.getByRole('listitem').count()).toBe(2);
+      expect(await groups.innerText()).toContain('查询实时行情 · 9 次');
+      expect(await groups.innerText()).toContain('行情服务超时');
+      expect(
+        await groups.evaluate(
+          (el) => getComputedStyle(el.parentElement!).maxHeight,
+        ),
+      ).toBe('180px');
+      expect(await f.page.getByLabel('助手任务', { exact: true }).count()).toBe(
+        0,
+      );
+      expect(
+        await f.page.locator('[id^="message-"]').last().innerText(),
+      ).toContain('Alan');
+      await toggle.focus();
+      await f.page.keyboard.press(' ');
+      expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+    } finally {
+      await f.close();
+    }
+  });
+
   it('shows the current member monthly balance alongside the workbench', async () => {
     const f = await fixture();
     try {
@@ -788,17 +850,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ];
         await f.page.reload();
         const timing = f.page.getByLabel('本轮运行时间', { exact: true });
+        const process = f.page.getByRole('region', {
+          name: '工作过程',
+          exact: true,
+        });
+        await process.getByRole('button').click();
         await timing.waitFor();
-        await timing.locator('summary').click();
-        expect(await timing.innerText()).toContain('已运行 0 分 12 秒');
-        expect(await timing.innerText()).toContain('用户 60 分钟');
-        expect(await timing.innerText()).toContain('回执未完成，用量待核对');
+        expect(await timing.innerText()).toContain('总耗时 22 秒');
+        expect(await timing.innerText()).toContain('累计等待 10 秒');
+        expect(await process.innerText()).not.toContain('模型请求');
         f.state.runTimings[0]!.timing.waitingMs = 2400000;
         f.state.runTimings[0]!.timing.wallMs = 2412460;
         await expect
           .poll(() => timing.innerText(), { timeout: 5000 })
           .toContain('等待 40 分 0 秒');
-        expect(await timing.innerText()).toContain('已运行 0 分 12 秒');
+        expect(await timing.innerText()).toContain('总耗时 40 分 12 秒');
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -814,10 +880,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.timingError = false;
         await timing.waitFor();
         await f.page.reload();
+        expect(await timing.count()).toBe(0);
+        await process.getByRole('button').click();
         await timing.waitFor();
-        expect(await timing.locator('summary').innerText()).toContain(
-          '等待 40 分 0 秒',
-        );
+        expect(await timing.innerText()).toContain('等待 40 分 0 秒');
         f.state.runTimings = [];
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
       } finally {

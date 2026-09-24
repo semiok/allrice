@@ -1498,66 +1498,6 @@ div.composerTools {
   font-size: 12px;
 }
 
-.nativeTimeline {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0 14px;
-}
-
-.nativeEvent {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.nativeEventIcon {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 7px;
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-}
-
-.nativeEvent > div {
-  min-width: 0;
-  padding-top: 2px;
-}
-
-.nativeEvent strong {
-  display: block;
-  overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-secondary);
-  font-weight: 500;
-}
-
-.nativeEvent small {
-  display: block;
-  margin-top: 1px;
-  overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-caption);
-}
-
-.nativeEvent[data-kind='search'] .nativeEventIcon,
-.nativeEvent[data-kind='think'] .nativeEventIcon {
-  color: var(--dsw-alias-state-business-primary);
-}
-
-.nativeEvent[data-status='started'] .nativeEventIcon {
-  animation: nativeEventPulse 1.4s ease-in-out infinite;
-}
-
-.nativeEvent[data-status='failed'] strong,
-.nativeEvent[data-status='failed'] .nativeEventIcon {
-  color: var(--dsw-alias-state-error-primary);
-}
-
 .nativeTraceState,
 .nativeTraceRetry {
   padding: 3px 0;
@@ -2123,19 +2063,73 @@ div.composerTools {
 }
 
 .runTiming {
-  margin: 6px 0 12px;
-  color: var(--text-secondary, #666);
+  margin: 4px 0 4px 22px;
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
-.runTiming summary {
-  cursor: pointer;
+/* Allrice public-event adapter; native DSH disclosure chrome stays unchanged. */
+.workProcess {
+  margin: 4px 0 8px;
+  min-width: 0;
 }
-
-.runTiming p {
+.workProcess [data-disclosure-row]:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.processDetails {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-left: 22px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.processDetails p {
   margin: 4px 0;
+}
+.processGroups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.processGroups li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  padding: 3px 0;
+}
+.processGroups small {
+  color: var(--dsw-alias-label-caption);
+  font-size: inherit;
+}
+.processError {
+  flex-basis: 100%;
+}
+.processGroups [data-failed] small {
+  color: var(--dsw-alias-state-error-primary);
+}
+.processPulse {
+  display: inline-flex;
+  animation: nativeEventPulse 1.4s ease-in-out infinite;
+}
+.processStatus {
+  color: var(--dsw-alias-label-secondary);
+}
+.assistantCopy[data-streaming='true'] > :last-child::after {
+  content: '▍';
+  color: var(--dsw-alias-label-secondary);
+  animation: nativeEventPulse 1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .processPulse,
+  .assistantCopy[data-streaming='true'] > :last-child::after {
+    animation: none;
+  }
 }
 
 @media (max-width: 760px) {

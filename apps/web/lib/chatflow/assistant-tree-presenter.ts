@@ -23,14 +23,20 @@ export const assistantMessageLabel: Readonly<Record<string, string>> = {
 };
 
 export function presentAssistantTree(tree: AssistantTreeView) {
-  const children = tree.instances.filter((item) => item.parentRunId !== null);
+  const children = tree.instances.filter(
+    (item) => item.parentRunId !== null && item.runId !== tree.rootRunId,
+  );
   const unresolved = children.filter(
     (item) =>
       !settled.has(item.status) ||
       (item.cancelRequestedAt !== null && item.stoppedAt === null),
   );
-  const attention = children.filter((item) =>
-    ['unknown', 'failed', 'partial', 'waiting'].includes(item.status),
+  const attention = children.filter(
+    (item) =>
+      ['unknown', 'failed', 'partial', 'waiting', 'cancel_requested'].includes(
+        item.status,
+      ) ||
+      (item.cancelRequestedAt !== null && item.stoppedAt === null),
   );
   const unconfirmedStops = tree.instances.filter(
     (item) => item.cancelRequestedAt && !item.stoppedAt,
@@ -44,9 +50,7 @@ export function presentAssistantTree(tree: AssistantTreeView) {
     attention,
     unconfirmedStops,
     hasLiveWork,
-    label: children.length
-      ? `Rice 已安排 ${children.length} 个助手`
-      : '日常任务 · 暂无助手',
+    label: children.length ? `已安排 ${children.length} 个助手` : '独立处理',
     summary: tree.cancelRequested
       ? unconfirmedStops.length
         ? `已请求取消整项任务，${unconfirmedStops.length} 项尚未确认停止`
@@ -59,6 +63,6 @@ export function presentAssistantTree(tree: AssistantTreeView) {
             ? '助手执行已结束，结果采用状态见明细'
             : tree.configuration.allowAssistants
               ? '可按需要进行有限委派'
-              : '由 Rice 独立处理',
+              : '独立处理',
   };
 }

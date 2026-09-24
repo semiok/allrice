@@ -70,11 +70,11 @@ function render(tree: AssistantTreeView, detailed = true) {
 describe('P26 actual-state presentation (fixtures are not execution evidence)', () => {
   it('counts persisted children only, not root or proposed assistant count', () => {
     const tree = fixture();
-    expect(presentAssistantTree(tree).label).toBe('Rice 已安排 1 个助手');
+    expect(presentAssistantTree(tree).label).toBe('已安排 1 个助手');
     tree.instances = tree.instances.slice(0, 1);
-    expect(render(tree)).toContain('暂无助手');
+    expect(render(tree)).toBe('');
     tree.configuration.allowAssistants = false;
-    expect(render(tree)).toContain('由 Rice 独立处理');
+    expect(render(tree)).toBe('');
   });
   it('keeps pending stops visible outside default-collapsed details', () => {
     const tree = fixture();
@@ -115,13 +115,13 @@ describe('P26 actual-state presentation (fixtures are not execution evidence)', 
       },
     ];
     let html = render(tree);
-    expect(html).toContain('主 Rice 尚未确认采用');
+    expect(html).toContain('主任务 尚未确认采用');
     expect(html).toContain('第三个来源不可用');
     expect(html).toContain(`sha256:${'a'.repeat(64)}`);
     expect(html).toContain('不能视作零消耗');
     tree.results[0]!.parentAdoptedSeq = 42;
     html = render(tree);
-    expect(html).toContain('主 Rice 已采用');
+    expect(html).toContain('主任务 已采用');
     expect(html).toContain('#42');
     expect(html).not.toContain('尚未确认采用');
   });

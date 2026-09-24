@@ -15,11 +15,7 @@ import { MessageImageGallery } from './attachment-components';
 import type { Message, RunTrace, RunView } from './chatflow-types';
 import { BrowserWorkspacePanel } from './browser-workspace-panel';
 import { hasBrowserWorkspaceEvents } from '../../lib/chatflow/managed-browser-task-presenter';
-import {
-  assistantDelta,
-  formatTime,
-  nativeExperienceIcon,
-} from './chatflow-utils';
+import { assistantDelta, formatTime } from './chatflow-utils';
 import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
 import chatUi from './dsh-upstream/ChatView.module.css';
 import messageUi from './dsh-upstream/MessageItem.module.css';
@@ -34,10 +30,12 @@ import { LocalMcpPanel } from './local-mcp-panel';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
-import { ChatRunTiming } from './run-timing';
+import { WorkProcess } from './work-process';
+import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 
 interface ChatTranscriptProps {
   atBottom: boolean;
+  employeeName?: string;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
   assistantTrees?: Record<string, AssistantTreeView>;
@@ -59,6 +57,7 @@ interface ChatTranscriptProps {
 
 export function ChatTranscript({
   atBottom,
+  employeeName = 'AI 员工',
   localCommandsEnabled = false,
   localMcpEnabled = false,
   assistantTrees = {},
@@ -93,7 +92,13 @@ export function ChatTranscript({
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
                 message.content.text.length > 0 ||
-                !!(message.runId && assistantTrees[message.runId]),
+                !!(
+                  message.runId &&
+                  assistantTrees[message.runId]?.instances.some(
+                    (item) =>
+                      item.parentRunId !== null && item.runId !== message.runId,
+                  )
+                ),
             )
             .map((message) => {
               const messageRun = message.runId
@@ -102,14 +107,23 @@ export function ChatTranscript({
               const trace = message.runId
                 ? runTraces[message.runId]
                 : undefined;
+              const assistantTree = message.runId
+                ? assistantTrees[message.runId]
+                : undefined;
+              const assistantState = assistantTree
+                ? presentAssistantTree(assistantTree)
+                : undefined;
               const timing = message.runId
-                ? timingByRun.get(message.runId)
+                ? (timingByRun.get(message.runId) ??
+                  assistantTree?.timing ??
+                  undefined)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
               const nativeExperience = projectNativeExperience(traceEvents);
-              const messageIsRunning =
-                messageRun?.status === 'running' ||
-                messageRun?.status === 'connecting';
+              const messageIsRunning = messageRun
+                ? messageRun.status === 'running' ||
+                  messageRun.status === 'connecting'
+                : message.status === 'pending';
               const streamedText = messageRun
                 ? assistantDelta(messageRun.events)
                 : '';
@@ -120,7 +134,8 @@ export function ChatTranscript({
                 (message.status === 'failed' && !message.content.budgetWarning
                   ? modelGovernanceFailureText(message.errorCode)
                   : null) ??
-                (streamedText || message.content.text);
+                (streamedText ||
+                  (message.status === 'pending' ? '' : message.content.text));
               const summarize =
                 !!onOpenArtifact &&
                 linkedArtifacts.length > 0 &&
@@ -201,96 +216,48 @@ export function ChatTranscript({
                     <div className={assistantUi.root}>
                       <div className={styles.assistantIdentity}>
                         <i aria-hidden="true" />
-                        <span>Rice</span>
-                        {messageIsRunning ? (
-                          <>
-                            <span className={styles.runningDot} />
-                            <span>
-                              {timing?.phase === 'waiting'
-                                ? '等待处理'
-                                : '正在工作'}
-                            </span>
-                          </>
-                        ) : null}
+                        <span>{employeeName}</span>
                         <time>{formatTime(message.createdAt)}</time>
                       </div>
-                      {timing ? <ChatRunTiming timing={timing} /> : null}
-                      {message.runId &&
-                      (nativeExperience.length > 0 ||
-                        messageIsRunning ||
-                        trace?.status === 'loading' ||
-                        trace?.status === 'failed') ? (
-                        <div
-                          className={styles.nativeTimeline}
-                          aria-label="DSH 工作过程"
-                        >
-                          {nativeExperience.map((item) => (
-                            <div
-                              className={styles.nativeEvent}
-                              data-kind={item.kind}
-                              data-status={item.status}
-                              key={item.id}
-                            >
-                              <span
-                                className={styles.nativeEventIcon}
-                                aria-hidden="true"
-                              >
-                                {nativeExperienceIcon(item.kind)}
-                              </span>
-                              <div>
-                                <strong>{item.title}</strong>
-                                {item.detail ? (
-                                  <small>{item.detail}</small>
-                                ) : null}
-                              </div>
-                            </div>
-                          ))}
-                          {!nativeExperience.length &&
-                          trace?.status === 'failed' ? (
-                            <button
-                              className={styles.nativeTraceRetry}
-                              onClick={() =>
-                                void onLoadRunTrace(message.runId!)
-                              }
-                              type="button"
-                            >
-                              工作过程加载失败，点击重试
-                            </button>
-                          ) : null}
-                          {!nativeExperience.length &&
-                          trace?.status === 'loading' ? (
-                            <div className={styles.nativeTraceState}>
-                              正在恢复 DSH 工作过程…
-                            </div>
-                          ) : null}
-                          {!nativeExperience.length &&
-                          messageIsRunning &&
-                          trace?.status !== 'loading' ? (
-                            <div className={styles.nativeTraceState}>
-                              DSH 正在准备本轮上下文…
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
+                      <WorkProcess
+                        items={nativeExperience}
+                        timing={timing}
+                        running={messageIsRunning}
+                        streaming={!!streamedText}
+                        failed={
+                          message.status === 'failed' ||
+                          messageRun?.status === 'failed'
+                        }
+                        canceled={messageRun?.status === 'canceled'}
+                        traceStatus={trace?.status}
+                        onRetry={() => {
+                          if (message.runId) void onLoadRunTrace(message.runId);
+                        }}
+                        assistantCount={assistantState?.children.length ?? 0}
+                        assistantAttention={
+                          assistantState?.attention.length ?? 0
+                        }
+                      >
+                        {assistantTree &&
+                        assistantState?.children.length &&
+                        onAssistantChanged &&
+                        onOpenArtifact ? (
+                          <AssistantRunPanel
+                            key={`${workspaceId}/${message.runId}`}
+                            tree={assistantTree}
+                            workspaceId={workspaceId}
+                            headers={tenantHeaders}
+                            onArtifact={onOpenArtifact}
+                            onChanged={onAssistantChanged}
+                          />
+                        ) : null}
+                      </WorkProcess>
                       {message.runId && hasManagedBrowserEvents(traceEvents) ? (
                         <ManagedBrowserTaskPanel
                           runActive={messageIsRunning}
                           runId={message.runId}
                           tenantHeaders={tenantHeaders}
                           workspaceId={workspaceId}
-                        />
-                      ) : null}
-                      {message.runId &&
-                      assistantTrees[message.runId] &&
-                      onAssistantChanged &&
-                      onOpenArtifact ? (
-                        <AssistantRunPanel
-                          key={`${workspaceId}/${message.runId}`}
-                          tree={assistantTrees[message.runId]!}
-                          workspaceId={workspaceId}
-                          headers={tenantHeaders}
-                          onArtifact={onOpenArtifact}
-                          onChanged={onAssistantChanged}
                         />
                       ) : null}
                       {message.runId &&
@@ -334,19 +301,13 @@ export function ChatTranscript({
                           runActive={messageIsRunning}
                         />
                       )}
-                      {messageIsRunning && !streamedText ? (
-                        <div className={chatUi.turnStatus}>
-                          Rice 正在理解你的需求…
-                        </div>
-                      ) : (
+                      {responseText ? (
                         <div
                           className={`${assistantUi.body} ${styles.assistantCopy}`}
+                          data-streaming={
+                            (messageIsRunning && !!streamedText) || undefined
+                          }
                         >
-                          {messageIsRunning && streamedText ? (
-                            <small role="status">
-                              正在生成回复，尚未完成交付。
-                            </small>
-                          ) : null}
                           {summarize ? (
                             <>
                               <p>
@@ -368,7 +329,7 @@ export function ChatTranscript({
                             />
                           )}
                         </div>
-                      )}
+                      ) : null}
                       {message.content.budgetWarning &&
                       message.status === 'failed' ? (
                         <small role="status">

@@ -13,3 +13,7 @@ skills/office/references/pptx.md
 
 # Preserve the pinned DSH queue stylesheet byte-for-byte below its provenance header.
 apps/web/app/chatflow/dsh-upstream/QueueDock.module.css
+
+# Native DSH reasoning/disclosure presentation styles.
+apps/web/app/chatflow/dsh-upstream/ReasoningRow.module.css
+apps/web/app/chatflow/dsh-upstream/DisclosureRow.module.css

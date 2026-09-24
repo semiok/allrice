@@ -88,15 +88,6 @@ export function assistantDelta(events: ChatFlowEventEnvelope[]) {
     .join('');
 }
 
-export function nativeExperienceIcon(kind: string) {
-  if (kind === 'context') return '▣';
-  if (kind === 'search') return '◎';
-  if (kind === 'think') return '◉';
-  if (kind === 'todo') return '☷';
-  if (kind === 'compaction') return '↻';
-  return '◇';
-}
-
 export function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
   if (!textarea) return;
 

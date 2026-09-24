@@ -42,11 +42,17 @@ commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`:
   measurement adapted in `apps/web/app/chatflow/workbench-splitter.tsx`)
 - `packages/client/ui-sidebar/src/client/SidebarRoot.module.css`
 - `packages/client/ui-conversation/src/client/**`
-- `packages/client/ui-primitives/src/icons/index.tsx` (six queue glyphs)
+- `packages/client/ui-primitives/src/icons/index.tsx` (six queue glyphs and Think glyph)
+- `packages/client/ui-primitives/src/DisclosureRow.tsx` and `DisclosureRow.module.css`
 
 `queued-messages-dock.tsx` adapts the native `QueueDock.tsx`; its CSS is copied
 unchanged and the icon glyphs are verbatim excerpts. The adapter connects the
 native list/actions to AllRice durable inputs and returns edits to the composer.
+
+`work-process.tsx` uses the native `DisclosureRow` primitive (imports and string
+class joining adapted) and unchanged `ReasoningRow.module.css`. AllRice adds
+Chinese grouping over public tool events and server timing; it does not expose
+raw model reasoning or create a second execution timeline.
 
 The copied files live under `apps/web/app/dsh-upstream` and
 `apps/web/app/chatflow/dsh-upstream`. AllRice supplies a SaaS adapter over those
