@@ -8,7 +8,6 @@ import { DshDialog } from './dsh-upstream/Dialog';
 import {
   capabilityLabels,
   capabilityReasons,
-  capabilitySettingsHref,
   capabilityStateLabels,
 } from './capability-catalog';
 import styles from './capability-panel.module.css';
@@ -21,6 +20,7 @@ export function CapabilityPanel({
   onClose,
   onRefresh,
   onBridge,
+  onConnections,
   onCompose,
 }: {
   data: WorkspaceReadiness | null;
@@ -30,6 +30,7 @@ export function CapabilityPanel({
   onClose: () => void;
   onRefresh: () => void;
   onBridge: () => void;
+  onConnections: () => void;
   onCompose: (id: WorkspaceCapabilityId) => void;
 }) {
   return (
@@ -42,12 +43,9 @@ export function CapabilityPanel({
       bodyClassName={styles.body}
     >
       <p>
-        入口可见不等于获得授权。这里显示下一项任务的配置，不改变正在运行的任务；具体操作仍走原有审批与预算检查。
+        当前员工可用的能力和环境。直接告诉员工你的任务；需要登录账号或选择本地文件时，会在任务中引导你完成。
       </p>
-      <p>
-        Bridge
-        非必装。云端任务可独立执行；本地设备离线不会隐式上传文件或迁移在途操作。
-      </p>
+      <p>云端工作无需安装软件。处理电脑里的文件时，再连接 Bridge。</p>
       <div className={styles.refresh}>
         <button type="button" onClick={onRefresh} disabled={loading}>
           {loading ? '正在检查…' : '刷新能力状态'}
@@ -63,11 +61,18 @@ export function CapabilityPanel({
         {workspaceCapabilityIds.map((id) => {
           const label = capabilityLabels[id],
             capability = data?.capabilities.find((c) => c.id === id);
-          const href =
-            capability && data?.canAdminister
-              ? capabilitySettingsHref(capability.action, data.workspaceId)
-              : null;
           const state = capability?.state ?? 'unknown';
+          const localSetup =
+            capability &&
+            [
+              'bridge_missing',
+              'bridge_offline',
+              'folder_missing',
+              'device_paused',
+              'browser_unavailable',
+              'runner_missing',
+              'candidate_runner_missing',
+            ].includes(capability.reason);
           return (
             <article
               key={id}
@@ -77,7 +82,17 @@ export function CapabilityPanel({
             >
               <header>
                 <h3>{label.title}</h3>
-                <span>{capabilityStateLabels[state]}</span>
+                <span>
+                  {capability?.reason === 'employee_policy'
+                    ? '员工未提供'
+                    : capability?.reason === 'bridge_missing'
+                      ? '连接电脑'
+                      : capability?.reason === 'folder_missing'
+                        ? '选择文件夹'
+                        : capability?.reason === 'device_paused'
+                          ? '已暂停'
+                          : capabilityStateLabels[state]}
+                </span>
               </header>
               <p>{label.description}</p>
               <p>
@@ -85,22 +100,6 @@ export function CapabilityPanel({
                   ? capabilityReasons[capability.reason]
                   : '尚未取得当前状态，请刷新确认。'}
               </p>
-              {capability && (
-                <small>
-                  下一步由
-                  {capability.responsibleRole === 'platform_admin'
-                    ? '平台管理员'
-                    : capability.responsibleRole === 'tenant_admin'
-                      ? '当前租户管理员'
-                      : '你'}
-                  处理。
-                  {capability.authorization === 'per_action'
-                    ? '执行仍需对精确动作逐次审批。'
-                    : capability.authorization === 'root_budget'
-                      ? '助手仍共用父任务预算。'
-                      : ''}
-                </small>
-              )}
               {capability?.action === 'compose' &&
               state === 'ready' &&
               label.prompt ? (
@@ -111,15 +110,44 @@ export function CapabilityPanel({
                 >
                   准备{label.title}任务
                 </button>
-              ) : capability?.action === 'bridge' ? (
+              ) : localSetup ? (
                 <button type="button" onClick={onBridge}>
-                  打开 Bridge 下载与配对
+                  {capability.reason === 'folder_missing'
+                    ? '选择工作文件夹'
+                    : '连接与管理电脑'}
                 </button>
-              ) : href ? (
-                <a href={href} target="_blank" rel="noopener noreferrer">
-                  打开配置（新标签页）
-                </a>
               ) : null}
+              {id === 'cloud_mcp' && data && (
+                <button type="button" onClick={onConnections}>
+                  已连接应用
+                </button>
+              )}
+              {id === 'local_mcp' &&
+                state !== 'ready' &&
+                data?.capabilities.some(
+                  (c) => c.id === 'cloud_mcp' && c.state === 'ready',
+                ) && (
+                  <button
+                    type="button"
+                    disabled={busy || loading}
+                    onClick={() => onCompose('cloud_mcp')}
+                  >
+                    让员工连接在线应用
+                  </button>
+                )}
+              {capability?.reason === 'runner_missing' &&
+                id === 'local_command' &&
+                data?.capabilities.some(
+                  (c) => c.id === 'cloud_command' && c.state === 'ready',
+                ) && (
+                  <button
+                    type="button"
+                    disabled={busy || loading}
+                    onClick={() => onCompose('cloud_command')}
+                  >
+                    改用云端计算
+                  </button>
+                )}
               {capability && state !== 'ready' && (
                 <details>
                   <summary>查看处理步骤</summary>
@@ -142,13 +170,7 @@ export function CapabilityPanel({
                       <>
                         <li>{capabilityReasons[capability.reason]}</li>
                         <li>
-                          {data?.canAdminister
-                            ? '在对应租户设置核对；若没有配置入口，联系平台管理员处理部署或员工发布。'
-                            : '向当前租户管理员提供上面的能力名称和原因；不需要进入平台后台。'}
-                        </li>
-                        <li>
-                          配置完成后返回并刷新。只有状态核实后才准备任务，批准计划或查看
-                          Diff 不等于授权执行。
+                          完成后点击“刷新能力状态”。其他可用能力可以继续使用。
                         </li>
                       </>
                     )}
@@ -160,7 +182,7 @@ export function CapabilityPanel({
                     'local_browser',
                   ].includes(id) && (
                     <button type="button" onClick={onBridge}>
-                      查看 Bridge 与工作区
+                      连接与管理电脑
                     </button>
                   )}
                 </details>
@@ -170,7 +192,7 @@ export function CapabilityPanel({
         })}
       </div>
       <p>
-        “准备任务”只把可编辑指引加入输入框，不会自动发送、安装环境或授予权限。打开此面板时检查一次；配置完成后，点击“刷新能力状态”更新。
+        “准备任务”会把指引加入输入框，编辑后发送即可。打开时检查一次；完成连接后可手动刷新。具体写入和执行操作仍在任务中确认。
       </p>
     </DshDialog>
   );

@@ -264,6 +264,100 @@ suite('workspace MCP page scope — actual isolated PostgreSQL', () => {
     });
   });
 
+  it('MET159 separates member application availability from scoped connection readiness without writes', async () => {
+    vi.stubEnv('ALLRICE_CLOUD_MCP_ENABLED', '1');
+    vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', '');
+    const f = await fixture('member'),
+      org = f.organizationId,
+      ws = f.firstWorkspaceId,
+      user = f.userId;
+    const employee = randomUUID(),
+      version = randomUUID(),
+      assignment = randomUUID();
+    const manifest = employeeManifest({
+      key: 'apps-fixture',
+      name: 'Apps fixture',
+      description: 'Isolated test',
+      toolNames: ['cloud.mcp.call'],
+      securityPolicy: {
+        dataScopes: ['workspace', 'user'],
+        connectorIdentityModes: ['service'],
+        approvalPolicy: 'confirm_external',
+        deniedCapabilities: [],
+      },
+    });
+    await database.begin(async (tx) => {
+      await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${ws},'apps-fixture','Fixture')`;
+      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${ws},${employee},1,'Fixture','synthetic','test','[]',${'sha256:' + 'a'.repeat(64)},${tx.json(manifest)})`;
+      await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignment},${org},${ws},${employee},${version},${user})`;
+      await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls) values(${org},${ws},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: [{ action: 'cloud.mcp.call', effect: 'allow' }] })})`;
+    });
+    const status = async () =>
+      (await getWorkspaceReadiness(f.context, ws, null)).capabilities.find(
+        (c) => c.id === 'cloud_mcp',
+      )!;
+    expect(await status()).toMatchObject({
+      state: 'ready',
+      reason: 'connection_on_demand',
+      action: 'compose',
+    });
+    const store = createMcpStore({ database, memberManaged: true });
+    const connection = await store.create(f.context, {
+      workspaceId: ws,
+      name: 'Public fixture',
+      endpoint: 'https://mcp.example.test/mcp',
+    });
+    const lease = await store.claimDiscovery(randomUUID());
+    expect(lease?.connectionId).toBe(connection.id);
+    await store.completeDiscovery(lease!, {
+      tools: [
+        {
+          name: 'records.list',
+          description: 'Synthetic',
+          inputSchema: { type: 'object', properties: {} },
+          outputSchema: null,
+        },
+      ],
+    });
+    await database`insert into allrice_employee_mcp_bindings(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id,enabled,granted_by) values(${org},${ws},${employee},${version},${connection.id},true,${user})`;
+    // Anonymous connections do not depend on a private-credential encryption key.
+    expect(await status()).toMatchObject({ state: 'ready', reason: 'ready' });
+    await store.setMemberConnected(f.context, {
+      workspaceId: ws,
+      connectionId: connection.id,
+      connected: false,
+    });
+    expect(await status()).toMatchObject({
+      state: 'ready',
+      reason: 'connection_on_demand',
+    });
+    await store.setMemberConnected(f.context, {
+      workspaceId: ws,
+      connectionId: connection.id,
+      connected: true,
+    });
+    const other = await fixture('member');
+    await database`update allrice_mcp_binding_config set managed_by=${other.userId} where binding_id=${connection.id}`;
+    expect(await status()).toMatchObject({
+      state: 'ready',
+      reason: 'connection_on_demand',
+    });
+    await database`update allrice_mcp_binding_config set managed_by=${user},auth_kind='bearer' where binding_id=${connection.id}`;
+    expect(await status()).toMatchObject({
+      state: 'ready',
+      reason: 'connection_on_demand',
+    });
+    await database`update allrice_memberships set role='viewer' where id=${f.membershipId}`;
+    expect(await status()).toMatchObject({
+      state: 'needs_authorization',
+      reason: 'read_only',
+    });
+    const [operations] =
+      await database`select count(*)::int as n from allrice_runtime_operations where organization_id=${org}`;
+    expect(operations?.n).toBe(0);
+  });
+
   it('UX01-B reports real folder/sandbox freshness without cloud dependence or writes', async () => {
     for (const flag of [
       'ALLRICE_WORKBENCH_ENABLED',

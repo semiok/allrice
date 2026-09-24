@@ -86,6 +86,10 @@ export function ChatFlowClient({
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const [settings, setSettings] = useState<{
+    scope: string;
+    section: string;
+  } | null>(null);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
@@ -120,6 +124,10 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  useEffect(() => {
+    setSettings(null);
+  }, [settingsScope]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
@@ -924,6 +932,15 @@ export function ChatFlowClient({
         />
       )}
       <ChatSidebar
+        settingsSection={
+          settings?.scope === settingsScope ? settings.section : null
+        }
+        onSettingsSectionChange={(section) =>
+          setSettings(
+            section === null ? null : { scope: settingsScope, section },
+          )
+        }
+        onBridge={() => void loadBridgeDevices(true)}
         monthlyQuota={monthlyQuota}
         activeId={activeId}
         collapsed={sidebarCollapsed}
@@ -1288,6 +1305,10 @@ export function ChatFlowClient({
           busy={busy}
           onClose={() => setCapabilitiesOpen(false)}
           onRefresh={() => void readiness.reload()}
+          onConnections={() => {
+            setCapabilitiesOpen(false);
+            setSettings({ scope: settingsScope, section: 'apps' });
+          }}
           onBridge={() => {
             setCapabilitiesOpen(false);
             void loadBridgeDevices(true);
@@ -1352,10 +1373,8 @@ export function ChatFlowClient({
         >
           <div className={styles.bridgeIntro}>
             <p>
-              Bridge 只访问你明确授权的文件夹；读写能力由员工配置和 Tool Broker
-              控制，不开放宿主
-              Shell，也不会把模型密钥下发到电脑。新版的本地命令在独立 Linux
-              沙箱中执行，需要单独启用及逐次审批。
+              安装并配对 Bridge 后，员工即可连接你的电脑。选择需要处理的文件夹；
+              独立浏览器和已有计算环境会自动准备，具体文件修改和命令执行在任务中确认。
             </p>
             <button
               disabled={bridgeBusy}
@@ -1376,27 +1395,25 @@ export function ChatFlowClient({
               className={styles.bridgeClientDownload}
               download="RiceBridge-M.zip"
               href="/api/v1/bridge/client/macos-arm64"
-              onClick={() => noteBridgeDownload('M 芯片菜单栏版 0.5.0-dev.1')}
+              onClick={() => noteBridgeDownload('M 芯片菜单栏版')}
             >
-              下载 M 芯片版 · 0.5.0-dev.1
+              下载 M 芯片版
             </a>
             <a
               className={styles.bridgeClientDownload}
               download="RiceBridge-Intel.zip"
               href="/api/v1/bridge/client/macos-x64"
-              onClick={() =>
-                noteBridgeDownload('Intel 芯片菜单栏版 0.5.0-dev.1')
-              }
+              onClick={() => noteBridgeDownload('Intel 芯片菜单栏版')}
             >
-              下载 Intel 芯片版 · 0.5.0-dev.1
+              下载 Intel 芯片版
             </a>
           </div>
           <p>
             升级前正常退出旧 Bridge，再解压打开 Rice
             Bridge.app；原有配对和工作区会保留。
-            新版在菜单栏运行，无需保持终端窗口，可查看状态、选择工作区、暂停和诊断，
-            以及分别开启独立浏览器和项目预览。新能力默认关闭，仍需服务端配置和逐次审批。
-            这是尚未 Apple 公证的 Dev 包，不会自动安装沙箱或开放执行权限。
+            在菜单栏查看状态、选择文件夹或暂停连接，无需保持终端窗口。
+            环境准备失败时，选择“重新检查并准备环境”重试；通用计算也可直接交给员工在云端完成。
+            当前下载为尚未 Apple 公证的 Dev 包。
           </p>
           {bridgeFeedback ? (
             <p

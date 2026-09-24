@@ -49,19 +49,20 @@ export const capabilityLabels: Record<
   local_browser: {
     title: '本地独立浏览器',
     description:
-      '使用 Bridge 上单独授权的浏览器，不要求选择文件夹，不控制日常 Chrome。',
+      '连接 Bridge 后自动准备独立浏览器，无需选择文件夹，不影响日常 Chrome。',
     prompt:
       '请使用已授权 Bridge 上的独立浏览器核查【填写 URL 与目标】，不要使用个人 Chrome。涉及提交或修改时等待精确审批；设备离线时停止等待，不转交云端。',
   },
   cloud_mcp: {
-    title: '云端 MCP 连接器',
-    description: '连接器发现、工具许可与员工绑定均需就绪，实际调用仍逐次审批。',
+    title: '应用连接',
+    description:
+      '告诉员工需要哪个应用，由员工连接并使用；私人账号需要你本人登录。',
     prompt:
-      '请通过已授权的云端 MCP 连接器完成【填写业务任务】。先核对连接和工具范围，实际调用等待精确审批；结果未知时不要盲目重复提交。',
+      '请连接【填写应用名称或服务地址】并完成【填写业务任务】。优先复用我的已有连接；需要登录或填写凭据时，提供专用连接入口，完成后继续本任务。不要让我把密码或令牌发到聊天中。',
   },
   local_mcp: {
-    title: '本地 MCP 工具',
-    description: '在固定设备和目录副本的沙箱内运行已授权 MCP 服务。',
+    title: '本地应用工具',
+    description: '通过已连接的电脑使用本地安装的应用服务。',
     prompt:
       '请使用已授权的本地 MCP 工具完成【填写业务任务】，固定当前 Bridge、目录和版本，逐次请求审批；不要安装未知服务或迁移到云端。',
   },
@@ -99,13 +100,13 @@ export const capabilityStateLabels = {
 };
 export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
   {
-    ready: '已核对当前配置；发起任务时仍会复查权限、环境与额度。',
+    ready: '已就绪，可以直接交给员工处理。',
     release_disabled: '当前部署尚未开放此能力；请联系平台管理员核对发布范围。',
     planned: '此能力仍在后续规划中，当前不可执行。',
     employee_missing:
-      '当前没有可核验的员工配置，请租户管理员检查员工分配或发布版本。',
+      '当前没有可用的员工配置。可在左侧选择已派驻员工，或等待新的员工派驻。',
     employee_policy:
-      '当前员工版本未许可所需工具或明确禁止相关权限，请租户管理员核对员工策略。',
+      '当前员工未提供或已停用此能力。可在左侧选择具备该能力的员工继续处理。',
     policy_missing:
       '工作区缺少有效执行策略，请租户管理员与平台管理员核对策略配置。',
     policy_denied:
@@ -113,10 +114,11 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     read_only: '当前角色不能发起执行，请向当前租户管理员申请权限。',
     provider_unsupported:
       '当前会话模型协议尚不支持此助手路径；请租户管理员核对模型配置。',
-    bridge_missing: '尚未配对你自己的 Bridge，点击打开下载与配对指引。',
+    bridge_missing:
+      '连接电脑后即可处理本地任务。点击下方按钮下载并配对 Bridge。',
     bridge_offline:
       '没有在线的已配对设备；请启动 Bridge 后刷新，不自动转为云端执行。',
-    folder_missing: 'Bridge 在线，但尚未选择并授权文件工作区。',
+    folder_missing: '电脑已连接。选择需要交给员工处理的文件夹即可。',
     environment_preparing:
       'Bridge 正在自动准备环境，稍后刷新即可查看结果；其他已就绪能力可继续使用。',
     device_paused: '你已暂停此能力。需要使用时，从 Bridge 菜单恢复即可。',
@@ -129,7 +131,9 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     target_missing: '尚未配置对应执行环境，请由平台管理员准备隔离运行环境。',
     target_unavailable: '所需执行目标不可用，请恢复对应环境后刷新。',
     grant_missing:
-      '环境存在，但当前用户尚无有效授权，请租户管理员配置授权范围。',
+      '当前账号的环境使用关系已停用或尚未准备完成；已有撤销不会自动恢复。',
+    connection_on_demand:
+      '可让员工按需连接应用。具体应用的登录与连接状态可在“已连接应用”查看。',
     connection_missing:
       '尚未配置可用连接器；需添加连接、发现工具、授权工具并绑定员工版本。',
     connection_unverified:

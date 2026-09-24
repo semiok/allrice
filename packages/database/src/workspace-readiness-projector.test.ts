@@ -165,21 +165,31 @@ describe('MET-147 capability matrix: discovery is not authority', () => {
       cloudBrowser: 'ungranted' as const,
     };
     expect(item(f, 'cloud_mcp')).toMatchObject({
-      state: 'needs_authorization',
-      action: 'guide',
-      responsibleRole: 'tenant_admin',
+      state: 'ready',
+      reason: 'connection_on_demand',
+      action: 'compose',
+      responsibleRole: 'user',
     });
     expect(item(f, 'cloud_browser').action).toBe('guide');
     f.canAdminister = true;
-    expect(item(f, 'cloud_mcp').action).toBe('mcp_settings');
+    expect(item(f, 'cloud_mcp').action).toBe('compose');
     expect(item(f, 'cloud_browser').action).toBe('browser_settings');
   });
   it.each(['missing', 'unverified', 'ungranted'] as const)(
-    'MCP %s is never ready',
+    'cloud applications can be connected on demand when %s; local services still require installation',
     (cloudMcp) => {
-      expect(
-        item({ ...readinessFixture(), cloudMcp }, 'cloud_mcp').state,
-      ).not.toBe('ready');
+      const f = { ...readinessFixture(), cloudMcp, localMcp: cloudMcp };
+      expect(item(f, 'cloud_mcp')).toMatchObject({
+        state: 'ready',
+        reason: 'connection_on_demand',
+        action: 'compose',
+      });
+      expect(item(f, 'local_mcp').state).not.toBe('ready');
+      f.cloudMcpPolicy = false;
+      expect(item(f, 'cloud_mcp')).toMatchObject({
+        state: 'needs_authorization',
+        reason: 'employee_policy',
+      });
     },
   );
   it('unknown configuration and unsupported providers are explicit, not successful', () => {

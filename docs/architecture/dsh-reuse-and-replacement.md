@@ -54,7 +54,7 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 ### MET-160：官方 UI 复用与后续同步
 
-设置入口复用官方 `Modal` 与 `SettingsRoot` 双栏导航：账号用量、MCP 与浏览器配置统一进入设置。完整设置插件绑定 DSH 宿主 `remote.settings` / ConfigForm / onboarding，故保留原生面板源码并接 Allrice 既有业务组件；不复制宿主模型/插件配置为无效租户开关。来源与补丁纳入同一 UI 同步账本。
+设置入口复用官方 `Modal` 与 `SettingsRoot` 双栏导航：账号用量、已连接应用与电脑配对统一进入设置，普通成员无需管理员角色或额外浏览器授权表单。完整设置插件绑定 DSH 宿主 `remote.settings` / ConfigForm / onboarding，故保留原生面板源码并接 Allrice 既有业务组件；不复制宿主模型/插件配置为无效租户开关。来源与补丁纳入同一 UI 同步账本。
 
 固定 Web 组件版本 `0.1.7-rc.1` / `46a7f68b0922371ce7144b668b90e377d8e799f4`；Worker 引擎仍为 `0.1.5-rc.3`。官方 DockLayout、PDF 发布组件、CodeBlock 直接使用；员工树因原生 WorkspaceBrowser 固定工作区管理菜单和缺少员工轨配置，文件树因宿主 cwd/RPC 接口不适用于对象存储，取原生组件源码并记录最小适配。原生 store、折叠、标签/分栏、目录生命周期与缩放不另写一套。完整插件验证、实际文件结果、边界与回退见 [工作台复用记录](../features/native-workbench/README.md)。
 
@@ -80,7 +80,7 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 员工已配置 `cloud.mcp.call` 即可为当前用户连接应用，不再先要求管理员创建连接、配置工具矩阵或重发员工。登录复用原生 User Questions 和既有持久化等待：完成后续跑原任务，等待释放 Worker，登录答案不等于批准远程写操作。用户可以断开、恢复或删除自己的连接；删除个人连接清除服务端凭据，共享连接只影响当前成员。界面不把排队或发现失败显示为连接成功。
 
-旧 `client_kind=sdk` 连接继续保留原工具名、已冻结任务和审批兼容；新托管连接使用 `dsh`。只有旧连接与在途任务均迁移、名称与摘要对应关系验收后，才删除旧 SDK transport。上游直接提供宿主 fetch/authProvider 与禁重连配置后，移除本补丁。独立「已连接应用」页面与任务内登录已接入；统一 Settings 菜单由 MET-159 PR5 与 MET-160 界面汇合。验收范围及第三方账号限制见 [PR4 记录](allrice-2.0/met159-managed-connections.md)。
+旧 `client_kind=sdk` 连接继续保留原工具名、已冻结任务和审批兼容；新托管连接使用 `dsh`。只有旧连接与在途任务均迁移、名称与摘要对应关系验收后，才删除旧 SDK transport。上游直接提供宿主 fetch/authProvider 与禁重连配置后，移除本补丁。独立「已连接应用」页面与任务内登录已接入；MET-159 PR5 已将同一连接组件接入 MET-160 原生 Settings。成员可直接查看、登录、断开和删除；能力面板区分可按需建连与具体账号的实际连接状态。详见 [PR5 记录](allrice-2.0/met159-workbench-settings.md)。验收范围及第三方账号限制见 [PR4 记录](allrice-2.0/met159-managed-connections.md)。
 
 ## MET-157 Office 1.3.1：原生流程已接入（2026-09-24）
 

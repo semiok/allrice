@@ -8,6 +8,8 @@ import { officePreview } from '@allrice/office-runtime';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
+  McpConnectionSchema,
+  type McpConnection,
   OfficeRenderResponseSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
@@ -208,6 +210,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expectedGeneration?: number;
       }>,
       messageInputs: [] as Array<{ text: string; attachmentIds: string[] }>,
+      connections: [] as McpConnection[],
+      connectionReads: 0,
+      connectionActions: [] as string[],
       readinessError: false,
       readinessWrongScope: false,
       readinessDelay: null as Promise<void> | null,
@@ -342,6 +347,26 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           return answer({ ok: true });
         }
       }
+      if (path === '/api/v1/connections') {
+        if (route.request().method() === 'PATCH') {
+          const input = route.request().postDataJSON();
+          expect(input.workspaceId).toBe(state.workspace);
+          const connection = state.connections.find(
+            (c) => c.id === input.connectionId,
+          )!;
+          state.connectionActions.push(input.action);
+          if (input.action === 'disconnect') connection.disconnected = true;
+          if (input.action === 'reconnect') connection.disconnected = false;
+          if (input.action === 'delete') {
+            connection.disconnected = true;
+            connection.removed = true;
+          }
+          return answer({ connection });
+        }
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        state.connectionReads++;
+        return answer({ connections: state.connections });
+      }
       if (route.request().method() !== 'GET') {
         writes.push(path);
         return answer({}, 500);
@@ -468,7 +493,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
       if (path === '/api/v1/workspace/monthly-quota') {
-        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        // A completed turn may still have a read in flight for the old scope.
+        // Model the server denying it after a workspace switch, rather than
+        // throwing inside Playwright's asynchronous route handler.
+        if (url.searchParams.get('workspaceId') !== state.workspace)
+          return answer({ error: { code: 'authorization_denied' } }, 403);
         return answer({
           organizationId: org,
           workspaceId: state.workspace,
@@ -1173,10 +1202,33 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it.each([390, 1440])(
-    'MET160 native settings holds account and connection screens, preserves drafts and restores focus at width %s',
-    async (width) => {
-      const f = await fixture({ width, tenantAdmin: true });
+  it.each([
+    { width: 390, tenantAdmin: false },
+    { width: 1440, tenantAdmin: false },
+    { width: 1440, tenantAdmin: true },
+  ])(
+    'MET159 native settings works without admin configuration, preserves drafts and restores focus (%o)',
+    async ({ width, tenantAdmin }) => {
+      const f = await fixture({ width, tenantAdmin });
+      f.state.connections = [
+        McpConnectionSchema.parse({
+          id: id(70),
+          definitionId: id(71),
+          workspaceId: workspace,
+          name: '工作资料',
+          endpoint: 'https://mcp.example.test/mcp',
+          enabled: true,
+          revision: 1,
+          credentialConfigured: false,
+          credentialReference: 'synthetic',
+          managed: true,
+          shared: false,
+          discoveryState: 'error',
+          discoveryCode: 'MCP_AUTH_REQUIRED',
+          checkedAt: null,
+          tools: [],
+        }),
+      ];
       try {
         const composer = f.page.getByRole('textbox', { name: '消息' });
         await composer.fill('保留聊天草稿');
@@ -1201,34 +1253,54 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: `/tmp/met160-settings-account-${width}.png`,
         });
         await dialog
-          .getByRole('button', { name: 'MCP 连接', exact: true })
+          .getByRole('button', { name: '已连接应用', exact: true })
+          .click();
+        await dialog.getByText('需要登录', { exact: true }).waitFor();
+        await dialog.getByRole('button', { name: '填写连接凭据' }).click();
+        const credential = dialog.getByLabel('应用访问令牌');
+        await credential.fill('synthetic-unsaved-token');
+        await dialog
+          .getByRole('button', { name: '账号与用量', exact: true })
           .click();
         await dialog
-          .getByRole('heading', { name: '云端 MCP', exact: true })
-          .waitFor();
-        const name = dialog
-          .getByRole('textbox', { name: '连接名称', exact: true })
-          .first();
-        await name.fill('尚未保存的连接');
-        await dialog
-          .getByRole('button', { name: '云端浏览器', exact: true })
+          .getByRole('button', { name: '我的电脑', exact: true })
           .click();
-        await dialog
-          .getByRole('button', { name: '创建精确站点授权' })
-          .waitFor();
-        await dialog
-          .getByRole('button', { name: '本地浏览器', exact: true })
-          .click();
-        await dialog
-          .getByRole('region', { name: '本地浏览器授权', exact: true })
-          .waitFor();
+        await dialog.getByRole('button', { name: '连接与管理电脑' }).waitFor();
         expect(
-          await dialog.getByRole('link', { name: '返回工作台' }).count(),
+          await dialog
+            .getByRole('button', { name: '云端浏览器', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await dialog
+            .getByRole('button', { name: '本地浏览器', exact: true })
+            .count(),
         ).toBe(0);
         await dialog
-          .getByRole('button', { name: 'MCP 连接', exact: true })
+          .getByRole('button', { name: '已连接应用', exact: true })
           .click();
-        expect(await name.inputValue()).toBe('尚未保存的连接');
+        expect(await credential.inputValue()).toBe('synthetic-unsaved-token');
+        const reads = f.state.connectionReads;
+        await f.page.clock.install();
+        await f.page.clock.runFor(31_000);
+        expect(f.state.connectionReads).toBe(reads);
+        await dialog
+          .getByRole('button', { name: '断开连接', exact: true })
+          .click();
+        await dialog.getByText('已断开', { exact: true }).waitFor();
+        expect(await credential.count()).toBe(0);
+        await dialog
+          .getByRole('button', { name: '重新连接', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '删除连接', exact: true })
+          .click();
+        await dialog.getByText('还没有连接应用。', { exact: false }).waitFor();
+        expect(f.state.connectionActions).toEqual([
+          'disconnect',
+          'reconnect',
+          'delete',
+        ]);
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= innerWidth,
@@ -1268,6 +1340,57 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+
+  it('MET159 closes personal settings and discards credential drafts when a refreshed workspace changes viewer', async () => {
+    const f = await fixture({ running: true });
+    try {
+      await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
+      f.state.connections = [
+        McpConnectionSchema.parse({
+          id: id(70),
+          definitionId: id(71),
+          workspaceId: workspace,
+          name: '上一位用户的应用',
+          endpoint: 'https://mcp.example.test/mcp',
+          enabled: true,
+          revision: 1,
+          credentialConfigured: false,
+          credentialReference: 'synthetic',
+          managed: true,
+          shared: false,
+          discoveryState: 'error',
+          discoveryCode: 'MCP_AUTH_REQUIRED',
+          checkedAt: null,
+          tools: [],
+        }),
+      ];
+      await f.page.getByRole('button', { name: '设置', exact: true }).click();
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      await settings
+        .getByRole('button', { name: '已连接应用', exact: true })
+        .click();
+      await settings.getByRole('button', { name: '填写连接凭据' }).click();
+      await settings.getByLabel('应用访问令牌').fill('synthetic-private-draft');
+      f.state.viewer = id(50);
+      f.state.workspace = id(51);
+      f.state.connections = [];
+      f.finishRun();
+      await expect.poll(() => settings.count()).toBe(0);
+      await f.page.getByRole('button', { name: '设置', exact: true }).click();
+      await settings
+        .getByRole('button', { name: '已连接应用', exact: true })
+        .click();
+      await settings.getByText('还没有连接应用。', { exact: false }).waitFor();
+      expect(await settings.getByLabel('应用访问令牌').count()).toBe(0);
+      expect(await settings.getByText('上一位用户的应用').count()).toBe(0);
+      expect(f.state.connectionActions).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
 
   it.each([false, true])(
     'shows ordinary task timing on mobile with workbench disabled=%s, refreshes server waits and recovers from a failed read',
@@ -1853,9 +1976,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
       const card = dialog.locator('[data-capability="local_files"]');
-      await card
-        .getByRole('button', { name: '打开 Bridge 下载与配对' })
-        .click();
+      await card.getByRole('button', { name: '连接与管理电脑' }).click();
       const bridge = f.page.getByRole('dialog', { name: '本地工作区' });
       await bridge.waitFor();
       expect(
@@ -1955,37 +2076,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         c.id === 'cloud_mcp'
           ? {
               ...c,
-              state: 'needs_authorization',
-              reason: 'connection_grant_missing',
-              action: 'mcp_settings',
-              responsibleRole: 'tenant_admin',
+              state: 'ready',
+              reason: 'connection_on_demand',
+              action: 'compose',
+              responsibleRole: 'user',
+              releaseEnabled: true,
             }
           : c,
       );
-      await f.page
-        .getByRole('button', { name: '能力与环境', exact: true })
-        .click();
+      const entry = f.page.getByRole('button', {
+        name: '能力与环境',
+        exact: true,
+      });
+      await entry.click();
       const dialog = f.page.getByRole('dialog', { name: '能力与环境' });
-      await dialog.getByText(/核对时间/).waitFor();
       const mcp = dialog.locator('[data-capability="cloud_mcp"]');
+      await mcp.getByRole('button', { name: '准备应用连接任务' }).waitFor();
       expect(await mcp.getByRole('link').count()).toBe(0);
-      f.state.canAdminister = true;
-      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
-      const settings = mcp.getByRole('link', { name: /打开配置/ });
-      await settings.waitFor();
-      expect(await settings.getAttribute('href')).toBe(
-        `/workspace/mcp?workspaceId=${workspace}`,
-      );
-      expect(await settings.getAttribute('target')).toBe('_blank');
-      f.state.capabilities = f.state.capabilities.map((c) =>
-        c.id === 'cloud_mcp'
-          ? { ...c, state: 'ready', reason: 'ready', action: 'compose' }
-          : c,
-      );
-      await dialog.getByRole('button', { name: '刷新能力状态' }).click();
       await mcp
-        .getByRole('button', { name: '准备云端 MCP 连接器任务' })
-        .waitFor();
+        .getByRole('button', { name: '已连接应用', exact: true })
+        .click();
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      await settings.getByText('还没有连接应用。', { exact: false }).waitFor();
+      expect(await dialog.count()).toBe(0);
+      await f.page.keyboard.press('Escape');
+      await entry.click();
+      await mcp.getByRole('button', { name: '准备应用连接任务' }).waitFor();
       f.state.readinessError = true;
       await dialog.getByRole('button', { name: '刷新能力状态' }).click();
       await dialog

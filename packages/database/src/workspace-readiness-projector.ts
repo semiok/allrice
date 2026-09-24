@@ -273,8 +273,9 @@ export function projectWorkspacePrerequisites(
       if (environment === 'ungranted')
         add('needs_authorization', 'grant_missing', 'tenant_admin', action);
     }
-    const connection =
-      id === 'cloud_mcp' ? f.cloudMcp : id === 'local_mcp' ? f.localMcp : null;
+    // Published cloud tools can establish a member's connection in the task.
+    // A private account's login state is not a platform capability prerequisite.
+    const connection = id === 'local_mcp' ? f.localMcp : null;
     if (connection && connection !== 'ready') {
       const reason =
         connection === 'missing'
@@ -300,7 +301,16 @@ export function projectWorkspacePrerequisites(
       add('needs_configuration', 'provider_unsupported', 'tenant_admin');
     return reasons.length
       ? reasons
-      : [result('ready', 'ready', 'user', 'compose')];
+      : [
+          result(
+            'ready',
+            id === 'cloud_mcp' && f.cloudMcp !== 'ready'
+              ? 'connection_on_demand'
+              : 'ready',
+            'user',
+            'compose',
+          ),
+        ];
   });
 }
 
