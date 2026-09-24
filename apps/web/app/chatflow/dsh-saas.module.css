@@ -1186,6 +1186,15 @@ header.conversationHeader::after {
   text-overflow: ellipsis;
 }
 
+div.composerTools {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.composerTrailing {
+  max-width: 100%;
+}
+
 .composerStatus {
   display: flex;
   width: 100%;
@@ -1200,9 +1209,10 @@ header.conversationHeader::after {
 
 .composerStatusLeft {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
-  gap: 10px;
+  gap: 2px 10px;
 }
 
 .composerStatus .localWorkspaceStatus {

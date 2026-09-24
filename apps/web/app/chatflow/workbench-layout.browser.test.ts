@@ -1212,6 +1212,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await dragTo(30);
       await expect.poll(panelWidth).toBe(1008); // 70vw at 1440px.
       expect(await splitter.getAttribute('aria-valuenow')).toBe('1008');
+      const center = (await f.page.locator('main > section').boundingBox())!;
+      for (const control of [
+        f.page.getByRole('button', { name: '添加文件', exact: true }),
+        f.page.getByRole('combobox', { name: '工作模式', exact: true }),
+        f.page.getByRole('combobox', { name: '上传文件可见范围' }),
+        f.page.getByRole('button', { name: '发送', exact: true }),
+      ]) {
+        const box = (await control.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(center.x);
+        expect(box.x + box.width).toBeLessThanOrEqual(center.x + center.width);
+      }
       expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
       await splitter.dblclick({ position: { x: 4, y: 100 } });
       await expect.poll(panelWidth).toBe(547);

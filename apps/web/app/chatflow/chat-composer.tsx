@@ -173,7 +173,7 @@ export function ChatComposer({
           value={draft}
         />
         <div className={inputUi.row}>
-          <div className={inputUi.tools}>
+          <div className={`${inputUi.tools} ${styles.composerTools}`}>
             <div className={styles.attachmentMenuAnchor}>
               <button
                 aria-expanded={attachmentMenuOpen}
@@ -243,7 +243,7 @@ export function ChatComposer({
               <option value="workspace">工作区公开</option>
             </select>
           </div>
-          <div className={inputUi.trailing}>
+          <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
             <span className={styles.providerChip}>{providerLabel}</span>
             <button
               aria-label="发送"
