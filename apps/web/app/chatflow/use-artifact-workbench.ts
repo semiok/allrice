@@ -182,10 +182,7 @@ export function useArtifactWorkbench({
             : preserveCurrent
               ? { ...current.selection, explicit: true }
               : current.selection,
-          noticeId:
-            requested || current.selection.id === current.noticeId
-              ? null
-              : current.noticeId,
+          noticeId: requested === current.noticeId ? null : current.noticeId,
         };
       });
       if (!preserveCurrent)
