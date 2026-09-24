@@ -1,4 +1,8 @@
-import { runtimeFeatureEnabled } from '@allrice/contracts';
+import {
+  OfficeExportSchema,
+  NativeOfficeExportSchema,
+  runtimeFeatureEnabled,
+} from '@allrice/contracts';
 import {
   allRiceToolManifest,
   RuntimeLocalCommandToolInputSchema,
@@ -155,6 +159,11 @@ export const riceToolDefinitions = [
       properties: {
         objectId: { type: 'string', format: 'uuid' },
         maxCharacters: { type: 'integer', minimum: 1000, maximum: 300000 },
+        includeStructure: {
+          type: 'boolean',
+          description:
+            'Office 编辑前设为 true，返回段落、实际页序或工作表坐标与公式，以及源文件 checksum。',
+        },
       },
       required: ['objectId'],
       additionalProperties: false,
@@ -377,6 +386,16 @@ export const riceToolDefinitions = [
           ],
         },
         content: { type: 'string', minLength: 1, maxLength: 200000 },
+        python: {
+          ...z.toJSONSchema(NativeOfficeExportSchema),
+          description:
+            'Office 默认路径：执行 DSH 原生 Python 文档流程。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
+        },
+        office: {
+          ...z.toJSONSchema(OfficeExportSchema),
+          description:
+            '旧版冻结员工包兼容参数。当前 Office 技能使用 python 原生流程。',
+        },
         parentObjectId: {
           type: 'string',
           format: 'uuid',
@@ -388,7 +407,12 @@ export const riceToolDefinitions = [
           description: '相对上一版的简短变更说明。',
         },
       },
-      required: ['fileName', 'format', 'content'],
+      required: ['fileName', 'format'],
+      oneOf: [
+        { required: ['content'] },
+        { required: ['python'] },
+        { required: ['office'] },
+      ],
       additionalProperties: false,
     },
   },

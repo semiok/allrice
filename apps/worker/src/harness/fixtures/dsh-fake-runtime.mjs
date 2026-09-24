@@ -255,13 +255,13 @@ lines.on('line', (line) => {
     text = 'tool-finished';
   } else if (prompt.includes('use-tool-with-preamble')) {
     text =
-      'I will check that now.\n<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';
+      'I will check that now.\n<allrice_tool_call>{"id":"call-1","name":"workspace.file.read","arguments":{"objectId":"00000000-0000-4000-8000-000000000001"}}</allrice_tool_call>';
   } else if (prompt.includes('use-tool-with-postamble')) {
     text =
-      '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>I will summarize after the tool returns.';
+      '<allrice_tool_call>{"id":"call-1","name":"workspace.file.read","arguments":{"objectId":"00000000-0000-4000-8000-000000000001"}}</allrice_tool_call>I will summarize after the tool returns.';
   } else if (prompt.includes('use-tool')) {
     text =
-      '<allrice_tool_call>{"id":"call-1","name":"workspace.file.list","arguments":{"limit":1}}</allrice_tool_call>';
+      '<allrice_tool_call>{"id":"call-1","name":"workspace.file.read","arguments":{"objectId":"00000000-0000-4000-8000-000000000001"}}</allrice_tool_call>';
   } else if (prompt.includes('show-env')) {
     text = JSON.stringify({
       provider: initializedProvider,

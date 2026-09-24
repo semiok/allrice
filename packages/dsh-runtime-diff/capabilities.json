@@ -37,6 +37,13 @@
           "name": "旧会话与上下文恢复",
           "detail": "已验证旧日志副本迁移、原生压缩和会话重启，保留历史任务事实。",
           "status": "随版本生效"
+        },
+        {
+          "id": "office",
+          "name": "Office 文档阅读、编辑与预览",
+          "detail": "单一 Office Skill 默认复用 DSH 原生格式指南、Python 文档库工作流程与检查脚本；可编辑 Word 样式和页眉、Excel 条件格式与图表、PPT 图表和讲稿。Allrice 补充文件授权、版本下载、普通/共享公式重算与页面预览；数组公式/外链数据暂未检查，渲染不代表已核对排版。实际接入与验收见 MET-157。",
+          "status": "按租户启用",
+          "action": "employees"
         }
       ]
     },
@@ -82,12 +89,6 @@
       "title": "上游前瞻",
       "description": "以下来自已复核的 0.1.7-alpha.2，不属于当前已安装版本。",
       "items": [
-        {
-          "id": "office",
-          "name": "Office Skill",
-          "detail": "文档、表格和演示文稿的工作方法与检查资源，可优先评估复用。",
-          "status": "alpha.2 · 待验证"
-        },
         {
           "id": "ptc",
           "name": "PTC Workflow",

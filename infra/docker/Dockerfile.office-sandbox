@@ -1,0 +1,9 @@
+FROM node:22.23.2-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/office \
+    && /opt/office/bin/pip install --no-cache-dir \
+       python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 pandas==2.3.3
+COPY skills/office/scripts/check_office.py /opt/dsh-office/scripts/check_office.py
+COPY skills/office/references/LICENSE.dsh /opt/dsh-office/LICENSE
+USER 65532:65532

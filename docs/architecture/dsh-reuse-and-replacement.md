@@ -4,7 +4,29 @@
 
 运行事实仍以 [upstream.json](../../apps/worker/dsh/upstream.json)、[distribution.json](../../apps/worker/dsh/distribution.json)、[compatibility.json](../../apps/worker/dsh/compatibility.json)、[patch-ledger.json](../../apps/worker/dsh/patch-ledger.json) 和依赖锁为准。本页不控制发行渠道、工具授权或候选发布。
 
-## 首要原则：升级能力默认开放
+## 首要原则：DSH 原生能力优先复用
+
+2026-09-24 用户在 Office 接入复盘中再次明确：**DSH 已有的能力，先复用其原生实现、脚本和工作流程；Allrice 只补实际验证出的缺口与必需的产品接入。不能在没有验证原生路径之前，先写一套同类实现。**
+
+这条原则适用于所有后续 DSH 升级、能力接入和替换工单，包括 MET-144 / MET-145 / MET-146 的 Subagent、Team 复用，MET-156 下挂的 Office、PTC 等 Skill，以及 MET-155 架构改造。历史工单中的自有实现或“本轮不接入”结论，不能代替新一轮原生复用验证。
+
+### 每个复用工单的执行顺序
+
+1. **先跑原生最小闭环。** 找到官方包、脚本和示例，准备其要求的运行环境，用一个真实任务验证输入、执行和交付。以最小可运行实验开始，控制时间和 token 投入；不先搭完整自有框架或做大范围重构。
+2. **区分接入工作与能力缺口。** 租户身份、输入输出映射、文件保存、版本和界面属于 Allrice 接入责任，由薄适配完成。上游不认识 Allrice 的文件对象或业务 ID，不是重写上游能力的理由。缺依赖、缺执行工具或缺文件交付接线时，先补齐环境和接线。
+3. **复用可执行能力。** 优先保留原生提供器、脚本、工具和工作流程，尽量不修改上游资源。仅引用 Skill 文案后另写全部执行逻辑，必须如实标为“指导内容复用”，不能算作原生能力接入。不能为了适配自定义接口，提前缩减上游已经能完成的操作。
+4. **只对具体缺口补代码。** 自写前在工单记录固定上游版本、复现任务、实际失败或缺失行为，以及为什么简单适配不能满足要求。按证据选取最小补充范围；“更可控”“更符合现有架构”等笼统判断不能单独作为重写理由。上游发布版本是优先验证和复用的起点，接入后的真实结果仍需检查。
+5. **按用户任务验收并开放。** 验收实际文件和行为，区分完整完成、部分完成和运行失败，不能仅以 CI 通过、文件存在或运行状态 succeeded 认定完成。接入能力沿用下面的默认开放原则；有重复旧实现时，同步明确替换范围并清理，兼容代码需注明仍承担的责任和退役条件。
+
+工单与 PR 统一写清五项：**复用的上游包与版本、原生实测结果、Allrice 必需适配、证据明确的补充或自写部分、被替换的旧实现与用户端验收结果。** 不增加重复审批或新的后台开关。
+
+### Office 复盘与纠正方向
+
+MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化接口重新实现文档操作。在没有先完成原生对照的情况下扩大自有实现，增加了开发和验证成本，也限制了页眉修改、追加格式化内容、条件格式、原图表更新和新增幻灯片等操作。这是需要纠正的实施选择，不能作为后续 Skill 的默认接入模板。
+
+2026-09-24 的相同模型、相同输入小样本对照中，基础任务两边均完成，Allrice 用时 108.6 秒、原生用时 213.7 秒；复杂任务原生完成所要求的文档操作，当前 Allrice 仅部分完成。原生复杂 Excel 仍有公式缓存为空、打印分页溢出的问题，属于有实测依据的补充范围。纠正方向是让原生文档工作流程承担开放式操作，复用现有文件交付、版本、公式重算和预览；本次实验不代表已完成租户原生接入，也不证明原生在所有任务上更快。下文 PR1/PR2/PR3 记录保留当时实现事实，不构成继续扩大重复实现的依据。
+
+## 默认开放原则：升级能力默认开放
 
 2026-09-24 用户确认，作为测试阶段每次 DSH 升级的持续执行原则：
 
@@ -37,6 +59,32 @@
 状态含义：**保留**＝上游没有承担对应 Allrice 责任；**可复用待验证**＝有重叠但还不能删旧路径；**适配后替换**＝已找到替代接口，待通过同等行为验证；**已替换**＝删除旧路径的 PR 和证据齐全；**明确不接入**＝本轮不启用该执行面。来源存在不等于产品已启用，也不等于验证通过。本轮仅图片准入后的引用转换标记为“已替换”；所属生命周期适配整体保留。
 
 以下记录保留 MET-154 当时的实现与验收事实，其中“本轮不接入”“临时配置已恢复”不构成后续默认关闭的政策。后续升级和能力接入执行上面的“默认开放”原则。
+
+## MET-157 Office 1.3.1：原生流程已接入（2026-09-24）
+
+当前默认复用原样 DSH 格式指南、原样执行的检查脚本，以及 python-docx / openpyxl / pandas / python-pptx 工作流程。Allrice 仅接文件授权、隔离执行、版本下载、公式缓存与页面预览；旧 typed 编辑只保留历史冻结包兼容，不再并行扩写。三个旧切片已收敛为直接面向 main 的 PR #100，#98、#99 关闭并由它取代。
+
+真实租户已完成此前固定编辑接口不能完成的 Word 样式/页眉、Excel 条件格式/图表和 PPT 图表/新页/讲稿操作。最终 Excel v4 缓存 20/40/60/120、预览两页，图表完整同页。验收还定位并用 Docker init 修复既有预览服务的子进程回收问题；未增加自有回收器或改写文件内容。完整结果、失败与修复边界见 [原生接入验收](../features/office/native-validation.md)。下面 PR1–PR3 记录是历史事实，不再代表当前默认实现或合并路线。
+
+## MET-157 Office PR3 质量与预览（2026-09-24）
+
+Office 1.2.0 默认接入独立 LibreOffice 计算与页面渲染，继续复用 alpha.2 的“重算—检查—交付”工作方法；没有移植 DSH Shell，也不重新实现公式引擎。普通与共享公式的实际结果回填原 XLSX 缓存，Word/PPT 原字节保留，租户工作台直接显示页面与公式错误。保持单一 Skill 和现有文件/版本/鉴权链路；没有新增管理员开关。
+
+渲染子进程不能建立 IP 连接，不挂载租户凭据；预览按文件哈希缓存，重启后重建。数组/溢出公式及外链数据明确标为未检查。公式求值不代替业务核对，渲染成功不等于排版验收。真实 Dev 上传、原文件修改、公式求值、Word/PPT 成果交付、版本下载和预览重启恢复已通过，详见 [Dev 验收记录](../features/office/dev-validation.md)。保持 Office 默认开放；三个堆叠 PR 合并后再关闭 MET-157。
+
+## MET-157 Office PR2 复用复核（2026-09-24）
+
+继续固定 `00102833dfaee1da9f48a3a8eae9d34005a75218` / alpha.2 的 Office SOP；引擎仍为 rc.3。本次把“检查原文档、保留原包、定点修改、公式与缓存分开处理”的方法接入现有 document.read / export.create：单一 Office 1.1.0 默认提供 Word 原生表格、Excel 多表与公式、PPT 可编辑图表，以及原文件文字/单元格修改。没有新增后台能力开关；发布新员工版本后直接使用。
+
+执行仍复用 Allrice 已有 docx / ExcelJS / PptxGenJS / JSZip，增加固定版本 xmldom 作 XML 定点修改。没有复制或安装上游 Python 执行器，也没有另建文件库。实测二进制保留、权限、版本与恢复证据见 [Office README](../features/office/README.md)。公式重算、视觉验收和真实 Dev 闭环留在 PR3，不能用包结构成功替代。
+
+退役条件：由 Allrice 的薄适配把受控文件对象映射到原生任务输入，并把产物接回原文件与版本链；原生路径通过同一组二进制/权限/恢复回归后，替换重叠的本地格式适配器。不要求上游原生理解 Allrice 专有文件对象或租户模型，也不以缺少该接口为由继续重写文档能力。回退需同时恢复应用、Office 1.0.0 目录与员工已发布版本；历史文件与冻结包继续保留。
+
+## MET-157 Office 增量复用（2026-09-24）
+
+基于 main `5dddcc3` 开始单一 Office Skill 接入；#96、#97 已先合并且 main CI 4/4 通过。Office 1.3 改为原样复用固定 alpha.2 的三份格式指南和实际执行的检查脚本，补齐 Python 文档库与现有隔离沙箱接线，DSH 引擎和插件组合不变。新配置合并 document-analysis、structured-deliverable，已发布和在途包继续使用原内容；管理员选中后自动装配现有工具，没有新增 Office 开关。
+
+当前交付边界、来源、PR2/PR3 缺口和回退方法见 [Office README](../features/office/README.md)。旧入口只从新配置选择中退役；旧内容保留到所有历史版本与会话无需恢复之后，不能仅因新增 Office 就删除。当前默认通过原生 Python 工作流程编辑文件；Allrice 保留文件授权、版本、公式缓存和页面预览。旧 typed Office 编辑仅兼容历史冻结包，不再并行扩写。实际复用的是指南、检查脚本和文档库工作流程，未安装完整上游三技能提供器。
 
 ## 已登记的 10 项适配
 
@@ -132,19 +180,19 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 
 ## 值得复用的上游能力
 
-| 稳定 ID / 能力                     | 上游存在性与 Allrice 当前状态                                                                                | 决策、验收与退役条件                                                                                                                                                            |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cap-agent-team` / 协作开发        | [旧源码][old-team]已有 private Team 实验，rc.3 已公开发布；Allrice 未挂载 Team，已有受控 message/report/stop | 可复用待验证。优先 mailbox 幂等、版本 CAS、事件等待。只有同一候选测试/审查/交付链不退化才替换机制；不替代跨进程队列或上线 Teamwork 产品模式。                                   |
-| `cap-sdk-image` / 图片准入         | rc.3 [SDK][sdk]新增 encoded-image 准入；Allrice 已有附件桥接                                                 | 适配后替换。通过附件顺序、伪 MIME、超限及撤权路径，再删除重叠代码。                                                                                                             |
-| `cap-compaction` / 压缩            | 旧版已有 compaction；Allrice 已调用 `ctx.compaction.compactNow`，不是新能力                                  | 保留原生复用。验证新 [压缩策略][compaction]的安全区间、模型路由、手动 busy 拒绝和上下文投影；不自建摘要主循环。                                                                 |
-| `cap-plan-goal` / Plan、Goal       | [Plan][plan]、[Goal][goal]在旧版已有，Allrice 未启用它们的产品流程                                           | 明确不接入本轮运行面；研究 SOP/上下文表达。未来必须映射精确审批、权威时钟与取消，不另建自动重启循环。                                                                           |
-| `cap-session-reference` / 会话引用 | 旧版已有 [Session Reference][reference]；Allrice 使用授权后的历史检索                                        | 可复用待验证。引用解析可以借鉴，但必须证明租户隔离、会话 ACL、冻结 Skill 和只读范围，才能替换自有引用适配。                                                                     |
-| `cap-code-mode` / Code Mode        | 旧版已有 [tool presentation][presentation]；“代码式展示”不能等同执行沙箱                                     | 明确不接入本轮运行面。需区分展示、PTC 执行与本地命令权限；新执行权限另列产品范围。                                                                                              |
-| `cap-ptc` / PTC workflow           | [workflow-ptc][ptc]存在于 alpha.2，不在 rc.3 包组合                                                          | 明确不接入。可研究编排表达；Node VM 不是安全边界，文件策略不限制网络，总时限仍需调用方管理。须在既有隔离执行器中验证授权、取消、账本和计时，才讨论替代。                        |
-| `cap-office` / Office Skill        | [skill-office][office]在 alpha.2；Allrice 已有 DOCX/XLSX/PPTX 交付依赖                                       | 可复用待验证。优先通过冻结 SkillBundle 引用可审查的 SOP/结构检查器，不默认开放 Python/Shell；需审许可证/依赖、文档结构、视觉/公式和交付权限。结构通过不证明排版或公式计算正确。 |
-| `cap-landlock` / OS 文件限制       | rc.3 [sandbox-local][sandbox]有 Linux bwrap→Landlock 路线，旧源码也有相关后端                                | 可复用待验证。评估作为现有隔离内的附加限制；必须识别 partial enforcement、网络和内核共享边界，不能替换 VM/Bridge 授权。                                                         |
-| `cap-hooks` / Hooks                | [hook-protocol][hooks]及 Codex/Claude bridge 是实际包名，不能假定存在通用 `dsh-hooks` 包                     | 明确不作为授权门禁接入。失败通常不阻断、exit 2 才阻断，且执行依赖 shell；可学习事件扩展设计，Allrice 授权检查仍在 Broker 前。                                                   |
-| `cap-completion-wakeup` / 连续唤醒 | [alpha.2][alpha-release]修正连续后台/一次性助手完成后的默认唤醒上限；不推定 rc.3 已有该修复                  | 可复用待验证。逐次结果都需同一授权父节点与 durable delivery ID；验证长协作、取消、重复结算和用量，才删旧唤醒包装。                                                              |
+| 稳定 ID / 能力                     | 上游存在性与 Allrice 当前状态                                                                                | 决策、验收与退役条件                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cap-agent-team` / 协作开发        | [旧源码][old-team]已有 private Team 实验，rc.3 已公开发布；Allrice 未挂载 Team，已有受控 message/report/stop | 可复用待验证。优先 mailbox 幂等、版本 CAS、事件等待。只有同一候选测试/审查/交付链不退化才替换机制；不替代跨进程队列或上线 Teamwork 产品模式。                                                                                                                                                                                                                           |
+| `cap-sdk-image` / 图片准入         | rc.3 [SDK][sdk]新增 encoded-image 准入；Allrice 已有附件桥接                                                 | 适配后替换。通过附件顺序、伪 MIME、超限及撤权路径，再删除重叠代码。                                                                                                                                                                                                                                                                                                     |
+| `cap-compaction` / 压缩            | 旧版已有 compaction；Allrice 已调用 `ctx.compaction.compactNow`，不是新能力                                  | 保留原生复用。验证新 [压缩策略][compaction]的安全区间、模型路由、手动 busy 拒绝和上下文投影；不自建摘要主循环。                                                                                                                                                                                                                                                         |
+| `cap-plan-goal` / Plan、Goal       | [Plan][plan]、[Goal][goal]在旧版已有，Allrice 未启用它们的产品流程                                           | 明确不接入本轮运行面；研究 SOP/上下文表达。未来必须映射精确审批、权威时钟与取消，不另建自动重启循环。                                                                                                                                                                                                                                                                   |
+| `cap-session-reference` / 会话引用 | 旧版已有 [Session Reference][reference]；Allrice 使用授权后的历史检索                                        | 可复用待验证。引用解析可以借鉴，但必须证明租户隔离、会话 ACL、冻结 Skill 和只读范围，才能替换自有引用适配。                                                                                                                                                                                                                                                             |
+| `cap-code-mode` / Code Mode        | 旧版已有 [tool presentation][presentation]；“代码式展示”不能等同执行沙箱                                     | 明确不接入本轮运行面。需区分展示、PTC 执行与本地命令权限；新执行权限另列产品范围。                                                                                                                                                                                                                                                                                      |
+| `cap-ptc` / PTC workflow           | [workflow-ptc][ptc]存在于 alpha.2，不在 rc.3 包组合                                                          | 明确不接入。可研究编排表达；Node VM 不是安全边界，文件策略不限制网络，总时限仍需调用方管理。须在既有隔离执行器中验证授权、取消、账本和计时，才讨论替代。                                                                                                                                                                                                                |
+| `cap-office` / Office Skill        | [skill-office][office]，固定 `00102833dfaee1da9f48a3a8eae9d34005a75218` / alpha.2；运行引擎仍为 rc.3         | MET-157 PR1 复用 DOCX/XLSX/PPTX 工作方法为单一 Office Skill 的冻结内部资源，合并旧文档阅读与交付入口，默认启用现有读写链路；MIT 来源与改动见 [Office provenance](../../skills/office/references/provenance.md)。未引入上游 Python 执行器；PR2 已扩展原生表格/图表和定点原包编辑；PR3 已接入真实公式求值与租户页面预览，Dev 闭环验收单独记录，不把渲染成功当成排版正确。 |
+| `cap-landlock` / OS 文件限制       | rc.3 [sandbox-local][sandbox]有 Linux bwrap→Landlock 路线，旧源码也有相关后端                                | 可复用待验证。评估作为现有隔离内的附加限制；必须识别 partial enforcement、网络和内核共享边界，不能替换 VM/Bridge 授权。                                                                                                                                                                                                                                                 |
+| `cap-hooks` / Hooks                | [hook-protocol][hooks]及 Codex/Claude bridge 是实际包名，不能假定存在通用 `dsh-hooks` 包                     | 明确不作为授权门禁接入。失败通常不阻断、exit 2 才阻断，且执行依赖 shell；可学习事件扩展设计，Allrice 授权检查仍在 Broker 前。                                                                                                                                                                                                                                           |
+| `cap-completion-wakeup` / 连续唤醒 | [alpha.2][alpha-release]修正连续后台/一次性助手完成后的默认唤醒上限；不推定 rc.3 已有该修复                  | 可复用待验证。逐次结果都需同一授权父节点与 durable delivery ID；验证长协作、取消、重复结算和用量，才删旧唤醒包装。                                                                                                                                                                                                                                                      |
 
 本表条目由 MET-154 完成本轮复核，后续能力模块/Skill 封装由 MET-155 承接。按首要原则推进接入与默认开放，不因模块化尚未完成而推迟可用能力交付。暂停或回退针对具体问题，保留正在使用的依赖、数据和已开放的其他能力。
 
@@ -184,3 +232,7 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 [hooks]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/hooks/hook-protocol/README.md
 [alpha-release]: https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-alpha.2
 [attachment-admission]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/attachment/attachment/src/index.ts
+
+### Office 原生工具接入补齐（MET-157 PR3）
+
+`allrice-office-native-v1`：将 `workspace.file.list` 接入现有 DSH 原生工具循环；补齐 `workspace.document.read.includeStructure` 与 `workspace.export.create.office`，`content` 与 `office` 二选一。使用现有 DSH 注册接口与 Allrice Broker，不增加 Agent 循环或权限开关。真实固定版本 DSH 子进程回归覆盖文件列表返回、结构读取、三种格式生成和原文件定点编辑，防止仅后端支持而模型接口缺失。

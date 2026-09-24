@@ -122,6 +122,9 @@ importers:
       '@allrice/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@allrice/office-runtime':
+        specifier: workspace:*
+        version: link:../../packages/office-runtime
       '@allrice/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -168,6 +171,9 @@ importers:
       '@allrice/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@allrice/office-runtime':
+        specifier: workspace:*
+        version: link:../../packages/office-runtime
       '@allrice/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -315,6 +321,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@4.4.3)
+      '@xmldom/xmldom':
+        specifier: 0.9.12
+        version: 0.9.12
       cheerio:
         specifier: 1.1.2
         version: 1.1.2
@@ -396,6 +405,12 @@ importers:
       '@earendil-works/pi-ai':
         specifier: 0.85.1
         version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(ws@8.21.3)(zod@4.4.3)
+
+  packages/office-runtime:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/storage:
     dependencies:
@@ -3847,6 +3862,10 @@ packages:
   '@xmldom/xmldom@0.8.15':
     resolution: {integrity: sha512-/5NV/vDALVFDXgLmfsy9TRCBlKwO2LNBFzpzvb9iIj+jR+eSc6DLYYvVOdivT/jm7MtU6TebYuRmzEOI7w40UA==}
     engines: {node: '>=10.0.0'}
+
+  '@xmldom/xmldom@0.9.12':
+    resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==}
+    engines: {node: '>=14.6'}
 
   '@xterm/headless@6.0.0':
     resolution: {integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==}
@@ -9863,6 +9882,8 @@ snapshots:
       '@vscode/ripgrep-win32-x64': 1.18.0
 
   '@xmldom/xmldom@0.8.15': {}
+
+  '@xmldom/xmldom@0.9.12': {}
 
   '@xterm/headless@6.0.0': {}
 

@@ -70,6 +70,11 @@ export async function ensureStorageDirectory() {
 export async function prepareDevelopmentDatabase() {
   loadDevelopmentEnvironment();
 
+  // Plain Node DSH subprocesses consume the same compiled Office contracts
+  // as production. The Web/Worker tsx aliases do not apply in that process.
+  console.info('[setup] Building shared runtime contracts...');
+  run(pnpmCommand, ['--filter', '@allrice/contracts', 'build']);
+
   if (!process.env.DATABASE_URL) {
     if (!commandWorks('docker', ['compose', 'version'])) {
       throw new Error(
@@ -122,4 +127,37 @@ export function spawnDevelopmentServices() {
     env: process.env,
     stdio: 'inherit',
   });
+}
+
+export async function prepareOfficeRenderer() {
+  loadDevelopmentEnvironment();
+  if (!process.env.ALLRICE_OFFICE_RENDERER_URL) {
+    console.info('[setup] Starting Office preview and formula calculation...');
+    run('docker', [
+      'compose',
+      '--project-name',
+      'allrice-dev',
+      '--file',
+      'compose.dev.yaml',
+      'up',
+      '--detach',
+      '--build',
+      '--wait',
+      '--wait-timeout',
+      '120',
+      'office-renderer',
+    ]);
+    process.env.ALLRICE_OFFICE_RENDERER_URL = 'http://127.0.0.1:3112';
+  }
+  const response = await fetch(
+    new URL('/health', process.env.ALLRICE_OFFICE_RENDERER_URL),
+    {
+      signal: globalThis.AbortSignal.timeout(5000),
+      redirect: 'error',
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      'Office renderer is not ready. Check ALLRICE_OFFICE_RENDERER_URL.',
+    );
 }

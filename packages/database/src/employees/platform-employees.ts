@@ -5,6 +5,7 @@ import type postgres from 'postgres';
 import {
   PlatformEmployeeDefinitionSchema,
   assembleEmployeeCapabilities,
+  upgradeEmployeeSkillBindings,
   rapidEmployeeIterationEnabled,
   employeePublicationPolicy,
   PlatformEmployeeAuditEventSchema,
@@ -33,6 +34,7 @@ import {
 import { employeeManifest } from './employee-config.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
+import { platformSkillReplacements } from '../platform-content/replacements.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
 import { enablePublishedDevelopmentCloud } from './development-cloud-grants.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
@@ -383,9 +385,12 @@ export async function listPlatformEmployeeWorkspaces() {
   `;
 }
 
-export async function listPlatformNativeSkills() {
-  const sql = getDatabase();
-  return sql<
+export async function listPlatformNativeSkills(
+  sql: postgres.Sql | postgres.TransactionSql = getDatabase(),
+) {
+  const replacements = await platformSkillReplacements(sql);
+  const replaced = new Set([...replacements.values()].flat());
+  const skills = await sql<
     {
       id: string;
       name: string;
@@ -416,6 +421,12 @@ export async function listPlatformNativeSkills() {
     from allrice_platform_dsh_skills
     order by enabled desc, name, id
   `;
+  return skills
+    .filter((skill) => !replaced.has(skill.id))
+    .map((skill) => ({
+      ...skill,
+      replaces: replacements.get(skill.id) ?? [],
+    }));
 }
 
 function testRunSnapshot(row: TestRunRow) {
@@ -1113,9 +1124,7 @@ export async function savePlatformEmployeeDraft(
     UpdatePlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
   const skills = rawDefinition.capabilities.nativeSkillIds.length
-    ? await sql<{ id: string; requiredToolRefs: string[] }[]>`
-        select id, required_tool_refs as "requiredToolRefs" from allrice_platform_dsh_skills
-        where id in ${sql(rawDefinition.capabilities.nativeSkillIds)}`
+    ? await listPlatformNativeSkills(sql)
     : [];
   const definition = PlatformEmployeeDefinitionSchema.parse({
     ...assembleEmployeeCapabilities(rawDefinition, skills),
@@ -1203,9 +1212,17 @@ export async function compilePlatformEmployee(
       throw new Error('platform_employee_published_revision_immutable');
     if (!['draft', 'testing'].includes(revision.status))
       throw new Error('platform_employee_draft_unavailable');
-    const definition = PlatformEmployeeDefinitionSchema.parse(
+    const rawDefinition = PlatformEmployeeDefinitionSchema.parse(
       revision.definition,
     );
+    const upgraded = upgradeEmployeeSkillBindings(
+      rawDefinition,
+      await listPlatformNativeSkills(transaction),
+    );
+    const definition = PlatformEmployeeDefinitionSchema.parse({
+      ...upgraded,
+      securityPolicy: rawDefinition.securityPolicy,
+    });
     const errors: string[] = [];
     const warnings: string[] = [];
     const modelProblem = employeeModelPolicyProblem(definition.modelPolicy);
@@ -1368,6 +1385,7 @@ export async function compilePlatformEmployee(
     await transaction`
       update allrice_platform_employee_revisions
       set status = ${errors.length === 0 ? 'testing' : 'draft'},
+        definition = ${transaction.json(definition)}, checksum = ${checksum(definition)},
         runtime_profile = ${profile ? transaction.json(profile) : null},
         validation_report = ${transaction.json(report)}
       where id = ${revision.id}

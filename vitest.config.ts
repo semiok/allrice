@@ -13,6 +13,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/office-runtime': fileURLToPath(
+        new URL('./packages/office-runtime/src/index.ts', import.meta.url),
+      ),
       '@allrice/browser-control': fileURLToPath(
         new URL('./packages/browser-control/src/index.ts', import.meta.url),
       ),

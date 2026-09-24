@@ -75,11 +75,15 @@ export function integratedCapabilityStatus(
 ): string {
   const facts = runtimeCapabilityFacts(data);
   if (!facts.measured) return '运行状态未知';
-  if (id === 'assistants' || id === 'development') {
+  const office = facts.availableSkills.find((skill) => skill.name === 'office');
+  if (id === 'office' && !office) return 'Office Skill 尚未同步或已停用';
+  if (id === 'assistants' || id === 'development' || id === 'office') {
     const required: readonly string[] =
-      id === 'development'
-        ? developmentWorkflowToolNames
-        : ['assistant.delegate', 'assistant.report'];
+      id === 'office'
+        ? office!.requiredToolRefs
+        : id === 'development'
+          ? developmentWorkflowToolNames
+          : ['assistant.delegate', 'assistant.report'];
     const enabled = (tools: { name: string; enabled: boolean }[]) =>
       required.every((name) =>
         tools.some((tool) => tool.name === name && tool.enabled),
@@ -90,13 +94,19 @@ export function integratedCapabilityStatus(
     if (enabledWorkers === 0) return 'Worker 功能开关未开启';
     if (enabledWorkers !== facts.workers.length) return 'Worker 配置不一致';
     if (!enabled(data!.webTools)) return 'Web 功能开关未开启';
-    const publications = data!.publications.filter((item) =>
-      required.every((name) => item.toolNames.includes(name)),
+    const publications = data!.publications.filter(
+      (item) =>
+        required.every((name) => item.toolNames.includes(name)) &&
+        (id !== 'office' || item.skillIds.includes(office!.id)),
     );
     if (!publications.length) return '尚未发布到租户员工';
-    const policyEnabled = publications.filter(
-      (item) => item.policyEnabled && item.policyMode === 'execute',
-    );
+    // Office uses managed storage tools, not the assistant/command execution policy.
+    const policyEnabled =
+      id === 'office'
+        ? publications
+        : publications.filter(
+            (item) => item.policyEnabled && item.policyMode === 'execute',
+          );
     if (!policyEnabled.length) return '已发布 · 租户执行策略未开启';
     return `已发布到 ${new Set(policyEnabled.map((item) => item.workspaceId)).size} 个工作区 · 任务内校验授权`;
   }

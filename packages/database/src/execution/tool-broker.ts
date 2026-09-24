@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 
 import {
+  ArtifactSourceFileSchema,
   DeliverableVersionSchema,
   DeliveryFormatSchema,
   ObjectKeySchema,
@@ -9,6 +10,7 @@ import {
   authorizeExecution,
   makeObjectKey,
   type DeliveryFormat,
+  type ArtifactSourceFile,
   type ExecutionContext,
   type RequestContext,
   type StorageObject,
@@ -180,6 +182,36 @@ export async function getToolBrokerFile(
   return { object, fileName: row.file_name, visibility: row.visibility };
 }
 
+/** Recheck the exact source inside the publication transaction. The share lock
+ * keeps deletion/checksum/visibility changes from racing registration. */
+export async function assertToolBrokerSourceFile(
+  tx: TransactionSql,
+  context: ExecutionContext,
+  sourceInput: ArtifactSourceFile,
+  sessionId?: string,
+) {
+  const source = ArtifactSourceFileSchema.parse(sourceInput);
+  const [row] = await tx<(ResourceRow & { checksum: string })[]>`
+    select id, organization_id, workspace_id, owner_id, visibility, checksum
+    from allrice_storage_objects
+    where id=${source.objectId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId ?? null} and state='ready'
+    for share
+  `;
+  if (!row) throw new DataAccessError('not_found');
+  authorizeRead(context, 'storage_object', row);
+  if (row.checksum !== source.checksum) throw new Error('source_file_changed');
+  const [version] = await tx<{ object_id: string }[]>`
+    select object_id from allrice_deliverable_versions
+    where object_id=${source.objectId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId ?? null}
+      and owner_id=${context.policySnapshot.subjectId} and session_id=${sessionId ?? null}
+  `;
+  // An uploaded/shared template starts a new series; our own current-session
+  // deliverable continues its existing immutable version chain.
+  return { source, parentObjectId: version?.object_id };
+}
+
 export function createToolBrokerExportObject(input: {
   context: ExecutionContext;
   mediaType: string;
@@ -218,6 +250,7 @@ export async function registerToolBrokerExport(
     sessionId?: string;
     platformTestRunId?: string;
     parentObjectId?: string;
+    sourceFile?: ArtifactSourceFile;
     fileName: string;
     format: DeliveryFormat;
     changeSummary?: string;
@@ -271,6 +304,21 @@ export async function registerToolBrokerExport(
     } else {
       throw new DataAccessError('authorization_denied');
     }
+    const source = input.sourceFile
+      ? await assertToolBrokerSourceFile(
+          transaction,
+          input.context,
+          input.sourceFile,
+          input.sessionId,
+        )
+      : undefined;
+    if (
+      source &&
+      input.parentObjectId &&
+      input.parentObjectId !== source.parentObjectId
+    )
+      throw new Error('source_file_changed');
+    const requestedParent = source?.parentObjectId ?? input.parentObjectId;
     const quotas = await transaction<
       { limit_bytes: number | string; used_bytes: number | string }[]
     >`
@@ -308,14 +356,14 @@ export async function registerToolBrokerExport(
     let versionNumber = 1;
     let parentVersionId: string | null = null;
     let parentObjectId: string | null = null;
-    if (input.parentObjectId) {
+    if (requestedParent) {
       const parents = await transaction<
         { id: string; object_id: string; series_id: string }[]
       >`
         select version.id, version.object_id, version.series_id
         from allrice_deliverable_versions version
         join allrice_storage_objects object on object.id = version.object_id
-        where version.object_id = ${UuidSchema.parse(input.parentObjectId)}
+        where version.object_id = ${UuidSchema.parse(requestedParent)}
           and version.organization_id = ${input.context.organizationId}
           and version.workspace_id = ${workspaceId}
           and version.owner_id = ${ownerId}
@@ -368,6 +416,14 @@ export async function registerToolBrokerExport(
         )
       `;
     }
+    if (source)
+      await transaction`
+      insert into allrice_audit_events (organization_id, workspace_id, actor_id, action,
+        resource_type, resource_id, decision, reason, metadata)
+      values (${input.context.organizationId}, ${workspaceId}, ${ownerId}, 'artifact.source',
+        'deliverable_version', ${versions[0]!.id}, 'recorded', 'source_file_copy',
+        ${transaction.json({ sourceFile: source.source, objectId: input.object.id, runId: input.context.runId })})
+    `;
     return {
       id: versions[0]!.id,
       seriesId: versions[0]!.series_id,

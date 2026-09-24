@@ -46,6 +46,8 @@ docker compose config --quiet
 docker compose --project-name "${compose_project}" up --build --wait --wait-timeout 300
 
 wait_for_proxy_ready
+docker compose --project-name "${compose_project}" exec -T office-renderer python3 -m unittest test_renderer
+docker compose --project-name "${compose_project}" exec -T worker node scripts/acceptance/office-renderer.mjs
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/live"
 curl --fail --silent --show-error "http://127.0.0.1:${proxy_port}/api/health/ready"
 
@@ -177,7 +179,9 @@ fi
 # Simulate an ungraceful Worker crash. The expired lease must be recovered by
 # the replacement Worker without browser participation.
 docker compose --project-name "${compose_project}" kill -s SIGKILL worker
-docker compose --project-name "${compose_project}" up --detach --wait --wait-timeout 120 worker
+# Recover only the crashed process. Recreating migrations/renderers spends the
+# job's 30-second deadline on unrelated dependency startup instead of recovery.
+docker compose --project-name "${compose_project}" up --no-deps --detach --wait --wait-timeout 120 worker
 ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \
 ALLRICE_EXECUTION_SMOKE_STATE="${execution_state}" \

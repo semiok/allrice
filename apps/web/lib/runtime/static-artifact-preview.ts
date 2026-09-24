@@ -5,10 +5,31 @@ import {
 import { parseChangesetBytes, readArtifactBytes } from '@allrice/database';
 import { getStorageAdapter } from '../storage/runtime';
 import { boundedRaster } from './raster-preview';
+import {
+  officeFormat,
+  officePreview,
+  officeRenderNotice,
+  renderOffice,
+} from '@allrice/office-runtime';
 
 /** Only renders verified stored bytes. Caller must authorize before AND after
  * storage IO. Never executes HTML/SVG or remote content in the main document. */
 export async function readStaticArtifactPreview(artifact: WorkbenchArtifact) {
+  const format = officeFormat(artifact.object.mediaType);
+  if (format && artifact.object.sizeBytes <= 8_000_000) {
+    // Use the existing size/deadline/hash checks. The HTTP caller reauthorizes
+    // after conversion as well, including when the renderer returns a cache hit.
+    const bytes = await readArtifactBytes(
+      getStorageAdapter(),
+      artifact.object,
+      8_000_000,
+    );
+    try {
+      return officePreview(await renderOffice(bytes, format));
+    } catch (error) {
+      return { kind: 'download_only', reason: officeRenderNotice(error) };
+    }
+  }
   const policy = runtimeStaticPreviewPolicy(artifact.object.mediaType);
   if (
     artifact.object.sizeBytes > 512_000 ||

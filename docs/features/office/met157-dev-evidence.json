@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-24",
+  "environment": "Dev",
+  "material": "synthetic",
+  "officeSkillVersion": "1.2.0",
+  "nativeEngine": "0.1.5-rc.3",
+  "acceptanceCodeSha": "37212a757369184bd8528ffc93dcca3c2d23b93f",
+  "bootstrapFixSha": "a0ed40f96c8d73edc2e3391d2a95fe8fee20a8b6",
+  "tenantRole": "admin",
+  "rolesModified": false,
+  "templateEdits": {
+    "at": "2026-09-24T05:03:36.896Z",
+    "sessionId": "e2d72b66-62db-4391-b1ce-9ed79b9a8c4c",
+    "runId": "0b34f38b-c44e-4ebe-861c-0032e457995c",
+    "tenantRole": "admin",
+    "rolesModified": false,
+    "officeVersion": "1.2.0",
+    "uploaded": 3,
+    "checked": [
+      {
+        "format": "docx",
+        "artifactId": "437f396d-46d1-4bc2-b8ee-bac6ba0bc583",
+        "objectId": "38ff9443-d7d9-4501-b432-bcf9e907ed62",
+        "checksum": "sha256:c97b79f91028a3a0a3cf712e74098083ebfb42b1c4c5d1f16b0ddf03b7de6975",
+        "version": 1,
+        "pages": 1,
+        "formulaCount": 0,
+        "formulaErrors": 0,
+        "changedMembers": ["word/document.xml"]
+      },
+      {
+        "format": "xlsx",
+        "artifactId": "294d10a2-ceba-4232-b3f7-b6aedfd59cb0",
+        "objectId": "f3d5326d-77d7-44fa-97e6-646b4fd721d0",
+        "checksum": "sha256:75a73e356bc575ff4e8bc0cd582e017f19602fc453234732f041a81ecc592dcf",
+        "version": 1,
+        "pages": 2,
+        "formulaCount": 2,
+        "formulaErrors": 0,
+        "changedMembers": [
+          "xl/worksheets/sheet1.xml",
+          "xl/worksheets/sheet2.xml",
+          "xl/workbook.xml"
+        ]
+      },
+      {
+        "format": "pptx",
+        "artifactId": "09f850d7-e32a-4072-947d-bc4b722afe25",
+        "objectId": "6eb1b488-c39d-4d66-a162-e879bf43b107",
+        "checksum": "sha256:59cb1876723dfead27c0e562dda0ac03820700019395f07552f62ac832a252e4",
+        "version": 1,
+        "pages": 2,
+        "formulaCount": 0,
+        "formulaErrors": 0,
+        "changedMembers": ["ppt/slides/slide1.xml"]
+      }
+    ]
+  },
+  "analysisDelivery": {
+    "at": "2026-09-24T05:18:09.742Z",
+    "sessionId": "e2d72b66-62db-4391-b1ce-9ed79b9a8c4c",
+    "runId": "543a0f71-58a4-4b0a-b10d-47bc3e4938d6",
+    "checked": [
+      {
+        "format": "docx",
+        "id": "1484d95e-24b8-49d4-91bc-f462e3087ab9",
+        "objectId": "8dacef14-46af-45b6-9eb1-f2a975b4334a",
+        "checksum": "sha256:bb3f99ec975bc7a6cccfacf162ca4d5b188aeb94baed137b436f38905ca4f183",
+        "version": 2,
+        "pages": 1
+      },
+      {
+        "format": "xlsx",
+        "id": "1803df8c-4abf-4e0b-88ac-70154cf36ee4",
+        "objectId": "d2370b4f-aec7-4c6b-a681-db0ebd1086c0",
+        "checksum": "sha256:1e35e4c9a4792e1d8dc9acd9e6227807ae4b2b79b81bdb03aa1c11ca0cf5dac7",
+        "version": 3,
+        "pages": 2
+      },
+      {
+        "format": "pptx",
+        "id": "ac1e39b1-d67c-4b43-b9d6-36da225b1391",
+        "objectId": "2b005314-b83d-42cd-aa4f-a90e1c03b72a",
+        "checksum": "sha256:9a0dba19d181debafd0342dd20857f91f7309ef9aaae4547c37c031f9be2a68a",
+        "version": 1,
+        "pages": 1
+      }
+    ],
+    "priorVersionDownloadUnchanged": true,
+    "rendererRestartRegeneratedIdenticalPreview": true,
+    "anonymousDenied": true,
+    "foreignWorkspaceDenied": true,
+    "foreignStatus": 404
+  },
+  "ui": {
+    "sessionId": "e2d72b66-62db-4391-b1ce-9ed79b9a8c4c",
+    "excelArtifactId": "1803df8c-4abf-4e0b-88ac-70154cf36ee4",
+    "formulaValues": [100, 150],
+    "paging": true,
+    "versionDownloadLink": true,
+    "officePreviewVisible": true
+  },
+  "audit": {
+    "runId": "543a0f71-58a4-4b0a-b10d-47bc3e4938d6",
+    "state": "succeeded",
+    "failedTools": 0,
+    "sources": [
+      {
+        "resource_id": "1803df8c-4abf-4e0b-88ac-70154cf36ee4",
+        "metadata": {
+          "runId": "543a0f71-58a4-4b0a-b10d-47bc3e4938d6",
+          "objectId": "d2370b4f-aec7-4c6b-a681-db0ebd1086c0",
+          "sourceFile": {
+            "checksum": "sha256:7d0977a9c49588ad729110cb5b6628bb017f732f1394848c856c58f8d9bbb185",
+            "objectId": "f73dbc63-0551-455b-a719-5d73695c5808"
+          }
+        }
+      },
+      {
+        "resource_id": "1484d95e-24b8-49d4-91bc-f462e3087ab9",
+        "metadata": {
+          "runId": "543a0f71-58a4-4b0a-b10d-47bc3e4938d6",
+          "objectId": "8dacef14-46af-45b6-9eb1-f2a975b4334a",
+          "sourceFile": {
+            "checksum": "sha256:218fe2526bc9edaccafafae74e9770f6f7e03575dcfa96778e35225952f3aa63",
+            "objectId": "06dbc11b-c47e-4e01-8ed9-5f39863f9a4b"
+          }
+        }
+      }
+    ]
+  },
+  "renderer": {
+    "image": "sha256:099caaa43f836ff6bcd2690ddaaafe6671b8dc2c44a6cad1fdeac16fb4109b8e",
+    "packages": "fonts-noto-cjk\t1:20220127+repack1-1\nlibreoffice-core\t4:7.4.7-1+deb12u14\nlibseccomp2:amd64\t2.5.4-1+deb12u1\npoppler-utils\t22.12.0-2+deb12u3\npython3-uno\t4:7.4.7-1+deb12u14\n",
+    "readOnly": true,
+    "memoryBytes": 805306368,
+    "ports": {
+      "3112/tcp": [
+        {
+          "HostIp": "127.0.0.1",
+          "HostPort": "3112"
+        }
+      ]
+    },
+    "restart": {
+      "Name": "unless-stopped",
+      "MaximumRetryCount": 0
+    },
+    "previousImage": "sha256:d8e76ead9e0c8f9067042a08ed3a3bff0d85a504f969098439c4a6e74d12fec8",
+    "queueAndConversionDeadlineSeconds": 40
+  },
+  "consoles": {
+    "nativeVersion": "0.1.5-rc.3",
+    "webWorkerAndDshLabReleaseSha": "37212a757369184bd8528ffc93dcca3c2d23b93f",
+    "allriceSync": true,
+    "officeCatalogEntry": "Office 文档阅读、编辑与预览"
+  },
+  "visualInspection": {
+    "docx": "Chinese title, editable table, values and source labels readable; no clipping in sampled page",
+    "xlsx": "00123 retained; 50.00 and 100 visible, second sheet total 150",
+    "pptx": "Chinese title, category labels and native bars 50/100/150 readable; editable workbook and notes checked"
+  }
+}

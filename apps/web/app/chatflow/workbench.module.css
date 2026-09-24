@@ -326,3 +326,30 @@
     scroll-behavior: auto !important;
   }
 }
+
+.officePreview {
+  min-width: 0;
+}
+.officePreview > img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: white;
+  margin: 12px 0;
+}
+.officeResults {
+  overflow-x: auto;
+  max-height: 280px;
+}
+.officeResults table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+.officeResults th,
+.officeResults td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2, #ddd);
+  overflow-wrap: anywhere;
+}

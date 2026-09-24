@@ -124,8 +124,8 @@ function executionInput(input: {
     threadId: input.threadId,
     tools: [
       {
-        name: 'workspace.file.list',
-        description: 'List files',
+        name: 'workspace.file.read',
+        description: 'Read one file through the legacy envelope',
         inputSchema: { type: 'object' },
       },
     ],
@@ -632,7 +632,7 @@ describe('DshHarnessAdapter', () => {
       }),
     );
     expect(result.answer).toBe('tool-finished');
-    expect(calls).toEqual(['workspace.file.list']);
+    expect(calls).toEqual(['workspace.file.read']);
     expect(
       events.filter((event) => event.type.startsWith('tool.')),
     ).toHaveLength(2);
@@ -869,7 +869,7 @@ describe('DshHarnessAdapter', () => {
         },
       }),
     );
-    expect(calls).toEqual(['workspace.file.list']);
+    expect(calls).toEqual(['workspace.file.read']);
     expect(result.answer).toBe('tool-finished');
     expect(result.answer).not.toContain('allrice_tool_call');
   });
@@ -890,7 +890,7 @@ describe('DshHarnessAdapter', () => {
         },
       }),
     );
-    expect(calls).toEqual(['workspace.file.list']);
+    expect(calls).toEqual(['workspace.file.read']);
     expect(result.answer).toBe('tool-finished');
     expect(result.answer).not.toContain('allrice_tool_call');
   });

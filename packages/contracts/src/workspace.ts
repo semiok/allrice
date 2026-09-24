@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
+import { officeMediaTypes } from './office-quality.ts';
 import { KnowledgeCitationSchema } from './knowledge.ts';
 import {
   MemoryClassSchema,
@@ -289,6 +290,7 @@ export const CreateSessionAttachmentInputSchema = z
       'text/markdown',
       'application/json',
       'application/pdf',
+      ...Object.values(officeMediaTypes),
       'image/png',
       'image/jpeg',
       'image/webp',

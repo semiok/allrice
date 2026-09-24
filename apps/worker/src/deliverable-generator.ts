@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
-import PptxGenJS from 'pptxgenjs';
 
 import type { DeliveryFormat } from '@allrice/contracts';
 
@@ -129,7 +129,11 @@ function presentationSections(content: string) {
 }
 
 async function generatePptx(content: string) {
-  const PptxConstructor = PptxGenJS as unknown as new () => {
+  // Use the package's declared CJS entry: tsx's ESM loader otherwise returns
+  // a module wrapper here, while compiled Node and Vitest return a constructor.
+  const PptxConstructor = createRequire(import.meta.url)(
+    'pptxgenjs',
+  ) as new () => {
     author: string;
     subject: string;
     layout: string;

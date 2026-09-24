@@ -11,13 +11,15 @@ import {
   it,
   vi,
 } from 'vitest';
-import type {
-  PlatformEmployeeDefinition,
-  SkillBundle,
+import {
+  PlatformEmployeeDefinitionSchema,
+  type PlatformEmployeeDefinition,
+  type SkillBundle,
 } from '@allrice/contracts';
 import type * as DatabaseClient from './core/client.ts';
 import {
   compilePlatformEmployee,
+  listPlatformNativeSkills,
   completePlatformEmployeeTestRun,
   publishPlatformEmployee,
   queuePlatformEmployeeTestRun,
@@ -25,6 +27,8 @@ import {
   savePlatformEmployeeDraft,
 } from './employees/platform-employees.ts';
 import { skillBundleChecksum, skillBytesChecksum } from './skill-bundles.ts';
+import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
+import { synchronizePlatformContent } from './platform-content/sync.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -41,7 +45,7 @@ vi.mock('./core/client.ts', async (original) => ({
   getDatabase: () => port,
 }));
 
-async function fixture() {
+async function fixture(legacySkillIds?: string[]) {
   const organizationId = randomUUID(),
     workspaceId = randomUUID(),
     ownerId = randomUUID();
@@ -80,10 +84,16 @@ async function fixture() {
       baseUrl: null,
     },
     capabilities: {
-      nativeSkillIds: [skillId],
+      nativeSkillIds: legacySkillIds ?? [skillId],
       workflowRevisionIds: [],
       knowledgeRevisionIds: [],
-      toolNames: ['workspace.skill.read'],
+      toolNames: legacySkillIds
+        ? [
+            'workspace.file.list',
+            'workspace.document.read',
+            'workspace.export.create',
+          ]
+        : ['workspace.skill.read'],
       connectorRefs: [],
     },
     securityPolicy: {
@@ -430,4 +440,82 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
       await db.unsafe(`drop function ${functionName}()`);
     }
   }, 15000);
+
+  it('migrates both legacy Office bindings on the next draft, preserving published and queued packages and rollback', async () => {
+    const catalog = await loadPlatformContentCatalog();
+    const office = catalog.skills.find((skill) => skill.name === 'office')!;
+    const f = await fixture(office.replaces);
+    const oldTrial = await f.preview();
+    expect((await f.publish()).valid).toBe(true);
+    const published = await f.revision();
+    const [queuedBefore] =
+      await db`select * from allrice_platform_employee_test_runs where id=${oldTrial.id}`;
+
+    await synchronizePlatformContent(catalog);
+    const choices = await listPlatformNativeSkills();
+    expect(choices.find((skill) => skill.id === office.id)?.replaces).toEqual(
+      office.replaces,
+    );
+    expect(choices.some((skill) => office.replaces!.includes(skill.id))).toBe(
+      false,
+    );
+    await savePlatformEmployeeDraft(f.employeeId, { definition: f.definition });
+    const nextTrial = await f.preview();
+    const next = await f.revision(nextTrial.revisionId);
+    expect(next.definition.capabilities.nativeSkillIds).toEqual([office.id]);
+    expect(next.definition.capabilities.toolNames).toEqual(
+      expect.arrayContaining(office.requiredToolRefs),
+    );
+    expect(
+      next.runtime_profile.runtimePackage.skills.map(
+        (skill: { name: string }) => skill.name,
+      ),
+    ).toEqual(['office']);
+    expect((await f.publish()).valid).toBe(true);
+    expect(await f.revision()).toEqual(published);
+    expect(
+      (
+        await db`select * from allrice_platform_employee_test_runs where id=${oldTrial.id}`
+      )[0],
+    ).toEqual(queuedBefore);
+    await rollbackPlatformEmployee(f.employeeId, {
+      revisionId: f.revisionId,
+      reason: 'Office compatibility regression check',
+    });
+    expect(await f.revision()).toEqual(published);
+    await expect(compilePlatformEmployee(f.employeeId)).rejects.toThrow(
+      'platform_employee_published_revision_immutable',
+    );
+  });
+
+  it('upgrades an existing uncompiled legacy draft, while respecting explicit storage denial', async () => {
+    const catalog = await loadPlatformContentCatalog();
+    const office = catalog.skills.find((skill) => skill.name === 'office')!;
+    await synchronizePlatformContent(catalog);
+    const f = await fixture(office.replaces);
+    expect((await compilePlatformEmployee(f.employeeId)).valid).toBe(true);
+    const compiled = await f.revision();
+    expect(compiled.definition.capabilities.nativeSkillIds).toEqual([
+      office.id,
+    ]);
+    expect(compiled.checksum).toBe(
+      skillBytesChecksum(
+        JSON.stringify(
+          PlatformEmployeeDefinitionSchema.parse(compiled.definition),
+        ),
+      ),
+    );
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: {
+        ...f.definition,
+        securityPolicy: {
+          ...f.definition.securityPolicy,
+          deniedCapabilities: ['storage:write'],
+        },
+      },
+    });
+    const blocked = await compilePlatformEmployee(f.employeeId);
+    expect(blocked.valid).toBe(false);
+    expect(blocked.errors.join(' ')).toContain('storage:write');
+  });
 });

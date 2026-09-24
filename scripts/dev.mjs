@@ -1,5 +1,6 @@
 import {
   ensureStorageDirectory,
+  prepareOfficeRenderer,
   prepareDevelopmentDatabase,
   spawnDevelopmentServices,
 } from './dev-environment.mjs';
@@ -7,6 +8,7 @@ import {
 try {
   await ensureStorageDirectory();
   await prepareDevelopmentDatabase();
+  await prepareOfficeRenderer();
 
   console.info('[dev] Starting Web and Worker...');
   const child = spawnDevelopmentServices();

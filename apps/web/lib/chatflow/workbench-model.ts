@@ -3,6 +3,8 @@ import {
   ReviewFeedbackSchema,
   WorkbenchArtifactSchema,
   WorkbenchCursorSchema,
+  OfficePreviewSchema,
+  type OfficePreview,
   type ChangesetDocument,
   type ReviewFeedback,
   type WorkbenchArtifact,
@@ -10,6 +12,7 @@ import {
 } from '@allrice/contracts';
 
 export type ArtifactPreview =
+  | OfficePreview
   | { kind: 'text'; text: string; mediaType: string }
   | { kind: 'changeset'; changeset: ChangesetDocument }
   | {
@@ -72,6 +75,7 @@ export function parseArtifactDetail(input: unknown): {
 export function parseArtifactPreview(input: unknown): ArtifactPreview {
   const v = input as Record<string, unknown>;
   if (!v || typeof v !== 'object') throw Error('预览格式无效');
+  if (v.kind === 'office') return OfficePreviewSchema.parse(v);
   if (
     v.kind === 'text' &&
     typeof v.text === 'string' &&

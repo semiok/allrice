@@ -1,5 +1,10 @@
 // Model-visible native declarations; publication and execution authority stay
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
+import {
+  OfficeExportSchema,
+  NativeOfficeExportSchema,
+} from '@allrice/contracts';
+
 export const workbenchNativeTools = [
   {
     canonicalName: 'workspace.export.create',
@@ -7,6 +12,35 @@ export const workbenchNativeTools = [
     description:
       'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Publishing a proposal does not write to the local device.',
     presentation: 'tool',
+    validateArguments(args) {
+      if (
+        [args.content, args.office, args.python].filter((v) => v !== undefined)
+          .length !== 1
+      )
+        throw new Error(
+          'Supply exactly one of content, python or legacy office.',
+        );
+      if (args.python !== undefined) {
+        if (args.inputs !== undefined || args.sourceObjectId !== undefined)
+          throw new Error(
+            'Put inputs and sourceObjectId INSIDE python: {script, inputs, sourceObjectId}. Use storage object IDs and checksums returned by workspace_file_list/workspace_document_read, not attachment IDs.',
+          );
+        NativeOfficeExportSchema.parse(args.python);
+      }
+      if (args.office !== undefined) {
+        const parsed = OfficeExportSchema.safeParse(args.office);
+        if (!parsed.success)
+          throw new Error(
+            'Invalid Office payload: ' +
+              parsed.error.issues
+                .slice(0, 5)
+                .map(
+                  (issue) => `office.${issue.path.join('.')}: ${issue.message}`,
+                )
+                .join('; '),
+          );
+      }
+    },
     parameters: {
       artifactKind: {
         type: 'string',
@@ -35,9 +69,59 @@ export const workbenchNativeTools = [
       },
       content: {
         type: 'string',
-        required: true,
         description:
-          'Complete final file content, or the changeset JSON proposal.',
+          'Complete final text content, or the changeset JSON proposal. Supply exactly one of content, python or legacy office.',
+      },
+      python: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          script: {
+            type: 'string',
+            required: true,
+            description: 'Python code. Save /tmp/work/output/result.<format>.',
+          },
+          inputs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: {
+                  type: 'string',
+                  required: true,
+                  description:
+                    'Relative input filename, available at /tmp/work/input/<path>.',
+                },
+                objectId: {
+                  type: 'string',
+                  required: true,
+                  description:
+                    'Storage object UUID returned by the file tools; not an attachment ID.',
+                },
+                checksum: {
+                  type: 'string',
+                  required: true,
+                  description:
+                    'Exact sha256 checksum returned by the file tools.',
+                },
+              },
+            },
+          },
+          sourceObjectId: {
+            type: 'string',
+            description:
+              'Object ID of the input file being revised, also listed in python.inputs.',
+          },
+        },
+        description:
+          'Default Office workflow: {script: "Python code", inputs?: [{path, objectId, checksum}], sourceObjectId?: "edited input UUID"}. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
+      },
+      office: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'Compatibility only for previously frozen employee packages. Current Office workflows use python with native document libraries.',
       },
       parentObjectId: {
         type: 'string',
