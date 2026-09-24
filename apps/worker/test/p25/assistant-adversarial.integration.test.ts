@@ -36,6 +36,72 @@ integration(
       vi.unstubAllEnvs();
     });
 
+    it.each([
+      'known-read',
+      'proposal',
+      'unknown-tool',
+      'settlement-failed',
+    ] as const)(
+      'accounts a returned query failure without releasing uncertain execution: %s',
+      async (mode) => {
+        const f = await assistantFixture(database.db);
+        const error = new Error('Synthetic handler failure');
+        const handler = vi.fn(async () => {
+          throw error;
+        });
+        const settle =
+          mode === 'settlement-failed'
+            ? vi
+                .spyOn(f.runtime, 'settleUsage')
+                .mockRejectedValue(new Error('Synthetic database unavailable'))
+            : undefined;
+        const bridge = createAssistantWorkerBridge({
+          runtime: f.runtime,
+          task: f.task,
+          context: f.context,
+          worker: f.worker,
+          wireNames: {},
+          readOnlyTools: new Set(mode === 'unknown-tool' ? [] : ['read']),
+          onRootTool: handler,
+        });
+        const method = mode === 'proposal' ? 'proposal' : 'tool';
+        const request = {
+          nativeSessionId: f.nativeSessionId,
+          callId: randomUUID(),
+          name: 'read',
+          arguments: {},
+        };
+        await expect(bridge.handle(method, request)).rejects.toThrow(
+          mode === 'settlement-failed'
+            ? 'Synthetic database unavailable'
+            : error,
+        );
+        settle?.mockRestore();
+        const rows =
+          await database.db`select metric,settled_amount,result_digest from allrice_assistant_usage where root_run_id=${f.task.runId}`;
+        expect(rows).toHaveLength(4);
+        for (const row of rows) {
+          if (mode === 'known-read') {
+            expect(Number(row.settled_amount)).toBe(
+              row.metric === 'tool_calls' ? 1 : 0,
+            );
+            expect(row.result_digest).toMatch(/^sha256:/);
+          } else {
+            expect(row.settled_amount).toBeNull();
+            expect(row.result_digest).toBeNull();
+          }
+        }
+        // Transport duplicates never execute the tool a second time, including
+        // an already-accounted failure. A model retry uses a fresh call ID.
+        await expect(bridge.handle(method, request)).rejects.toThrow();
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({
+          status: mode === 'known-read' ? 'completed' : 'unknown',
+          usageComplete: mode === 'known-read',
+        });
+      },
+    );
+
     it('rejects invented artifact identity/digest rather than minting completed evidence', async () => {
       const f = await assistantFixture(database.db),
         child = (await f.delegate()).instance;

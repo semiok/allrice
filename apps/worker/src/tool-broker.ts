@@ -116,7 +116,15 @@ export async function executeRiceTool(
         error instanceof HandlerError
           ? error.code.toLowerCase()
           : 'tool_execution_failed',
-      metadata: auditMetadata(input, requiredCapability),
+      metadata: {
+        ...auditMetadata(input, requiredCapability),
+        nativeCallId: input.call.id,
+        errorCode:
+          error instanceof HandlerError ? error.code : 'TOOL_EXECUTION_FAILED',
+        ...(error instanceof HandlerError
+          ? { retryable: error.retryable }
+          : {}),
+      },
     }).catch(() => undefined);
     throw error;
   }

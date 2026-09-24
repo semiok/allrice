@@ -31,6 +31,44 @@ function marketSymbol(value: string) {
 }
 
 async function boundedYahooJson(path: string) {
+  try {
+    return await requestYahooJson(path);
+  } catch (error) {
+    if (error instanceof HandlerError) throw error;
+    const cause = error instanceof Error ? error.cause : undefined;
+    const code =
+      cause && typeof cause === 'object' && 'code' in cause
+        ? String(cause.code)
+        : '';
+    const timedOut =
+      (error instanceof Error && error.name === 'TimeoutError') ||
+      [
+        'ETIMEDOUT',
+        'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_HEADERS_TIMEOUT',
+        'UND_ERR_BODY_TIMEOUT',
+      ].includes(code);
+    // Do not expose raw fetch messages/URLs, credentials or upstream bodies.
+    const detail = [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'UND_ERR_SOCKET',
+    ].includes(code)
+      ? `（${code}）`
+      : '';
+    throw new HandlerError(
+      timedOut ? 'MARKET_DATA_TIMEOUT' : 'MARKET_DATA_NETWORK_ERROR',
+      timedOut
+        ? 'Yahoo Finance 行情请求超时；可稍后重试或使用其他资料来源。'
+        : `Yahoo Finance 行情连接失败${detail}；可稍后重试或使用其他资料来源。`,
+      true,
+    );
+  }
+}
+
+async function requestYahooJson(path: string) {
   const response = await fetch(new URL(path, yahooOrigin), {
     headers: {
       accept: 'application/json',

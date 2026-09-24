@@ -75,4 +75,76 @@ describe('market data provider', () => {
     expect(history.rows).toHaveLength(2);
     expect(history.rows[1]?.close).toBe(211);
   });
+
+  it.each([
+    {
+      failure: new DOMException('sensitive request URL', 'TimeoutError'),
+      code: 'MARKET_DATA_TIMEOUT',
+      detail: '超时',
+    },
+    {
+      failure: new TypeError('fetch failed with private details', {
+        cause: { code: 'ECONNRESET' },
+      }),
+      code: 'MARKET_DATA_NETWORK_ERROR',
+      detail: 'ECONNRESET',
+    },
+    {
+      failure: new TypeError('fetch failed', {
+        cause: { code: 'UND_ERR_CONNECT_TIMEOUT' },
+      }),
+      code: 'MARKET_DATA_TIMEOUT',
+      detail: '超时',
+    },
+  ])(
+    'preserves safe $code diagnostics for a transport failure',
+    async ({ failure, code, detail }) => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(failure));
+      await expect(getMarketQuote('BOTZ')).rejects.toMatchObject({
+        code,
+        retryable: true,
+        message: expect.stringContaining(detail),
+      });
+      await expect(getMarketQuote('BOTZ')).rejects.not.toThrow(
+        /sensitive|private/,
+      );
+    },
+  );
+
+  it('classifies a response-body connection reset too', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        headers: new Headers(),
+        text: async () => {
+          throw new TypeError('terminated', {
+            cause: { code: 'UND_ERR_SOCKET' },
+          });
+        },
+      }),
+    );
+    await expect(getMarketHistory({ symbol: 'AIQ' })).rejects.toMatchObject({
+      code: 'MARKET_DATA_NETWORK_ERROR',
+      message: expect.stringContaining('UND_ERR_SOCKET'),
+    });
+  });
+
+  it.each([429, 503])(
+    'keeps HTTP %s available in the native error instead of a generic connection failure',
+    async (status) => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            new Response('upstream body not disclosed', { status }),
+          ),
+      );
+      await expect(getMarketQuote('ARM')).rejects.toMatchObject({
+        code: 'MARKET_DATA_UNAVAILABLE',
+        message: `Yahoo Finance 返回 HTTP ${status}`,
+        retryable: true,
+      });
+    },
+  );
 });
