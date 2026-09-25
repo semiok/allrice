@@ -249,22 +249,29 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshMenu() {
-        let menu = statusItem?.menu ?? NSMenu()
-        menu.delegate = self
+        let menu: NSMenu
+        if let existing = statusItem?.menu {
+            menu = existing
+        } else {
+            menu = NSMenu()
+            menu.delegate = self
+            statusItem?.menu = menu
+        }
         if !menuOpen { populateMenu(menu, developer: false) }
-        statusItem?.menu = menu
         statusItem?.button?.toolTip = title
         detail?.string = statusText()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        populateMenu(menu, developer: NSEvent.modifierFlags.contains(.option))
         menuOpen = true
+        populateMenu(menu, developer: NSEvent.modifierFlags.contains(.option))
     }
 
     func menuDidClose(_ menu: NSMenu) {
         menuOpen = false
-        refreshMenu()
+        // AppKit dispatches the chosen item's action after closing the menu.
+        // Keep those items alive until that dispatch has completed.
+        DispatchQueue.main.async { [weak self] in self?.refreshMenu() }
     }
 
     private func populateMenu(_ menu: NSMenu, developer: Bool) {

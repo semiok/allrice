@@ -103,21 +103,21 @@ const ui = (statements) =>
       '-e',
       'end tell',
     ],
-    { encoding: 'utf8', timeout: 15000 },
+    { encoding: 'utf8', timeout: 15000, stdio: 'pipe' },
   ).trim();
 const menu = (item) =>
   ui([
-    'click menu bar item "Rice" of menu bar 1',
-    `click menu item ${JSON.stringify(item)} of menu 1 of menu bar item "Rice" of menu bar 1`,
+    'click menu bar item "Rice" of last menu bar',
+    `click menu item ${JSON.stringify(item)} of menu 1 of menu bar item "Rice" of last menu bar`,
   ]);
 const developerMenu = (item) => {
   try {
     ui([
       'key down option',
-      'click menu bar item "Rice" of menu bar 1',
-      'key up option',
-      'click menu item "开发者工具" of menu 1 of menu bar item "Rice" of menu bar 1',
-      `click menu item ${JSON.stringify(item)} of menu 1 of menu item "开发者工具" of menu 1 of menu bar item "Rice" of menu bar 1`,
+      'click menu bar item "Rice" of last menu bar',
+      'delay 0.2',
+      'click menu item "开发者工具" of menu 1 of menu bar item "Rice" of last menu bar',
+      `click menu item ${JSON.stringify(item)} of menu 1 of menu item "开发者工具" of menu 1 of menu bar item "Rice" of last menu bar`,
     ]);
   } finally {
     ui(['key up option']);
@@ -195,13 +195,14 @@ try {
     results.credentialStorageVisible = true;
   }
   await wait(() => polls > 0);
+  menu('查看状态…');
   await wait(() => status().includes('Bridge 在线'));
   results.onlineWindow = status().includes(
     fresh ? 'P13 fresh synthetic pairing' : 'Synthetic workspace',
   );
   const ordinaryMenu = ui([
-    'click menu bar item "Rice" of menu bar 1',
-    'get name of menu items of menu 1 of menu bar item "Rice" of menu bar 1',
+    'click menu bar item "Rice" of last menu bar',
+    'get name of menu items of menu 1 of menu bar item "Rice" of last menu bar',
   ]);
   ui(['key code 53']);
   assert.ok(
