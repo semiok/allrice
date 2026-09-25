@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from '../work-automation.ts';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -130,6 +131,12 @@ async function fixture(options: { wss?: boolean } = {}) {
     await sql`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds,metadata,last_heartbeat_at) values (${ids.target},${ids.organization},${ids.workspace},${`bridge.${ids.device}`},'rice_bridge','B1 synthetic target','online',${sql.json(['files.read', 'files.write'])},1,120,${sql.json({ bridgeDeviceId: ids.device })},clock_timestamp())`;
     await sql`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint) values (${ids.grant},${ids.organization},${ids.workspace},${ids.user},${ids.device},'B1 synthetic folder',${rootFingerprint})`;
   });
+  await updateWorkAutomation(
+    context,
+    ids.workspace,
+    { expectedRevision: 0, capability: 'computer', enabled: false },
+    database,
+  );
   await setRuntimePolicyControls(
     context,
     {

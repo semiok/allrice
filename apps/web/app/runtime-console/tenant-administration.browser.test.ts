@@ -693,8 +693,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         await page
           .getByLabel('assistant.delegate 规则', { exact: true })
           .locator('option[value="ask"]')
-          .isDisabled(),
-      ).toBe(true);
+          .count(),
+      ).toBe(0);
       await page
         .getByLabel('策略修改原因')
         .fill('Synthetic explicit policy approval');
@@ -721,7 +721,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .locator('td')
           .nth(2)
           .textContent(),
-      ).toContain('需精确审批');
+      ).toContain('按成员工作方式执行');
       const [stored] =
         await fixture.db`select controls from allrice_runtime_policy_controls where workspace_id=${snow.workspaceId}`;
       expect(stored!.controls).toMatchObject({
@@ -959,7 +959,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         await page
           .locator('option[value="autonomous"]')
           .evaluate((option) => (option as HTMLOptionElement).disabled),
-      ).toBe(true);
+      ).toBe(false);
       await page.getByRole('button', { name: '技能', exact: true }).click();
       await page
         .getByRole('button', {
