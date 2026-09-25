@@ -208,6 +208,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    // Loading the development bundle can outlast interaction waits under CI load.
+    page.setDefaultNavigationTimeout(15_000);
     const employeeHistorySessions = [
       ...Array.from({ length: 7 }, (_, n) => ({
         ...session(id(600 + n)),
