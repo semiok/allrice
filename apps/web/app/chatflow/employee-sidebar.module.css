@@ -11,9 +11,9 @@
 .employeeCard,
 .avatar,
 .pickerCard {
-  --employee-start: #87c6ec;
-  --employee-end: #87c6ec;
-  --employee-foreground: #1f2937;
+  --employee-start: #3b82f6;
+  --employee-end: #3b82f6;
+  --employee-foreground: #090d16;
   background-color: var(--employee-start);
   background-image:
     radial-gradient(ellipse at 100% 0, #ffffff0c, transparent 65%),

@@ -21,7 +21,7 @@ import {
   employeeColorPalette,
   employeeColorForeground,
   resolveEmployeeAccent,
-  type EmployeeAccentColor,
+  type EmployeePaletteColor,
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
@@ -889,12 +889,12 @@ export function EmployeeProduction() {
       <>
         <fieldset className={styles.employeeColors}>
           <legend>员工配色</legend>
-          <p>莫奈印象十色。选择员工的识别色，保存并发布后同步到前台。</p>
+          <p>科技十色。选择员工的识别色，保存并发布后同步到前台。</p>
           <div className={styles.colorOptions}>
             {(
               Object.entries(employeeColorPalette) as [
-                EmployeeAccentColor,
-                (typeof employeeColorPalette)[EmployeeAccentColor],
+                EmployeePaletteColor,
+                (typeof employeeColorPalette)[EmployeePaletteColor],
               ][]
             ).map(([id, color]) => (
               <label key={id} className={styles.colorOption}>
@@ -909,7 +909,7 @@ export function EmployeeProduction() {
                   className={styles.colorSwatch}
                   style={{
                     backgroundColor: color.value,
-                    color: employeeColorForeground,
+                    color: employeeColorForeground(id),
                   }}
                   aria-hidden="true"
                 >
@@ -923,7 +923,7 @@ export function EmployeeProduction() {
             <span
               style={{
                 backgroundColor: employeeColorPalette[accent].value,
-                color: employeeColorForeground,
+                color: employeeColorForeground(accent),
               }}
               aria-hidden="true"
             >
