@@ -49,13 +49,19 @@
   min-width: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 16px;
+  /* Leave the scrollport's top flush so native sticky code banners seal it. */
+  padding: 0 16px;
 }
 .text {
   min-width: 0;
+  padding: 16px 0;
   overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 1.75;
+}
+.code {
+  /* A file viewport has square sticky edges; text must not peek around them. */
+  --dsl-code-block-border-radius: 0px;
 }
 .sourceNotice {
   margin: 0 0 16px;
@@ -78,6 +84,9 @@
     min-height: 40px;
   }
   .content {
-    padding: 12px;
+    padding: 0 12px;
+  }
+  .text {
+    padding: 12px 0;
   }
 }

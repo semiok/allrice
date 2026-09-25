@@ -1206,6 +1206,93 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
+  it.each([1440, 390])(
+    'file copy toolbar seals the top of the reader while scrolling at width %s',
+    async (width) => {
+      const f = await fixture({ width });
+      try {
+        f.state.files = [
+          {
+            id: id(901),
+            fileName: '工具记录.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 18000,
+            visibility: 'private',
+            ownedByMe: true,
+            category: 'uploads',
+            deliverableVersion: null,
+          },
+        ];
+        f.state.filePreview = {
+          kind: 'text',
+          mediaType: 'text/plain',
+          text: Array.from(
+            { length: 300 },
+            (_, n) =>
+              `记录 ${n}: timestamp=1781007600, adjustedClose=4.535999774932861`,
+          ).join('\n'),
+        };
+        await f.page
+          .getByRole('button', { name: '工作区文件', exact: true })
+          .click();
+        const tree = f.panel.locator('[data-files-state="tree"]');
+        await tree
+          .getByRole('button', { name: '上传文件', exact: true })
+          .click();
+        await tree
+          .getByRole('button', { name: '工具记录.txt', exact: true })
+          .click();
+        const text = f.panel.getByRole('region', {
+          name: '文件正文',
+          exact: true,
+        });
+        await text.waitFor();
+        const scrollport = text.locator('..');
+        await scrollport.evaluate((e) => {
+          e.scrollTop = 450;
+        });
+        const banner = text.locator('.md-code-block > :first-child');
+        await expect
+          .poll(async () => {
+            const [b, s] = await Promise.all([
+              banner.boundingBox(),
+              scrollport.boundingBox(),
+            ]);
+            return Math.abs(b!.y - s!.y);
+          })
+          .toBeLessThanOrEqual(1);
+        const toolbar = f.panel.locator('[aria-label="文件操作"]');
+        const top = await toolbar.boundingBox(),
+          b = await banner.boundingBox();
+        expect(b!.y).toBeGreaterThanOrEqual(top!.y + top!.height - 1);
+        expect(
+          await banner.evaluate((e) => {
+            const r = e.getBoundingClientRect();
+            return [1, r.width / 2, r.width - 1].every((x) =>
+              e.contains(document.elementFromPoint(r.x + x, r.y + 1)),
+            );
+          }),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `.local/reader/copy-toolbar-${width}.png`,
+          animations: 'disabled',
+        });
+        await f.page
+          .context()
+          .grantPermissions(['clipboard-read', 'clipboard-write']);
+        await banner
+          .getByRole('button', { name: '复制文本', exact: true })
+          .click();
+        await expect
+          .poll(() => f.page.evaluate(() => navigator.clipboard.readText()))
+          .toBe(f.state.filePreview.text);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('document reader keeps mobile actions visible, uses native menus and preserves exact version downloads', async () => {
     const f = await fixture({ width: 390, artifacts: true });
     try {
