@@ -170,7 +170,7 @@ export function ComputerSettings({
                 : '电脑离线'}
           </p>
           {!computer.supported && <p>请更新 Bridge 后使用这些开关。</p>}
-          {computer.environment?.paused && (
+          {!computer.pending && computer.environment?.paused && (
             <p>Bridge 已整体暂停，请在本机恢复连接。</p>
           )}
           {choices.map((choice) => {
@@ -179,16 +179,20 @@ export function ComputerSettings({
               ? '已关闭'
               : computer.pending
                 ? '等待同步'
-                : choice.key === 'development' &&
-                    !computer.settings.localCommand
-                  ? '需要开启本地沙箱命令'
-                  : state === 'ready'
-                    ? '可用'
-                    : state === 'preparing'
-                      ? '正在准备'
-                      : state === 'unavailable'
-                        ? '环境尚未就绪'
-                        : '已开启';
+                : computer.device.status !== 'online'
+                  ? '电脑离线'
+                  : computer.environment?.paused
+                    ? 'Bridge 已暂停'
+                    : choice.key === 'development' &&
+                        !computer.settings.localCommand
+                      ? '需要开启本地沙箱命令'
+                      : state === 'ready'
+                        ? '可用'
+                        : state === 'preparing'
+                          ? '正在准备'
+                          : state === 'unavailable'
+                            ? '环境尚未就绪'
+                            : '已开启';
             return (
               <div key={choice.key} className={styles.capabilitySetting}>
                 <div>
