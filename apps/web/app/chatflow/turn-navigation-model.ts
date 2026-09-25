@@ -1,3 +1,4 @@
+import { assistantStreamText } from '../../lib/execution/assistant-stream';
 import { modelGovernanceFailureText } from '@allrice/contracts';
 import type { Message, RunView } from './chatflow-types';
 import { preview } from './dsh-upstream/turn-navigation/preview';
@@ -31,19 +32,14 @@ export const turnNavigationText: TurnNavigatorTranslator = (key, values) => {
 };
 
 function streamedPreview(view: RunView) {
-  let text = '';
-  for (const event of view.events) {
-    if (event.type === 'assistant.text.delta')
-      text += String(event.payload.text ?? '').slice(0, 240 - text.length);
-    if (text.length >= 240) break;
-  }
-  return preview([text], 120);
+  return preview([assistantStreamText(view.events, '').slice(0, 240)], 120);
 }
 
 /** Only visible conversation text enters a preview; never traces or tool output. */
 export function conversationTurns(
   messages: readonly Message[],
   runViews: Readonly<Record<string, RunView>>,
+  streamingOutput = true,
 ): TurnRailItem[] {
   const items: TurnRailItem[] = [];
   const byRun = new Map<string, number>();
@@ -77,12 +73,17 @@ export function conversationTurns(
       continue;
     }
     const streamed = message.runId && runViews[message.runId];
+    const running = streamed
+      ? ['running', 'connecting'].includes(streamed.status)
+      : message.status === 'pending';
     const text =
-      (message.status === 'failed' && !message.content.budgetWarning
-        ? modelGovernanceFailureText(message.errorCode)
-        : null) ??
-      ((streamed && streamedPreview(streamed)) ||
-        (message.status === 'pending' ? '' : message.content.text));
+      !streamingOutput && running
+        ? ''
+        : ((message.status === 'failed' && !message.content.budgetWarning
+            ? modelGovernanceFailureText(message.errorCode)
+            : null) ??
+          ((streamed && streamedPreview(streamed)) ||
+            (message.status === 'pending' ? '' : message.content.text)));
     let index = known;
     // Older records may have no run ID on the prompt.
     if (index === undefined && latest !== undefined && !message.runId)

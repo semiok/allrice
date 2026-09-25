@@ -35,6 +35,7 @@ import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 
 interface ChatTranscriptProps {
+  streamingOutput?: boolean;
   atBottom: boolean;
   employeeName?: string;
   localCommandsEnabled?: boolean;
@@ -57,6 +58,7 @@ interface ChatTranscriptProps {
 }
 
 export function ChatTranscript({
+  streamingOutput = false,
   atBottom,
   employeeName = 'AI 员工',
   localCommandsEnabled = false,
@@ -139,6 +141,7 @@ export function ChatTranscript({
                 traceEvents,
                 fallbackText,
                 messageIsRunning,
+                streamingOutput,
               );
               const responseText = progress.finalText;
               const summarize =
@@ -232,7 +235,7 @@ export function ChatTranscript({
                         parts={progress.parts}
                         timing={timing}
                         running={messageIsRunning}
-                        streaming={!!streamedText}
+                        streaming={streamingOutput && !!streamedText}
                         failed={
                           message.status === 'failed' ||
                           messageRun?.status === 'failed'

@@ -7,6 +7,7 @@ import { AllriceMark } from '../../components/allrice-mark';
 import type { SaasCapabilityManifest } from '@allrice/contracts';
 import { SidebarSettings } from './sidebar-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
+import type { usePersonalPreferences } from './use-personal-preferences';
 
 import type { Session, Workspace } from './chatflow-types';
 import { EmployeeSidebar } from './employee-sidebar';
@@ -23,6 +24,7 @@ interface ChatSidebarProps {
   sessions: Session[];
   workspace: Workspace;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
+  preferences: ReturnType<typeof usePersonalPreferences>;
   settingsSection: string | null;
   onSettingsSectionChange: (section: string | null) => void;
   onBridge: () => void;
@@ -41,6 +43,7 @@ export function ChatSidebar({
   sessions,
   workspace,
   monthlyQuota,
+  preferences,
   settingsSection,
   onSettingsSectionChange,
   onBridge,
@@ -189,6 +192,7 @@ export function ChatSidebar({
             manifest={manifest}
             workspaceId={workspace.workspaceId}
             monthlyQuota={monthlyQuota}
+            preferences={preferences}
             section={settingsSection}
             onSectionChange={onSettingsSectionChange}
             onBridge={onBridge}
