@@ -19,7 +19,7 @@ import {
   IconDataOutlineRegular,
   IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import type { TaskRuntimeTiming } from '@allrice/contracts';
+import type { TaskRuntimeTiming, WorkbenchArtifact } from '@allrice/contracts';
 import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
 import {
   summarizeWorkProcess,
@@ -65,6 +65,8 @@ export function WorkProcess({
   assistantCount,
   assistantAttention,
   children,
+  artifacts,
+  label = '工作过程',
 }: {
   items: NativeExperienceItem[];
   parts?: WorkProgressPart[];
@@ -78,6 +80,8 @@ export function WorkProcess({
   assistantCount: number;
   assistantAttention: number;
   children?: ReactNode;
+  artifacts?: readonly WorkbenchArtifact[];
+  label?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const process = summarizeWorkProcess(items);
@@ -117,10 +121,66 @@ export function WorkProcess({
   ]
     .filter(Boolean)
     .join(' · ');
+  if (parts) {
+    return (
+      <section className={styles.workProcess} aria-label={label}>
+        <DisclosureRow
+          icon={<IconThinkOutline14 />}
+          title={title}
+          open={false}
+          expandable={false}
+          onToggle={noop}
+          collapsedContent={
+            timing ? (
+              <span className={styles.processTiming} aria-label="本轮运行时间">
+                总耗时 <RunElapsedTime timing={timing} running={running} />
+              </span>
+            ) : null
+          }
+        />
+        <div className={styles.processFlow}>
+          {parts.map((part, index) =>
+            part.kind === 'reply' ? (
+              <div
+                key={part.id}
+                className={styles.processReply}
+                data-work-reply={part.id}
+              >
+                <AssistantMarkdown
+                  text={part.text}
+                  streaming={running && index === parts.length - 1}
+                  artifacts={artifacts}
+                />
+              </div>
+            ) : (
+              <WorkProcess
+                key={part.id}
+                label="工作步骤"
+                items={part.items}
+                running={running && !part.closed}
+                streaming={false}
+                failed={false}
+                canceled={false}
+                onRetry={onRetry}
+                assistantCount={0}
+                assistantAttention={0}
+              />
+            ),
+          )}
+        </div>
+        {traceStatus === 'failed' ? (
+          <button type="button" onClick={onRetry}>
+            过程加载失败，点击重试
+          </button>
+        ) : null}
+        {children}
+      </section>
+    );
+  }
   return (
     <section
       className={`${reasoning.root} ${styles.workProcess}`}
-      aria-label="工作过程"
+      aria-label={label}
       data-state={microStatus && !waiting ? 'running' : 'ok'}
     >
       <DisclosureRow
@@ -170,30 +230,8 @@ export function WorkProcess({
           </>
         }
       >
-        <div
-          className={`${styles.processDetails} ${parts ? styles.processFlow : ''}`}
-        >
-          {parts ? (
-            parts.map((part) =>
-              part.kind === 'reply' ? (
-                <div
-                  key={part.id}
-                  className={styles.processReply}
-                  data-work-reply={part.id}
-                >
-                  <AssistantMarkdown text={part.text} />
-                </div>
-              ) : (
-                <WorkProcessSteps
-                  key={part.id}
-                  items={part.items}
-                  running={running}
-                />
-              ),
-            )
-          ) : (
-            <WorkProcessSteps items={items} running={running} />
-          )}
+        <div className={styles.processDetails}>
+          <WorkProcessSteps items={items} running={running} />
           {traceStatus === 'failed' ? (
             <button
               className={styles.nativeTraceRetry}

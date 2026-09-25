@@ -1,0 +1,9 @@
+--- a/packages/client/ui-chat/src/client/contract/chat-visibility.ts
++++ b/packages/client/ui-chat/src/client/contract/chat-visibility.ts
+@@ -1,5 +1,5 @@
+ /** Chat-only row visibility; durable events and trajectory inspection remain intact. */
+-import type { ChatNode } from './chat-nodes.ts'
++import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client'
+ 
+ /**
+  * Exclude system prompts, ordinary Context, and permission commands from visible Chat rows.

@@ -97,7 +97,15 @@ describe('native reading order adapted to Allrice', () => {
       }),
     );
     const done = projectWorkProgress(events, 'stale', false);
-    expect(done.parts?.map((part) => part.kind)).toEqual(['reply', 'steps']);
+    expect(done.parts?.map((part) => part.kind)).toEqual([
+      'reply',
+      'steps',
+      'reply',
+    ]);
+    expect(done.parts?.at(-1)).toMatchObject({
+      id: 'reply:b',
+      text: '已确认入口（校准）',
+    });
     expect(done.finalText).toBe('已确认入口（校准）');
   });
   it('replaces an abandoned partial reply, isolates attempts and retains visible progress on failure', () => {
@@ -117,7 +125,11 @@ describe('native reading order adapted to Allrice', () => {
       '执行中断，请重试',
       false,
     );
-    expect(result.parts?.map((part) => part.kind)).toEqual(['reply', 'steps']);
+    expect(result.parts?.map((part) => part.kind)).toEqual([
+      'reply',
+      'steps',
+      'reply',
+    ]);
     expect(JSON.stringify(result.parts)).toContain('重新检查');
     expect(JSON.stringify(result.parts)).not.toMatch(/失败半句|旧任务/);
     expect(result.finalText).toBe('执行中断，请重试');

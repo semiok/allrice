@@ -81,6 +81,15 @@ SOFTWARE.
 
 ## DSH employee workspace UI (MET-160)
 
+Chat reply rendering directly consumes `MarkdownText` from the official
+`@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1` package. Process/reply ordering
+uses the official `ProcessState`, assistant-content and visibility predicates,
+process-activity helper and verbatim tool-state predicates from the same pinned
+commit below, under `apps/web/app/chatflow/dsh-upstream/process/`. Recorded patches
+only adapt imports, extract the two tool predicates, and omit an unused catch
+binding for lint compatibility. AllRice maps public events and authenticated
+file links; it does not fork the native incremental Markdown renderer.
+
 DSH `0.1.7-rc.1`, commit `46a7f68b0922371ce7144b668b90e377d8e799f4`,
 https://github.com/deepseek-ai/deepseek-harness, MIT.
 Native workspace Rows/tree/locales and the collapsedSessionRows excerpt are

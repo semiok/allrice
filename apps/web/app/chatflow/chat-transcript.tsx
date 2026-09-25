@@ -233,6 +233,7 @@ export function ChatTranscript({
                       <WorkProcess
                         items={progress.items}
                         parts={progress.parts}
+                        artifacts={linkedArtifacts}
                         timing={timing}
                         running={messageIsRunning}
                         streaming={streamingOutput && !!streamedText}
@@ -313,7 +314,7 @@ export function ChatTranscript({
                           runActive={messageIsRunning}
                         />
                       )}
-                      {responseText ? (
+                      {responseText && !progress.parts ? (
                         <div
                           className={`${assistantUi.body} ${styles.assistantCopy}`}
                           data-streaming={
@@ -337,6 +338,7 @@ export function ChatTranscript({
                           ) : (
                             <AssistantMarkdown
                               text={responseText}
+                              streaming={streamingOutput && messageIsRunning}
                               artifacts={linkedArtifacts}
                             />
                           )}

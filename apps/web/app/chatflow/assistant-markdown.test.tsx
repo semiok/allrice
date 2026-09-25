@@ -29,6 +29,17 @@ describe('AssistantMarkdown', () => {
     expect(html).toContain('rel="noopener noreferrer"');
   });
 
+  it('disables reference images without interpreting their alt text as Markdown or math', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMarkdown
+        allowRemoteImages={false}
+        text={'![price $x$][img]\n\n[img]: https://tracker.invalid/pixel'}
+      />,
+    );
+    expect(html).not.toContain('<img');
+    expect(html).toContain('[图片：price $x$]');
+  });
+
   it('does not render raw HTML from an assistant response', () => {
     const html = renderToStaticMarkup(
       <AssistantMarkdown text={'<script>alert("x")</script>'} />,
