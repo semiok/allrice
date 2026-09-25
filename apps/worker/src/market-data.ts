@@ -130,6 +130,30 @@ function firstChartResult(response: YahooChartResponse) {
   return result;
 }
 
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function exchangeDate(timestamp: number, meta: Record<string, unknown>) {
+  const date = new Date(timestamp * 1000);
+  if (!Number.isFinite(date.getTime())) return null;
+  if (typeof meta.exchangeTimezoneName === 'string') {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: meta.exchangeTimezoneName,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(date);
+    } catch {
+      // Some instruments only supply Yahoo's numeric exchange UTC offset.
+    }
+  }
+  const offset = finiteNumber(meta.gmtoffset);
+  if (offset === null || Math.abs(offset) > 86400) return null;
+  return new Date((timestamp + offset) * 1000).toISOString().slice(0, 10);
+}
+
 export async function getMarketQuote(symbolInput: string) {
   const symbol = marketSymbol(symbolInput);
   const response = await boundedYahooJson(
@@ -140,22 +164,43 @@ export async function getMarketQuote(symbolInput: string) {
   const timestamps = result.timestamp ?? [];
   const quote = result.indicators?.quote?.[0] ?? {};
   const closes = Array.isArray(quote.close) ? quote.close : [];
-  const points = timestamps.flatMap((timestamp, index) => {
-    const close = closes[index];
-    return typeof close === 'number' ? [{ timestamp, close }] : [];
-  });
-  const latest = points.at(-1) ?? null;
-  const previous = points.at(-2) ?? null;
-  const marketPrice =
-    typeof meta.regularMarketPrice === 'number'
-      ? meta.regularMarketPrice
-      : (latest?.close ?? null);
+  const points = timestamps
+    .flatMap((timestamp, index) => {
+      const close = finiteNumber(closes[index]);
+      return finiteNumber(timestamp) !== null ? [{ timestamp, close }] : [];
+    })
+    .sort((left, right) => left.timestamp - right.timestamp);
+  const latest =
+    points.findLast((point) => point.close !== null && point.close > 0) ?? null;
+  const regularMarketPrice = finiteNumber(meta.regularMarketPrice);
+  const marketPrice = regularMarketPrice ?? latest?.close ?? null;
+  const marketTime =
+    regularMarketPrice !== null
+      ? finiteNumber(meta.regularMarketTime)
+      : (latest?.timestamp ?? null);
+  const marketDate =
+    marketTime === null ? null : exchangeDate(marketTime, meta);
+  // chartPreviousClose is the baseline BEFORE the requested five-day range,
+  // not yesterday's close. Compare exchange dates against the quote's session
+  // (not the fetch date), including before the open, weekends and missing bars.
+  const previous =
+    marketDate === null
+      ? undefined
+      : points.findLast((point) => {
+          const date = exchangeDate(point.timestamp, meta);
+          return date !== null && date < marketDate;
+        });
+  const hint = finiteNumber(meta.priceHint);
+  const previousPrice = previous?.close ?? null;
+  const dailyClose =
+    previousPrice === null || previousPrice <= 0
+      ? null
+      : hint !== null && Number.isInteger(hint) && hint >= 0 && hint <= 12
+        ? Number(previousPrice.toFixed(hint))
+        : previousPrice;
+  const explicitClose = finiteNumber(meta.regularMarketPreviousClose);
   const previousClose =
-    typeof meta.regularMarketPreviousClose === 'number'
-      ? meta.regularMarketPreviousClose
-      : typeof meta.chartPreviousClose === 'number'
-        ? meta.chartPreviousClose
-        : (previous?.close ?? null);
+    explicitClose !== null && explicitClose > 0 ? explicitClose : dailyClose;
   const change =
     marketPrice !== null && previousClose !== null
       ? Number((marketPrice - previousClose).toFixed(8))
@@ -187,10 +232,7 @@ export async function getMarketQuote(symbolInput: string) {
       previousClose,
       change,
       changePercent,
-      marketTime:
-        typeof meta.regularMarketTime === 'number'
-          ? meta.regularMarketTime
-          : (latest?.timestamp ?? null),
+      marketTime,
       fiftyTwoWeekHigh:
         typeof meta.fiftyTwoWeekHigh === 'number'
           ? meta.fiftyTwoWeekHigh
@@ -199,7 +241,8 @@ export async function getMarketQuote(symbolInput: string) {
         typeof meta.fiftyTwoWeekLow === 'number' ? meta.fiftyTwoWeekLow : null,
     },
     sourceUrl: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
-    notice: '公开行情可能延迟；交易决策应以持牌行情服务或券商数据为准。',
+    notice:
+      '涨跌幅相对报价所属交易日的上一交易日收盘价；公开行情可能延迟，交易决策应以持牌行情服务或券商数据为准。',
   };
 }
 

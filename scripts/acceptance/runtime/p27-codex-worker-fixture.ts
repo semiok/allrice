@@ -1,6 +1,9 @@
 /** One isolated ordinary Codex Worker task. Preparation never executes a model or reads credentials. */
 import { randomUUID } from 'node:crypto';
-import type { RequestContext } from '../../../packages/contracts/src/index.ts';
+import type {
+  PromptImageAttachment,
+  RequestContext,
+} from '../../../packages/contracts/src/index.ts';
 import type {
   AssistantFixtureCleanupProof,
   createAssistantFixtureDatabase,
@@ -39,6 +42,8 @@ export async function createP27CodexWorkerFixture(
     throughMigration?: '0096_assistant_pricing.sql';
     /** Synthetic SQL tests only. Live model drivers retain the default local pin. */
     allowCiDatabase?: boolean;
+    /** Synthetic Worker regression only; never used by live Codex smoke. */
+    syntheticImagesWithAssistants?: boolean;
   } = {},
 ) {
   requireFixture(
@@ -47,6 +52,10 @@ export async function createP27CodexWorkerFixture(
     'P27_CODEX_WORKER_MIGRATION_CHECKPOINT_INVALID',
   );
   requireFixture(!owned, 'P27_CODEX_WORKER_FIXTURE_ALREADY_OWNED');
+  requireFixture(
+    !options.syntheticImagesWithAssistants || options.allowCiDatabase === true,
+    'P27_CODEX_WORKER_SYNTHETIC_IMAGES_ONLY',
+  );
   requireFixture(
     !process.env.DATABASE_URL,
     'P27_CODEX_WORKER_AMBIENT_DATABASE',
@@ -224,7 +233,9 @@ export async function createP27CodexWorkerFixture(
       key: 'p27-codex-worker',
       name: 'P27 isolated ordinary Codex Worker',
       description: 'Synthetic acceptance only',
-      toolNames: [],
+      toolNames: options.syntheticImagesWithAssistants
+        ? ['assistant.delegate', 'assistant.report']
+        : [],
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-codex',
@@ -260,7 +271,7 @@ export async function createP27CodexWorkerFixture(
       await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignmentId},${organizationId},${workspaceId},${employeeId},${employeeVersionId},${ownerId},false)`;
       await tx`update allrice_model_providers set enabled=true where id=${catalog.provider_id}`;
-      await tx`update allrice_model_catalog_entries set enabled=true,input_modalities='["text"]' where id=${catalogId}`;
+      await tx`update allrice_model_catalog_entries set enabled=true,input_modalities=${tx.json(options.syntheticImagesWithAssistants ? ['text', 'image'] : ['text'])} where id=${catalogId}`;
       await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
         values(${connectionId},${catalog.provider_id},'platform','P27 isolated Codex','deployment:codex-default',null,'ready')`;
       await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
@@ -284,7 +295,7 @@ export async function createP27CodexWorkerFixture(
     });
     let preparing = false;
     let attempted = false;
-    async function prepare(prompt: string) {
+    async function prepare(prompt: string, images?: PromptImageAttachment[]) {
       requireFixture(
         !closed && !preparing,
         'P27_CODEX_WORKER_FIXTURE_NOT_IDLE',
@@ -324,7 +335,7 @@ export async function createP27CodexWorkerFixture(
             userRequest: prompt,
             conversation: [],
             memories: [],
-            imageAttachments: [],
+            imageAttachments: images ?? [],
           },
         });
         requireFixture(
@@ -358,7 +369,7 @@ export async function createP27CodexWorkerFixture(
               assistantConfiguration: {
                 version: 1,
                 mode: 'daily',
-                allowAssistants: false,
+                allowAssistants: images !== undefined,
                 maxConcurrent: 1,
                 maxDepth: 1,
                 maxChildren: 1,
@@ -424,10 +435,21 @@ export async function createP27CodexWorkerFixture(
       connectionId,
       catalogId,
       runLimits,
-      async prepareOrdinaryTask(prompt: string) {
+      async prepareOrdinaryTask(
+        prompt: string,
+        syntheticAssistantImages?: PromptImageAttachment[],
+      ) {
+        // Capture attachments BEFORE the production snapshot is frozen. The
+        // live ordinary smoke retains its no-assistant behavior; only opted-in
+        // synthetic integration tests may exercise this image/assistant path.
+        requireFixture(
+          syntheticAssistantImages === undefined ||
+            options.syntheticImagesWithAssistants === true,
+          'P27_CODEX_WORKER_SYNTHETIC_IMAGES_ONLY',
+        );
         requireFixture(!attempted, 'P27_CODEX_WORKER_ALREADY_ATTEMPTED');
         attempted = true;
-        return prepare(prompt);
+        return prepare(prompt, syntheticAssistantImages);
       },
       close,
     };

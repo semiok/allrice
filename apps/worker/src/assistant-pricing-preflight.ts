@@ -80,8 +80,10 @@ export function preflightAssistantPricing(input: {
   at?: string;
 }): AssistantPriceSnapshot | undefined {
   if (!input.enabled) return undefined;
-  if (input.hasNonTextInput) deny('ASSISTANT_PRICE_TEXT_ONLY');
+  // The text-only tariff is an API pricing constraint, not a vision limit.
+  // Verify subscription identity first; native DSH still admits the images.
   if (preflightAssistantSubscription(input)) return undefined;
+  if (input.hasNonTextInput) deny('ASSISTANT_PRICE_TEXT_ONLY');
   const parsed = SessionModelSnapshotSchema.safeParse(input.modelSnapshot);
   if (!parsed.success) deny('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
   const frozen = parsed.data;

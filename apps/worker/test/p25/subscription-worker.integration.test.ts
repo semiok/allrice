@@ -1,5 +1,6 @@
 /** Actual ordinary Worker + isolated PG; native acquisition is forbidden and
  * the adapter supplies synthetic usage. No provider or credential is read. */
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +20,12 @@ import {
   assertQuotaAvailable,
 } from '@allrice/database';
 import type * as Database from '@allrice/database';
-import { CodexSubscriptionQuotaSnapshotSchema } from '@allrice/contracts';
+import {
+  CodexSubscriptionQuotaSnapshotSchema,
+  type PromptImageAttachment,
+} from '@allrice/contracts';
+import { LocalStorageAdapter } from '@allrice/storage';
+import { assistantSubscriptionSnapshotDigest } from '../../src/assistant-pricing-preflight.ts';
 
 const status = vi.hoisted(() => ({ quota: undefined as unknown }));
 vi.mock('@allrice/database', async (original) => ({
@@ -62,6 +68,7 @@ integration(
     });
     it.each([
       'complete',
+      'image_with_assistants',
       'transport_failure',
       'mismatched_result',
       'missing_usage',
@@ -78,6 +85,7 @@ integration(
       async (mode) => {
         const unknownUsage = ![
           'complete',
+          'image_with_assistants',
           'startup_undispatched',
           'failed_known_usage',
         ].includes(mode);
@@ -88,13 +96,55 @@ integration(
         // local/CI database URLs. Live Codex smoke callers retain the local pin.
         const fixture = await createP27CodexWorkerFixture({
           allowCiDatabase: true,
+          syntheticImagesWithAssistants: mode === 'image_with_assistants',
         });
         let cleanup: (() => Promise<void>) | undefined;
         try {
           vi.stubEnv('ALLRICE_STORAGE_ROOT', join(temporary, 'storage'));
+          const png =
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC';
+          let images: PromptImageAttachment[] | undefined;
+          if (mode === 'image_with_assistants') {
+            // Exercise the production Worker image loader and billing/controller
+            // wiring with an image captured in the initial immutable snapshot.
+            vi.stubEnv(
+              'ALLRICE_ASSISTANT_PRICING_JSON',
+              'never-parse-for-subscription-images',
+            );
+            const bytes = Buffer.from(png, 'base64'),
+              id = randomUUID();
+            const image: PromptImageAttachment = {
+              fileName: 'chart.png',
+              object: {
+                id,
+                organizationId: fixture.organizationId,
+                workspaceId: fixture.workspaceId,
+                ownerId: fixture.ownerId,
+                key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/owners/${fixture.ownerId}/uploads/${id}`,
+                mediaType: 'image/png',
+                sizeBytes: bytes.length,
+                checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+                immutable: true,
+                retentionUntil: null,
+                deletedAt: null,
+              },
+            };
+            await new LocalStorageAdapter(join(temporary, 'storage')).put(
+              image.object,
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(bytes);
+                  controller.close();
+                },
+              }),
+            );
+            images = [image];
+          }
           const task = await fixture.prepareOrdinaryTask(
             'Synthetic arithmetic.',
+            images,
           );
+          if (images) vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
           const isolation = await prepareExecutionIsolation({
             root: temporary,
             organizationId: fixture.organizationId,
@@ -172,6 +222,14 @@ integration(
             ) {
               if (mode === 'startup_undispatched')
                 return originalExecute.call(this, input);
+              if (mode === 'image_with_assistants') {
+                expect(input.images).toEqual([
+                  { mediaType: 'image/png', data: png, name: 'chart.png' },
+                ]);
+                expect(input.assistants?.subscriptionSnapshot).toMatchObject({
+                  billingMode: 'subscription',
+                });
+              }
               if (mode === 'transport_failure')
                 throw Error('synthetic transport failed after dispatch');
               if (mode.startsWith('failed_')) {
@@ -227,6 +285,21 @@ integration(
                 },
                 usageComplete: mode === 'missing_usage' ? undefined : true,
                 cacheUsageKnown: mode === 'missing_usage' ? undefined : true,
+                ...(mode === 'image_with_assistants'
+                  ? {
+                      assistantStatus: 'completed' as const,
+                      billingMode: 'subscription' as const,
+                      costBasis: 'not_applicable' as const,
+                      estimatedCostCents: null,
+                      costEstimateAvailable: false,
+                      actualCostKnown: false as const,
+                      cacheUsageKnown: false,
+                      subscriptionSnapshotDigest:
+                        assistantSubscriptionSnapshotDigest(
+                          input.assistants!.subscriptionSnapshot!,
+                        ),
+                    }
+                  : {}),
               };
             });
           const pending = executeEmployeeRun({

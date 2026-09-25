@@ -127,6 +127,22 @@ function subscriptionFixture() {
   return input;
 }
 describe('Worker subscription preflight and exact result binding', () => {
+  it('admits image input with assistants on a verified Codex subscription without API tariffs', () => {
+    const input = { ...subscriptionFixture(), hasNonTextInput: true };
+    vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', 'never-parse-me');
+    vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', undefined);
+    expect(preflightAssistantPricing(input)).toBeUndefined();
+    expect(preflightAssistantSubscription(input)).toMatchObject({
+      billingMode: 'subscription',
+    });
+    expect(() =>
+      preflightAssistantPricing({ ...input, modelSnapshot: undefined }),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED',
+      }),
+    );
+  });
   it('returns a subscription proof without parsing unavailable/malicious API tariffs', () => {
     const input = subscriptionFixture();
     vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', 'never-parse-me');
