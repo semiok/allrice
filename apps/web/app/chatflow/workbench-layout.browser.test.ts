@@ -9,8 +9,6 @@ import type { Browser } from '../../../worker/node_modules/playwright-core/index
 import {
   WorkbenchArtifactSchema,
   type MessageFeedbackItem,
-  type ReviewDraftInput,
-  type ReviewFeedback,
   McpConnectionSchema,
   type McpConnection,
   OfficeRenderResponseSchema,
@@ -281,11 +279,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       feedbackError: false,
       feedbackWrites: 0,
       feedbackReview: { status: 'new', note: '' },
-      revisionPosts: [] as ReviewDraftInput[],
-      revisionFeedback: [] as ReviewFeedback[],
-      revisionMessageIds: new Set<string>(),
-      lostRevisionReceipt: false,
-      lostRunReceipt: false,
       contentError: false,
       officePreview: null as ArtifactPreview | null,
       files: [] as WorkspaceFile[],
@@ -400,15 +393,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ) {
         const body = route.request().postDataJSON();
         state.messageInputs.push(body);
-        state.revisionMessageIds.add(body.clientMessageId);
-        if (state.lostRunReceipt) {
-          state.lostRunReceipt = false;
-          return answer(
-            { error: { message: '修订任务回执丢失，请重试' } },
-            503,
-          );
-        }
-        return answer({ run: { id: run }, created: true });
+        return answer({
+          run: { id: run },
+          delivery: 'immediate',
+          fallbackRunId: null,
+          created: true,
+          userMessage: {
+            id: id(300),
+            role: 'user',
+            content: { text: body.text },
+            status: 'completed',
+            runId: run,
+            createdAt: now,
+          },
+          assistantMessage: {
+            id: id(500),
+            role: 'assistant',
+            content: { text: '正在处理…' },
+            status: 'pending',
+            runId: run,
+            createdAt: now,
+          },
+        });
       }
       if (options.queue && route.request().method() === 'POST') {
         if (path.endsWith('/messages')) {
@@ -485,7 +491,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.connectionReads++;
         return answer({ connections: state.connections });
       }
-      if (route.request().method() !== 'GET' && !path.endsWith('/feedback')) {
+      if (route.request().method() !== 'GET') {
         writes.push(path);
         return answer({}, 500);
       }
@@ -746,34 +752,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       if (path.includes('/artifacts/')) {
         const a = state.items.find((item) => path.includes(item.id));
         if (!a) return answer({}, 404);
-        if (path.endsWith('/feedback')) {
-          const draft = route.request().postDataJSON() as ReviewDraftInput;
-          state.revisionPosts.push(draft);
-          const feedback: ReviewFeedback = {
-            id: draft.feedbackId,
-            artifactId: a.id,
-            actorId: user,
-            revision: 1,
-            checksum: a.object.checksum,
-            comments: draft.comments,
-            state: 'submitted',
-            stale: false,
-            resultArtifactId: null,
-            resolution: null,
-            createdAt: now,
-            submittedAt: now,
-            updatedAt: now,
-          };
-          state.revisionFeedback = [feedback];
-          if (state.lostRevisionReceipt) {
-            state.lostRevisionReceipt = false;
-            return answer(
-              { error: { message: '修改要求回执丢失，请重试' } },
-              503,
-            );
-          }
-          return answer({ feedback });
-        }
         if (path.endsWith('/content'))
           return answer(
             state.officePreview ?? {
@@ -783,7 +761,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
             state.contentError ? 503 : 200,
           );
-        return answer({ artifact: a, feedback: state.revisionFeedback });
+        return answer({ artifact: a, feedback: [] });
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
         return answer({ error: { message: 'Not accessible' } }, 403);
@@ -1132,55 +1110,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
-  it('one-click artifact revision preserves the version and deduplicates both lost receipts', async () => {
+  it('artifact previews keep file actions and use the chat composer for revision requests', async () => {
     const f = await fixture({ artifacts: true });
     try {
-      await f.page
-        .getByRole('button', { name: /交付成果/ })
-        .first()
-        .click();
-      const panel = f.page.locator('#artifact-workbench');
-      await panel
-        .getByRole('textbox', { name: '修改要求', exact: true })
-        .fill('把结论放在开头');
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
       expect(
-        await panel.getByRole('button', { name: '加入本批意见' }).count(),
-      ).toBe(0);
-      f.state.lostRevisionReceipt = true;
-      await panel
-        .getByRole('button', { name: '提交修改', exact: true })
+        await f.panel.getByRole('link', { name: '下载此版本' }).isVisible(),
+      ).toBe(true);
+      expect(await f.panel.getByRole('textbox').count()).toBe(0);
+      expect(await f.panel.getByText(/修改记录|让Rice修改/).count()).toBe(0);
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await input.fill('请把 report-10.md 的结论放在开头');
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
-      await panel
-        .getByText('成果服务暂不可用，请重试。', { exact: true })
-        .waitFor();
-      f.state.lostRunReceipt = true;
-      await panel
-        .getByRole('button', { name: '提交修改', exact: true })
-        .click();
-      await panel
-        .getByText('修订任务回执丢失，请重试', { exact: true })
-        .waitFor();
-      await panel
-        .getByRole('button', { name: '提交修改', exact: true })
-        .click();
-      await panel
-        .getByText('已交给Rice，可在对话中查看修改进展。', { exact: true })
-        .waitFor();
-      expect(f.state.revisionPosts).toHaveLength(3);
-      expect(
-        new Set(f.state.revisionPosts.map((p) => JSON.stringify(p))).size,
-      ).toBe(1);
-      expect(f.state.revisionMessageIds.size).toBe(1);
-      expect(f.state.revisionPosts[0]).toMatchObject({
-        artifactId: id(10),
-        checksum: artifact(10).object.checksum,
-        comments: [{ text: '把结论放在开头' }],
-      });
+      expect(await input.inputValue()).toBe('请把 report-10.md 的结论放在开头');
+      await input.press('Enter');
+      await expect.poll(() => f.state.messageInputs.length).toBe(1);
+      expect(f.state.messageInputs[0]?.text).toBe(
+        '请把 report-10.md 的结论放在开头',
+      );
       expect(f.errors).toEqual([]);
     } finally {
       await f.close();
     }
-  }, 30000);
+  });
 
   it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
@@ -3205,7 +3159,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('uses a narrow drawer, traps/restores focus, preserves drafts across resize, and has no horizontal overflow', async () => {
+  it('uses a narrow drawer, traps/restores focus, preserves preview state across resize, and has no horizontal overflow', async () => {
     const f = await fixture({ width: 390, artifacts: true });
     try {
       expect(await f.panel.count()).toBe(0);
@@ -3246,39 +3200,42 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.getAttribute('role'))
         .toBe('complementary');
-      const opinion = f.panel.getByRole('textbox', {
-        name: '修改要求',
-        exact: true,
+      const metadata = f.panel.locator('details').filter({
+        has: f.page.locator('summary', { hasText: '版本与基线标识' }),
       });
-      await opinion.fill('保留我的意见');
+      await metadata.locator('summary').click();
       await f.page.setViewportSize({ width: 390, height: 844 });
       // Viewport acknowledgement precedes the matchMedia event/React commit.
       // Await the rendered drawer, rather than racing its previous wide role.
       await expect.poll(() => f.panel.getAttribute('role')).toBe('dialog');
-      expect(await opinion.inputValue()).toBe('保留我的意见');
+      expect(await metadata.getAttribute('open')).not.toBeNull();
       await f.page.screenshot({ path: '/tmp/met147-mobile.png' });
       expect(
         await f.page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       ).toBe(true);
-      f.page.once('dialog', (d) => d.dismiss());
       await f.page.keyboard.press('Escape');
-      expect(await opinion.inputValue()).toBe('保留我的意见');
+      expect(await f.panel.count()).toBe(0);
     } finally {
       await f.close();
     }
   });
 
-  it('MET160 native Dock preserves reviews across tabs, split, fullscreen, close and restored layout', async () => {
+  it('MET160 native Dock preserves previews across tabs, split, fullscreen, close and restored layout', async () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-      const note = f.panel.getByRole('textbox', {
-        name: '修改要求',
-        exact: true,
-      });
-      await note.fill('保留第一份成果的意见');
+      // Selecting a version pins it while newer artifacts arrive.
+      await f.panel
+        .getByRole('combobox', { name: '成果版本' })
+        .selectOption(id(10));
+      const metadata = f.panel
+        .locator('[data-dockkit-host="dock"]:not([hidden]) details')
+        .filter({
+          has: f.page.locator('summary', { hasText: '版本与基线标识' }),
+        });
+      await metadata.first().locator('summary').click();
       f.state.items.push(artifact(11));
       await f.reloadList();
       await f.panel
@@ -3296,8 +3253,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
         .toBe(2);
-      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
-      await note.nth(1).fill('第二份独立意见');
+      expect(await metadata.first().getAttribute('open')).not.toBeNull();
+      expect(await metadata.nth(1).getAttribute('open')).toBeNull();
       const divider = f.panel.locator('[data-dockkit-divider]');
       const box = (await divider.boundingBox())!;
       await f.page.mouse.move(box.x, box.y + 120);
@@ -3311,21 +3268,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel
         .getByRole('button', { name: '退出全屏', exact: true })
         .click();
-      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
-      expect(await note.nth(1).inputValue()).toBe('第二份独立意见');
-      const firstTab = f.panel.getByRole('tab', { name: /^report-10.md/ });
-      f.page.once('dialog', (dialog) => dialog.dismiss());
-      await firstTab
-        .getByRole('button', { name: '关闭标签', exact: true })
-        .click();
-      expect(await firstTab.count()).toBe(1);
+      expect(await metadata.first().getAttribute('open')).not.toBeNull();
+      expect(await metadata.nth(1).getAttribute('open')).toBeNull();
       await f.panel
         .getByRole('button', { name: '全屏查看', exact: true })
         .click();
       await f.page.screenshot({ path: '/tmp/allrice-met160-dock-split.png' });
-      // Leave the reviews clean before exercising persistence across reload.
-      await note.first().fill('');
-      await note.nth(1).fill('');
       await f.page.reload();
       await expect
         .poll(() => f.panel.locator('[data-dockkit-pane]').count())
@@ -3346,28 +3294,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
-  it('protects review drafts and explicit version selection on new artifacts, including list failure/retry', async () => {
+  it('protects explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
     try {
-      const opinion = f.panel.getByRole('textbox', {
-        name: '修改要求',
-        exact: true,
-      });
-      await opinion.fill('需要补充来源');
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      await f.panel
+        .getByRole('combobox', { name: '成果版本' })
+        .selectOption(id(10));
       f.state.items.unshift(artifact(11));
       await f.reloadList();
       expect(
         await f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
       ).toBe(id(10));
       await f.panel.getByRole('button', { name: '查看新成果' }).waitFor();
-      expect(await opinion.inputValue()).toBe('需要补充来源');
+      expect(
+        await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
+      ).toBe(true);
       f.state.listError = true;
       await f.entry.click();
       await f.panel.getByRole('alert').waitFor();
-      expect(await opinion.inputValue()).toBe('需要补充来源');
+      expect(
+        await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
+      ).toBe(true);
       f.state.listError = false;
       await f.reloadList();
-      f.page.once('dialog', (d) => d.accept());
       await f.panel.getByRole('button', { name: '查看新成果' }).click();
       await expect
         .poll(() =>

@@ -2588,7 +2588,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     ).rejects.toThrow('feedback_limit');
   });
   it.skipIf(process.env.ALLRICE_WORKBENCH_BROWSER_TEST !== '1')(
-    'P07 real Chromium and PostgreSQL: Cline diff, persisted review, stale versions and inert previews',
+    'P07 real Chromium and PostgreSQL: read-only Cline diff, stale versions and inert previews',
     async () => {
       const f = await artifactFixture(riceManifest());
       f.context.memberships = f.policyPayload.memberships;
@@ -2694,8 +2694,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         ),
       );
       let origin = '',
-        lostSave = false,
-        lostContinuation = false,
         writeCount = 0;
       const server = createServer((req, res) => {
         void (async () => {
@@ -2758,15 +2756,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
               f.sessionId,
               JSON.parse(Buffer.concat(chunks).toString()),
             );
-            if (lostContinuation) {
-              lostContinuation = false;
-              res.writeHead(503).end(
-                JSON.stringify({
-                  error: { message: '合成 ACK 丢失，可重试' },
-                }),
-              );
-              return;
-            }
             res.end(JSON.stringify(result));
             return;
           }
@@ -2829,11 +2818,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
                 f.storage,
                 database,
               );
-              if (lostSave) {
-                lostSave = false;
-                res.statusCode = 503;
-                return {};
-              }
               return { feedback };
             }
             return {
@@ -2915,52 +2899,13 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             .first()
             .isVisible(),
         ).toBe(true);
-        await page
-          .locator(
-            '[data-dockkit-host="dock"]:not([hidden]) [data-cline-diff] diffs-container [data-additions] [data-column-number="1"]',
-          )
-          .click();
-        await activeContent
-          .getByText('已选内容：answer.ts · 修改后 L1', { exact: false })
-          .waitFor();
         await page.screenshot({ path: join(evidenceDir, 'desktop-diff.png') });
-        await activeContent
-          .getByLabel('修改要求', { exact: true })
-          .fill('请加上这行的测试。');
-        lostSave = true;
-        await page
-          .getByRole('button', { name: '提交修改', exact: true })
-          .click();
-        await page.getByRole('alert').waitFor();
-        const saved = await listArtifactFeedback(
-          f.context,
-          f.sessionId,
-          change.id,
-          database,
-        );
-        expect(saved).toHaveLength(1);
-        expect(saved[0]!.state).toBe('submitted');
-        expect(saved[0]!.comments[0]!.anchor).toMatchObject({
-          path: 'answer.ts',
-          side: 'after',
-          startLine: 1,
-          endLine: 1,
-        });
-        lostContinuation = true;
-        await page
-          .getByRole('button', { name: '提交修改', exact: true })
-          .click();
-        await activeContent
-          .getByText('合成 ACK 丢失，可重试', { exact: true })
-          .waitFor();
-        await page
-          .getByRole('button', { name: '提交修改', exact: true })
-          .click();
-        await activeContent
-          .getByText('已交给当前员工，可在对话中查看修改进展。', {
-            exact: true,
-          })
-          .waitFor();
+        expect(await activeContent.getByRole('textbox').count()).toBe(0);
+        expect(
+          await activeContent
+            .getByRole('link', { name: '下载此版本' })
+            .isVisible(),
+        ).toBe(true);
         expect(
           await listArtifactFeedback(
             f.context,
@@ -2968,31 +2913,22 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             change.id,
             database,
           ),
-        ).toHaveLength(1);
+        ).toHaveLength(0);
         expect(
           await database`select response_id from allrice_review_continuations where organization_id=${f.context.organizationId}`,
-        ).toHaveLength(1);
+        ).toHaveLength(0);
         expect(
           await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
         ).toHaveLength(0);
         await activeContent
           .getByLabel('成果版本', { exact: true })
           .selectOption(textArtifact.id);
-        await activeContent
-          .getByLabel('修改要求', { exact: true })
-          .fill('全局意见');
         const revisedDoc = await f.publish(
           'doc-revision',
           'first line\nrevised line',
           textArtifact.object.id,
         );
         await activeContent.getByText('旧版本 · 仅查看').waitFor();
-        expect(
-          await page
-            .getByRole('button', { name: '提交修改', exact: true })
-            .isDisabled(),
-        ).toBe(true);
-        page.once('dialog', (dialog) => void dialog.accept());
         await page.getByRole('button', { name: '查看最新版本' }).click();
         await activeContent
           .getByText('revised line', { exact: false })
@@ -3037,13 +2973,10 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         await page
           .getByRole('button', { name: '下一页正文', exact: true })
           .click();
-        await page
-          .getByRole('button', { name: '评论第 101 行', exact: true })
-          .click();
         await activeContent
-          .getByText('修改后 L101', { exact: false })
+          .getByText('2/201 页 · 20001 行', { exact: true })
           .waitFor();
-        expect(await activeContent.locator('pre button').count()).toBe(100);
+        expect(await activeContent.locator('pre button').count()).toBe(0);
         await page.setViewportSize({ width: 390, height: 844 });
         const dialog = page.getByRole('dialog', { name: '交付成果' });
         await dialog.waitFor();
@@ -3066,7 +2999,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             .evaluate((e) => e === document.activeElement),
         ).toBe(true);
         expect(errors).toEqual([]);
-        expect(writeCount).toBe(3);
+        expect(writeCount).toBe(0);
         console.info(
           'P07 browser evidence:',
           evidenceDir,

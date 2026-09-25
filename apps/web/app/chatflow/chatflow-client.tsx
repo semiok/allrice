@@ -743,7 +743,6 @@ export function ChatFlowClient({
   }
 
   function confirmSessionNavigation() {
-    if (!workbench.confirmNavigation()) return false;
     return (
       !(draft.trim() || pendingAttachments.length) ||
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
@@ -1153,7 +1152,7 @@ export function ChatFlowClient({
                     error={interactions.error}
                     sessionId={activeId}
                     onArtifact={(id) => {
-                      if (workbench.confirmNavigation()) workbench.show(id);
+                      workbench.show(id);
                     }}
                     onOperation={(id) => {
                       const card = document.getElementById(`operation-${id}`);
@@ -1217,7 +1216,7 @@ export function ChatFlowClient({
                     workspaceId={workspace.workspaceId}
                     artifacts={workbench.artifacts}
                     onOpenArtifact={(id) => {
-                      if (workbench.confirmNavigation()) workbench.show(id);
+                      workbench.show(id);
                     }}
                   />
                 </MessageFeedbackProvider>
@@ -1258,7 +1257,6 @@ export function ChatFlowClient({
 
       {workbenchEnabled && hasWorkbenchContent ? (
         <ArtifactWorkbench
-          employeeName={activeEmployeeName}
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
@@ -1282,7 +1280,6 @@ export function ChatFlowClient({
             workbenchEntry.current?.focus();
           }}
           onReload={workbench.reload}
-          onDirtyChange={workbench.noteDirty}
           onContinued={(runId) => {
             if (!activeId) return;
             void loadHistory(activeId);
