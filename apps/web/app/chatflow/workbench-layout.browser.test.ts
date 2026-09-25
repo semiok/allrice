@@ -2297,9 +2297,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page.locator('summary[aria-label="账号月额度"]').count(),
       ).toBe(0);
+      expect(
+        await f.page.getByText('Codex 订阅 · DSH', { exact: true }).count(),
+      ).toBe(0);
       await settings.click();
       const quota = f.page.locator('summary[aria-label="账号月额度"]');
       await quota.getByText('Synthetic member', { exact: true }).waitFor();
+      await quota.getByText('Codex 订阅 · DSH', { exact: true }).waitFor();
       await quota.getByText('剩余 43%', { exact: true }).waitFor();
       await f.page.getByText('本月已记录', { exact: false }).waitFor();
       expect(

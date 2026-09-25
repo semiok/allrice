@@ -889,7 +889,6 @@ export function ChatFlowClient({
       onUploadAttachments={uploadAttachments}
       onUploadVisibilityChange={setUploadVisibility}
       pendingAttachments={pendingAttachments}
-      providerLabel={activeProviderLabel}
       uploadVisibility={uploadVisibility}
     />
   );
@@ -958,6 +957,7 @@ export function ChatFlowClient({
         onBridge={() => void loadBridgeDevices(true)}
         monthlyQuota={monthlyQuota}
         preferences={preferences}
+        providerLabel={activeProviderLabel}
         activeId={activeId}
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
@@ -1090,10 +1090,6 @@ export function ChatFlowClient({
                       {workbench.noticeId && !workbenchOpen ? ' · 新成果' : ''}
                     </button>
                   ) : null}
-                  <span className={styles.runtimePill}>
-                    <i />
-                    {activeProviderLabel}
-                  </span>
                 </div>
               </div>
             </header>

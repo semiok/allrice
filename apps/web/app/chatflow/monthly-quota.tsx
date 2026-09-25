@@ -11,11 +11,13 @@ export function MonthlyQuota({
   failed,
   onRefresh,
   expanded = false,
+  providerLabel,
 }: {
   data: UserMonthlyQuota | null;
   failed: boolean;
   onRefresh: () => void;
   expanded?: boolean;
+  providerLabel?: string;
 }) {
   const observing = data?.codexTokenPolicy === 'observe';
   return (
@@ -44,7 +46,16 @@ export function MonthlyQuota({
           <circle cx="12" cy="12" r="2" />
         </svg>
         <span className={styles.identity}>
-          <span className={styles.name}>{data?.displayName ?? '当前账号'}</span>
+          <span className={styles.account}>
+            <span className={styles.name}>
+              {data?.displayName ?? '当前账号'}
+            </span>
+            {providerLabel && (
+              <span className={styles.provider} aria-label="模型服务">
+                {providerLabel}
+              </span>
+            )}
+          </span>
           <span className={styles.label}>
             {observing ? '本月使用情况' : 'AllRice 月额度'}
           </span>

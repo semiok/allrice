@@ -31,7 +31,6 @@ interface ChatComposerProps {
   bridgeConnectionState: BridgeConnectionState;
   nativeContextStatus: History['nativeContextStatus'];
   pendingAttachments: PendingAttachment[];
-  providerLabel: string;
   uploadVisibility: Visibility;
   onAttachmentMenuOpenChange: (open: boolean) => void;
   onCancelRun: () => void | Promise<void>;
@@ -63,7 +62,6 @@ export function ChatComposer({
   bridgeConnectionState,
   nativeContextStatus,
   pendingAttachments,
-  providerLabel,
   uploadVisibility,
   onAttachmentMenuOpenChange,
   onCancelRun,
@@ -217,7 +215,6 @@ export function ChatComposer({
             </select>
           </div>
           <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
-            <span className={styles.providerChip}>{providerLabel}</span>
             <button
               aria-label="发送"
               className={`${inputUi.primary} ${styles.employeeSend}`}
