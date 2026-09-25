@@ -166,7 +166,9 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       await page.getByRole('alert').waitFor();
       expect(await cloud.getAttribute('aria-checked')).toBe('false');
       await page.getByRole('button', { name: '重新读取' }).click();
-      await cloud.waitFor();
+      await page
+        .getByRole('switch', { name: '我的电脑自动工作', checked: false })
+        .waitFor();
       expect(
         await page
           .getByRole('switch', { name: '我的电脑自动工作' })
