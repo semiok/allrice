@@ -599,9 +599,10 @@ integration(
             ).toMatchObject({ capacity: 12000, reserved: 0 });
           }
 
-          // A new real business Run on the same Session gets a distinct lease
-          // and budget root. The profile intentionally rebuilds the host when
-          // rootRunId changes, preserving only the authorized native journal.
+          // Reuse the native host while the next business Run gets its own
+          // lease and budget root. Old child results and usage stay on Run 1.
+          const previousRuntime = adapter.runtimeInventory()[0];
+          expect(previousRuntime).toBeDefined();
           const nextRunId = randomUUID(),
             nextJobId = randomUUID(),
             nextUserMessageId = randomUUID(),
@@ -644,6 +645,7 @@ integration(
               },
             }),
           });
+          expect(adapter.runtimeInventory()[0]?.id).toBe(previousRuntime!.id);
           expect(next).toMatchObject({
             assistantStatus: 'completed',
             usageComplete: true,
