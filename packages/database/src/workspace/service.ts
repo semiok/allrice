@@ -2315,6 +2315,8 @@ export async function getEmployeeWorkspace(
         employeeId: item.employeeId,
         name: manifest.name,
         description: manifest.description,
+        appearance:
+          manifest.schemaVersion === 2 ? manifest.appearance : undefined,
         identity,
         skills: skillsByEmployee.get(item.employeeId) ?? [],
         model: {

@@ -4,6 +4,7 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { EmployeeRuntimePackageSchema } from './employees.ts';
 import { HarnessEventSchema } from './harness.ts';
 import { employeeModelPolicyProblem } from './employee-model-settings.ts';
+import { EmployeeAccentColorSchema } from './employee-colors.ts';
 
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
   'dsh-0.1.5-rc.3-a4c74a9' as const;
@@ -42,6 +43,7 @@ export const PlatformEmployeeDefinitionSchema = z
       .object({
         avatarType: z.enum(['initials', 'emoji', 'image']),
         avatarValue: z.string().trim().min(1).max(500),
+        accentColor: EmployeeAccentColorSchema.optional(),
       })
       .strict(),
     identity: z

@@ -578,13 +578,13 @@ header.conversationHeader::after {
 }
 
 /* Scope the employee identity to the conversation, leaving platform branding intact. */
-.employeeConversation[data-employee-accent='orange'] {
-  --dsw-alias-state-business-primary: #b75a23;
-  --dsw-alias-button-info-fill: #b75a23;
-  --dsw-alias-button-info-hover: #a7491c;
+.employeeConversation {
+  --dsw-alias-state-business-primary: var(--employee-end);
+  --dsw-alias-button-info-fill: var(--employee-end);
+  --dsw-alias-button-info-hover: var(--employee-start);
   --dsw-specific-bubble: color-mix(
     in srgb,
-    #b75a23 10%,
+    var(--employee-end) 10%,
     var(--dsw-alias-bg-base)
   );
 }

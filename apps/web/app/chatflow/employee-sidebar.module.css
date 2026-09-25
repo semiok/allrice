@@ -24,12 +24,6 @@
     ),
     linear-gradient(115deg, var(--employee-start), var(--employee-end));
 }
-.employeeCard[data-accent='orange'],
-.avatar[data-accent='orange'],
-.pickerCard[data-accent='orange'] {
-  --employee-start: #a7491c;
-  --employee-end: #b75a23;
-}
 .employeeCard {
   --dsw-alias-label-primary: #fff;
   --dsw-alias-label-secondary: #fff;

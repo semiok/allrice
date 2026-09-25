@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EmployeeAccentColorSchema } from './employee-colors.ts';
 
 import {
   FrozenAgentSkillBindingSchema,
@@ -66,6 +67,7 @@ export const EmployeeAppearanceSchema = z
   .object({
     avatarType: z.enum(['initials', 'emoji', 'image']).default('initials'),
     avatarValue: z.string().trim().min(1).max(500).default('R'),
+    accentColor: EmployeeAccentColorSchema.optional(),
   })
   .strict();
 

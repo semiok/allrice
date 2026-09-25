@@ -18,6 +18,9 @@ import {
   upgradeEmployeeSkillBindings,
   developmentWorkflowToolNames,
   SkillCapabilitySchema,
+  employeeColorPalette,
+  resolveEmployeeAccent,
+  type EmployeeAccentColor,
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
@@ -877,8 +880,56 @@ export function EmployeeProduction() {
       </div>
     );
   } else if (tab === 'persona') {
+    const accent = resolveEmployeeAccent(
+      draft.name,
+      draft.appearance.accentColor,
+    );
     panel = (
       <>
+        <fieldset className={styles.employeeColors}>
+          <legend>员工配色</legend>
+          <p>选择员工的识别色，保存并发布后同步到前台。</p>
+          <div className={styles.colorOptions}>
+            {(
+              Object.entries(employeeColorPalette) as [
+                EmployeeAccentColor,
+                (typeof employeeColorPalette)[EmployeeAccentColor],
+              ][]
+            ).map(([id, color]) => (
+              <label key={id} className={styles.colorOption}>
+                <input
+                  type="radio"
+                  name="employee-accent-color"
+                  value={id}
+                  checked={accent === id}
+                  onChange={() => update(['appearance', 'accentColor'], id)}
+                />
+                <span
+                  className={styles.colorSwatch}
+                  style={{ backgroundColor: color.end }}
+                  aria-hidden="true"
+                >
+                  {accent === id ? '✓' : ''}
+                </span>
+                <span>{color.label}</span>
+              </label>
+            ))}
+          </div>
+          <div className={styles.colorPreview}>
+            <span
+              style={{ backgroundColor: employeeColorPalette[accent].end }}
+              aria-hidden="true"
+            >
+              {draft.name.slice(0, 1)}
+            </span>
+            <div>
+              <strong>{draft.name}</strong>
+              <small>
+                {employeeColorPalette[accent].label} · 前台识别色预览
+              </small>
+            </div>
+          </div>
+        </fieldset>
         <section className={styles.runtimeFileMap}>
           <header>
             <strong>运行时文件映射</strong>

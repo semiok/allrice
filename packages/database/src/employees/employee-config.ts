@@ -12,6 +12,7 @@ import {
   EmployeeUserProfilePolicySchema,
   PartnerProfileSchema,
   type EmployeeIdentity,
+  type EmployeeAccentColor,
   type EmployeeManifest,
   type EmployeeRuntimePackage,
   type EmployeeUserProfile,
@@ -110,6 +111,7 @@ export function employeeManifest(input: {
   appearance?: {
     avatarType: 'initials' | 'emoji' | 'image';
     avatarValue: string;
+    accentColor?: EmployeeAccentColor;
   };
   applicableScenarios?: string[];
   behaviorRules?: string[];
