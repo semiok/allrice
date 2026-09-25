@@ -1161,13 +1161,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await conversation.evaluate((node) =>
           getComputedStyle(node).getPropertyValue('--employee-end').trim(),
         ),
-      ).toBe('#B9A1DE');
+      ).toBe('#8B5CF6');
       expect(await f.page.locator('[data-accent="violet"]').count()).toBe(1);
       expect(
         await f.page
           .locator('[data-accent="violet"]')
           .evaluate((node) => getComputedStyle(node).color),
-      ).toBe('rgb(31, 41, 55)');
+      ).toBe('rgb(9, 13, 22)');
       await f.page
         .getByRole('button', { name: '查看Rice详情', exact: true })
         .click();
@@ -1175,6 +1175,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: 'Rice员工详情',
         exact: true,
       });
+      await details.locator('[data-employee-accent="violet"]').waitFor();
       expect(
         await details.locator('[data-employee-accent="violet"]').count(),
       ).toBe(1);
@@ -1189,7 +1190,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const rice = picker.getByRole('button', { name: /Rice/ });
       expect(await rice.getAttribute('data-accent')).toBe('violet');
       expect(await rice.evaluate((node) => getComputedStyle(node).color)).toBe(
-        'rgb(31, 41, 55)',
+        'rgb(9, 13, 22)',
       );
       await rice.click();
       await f.page
