@@ -18,20 +18,22 @@ import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 
 export function ConversationTurnNavigator({
   messages,
+  streamingOutput = false,
   runViews,
   scrollRef,
   columnRef,
   onNavigateAway,
 }: {
   messages: readonly Message[];
+  streamingOutput?: boolean;
   runViews: Readonly<Record<string, RunView>>;
   scrollRef: RefObject<HTMLDivElement | null>;
   columnRef: RefObject<HTMLDivElement | null>;
   onNavigateAway: () => void;
 }) {
   const items = useMemo(
-    () => conversationTurns(messages, runViews),
-    [messages, runViews],
+    () => conversationTurns(messages, runViews, streamingOutput),
+    [messages, runViews, streamingOutput],
   );
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
   // Streaming preview changes do not rebuild observers or read every row again.

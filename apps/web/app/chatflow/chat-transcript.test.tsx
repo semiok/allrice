@@ -29,6 +29,7 @@ function render(
   panels.cloud.mockReturnValue(null);
   return renderToStaticMarkup(
     <ChatTranscript
+      streamingOutput
       atBottom
       localCommandsEnabled={enabled}
       messages={shownMessages}

@@ -4,6 +4,7 @@ import type {
   UserQuestionAnswerSubmission,
   ReviewContinuationInput,
   ChangesetActionInput,
+  UserPreferences,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -54,6 +55,7 @@ export interface EmployeeProfile extends EmployeeProfileDetailsData {
 export interface Workspace {
   /** Authenticated viewer only; used to isolate local UI preferences. */
   viewerId?: string | null;
+  preferences?: UserPreferences;
   organizationId: string;
   workspaceId: string;
   employees: Employee[];

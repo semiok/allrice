@@ -47,7 +47,7 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/tenant-administration.integration.test.ts packages/database/src/tenant-employees.integration.test.ts packages/database/src/tenant-inheritance.integration.test.ts packages/database/src/employee-administration.integration.test.ts packages/database/src/tenant-resources.integration.test.ts packages/database/src/tenant-validation.integration.test.ts packages/database/src/user-monthly-quota.integration.test.ts apps/web/app/runtime-console/tenant-administration.browser.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/tenant-administration.integration.test.ts packages/database/src/tenant-employees.integration.test.ts packages/database/src/tenant-inheritance.integration.test.ts packages/database/src/employee-administration.integration.test.ts packages/database/src/tenant-resources.integration.test.ts packages/database/src/tenant-validation.integration.test.ts packages/database/src/user-monthly-quota.integration.test.ts packages/database/src/user-preferences.integration.test.ts apps/web/app/runtime-console/tenant-administration.browser.test.ts
 
   validate:
     runs-on: ubuntu-latest

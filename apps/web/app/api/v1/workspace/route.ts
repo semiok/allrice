@@ -1,4 +1,8 @@
-import { DataAccessError, getEmployeeWorkspace } from '@allrice/database';
+import {
+  DataAccessError,
+  getEmployeeWorkspace,
+  getUserPreferences,
+} from '@allrice/database';
 
 import { getRequestContext } from '../../../../lib/identity/session';
 import { storageErrorResponse } from '../../../../lib/storage/responses';
@@ -31,6 +35,10 @@ export async function GET(request: Request) {
           ...workspace,
           canAdminister,
           viewerId: context.actor.type === 'user' ? context.actor.id : null,
+          preferences:
+            context.actor.type === 'user'
+              ? await getUserPreferences(context)
+              : undefined,
         },
       },
       { headers: { 'cache-control': 'private, no-store' } },

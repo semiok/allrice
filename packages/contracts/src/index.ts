@@ -1,5 +1,6 @@
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
+export * from './user-preferences.ts';
 export type HealthStatus = 'live' | 'ready' | 'not_ready';
 
 export interface HealthResponse {
