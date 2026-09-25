@@ -13,11 +13,16 @@ import {
 import { zh } from './dsh-upstream/files/locales';
 import type { WorkspaceFile } from './chatflow-types';
 import { readJson } from './chatflow-utils';
+import { isToolResultFile } from '../../lib/chatflow/document-reader-model';
 
 // Object-store categories, not a host filesystem path. IDs give duplicate names
 // separate identities; displayName keeps the actual filename on the native row.
 const root = '/工作区文件';
-const categories = { 上传文件: 'uploads', 交付文件: 'exports' } as const;
+const categories = {
+  上传文件: 'uploads',
+  交付文件: 'exports',
+  过程资料: 'tool-results',
+} as const;
 export function WorkspaceFileTree(props: {
   workspaceId: string;
   sessionId: string;
@@ -60,18 +65,25 @@ export function WorkspaceFileTree(props: {
             ok: false,
             error: { code: 'request/aborted', message: '已取消' },
           };
-        for (const [id, file] of files)
-          if (file.category === category) files.delete(id);
-        const matching = result.files.filter(
-          (file) => file.category === category,
-        );
+        const belongs = (file: WorkspaceFile) =>
+          category === 'tool-results'
+            ? file.category === 'exports' &&
+              isToolResultFile(file.fileName, file.id)
+            : file.category === category &&
+              (category !== 'exports' ||
+                !isToolResultFile(file.fileName, file.id));
+        for (const [id, file] of files) if (belongs(file)) files.delete(id);
+        const matching = result.files.filter(belongs);
         for (const file of matching) files.set(file.id, file);
         return {
           ok: true,
           value: {
             entries: matching.map((file) => ({
               name: file.id,
-              displayName: file.fileName,
+              displayName:
+                category === 'tool-results'
+                  ? `${file.fileName.startsWith('tool-result-web-search-') ? '搜索资料' : '工具记录'} · ${file.id.slice(0, 8)}`
+                  : file.fileName,
               type: 'file',
             })),
             truncated: result.files.length >= 100,

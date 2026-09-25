@@ -2758,6 +2758,58 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       await database`select version_id from allrice_workbench_artifacts where organization_id=${f.context.organizationId}`,
     ).toHaveLength(0);
   });
+  it('lists delivered files without tool-result spills starving the first page, retaining explicit reads', async () => {
+    const f = await artifactFixture();
+    const bytes = Buffer.from('stored result');
+    const save = async (toolResult: boolean, summary = true) => {
+      const object = createToolBrokerExportObject({
+        context: f.execution,
+        mediaType: 'text/plain',
+        sizeBytes: bytes.length,
+        checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      });
+      await f.storage.put(object, new Blob([bytes]).stream());
+      const version = await registerToolBrokerExport(
+        {
+          context: f.execution,
+          sessionId: f.sessionId,
+          object,
+          fileName: toolResult
+            ? `tool-result-web-search-${object.id}.txt`
+            : 'research.txt',
+          format: 'text',
+          ...(toolResult && summary
+            ? {
+                changeSummary: `Tool result web.search; Run ${f.execution.runId}; call read-1`,
+              }
+            : {}),
+        },
+        database,
+      );
+      return version;
+    };
+    const delivered = await save(false);
+    const similarlyNamed = await save(true, false);
+    let last;
+    for (let i = 0; i < 51; i++) last = await save(true);
+    const page = await listWorkbenchArtifacts(
+      f.context,
+      f.sessionId,
+      undefined,
+      database,
+    );
+    expect(page.artifacts.map((a) => a.id).sort()).toEqual(
+      [delivered.id, similarlyNamed.id].sort(),
+    );
+    expect(page.nextCursor).toBeNull();
+    const stored = await getWorkbenchArtifact(
+      f.context,
+      f.sessionId,
+      last!.id,
+      database,
+    );
+    expect(await readArtifactBytes(f.storage, stored.object)).toEqual(bytes);
+  });
   it('P06 does not publish with disabled flag or lost Worker lease', async () => {
     const f = await artifactFixture();
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '0');

@@ -324,6 +324,12 @@
           "target": "apps/web/app/chatflow/dsh-upstream/document/zoom/types.ts",
           "upstreamSha256": "aee361914c9687c510d588e658bd09d545b7b043378ed445049298874111820b",
           "sha256": "aee361914c9687c510d588e658bd09d545b7b043378ed445049298874111820b"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/TextPreview.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/TextPreview.module.css",
+          "upstreamSha256": "525b8406ea103443ecc91bee83d133b7583aea710f76aa994ab64913d52470b9",
+          "sha256": "525b8406ea103443ecc91bee83d133b7583aea710f76aa994ab64913d52470b9"
         }
       ]
     },
