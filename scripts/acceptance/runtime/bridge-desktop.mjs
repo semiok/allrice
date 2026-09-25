@@ -110,6 +110,19 @@ const menu = (item) =>
     'click menu bar item "Rice" of menu bar 1',
     `click menu item ${JSON.stringify(item)} of menu 1 of menu bar item "Rice" of menu bar 1`,
   ]);
+const developerMenu = (item) => {
+  try {
+    ui([
+      'key down option',
+      'click menu bar item "Rice" of menu bar 1',
+      'key up option',
+      'click menu item "开发者工具" of menu 1 of menu bar item "Rice" of menu bar 1',
+      `click menu item ${JSON.stringify(item)} of menu 1 of menu item "开发者工具" of menu 1 of menu bar item "Rice" of menu bar 1`,
+    ]);
+  } finally {
+    ui(['key up option']);
+  }
+};
 const status = () =>
   ui([
     'get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"',
@@ -179,7 +192,18 @@ try {
   results.onlineWindow = status().includes(
     fresh ? 'P13 fresh synthetic pairing' : 'Synthetic workspace',
   );
-  menu('暂停并停止本地任务');
+  const ordinaryMenu = ui([
+    'click menu bar item "Rice" of menu bar 1',
+    'get name of menu items of menu 1 of menu bar item "Rice" of menu bar 1',
+  ]);
+  ui(['key code 53']);
+  assert.ok(
+    !/开发者工具|诊断与日志|独立浏览器|项目预览|准备环境|暂停/.test(
+      ordinaryMenu,
+    ),
+  );
+  results.simpleMenu = true;
+  developerMenu('暂停并停止本地任务');
   await wait(() => status().includes('已暂停'));
   const stoppedPolls = polls;
   await delay(1200);
@@ -188,7 +212,7 @@ try {
   menu('恢复连接');
   await wait(() => polls > stoppedPolls);
   results.resume = true;
-  menu('选择工作区…');
+  menu('选择文件夹…');
   await wait(() =>
     /取消|Cancel/.test(ui(['get name of every button of window 1'])),
   );
@@ -197,7 +221,7 @@ try {
     : 'Cancel';
   ui([`click button ${JSON.stringify(cancel)} of window 1`]);
   results.nativePickerCanceled = true;
-  menu('诊断与日志…');
+  developerMenu('诊断与日志…');
   await wait(() =>
     ui(['get name of every button of window 1']).includes('关闭'),
   );
@@ -222,7 +246,7 @@ try {
     }
   }
   if (fresh) {
-    menu('撤销设备配对…');
+    menu('断开配对…');
     await wait(() =>
       ui(['get name of every button of window 1']).includes('撤销配对'),
     );
