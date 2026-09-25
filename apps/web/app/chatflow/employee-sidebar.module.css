@@ -1,9 +1,16 @@
 .root {
+  /* Match DSH WorkspaceBrowser's list scroll seat inside regionArea. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
   padding: 8px;
 }
 .root[data-collapsed] {
   /* The native rail already supplies its horizontal inset. */
   padding: 0;
+  scrollbar-gutter: auto;
 }
 .group {
   margin-bottom: 16px;
