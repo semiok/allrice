@@ -1,0 +1,20 @@
+--- a/packages/client/ui-chat/src/client/chat/MessageIconActions.tsx
++++ b/packages/client/ui-chat/src/client/chat/MessageIconActions.tsx
+@@ -5,7 +5,7 @@
+ import {
+   IconBranchOutlineRegular, IconCheckOutlineRegular, IconCopyOutlineRegular, Tooltip, writeClipboard,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { ChatViewSlotProps } from '../contract/slots.ts'
++import type { ChatViewSlotProps } from '../../feedback-native-types'
+ import { formatMessageClock } from './message-chrome.ts'
+ import { useCalendarDay } from './use-calendar-day.ts'
+ import css from './MessageIconActions.module.css'
+@@ -52,7 +52,7 @@
+   // gated so re-clicks during the window neither re-copy nor stack timers.
+   const [copied, setCopied] = useState(false)
+   const copyPending = useRef(false)
+-  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
++  const copyTimer = useRef<number | null>(null)
+   const copyEpoch = useRef(0)
+   useEffect(() => () => {
+     copyEpoch.current += 1

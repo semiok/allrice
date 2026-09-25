@@ -31,6 +31,7 @@ import { ChatSidebar } from './chat-sidebar';
 import { EmployeePickerDialog } from './employee-picker-dialog';
 import { employeeAccent, employeeIntroduction } from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
+import { MessageFeedbackProvider } from './message-feedback';
 import { ChatTranscript } from './chat-transcript';
 import { ConversationTurnNavigator } from './conversation-turn-navigator';
 import { ArtifactWorkbench } from './artifact-workbench';
@@ -1190,29 +1191,36 @@ export function ChatFlowClient({
                     加载更早的助手任务记录
                   </button>
                 ) : null}
-                <ChatTranscript
-                  employeeName={activeEmployeeName}
-                  atBottom={atTranscriptBottom}
-                  localCommandsEnabled={localCommandsEnabled}
-                  localMcpEnabled={localMcpEnabled}
-                  assistantTrees={assistants.trees}
-                  runTimings={interactions.data?.runTimings}
-                  onAssistantChanged={assistants.reload}
-                  messages={history?.messages ?? []}
-                  onLoadRunTrace={loadRunTrace}
-                  onRecoverRun={recoverRun}
-                  onScrollToBottom={scrollToTranscriptBottom}
-                  recoverableRunView={recoverableRunView}
-                  runTraces={runTraces}
-                  runViews={runViews}
-                  tenantHeaders={tenantHeaders}
-                  transcriptColumn={transcriptColumn}
+                <MessageFeedbackProvider
+                  key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
+                  sessionId={activeId!}
                   workspaceId={workspace.workspaceId}
-                  artifacts={workbench.artifacts}
-                  onOpenArtifact={(id) => {
-                    if (workbench.confirmNavigation()) workbench.show(id);
-                  }}
-                />
+                  headers={tenantHeaders}
+                >
+                  <ChatTranscript
+                    employeeName={activeEmployeeName}
+                    atBottom={atTranscriptBottom}
+                    localCommandsEnabled={localCommandsEnabled}
+                    localMcpEnabled={localMcpEnabled}
+                    assistantTrees={assistants.trees}
+                    runTimings={interactions.data?.runTimings}
+                    onAssistantChanged={assistants.reload}
+                    messages={history?.messages ?? []}
+                    onLoadRunTrace={loadRunTrace}
+                    onRecoverRun={recoverRun}
+                    onScrollToBottom={scrollToTranscriptBottom}
+                    recoverableRunView={recoverableRunView}
+                    runTraces={runTraces}
+                    runViews={runViews}
+                    tenantHeaders={tenantHeaders}
+                    transcriptColumn={transcriptColumn}
+                    workspaceId={workspace.workspaceId}
+                    artifacts={workbench.artifacts}
+                    onOpenArtifact={(id) => {
+                      if (workbench.confirmNavigation()) workbench.show(id);
+                    }}
+                  />
+                </MessageFeedbackProvider>
               </div>
               <div
                 className={`${conversationUi.composerSeat} ${conversationUi.composerStack} ${styles.composerDock}`}
@@ -1250,6 +1258,7 @@ export function ChatFlowClient({
 
       {workbenchEnabled && hasWorkbenchContent ? (
         <ArtifactWorkbench
+          employeeName={activeEmployeeName}
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}

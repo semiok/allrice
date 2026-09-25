@@ -404,6 +404,96 @@
           "external": true
         }
       ]
+    },
+    {
+      "id": "message-feedback",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-components-and-controllers-with-allrice-http-storage-adapter",
+      "files": [
+        {
+          "source": "packages/client/ui-message-feedback/src/client/MessageFeedbackActions.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/MessageFeedbackActions.tsx",
+          "upstreamSha256": "19579007e4e5716737bb36f814e0a90d118c5255aa27c06b4898a9431ccb15f2",
+          "sha256": "5cfb43b99e5b3c5c488f4fc3219990a61cd09baf0df576628ee2655f8272169f",
+          "patch": "scripts/dsh-ui-patches/feedback-MessageFeedbackActions.tsx.patch",
+          "patchSha256": "9c236b8835db37f1906c3be16a9deea438877578b2e13336d9a04f8dee857ba0"
+        },
+        {
+          "source": "packages/client/ui-message-feedback/src/client/MessageFeedbackActions.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/MessageFeedbackActions.module.css",
+          "upstreamSha256": "74a7202c4d6c60c4b7470268601e8c477897e3cf3936e395f9cb725392eb0538",
+          "sha256": "74a7202c4d6c60c4b7470268601e8c477897e3cf3936e395f9cb725392eb0538"
+        },
+        {
+          "source": "packages/client/ui-message-feedback/src/client/FeedbackDialog.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/FeedbackDialog.tsx",
+          "upstreamSha256": "939d340e3c7a31e21054ba1c936d85b7d2e1983c74c0ea163d5a8068b6a42b1c",
+          "sha256": "8448d43043bbfc7e0e1f4dec51d61bbb1e3b955b20a0a5466a81774e456a8722",
+          "patch": "scripts/dsh-ui-patches/feedback-FeedbackDialog.tsx.patch",
+          "patchSha256": "da55872bc6f4bc31238a8bea23e3c62561a3f17747281f5769d7aeaac2b0c9a3"
+        },
+        {
+          "source": "packages/client/ui-message-feedback/src/client/FeedbackDialog.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/FeedbackDialog.module.css",
+          "upstreamSha256": "252e2a8a459a96bfbc2590a0edb7a0efeb61e6acb9c4017d1d91d5b0dea76bf5",
+          "sha256": "252e2a8a459a96bfbc2590a0edb7a0efeb61e6acb9c4017d1d91d5b0dea76bf5"
+        },
+        {
+          "source": "packages/client/ui-message-feedback/src/client/controller.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/controller.ts",
+          "upstreamSha256": "acdd87af6e5f12027e96f0a4815775a3f0f7f7aea73a7585e0b35c295501da02",
+          "sha256": "f9bb76bb28324e2a6b77842b176e07781e521758be1aa9d0fb64c08608067b95",
+          "patch": "scripts/dsh-ui-patches/feedback-controller.ts.patch",
+          "patchSha256": "a13c6a916b22cc6d66c735b36ae4a1175831a0c63154232ebe1bc17780585948"
+        },
+        {
+          "source": "packages/client/ui-message-feedback/src/client/dialog.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/dialog.ts",
+          "upstreamSha256": "5e71e54209d9ef29649a091d6d0e2d790f2438960f49b24a17dc111f81d03878",
+          "sha256": "9d355e131b0ddb9a0b24e4e3f791bb590c5bcb0282e5b4b400e3d2daaf323f19",
+          "patch": "scripts/dsh-ui-patches/feedback-dialog.ts.patch",
+          "patchSha256": "ca9d84975f53180922281c1c81be311a2e62c88fabfd85f209523e54ea23c767"
+        },
+        {
+          "source": "packages/client/ui-message-feedback/src/client/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/locales.ts",
+          "upstreamSha256": "68d4cca039f1c98a06bf1fb1ef09cd9c6eb39e125299df3ea4e72406fb2c2510",
+          "sha256": "b9cec7142ffe5e6187d41d6cb6cfa55ccc86a2fcbe427e7c2db6f4b74b01240a",
+          "patch": "scripts/dsh-ui-patches/feedback-locales.ts.patch",
+          "patchSha256": "31da3eaacc4c04a65c80d64c461f36e04b52a55cb1fddc216fdeaa28e11bc01f"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/MessageIconActions.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/MessageIconActions.tsx",
+          "upstreamSha256": "57bbf290748e848503b92d8659b4197c6cc62293cd2301bbe95bec43c8626fb5",
+          "sha256": "a313f80189a2ce6d40bed9b334d1fc4bc7620ba91eb3c3817c4f2e88eee056ff",
+          "patch": "scripts/dsh-ui-patches/feedback-MessageIconActions.tsx.patch",
+          "patchSha256": "7e266dc1866e07cf31120a08bc6d8eca02cade80f1929a661b78d85ada4f1f3a"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/MessageIconActions.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/MessageIconActions.module.css",
+          "upstreamSha256": "1d521755be649207a9cb3f88173034bec2119cde2c502f514f35567afaf73b36",
+          "sha256": "1d521755be649207a9cb3f88173034bec2119cde2c502f514f35567afaf73b36"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/message-chrome.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/message-chrome.ts",
+          "upstreamSha256": "c9756738dca756da4c0fb2bb88d32d85977ccc8f014cfae9733a189828f117d7",
+          "sha256": "42318c4bc3590e756e68dea7ec1b428c45c9c00a48f0e6bee809cd3816988ca3",
+          "patch": "scripts/dsh-ui-patches/feedback-message-chrome.ts.patch",
+          "patchSha256": "46d8e1d4703a80d54e36da3ac722efb67392a92177409097e2e4d2d6b1a63a69"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/use-calendar-day.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/feedback/use-calendar-day.ts",
+          "upstreamSha256": "7add01dcf998cb7b00b85c9f71679f33954c84210beeadb28d371e22410a63f7",
+          "sha256": "7add01dcf998cb7b00b85c9f71679f33954c84210beeadb28d371e22410a63f7"
+        }
+      ],
+      "packages": []
     }
   ]
 }

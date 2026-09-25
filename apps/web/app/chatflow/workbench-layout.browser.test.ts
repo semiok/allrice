@@ -8,6 +8,9 @@ import { officePreview } from '@allrice/office-runtime';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
+  type MessageFeedbackItem,
+  type ReviewDraftInput,
+  type ReviewFeedback,
   McpConnectionSchema,
   type McpConnection,
   OfficeRenderResponseSchema,
@@ -274,6 +277,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       artifactReads: 0,
+      messageFeedback: [] as MessageFeedbackItem[],
+      feedbackError: false,
+      feedbackWrites: 0,
+      feedbackReview: { status: 'new', note: '' },
+      revisionPosts: [] as ReviewDraftInput[],
+      revisionFeedback: [] as ReviewFeedback[],
+      revisionMessageIds: new Set<string>(),
+      lostRevisionReceipt: false,
+      lostRunReceipt: false,
       contentError: false,
       officePreview: null as ArtifactPreview | null,
       files: [] as WorkspaceFile[],
@@ -316,6 +328,88 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
+      if (path.endsWith('/message-feedback')) {
+        if (route.request().method() === 'GET')
+          return answer({
+            ok: true,
+            value: { items: path.includes(A) ? state.messageFeedback : [] },
+          });
+        if (state.feedbackError) return answer({}, 503);
+        state.feedbackWrites++;
+        const body = route.request().postDataJSON();
+        if (route.request().method() === 'DELETE') {
+          state.messageFeedback = [];
+          return answer({ ok: true, value: { absent: true } });
+        }
+        const saved: MessageFeedbackItem = {
+          messageId: body.messageId,
+          rating: body.rating,
+          ...(body.note ? { note: body.note } : {}),
+          ...(body.category ? { category: body.category } : {}),
+          version: id(950 + state.feedbackWrites),
+          createdAt: Date.parse(now),
+          updatedAt: Date.parse(now),
+        };
+        state.messageFeedback = [saved];
+        return answer({ ok: true, value: saved });
+      }
+      if (path.startsWith('/api/v1/admin/tenant-feedback')) {
+        const entry = state.messageFeedback[0];
+        const row = entry && {
+          id: entry.messageId,
+          version: entry.version,
+          helpful: entry.rating === 'positive',
+          reason: entry.note,
+          category: entry.category,
+          organization_name: '测试租户',
+          workspace_name: '工作区',
+          actor_name: '测试用户',
+          employee_name: 'Office 文档助手',
+          employee_version: 1,
+          updated_at: now,
+          review_status: state.feedbackReview.status,
+          review_note: state.feedbackReview.note,
+          response_preview: '报告已经完成',
+          question: '制作一份报告',
+          answer: '报告已经完成',
+          model: 'synthetic',
+          run_id: run,
+          session_id: A,
+          run_status: 'succeeded',
+        };
+        if (route.request().method() === 'PATCH') {
+          const body = route.request().postDataJSON();
+          state.feedbackReview = { status: body.status, note: body.note };
+          return answer({ updated: true });
+        }
+        if (path.endsWith('/tenant-feedback'))
+          return answer({
+            items: row ? [row] : [],
+            total: row ? 1 : 0,
+            pending: state.feedbackReview.status === 'new' ? 1 : 0,
+            page: 1,
+            organizations: [{ id: org, name: '测试租户' }],
+            employees: [{ id: id(7), name: 'Office 文档助手' }],
+          });
+        return answer({ feedback: row });
+      }
+      if (
+        !options.queue &&
+        path.endsWith('/messages') &&
+        route.request().method() === 'POST'
+      ) {
+        const body = route.request().postDataJSON();
+        state.messageInputs.push(body);
+        state.revisionMessageIds.add(body.clientMessageId);
+        if (state.lostRunReceipt) {
+          state.lostRunReceipt = false;
+          return answer(
+            { error: { message: '修订任务回执丢失，请重试' } },
+            503,
+          );
+        }
+        return answer({ run: { id: run }, created: true });
+      }
       if (options.queue && route.request().method() === 'POST') {
         if (path.endsWith('/messages')) {
           const body = route.request().postDataJSON();
@@ -391,7 +485,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.connectionReads++;
         return answer({ connections: state.connections });
       }
-      if (route.request().method() !== 'GET') {
+      if (route.request().method() !== 'GET' && !path.endsWith('/feedback')) {
         writes.push(path);
         return answer({}, 500);
       }
@@ -652,6 +746,34 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       if (path.includes('/artifacts/')) {
         const a = state.items.find((item) => path.includes(item.id));
         if (!a) return answer({}, 404);
+        if (path.endsWith('/feedback')) {
+          const draft = route.request().postDataJSON() as ReviewDraftInput;
+          state.revisionPosts.push(draft);
+          const feedback: ReviewFeedback = {
+            id: draft.feedbackId,
+            artifactId: a.id,
+            actorId: user,
+            revision: 1,
+            checksum: a.object.checksum,
+            comments: draft.comments,
+            state: 'submitted',
+            stale: false,
+            resultArtifactId: null,
+            resolution: null,
+            createdAt: now,
+            submittedAt: now,
+            updatedAt: now,
+          };
+          state.revisionFeedback = [feedback];
+          if (state.lostRevisionReceipt) {
+            state.lostRevisionReceipt = false;
+            return answer(
+              { error: { message: '修改要求回执丢失，请重试' } },
+              503,
+            );
+          }
+          return answer({ feedback });
+        }
         if (path.endsWith('/content'))
           return answer(
             state.officePreview ?? {
@@ -661,7 +783,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
             state.contentError ? 503 : 200,
           );
-        return answer({ artifact: a, feedback: [] });
+        return answer({ artifact: a, feedback: state.revisionFeedback });
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
         return answer({ error: { message: 'Not accessible' } }, 403);
@@ -926,6 +1048,139 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   }, 30_000);
+
+  it('native feedback hover, copy, rating dialog, retry, withdrawal and platform follow-up work together', async () => {
+    const f = await fixture();
+    try {
+      const row = f.page.locator(`#message-${id(20)}`);
+      const copy = row.getByRole('button', { name: '复制', exact: true });
+      await f.page.mouse.move(20, 20);
+      await expect
+        .poll(() =>
+          copy.locator('..').evaluate((n) => getComputedStyle(n).opacity),
+        )
+        .toBe('0');
+      await row.hover();
+      await copy.click();
+      await row.getByRole('button', { name: '已复制', exact: true }).waitFor();
+      expect(await row.getByRole('button', { name: /分支/ }).count()).toBe(0);
+      await row
+        .getByRole('button', { name: '有问题的回答', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '提交反馈',
+        exact: true,
+      });
+      await dialog.waitFor();
+      await dialog
+        .getByRole('button', { name: '任务结果', exact: true })
+        .click();
+      await dialog
+        .getByRole('textbox', { name: '反馈详情' })
+        .fill('请补充数据来源');
+      if (process.env.ALLRICE_FEEDBACK_SCREENSHOT)
+        await f.page.screenshot({
+          path: process.env.ALLRICE_FEEDBACK_SCREENSHOT + '-dialog.png',
+        });
+      f.state.feedbackError = true;
+      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await f.page.getByText('反馈保存失败', { exact: true }).waitFor();
+      expect(
+        await dialog.getByRole('textbox', { name: '反馈详情' }).inputValue(),
+      ).toBe('请补充数据来源');
+      f.state.feedbackError = false;
+      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      expect(f.state.messageFeedback[0]).toMatchObject({
+        rating: 'negative',
+        category: 'task-result',
+        note: '请补充数据来源',
+      });
+      await f.page.mouse.move(20, 20);
+      await expect
+        .poll(() =>
+          copy.locator('..').evaluate((n) => getComputedStyle(n).opacity),
+        )
+        .toBe('1');
+      await row.getByRole('button', { name: '取消标记', exact: true }).click();
+      await expect.poll(() => f.state.messageFeedback.length).toBe(0);
+      await row.getByRole('button', { name: '好的回答', exact: true }).click();
+      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      await f.page.goto(`${origin}/?feedback-inbox=1`);
+      await f.page.getByRole('button', { name: /测试租户 · 测试用户/ }).click();
+      await f.page.getByRole('heading', { name: '对应问题' }).waitFor();
+      await f.page.getByText('制作一份报告', { exact: true }).waitFor();
+      await f.page
+        .getByRole('combobox', { name: '反馈处理状态', exact: true })
+        .selectOption('resolved');
+      await f.page
+        .getByRole('textbox', { name: '处理备注' })
+        .fill('已补充来源规则');
+      await f.page.getByRole('button', { name: '保存处理记录' }).click();
+      await expect
+        .poll(() => f.state.feedbackReview)
+        .toEqual({ status: 'resolved', note: '已补充来源规则' });
+      if (process.env.ALLRICE_FEEDBACK_SCREENSHOT)
+        await f.page.screenshot({
+          path: process.env.ALLRICE_FEEDBACK_SCREENSHOT + '-inbox.png',
+        });
+      expect(f.state.messageInputs).toHaveLength(0);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
+  it('one-click artifact revision preserves the version and deduplicates both lost receipts', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.page
+        .getByRole('button', { name: /交付成果/ })
+        .first()
+        .click();
+      const panel = f.page.locator('#artifact-workbench');
+      await panel
+        .getByRole('textbox', { name: '修改要求', exact: true })
+        .fill('把结论放在开头');
+      expect(
+        await panel.getByRole('button', { name: '加入本批意见' }).count(),
+      ).toBe(0);
+      f.state.lostRevisionReceipt = true;
+      await panel
+        .getByRole('button', { name: '提交修改', exact: true })
+        .click();
+      await panel
+        .getByText('成果服务暂不可用，请重试。', { exact: true })
+        .waitFor();
+      f.state.lostRunReceipt = true;
+      await panel
+        .getByRole('button', { name: '提交修改', exact: true })
+        .click();
+      await panel
+        .getByText('修订任务回执丢失，请重试', { exact: true })
+        .waitFor();
+      await panel
+        .getByRole('button', { name: '提交修改', exact: true })
+        .click();
+      await panel
+        .getByText('已交给Rice，可在对话中查看修改进展。', { exact: true })
+        .waitFor();
+      expect(f.state.revisionPosts).toHaveLength(3);
+      expect(
+        new Set(f.state.revisionPosts.map((p) => JSON.stringify(p))).size,
+      ).toBe(1);
+      expect(f.state.revisionMessageIds.size).toBe(1);
+      expect(f.state.revisionPosts[0]).toMatchObject({
+        artifactId: id(10),
+        checksum: artifact(10).object.checksum,
+        comments: [{ text: '把结论放在开头' }],
+      });
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30000);
 
   it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
@@ -2991,8 +3246,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.getAttribute('role'))
         .toBe('complementary');
-      const opinion =
-        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
+      const opinion = f.panel.getByRole('textbox', {
+        name: '修改要求',
+        exact: true,
+      });
       await opinion.fill('保留我的意见');
       await f.page.setViewportSize({ width: 390, height: 844 });
       // Viewport acknowledgement precedes the matchMedia event/React commit.
@@ -3017,8 +3274,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-      const note =
-        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
+      const note = f.panel.getByRole('textbox', {
+        name: '修改要求',
+        exact: true,
+      });
       await note.fill('保留第一份成果的意见');
       f.state.items.push(artifact(11));
       await f.reloadList();
@@ -3090,8 +3349,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it('protects review drafts and explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
     try {
-      const opinion =
-        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
+      const opinion = f.panel.getByRole('textbox', {
+        name: '修改要求',
+        exact: true,
+      });
       await opinion.fill('需要补充来源');
       f.state.items.unshift(artifact(11));
       await f.reloadList();

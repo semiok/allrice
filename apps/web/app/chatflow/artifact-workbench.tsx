@@ -73,6 +73,7 @@ class DiffBoundary extends Component<
 }
 type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
+  employeeName?: string;
   open: boolean;
   width: number;
   dockScope: string;
@@ -446,6 +447,7 @@ function ArtifactTabBody(
           <ArtifactReview
             key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
             artifactId={artifactId}
+            employeeName={props.employeeName}
             sessionId={props.sessionId}
             workspaceId={props.workspaceId}
             tenantHeaders={props.tenantHeaders}
@@ -629,6 +631,7 @@ function TextPage({
 }
 
 function ArtifactReview({
+  employeeName = '当前员工',
   artifactId,
   sessionId,
   workspaceId,
@@ -637,6 +640,7 @@ function ArtifactReview({
   onSelect,
   onContinued,
 }: {
+  employeeName?: string;
   artifactId: string;
   sessionId: string;
   workspaceId: string;
@@ -659,7 +663,7 @@ function ArtifactReview({
         text:
           review.kind === 'plan_review'
             ? '认可本版计划并继续'
-            : '请 Rice 根据本批意见修订',
+            : `请${employeeName}根据修改要求修订这份文件`,
         deliveryMode: 'follow_up',
         attachmentIds: [],
         reviewContinuation: review,
@@ -676,14 +680,14 @@ function ArtifactReview({
         ),
       );
       setSent((old) => new Set([...old, key]));
-      setNotice(
-        '已创建后续任务，可在交互与任务记录中查看；并未授予新的执行权限。',
-      );
+      setNotice(`已交给${employeeName}，可在对话中查看修改进展。`);
       onContinued?.(result.run.id);
+      return true;
     } catch (e) {
       setError(
         e instanceof Error ? e.message : '后续任务提交失败，可安全重试。',
       );
+      return false;
     } finally {
       setBusy(false);
     }
@@ -697,11 +701,8 @@ function ArtifactReview({
     [previewRetry, setPreviewRetry] = useState(0);
   const [text, setText] = useState(''),
     [anchor, setAnchor] = useState<Anchor>({ kind: 'whole' }),
-    [path, setPath] = useState(''),
-    [side, setSide] = useState<'before' | 'after'>('after');
-  const [start, setStart] = useState(1),
-    [end, setEnd] = useState(1),
-    [view, setView] = useState<'preview' | 'diff'>('preview'),
+    [path, setPath] = useState('');
+  const [view, setView] = useState<'preview' | 'diff'>('preview'),
     [mode, setMode] = useState<'split' | 'unified'>('split'),
     [rawSide, setRawSide] = useState<'before' | 'after'>('after');
   const [previous, setPrevious] = useState<{
@@ -740,7 +741,7 @@ function ArtifactReview({
           },
     );
     setDirty(false);
-    setText('');
+    setText(saved?.comments.map((comment) => comment.text).join('\n') ?? '');
     setAnchor({ kind: 'whole' });
   };
   const refresh = useCallback(
@@ -896,66 +897,84 @@ function ArtifactReview({
         setNotice('此侧不支持当前版本的行评论，请使用整件意见。');
         return;
       }
-      setSide(selectedSide);
-      setStart(a);
-      setEnd(b);
       composer.current?.focus();
     },
     [file, artifact?.id, supportsLines],
   );
-  function addComment() {
-    if (!draft || !artifact || artifact.stale || !text.trim()) return;
-    const updated = {
-      ...draft,
-      comments: [...draft.comments, { id: crypto.randomUUID(), anchor, text }],
-    };
-    const parsed = ReviewDraftInputSchema.safeParse(updated);
-    if (!parsed.success) {
-      setError('每批最多 20 条意见，每条最多 4000 字；请检查评论范围。');
+  const revisionAttempt = useRef<{
+    fingerprint: string;
+    body: ReviewDraftInput;
+  } | null>(null);
+  const submittingRevision = useRef(false);
+  async function requestRevision() {
+    if (
+      !draft ||
+      !artifact ||
+      artifact.stale ||
+      !text.trim() ||
+      submittingRevision.current
+    )
       return;
-    }
-    setDraft(parsed.data);
-    setText('');
-    setDirty(true);
-    setNotice('已加入本地草稿，保存或提交后才会持久化。');
-  }
-  async function save(submit: boolean) {
-    if (!draft || busy || artifact?.stale) return;
+    submittingRevision.current = true;
     setBusy(true);
     setError('');
+    setNotice('');
     try {
+      const fingerprint = JSON.stringify({ text: text.trim(), anchor });
+      if (revisionAttempt.current?.fingerprint !== fingerprint) {
+        revisionAttempt.current = {
+          fingerprint,
+          body: ReviewDraftInputSchema.parse({
+            ...draft,
+            ...(revisionAttempt.current
+              ? { feedbackId: crypto.randomUUID(), expectedRevision: 0 }
+              : {}),
+            comments: [{ id: crypto.randomUUID(), anchor, text: text.trim() }],
+          }),
+        };
+      }
+      const body = revisionAttempt.current.body;
+      // Both phases reuse stable IDs on a lost response: one feedback, one follow-up task.
       const raw = (await workbenchJson(
         `${endpoint}/feedback${query}`,
         tenantHeaders,
         {
-          method: submit ? 'POST' : 'PUT',
+          method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(draft),
+          body: JSON.stringify(body),
         },
       )) as { feedback: unknown };
       const saved = ReviewFeedbackSchema.parse(raw.feedback);
-      if (saved.artifactId !== artifactId || saved.id !== draft.feedbackId)
-        throw Error('反馈回执不匹配');
-      setFeedback((rows) => [...rows.filter((f) => f.id !== saved.id), saved]);
-      setDirty(false);
-      setDraft(
-        submit
-          ? {
-              ...draft,
-              feedbackId: crypto.randomUUID(),
-              expectedRevision: 0,
-              comments: [],
-            }
-          : { ...draft, expectedRevision: saved.revision },
-      );
-      setNotice(
-        submit
-          ? '意见已提交，等待后续处理。它不是文件执行授权。'
-          : '草稿已保存，重新打开可继续编辑。',
-      );
+      if (saved.artifactId !== artifactId || saved.id !== body.feedbackId)
+        throw Error('修改要求回执不匹配');
+      setFeedback((rows) => [
+        ...rows.filter((row) => row.id !== saved.id),
+        saved,
+      ]);
+      const continued = await continueReview({
+        kind: 'version_feedback',
+        artifactId,
+        checksum: saved.checksum,
+        feedbackId: saved.id,
+      });
+      if (continued) {
+        setText('');
+        setDirty(false);
+        setAnchor({ kind: 'whole' });
+        setDraft({
+          ...body,
+          feedbackId: crypto.randomUUID(),
+          expectedRevision: 0,
+          comments: [],
+        });
+        revisionAttempt.current = null;
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '反馈保存失败');
+      setError(
+        cause instanceof Error ? cause.message : '修改要求提交失败，请重试。',
+      );
     } finally {
+      submittingRevision.current = false;
       setBusy(false);
     }
   }
@@ -1086,8 +1105,6 @@ function ArtifactReview({
                 onChange={(e) => {
                   setPath(e.target.value);
                   setAnchor({ kind: 'whole' });
-                  setStart(1);
-                  setEnd(1);
                 }}
               >
                 {preview.changeset.files.map((f) => (
@@ -1265,75 +1282,24 @@ function ArtifactReview({
                 </small>
               </div>
             ) : null}
-            <h3>对此版本的意见</h3>
+            <h3>让{employeeName}修改</h3>
             <p className={styles.muted}>
-              意见会绑定 v{artifact.version.version}
-              ，不会批准文件修改或命令执行。图片与非文本格式支持整件反馈。
+              告诉我哪里需要调整，修改要求会连同这份文件的 v
+              {artifact.version.version} 一起发送。
             </p>
-            {supportsLines ? (
-              <div className={styles.row}>
-                {file ? (
-                  <label>
-                    评论侧
-                    <select
-                      aria-label="评论侧"
-                      disabled={!canEdit}
-                      value={side}
-                      onChange={(e) =>
-                        setSide(e.target.value as 'before' | 'after')
-                      }
-                    >
-                      <option value="before">修改前</option>
-                      <option value="after">修改后</option>
-                    </select>
-                  </label>
-                ) : null}
-                <label>
-                  起始行
-                  <input
-                    aria-label="起始行"
-                    type="number"
-                    min={1}
-                    max={200001}
-                    value={start}
-                    disabled={!canEdit}
-                    onChange={(e) => setStart(Number(e.target.value))}
-                  />
-                </label>
-                <label>
-                  结束行
-                  <input
-                    aria-label="结束行"
-                    type="number"
-                    min={1}
-                    max={200001}
-                    value={end}
-                    disabled={!canEdit}
-                    onChange={(e) => setEnd(Number(e.target.value))}
-                  />
-                </label>
-                <button
-                  type="button"
-                  disabled={!canEdit}
-                  onClick={() => useLines(side, start, end)}
-                >
-                  定位行范围
-                </button>
-              </div>
-            ) : null}
-            <p className={styles.muted}>
-              位置：{reviewAnchorLabel(anchor)}{' '}
-              {anchor.kind !== 'whole' ? (
+            {anchor.kind !== 'whole' && (
+              <p className={styles.muted}>
+                已选内容：{reviewAnchorLabel(anchor)}{' '}
                 <button
                   type="button"
                   onClick={() => setAnchor({ kind: 'whole' })}
                 >
-                  改为整件意见
+                  取消选择
                 </button>
-              ) : null}
-            </p>
+              </p>
+            )}
             <label htmlFor={feedbackId} className={styles.hiddenLabel}>
-              评论内容
+              修改要求
             </label>
             <textarea
               id={feedbackId}
@@ -1341,73 +1307,17 @@ function ArtifactReview({
               value={text}
               maxLength={4000}
               disabled={!canEdit}
-              placeholder="提出修改意见，或说明需要澄清的地方…"
-              onChange={(e) => setText(e.target.value)}
+              placeholder="例如：补充最新数据，把结论放在开头…"
+              onChange={(event) => setText(event.target.value)}
             />
             <div className={styles.row}>
               <button
                 type="button"
-                disabled={
-                  !canEdit ||
-                  !text.trim() ||
-                  (draft?.comments.length ?? 0) >= 20
-                }
-                onClick={addComment}
-              >
-                加入本批意见
-              </button>
-              <span className={styles.muted}>
-                {draft?.comments.length ?? 0}/20 条 ·{' '}
-                {dirty || text ? '尚未保存' : '无未保存编辑'}
-              </span>
-            </div>
-            {draft?.comments.map((c) => (
-              <div className={styles.comment} key={c.id}>
-                <small>{reviewAnchorLabel(c.anchor)}</small>
-                <p>{c.text}</p>
-                <button
-                  type="button"
-                  disabled={!canEdit}
-                  onClick={() => {
-                    setDraft({
-                      ...draft,
-                      comments: draft.comments.filter((x) => x.id !== c.id),
-                    });
-                    setDirty(true);
-                  }}
-                >
-                  移除此条
-                </button>
-              </div>
-            ))}
-            <div className={styles.row}>
-              <button
-                type="button"
-                disabled={!canEdit || !draft?.comments.length || !!text}
-                onClick={() => void save(false)}
-              >
-                保存草稿
-              </button>
-              <button
-                type="button"
                 className={styles.primary}
-                disabled={!canEdit || !draft?.comments.length || !!text}
-                onClick={() => void save(true)}
+                disabled={!canEdit || !text.trim()}
+                onClick={() => void requestRevision()}
               >
-                提交本批意见
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  if (
-                    !dirtyRef.current ||
-                    window.confirm('刷新会丢弃未保存编辑，继续吗？')
-                  )
-                    void refresh(true);
-                }}
-              >
-                刷新版本反馈
+                {busy ? '正在提交…' : '提交修改'}
               </button>
             </div>
             {notice ? (
@@ -1416,8 +1326,8 @@ function ArtifactReview({
               </p>
             ) : null}
           </section>
-          <section className={styles.history} aria-label="已保存反馈">
-            <h3>已保存反馈 · {feedback.length}</h3>
+          <details className={styles.history} aria-label="修改记录">
+            <summary>修改记录 · {feedback.length}</summary>
             {feedback.length === 0 ? (
               <p className={styles.muted}>暂无已保存的意见。</p>
             ) : (
@@ -1450,9 +1360,7 @@ function ArtifactReview({
                         })
                       }
                     >
-                      {sent.has(f.id)
-                        ? '修订请求已发送'
-                        : '请 Rice 根据本批意见修订'}
+                      {sent.has(f.id) ? '修订请求已发送' : '继续提交修改'}
                     </button>
                   ) : null}
                   {f.state === 'draft' ? (
@@ -1471,8 +1379,13 @@ function ArtifactReview({
                             expectedRevision: f.revision,
                             comments: f.comments,
                           });
-                          setText('');
+                          setText(
+                            f.comments
+                              .map((comment) => comment.text)
+                              .join('\n'),
+                          );
                           setDirty(false);
+                          revisionAttempt.current = null;
                         }
                       }}
                     >
@@ -1493,7 +1406,7 @@ function ArtifactReview({
                 </details>
               ))
             )}
-          </section>
+          </details>
         </>
       )}
     </div>

@@ -2,7 +2,7 @@
 
 import {
   useCallback,
-  useLayoutEffect,
+  useEffect,
   useMemo,
   useState,
   type RefObject,
@@ -38,7 +38,8 @@ export function ConversationTurnNavigator({
   const anchors = items
     .map((item) => (item.anchor.kind === 'loaded' ? item.anchor.key : ''))
     .join('\0');
-  useLayoutEffect(() => {
+  // Bind after the full message subtree has attached its refs (including session providers).
+  useEffect(() => {
     const scroll = scrollRef.current;
     const column = columnRef.current;
     if (!scroll || !column || !anchors) return;
