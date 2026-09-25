@@ -2736,8 +2736,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const link = f.page.getByRole('link', { name: '下载报告', exact: true });
       await expect
         .poll(() => link.getAttribute('href'))
-        .toBe(`${path}?name=report-10.md`);
-      expect(await link.getAttribute('target')).toBeNull();
+        .toBe(`${origin}${path}?name=report-10.md`);
+      // Native Markdown opens HTTP links without navigating away from the chat.
+      expect(await link.getAttribute('target')).toBe('_blank');
+      expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
       expect(
         await f.page
           .getByRole('link', { name: '原始来源', exact: true })
