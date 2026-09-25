@@ -499,9 +499,10 @@ function connectTcp(address: string, port: number, family: number) {
       socket.destroy();
       reject(error);
     };
-    socket.once('error', rejectConnection);
+    // Keep an owner while the connected socket crosses the async hand-off to
+    // its caller; a late reset still destroys the socket after resolve().
+    socket.on('error', rejectConnection);
     socket.once('connect', () => {
-      socket.off('error', rejectConnection);
       resolve(socket);
     });
   });
@@ -621,6 +622,8 @@ interface ManagedBrowserPinnedProxy {
 
 export async function startManagedBrowserPinnedProxy(input: {
   resolvePublicAddresses: (hostname: string) => Promise<HostnameAddress[]>;
+  /** Host transport injection; destination validation still precedes connection. */
+  connectTcp?: ManagedBrowserPinnedConnectionDependencies['connectTcp'];
   /** Optional task-wide transport cap; legacy read-only callers are unchanged. */
   maximumBytes?: number;
 }): Promise<ManagedBrowserPinnedProxy> {
@@ -638,6 +641,9 @@ export async function startManagedBrowserPinnedProxy(input: {
   let transferredBytes = 0;
   const trackSocket = (socket: Socket) => {
     activeSockets.add(socket);
+    // CONNECT detaches Node's HTTP parser; subsequent socket failures need an
+    // owner for the lifetime of the tunnel, not just the initial TCP handshake.
+    socket.on('error', () => socket.destroy());
     if (input.maximumBytes !== undefined)
       socket.on('data', (chunk) => {
         transferredBytes += chunk.length;
@@ -761,9 +767,20 @@ export async function startManagedBrowserPinnedProxy(input: {
           await connectManagedBrowserPinnedTarget(
             target.hostname,
             target.port,
-            { resolvePublicAddresses: input.resolvePublicAddresses },
+            {
+              resolvePublicAddresses: input.resolvePublicAddresses,
+              connectTcp: input.connectTcp,
+            },
           ),
         );
+        if (clientSocket.destroyed) {
+          upstreamSocket.destroy();
+          return;
+        }
+        // A lost browser must release the upstream connection. A failed
+        // upstream must terminate this tunnel while leaving the Worker alive.
+        clientSocket.once('close', () => upstreamSocket.destroy());
+        upstreamSocket.once('error', () => clientSocket.destroy());
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head.byteLength) upstreamSocket.write(head);
         upstreamSocket.pipe(clientSocket);
