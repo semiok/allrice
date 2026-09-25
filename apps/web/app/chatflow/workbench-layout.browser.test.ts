@@ -209,6 +209,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const context = await browser.newContext({
       viewport: { width: options.width ?? 1440, height: 950 },
       hasTouch: options.touch,
+      isMobile: options.touch,
     });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
@@ -1242,22 +1243,36 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           top: await top.boundingBox(),
           settings: await settings.boundingBox(),
         };
+        // Wait for the mobile drawer to finish entering before choosing touch coordinates.
+        await expect
+          .poll(() => sidebar.evaluate((n) => n.getBoundingClientRect().left))
+          .toBe(0);
         const box = (await tree.boundingBox())!;
         const x = box.x + box.width / 2,
           y = box.y + box.height * 0.65;
         const cdp =
           width === 390 ? await f.page.context().newCDPSession(f.page) : null;
         const scroll = async (down: boolean) => {
-          if (cdp)
-            await cdp.send('Input.synthesizeScrollGesture', {
-              x,
-              y,
-              yDistance: down ? -250 : 250,
-              gestureSourceType: 'touch',
-              speed: 800,
-              preventFling: true,
+          if (cdp) {
+            const startY = down ? y : y - 250;
+            await cdp.send('Input.dispatchTouchEvent', {
+              type: 'touchStart',
+              touchPoints: [{ x, y: startY }],
             });
-          else {
+            for (let step = 1; step <= 10; step++) {
+              await cdp.send('Input.dispatchTouchEvent', {
+                type: 'touchMove',
+                touchPoints: [{ x, y: startY + (down ? -1 : 1) * step * 25 }],
+              });
+              await f.page.evaluate(() => new Promise(requestAnimationFrame));
+            }
+            // Pause the finger before lifting so the assertion does not race a fling.
+            await f.page.waitForTimeout(150);
+            await cdp.send('Input.dispatchTouchEvent', {
+              type: 'touchEnd',
+              touchPoints: [],
+            });
+          } else {
             await f.page.mouse.move(x, y);
             await f.page.mouse.wheel(0, down ? 350 : -350);
           }
