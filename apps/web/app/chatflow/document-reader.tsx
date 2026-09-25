@@ -184,6 +184,7 @@ export function DocumentText(props: {
         />
       ) : (
         <CodeBlock
+          className={styles.code}
           code={text.slice(0, limit)}
           lang={language}
           lineNumbers={!!props.source}
