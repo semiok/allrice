@@ -15,6 +15,7 @@ import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
 
 import { ChatComposer } from './chat-composer';
+import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { AssistantModeControl } from './assistant-mode-control';
 import {
@@ -771,7 +772,7 @@ export function ChatFlowClient({
   }
 
   if (!workspace || !manifest) {
-    return <main className={styles.loading}>正在进入 AllRice ChatFlow…</main>;
+    return <WorkspaceStartup error={error} />;
   }
 
   const sessions = workspace.sessions.filter((session) => !session.archivedAt);

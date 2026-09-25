@@ -200,6 +200,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       disabled?: boolean;
       noSession?: boolean;
       noStorage?: boolean;
+      startup?: 'failed' | 'slow';
       running?: boolean;
       queue?: boolean;
     } = {},
@@ -226,6 +227,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      startupFailure: options.startup === 'failed',
       messages: null as Message[] | null,
       queue: [] as QueuedMessage[],
       queuedStarted: [] as Message[],
@@ -302,6 +304,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       timingError: false,
       delay: null as null | Promise<void>,
     };
+    let releaseStartup!: () => void;
+    const startupGate = new Promise<void>((resolve) => {
+      releaseStartup = resolve;
+    });
+    if (options.startup === 'slow') await page.clock.install();
     let finishStream!: () => void;
     const streamGate = new Promise<void>((done) => {
       finishStream = done;
@@ -498,6 +505,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         writes.push(path);
         return answer({}, 500);
       }
+      if (path === '/api/v1/workspace' && state.startupFailure)
+        return answer(
+          { error: { message: 'Service temporarily unavailable' } },
+          503,
+        );
+      if (path === '/api/v1/workspace' && options.startup === 'slow')
+        await startupGate;
       if (path === '/api/v1/workspace')
         return answer({
           workspace: {
@@ -817,8 +831,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await page.goto(
       `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}`,
     );
-    await page
-      .getByRole('textbox', { name: /^给 .+ 的消息$/ })
+    await (
+      options.startup
+        ? page.getByRole('region', { name: '进入工作区', exact: true })
+        : page.getByRole('textbox', { name: /^给 .+ 的消息$/ })
+    )
       .waitFor()
       .catch(async (error) => {
         console.error(
@@ -840,6 +857,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       panel,
       entry,
       releaseStream: finishStream,
+      releaseStartup,
       finishRun() {
         state.messageStatus = 'completed';
         state.items = [artifact(11)];
@@ -856,6 +874,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .toBe(true);
       },
       async close() {
+        releaseStartup();
         finishStream();
         await context.close();
         expect(errors).toEqual([]);
@@ -864,6 +883,45 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it.each(['failed', 'slow'] as const)(
+    'workspace startup recovers from a %s request without an endless loading screen',
+    async (startup) => {
+      const f = await fixture({ startup });
+      try {
+        const retry = f.page.getByRole('button', {
+          name: '重新连接',
+          exact: true,
+        });
+        if (startup === 'failed') {
+          await f.page
+            .getByRole('alert')
+            .filter({ hasText: '暂时无法进入工作区' })
+            .waitFor();
+          f.state.startupFailure = false;
+          await retry.click();
+        } else {
+          expect(await retry.count()).toBe(0);
+          await f.page.clock.runFor(15_000);
+          await f.page
+            .getByRole('status')
+            .filter({ hasText: '连接用时较长' })
+            .waitFor();
+          expect(await retry.isVisible()).toBe(true);
+          // A delayed response can still finish without a reload or duplicate task.
+          f.releaseStartup();
+        }
+        await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+        expect(
+          await f.page.getByRole('region', { name: '进入工作区' }).count(),
+        ).toBe(0);
+        expect(f.errors).toEqual([]);
+        expect(f.writes).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('native turn navigation previews, jumps and tracks reading position, and hides when the conversation narrows', async () => {
     const f = await fixture();
