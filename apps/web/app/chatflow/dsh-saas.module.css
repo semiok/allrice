@@ -39,6 +39,32 @@ main.shell {
   background: var(--dsw-alias-bg-base);
 }
 
+.startup {
+  max-width: 420px;
+  padding: 24px;
+  text-align: center;
+}
+.startup p {
+  margin: 0 0 16px;
+}
+.startupHint {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.startup button {
+  min-height: 40px;
+  padding: 8px 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-button-elevated-fill);
+  font: inherit;
+  cursor: pointer;
+}
+.startup button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
 .historyLoading {
   max-width: 800px;
   margin: 32px auto;
