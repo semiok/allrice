@@ -1,9 +1,11 @@
 import styles from './dsh-saas.module.css';
-import { employeeAccent } from './employee-navigation';
+import { employeeAccent, employeeAccentStyle } from './employee-navigation';
+import type { EmployeeAccentColor } from '@allrice/contracts';
 
 export interface EmployeeProfileDetailsData {
   name: string;
   description: string;
+  appearance?: { accentColor?: EmployeeAccentColor };
   identity: {
     role: string;
     mission: string;
@@ -57,7 +59,14 @@ export function EmployeeProfileDetails({
     <>
       <div
         className={`${styles.employeeProfileIntro} ${styles.employeeConversation}`}
-        data-employee-accent={employeeAccent(profile.name)}
+        data-employee-accent={employeeAccent(
+          profile.name,
+          profile.appearance?.accentColor,
+        )}
+        style={employeeAccentStyle(
+          profile.name,
+          profile.appearance?.accentColor,
+        )}
       >
         <span className={styles.employeeProfileAvatar}>
           {profile.name.slice(0, 1)}

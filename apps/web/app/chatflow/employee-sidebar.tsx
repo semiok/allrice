@@ -5,6 +5,7 @@ import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
 import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
 import {
   employeeAccent,
+  employeeAccentStyle,
   employeeGroups,
   employeePreferenceKey,
   employeeTranslate,
@@ -82,7 +83,8 @@ export function EmployeeSidebar({
           (item) => item.assignmentId === group.key,
         );
         const role = profile?.identity.role;
-        const accent = employeeAccent(group.label);
+        const color = employee?.currentVersion.manifest.appearance?.accentColor;
+        const accent = employeeAccent(group.label, color);
         const history = sessions.filter(
           (session) => session.employeeAssignmentId === group.key,
         );
@@ -109,6 +111,7 @@ export function EmployeeSidebar({
                 type="button"
                 className={css.avatar}
                 data-accent={accent}
+                style={employeeAccentStyle(group.label, color)}
                 aria-label={group.label}
                 aria-expanded={rail === group.key}
                 onFocus={() => setRail(group.key)}
@@ -156,6 +159,7 @@ export function EmployeeSidebar({
             <div
               className={css.employeeCard}
               data-accent={accent}
+              style={employeeAccentStyle(group.label, color)}
               data-active={group.containsCurrent || undefined}
             >
               <div className={css.header}>

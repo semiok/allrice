@@ -4,6 +4,13 @@ import type {
   Session,
   Workspace,
 } from './chatflow-types';
+import type { CSSProperties } from 'react';
+import {
+  employeeColorPalette,
+  employeeColorForeground,
+  resolveEmployeeAccent,
+  type EmployeeAccentColor,
+} from '@allrice/contracts';
 import { deriveGroups } from './dsh-upstream/workspace/tree';
 import type {
   SessionListState,
@@ -13,8 +20,18 @@ import type {
 import { zh } from './dsh-upstream/workspace/locales';
 import type { WorkspaceBrowserProps } from './dsh-upstream/workspace/contracts';
 
-export function employeeAccent(name: string) {
-  return /office/i.test(name) ? 'orange' : 'blue';
+export const employeeAccent = resolveEmployeeAccent;
+
+export function employeeAccentStyle(
+  name: string,
+  configured?: EmployeeAccentColor,
+): CSSProperties {
+  const color = employeeColorPalette[employeeAccent(name, configured)];
+  return {
+    '--employee-start': color.value,
+    '--employee-end': color.value,
+    '--employee-foreground': employeeColorForeground,
+  } as CSSProperties;
 }
 
 export function employeeIntroduction(

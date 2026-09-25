@@ -29,7 +29,11 @@ import {
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { ChatSidebar } from './chat-sidebar';
 import { EmployeePickerDialog } from './employee-picker-dialog';
-import { employeeAccent, employeeIntroduction } from './employee-navigation';
+import {
+  employeeAccent,
+  employeeAccentStyle,
+  employeeIntroduction,
+} from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
 import { MessageFeedbackProvider } from './message-feedback';
 import { ChatTranscript } from './chat-transcript';
@@ -789,6 +793,9 @@ export function ChatFlowClient({
   const activeProviderLabel = activeSession
     ? providerForSession(workspace, activeSession)
     : providerForEmployee(activeEmployee);
+  const activeEmployeeColor =
+    activeEmployee?.currentVersion.manifest.appearance?.accentColor ??
+    activeEmployeeProfile?.appearance?.accentColor;
   const employeeAssistantAvailability = assistantEligibility({
     enabled: assistantsEnabled,
     sessionId: activeId,
@@ -993,7 +1000,11 @@ export function ChatFlowClient({
 
       <section
         className={`${frameUi.centerCol} ${styles.employeeConversation}`}
-        data-employee-accent={employeeAccent(activeEmployeeName)}
+        data-employee-accent={employeeAccent(
+          activeEmployeeName,
+          activeEmployeeColor,
+        )}
+        style={employeeAccentStyle(activeEmployeeName, activeEmployeeColor)}
       >
         <div
           className={conversationUi.root}

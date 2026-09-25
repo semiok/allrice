@@ -924,6 +924,17 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button')
         .filter({ hasText: 'MET151 UI fixture' })
         .click();
+      await page.getByRole('button', { name: '人设', exact: true }).click();
+      const palette = page.getByRole('group', {
+        name: '员工配色',
+        exact: true,
+      });
+      expect(await palette.getByRole('radio').count()).toBe(10);
+      await palette.getByRole('radio', { name: '鸢尾紫', exact: true }).check();
+      if (process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT)
+        await palette.screenshot({
+          path: process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT,
+        });
       await page.getByRole('button', { name: '工具', exact: true }).click();
       await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
       await page.getByText('本地项目预览', { exact: true }).waitFor();
@@ -946,6 +957,17 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         )
         .toBe(true);
       await f.preview(); // Synthetic completion only; draft save/compile above uses real UI/HTTP.
+      await page.reload();
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'MET151 UI fixture' })
+        .click();
+      await page.getByRole('button', { name: '人设', exact: true }).click();
+      expect(
+        await page
+          .getByRole('radio', { name: '鸢尾紫', exact: true })
+          .isChecked(),
+      ).toBe(true);
       const unreviewed = await context.request.post(
         `${origin}/api/v1/admin/platform-employees/${f.employeeId}/publish`,
         {
@@ -1046,6 +1068,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .first()
         .waitFor();
       expect(await f.assigned()).toBe(1);
+      const [published] = await fixture.db`
+        select v.manifest from allrice_employee_assignments a
+        join allrice_employee_versions v on v.id=a.employee_version_id
+        where a.workspace_id=${f.workspaceId} and a.active`;
+      expect(published?.manifest.appearance.accentColor).toBe('violet');
       expect(
         await fixture.db`select id from allrice_memberships where user_id=${platform.user.id} and organization_id=${f.organizationId}`,
       ).toHaveLength(0);

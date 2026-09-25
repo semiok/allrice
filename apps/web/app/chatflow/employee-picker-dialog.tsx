@@ -2,7 +2,11 @@
 import { useEffect } from 'react';
 import type { Workspace } from './chatflow-types';
 import { DshDialog } from './dsh-upstream/Dialog';
-import { employeeAccent, employeeIntroduction } from './employee-navigation';
+import {
+  employeeAccent,
+  employeeAccentStyle,
+  employeeIntroduction,
+} from './employee-navigation';
 import css from './employee-sidebar.module.css';
 
 export function EmployeePickerDialog({
@@ -63,7 +67,14 @@ export function EmployeePickerDialog({
               type="button"
               key={employee.id}
               className={css.pickerCard}
-              data-accent={employeeAccent(manifest.name)}
+              data-accent={employeeAccent(
+                manifest.name,
+                manifest.appearance?.accentColor,
+              )}
+              style={employeeAccentStyle(
+                manifest.name,
+                manifest.appearance?.accentColor,
+              )}
               data-default-employee={
                 employee.isDefault ||
                 (!workspace.employees.some((item) => item.isDefault) &&

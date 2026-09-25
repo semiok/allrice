@@ -11,8 +11,9 @@
 .employeeCard,
 .avatar,
 .pickerCard {
-  --employee-start: #304fb1;
-  --employee-end: #3569c6;
+  --employee-start: #87c6ec;
+  --employee-end: #87c6ec;
+  --employee-foreground: #1f2937;
   background-color: var(--employee-start);
   background-image:
     radial-gradient(ellipse at 100% 0, #ffffff0c, transparent 65%),
@@ -24,22 +25,16 @@
     ),
     linear-gradient(115deg, var(--employee-start), var(--employee-end));
 }
-.employeeCard[data-accent='orange'],
-.avatar[data-accent='orange'],
-.pickerCard[data-accent='orange'] {
-  --employee-start: #a7491c;
-  --employee-end: #b75a23;
-}
 .employeeCard {
-  --dsw-alias-label-primary: #fff;
-  --dsw-alias-label-secondary: #fff;
-  --dsw-alias-label-tertiary: #fff;
-  --dsw-alias-state-business-primary: #fff;
+  --dsw-alias-label-primary: var(--employee-foreground);
+  --dsw-alias-label-secondary: var(--employee-foreground);
+  --dsw-alias-label-tertiary: var(--employee-foreground);
+  --dsw-alias-state-business-primary: var(--employee-foreground);
   --dsw-alias-interactive-bg-hover: transparent;
   margin-bottom: 6px;
   border-radius: 14px;
   padding: 2px 6px 6px;
-  color: #fff;
+  color: var(--employee-foreground);
 }
 .employeeCard[data-active] {
   box-shadow: 0 3px 10px #233b781a;
@@ -73,7 +68,7 @@
   height: 32px;
 }
 .info:hover {
-  color: #fff;
+  color: var(--employee-foreground);
   opacity: 0.8;
 }
 .meta {
@@ -122,7 +117,7 @@
   padding: 0;
   border: 1px solid #ffffff14;
   border-radius: 10px;
-  color: #fff;
+  color: var(--employee-foreground);
   cursor: pointer;
   font: inherit;
   font-weight: 600;
@@ -219,7 +214,7 @@
   border: 1px solid #ffffff14;
   border-radius: 18px;
   padding: 22px;
-  color: #fff;
+  color: var(--employee-foreground);
   cursor: pointer;
   font-family: inherit;
   transition:
@@ -256,7 +251,7 @@
   padding: 3px 8px;
   border-radius: 20px;
   background: #ffffff18;
-  color: #ffffffeb;
+  color: var(--employee-foreground);
   font-size: 11px;
   line-height: 18px;
 }
@@ -272,7 +267,7 @@
   -webkit-line-clamp: 2;
   overflow: hidden;
   margin-top: 8px;
-  color: #ffffffd9;
+  color: var(--employee-foreground);
   font-size: 13px;
   line-height: 21px;
   overflow-wrap: anywhere;
@@ -284,7 +279,7 @@
   gap: 12px;
   margin-top: auto;
   padding-top: 22px;
-  color: #fffffff2;
+  color: var(--employee-foreground);
   font-size: 12px;
   line-height: 18px;
 }
@@ -315,7 +310,7 @@
 }
 
 .pickerCard:focus-visible {
-  outline: 2px solid var(--employee-end);
+  outline: 2px solid var(--employee-foreground);
   outline-offset: 3px;
 }
 .avatar:focus-visible {

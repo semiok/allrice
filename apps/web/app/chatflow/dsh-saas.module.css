@@ -320,7 +320,7 @@ main.shell {
   place-items: center;
   border-radius: 13px;
   background: var(--dsw-alias-button-info-fill);
-  color: #fff;
+  color: var(--employee-foreground, #fff);
   font-size: 17px;
   font-weight: 700;
 }
@@ -457,7 +457,7 @@ main.shell {
 }
 
 .employeeSkillList article > span {
-  color: var(--dsw-alias-button-info-fill);
+  color: var(--dsw-alias-state-business-primary);
   font-size: 16px;
 }
 
@@ -578,15 +578,27 @@ header.conversationHeader::after {
 }
 
 /* Scope the employee identity to the conversation, leaving platform branding intact. */
-.employeeConversation[data-employee-accent='orange'] {
-  --dsw-alias-state-business-primary: #b75a23;
-  --dsw-alias-button-info-fill: #b75a23;
-  --dsw-alias-button-info-hover: #a7491c;
+.employeeConversation {
+  --dsw-alias-state-business-primary: color-mix(
+    in srgb,
+    var(--employee-end) 45%,
+    var(--dsw-alias-label-primary)
+  );
+  --dsw-alias-button-info-fill: var(--employee-end);
+  --dsw-alias-button-info-hover: color-mix(
+    in srgb,
+    var(--employee-end) 90%,
+    var(--employee-foreground)
+  );
   --dsw-specific-bubble: color-mix(
     in srgb,
-    #b75a23 10%,
+    var(--employee-end) 10%,
     var(--dsw-alias-bg-base)
   );
+}
+
+.employeeConversation .employeeSend {
+  color: var(--employee-foreground);
 }
 
 .emptyStage {
@@ -1128,7 +1140,7 @@ div.composerTools {
   place-items: center;
   border-radius: 8px;
   background: var(--dsw-alias-button-info-fill);
-  color: #fff;
+  color: var(--employee-foreground, #fff);
   font-size: 13px;
   font-style: normal;
   font-weight: 800;
@@ -1207,7 +1219,7 @@ div.composerTools {
   flex: none;
   border-radius: 5px;
   padding: 1px 4px;
-  color: var(--dsw-alias-button-info-fill);
+  color: var(--dsw-alias-state-business-primary);
   background: var(--dsw-specific-sidebar-nav-item-active-accent);
   font-size: 9px;
   font-style: normal;
@@ -1797,7 +1809,7 @@ div.composerTools {
   padding: 0 5px;
   border-radius: 6px;
   background: var(--dsw-specific-sidebar-nav-item-active-accent);
-  color: var(--dsw-alias-button-info-fill);
+  color: var(--dsw-alias-state-business-primary);
   font-size: 11px;
   font-style: normal;
   font-weight: 600;

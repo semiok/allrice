@@ -16,6 +16,7 @@ import {
   type WorkspaceCapability,
   type InteractionStatus,
   type ChatFlowEventEnvelope,
+  type EmployeeAccentColor,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type { QueuedMessage, Message, WorkspaceFile } from './chatflow-types';
@@ -193,6 +194,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       tenantAdmin?: boolean;
       employeeCount?: number;
       employeeHistory?: boolean;
+      employeeColor?: EmployeeAccentColor;
       width?: number;
       artifacts?: boolean;
       disabled?: boolean;
@@ -518,6 +520,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     employeeId: id(9),
                     name: 'Rice',
                     description: '负责研究、分析与文件交付',
+                    appearance: { accentColor: options.employeeColor },
                     identity: {
                       role: '研究助理',
                       mission: '帮助完成研究',
@@ -576,6 +579,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                         id: id(8),
                         manifest: {
                           name: state.employeeName,
+                          appearance: { accentColor: options.employeeColor },
                           runtimePolicy: { harness: 'dsh', provider: 'codex' },
                         },
                       },
@@ -1134,6 +1138,64 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(f.state.messageInputs[0]?.text).toBe(
         '请把 report-10.md 的结论放在开头',
       );
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('uses the published employee color across sidebar, picker, conversation and profile', async () => {
+    const f = await fixture({
+      employeeCount: 2,
+      employeeHistory: true,
+      employeeColor: 'violet',
+    });
+    try {
+      const conversation = f.page.locator('[data-employee-accent="violet"]');
+      await conversation.waitFor();
+      expect(
+        await conversation.evaluate((node) =>
+          getComputedStyle(node).getPropertyValue('--employee-end').trim(),
+        ),
+      ).toBe('#B9A1DE');
+      expect(await f.page.locator('[data-accent="violet"]').count()).toBe(1);
+      expect(
+        await f.page
+          .locator('[data-accent="violet"]')
+          .evaluate((node) => getComputedStyle(node).color),
+      ).toBe('rgb(31, 41, 55)');
+      await f.page
+        .getByRole('button', { name: '查看Rice详情', exact: true })
+        .click();
+      const details = f.page.getByRole('dialog', {
+        name: 'Rice员工详情',
+        exact: true,
+      });
+      expect(
+        await details.locator('[data-employee-accent="violet"]').count(),
+      ).toBe(1);
+      await details.getByRole('button', { name: '关闭', exact: true }).click();
+      await f.page
+        .getByRole('button', { name: '新的工作', exact: true })
+        .click();
+      const picker = f.page.getByRole('dialog', {
+        name: '选择 AI 员工',
+        exact: true,
+      });
+      const rice = picker.getByRole('button', { name: /Rice/ });
+      expect(await rice.getAttribute('data-accent')).toBe('violet');
+      expect(await rice.evaluate((node) => getComputedStyle(node).color)).toBe(
+        'rgb(31, 41, 55)',
+      );
+      await rice.click();
+      await f.page
+        .getByRole('button', { name: '收起侧边栏', exact: true })
+        .click();
+      expect(
+        await f.page
+          .getByRole('button', { name: 'Rice', exact: true })
+          .getAttribute('data-accent'),
+      ).toBe('violet');
       expect(f.errors).toEqual([]);
     } finally {
       await f.close();

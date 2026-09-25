@@ -4,6 +4,7 @@ import type {
   UserQuestionAnswerSubmission,
   ReviewContinuationInput,
   ChangesetActionInput,
+  EmployeeAccentColor,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -28,6 +29,7 @@ export interface EmployeeVersion {
   manifest: {
     name: string;
     description?: string;
+    appearance?: { accentColor?: EmployeeAccentColor };
     runtimePolicy?: {
       harness: 'codex' | 'dsh';
       provider?: string;
