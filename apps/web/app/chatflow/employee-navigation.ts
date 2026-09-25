@@ -26,11 +26,12 @@ export function employeeAccentStyle(
   name: string,
   configured?: EmployeeAccentColor,
 ): CSSProperties {
-  const color = employeeColorPalette[employeeAccent(name, configured)];
+  const accent = employeeAccent(name, configured);
+  const color = employeeColorPalette[accent];
   return {
     '--employee-start': color.value,
     '--employee-end': color.value,
-    '--employee-foreground': employeeColorForeground,
+    '--employee-foreground': employeeColorForeground(accent),
   } as CSSProperties;
 }
 
