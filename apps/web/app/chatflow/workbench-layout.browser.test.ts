@@ -1295,6 +1295,41 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it('employee card hover preserves initials and position while highlighting the card', async () => {
+    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+    try {
+      for (const [employeeId, initial] of [
+        [id(7), 'R'],
+        [id(17), 'O'],
+      ]) {
+        const row = f.page.locator(`[data-row-key="workspace:${employeeId}"]`);
+        const letter = row.getByText(initial, { exact: true });
+        const card = row.locator('..').locator('..');
+        await f.page.mouse.move(1000, 900);
+        await expect.poll(() => letter.isVisible()).toBe(true);
+        const before = await letter.boundingBox();
+        const shadow = await card.evaluate(
+          (e) => getComputedStyle(e).boxShadow,
+        );
+        await row.hover();
+        expect(await letter.isVisible()).toBe(true);
+        expect(await letter.boundingBox()).toEqual(before);
+        await expect
+          .poll(() => card.evaluate((e) => getComputedStyle(e).boxShadow))
+          .not.toBe(shadow);
+        const expanded = await row.getAttribute('aria-expanded');
+        await row.click();
+        await expect
+          .poll(() => row.getAttribute('aria-expanded'))
+          .toBe(expanded === 'true' ? 'false' : 'true');
+        expect(await letter.isVisible()).toBe(true);
+      }
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
     try {
