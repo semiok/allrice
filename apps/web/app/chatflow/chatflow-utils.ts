@@ -1,3 +1,4 @@
+import { assistantStreamText } from '../../lib/execution/assistant-stream';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 import type { Employee, Session, Workspace } from './chatflow-types';
@@ -79,10 +80,7 @@ export function providerForSession(workspace: Workspace, session?: Session) {
 }
 
 export function assistantDelta(events: ChatFlowEventEnvelope[]) {
-  return events
-    .filter((event) => event.type === 'assistant.text.delta')
-    .map((event) => String(event.payload.text ?? ''))
-    .join('');
+  return assistantStreamText(events, '');
 }
 
 export function resizeComposerTextarea(textarea: HTMLTextAreaElement | null) {
