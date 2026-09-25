@@ -18,7 +18,7 @@
 .section input,
 .section select,
 .section textarea,
-.section button {
+.section button:not([role='switch']) {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-2);
   border-color: var(--dsw-alias-border-primary, #d9dce2);
@@ -29,4 +29,27 @@
 }
 .section form {
   grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+}
+.computer {
+  margin: 20px 0;
+}
+.capabilitySetting {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  padding: 16px 0;
+  border-top: 1px solid var(--dsw-alias-border-primary, #d9dce2);
+}
+.capabilitySetting p {
+  margin: 4px 0;
+}
+.capabilitySetting small {
+  color: var(--dsw-alias-label-secondary);
+}
+.computerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
 }

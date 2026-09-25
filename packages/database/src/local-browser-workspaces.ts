@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { bridgeSettingsView } from './bridge-settings.ts';
 import type postgres from 'postgres';
 import {
   BrowserProfileSchema,
@@ -104,8 +105,13 @@ export async function createLocalBrowserWorkspace(
     if (!run)
       throw new RuntimePolicyError('local_browser_frozen_authority_denied');
     const [grant] = await tx<
-      { version: number; profile: unknown; device_id: string }[]
-    >`select g.version,g.profile,l.device_id
+      {
+        version: number;
+        profile: unknown;
+        device_id: string;
+        metadata: Record<string, unknown>;
+      }[]
+    >`select g.version,g.profile,l.device_id,t.metadata
       from allrice_browser_control_grants g join allrice_local_browser_grants l on l.grant_id=g.id
         and l.organization_id=g.organization_id and l.workspace_id=g.workspace_id and l.owner_id=g.owner_id
       join allrice_bridge_devices d on d.id=l.device_id and d.organization_id=l.organization_id and d.workspace_id=l.workspace_id and d.owner_id=l.owner_id
@@ -117,7 +123,8 @@ export async function createLocalBrowserWorkspace(
         and (g.profile->>'network' is null or (t.metadata->'environment'->>'version'='1' and t.metadata->'environment'->>'browser'='ready'))
         and (t.metadata->'environment' is null or t.metadata->'environment'='null'::jsonb or t.metadata->'environment'->>'browser'='ready')
       for update of g,l`;
-    if (!grant) throw new RuntimePolicyError('local_browser_grant_denied');
+    if (!grant || !bridgeSettingsView(grant.metadata).settings.localBrowser)
+      throw new RuntimePolicyError('local_browser_grant_denied');
     const profile = BrowserProfileSchema.parse(grant.profile);
     if (!browserOriginAllowed(url, profile) || browserGrantOriginDenial(url))
       throw new RuntimePolicyError('browser_origin_denied');

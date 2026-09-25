@@ -1,4 +1,7 @@
-import { heartbeatBridgeDevice } from '@allrice/database';
+import {
+  heartbeatBridgeDevice,
+  bridgeSettingsCommand,
+} from '@allrice/database';
 
 import { getBridgeDeviceToken } from '../../../../../../lib/bridge/request';
 import { bridgeErrorResponse } from '../../../../../../lib/bridge/responses';
@@ -10,6 +13,7 @@ export async function POST(request: Request) {
     const input = await request.json().catch(() => undefined);
     return Response.json({
       device: await heartbeatBridgeDevice(getBridgeDeviceToken(request), input),
+      settings: await bridgeSettingsCommand(getBridgeDeviceToken(request)),
     });
   } catch (error) {
     return bridgeErrorResponse(error);

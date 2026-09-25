@@ -18,6 +18,7 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from './core/client.ts';
+import { bridgeSettingsView } from './bridge-settings.ts';
 import {
   createAssistantOperationAuthority,
   type AssistantOperationOrigin,
@@ -251,9 +252,15 @@ export function createGovernedBridgePolicyOptions(
           ? 'files.write'
           : 'files.read';
       const [target] = await tx<
-        { id: string; kind: string; state: string; capabilities: string[] }[]
+        {
+          id: string;
+          kind: string;
+          state: string;
+          capabilities: string[];
+          metadata: Record<string, unknown>;
+        }[]
       >`
-        select id,kind,state,capabilities from allrice_execution_targets
+        select id,kind,state,capabilities,metadata from allrice_execution_targets
         where id=${binding.execution.targetId} and organization_id=${device.organizationId}
           and workspace_id=${device.workspaceId} and target_key=${`bridge.${device.id}`}
           and metadata->>'bridgeDeviceId'=${device.id} for share`;
@@ -271,6 +278,13 @@ export function createGovernedBridgePolicyOptions(
         target.kind !== 'rice_bridge' ||
         target.state !== 'online' ||
         (!command && !mcp && !target.capabilities.includes(targetCapability))
+      )
+        throw new RuntimePolicyError('bridge_authority_changed');
+
+      const settings = bridgeSettingsView(target.metadata).settings;
+      if (
+        ((command || mcp) && !settings.localCommand) ||
+        (command?.arguments.candidate && !settings.development)
       )
         throw new RuntimePolicyError('bridge_authority_changed');
 

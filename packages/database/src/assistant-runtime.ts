@@ -1,4 +1,5 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { bridgeSettingsView } from './bridge-settings.ts';
 import { randomUUID } from 'node:crypto';
 import {
   AssistantMessageRequestSchema,
@@ -378,6 +379,20 @@ export function createAssistantRuntime(
             fail('canceled');
         } else await active(tx, root, row.run_id);
         if (!row.allowed_tools.includes(tool)) fail('forbidden');
+        if (!completed && tool === 'assistant.development') {
+          const devices = await tx<{ metadata: Record<string, unknown> }[]>`
+            select t.metadata from allrice_runs r join allrice_bridge_devices d
+              on d.organization_id=r.organization_id and d.workspace_id=r.workspace_id and d.owner_id=r.owner_id and d.revoked_at is null
+            join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id
+              and t.kind='rice_bridge' and t.target_key='bridge.'||d.id::text
+            where r.id=${root.root_run_id}`;
+          if (
+            devices.some(
+              (d) => !bridgeSettingsView(d.metadata).settings.development,
+            )
+          )
+            fail('forbidden');
+        }
         const task = taskFor(root, row);
         await authorize({
           transaction: tx,

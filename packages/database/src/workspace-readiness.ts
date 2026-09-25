@@ -1,4 +1,5 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { bridgeSettingsView } from './bridge-settings.ts';
 import {
   BrowserProfileSchema,
   CloudExecutionProfileSchema,
@@ -110,6 +111,7 @@ async function readWorkspaceReadiness(
         folder: boolean;
         target_online: boolean;
         environment: unknown;
+        metadata: Record<string, unknown> | null;
         profile: unknown;
         profile_fresh: boolean;
       }[]
@@ -124,6 +126,8 @@ async function readWorkspaceReadiness(
           and t.kind='rice_bridge' and t.state='online') as target_online,
         (select t.metadata->'environment' from allrice_execution_targets t where t.organization_id=d.organization_id
           and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge') as environment,
+        (select t.metadata from allrice_execution_targets t where t.organization_id=d.organization_id
+          and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge') as metadata,
         p.profile,coalesce(p.reported_at between now()-interval '90 seconds' and now(),false) as profile_fresh
       from allrice_bridge_devices d left join allrice_bridge_runtime_profiles p on p.device_id=d.id
         and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
@@ -278,9 +282,31 @@ async function readWorkspaceReadiness(
       .filter((d) => d.online)
       .flatMap((d) => {
         const parsed = BridgeEnvironmentSchema.safeParse(d.environment);
-        return parsed.success ? [parsed.data] : [];
+        if (!parsed.success) return [];
+        const { settings, pending } = bridgeSettingsView(d.metadata ?? {});
+        return [
+          {
+            ...parsed.data,
+            browser: !settings.localBrowser
+              ? ('paused' as const)
+              : pending
+                ? ('preparing' as const)
+                : parsed.data.browser,
+            sandbox: !settings.localCommand
+              ? ('paused' as const)
+              : pending
+                ? ('preparing' as const)
+                : parsed.data.sandbox,
+            development:
+              !settings.development || !settings.localCommand
+                ? ('paused' as const)
+                : pending
+                  ? ('preparing' as const)
+                  : (parsed.data.development ?? parsed.data.sandbox),
+          },
+        ];
       });
-    const preparationStatus = (kind: 'browser' | 'sandbox') =>
+    const preparationStatus = (kind: 'browser' | 'sandbox' | 'development') =>
       ['ready', 'preparing', 'unavailable', 'paused'].find((status) =>
         preparations.some((p) => p[kind] === status),
       );
@@ -301,6 +327,7 @@ async function readWorkspaceReadiness(
         ? {
             browser: preparationStatus('browser'),
             sandbox: preparationStatus('sandbox'),
+            development: preparationStatus('development'),
             paused:
               preparations.every((p) => p.paused) &&
               preparations.length === devices.filter((d) => d.online).length,

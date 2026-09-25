@@ -208,6 +208,16 @@ suite('P22 real PostgreSQL device browser authority', () => {
     ).rejects.toThrow('browser_authority_unavailable');
   });
 
+  it('a pending browser-off choice stops admission before the next Bridge heartbeat', async () => {
+    const f = await fixture();
+    await readCurrentBrowserWorkspace(f.context, f.browser!.w.id, db);
+    await db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{bridgeSettings}',${db.json({ revision: 1, settings: { localCommand: true, localBrowser: false, development: true } })}) where target_key=${`bridge.${f.device.id}`}`;
+    await expect(
+      readCurrentBrowserWorkspace(f.context, f.browser!.w.id, db),
+    ).rejects.toThrow('browser_authority_unavailable');
+    await expect(f.open()).rejects.toThrow('local_browser_grant_denied');
+  });
+
   it('heartbeat waits for browser authority without holding its device lock', async () => {
     const f = await fixture();
     let heartbeat: Promise<unknown> | undefined;
