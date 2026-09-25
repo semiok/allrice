@@ -1,6 +1,7 @@
 import {
   dispatchBridgeCommand,
   createLocalCommandOperation,
+  createLocalFileOperation,
   waitLocalCommandOperation,
   localServiceWorkerAction,
   RuntimePolicyError,
@@ -82,6 +83,25 @@ export const executeLocalBridgeTool: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
+  if (
+    input.call.name === 'local.fs.write' ||
+    input.call.name === 'local.fs.mkdir'
+  ) {
+    const operation = await createLocalFileOperation({
+      context: input.context,
+      payload: { capability: input.call.name, arguments: args },
+      callId: input.call.id,
+    });
+    const result = await waitLocalCommandOperation(operation, input.signal);
+    return {
+      modelContent: JSON.stringify({
+        ...result,
+        source: 'rice-bridge',
+        localWorkspace: operation.workspaceLabel,
+      }),
+      summary: `${operation.workspaceLabel} · 文件操作 ${result.status}`,
+    };
+  }
   const bridge = await dispatchBridgeCommand({
     context: input.context,
     payload: BridgeCommandPayloadSchema.parse({

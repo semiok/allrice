@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   readFile,
@@ -42,6 +43,7 @@ import {
 } from 'vitest';
 import {
   createLocalCommandOperation,
+  createLocalFileOperation,
   listLocalCommandOperations,
   cancelLocalCommandRun,
   waitLocalCommandOperation,
@@ -269,6 +271,16 @@ async function fixture(
         },
       ],
     });
+  await updateWorkAutomation(
+    context,
+    workspace,
+    {
+      expectedRevision: 0,
+      capability: 'computer',
+      enabled: effect === 'allow',
+    },
+    database,
+  );
   function operation(
     raw: BridgeCommandPayload = {
       capability: 'local.fs.write',
@@ -480,6 +492,12 @@ async function commandFixture(
     },
     manifest,
   );
+  await updateWorkAutomation(
+    f.context,
+    f.context.workspaceId!,
+    { expectedRevision: 1, capability: 'computer', enabled: false },
+    database,
+  );
   const jobId = randomUUID(),
     workerId = randomUUID();
   await database`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
@@ -583,6 +601,226 @@ async function commandFixture(
 
 suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it('MET-159 defaults to actual file delivery, supports manual confirmation, CAS and no replay', async () => {
+    const f = await commandFixture(['local.fs.write', 'local.fs.mkdir']);
+    await database`delete from allrice_member_work_automation where organization_id=${f.context.organizationId}`;
+    await database`delete from allrice_bridge_runtime_profiles where device_id=${f.device.id}`;
+    vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0'); // Files need no VM runner.
+    await setRuntimePolicyControls(
+      f.context,
+      {
+        version: 3,
+        enabled: true,
+        mode: 'execute',
+        rules: [
+          { action: 'local.fs.write', effect: 'allow' },
+          { action: 'local.fs.mkdir', effect: 'allow' },
+        ],
+      },
+      2,
+      database,
+    );
+    const temporary = await realpath(
+      await mkdtemp(join(tmpdir(), 'allrice-auto-file-')),
+    );
+    artifactRoots.push(temporary);
+    const root = join(temporary, 'workspace');
+    await mkdir(root);
+    const fingerprint = createHash('sha256').update(root).digest('hex');
+    await database`update allrice_bridge_folder_grants set root_fingerprint=${fingerprint} where id=${f.grant}`;
+    const handler = createRuntimeBridgeHttpHandler({
+      enabled: () => true,
+      authenticate: async (token) => {
+        if (token !== 'auto-file-fixture') throw Error('unauthorized');
+        return {
+          device: f.device,
+          grants: [
+            {
+              id: f.grant,
+              deviceId: f.device.id,
+              label: 'fixture',
+              rootFingerprint: fingerprint,
+              createdAt: new Date().toISOString(),
+              revokedAt: null,
+            },
+          ],
+        };
+      },
+      ledgerForDevice: async () => f.ledger(),
+    });
+    const server = createServer((req, res) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const path = new URL(req.url!, 'http://localhost').pathname;
+        const response = await handler(
+          new Request(`http://localhost${path}`, {
+            method: 'POST',
+            headers: {
+              authorization: String(req.headers.authorization ?? ''),
+              'content-type': 'application/json',
+            },
+            body: Buffer.concat(chunks),
+          }),
+          path.split('/').at(-1)! as
+            'next' | 'start' | 'receipts' | 'heartbeat' | 'output',
+          path.split('/').at(-2),
+        );
+        res.statusCode = response.status;
+        res.end(await response.text());
+      })().catch((e) => {
+        res.statusCode = 500;
+        res.end(String(e));
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw Error('listener');
+    const origin = `http://127.0.0.1:${addr.port}`;
+    const journal = await BridgeJournal.open({
+      directory: join(temporary, 'journal'),
+      server: origin,
+      deviceId: f.device.id,
+    });
+    const client = new RuntimeBridgeOperationClient({
+      config: {
+        server: origin,
+        deviceId: f.device.id,
+        deviceName: 'fixture',
+        grants: [
+          {
+            id: f.grant,
+            label: 'fixture',
+            rootPath: root,
+            rootFingerprint: fingerprint,
+          },
+        ],
+      },
+      token: 'auto-file-fixture',
+      journal,
+    });
+    const write = (callId: string, content: string, expectedSha256?: string) =>
+      createLocalFileOperation(
+        {
+          context: f.execution,
+          callId,
+          payload: {
+            capability: 'local.fs.write',
+            arguments: {
+              path: 'result.txt',
+              content,
+              ...(expectedSha256 ? { expectedSha256 } : {}),
+            },
+          },
+        },
+        database,
+      );
+    try {
+      const first = await write('auto-create', 'delivered');
+      expect(first.snapshot.status).toBe('ready');
+      expect(await client.pollOnce()).toBe(true);
+      expect(await readFile(join(root, 'result.txt'), 'utf8')).toBe(
+        'delivered',
+      );
+      expect(
+        (
+          await f
+            .ledger()
+            .readOperation(
+              f.task.scope,
+              first.snapshot.binding.attempt.operationId,
+            )
+        ).status,
+      ).toBe('succeeded');
+      await writeFile(join(root, 'result.txt'), 'user edit');
+      await write('auto-create', 'delivered');
+      expect(await client.pollOnce()).toBe(false);
+      expect(await readFile(join(root, 'result.txt'), 'utf8')).toBe(
+        'user edit',
+      );
+      const collision = await write('create-only-conflict', 'overwrite');
+      await client.pollOnce();
+      expect(
+        (
+          await f
+            .ledger()
+            .readOperation(
+              f.task.scope,
+              collision.snapshot.binding.attempt.operationId,
+            )
+        ).status,
+      ).toBe('unknown');
+      expect(await readFile(join(root, 'result.txt'), 'utf8')).toBe(
+        'user edit',
+      );
+      await updateWorkAutomation(
+        f.context,
+        f.context.workspaceId!,
+        { expectedRevision: 0, capability: 'computer', enabled: false },
+        database,
+      );
+      const manual = await write(
+        'manual-write',
+        'confirmed',
+        `sha256:${createHash('sha256').update('user edit').digest('hex')}`,
+      );
+      expect(manual.snapshot.status).toBe('waiting_user');
+      expect(await client.pollOnce()).toBe(false);
+      const view = (
+        await listLocalCommandOperations(f.context, f.run, database)
+      ).find(
+        (x) =>
+          x.snapshot.binding.attempt.operationId ===
+          manual.snapshot.binding.attempt.operationId,
+      )!;
+      expect(view.file?.capability).toBe('local.fs.write');
+      const req = view.approval!.request;
+      await decideRuntimeActionApproval(
+        f.context,
+        req.approvalId,
+        {
+          contractVersion: 1,
+          direction: 'response',
+          kind: 'action_approval',
+          requestId: req.requestId,
+          version: req.version,
+          requestDigest: req.requestDigest,
+          task: req.task,
+          responseId: randomUUID(),
+          respondedBy: f.context.actor.id,
+          respondedAt: new Date().toISOString(),
+          approvalId: req.approvalId,
+          decision: 'approved',
+        },
+        database,
+      );
+      await client.pollOnce();
+      expect(await readFile(join(root, 'result.txt'), 'utf8')).toBe(
+        'confirmed',
+      );
+      await updateWorkAutomation(
+        f.context,
+        f.context.workspaceId!,
+        { expectedRevision: 1, capability: 'computer', enabled: true },
+        database,
+      );
+      await write(
+        'revoked-folder',
+        'blocked',
+        `sha256:${createHash('sha256').update('confirmed').digest('hex')}`,
+      );
+      await database`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.grant}`;
+      expect(await client.pollOnce()).toBe(false);
+      expect(await readFile(join(root, 'result.txt'), 'utf8')).toBe(
+        'confirmed',
+      );
+    } finally {
+      await journal.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 20000);
   it.each(['profile', 'platform', 'revoked', 'stale'] as const)(
     'ARM native approval/dispatch/lease rejects changed %s',
     async (change) => {

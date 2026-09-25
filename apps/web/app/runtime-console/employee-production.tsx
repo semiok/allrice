@@ -891,7 +891,7 @@ export function EmployeeProduction() {
             </article>
             <article>
               <code>SOUL.md</code>
-              <span>行为准则、安全边界和操作确认策略</span>
+              <span>行为准则、安全边界和员工确认偏好</span>
             </article>
             <article>
               <code>AGENTS.md</code>
@@ -1227,7 +1227,7 @@ export function EmployeeProduction() {
     panel = (
       <div className={styles.grid}>
         <label className={styles.field}>
-          <RuntimeFieldLabel label="操作确认策略" runtimeSource="SOUL.md" />
+          <RuntimeFieldLabel label="员工确认偏好" runtimeSource="SOUL.md" />
           <select
             value={draft.securityPolicy.approvalPolicy}
             onChange={(event) =>
@@ -1236,10 +1236,11 @@ export function EmployeeProduction() {
           >
             <option value="confirm_side_effects">所有修改前询问</option>
             <option value="confirm_external">对外操作前询问</option>
-            <option value="autonomous" disabled>
-              不支持自动放行（请改为询问策略）
-            </option>
+            <option value="autonomous">授权范围内自动工作</option>
           </select>
+          <small>
+            实际执行跟随成员在前台「员工工作方式」中的设置；需要新账号或新文件夹时仍申请授权。
+          </small>
         </label>
         <label className={styles.field}>
           <span>Rice Bridge</span>

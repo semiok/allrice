@@ -1,5 +1,5 @@
 import {
-  localCommandFeatureEnabled,
+  localOperationsFeatureEnabled,
   listLocalCommandOperations,
   cancelLocalCommandRun,
   RuntimePolicyError,
@@ -11,7 +11,7 @@ import { UuidSchema } from '@allrice/contracts';
 export const runtime = 'nodejs';
 const headers = { 'Cache-Control': 'private, no-store' };
 async function handle(request: Request, cancel: boolean) {
-  if (!localCommandFeatureEnabled())
+  if (!localOperationsFeatureEnabled())
     return new Response(null, { status: 404, headers });
   try {
     if (cancel && !sameOriginBrowserWrite(request))

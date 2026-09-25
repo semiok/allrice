@@ -121,8 +121,6 @@ export function employeeToolConfigurationErrors(
         errors.push(`受控开发协作缺少必需工具：${required}`);
     }
   }
-  if (definition.securityPolicy.approvalPolicy === 'autonomous')
-    errors.push('平台当前不允许 AI 员工使用 autonomous 审批策略');
   return errors;
 }
 

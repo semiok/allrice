@@ -1,3 +1,4 @@
+import { defaultWorkAutomation } from '../work-automation.ts';
 import { describe, expect, it } from 'vitest';
 import {
   evaluateRuntimePolicy,
@@ -185,4 +186,96 @@ describe('B1 deterministic policy', () => {
       allowRemoteResources: false,
       requiresCurrentAuthorization: true,
     }));
+});
+
+describe('member-controlled confirmation', () => {
+  it.each([
+    'local.fs.write',
+    'local.fs.mkdir',
+    'local.fs.changeset',
+    'local.process.execute',
+    'local.mcp.discover',
+    'local.mcp.call',
+    'local.browser.act',
+    'cloud.process.execute',
+    'cloud.mcp.call',
+    'cloud.browser.act',
+  ])('applies settings to %s without expanding authority', (action) => {
+    const policy = { ...controls, rules: [{ action, effect: 'allow' }] };
+    expect(
+      runtimePolicyActionDecision(policy, action, [], defaultWorkAutomation)
+        .effect,
+    ).toBe('allow');
+    expect(
+      runtimePolicyActionDecision(policy, action, [], {
+        cloud: false,
+        computer: false,
+        assistants: true,
+      }).effect,
+    ).toBe('ask');
+    expect(
+      runtimePolicyActionDecision(
+        { ...policy, rules: [{ action, effect: 'ask' }] },
+        action,
+        [],
+        defaultWorkAutomation,
+      ).effect,
+    ).toBe('allow');
+    expect(
+      runtimePolicyActionDecision(
+        { ...policy, rules: [{ action, effect: 'deny' }] },
+        action,
+        [],
+        defaultWorkAutomation,
+      ).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision(
+        { ...policy, rules: [] },
+        action,
+        [],
+        defaultWorkAutomation,
+      ).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision(
+        { ...policy, mode: 'plan_only' },
+        action,
+        [],
+        defaultWorkAutomation,
+      ).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision(
+        policy,
+        action,
+        [action],
+        defaultWorkAutomation,
+      ).effect,
+    ).toBe('deny');
+  });
+  it('lets members disable assistants without disabling reads', () => {
+    const policy = {
+      ...controls,
+      rules: [
+        { action: 'assistant.delegate', effect: 'allow' },
+        { action: 'local.fs.read', effect: 'allow' },
+      ],
+    };
+    const off = { cloud: false, computer: false, assistants: false };
+    expect(
+      runtimePolicyActionDecision(policy, 'assistant.delegate', [], off).reason,
+    ).toBe('member_assistants_disabled');
+    expect(
+      runtimePolicyActionDecision(policy, 'local.fs.read', [], off).effect,
+    ).toBe('allow');
+    expect(
+      runtimePolicyActionDecision(
+        { ...policy, rules: [{ action: 'unregistered', effect: 'allow' }] },
+        'unregistered',
+        [],
+        defaultWorkAutomation,
+      ).effect,
+    ).toBe('deny');
+  });
 });

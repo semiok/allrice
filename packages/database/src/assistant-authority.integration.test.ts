@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 /** Real PostgreSQL admission tests with synthetic identities in a fresh schema.
  * No model, connector, deployed Worker, tenant enablement or GA proof is claimed. */
 import { randomUUID } from 'node:crypto';
@@ -53,6 +54,27 @@ integration(
     const authorityFixture = (
       options: Parameters<typeof createAssistantAuthorityFixture>[1] = {},
     ) => createAssistantAuthorityFixture(fixture.db, options);
+
+    it('a member can turn off new assistant work and restore it without changing employee grants', async () => {
+      const f = await authorityFixture();
+      await expect(f.authorize('configure')).resolves.toBeUndefined();
+      await updateWorkAutomation(
+        f.context,
+        f.workspace,
+        { expectedRevision: 0, capability: 'assistants', enabled: false },
+        fixture.db,
+      );
+      await expect(f.authorize('configure')).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+      await updateWorkAutomation(
+        f.context,
+        f.workspace,
+        { expectedRevision: 1, capability: 'assistants', enabled: true },
+        fixture.db,
+      );
+      await expect(f.authorize('configure')).resolves.toBeUndefined();
+    });
 
     it('accepts the published runtime-package checksum after JSONB, but rejects tampered packages and manifest authority', async () => {
       const published = await createEmployeeAdministrationFixture(fixture.db);

@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 /** Synthetic P17 PostgreSQL fixture. No real Bridge/process/credential/model. */
 import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
@@ -184,6 +185,18 @@ export async function createLocalMcpFixture(
           expectedRevision: 0,
           enabled: true,
         });
+  await updateWorkAutomation(
+    context,
+    workspace,
+    { expectedRevision: 0, capability: 'cloud', enabled: false },
+    db,
+  );
+  await updateWorkAutomation(
+    context,
+    workspace,
+    { expectedRevision: 1, capability: 'computer', enabled: false },
+    db,
+  );
   await setRuntimePolicyControls(
     context,
     {

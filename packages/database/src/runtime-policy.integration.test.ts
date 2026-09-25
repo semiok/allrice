@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import type {
@@ -115,6 +116,12 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
     mode: 'execute',
     rules: [{ action: binding.action, effect }],
   };
+  await updateWorkAutomation(
+    context,
+    workspace,
+    { expectedRevision: 0, capability: 'computer', enabled: false },
+    database,
+  );
   await setRuntimePolicyControls(context, controls, null, database);
   // Synthetic adapter state is independent of caller mutations, emulating re-resolved server payload.
   let currentBinding = structuredClone(binding);

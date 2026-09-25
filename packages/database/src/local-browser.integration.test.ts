@@ -319,6 +319,31 @@ suite('P22 real PostgreSQL device browser authority', () => {
       await Promise.allSettled([publication, observer]);
     }
   }, 15000);
+  it('MET-159 default automatic work starts an authorized local browser action once', async () => {
+    const f = await fixture(),
+      b = f.browser!;
+    await db`delete from allrice_member_work_automation where organization_id=${f.org}`;
+    const op = await createBrowserOperation(
+      f.context,
+      b.command,
+      randomUUID(),
+      db,
+    );
+    expect(op.snapshot.status).toBe('ready');
+    const input = {
+      ...b.identity!,
+      operationId: op.snapshot.binding.attempt.operationId,
+    };
+    expect(
+      (await startLocalBrowserOperation(f.device, input, db)).mayExecute,
+    ).toBe(true);
+    expect(
+      (await startLocalBrowserOperation(f.device, input, db)).mayExecute,
+    ).toBe(false);
+    expect(
+      await db`select id from allrice_approval_requests where resource_id=${op.snapshot.binding.attempt.operationId}`,
+    ).toHaveLength(0);
+  });
   it('opens without folder grant; exact approval and one START precede a durable receipt', async () => {
     const f = await fixture(),
       b = f.browser!;

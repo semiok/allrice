@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import {
   runtimeGovernedActions,
   runtimePolicyActionDecision,
+  defaultWorkAutomation,
   type RuntimePolicyControls,
 } from '@allrice/contracts';
 import styles from './tenant-administration.module.css';
@@ -117,16 +118,10 @@ export function TenantPolicyEditor({
     <section aria-label="执行策略">
       <h3>执行策略</h3>
       <p>
-        策略控制当前工作区的执行动作，不等于员工工具清单。平台开关、执行环境、实际使用者权限仍独立校验；禁止不会被员工配置覆盖。
+        这里保留工作区的明确禁止规则。日常使用请到前台设置的「员工工作方式」，选择自动执行或每次确认；默认在已授权范围内自动执行。
       </p>
       <p>
-        Changeset：workspace.export.create 生成提案 → 网页精确审批 →
-        local.fs.changeset 落盘；后者是内部执行动作，不是新增模型工具。
-      </p>
-      <p>
-        assistant.delegate
-        只控制受控助手的委派许可，仍受员工工具、任务选择和根预算约束。
-        当前不支持逐次委派审批；未配置、禁止或旧的每次审批规则均不能启动助手。
+        允许不会增加员工工具、文件夹或账号权限。旧的「每次审批」规则按成员工作方式执行；已有审批继续保留。
       </p>
       <button
         disabled={busy || loading}
@@ -206,17 +201,12 @@ export function TenantPolicyEditor({
                       : matches.some((r) => r.effect === 'allow')
                         ? 'allow'
                         : 'unset';
-                  const forced =
-                    runtimePolicyActionDecision(
-                      {
-                        version: 1,
-                        enabled: true,
-                        mode: 'execute',
-                        rules: [{ action, effect: 'allow' }],
-                      },
-                      action,
-                    ).effect === 'ask';
-                  const decision = runtimePolicyActionDecision(draft, action);
+                  const decision = runtimePolicyActionDecision(
+                    draft,
+                    action,
+                    [],
+                    defaultWorkAutomation,
+                  );
                   return (
                     <tr key={action}>
                       <td>
@@ -249,19 +239,14 @@ export function TenantPolicyEditor({
                         >
                           <option value="unset">未配置（禁止）</option>
                           <option value="deny">禁止</option>
-                          <option
-                            value="ask"
-                            disabled={action === 'assistant.delegate'}
-                          >
-                            {action === 'assistant.delegate'
-                              ? '每次审批（暂不支持，禁止委派）'
-                              : '每次审批'}
-                          </option>
-                          <option value="allow">
-                            {forced
-                              ? '允许申请（仍每次审批）'
-                              : '授权范围内允许'}
-                          </option>
+                          {effect === 'ask' ? (
+                            <option value="ask" disabled>
+                              {action === 'assistant.delegate'
+                                ? '旧审批规则（不能委派）'
+                                : '旧审批规则（跟随成员设置）'}
+                            </option>
+                          ) : null}
+                          <option value="allow">授权范围内允许</option>
                         </select>
                       </td>
                       <td>
@@ -269,7 +254,7 @@ export function TenantPolicyEditor({
                           ? '禁止'
                           : decision.effect === 'ask'
                             ? '需精确审批'
-                            : '允许'}
+                            : '按成员工作方式执行'}
                         <small>{decision.reason}</small>
                       </td>
                     </tr>

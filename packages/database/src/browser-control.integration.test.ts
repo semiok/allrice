@@ -231,6 +231,20 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       await Promise.allSettled([writer, ...(reader ? [reader] : [])]);
     }
   }, 15000);
+  it('MET-159 default automatic work admits a scoped cloud browser action without an approval', async () => {
+    const f = await fixture();
+    await db`delete from allrice_member_work_automation where organization_id=${f.org}`;
+    const op = await createBrowserOperation(
+      f.context,
+      f.command,
+      randomUUID(),
+      db,
+    );
+    expect(op.snapshot.status).toBe('ready');
+    expect(
+      await db`select id from allrice_approval_requests where resource_id=${op.snapshot.binding.attempt.operationId}`,
+    ).toHaveLength(0);
+  });
   it('exact operation always asks; takeover invalidates old approval without fabricating revocation or stop', async () => {
     const f = await fixture(),
       op = await createBrowserOperation(f.context, f.command, randomUUID(), db);

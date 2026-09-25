@@ -69,8 +69,6 @@ export function mcpEmployeeEligibility(
   }
   if (!value.securityPolicy.connectorIdentityModes.includes('service'))
     reasons.push('员工版本未许可 Service Connector 身份');
-  if (value.securityPolicy.approvalPolicy === 'autonomous')
-    reasons.push('MCP 必须逐次审批，不能使用自主执行策略');
   return reasons;
 }
 

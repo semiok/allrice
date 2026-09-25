@@ -1,3 +1,4 @@
+import { readWorkAutomation } from '../work-automation.ts';
 import { createHash } from 'node:crypto';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import {
@@ -1402,8 +1403,19 @@ export async function sendChatMessage(
       },
     });
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
+    const workAutomation = await sql.begin((transaction) =>
+      readWorkAutomation(transaction, {
+        organizationId: context.organizationId,
+        workspaceId,
+        userId: context.actor.id,
+      }),
+    );
+    const allowAssistants =
+      assistantPreference?.allowAssistants === true &&
+      workAutomation.settings.assistants;
+
     if (
-      assistantPreference?.allowAssistants &&
+      allowAssistants &&
       (!assistantRuntimeEnabled() ||
         !binding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
           'assistant.delegate',
@@ -1426,7 +1438,7 @@ export async function sendChatMessage(
             ? {
                 assistantConfiguration: {
                   ...defaultAssistantRunConfiguration(),
-                  allowAssistants: assistantPreference.allowAssistants,
+                  allowAssistants,
                 },
               }
             : {}),
