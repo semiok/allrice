@@ -45,4 +45,15 @@ describe('document reader data', () => {
     expect(searchResultDocument('plain text')).toBeNull();
     expect(searchResultDocument('{"query":"x","output":{}}')).toBeNull();
   });
+  it('keeps currency in search snippets from becoming a math formula', () => {
+    expect(
+      searchResultDocument(
+        JSON.stringify({
+          provider: 'test',
+          query: '股价',
+          output: 'Revenue $100 and price $25.',
+        }),
+      )?.body,
+    ).toBe('Revenue \\$100 and price \\$25.');
+  });
 });

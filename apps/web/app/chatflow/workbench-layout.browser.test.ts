@@ -1320,7 +1320,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           provider: 'fixture',
           query: '官方公告',
           output:
-            '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。',
+            '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。\n\nRevenue $100 and price $25.',
         }),
       };
       await f.page.reload();
@@ -1344,6 +1344,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getAttribute('href'),
       ).toBe('https://example.com/news');
       expect(await f.panel.getByText(/"provider"/).count()).toBe(0);
+      await f.panel
+        .getByText('Revenue $100 and price $25.', { exact: true })
+        .waitFor();
+      expect(await f.panel.locator('.katex').count()).toBe(0);
       await f.fileAction('查看源文本');
       await expect
         .poll(() =>
@@ -3888,6 +3892,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.locator('[data-document-id]:visible').count())
         .toBe(2);
+      // The pane shell mounts before its authenticated preview has returned.
+      await f.panel
+        .getByRole('region', { name: '文件正文', exact: true })
+        .waitFor();
       expect(await metadata.count()).toBe(1);
       expect(
         await f.panel

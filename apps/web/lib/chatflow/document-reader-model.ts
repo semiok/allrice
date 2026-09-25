@@ -36,7 +36,10 @@ export function searchResultDocument(text: string) {
       query: record.query,
       body: record.output
         .replace(/\uE200[^\uE201]*\uE201/g, '')
-        .replace(/\[wordlim:\s*\d+\]/g, ''),
+        .replace(/\[wordlim:\s*\d+\]/g, '')
+        // Search snippets contain currency, not authored TeX. Preserve prices
+        // when the native Markdown renderer would otherwise pair dollar signs.
+        .replace(/(?<!\\)\$(?=\s*\d)/g, '\\$'),
     };
   } catch {
     return null;
