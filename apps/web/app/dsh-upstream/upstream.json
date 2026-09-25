@@ -126,7 +126,8 @@
             "IconFolderOpenOutlineRegular",
             "IconDataOutlineRegular",
             "IconRefreshOutlineRegular",
-            "Switch"
+            "Switch",
+            "MarkdownText"
           ]
         },
         {
@@ -495,6 +496,67 @@
         }
       ],
       "packages": []
+    },
+    {
+      "id": "native-process-groups",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-source-with-import-adapters",
+      "files": [
+        {
+          "source": "packages/client/ui-chat/src/client/conversation-nodes/process-groups.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/process/process-groups.ts",
+          "upstreamSha256": "2d7188a9c35c846d0ec25c1de94b69cd5d77aa9c46ed44d94707a3794c18cd45",
+          "sha256": "f5a5ab6543a407bd56c7ee4ed607aafb178f8a970f78b89df8312c4fcaab5d71",
+          "patch": "scripts/dsh-ui-patches/process-process-groups.ts.patch",
+          "patchSha256": "3cb905439fd6af71beb2dcc4f1a9ae3329f81b6a64f28c758730f2dcbeda5e32"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/conversation-nodes/process-activity.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/process/process-activity.ts",
+          "upstreamSha256": "490b28f3fa34aaeee6f28af8e0b389b2646e3bb30f6f49b066c190b5eb98bb93",
+          "sha256": "50c51c1d12317ad0d8a0bd6cb6c20565f4e0e2c885d23144df52337faebe20c7",
+          "patch": "scripts/dsh-ui-patches/process-process-activity.ts.patch",
+          "patchSha256": "ce43e7ac062d22cf7d2582cadd55c46e4f2b4ef2cec55bc7e4341aa15f722ee0"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/contract/assistant-content.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/process/assistant-content.ts",
+          "upstreamSha256": "a736c22b643545b1acd072e850add94bdf628c25c13e5fb1dd1046fffaa18c85",
+          "sha256": "a736c22b643545b1acd072e850add94bdf628c25c13e5fb1dd1046fffaa18c85"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/contract/chat-visibility.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/process/chat-visibility.ts",
+          "upstreamSha256": "5928a3c4a28f6e6bd9ad4fc979ebe1f90024c2e83b66da00e5a2c4765ef25301",
+          "sha256": "00364782344608acba5f663555daaf50c8885aeac80c220eaa64f5b0add4dae9",
+          "patch": "scripts/dsh-ui-patches/process-chat-visibility.ts.patch",
+          "patchSha256": "305f26d01a993ce6f01b52789ea71aa4ff514aec5f3af47d2ba3ba607ac60066"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/contract/chat-nodes.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/process/tool-state.ts",
+          "upstreamSha256": "51bb2fe064dbb0f766817cefce2537642339d0e34b175ca09a0fb5b145ca9023",
+          "sha256": "8a737012fd33b976a07e0e554990ef2c3c1f50ebbc86500e3a703f05566fa665",
+          "patch": "scripts/dsh-ui-patches/process-tool-state.ts.patch",
+          "patchSha256": "6f726b8f388d7ee28fc7a6f0e81c990894ee3e85af29676a8160cf71e1db154f"
+        }
+      ],
+      "packages": [
+        {
+          "name": "@deepseek-ai/dsh-client-ui-chat",
+          "version": "0.1.7-rc.1"
+        },
+        {
+          "name": "@deepseek-ai/dsh-client-ui-conversation",
+          "version": "0.1.7-rc.1"
+        },
+        {
+          "name": "@deepseek-ai/dsh-brand",
+          "version": "0.1.7-rc.1"
+        }
+      ]
     }
   ]
 }

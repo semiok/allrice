@@ -1,0 +1,19 @@
+--- a/packages/client/ui-chat/src/client/conversation-nodes/process-groups.ts
++++ b/packages/client/ui-chat/src/client/conversation-nodes/process-groups.ts
+@@ -4,11 +4,11 @@
+   ConversationGroupDefinition, ConversationGroupInput, GroupKey, GroupSnapshot,
+   GroupUpdate, NodeKey, NodeReference, RenderEntry,
+ } from '@deepseek-ai/dsh-client-ui-conversation/client'
+-import type { ChatConversationViewNode, ChatNode } from '../contract/chat-nodes.ts'
+-import type { ProcessActivitySummary, ProcessGroupData } from '../contract/process-groups.ts'
+-import { hasAssistantReplyContent } from '../contract/assistant-content.ts'
+-import { isVisibleChatNode } from '../contract/chat-visibility.ts'
+-import { processActivity } from './process-activity.ts'
++import type { ChatConversationViewNode, ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client'
++import type { ProcessActivitySummary, ProcessGroupData } from '@deepseek-ai/dsh-client-ui-chat/client'
++import { hasAssistantReplyContent } from './assistant-content'
++import { isVisibleChatNode } from './chat-visibility'
++import { processActivity } from './process-activity'
+ 
+ const INDEPENDENT = new Set(['user', 'steering', 'turn-trigger', 'model-retry', 'turn-error', 'turn-max-tokens', 'turn-tail'])
+ type ProcessInput = ConversationGroupInput<ChatConversationViewNode>

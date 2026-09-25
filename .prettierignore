@@ -34,3 +34,6 @@ apps/web/app/chatflow/dsh-upstream/settings/
 apps/web/app/chatflow/dsh-upstream/turn-navigation/
 
 apps/web/app/chatflow/dsh-upstream/feedback/
+
+# Pinned official conversation grouping; verified with recorded compatibility patches.
+apps/web/app/chatflow/dsh-upstream/process/

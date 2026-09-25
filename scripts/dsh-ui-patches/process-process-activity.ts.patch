@@ -1,0 +1,24 @@
+--- a/packages/client/ui-chat/src/client/conversation-nodes/process-activity.ts
++++ b/packages/client/ui-chat/src/client/conversation-nodes/process-activity.ts
+@@ -1,8 +1,8 @@
+ /** Tool-category and live-detail interpretation owned by Chat grouping. */
+-import type { ProcessActivity, ProcessActivitySummary } from '../contract/process-groups.ts'
+-import type { ChatNode } from '../contract/chat-nodes.ts'
+-import { isRunningTool } from '../contract/chat-nodes.ts'
+-import type { ToolCallBlock } from '../contract/snapshot.ts'
++import type { ProcessActivity, ProcessActivitySummary } from '@deepseek-ai/dsh-client-ui-chat/client'
++import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client'
++import { isRunningTool } from './tool-state'
++import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
+ 
+ function activity(name: string): ProcessActivity {
+   if (name === 'read') return 'read'
+@@ -71,7 +71,7 @@
+   let args: unknown
+   try {
+     args = JSON.parse(argsRaw)
+-  } catch (_error: unknown) {
++  } catch {
+     // Partial or free-form arguments have no safe one-line task detail.
+     return normalizeLiveToolDetail(name)
+   }
