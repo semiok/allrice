@@ -98,6 +98,7 @@ describe.skipIf(process.env.ALLRICE_TEST_LOCAL_BROWSER_NATIVE !== '1')(
             await chmod(join(children[0]!.directory, 'lease.json'), 0o644);
           else child.stdin.write('close\n');
           if (mode === 'crash' || mode === 'graceful') await exited;
+          if (mode === 'graceful') expect(child.exitCode).toBe(0);
           const stopDeadline = Date.now() + 7000;
           while (
             children.some(({ pid }) => exists(pid)) &&
