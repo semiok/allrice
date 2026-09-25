@@ -1795,6 +1795,58 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('ticks elapsed time every second between server samples, including waits, and settles to the final receipt', async () => {
+    const f = await fixture({ running: true });
+    try {
+      f.state.runTimings = [
+        {
+          runId: run,
+          timing: {
+            activeMs: 17000,
+            waitingMs: 0,
+            wallMs: 17000,
+            timeoutMs: 3600000,
+            remainingMs: 3583000,
+            phase: 'active',
+            sources: [],
+            calls: null,
+          },
+        },
+      ];
+      await f.page.clock.install();
+      await f.page.reload();
+      const timing = f.page.getByLabel('本轮运行时间', { exact: true });
+      await timing.waitFor();
+      expect(await timing.innerText()).toBe('总耗时 17 秒');
+      for (const seconds of [18, 19, 20]) {
+        await f.page.clock.runFor(1000);
+        await expect
+          .poll(() => timing.innerText())
+          .toBe(`总耗时 ${seconds} 秒`);
+      }
+      // Server updates do not reset the display interval or make it run backwards.
+      f.state.runTimings[0]!.timing.phase = 'waiting';
+      f.state.runTimings[0]!.timing.wallMs = 19000;
+      await f.page.clock.runFor(2000);
+      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      expect(f.state.runTimings[0]!.timing.activeMs).toBe(17000);
+      f.state.runTimings[0]!.timing.phase = 'terminal';
+      f.state.runTimings[0]!.timing.wallMs = 22500;
+      await f.page.clock.runFor(2000);
+      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      await f.page.clock.runFor(5000);
+      expect(await timing.innerText()).toBe('总耗时 22 秒');
+      f.state.runTimings[0]!.timing.phase = 'queued';
+      f.state.runTimings[0]!.timing.wallMs = 0;
+      await f.page.reload();
+      await timing.waitFor();
+      await f.page.clock.runFor(3000);
+      expect(await timing.innerText()).toBe('总耗时 0 秒');
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
   it.each([false, true])(
     'shows ordinary task timing on mobile with workbench disabled=%s, refreshes server waits and recovers from a failed read',
     async (disabled) => {
