@@ -552,32 +552,6 @@ header.conversationHeader::after {
   white-space: nowrap;
 }
 
-.runtimePill,
-.providerChip {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-button-elevated-fill);
-  color: var(--dsw-alias-label-secondary);
-  white-space: nowrap;
-}
-
-.runtimePill {
-  height: 28px;
-  gap: 6px;
-  padding: 0 10px;
-  border-radius: 9px;
-  font-size: 12px;
-}
-
-.runtimePill i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--dsw-alias-state-business-primary);
-}
-
 .conversationBody {
   min-height: 0;
 }
@@ -1007,16 +981,6 @@ header.conversationHeader::after {
   color: var(--dsw-alias-label-caption);
   font-size: 11px;
   line-height: 16px;
-}
-
-.providerChip {
-  max-width: 180px;
-  height: 28px;
-  padding: 0 8px;
-  overflow: hidden;
-  border-radius: 8px;
-  font-size: 12px;
-  text-overflow: ellipsis;
 }
 
 div.composerTools {
@@ -1925,14 +1889,6 @@ div.composerTools {
 
   .conversationHeader {
     padding-right: 12px;
-  }
-
-  .runtimePill {
-    display: none;
-  }
-
-  .providerChip {
-    max-width: 116px;
   }
 
   .userQuestionFrame {
