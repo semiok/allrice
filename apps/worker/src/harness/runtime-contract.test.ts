@@ -41,6 +41,36 @@ describe('normalizeHarnessRunEvent', () => {
     },
   );
 
+  it('persists native reply identity and replacement semantics for history replay', () => {
+    expect(
+      normalizeHarnessRunEvent({
+        ...envelope('dsh'),
+        type: 'assistant.delta',
+        text: '阶段进展',
+        replyId: 'turn:1:step:2',
+        textMode: 'replace',
+      }),
+    ).toMatchObject({
+      type: 'assistant.text.delta',
+      payload: {
+        replyId: 'turn:1:step:2',
+        textMode: 'replace',
+        text: '阶段进展',
+      },
+    });
+    expect(
+      normalizeHarnessRunEvent({
+        ...envelope('dsh'),
+        type: 'assistant.completed',
+        text: '最终答复',
+        replyId: 'turn:1:step:3',
+      }),
+    ).toMatchObject({
+      type: 'assistant.text.completed',
+      payload: { replyId: 'turn:1:step:3' },
+    });
+  });
+
   it('preserves Tool Broker ownership instead of assigning it to a harness', () => {
     const event: HarnessEvent = {
       ...envelope('dsh'),

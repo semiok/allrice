@@ -42,7 +42,11 @@ export function normalizeHarnessRunEvent(
   if (event.type === 'assistant.completed') {
     return {
       type: 'assistant.text.completed',
-      payload: { ...envelope, text: event.text },
+      payload: {
+        ...envelope,
+        text: event.text,
+        ...(event.replyId ? { replyId: event.replyId } : {}),
+      },
     };
   }
   if (event.type === 'assistant.delta') {
@@ -51,6 +55,8 @@ export function normalizeHarnessRunEvent(
       payload: {
         ...envelope,
         text: event.text,
+        ...(event.replyId ? { replyId: event.replyId } : {}),
+        ...(event.textMode ? { textMode: event.textMode } : {}),
         ...(event.orderStart ? { orderStart: event.orderStart } : {}),
       },
     };

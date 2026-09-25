@@ -1,3 +1,8 @@
+import {
+  getBridgeSettings,
+  updateBridgeSettings,
+  bridgeSettingsCommand,
+} from './bridge-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import postgres from 'postgres';
@@ -101,6 +106,109 @@ suite(
         await admin.unsafe(`drop schema ${schema} cascade`);
         await admin.end();
       }
+    });
+    it('persists concurrent owner switches, acknowledges actual Bridge settings, and retains local choices', async () => {
+      const f = await fixture();
+      const settings = {
+        localCommand: true,
+        localBrowser: true,
+        development: true,
+      };
+      const environment = {
+        version: 1 as const,
+        clientVersion: '0.6.0-dev.4',
+        browser: 'unavailable' as const,
+        sandbox: 'unavailable' as const,
+        preview: 'unavailable' as const,
+        paused: false,
+        settings,
+        settingsRevision: 0,
+      };
+      await heartbeatBridgeDevice(f.token, {
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        environment,
+      });
+      expect(
+        await getBridgeSettings(f.context, f.workspace, f.device),
+      ).toMatchObject({ settings, pending: false, supported: true });
+      await Promise.all([
+        updateBridgeSettings(f.context, f.workspace, f.device, {
+          capability: 'localBrowser',
+          enabled: false,
+        }),
+        updateBridgeSettings(f.context, f.workspace, f.device, {
+          capability: 'development',
+          enabled: false,
+        }),
+      ]);
+      const command = await bridgeSettingsCommand(f.token);
+      expect(command).toEqual({
+        revision: 2,
+        settings: {
+          localCommand: true,
+          localBrowser: false,
+          development: false,
+        },
+      });
+      expect(
+        await getBridgeSettings(f.context, f.workspace, f.device),
+      ).toMatchObject({ pending: true, settings: command!.settings });
+      await heartbeatBridgeDevice(f.token, {
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        environment: {
+          ...environment,
+          settings: command!.settings,
+          settingsRevision: 2,
+        },
+      });
+      expect(
+        await getBridgeSettings(f.context, f.workspace, f.device),
+      ).toMatchObject({ pending: false, revision: 2 });
+      await heartbeatBridgeDevice(f.token, {
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        environment: {
+          ...environment,
+          settings: { ...command!.settings, localBrowser: true },
+          settingsRevision: 2,
+        },
+      });
+      expect(
+        (await getBridgeSettings(f.context, f.workspace, f.device)).settings
+          .localBrowser,
+      ).toBe(true);
+    });
+    it('does not allow another owner, tenant or revoked pairing to change device settings', async () => {
+      const own = await fixture(),
+        other = await fixture();
+      await heartbeatBridgeDevice(own.token);
+      for (const context of [
+        other.context,
+        {
+          ...own.context,
+          actor: { type: 'user' as const, id: other.owner },
+          memberships: [
+            { ...own.context.memberships[0]!, userId: other.owner },
+          ],
+        },
+      ]) {
+        await expect(
+          updateBridgeSettings(context, own.workspace, own.device, {
+            capability: 'localCommand',
+            enabled: false,
+          }),
+        ).rejects.toBeDefined();
+      }
+      expect(await bridgeSettingsCommand(own.token)).toBeNull();
+      await database`update allrice_bridge_devices set revoked_at=now() where id=${own.device}`;
+      await expect(
+        updateBridgeSettings(own.context, own.workspace, own.device, {
+          capability: 'localCommand',
+          enabled: false,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
     });
     it('reports online even without a folder grant; list/status reads never manufacture a heartbeat', async () => {
       const f = await fixture();

@@ -253,6 +253,8 @@ export async function runDesktopController() {
       onReady: () => acknowledgeBridgeUpdateReadiness(abort?.signal),
       onState: (next) => {
         runtime = next;
+        if (next.environment?.settings)
+          browserEnabled = next.environment.settings.localBrowser;
         publish();
       },
       onNotice: note,

@@ -138,6 +138,42 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('preserves native message boundaries, retry replacements and message-only replies before tools', async () => {
+    const events: HarnessEvent[] = [];
+    const result = await createAdapter().execute(
+      executionInput({ prompt: 'interleaved-progress', events }),
+    );
+    expect(result.answer).toBe('最终总结');
+    const visible = events.filter((e) => e.type === 'assistant.delta');
+    const replies = new Map<string, string>();
+    for (const e of visible)
+      replies.set(
+        e.replyId!,
+        e.textMode === 'replace'
+          ? e.text
+          : (replies.get(e.replyId!) ?? '') + e.text,
+      );
+    expect([...replies.values()]).toEqual([
+      '先检查目录',
+      '确认入口文件',
+      '最终总结',
+    ]);
+    expect(new Set(visible.map((e) => e.replyId)).size).toBe(3);
+    expect(visible.some((e) => e.textMode === 'replace' && e.text === '')).toBe(
+      true,
+    );
+    const textBeforeTool = events.findIndex(
+      (e) => e.type === 'assistant.delta' && e.text === '先检查目录',
+    );
+    const tool = events.findIndex((e) => e.type === 'tool.started');
+    const report = events.findIndex(
+      (e) => e.type === 'assistant.delta' && e.text === '确认入口文件',
+    );
+    expect(textBeforeTool).toBeLessThan(tool);
+    expect(tool).toBeLessThan(report);
+    expect(JSON.stringify(events)).not.toContain('private reasoning');
+  });
+
   it('settles an acknowledged turn when its process dies, preserving output without retrying', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];
@@ -585,7 +621,10 @@ describe('DshHarnessAdapter', () => {
       executionInput({ prompt: 'think-first', events }),
     );
     const streamed = events
-      .filter((event) => event.type === 'assistant.delta')
+      .filter(
+        (event) =>
+          event.type === 'assistant.delta' && event.textMode !== 'replace',
+      )
       .map((event) => ('text' in event ? event.text : ''))
       .join('');
     expect(result.answer).toBe('visible answer');

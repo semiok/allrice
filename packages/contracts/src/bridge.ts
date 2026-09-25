@@ -182,6 +182,28 @@ export const PairBridgeDeviceResponseSchema = z
   })
   .strict();
 
+export const BridgeSettingsSchema = z
+  .object({
+    localCommand: z.boolean(),
+    localBrowser: z.boolean(),
+    development: z.boolean(),
+  })
+  .strict();
+export type BridgeSettings = z.infer<typeof BridgeSettingsSchema>;
+export const BridgeSettingsCommandSchema = z
+  .object({
+    revision: z.number().int().positive(),
+    settings: BridgeSettingsSchema,
+  })
+  .strict();
+export type BridgeSettingsCommand = z.infer<typeof BridgeSettingsCommandSchema>;
+export const UpdateBridgeSettingsSchema = z
+  .object({
+    capability: z.enum(['localCommand', 'localBrowser', 'development']),
+    enabled: z.boolean(),
+  })
+  .strict();
+
 /** Optional on protocol v2: old clients never advertise default browser access. */
 export const BridgeEnvironmentSchema = z
   .object({
@@ -191,6 +213,11 @@ export const BridgeEnvironmentSchema = z
     sandbox: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     preview: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     paused: z.boolean(),
+    settings: BridgeSettingsSchema.optional(),
+    settingsRevision: z.number().int().nonnegative().optional(),
+    development: z
+      .enum(['preparing', 'ready', 'paused', 'unavailable'])
+      .optional(),
   })
   .strict();
 export type BridgeEnvironment = z.infer<typeof BridgeEnvironmentSchema>;

@@ -11,6 +11,8 @@ import {
   BridgeProtocolVersion,
   BridgeCommandSchema,
   BridgeWorkspaceSelectionRequestSchema,
+  BridgeSettingsCommandSchema,
+  type BridgeSettingsCommand,
   PairBridgeDeviceResponseSchema,
   type BridgeEnvironment,
   type BridgeCommand,
@@ -21,6 +23,10 @@ import {
 
 import { bridgeRequest, BridgeClientError } from './client.js';
 import { BridgeDualTransport } from './dual-transport.js';
+import {
+  localCapabilitySettings,
+  applyCapabilitySettings,
+} from './capability-settings.js';
 import {
   deleteConfig,
   deleteDeviceToken,
@@ -315,31 +321,43 @@ export function journalDirectory(config: BridgeConfig) {
   return `${configPath()}.operation-journal`;
 }
 
-export async function start(
-  options: {
-    signal?: AbortSignal;
-    /** Stop acquiring work; let already claimed foreground work finish. This
-     * is separate from pause/cancel and never aborts a running command. */
-    drainSignal?: AbortSignal;
-    /** Native update handshake: local initialization precedes acquisition. */
-    onReady?: () => Promise<void>;
-    onState?: (state: BridgeRuntimeState) => void;
-    onNotice?: (
-      code:
-        | 'BRIDGE_CONNECTED'
-        | 'CONNECTION_UNAVAILABLE'
-        | 'SANDBOX_UNAVAILABLE'
-        | 'WORKSPACE_CHANGED'
-        | 'BRIDGE_STOPPED',
-    ) => void;
-    chooseWorkspace?: () => Promise<string>;
-  } = {},
-) {
+type StartOptions = {
+  signal?: AbortSignal;
+  /** Stop acquiring work; let already claimed foreground work finish. This
+   * is separate from pause/cancel and never aborts a running command. */
+  drainSignal?: AbortSignal;
+  /** Native update handshake: local initialization precedes acquisition. */
+  onReady?: () => Promise<void>;
+  onState?: (state: BridgeRuntimeState) => void;
+  onNotice?: (
+    code:
+      | 'BRIDGE_CONNECTED'
+      | 'CONNECTION_UNAVAILABLE'
+      | 'SANDBOX_UNAVAILABLE'
+      | 'WORKSPACE_CHANGED'
+      | 'BRIDGE_STOPPED',
+  ) => void;
+  chooseWorkspace?: () => Promise<string>;
+};
+
+export async function start(options: StartOptions = {}) {
+  while (!options.signal?.aborted && !options.drainSignal?.aborted) {
+    const settings = await startSession(options);
+    if (!settings) return;
+    await applyCapabilitySettings(await readConfig(), settings);
+  }
+}
+
+async function startSession(
+  options: StartOptions,
+): Promise<BridgeSettingsCommand | null> {
   // A managed candidate must not bypass interrupted-update startup gating by
   // being invoked as `start` from a terminal instead of by the native host.
   const updateLifecycle = await import('./desktop-update.js');
   await updateLifecycle.assertBridgeUpdateStartup();
   let { config, token } = await credentials(await readConfig());
+  let capabilitySettings = await localCapabilitySettings(config);
+  let requestedSettings: BridgeSettingsCommand | null = null;
   if (config.paused) {
     config = { ...config, paused: false };
     await writeConfig(config);
@@ -424,7 +442,14 @@ export async function start(
     activeServices: 0,
     pendingReceipts: 0,
     unknownOperations: 0,
-    environment: initialBridgeEnvironment(),
+    environment: {
+      ...initialBridgeEnvironment(),
+      settings: capabilitySettings.settings,
+      settingsRevision: capabilitySettings.revision,
+      development: capabilitySettings.settings.development
+        ? 'preparing'
+        : 'paused',
+    },
   };
   const publish = () =>
     options.onState?.({
@@ -466,7 +491,10 @@ export async function start(
   let heartbeatInFlight: Promise<void> | null = null;
   const heartbeat = () => {
     heartbeatInFlight ??= (async () => {
-      await bridgeRequest({
+      capabilitySettings = await localCapabilitySettings(config);
+      state.environment!.settings = capabilitySettings.settings;
+      state.environment!.settingsRevision = capabilitySettings.revision;
+      const response = await bridgeRequest<{ settings?: unknown }>({
         server: config.server,
         path: '/api/v1/bridge/device/heartbeat',
         method: 'POST',
@@ -478,6 +506,15 @@ export async function start(
         },
         timeoutMs: 5000,
       });
+      const next = BridgeSettingsCommandSchema.safeParse(response.settings);
+      if (
+        !stopping &&
+        next.success &&
+        next.data.revision > capabilitySettings.revision
+      ) {
+        requestedSettings = next.data;
+        stop();
+      }
       lastHeartbeatAt = Date.now();
       if (!stopping) state.phase = 'online';
       options.onNotice?.('BRIDGE_CONNECTED');
@@ -556,6 +593,9 @@ export async function start(
       environment.preview = await bridgePreviewState(config, environment).catch(
         () => 'unavailable',
       );
+      environment.development = capabilitySettings.settings.development
+        ? environment.sandbox
+        : 'paused';
       if (!stopping && !commandAbort.signal.aborted) {
         publish();
         await heartbeat();
@@ -831,6 +871,7 @@ export async function start(
   }
   if (browserStopUnconfirmed) throw Error('LOCAL_BROWSER_CLEANUP_PENDING');
   console.info('Rice Bridge 已停止');
+  return requestedSettings;
 }
 
 export async function hasStoredPairing() {

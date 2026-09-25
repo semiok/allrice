@@ -17,7 +17,12 @@ export interface ReadinessFacts {
   controls: RuntimePolicyControls | null;
   governedLocalReads: boolean;
   bridge: 'missing' | 'offline' | 'online';
-  preparation?: { browser?: string; sandbox?: string; paused?: boolean };
+  preparation?: {
+    browser?: string;
+    sandbox?: string;
+    development?: string;
+    paused?: boolean;
+  };
   folder: boolean;
   runner: boolean;
   developmentRunner: boolean;
@@ -213,9 +218,11 @@ export function projectWorkspacePrerequisites(
       const preparation =
         id === 'local_browser'
           ? f.preparation?.browser
-          : ['local_command', 'development'].includes(id)
-            ? f.preparation?.sandbox
-            : undefined;
+          : id === 'development'
+            ? (f.preparation?.development ?? f.preparation?.sandbox)
+            : id === 'local_command'
+              ? f.preparation?.sandbox
+              : undefined;
       if (preparation === 'preparing')
         add('preparing', 'environment_preparing', 'user', 'guide');
       if (preparation === 'paused')

@@ -3,7 +3,7 @@ import Foundation
 
 // Presentation and child ownership only. Auth, policy, transport and execution
 // remain in RiceBridgeCore. No loopback control server and no shell execution.
-final class RiceBridgeApp: NSObject, NSApplicationDelegate {
+final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var process: Process?
     private let input = Pipe()
@@ -20,6 +20,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     private var protocolFailed = false
     private var coreReady = false
     private var pairing = false
+    private var menuOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundle = Bundle.main.bundleIdentifier,
@@ -248,34 +249,66 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     }
 
     private func refreshMenu() {
-        let menu = NSMenu()
+        let menu: NSMenu
+        if let existing = statusItem?.menu {
+            menu = existing
+        } else {
+            menu = NSMenu()
+            menu.delegate = self
+            statusItem?.menu = menu
+        }
+        if !menuOpen { populateMenu(menu, developer: false) }
+        statusItem?.button?.toolTip = title
+        detail?.string = statusText()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuOpen = true
+        populateMenu(menu, developer: NSEvent.modifierFlags.contains(.option))
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuOpen = false
+        // AppKit dispatches the chosen item's action after closing the menu.
+        // Keep those items alive until that dispatch has completed.
+        DispatchQueue.main.async { [weak self] in self?.refreshMenu() }
+    }
+
+    private func populateMenu(_ menu: NSMenu, developer: Bool) {
+        menu.removeAllItems()
         let status = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         menu.addItem(status)
         add(menu, "查看状态…", #selector(showStatus))
         menu.addItem(.separator())
         let paired = state["deviceId"] as? String != nil
         let busy = !coreReady || process?.isRunning != true || pairing || ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
-        add(menu, "配对设备…", #selector(pairDevice), enabled: !paired && !busy)
-        add(menu, "选择工作区…", #selector(selectWorkspace), enabled: paired && !busy)
-        add(menu, state["browserEnabled"] as? Bool == true ? "关闭独立浏览器…" : "启用独立浏览器…", #selector(toggleBrowser), enabled: paired && !busy)
-        add(menu, state["previewEnabled"] as? Bool == true ? "关闭项目预览…" : "启用项目预览…", #selector(togglePreview), enabled: paired && !busy)
+        if !paired { add(menu, "配对设备…", #selector(pairDevice), enabled: !busy) }
+        add(menu, "选择文件夹…", #selector(selectWorkspace), enabled: paired && !busy)
         if state["mode"] as? String == "paused" {
             add(menu, "恢复连接", #selector(resume), enabled: paired && !busy)
-        } else { add(menu, "暂停并停止本地任务", #selector(pause), enabled: paired && !busy) }
-        menu.addItem(.separator())
-        add(menu, "诊断与日志…", #selector(diagnostics))
+        }
         if (state["environment"] as? [String: Any])?["browser"] as? String == "unavailable" {
             add(menu, "安装或更新 Chrome…", #selector(installChrome), enabled: !busy)
         }
-        add(menu, "重新检查并准备环境", #selector(prepareEnvironment), enabled: paired && !busy)
-        add(menu, "检查可信更新…", #selector(updateStatus))
-        add(menu, "等待任务结束并暂停…", #selector(drainTasks), enabled: paired && !busy)
-        add(menu, "撤销设备配对…", #selector(revokeDevice), enabled: paired && !busy)
+        add(menu, "检查更新…", #selector(updateStatus))
+        if paired { add(menu, "断开配对…", #selector(revokeDevice), enabled: !busy) }
+        // Hold Option while opening the status menu for support/acceptance.
+        // Ordinary capability controls live in the tenant's computer settings.
+        if developer {
+            menu.addItem(.separator())
+            let tools = NSMenu()
+            add(tools, "诊断与日志…", #selector(diagnostics))
+            add(tools, state["browserEnabled"] as? Bool == true ? "关闭独立浏览器…" : "启用独立浏览器…", #selector(toggleBrowser), enabled: paired && !busy)
+            add(tools, state["previewEnabled"] as? Bool == true ? "关闭项目预览…" : "启用项目预览…", #selector(togglePreview), enabled: paired && !busy)
+            add(tools, "暂停并停止本地任务", #selector(pause), enabled: paired && !busy)
+            add(tools, "重新检查并准备环境", #selector(prepareEnvironment), enabled: paired && !busy)
+            add(tools, "等待任务结束并暂停…", #selector(drainTasks), enabled: paired && !busy)
+            let item = NSMenuItem(title: "开发者工具", action: nil, keyEquivalent: "")
+            item.submenu = tools
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
         add(menu, "退出 Rice Bridge", #selector(quit), enabled: !quitting)
-        statusItem?.menu = menu
-        statusItem?.button?.toolTip = title
-        detail?.string = statusText()
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ selector: Selector, enabled: Bool = true) {

@@ -17,11 +17,21 @@ export class HarnessEventBatcher {
 
   async accept(event: HarnessEvent) {
     this.throwFailure();
-    if (event.type !== 'assistant.delta') {
+    if (event.type !== 'assistant.delta' || event.textMode === 'replace') {
       await this.flush();
       await this.enqueueWrite(event);
       return;
     }
+    const previous = this.pending.at(-1);
+    if (
+      previous &&
+      (previous.replyId !== event.replyId ||
+        previous.generation !== event.generation ||
+        previous.attempt !== event.attempt ||
+        previous.messageId !== event.messageId ||
+        previous.turnId !== event.turnId)
+    )
+      await this.flush();
     this.pending.push(event);
     this.pendingCharacters += event.text.length;
     if (this.pendingCharacters >= this.maxCharacters) {

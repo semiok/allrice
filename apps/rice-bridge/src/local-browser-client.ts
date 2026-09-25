@@ -71,7 +71,7 @@ async function bounded(response: Response, maximum: number) {
       if (next.done) break;
       bytes += next.value.byteLength;
       if (bytes > maximum) {
-        await reader.cancel();
+        void reader.cancel().catch(() => undefined);
         throw Error();
       }
       parts.push(Buffer.from(next.value));
@@ -108,24 +108,48 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
     signal?: AbortSignal,
   ) {
     let status = 0;
+    const abort = new AbortController();
+    let rejectAborted!: () => void;
+    const canceled = new Promise<never>((_, reject) => {
+      rejectAborted = () => reject(new LocalBrowserTransportError(status));
+    });
+    const stop = () => {
+      abort.abort();
+      rejectAborted();
+    };
+    // Bound the complete exchange, including body reads/cancellation. A fetch
+    // stream that fails to settle after abort must not hold Bridge shutdown.
+    const deadline = setTimeout(stop, 2500);
+    signal?.addEventListener('abort', stop, { once: true });
     try {
-      const response = await fetch(new URL(path, this.input.server), {
-        method: 'POST',
-        redirect: 'error',
-        headers: { authorization: `Bearer ${this.input.token}`, ...headers },
-        body: typeof body === 'string' ? body : new Uint8Array(body),
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(2500)])
-          : AbortSignal.timeout(2500),
-      });
-      status = response.status;
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw Error();
-      }
-      return await bounded(response, maximum);
+      signal?.throwIfAborted();
+      return await Promise.race([
+        (async () => {
+          const response = await fetch(new URL(path, this.input.server), {
+            method: 'POST',
+            redirect: 'error',
+            headers: {
+              authorization: `Bearer ${this.input.token}`,
+              ...headers,
+            },
+            body: typeof body === 'string' ? body : new Uint8Array(body),
+            signal: abort.signal,
+          });
+          status = response.status;
+          if (!response.ok) {
+            void response.body?.cancel().catch(() => undefined);
+            throw Error();
+          }
+          return bounded(response, maximum);
+        })(),
+        canceled,
+      ]);
     } catch {
       throw new LocalBrowserTransportError(status);
+    } finally {
+      clearTimeout(deadline);
+      signal?.removeEventListener('abort', stop);
+      abort.abort();
     }
   }
   private async json(request: LocalBrowserHttpRequest, signal?: AbortSignal) {

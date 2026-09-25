@@ -162,6 +162,24 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
       execution,
     };
   }
+  it.each(['localCommand', 'development'] as const)(
+    'does not dispatch a candidate when the owner turns off %s',
+    async (capability) => {
+      const f = await setup(),
+        created = await f.create();
+      const settings = {
+        localCommand: true,
+        localBrowser: true,
+        development: true,
+        [capability]: false,
+      };
+      await f.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{bridgeSettings}',${f.db.json({ revision: 1, settings })}) where target_key=${`bridge.${f.device.id}`}`;
+      await expect(f.dispatch(created)).rejects.toThrow(
+        /unavailable|bridge_authority_changed/,
+      );
+    },
+  );
+
   it('requires exact approval, retains immutable bytes on cold lookup and skips clients without candidate support', async () => {
     const f = await setup(),
       created = await f.create('candidate-call');

@@ -8,6 +8,7 @@ export * from './workspace.ts';
 export * from './workspace-readiness.ts';
 export * from './experience.ts';
 export * from './bridge.ts';
+export * from './bridge-settings.ts';
 export * from './bridge-connections.ts';
 export * from './runtime-policy.ts';
 export { taskDeadlineOpen, linkTaskOperationCall } from './task-clock.ts';

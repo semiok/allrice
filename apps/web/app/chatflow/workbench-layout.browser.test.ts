@@ -294,6 +294,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
       events: [] as ChatFlowEventEnvelope[],
+      streamEvents: null as ChatFlowEventEnvelope[] | null,
       employeeName: 'Rice',
       runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
       timingError: false,
@@ -691,10 +692,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await streamGate;
         return route.fulfill({
           contentType: 'text/event-stream',
-          body: [
-            { type: 'assistant.text.delta', payload: { text: report } },
-            { type: 'run.succeeded', payload: {} },
-          ]
+          body: (
+            state.streamEvents ?? [
+              { type: 'assistant.text.delta', payload: { text: report } },
+              { type: 'run.succeeded', payload: {} },
+            ]
+          )
             .map(
               (event, i) =>
                 `data: ${JSON.stringify({
@@ -832,6 +835,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       unexpected,
       panel,
       entry,
+      releaseStream: finishStream,
       finishRun() {
         state.messageStatus = 'completed';
         state.items = [artifact(11)];
@@ -1579,6 +1583,120 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('lets an ordinary member control three Bridge capabilities in native settings without flashing the panel', async () => {
+    const f = await fixture();
+    const device = {
+      id: id(950),
+      organizationId: org,
+      workspaceId: workspace,
+      ownerId: user,
+      name: 'Synthetic Mac',
+      platform: 'macos-arm64',
+      protocolVersion: 2,
+      capabilities: ['local.fs.list'],
+      status: 'online',
+      lastSeenAt: now,
+      createdAt: now,
+      revokedAt: null,
+      folderGrants: [],
+    };
+    const settings = {
+      localCommand: true,
+      localBrowser: true,
+      development: true,
+    };
+    let revision = 0,
+      pending = false,
+      reads = 0;
+    const writes: string[] = [];
+    try {
+      await f.page.route('**/api/v1/bridge/devices**', async (route) => {
+        const request = route.request(),
+          url = new URL(request.url());
+        if (url.pathname === '/api/v1/bridge/devices')
+          return route.fulfill({ json: { devices: [device] } });
+        if (request.method() === 'PATCH') {
+          const change = request.postDataJSON() as {
+            capability: keyof typeof settings;
+            enabled: boolean;
+          };
+          writes.push(change.capability);
+          settings[change.capability] = change.enabled;
+          revision++;
+          pending = true;
+          reads = 0;
+        } else if (pending && ++reads >= 1) pending = false;
+        return route.fulfill({
+          json: {
+            device,
+            settings,
+            revision,
+            pending,
+            supported: true,
+            environment: {
+              version: 1,
+              clientVersion: '0.6.0-dev.4',
+              paused: false,
+              browser: settings.localBrowser ? 'ready' : 'paused',
+              sandbox: settings.localCommand ? 'ready' : 'paused',
+              preview: 'ready',
+              development: settings.development ? 'ready' : 'paused',
+              settings,
+              settingsRevision: pending ? revision - 1 : revision,
+            },
+          },
+        });
+      });
+      await f.page.getByRole('button', { name: '设置', exact: true }).click();
+      const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
+      await dialog
+        .getByRole('button', { name: '我的电脑', exact: true })
+        .click();
+      const browserSwitch = dialog.getByRole('switch', {
+        name: '本地独立浏览器',
+        exact: true,
+      });
+      await browserSwitch.waitFor();
+      expect(await dialog.getByRole('switch').count()).toBe(3);
+      for (const label of ['本地沙箱命令', '本地独立浏览器', '受控开发协作'])
+        expect(
+          await dialog
+            .getByRole('switch', { name: label, exact: true })
+            .getAttribute('aria-checked'),
+        ).toBe('true');
+      await browserSwitch.evaluate((el) =>
+        el.setAttribute('data-retained', 'yes'),
+      );
+      await browserSwitch.click();
+      await dialog.getByText('正在同步到电脑…', { exact: true }).waitFor();
+      await expect
+        .poll(() => browserSwitch.getAttribute('aria-checked'))
+        .toBe('false');
+      await dialog.getByText('已连接', { exact: true }).waitFor();
+      expect(await browserSwitch.getAttribute('data-retained')).toBe('yes');
+      const development = dialog.getByRole('switch', {
+        name: '受控开发协作',
+        exact: true,
+      });
+      await development.click();
+      await expect
+        .poll(() => development.getAttribute('aria-checked'))
+        .toBe('false');
+      expect(
+        await dialog
+          .getByRole('switch', { name: '本地沙箱命令', exact: true })
+          .getAttribute('aria-checked'),
+      ).toBe('true');
+      await dialog.getByText('已连接', { exact: true }).waitFor();
+      await f.page.screenshot({
+        path: '/tmp/allrice-bridge-three-switches.png',
+      });
+      expect(writes).toEqual(['localBrowser', 'development']);
+    } finally {
+      await f.close();
+    }
+  }, 15000);
+
   it('shows the current member monthly balance inside native settings', async () => {
     const f = await fixture();
     try {
@@ -1794,6 +1912,155 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
+    const f = await fixture({ running: true });
+    try {
+      const event = (
+        sequence: number,
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+      ): ChatFlowEventEnvelope => ({
+        schemaVersion: 3,
+        eventId: id(700 + sequence),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 1,
+        sequence,
+        cursor: `${run}:${sequence}`,
+        harness: 'dsh',
+        occurredAt: now,
+        sourceEvent: null,
+        type,
+        payload,
+      });
+      f.state.events = [
+        event(1, 'assistant.text.delta', {
+          replyId: 'first',
+          text: '我先检查项目目录。',
+        }),
+        event(2, 'assistant.text.delta', {
+          replyId: 'first',
+          text: '我先检查项目目录。',
+          textMode: 'replace',
+        }),
+        event(3, 'tool.started', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '读取入口文件',
+        }),
+        event(4, 'tool.completed', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '已读取入口文件',
+        }),
+        event(5, 'assistant.text.delta', {
+          replyId: 'last',
+          text: '入口文件已确认。',
+        }),
+      ];
+      f.state.streamEvents = f.state.events;
+      f.releaseStream();
+      const process = f.page.getByRole('region', {
+        name: '工作过程',
+        exact: true,
+      });
+      await process.getByText('入口文件已确认。', { exact: true }).waitFor();
+      expect(
+        await f.page.getByText('我先检查项目目录。', { exact: true }).count(),
+      ).toBe(1);
+      const text = await process.innerText();
+      expect(text.indexOf('我先检查项目目录。')).toBeLessThan(
+        text.indexOf('已读取入口文件'),
+      );
+      expect(text.indexOf('已读取入口文件')).toBeLessThan(
+        text.indexOf('入口文件已确认。'),
+      );
+      expect(await process.getByRole('button').count()).toBe(0);
+      await f.page.screenshot({ path: '.local/feedback/interleaved-live.png' });
+      f.state.events.push(
+        event(6, 'assistant.text.completed', {
+          replyId: 'last',
+          text: '入口文件已确认。',
+        }),
+      );
+      f.state.messageStatus = 'completed';
+      await f.page.reload();
+      const toggle = process.getByRole('button');
+      await toggle.waitFor();
+      await f.page.getByText('入口文件已确认。', { exact: true }).waitFor();
+      expect(
+        await process.getByText('我先检查项目目录。', { exact: true }).count(),
+      ).toBe(0);
+      await toggle.click();
+      await process.getByText('我先检查项目目录。', { exact: true }).waitFor();
+      expect(
+        await process.getByText('入口文件已确认。', { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await f.page.getByText('入口文件已确认。', { exact: true }).count(),
+      ).toBe(1);
+      expect(
+        await process.getByRole('list', { name: '工作步骤' }).count(),
+      ).toBe(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('ticks elapsed time every second between server samples, including waits, and settles to the final receipt', async () => {
+    const f = await fixture({ running: true });
+    try {
+      f.state.runTimings = [
+        {
+          runId: run,
+          timing: {
+            activeMs: 17000,
+            waitingMs: 0,
+            wallMs: 17000,
+            timeoutMs: 3600000,
+            remainingMs: 3583000,
+            phase: 'active',
+            sources: [],
+            calls: null,
+          },
+        },
+      ];
+      await f.page.clock.install();
+      await f.page.reload();
+      const timing = f.page.getByLabel('本轮运行时间', { exact: true });
+      await timing.waitFor();
+      expect(await timing.innerText()).toBe('总耗时 17 秒');
+      for (const seconds of [18, 19, 20]) {
+        await f.page.clock.runFor(1000);
+        await expect
+          .poll(() => timing.innerText())
+          .toBe(`总耗时 ${seconds} 秒`);
+      }
+      // Server updates do not reset the display interval or make it run backwards.
+      f.state.runTimings[0]!.timing.phase = 'waiting';
+      f.state.runTimings[0]!.timing.wallMs = 19000;
+      await f.page.clock.runFor(2000);
+      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      expect(f.state.runTimings[0]!.timing.activeMs).toBe(17000);
+      f.state.runTimings[0]!.timing.phase = 'terminal';
+      f.state.runTimings[0]!.timing.wallMs = 22500;
+      await f.page.clock.runFor(2000);
+      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      await f.page.clock.runFor(5000);
+      expect(await timing.innerText()).toBe('总耗时 22 秒');
+      f.state.runTimings[0]!.timing.phase = 'queued';
+      f.state.runTimings[0]!.timing.wallMs = 0;
+      await f.page.reload();
+      await timing.waitFor();
+      await f.page.clock.runFor(3000);
+      expect(await timing.innerText()).toBe('总耗时 0 秒');
+    } finally {
+      await f.close();
+    }
+  }, 30000);
 
   it.each([false, true])(
     'shows ordinary task timing on mobile with workbench disabled=%s, refreshes server waits and recovers from a failed read',

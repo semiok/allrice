@@ -1,4 +1,5 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { bridgeSettingsView } from './bridge-settings.ts';
 import type postgres from 'postgres';
 import {
   BrowserCommandSchema,
@@ -141,6 +142,7 @@ export type BrowserWorkspaceRow = {
   target_kind: string;
   target_state: string;
   target_capabilities: string[];
+  target_metadata: Record<string, unknown>;
   preview?: LocalPreviewLease;
 };
 /** Same current identity check for HTTP and Worker. Never accepts stale membership arrays. */
@@ -188,7 +190,7 @@ export async function currentBrowserWorkspace(
   await lockBrowserWorkspaceGrant(tx, ctx, id);
   const [w] = await tx<
     BrowserWorkspaceRow[]
-  >`select w.*,g.target_id,t.kind as target_kind,t.state as target_state,t.capabilities as target_capabilities,
+  >`select w.*,g.target_id,t.kind as target_kind,t.state as target_state,t.capabilities as target_capabilities,t.metadata as target_metadata,
     r.execution_spec,r.policy_snapshot_id,p.payload as policy_payload,
     e.employee_version_id,c.thread_generation,clock_timestamp() as clock
     from allrice_browser_workspaces w join allrice_browser_control_grants g on g.id=w.grant_id
@@ -217,6 +219,8 @@ export async function currentBrowserWorkspace(
   if (!w) throw new RuntimePolicyError('browser_authority_unavailable');
   w.device_id = null;
   if (w.transport === 'local') {
+    if (!bridgeSettingsView(w.target_metadata).settings.localBrowser)
+      throw new RuntimePolicyError('browser_authority_unavailable');
     if (
       !runtimeFeatureEnabled('ALLRICE_LOCAL_BROWSER_ENABLED') ||
       w.target_kind !== 'rice_bridge' ||
