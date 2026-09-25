@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AllriceMark } from '../../components/allrice-mark';
 
 import { GovernanceConsole } from './governance-console';
 import { TenantAdministration } from './tenant-administration';
@@ -340,7 +341,7 @@ export function RuntimeConsole() {
     <main className={styles.page}>
       <header className={styles.topbar}>
         <div className={styles.brand}>
-          <span>AR</span>
+          <AllriceMark size={38} />
           <div>
             <strong>AllRice Runtime Console</strong>
             <small>真实 Worker Runtime · DSH Native</small>
