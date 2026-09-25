@@ -205,6 +205,7 @@ integration(
         let controllerOptions:
           Parameters<typeof productionAssistantController>[0] | undefined;
         const stoppedReceipts = new Set<string>();
+        const settledReceipts = new Set<string>();
         const controller = (
           options: Parameters<typeof productionAssistantController>[0],
         ): NonNullable<HarnessExecutionInput['assistants']> => {
@@ -224,6 +225,11 @@ integration(
                   const result = await bound.handle(...request);
                   if (request[0] === 'stopped' && result.stopped === true)
                     stoppedReceipts.add(String(request[1].nativeSessionId));
+                  if (
+                    request[0] === 'settled' &&
+                    typeof result.deliveryId === 'string'
+                  )
+                    settledReceipts.add(result.deliveryId);
                   return result;
                 },
               };
@@ -385,9 +391,26 @@ integration(
             const [usage] =
               await database.db`select count(*) as unresolved from allrice_assistant_usage where root_run_id=${f.rootRunId} and settled_amount is null`;
             expect(Number(usage!.unresolved)).toBeGreaterThan(0);
-            expect(
-              await database.db`select 1 from allrice_assistant_results where root_run_id=${f.rootRunId}`,
-            ).toHaveLength(0);
+            // The native settled notification may beat the stopped ACK. It
+            // can persist only a partial stop receipt, never a child report or
+            // parent-adopted success. Match actual acknowledgements rather
+            // than assuming the stopped notification always wins the race.
+            const results =
+              await database.db`select delivery_id,payload,parent_adopted_seq from allrice_assistant_results where root_run_id=${f.rootRunId}`;
+            expect(results.map((row) => row.delivery_id).sort()).toEqual(
+              [...settledReceipts].sort(),
+            );
+            for (const row of results) {
+              expect(row.payload).toMatchObject({
+                status: 'partial',
+                summary:
+                  'Native assistant settled without a verified delivery.',
+                evidence: [],
+                usageComplete: false,
+              });
+              expect(row.payload.incomplete.length).toBeGreaterThan(0);
+              expect(row.parent_adopted_seq).toBeNull();
+            }
             return;
           }
           if (outcome === 'dynamic_output')

@@ -44,6 +44,8 @@ import {
   admitModelExecution as admitActual,
 } from '../../../../packages/database/src/providers/model-governance.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
+import { assembleEmployeeKernel } from '../../src/employee-kernel.js';
+import { estimateConversationTokens } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
 import { HandlerError } from '../../src/errors.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
@@ -790,6 +792,23 @@ integration(
             retryable: false,
           });
         expect(state.record).toHaveBeenCalledTimes(1);
+        const kernel = assembleEmployeeKernel({
+          employeeAssignmentId: f.assignment,
+          employeeVersionId: f.version,
+          sessionId: f.session,
+          userMessageId: randomUUID(),
+          assistantMessageId: randomUUID(),
+          resolved: await state.resolved.mock.results.at(-1)!.value,
+          workAutomation: { cloud: true, computer: true, assistants: true },
+        });
+        const initialInputTokens = estimateConversationTokens(
+          [
+            kernel.systemInstructions,
+            kernel.bootstrapConversation,
+            kernel.authorizedMemoryContext,
+            kernel.userRequest,
+          ].join('\n'),
+        );
         expect(state.admit).toHaveBeenCalledExactlyOnceWith({
           organizationId: f.org,
           workspaceId: f.workspace,
@@ -798,11 +817,11 @@ integration(
           connectionId: target.connectionId,
           // MET-150: ordinary verified subscriptions admit an initial-call
           // estimate, not the removed cumulative 136k task ceiling. This
-          // fixture's synthetic kernel estimates 10 input tokens; a persisted
+          // estimate includes current member work instructions. A persisted
           // API route must still use its frozen total budget on replay.
           requestedTokens:
             persisted === 'subscription'
-              ? 10 + modelSnapshot!.runLimits.maxOutputTokens
+              ? initialInputTokens + modelSnapshot!.runLimits.maxOutputTokens
               : modelSnapshot!.runLimits.maxTotalTokens,
           requestedRuntimeMs: modelSnapshot!.runLimits.timeoutMs,
         });
