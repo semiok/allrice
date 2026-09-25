@@ -76,33 +76,6 @@ export function useArtifactWorkbench({
     controller = useRef<AbortController | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-  const dirty = useRef({ scope: '', value: false });
-  const noteDirty = useCallback(
-    (value: boolean) => {
-      dirty.current = { scope, value };
-      if (value)
-        setData((previous) => {
-          const current =
-            previous.scope === scope
-              ? previous
-              : (snapshots.current.get(scope) ?? empty(scope));
-          return {
-            ...current,
-            selection: { ...current.selection, explicit: true },
-          };
-        });
-    },
-    [scope],
-  );
-  const confirmNavigation = useCallback(
-    () =>
-      dirty.current.scope !== scope ||
-      !dirty.current.value ||
-      window.confirm(
-        '有尚未保存的成果意见，离开会丢失这些本地编辑。仍要继续吗？',
-      ),
-    [scope],
-  );
   const reload = useCallback(
     async (before?: ArtifactCursor) => {
       if (!scope) return;
@@ -128,8 +101,6 @@ export function useArtifactWorkbench({
         )
           throw Error('成果所属会话不匹配');
         if (token !== generation.current) return;
-        const protectDraft =
-          dirty.current.scope === scope && dirty.current.value;
         setData((previous) => {
           const current =
             previous.scope === scope
@@ -144,8 +115,7 @@ export function useArtifactWorkbench({
             : undefined;
           const arrived =
             newest && !current.artifacts.some((a) => a.id === newest.id);
-          const automatic =
-            arrived && !current.selection.explicit && !protectDraft;
+          const automatic = arrived && !current.selection.explicit;
           return {
             scope,
             artifacts,
@@ -171,7 +141,7 @@ export function useArtifactWorkbench({
             snapshots.current.delete(scope);
             setData(empty(scope));
           }
-          // Keep the current review mounted, including unsaved opinions, on refresh failure.
+          // Keep the selected preview mounted on refresh failure.
           setStatus({
             scope,
             error: cause instanceof Error ? cause.message : '成果加载失败',
@@ -240,7 +210,5 @@ export function useArtifactWorkbench({
     reload,
     show,
     close: onClose,
-    noteDirty,
-    confirmNavigation,
   };
 }

@@ -31,6 +31,7 @@ import { ChatSidebar } from './chat-sidebar';
 import { EmployeePickerDialog } from './employee-picker-dialog';
 import { employeeAccent, employeeIntroduction } from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
+import { MessageFeedbackProvider } from './message-feedback';
 import { ChatTranscript } from './chat-transcript';
 import { ConversationTurnNavigator } from './conversation-turn-navigator';
 import { ArtifactWorkbench } from './artifact-workbench';
@@ -742,7 +743,6 @@ export function ChatFlowClient({
   }
 
   function confirmSessionNavigation() {
-    if (!workbench.confirmNavigation()) return false;
     return (
       !(draft.trim() || pendingAttachments.length) ||
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
@@ -1152,7 +1152,7 @@ export function ChatFlowClient({
                     error={interactions.error}
                     sessionId={activeId}
                     onArtifact={(id) => {
-                      if (workbench.confirmNavigation()) workbench.show(id);
+                      workbench.show(id);
                     }}
                     onOperation={(id) => {
                       const card = document.getElementById(`operation-${id}`);
@@ -1190,29 +1190,36 @@ export function ChatFlowClient({
                     加载更早的助手任务记录
                   </button>
                 ) : null}
-                <ChatTranscript
-                  employeeName={activeEmployeeName}
-                  atBottom={atTranscriptBottom}
-                  localCommandsEnabled={localCommandsEnabled}
-                  localMcpEnabled={localMcpEnabled}
-                  assistantTrees={assistants.trees}
-                  runTimings={interactions.data?.runTimings}
-                  onAssistantChanged={assistants.reload}
-                  messages={history?.messages ?? []}
-                  onLoadRunTrace={loadRunTrace}
-                  onRecoverRun={recoverRun}
-                  onScrollToBottom={scrollToTranscriptBottom}
-                  recoverableRunView={recoverableRunView}
-                  runTraces={runTraces}
-                  runViews={runViews}
-                  tenantHeaders={tenantHeaders}
-                  transcriptColumn={transcriptColumn}
+                <MessageFeedbackProvider
+                  key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
+                  sessionId={activeId!}
                   workspaceId={workspace.workspaceId}
-                  artifacts={workbench.artifacts}
-                  onOpenArtifact={(id) => {
-                    if (workbench.confirmNavigation()) workbench.show(id);
-                  }}
-                />
+                  headers={tenantHeaders}
+                >
+                  <ChatTranscript
+                    employeeName={activeEmployeeName}
+                    atBottom={atTranscriptBottom}
+                    localCommandsEnabled={localCommandsEnabled}
+                    localMcpEnabled={localMcpEnabled}
+                    assistantTrees={assistants.trees}
+                    runTimings={interactions.data?.runTimings}
+                    onAssistantChanged={assistants.reload}
+                    messages={history?.messages ?? []}
+                    onLoadRunTrace={loadRunTrace}
+                    onRecoverRun={recoverRun}
+                    onScrollToBottom={scrollToTranscriptBottom}
+                    recoverableRunView={recoverableRunView}
+                    runTraces={runTraces}
+                    runViews={runViews}
+                    tenantHeaders={tenantHeaders}
+                    transcriptColumn={transcriptColumn}
+                    workspaceId={workspace.workspaceId}
+                    artifacts={workbench.artifacts}
+                    onOpenArtifact={(id) => {
+                      workbench.show(id);
+                    }}
+                  />
+                </MessageFeedbackProvider>
               </div>
               <div
                 className={`${conversationUi.composerSeat} ${conversationUi.composerStack} ${styles.composerDock}`}
@@ -1273,7 +1280,6 @@ export function ChatFlowClient({
             workbenchEntry.current?.focus();
           }}
           onReload={workbench.reload}
-          onDirtyChange={workbench.noteDirty}
           onContinued={(runId) => {
             if (!activeId) return;
             void loadHistory(activeId);

@@ -1,0 +1,21 @@
+.actions {
+  margin-top: 12px;
+  flex-wrap: wrap;
+  height: auto;
+  min-height: 28px;
+}
+.duration {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.duration svg {
+  width: 15px;
+  height: 15px;
+}
+/* Keep a recorded rating legible even after the pointer leaves the reply. */
+[data-actions-reveal='hover']:has([data-active]) .actions {
+  opacity: 1;
+}

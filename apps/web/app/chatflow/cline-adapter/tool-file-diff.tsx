@@ -56,7 +56,7 @@ export function ToolFileDiff({
   before: string | null;
   after: string | null;
   mode: 'split' | 'unified';
-  onSelect: (side: 'before' | 'after', start: number, end: number) => void;
+  onSelect?: (side: 'before' | 'after', start: number, end: number) => void;
 }) {
   const host = useRef<HTMLDivElement>(null),
     [attempt, setAttempt] = useState(0),
@@ -80,10 +80,10 @@ export function ToolFileDiff({
       lineDiffType: 'word',
       maxLineDiffLength: 2000,
       expansionLineCount: 50,
-      enableLineSelection: true,
+      enableLineSelection: !!onSelect,
       onLineSelected(range: SelectedLineRange | null) {
         if (range && (!range.endSide || range.endSide === range.side))
-          onSelect(
+          onSelect?.(
             range.side === 'deletions' ? 'before' : 'after',
             Math.min(range.start, range.end),
             Math.max(range.start, range.end),
@@ -122,7 +122,7 @@ export function ToolFileDiff({
   if (!canRender)
     return (
       <p role="status">
-        文件过长，已停用富 Diff。可下载此版本文件，或按下方行号提交意见。
+        文件过长，已停用富 Diff。可下载此版本文件，或查看下方分页文本。
       </p>
     );
   if (failed || !diff)

@@ -662,7 +662,9 @@ export async function recordRunFeedback(
       and er.owner_id = ${actor}
     on conflict (run_id, actor_id) do update set
       message_id = excluded.message_id, helpful = excluded.helpful,
-      reason = excluded.reason, updated_at = now()
+      reason = excluded.reason, category = null, version = gen_random_uuid(),
+      reviewed = false, review_status = 'new', review_note = '',
+      reviewed_by = null, reviewed_at = null, updated_at = now()
     returning run_id
   `;
   if (!rows[0]) throw new EmployeeQualityError('not_found');

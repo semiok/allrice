@@ -1,0 +1,13 @@
+--- a/packages/client/ui-message-feedback/src/client/FeedbackDialog.tsx
++++ b/packages/client/ui-message-feedback/src/client/FeedbackDialog.tsx
+@@ -11,8 +11,8 @@
+ import {
+   Button, IconWarningOutlineRegular, Modal, Toast,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { FeedbackCategory } from '@deepseek-ai/dsh-command-feedback/types'
+-import type { FeedbackDialogProps } from './slots.ts'
++import type { FeedbackCategory } from '../../feedback-native-types'
++import type { FeedbackDialogProps } from '../../feedback-native-types'
+ import css from './FeedbackDialog.module.css'
+ 
+ /**
