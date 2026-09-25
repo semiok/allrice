@@ -183,9 +183,10 @@ export function EmployeeSidebar({
                   }
                   description={
                     <span className={css.meta}>
-                      {[role, `${group.sessionCount} 个工作`]
-                        .filter(Boolean)
-                        .join(' · ')}
+                      {role && (
+                        <span className={css.employeeRole}>{role} · </span>
+                      )}
+                      <span>{group.sessionCount} 个工作</span>
                     </span>
                   }
                   leading={
