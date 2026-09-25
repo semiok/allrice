@@ -18,6 +18,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     private var detail: NSTextView?
     private var quitting = false
     private var protocolFailed = false
+    private var coreReady = false
+    private var pairing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundle = Bundle.main.bundleIdentifier,
@@ -26,11 +28,30 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        installEditingMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.title = "Rice"
         refreshMenu()
-        do { try startCore() } catch { fail("BRIDGE_START_FAILED") }
+        do { try startCore() } catch { fail("BRIDGE_START_FAILED"); showError("BRIDGE_START_FAILED") }
         showStatus()
+    }
+
+    // Accessory apps still need standard responder-chain menu actions for
+    // Command-V/C/X/A in AppKit's text-field editor, including modal alerts.
+    private func installEditingMenu() {
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
+        let edit = NSMenu(title: "编辑")
+        for (title, action, key) in [
+            ("撤销", "undo:", "z"), ("剪切", "cut:", "x"),
+            ("复制", "copy:", "c"), ("粘贴", "paste:", "v"),
+            ("全选", "selectAll:", "a")
+        ] {
+            edit.addItem(NSMenuItem(title: title, action: Selector(action), keyEquivalent: key))
+        }
+        item.submenu = edit
+        menu.addItem(item)
+        NSApp.mainMenu = menu
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -80,6 +101,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.process = nil
+                self.coreReady = false
+                self.pairing = false
                 self.callbacks.removeAll()
                 if self.quitting {
                     if terminated.terminationReason == .exit && terminated.terminationStatus == 0 {
@@ -91,7 +114,12 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
                         self.showError("DESKTOP_STOP_UNCONFIRMED")
                     }
                 }
-                else { self.fail("BRIDGE_STOPPED"); self.refreshMenu() }
+                else {
+                    // A fatal startup frame explains the failure; don't replace
+                    // it with a generic exit code as the child terminates.
+                    if self.state["mode"] as? String != "error" { self.fail("BRIDGE_STOPPED") }
+                    self.refreshMenu()
+                }
             }
         }
         process = child
@@ -132,6 +160,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             guard let nextSequence = object["sequence"] as? Int, nextSequence > sequence,
                   let next = object["state"] as? [String: Any] else { return }
             sequence = nextSequence
+            coreReady = true
             state = next
             refreshMenu()
         case "response":
@@ -142,13 +171,26 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             guard let id = object["pickerId"] as? String, id.count <= 80 else { return }
             chooseFolder(pickerId: id)
         case "fatal", "protocolError":
-            fail(safeCode(object["code"]))
+            coreReady = false
+            pairing = false
+            let code = safeCode(object["code"])
+            fail(code)
+            showError(code)
         default: break
         }
     }
 
     private func send(_ type: String, fields: [String: Any] = [:], completion: (([String: Any]) -> Void)? = nil) {
-        guard process?.isRunning == true, callbacks.count < 32 else { fail("BRIDGE_NOT_RUNNING"); return }
+        guard process?.isRunning == true else {
+            let code = state["errorCode"] as? String ?? "BRIDGE_NOT_RUNNING"
+            fail(code)
+            completion?(["ok": false, "code": code])
+            return
+        }
+        guard callbacks.count < 32 else {
+            completion?(["ok": false, "code": "DESKTOP_BUSY"])
+            return
+        }
         let id = UUID().uuidString
         var object = fields
         object["v"] = 1; object["id"] = id; object["type"] = type
@@ -157,7 +199,11 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             guard bytes.count <= 16_384 else { throw NSError(domain: "Bridge", code: 2) }
             if let completion = completion { callbacks[id] = completion }
             try input.fileHandleForWriting.write(contentsOf: bytes + Data([10]))
-        } catch { callbacks.removeValue(forKey: id); fail("BRIDGE_PIPE_UNAVAILABLE") }
+        } catch {
+            callbacks.removeValue(forKey: id)
+            fail("BRIDGE_PIPE_UNAVAILABLE")
+            completion?(["ok": false, "code": "BRIDGE_PIPE_UNAVAILABLE"])
+        }
     }
 
     private func action(_ type: String, fields: [String: Any] = [:]) {
@@ -178,6 +224,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     }
 
     private var title: String {
+        if pairing { return "正在配对并连接…" }
+        if !coreReady && state["mode"] as? String != "error" { return "正在启动 Bridge…" }
         switch state["mode"] as? String {
         case "unpaired": return "尚未配对"
         case "paused": return "已暂停 · 本地任务已停止"
@@ -201,7 +249,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         add(menu, "查看状态…", #selector(showStatus))
         menu.addItem(.separator())
         let paired = state["deviceId"] as? String != nil
-        let busy = ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
+        let busy = !coreReady || process?.isRunning != true || pairing || ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
         add(menu, "配对设备…", #selector(pairDevice), enabled: !paired && !busy)
         add(menu, "选择工作区…", #selector(selectWorkspace), enabled: paired && !busy)
         add(menu, state["browserEnabled"] as? Bool == true ? "关闭独立浏览器…" : "启用独立浏览器…", #selector(toggleBrowser), enabled: paired && !busy)
@@ -317,6 +365,10 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func pairDevice() {
+        guard coreReady, process?.isRunning == true, !pairing else {
+            showError(state["errorCode"] as? String ?? "BRIDGE_NOT_RUNNING")
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "配对 Rice Bridge"
         alert.informativeText = "在你的 AllRice 网页生成配对码。配对会保存在此 Mac，以后无需重复输入。"
@@ -334,9 +386,18 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         }
         stack.frame = NSRect(x: 0, y: 0, width: 350, height: 112)
         alert.accessoryView = stack
+        alert.window.initialFirstResponder = code
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            action("pair", fields: ["server": server.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), "code": code.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)])
+            pairing = true
+            refreshMenu()
+            showStatus()
+            send("pair", fields: ["server": server.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), "code": code.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)]) { response in
+                self.pairing = false
+                self.refreshMenu()
+                self.showStatus()
+                if response["ok"] as? Bool != true { self.showError(self.safeCode(response["code"])) }
+            }
         }
         code.stringValue = ""
     }
@@ -455,8 +516,14 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
         refreshMenu()
     }
     private func showError(_ code: String) {
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert(); alert.messageText = "操作未完成"
         let explanations = [
+            "BRIDGE_START_FAILED": "Bridge 核心未能启动，暂时无法配对。请退出应用后重新打开，并查看状态中的诊断信息。",
+            "BRIDGE_NOT_RUNNING": "Bridge 核心没有运行，配对请求尚未发出。请退出应用后重新打开；已有配对会保留。",
+            "BRIDGE_STOPPED": "Bridge 核心已经退出，暂时无法连接。请退出应用后重新打开；已有配对会保留。",
+            "BRIDGE_PIPE_UNAVAILABLE": "窗口与 Bridge 核心的连接已中断。请退出应用后重新打开，并在状态窗口核对配对结果。",
+            "DESKTOP_BUSY": "Bridge 正在启动或处理其他操作，请稍后重试。",
             "DESKTOP_PAIRING_CODE_INVALID": "请输入网页生成的 8 位配对码；中间横杠可带可不带。",
             "DESKTOP_SERVER_INVALID": "请填写 HTTPS 服务地址，不包含用户名、密码或额外路径。",
             "DESKTOP_CREDENTIAL_UNAVAILABLE": "本机已有配对，但凭证暂不可读。请检查 Keychain，不要重新配对或删除配置。",
