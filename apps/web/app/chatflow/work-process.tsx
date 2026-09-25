@@ -26,7 +26,7 @@ import {
 import { DisclosureRow } from './dsh-upstream/DisclosureRow';
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
-import { formatRunDuration } from './run-timing';
+import { RunElapsedTime } from './run-timing';
 import styles from './dsh-saas.module.css';
 
 const stepIcons: Record<WorkProcessCategory, ReactNode> = {
@@ -144,7 +144,7 @@ export function WorkProcess({
                   className={styles.processTiming}
                   aria-label="本轮运行时间"
                 >
-                  总耗时 {formatRunDuration(timing.wallMs)}
+                  总耗时 <RunElapsedTime timing={timing} running={running} />
                 </span>
               </>
             ) : null}
