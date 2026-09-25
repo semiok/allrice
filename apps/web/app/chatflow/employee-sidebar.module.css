@@ -1,9 +1,16 @@
 .root {
+  /* Match DSH WorkspaceBrowser's list scroll seat inside regionArea. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
   padding: 8px;
 }
 .root[data-collapsed] {
   /* The native rail already supplies its horizontal inset. */
   padding: 0;
+  scrollbar-gutter: auto;
 }
 .group {
   margin-bottom: 16px;
@@ -35,9 +42,23 @@
   border-radius: 14px;
   padding: 2px 6px 6px;
   color: var(--employee-foreground);
+  transition: box-shadow 140ms ease;
 }
 .employeeCard[data-active] {
   box-shadow: 0 3px 10px #233b781a;
+}
+.employeeCard:focus-within {
+  box-shadow: 0 4px 14px #233b7826;
+}
+@media (hover: hover) {
+  .employeeCard:hover {
+    box-shadow: 0 4px 14px #233b7826;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .employeeCard {
+    transition: none;
+  }
 }
 .header {
   display: flex;
@@ -54,6 +75,13 @@
 }
 .header [role='treeitem'] > span > span {
   font-size: 16px;
+}
+/* Employee identity stays visible instead of DSH's folder-to-chevron swap. */
+.header [role='treeitem'] > span:has(> .initial) {
+  display: inline-flex;
+}
+.header [role='treeitem'] > span:has(> .initial) + span {
+  display: none;
 }
 .info {
   flex: none;

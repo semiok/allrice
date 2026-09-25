@@ -194,6 +194,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       tenantAdmin?: boolean;
       employeeCount?: number;
       employeeHistory?: boolean;
+      employeeHistoryCount?: number;
+      touch?: boolean;
       employeeColor?: EmployeeAccentColor;
       width?: number;
       artifacts?: boolean;
@@ -206,11 +208,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   ) {
     const context = await browser.newContext({
       viewport: { width: options.width ?? 1440, height: 950 },
+      hasTouch: options.touch,
+      isMobile: options.touch,
     });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
     const employeeHistorySessions = [
-      ...Array.from({ length: 7 }, (_, n) => ({
+      ...Array.from({ length: options.employeeHistoryCount ?? 7 }, (_, n) => ({
         ...session(id(600 + n)),
         title: `历史工作 ${n + 1}`,
       })),
@@ -1197,6 +1201,145 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: 'Rice', exact: true })
           .getAttribute('data-accent'),
       ).toBe('violet');
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([1440, 390])(
+    'expanded employee sessions scroll in both directions without moving sidebar controls at width %s',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width === 390,
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeHistoryCount: 30,
+      });
+      try {
+        await f.page.setViewportSize({ width, height: 620 });
+        if (width === 390)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        const sidebar = f.page.locator('#chat-sidebar');
+        const tree = sidebar.getByRole('tree', {
+          name: '员工与工作',
+          exact: true,
+        });
+        const rice = tree.locator('[data-row-key="workspace:' + id(7) + '"]');
+        if ((await rice.getAttribute('aria-expanded')) !== 'true')
+          await rice.click();
+        await sidebar.getByRole('button', { name: /展开其余/ }).click();
+        const top = sidebar.getByRole('button', {
+          name: '新的工作',
+          exact: true,
+        });
+        const settings = sidebar.getByRole('button', {
+          name: '设置',
+          exact: true,
+        });
+        const before = {
+          top: await top.boundingBox(),
+          settings: await settings.boundingBox(),
+        };
+        // Wait for the mobile drawer to finish entering before choosing touch coordinates.
+        await expect
+          .poll(() => sidebar.evaluate((n) => n.getBoundingClientRect().left))
+          .toBe(0);
+        const box = (await tree.boundingBox())!;
+        const x = box.x + box.width / 2,
+          y = box.y + box.height * 0.65;
+        const cdp =
+          width === 390 ? await f.page.context().newCDPSession(f.page) : null;
+        const scroll = async (down: boolean) => {
+          if (cdp) {
+            const startY = down ? y : y - 250;
+            await cdp.send('Input.dispatchTouchEvent', {
+              type: 'touchStart',
+              touchPoints: [{ x, y: startY }],
+            });
+            for (let step = 1; step <= 10; step++) {
+              await cdp.send('Input.dispatchTouchEvent', {
+                type: 'touchMove',
+                touchPoints: [{ x, y: startY + (down ? -1 : 1) * step * 25 }],
+              });
+              await f.page.evaluate(() => new Promise(requestAnimationFrame));
+            }
+            // Pause the finger before lifting so the assertion does not race a fling.
+            await f.page.waitForTimeout(150);
+            await cdp.send('Input.dispatchTouchEvent', {
+              type: 'touchEnd',
+              touchPoints: [],
+            });
+          } else {
+            await f.page.mouse.move(x, y);
+            await f.page.mouse.wheel(0, down ? 350 : -350);
+          }
+        };
+        await scroll(true);
+        await expect
+          .poll(() => tree.evaluate((n) => n.scrollTop))
+          .toBeGreaterThan(100);
+        await scroll(false);
+        await expect
+          .poll(() => tree.evaluate((n) => n.scrollTop))
+          .toBeLessThan(5);
+        await sidebar
+          .getByText('历史工作 30', { exact: true })
+          .scrollIntoViewIfNeeded();
+        const last = (await sidebar
+          .getByText('历史工作 30', { exact: true })
+          .boundingBox())!;
+        expect(last.y).toBeGreaterThanOrEqual(box.y);
+        expect(last.y + last.height).toBeLessThanOrEqual(
+          box.y + box.height + 1,
+        );
+        expect(await top.boundingBox()).toEqual(before.top);
+        expect(await settings.boundingBox()).toEqual(before.settings);
+        await sidebar
+          .getByRole('button', { name: '收起更多会话', exact: true })
+          .click();
+        expect(
+          await sidebar.getByText('历史工作 30', { exact: true }).count(),
+        ).toBe(0);
+        await cdp?.detach();
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it('employee card hover preserves initials and position while highlighting the card', async () => {
+    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+    try {
+      for (const [employeeId, initial] of [
+        [id(7), 'R'],
+        [id(17), 'O'],
+      ] as const) {
+        const row = f.page.locator(`[data-row-key="workspace:${employeeId}"]`);
+        const letter = row.getByText(initial, { exact: true });
+        const card = row.locator('..').locator('..');
+        await f.page.mouse.move(1000, 900);
+        await expect.poll(() => letter.isVisible()).toBe(true);
+        const before = await letter.boundingBox();
+        const shadow = await card.evaluate(
+          (e) => getComputedStyle(e).boxShadow,
+        );
+        await row.hover();
+        expect(await letter.isVisible()).toBe(true);
+        expect(await letter.boundingBox()).toEqual(before);
+        await expect
+          .poll(() => card.evaluate((e) => getComputedStyle(e).boxShadow))
+          .not.toBe(shadow);
+        const expanded = await row.getAttribute('aria-expanded');
+        await row.click();
+        await expect
+          .poll(() => row.getAttribute('aria-expanded'))
+          .toBe(expanded === 'true' ? 'false' : 'true');
+        expect(await letter.isVisible()).toBe(true);
+      }
       expect(f.errors).toEqual([]);
     } finally {
       await f.close();
