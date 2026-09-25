@@ -408,8 +408,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
             turnId = nextTurnId;
             await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
           },
-          onDelta: async (text, source) =>
-            emit({ type: 'assistant.delta', text, ...source }),
+          onDelta: async (text, source, replyId, textMode) =>
+            emit({
+              type: 'assistant.delta',
+              text,
+              ...source,
+              replyId,
+              textMode,
+            }),
           onNative: async (event) => emit(event),
         });
         usage.inputTokens += result.usage.inputTokens;
@@ -464,6 +470,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           await emit({
             type: 'assistant.completed',
             text: answer,
+            replyId: result.replyId,
             ...(result.completionSource ?? {}),
           });
           await emit({
@@ -804,7 +811,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     onFailureUsage(receipt: AssistantFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
-    onDelta(text: string, source: DshSourceMetadata): Promise<void>;
+    onDelta(
+      text: string,
+      source: DshSourceMetadata,
+      replyId?: string,
+      textMode?: 'append' | 'replace',
+    ): Promise<void>;
     onNative(event: HarnessEventPayload): Promise<void>;
   }) {
     let rawAnswer = '';
@@ -812,6 +824,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let visibleLength = 0;
     let deltaBuffer = '';
     let deltaMode: 'unknown' | 'answer' | 'tool' = 'unknown';
+    let replyId: string | undefined;
+    const resetReply = () => {
+      rawAnswer = '';
+      answer = '';
+      visibleLength = 0;
+      deltaBuffer = '';
+      deltaMode = 'unknown';
+      activeReasoningBlocks.clear();
+    };
     let eventChain = Promise.resolve();
     let processingError: unknown;
     let idle = false;
@@ -1069,6 +1090,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return;
       }
       if (event.type === 'assistant/chunk') {
+        const nextReplyId = `${input.runtime.sessionId}:${String(data.turn ?? '')}:${String(data.step ?? '')}`;
+        if (replyId !== nextReplyId) {
+          resetReply();
+          replyId = nextReplyId;
+        }
         const chunk = record(data.chunk);
         if (
           (chunk?.type === 'text-delta' || chunk?.type === 'reasoning-delta') &&
@@ -1122,7 +1148,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         if (!delta) return;
         if (deltaMode === 'tool') return;
         if (deltaMode === 'answer') {
-          await input.onDelta(delta, source);
+          await input.onDelta(delta, source, replyId);
           return;
         }
         deltaBuffer += delta;
@@ -1133,11 +1159,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
           return;
         }
         deltaMode = 'answer';
-        await input.onDelta(deltaBuffer, source);
+        await input.onDelta(deltaBuffer, source, replyId);
         deltaBuffer = '';
         return;
       }
       if (event.type === 'assistant/message') {
+        const nextReplyId = `${input.runtime.sessionId}:${String(data.turn ?? '')}:${String(data.step ?? '')}`;
+        if (replyId !== nextReplyId) {
+          resetReply();
+          replyId = nextReplyId;
+        }
         completionSource = source;
         const message = record(data.message);
         const final = textBlocks(message?.content);
@@ -1145,6 +1176,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
           rawAnswer = final;
           const visible = visibleModelText(final);
           if (visible.ready) answer = visible.text;
+        }
+        // Settle each native message, not the entire run. This also covers
+        // providers that emit a durable message without streaming deltas.
+        if (
+          final &&
+          !answer.includes(dshToolEnvelopePrefix) &&
+          deltaMode !== 'tool'
+        ) {
+          await input.onDelta(
+            normalizeAllRiceManagedFileLinks(answer),
+            source,
+            replyId,
+            'replace',
+          );
+          deltaBuffer = '';
         }
         const receipt = projectNativeUsage(
           data.usage,
@@ -1159,6 +1205,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usageComplete &&= receipt.usageComplete;
         cacheUsageKnown &&= receipt.cacheUsageKnown;
         usageSource = source;
+      }
+      if (event.type === 'llm/retry') {
+        // DSH discards the partial reply of a failed model attempt in place.
+        replyId = `${input.runtime.sessionId}:${String(data.turn ?? '')}:${String(data.step ?? '')}`;
+        resetReply();
+        await input.onDelta('', source, replyId, 'replace');
       }
       if (event.type === 'turn/end') {
         const reason = record(data.reason);
@@ -1255,15 +1307,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
           },
         );
       if (deltaMode === 'unknown' && deltaBuffer && !parseDshToolCall(answer)) {
-        await input.onDelta(deltaBuffer, {
-          sourceEventId: `dsh:buffer:${randomUUID()}`,
-          sourceEventType: 'assistant/chunk',
-          sourceOccurredAt: new Date().toISOString(),
-          sourcePayload: { text: deltaBuffer },
-        });
+        await input.onDelta(
+          deltaBuffer,
+          {
+            sourceEventId: `dsh:buffer:${randomUUID()}`,
+            sourceEventType: 'assistant/chunk',
+            sourceOccurredAt: new Date().toISOString(),
+            sourcePayload: { text: deltaBuffer },
+          },
+          replyId,
+        );
       }
       return {
         answer,
+        replyId,
         usage,
         completionSource,
         usageSource,

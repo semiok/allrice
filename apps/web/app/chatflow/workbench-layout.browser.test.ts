@@ -294,6 +294,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
       events: [] as ChatFlowEventEnvelope[],
+      streamEvents: null as ChatFlowEventEnvelope[] | null,
       employeeName: 'Rice',
       runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
       timingError: false,
@@ -691,10 +692,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await streamGate;
         return route.fulfill({
           contentType: 'text/event-stream',
-          body: [
-            { type: 'assistant.text.delta', payload: { text: report } },
-            { type: 'run.succeeded', payload: {} },
-          ]
+          body: (
+            state.streamEvents ?? [
+              { type: 'assistant.text.delta', payload: { text: report } },
+              { type: 'run.succeeded', payload: {} },
+            ]
+          )
             .map(
               (event, i) =>
                 `data: ${JSON.stringify({
@@ -832,6 +835,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       unexpected,
       panel,
       entry,
+      releaseStream: finishStream,
       finishRun() {
         state.messageStatus = 'completed';
         state.items = [artifact(11)];
@@ -1790,6 +1794,103 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await settings.getByLabel('应用访问令牌').count()).toBe(0);
       expect(await settings.getByText('上一位用户的应用').count()).toBe(0);
       expect(f.state.connectionActions).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
+    const f = await fixture({ running: true });
+    try {
+      const event = (
+        sequence: number,
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+      ): ChatFlowEventEnvelope => ({
+        schemaVersion: 3,
+        eventId: id(700 + sequence),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 1,
+        sequence,
+        cursor: `${run}:${sequence}`,
+        harness: 'dsh',
+        occurredAt: now,
+        sourceEvent: null,
+        type,
+        payload,
+      });
+      f.state.events = [
+        event(1, 'assistant.text.delta', {
+          replyId: 'first',
+          text: '我先检查项目目录。',
+        }),
+        event(2, 'assistant.text.delta', {
+          replyId: 'first',
+          text: '我先检查项目目录。',
+          textMode: 'replace',
+        }),
+        event(3, 'tool.started', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '读取入口文件',
+        }),
+        event(4, 'tool.completed', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '已读取入口文件',
+        }),
+        event(5, 'assistant.text.delta', {
+          replyId: 'last',
+          text: '入口文件已确认。',
+        }),
+      ];
+      f.state.streamEvents = f.state.events;
+      f.releaseStream();
+      const process = f.page.getByRole('region', {
+        name: '工作过程',
+        exact: true,
+      });
+      await process.getByText('入口文件已确认。', { exact: true }).waitFor();
+      expect(
+        await f.page.getByText('我先检查项目目录。', { exact: true }).count(),
+      ).toBe(1);
+      const text = await process.innerText();
+      expect(text.indexOf('我先检查项目目录。')).toBeLessThan(
+        text.indexOf('已读取入口文件'),
+      );
+      expect(text.indexOf('已读取入口文件')).toBeLessThan(
+        text.indexOf('入口文件已确认。'),
+      );
+      expect(await process.getByRole('button').count()).toBe(0);
+      await f.page.screenshot({ path: '.local/feedback/interleaved-live.png' });
+      f.state.events.push(
+        event(6, 'assistant.text.completed', {
+          replyId: 'last',
+          text: '入口文件已确认。',
+        }),
+      );
+      f.state.messageStatus = 'completed';
+      await f.page.reload();
+      const toggle = process.getByRole('button');
+      await toggle.waitFor();
+      await f.page.getByText('入口文件已确认。', { exact: true }).waitFor();
+      expect(
+        await process.getByText('我先检查项目目录。', { exact: true }).count(),
+      ).toBe(0);
+      await toggle.click();
+      await process.getByText('我先检查项目目录。', { exact: true }).waitFor();
+      expect(
+        await process.getByText('入口文件已确认。', { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await f.page.getByText('入口文件已确认。', { exact: true }).count(),
+      ).toBe(1);
+      expect(
+        await process.getByRole('list', { name: '工作步骤' }).count(),
+      ).toBe(1);
     } finally {
       await f.close();
     }

@@ -94,11 +94,14 @@ export const HarnessEventSchema = z.discriminatedUnion('type', [
   HarnessEventEnvelopeSchema.extend({
     type: z.literal('assistant.delta'),
     text: z.string(),
+    replyId: z.string().min(1).max(500).optional(),
+    textMode: z.enum(['append', 'replace']).optional(),
     orderStart: z.number().int().positive().optional(),
   }).strict(),
   HarnessEventEnvelopeSchema.extend({
     type: z.literal('assistant.completed'),
     text: z.string(),
+    replyId: z.string().min(1).max(500).optional(),
   }).strict(),
   HarnessEventEnvelopeSchema.extend({
     type: z.enum(['tool.started', 'tool.completed', 'tool.failed']),

@@ -8,7 +8,7 @@ import {
 } from '@allrice/contracts';
 import type { AssistantTreeView } from '@allrice/database';
 
-import { projectNativeExperience } from '../../lib/chatflow/native-experience';
+import { projectWorkProgress } from '../../lib/chatflow/work-progress';
 
 import { AssistantMarkdown } from './assistant-markdown';
 import { MessageImageGallery } from './attachment-components';
@@ -120,7 +120,6 @@ export function ChatTranscript({
                   undefined)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
-              const nativeExperience = projectNativeExperience(traceEvents);
               const messageIsRunning = messageRun
                 ? messageRun.status === 'running' ||
                   messageRun.status === 'connecting'
@@ -131,12 +130,17 @@ export function ChatTranscript({
               const linkedArtifacts = artifacts.filter(
                 (a) => a.provenance.runId === message.runId,
               );
-              const responseText =
+              const fallbackText =
                 (message.status === 'failed' && !message.content.budgetWarning
                   ? modelGovernanceFailureText(message.errorCode)
                   : null) ??
-                (streamedText ||
-                  (message.status === 'pending' ? '' : message.content.text));
+                (message.status === 'pending' ? '' : message.content.text);
+              const progress = projectWorkProgress(
+                traceEvents,
+                fallbackText,
+                messageIsRunning,
+              );
+              const responseText = progress.finalText;
               const summarize =
                 !!onOpenArtifact &&
                 linkedArtifacts.length > 0 &&
@@ -224,7 +228,8 @@ export function ChatTranscript({
                         <time>{formatTime(message.createdAt)}</time>
                       </div>
                       <WorkProcess
-                        items={nativeExperience}
+                        items={progress.items}
+                        parts={progress.parts}
                         timing={timing}
                         running={messageIsRunning}
                         streaming={!!streamedText}
