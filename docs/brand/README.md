@@ -11,3 +11,9 @@
 修改母版后执行 `pnpm exec tsx scripts/generate-brand-icons.ts`，提交生成的静态文件。图标 URL 带版本号，后续更换时同时更新 `layout.tsx` 与 `proxy.ts` 的公开静态资源列表。DSH 上游组件、员工头像与员工配色不属于平台标志，不随此修改。
 
 原确认稿保存在本目录的 `approved-reference.png`，仅用于设计对照，网页加载矢量资源。
+
+## WORKSPACE 产品标签
+
+展开侧栏在字标右侧显示小号大写 `WORKSPACE`：细描边、3px 圆角、随主题切换的中性色，金色继续只用于米粒和 i 点。折叠轨与 favicon 使用纯图标。
+
+`allrice-workspace.svg` 和 `allrice-workspace-reverse.svg` 是包含标签的可移交矢量组合，字标与标签文字均转为路径，不依赖字体。网页使用同源 React 组件与 CSS，素材根据实际组件排版导出；更新排版时同步导出文件。`workspace-approved-preview.png` 为用户确认的视觉参考。

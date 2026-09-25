@@ -3,7 +3,7 @@ import styles from './allrice-brand.module.css';
 
 export function AllriceBrand() {
   return (
-    <span className={styles.brand} role="img" aria-label="Allrice">
+    <span className={styles.brand} role="img" aria-label="Allrice Workspace">
       <AllriceMark size={28} />
       <span className={styles.wordmark} aria-hidden="true">
         allr
@@ -14,6 +14,9 @@ export function AllriceBrand() {
           </svg>
         </span>
         ce
+      </span>
+      <span className={styles.badge} aria-hidden="true">
+        WORKSPACE
       </span>
     </span>
   );
