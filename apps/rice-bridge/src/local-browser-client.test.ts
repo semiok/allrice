@@ -61,7 +61,7 @@ describe('P22 real HTTP authority transport', () => {
       if (kind === 'caller') shutdown.abort();
       else await vi.advanceTimersByTimeAsync(2500);
       await rejected;
-      expect(fetchMock.mock.calls[0]?.[1]?.signal.aborted).toBe(true);
+      expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
     },
   );
