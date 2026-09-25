@@ -267,9 +267,7 @@
             {
               "path": "lib/client.pdf.js",
               "sha256": "9dfd5bef9df99f1bf353575ec840a69f554164554d6742f83dbebb0d3b144324",
-              "exports": [
-                "PdfBody"
-              ]
+              "exports": ["PdfBody"]
             }
           ]
         }
