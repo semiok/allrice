@@ -34,7 +34,6 @@ function render(devices: BridgeDevice[], known = true) {
     isRunning: false,
     nativeContextStatus: null,
     pendingAttachments: [],
-    providerLabel: 'Synthetic provider',
     uploadVisibility: 'private',
     onAttachmentMenuOpenChange: noop,
     onCancelRun: noop,

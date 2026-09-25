@@ -18,6 +18,7 @@ export function SidebarSettings({
   manifest,
   workspaceId,
   monthlyQuota,
+  providerLabel,
   section,
   onSectionChange,
   onBridge,
@@ -26,6 +27,7 @@ export function SidebarSettings({
   manifest: SaasCapabilityManifest;
   workspaceId: string;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
+  providerLabel: string;
   section: string | null;
   onSectionChange: (section: string | null) => void;
   onBridge: () => void;
@@ -87,6 +89,7 @@ export function SidebarSettings({
                   {row.id === 'account' && (
                     <MonthlyQuota
                       expanded
+                      providerLabel={providerLabel}
                       data={monthlyQuota.data}
                       failed={monthlyQuota.failed}
                       onRefresh={() => void monthlyQuota.reload()}

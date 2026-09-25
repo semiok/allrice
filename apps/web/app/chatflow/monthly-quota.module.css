@@ -24,6 +24,21 @@
   flex-direction: column;
   min-width: 0;
 }
+.account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.provider {
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-1, #f3f5f8);
+  font-size: 12px;
+  line-height: 18px;
+}
 .name {
   overflow: hidden;
   white-space: nowrap;
