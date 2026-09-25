@@ -10,6 +10,7 @@ import {
   type WorkbenchArtifact,
   type RuntimeExecutionScope,
 } from '@allrice/contracts';
+import { isToolResultExport } from './document-reader-model';
 
 export type ArtifactPreview =
   | OfficePreview
@@ -53,7 +54,15 @@ export function parseArtifactList(input: unknown): {
   if (!value || !Array.isArray(value.artifacts) || value.artifacts.length > 50)
     throw Error('成果列表格式无效');
   return {
-    artifacts: value.artifacts.map((a) => WorkbenchArtifactSchema.parse(a)),
+    artifacts: value.artifacts
+      .map((a) => WorkbenchArtifactSchema.parse(a))
+      .filter(
+        (a) =>
+          !(
+            a.provenance.kind === 'legacy_deliverable' &&
+            isToolResultExport(a.version)
+          ),
+      ),
     nextCursor:
       value.nextCursor === null
         ? null
