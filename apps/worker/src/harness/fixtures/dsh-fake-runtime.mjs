@@ -225,6 +225,52 @@ lines.on('line', (line) => {
     model: 'fake',
     contextWindow: 128000,
   });
+  if (prompt.includes('interleaved-progress')) {
+    const delta = (step, text) =>
+      event(sessionId, 'assistant/chunk', {
+        turn,
+        step,
+        chunk: { type: 'text-delta', index: 0, text },
+      });
+    const message = (step, text) =>
+      event(sessionId, 'assistant/message', {
+        turn,
+        step,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+        usage: { inputTokens: 11, cacheReadTokens: 3, outputTokens: 5 },
+      });
+    reasoning(sessionId, turn, 0);
+    delta(0, '先检查');
+    delta(0, '目录');
+    message(0, '先检查目录');
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 0,
+      callId: 'progress-tool',
+      name: 'read',
+      arguments: { path: 'README.md' },
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 0,
+      callId: 'progress-tool',
+      message: {
+        content: [
+          { type: 'tool-result', callId: 'progress-tool', content: 'safe' },
+        ],
+      },
+    });
+    event(sessionId, 'llm/retry', { turn, step: 1 });
+    message(1, '确认入口文件');
+    delta(2, '应被替换的半段文字');
+    event(sessionId, 'llm/retry', { turn, step: 2 });
+    delta(2, '最终');
+    delta(2, '总结');
+    message(2, '最终总结');
+    event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
+    notify('session.status', { sessionId, status: 'idle' });
+    return;
+  }
   if (prompt.includes('crash after acknowledgement')) {
     event(sessionId, 'assistant/chunk', {
       turn,

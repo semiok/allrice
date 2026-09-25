@@ -2008,3 +2008,19 @@ div.composerTools {
     flex-wrap: wrap;
   }
 }
+
+/* Public intermediate replies use the same native Markdown as the final answer. */
+.processReply {
+  color: var(--dsw-alias-label-primary);
+  margin: 12px 0 16px;
+  line-height: 1.7;
+}
+
+.processDetails.processFlow {
+  max-height: none;
+  overflow: visible;
+  padding-left: 0;
+}
+.processFlow .processReply {
+  font-size: var(--dsw-font-size-message, 14px);
+}
