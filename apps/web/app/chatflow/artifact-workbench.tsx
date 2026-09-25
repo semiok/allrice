@@ -4,7 +4,6 @@ import {
   dockPaneIds,
   findPaneContentTab,
   findTabPane,
-  type TabId,
 } from '@deepseek-ai/dsh-client-ui-dockkit';
 import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
 import { dockLabels, useNativeDock } from './use-native-dock';
@@ -27,10 +26,6 @@ import {
   useState,
 } from 'react';
 import {
-  ReviewDraftInputSchema,
-  ReviewFeedbackSchema,
-  type ReviewDraftInput,
-  type ReviewFeedback,
   type WorkbenchArtifact,
   type ReviewContinuationInput,
 } from '@allrice/contracts';
@@ -39,7 +34,6 @@ import {
   artifactExecutionLabels,
   parseArtifactDetail,
   parseArtifactPreview,
-  reviewAnchorLabel,
   workbenchJson,
   type ArtifactPreview,
   type ArtifactCursor,
@@ -71,7 +65,6 @@ class DiffBoundary extends Component<
     );
   }
 }
-type Anchor = ReviewDraftInput['comments'][number]['anchor'];
 type Props = {
   open: boolean;
   width: number;
@@ -92,39 +85,15 @@ type Props = {
   onSelect: (id: string) => void;
   onClose: () => void;
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
-  onDirtyChange?: (value: boolean) => void;
   onContinued?: (runId: string) => void;
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
 export function ArtifactWorkbench(props: Props) {
   const panel = useRef<HTMLElement>(null),
-    dirty = useRef(false),
     previousFocus = useRef<HTMLElement | null>(null);
-  const dirtyTabs = useRef(new Set<string>());
-  const onDirty = useCallback(
-    (id: string, value: boolean) => {
-      if (value) dirtyTabs.current.add(id);
-      else dirtyTabs.current.delete(id);
-      dirty.current = dirtyTabs.current.size > 0;
-      props.onDirtyChange?.(dirty.current);
-    },
-    [props.onDirtyChange],
-  );
-  const close = useCallback(() => {
-    if (
-      !dirty.current ||
-      window.confirm('有尚未保存的意见，仍要收起成果栏吗？重新打开可继续编辑。')
-    )
-      props.onClose();
-  }, [props.onClose]);
-  const dock = useNativeDock(
-    props.dockScope,
-    (id) =>
-      !dirtyTabs.current.has(id) ||
-      window.confirm('有尚未保存的意见，关闭会丢失这些本地编辑。仍要关闭吗？'),
-    props.onClose,
-  );
+  const close = props.onClose;
+  const dock = useNativeDock(props.dockScope, () => true, props.onClose);
   const fullscreen = props.narrow || dock.surface.layout.mode === 'fullscreen';
   useEffect(() => {
     if (!props.open) return;
@@ -147,16 +116,6 @@ export function ArtifactWorkbench(props: Props) {
         previousFocus.current.focus();
     };
   }, [fullscreen, props.open]);
-  useEffect(() => {
-    const unload = (e: BeforeUnloadEvent) => {
-      if (dirty.current) {
-        e.preventDefault();
-        e.returnValue = '';
-      }
-    };
-    window.addEventListener('beforeunload', unload);
-    return () => window.removeEventListener('beforeunload', unload);
-  }, []);
   const previousSelection = useRef<string | null | undefined>(undefined);
   const previousRequest = useRef(0);
   function openArtifact(id: string, paneId?: Parameters<typeof dock.open>[3]) {
@@ -276,9 +235,9 @@ export function ArtifactWorkbench(props: Props) {
           renderTab={(tab) =>
             tab.kind === 'files' ? (
               <WorkspaceFileTree
+                tabId={tab.id}
                 workspaceId={props.workspaceId}
                 sessionId={props.sessionId ?? 'draft'}
-                tabId={tab.id}
                 tenantHeaders={props.tenantHeaders}
                 onOpen={(file) => {
                   const artifact = props.artifacts.find(
@@ -317,9 +276,7 @@ export function ArtifactWorkbench(props: Props) {
               <ArtifactTabBody
                 {...props}
                 key={tab.id}
-                tabId={tab.id}
                 selectedId={tab.kind === 'artifact' ? tab.contentId : null}
-                onDirty={onDirty}
                 onFiles={() => {
                   props.onBrowseFiles?.();
                   dock.open(
@@ -360,17 +317,11 @@ export function ArtifactWorkbench(props: Props) {
 
 function ArtifactTabBody(
   props: Props & {
-    tabId: TabId;
     onFiles: () => void;
-    onDirty: (id: string, value: boolean) => void;
   },
 ) {
   const selectorId = useId();
   const artifactId = props.selectedId;
-  const dirtyChanged = useCallback(
-    (value: boolean) => props.onDirty(props.tabId, value),
-    [props.onDirty, props.tabId],
-  );
   const select = props.onSelect;
   return (
     <div className={styles.body}>
@@ -449,7 +400,6 @@ function ArtifactTabBody(
             sessionId={props.sessionId}
             workspaceId={props.workspaceId}
             tenantHeaders={props.tenantHeaders}
-            onDirty={dirtyChanged}
             onSelect={select}
             onContinued={props.onContinued}
           />
@@ -518,7 +468,6 @@ export function ReadOnlyArtifactPreview({
                   before={file.before?.text ?? null}
                   after={file.after?.text ?? null}
                   mode="unified"
-                  onSelect={() => {}}
                 />
               </Suspense>
             </DiffBoundary>
@@ -565,15 +514,7 @@ export function ArtifactSummaryCards({
   );
 }
 
-function TextPage({
-  text,
-  onLine,
-  label,
-}: {
-  text: string;
-  onLine?: (line: number) => void;
-  label: string;
-}) {
+function TextPage({ text, label }: { text: string; label: string }) {
   const [page, setPage] = useState(0),
     lines = text.split('\n'),
     pages = Math.max(1, Math.ceil(lines.length / 100));
@@ -584,17 +525,7 @@ function TextPage({
         <pre>
           {lines.slice(current * 100, (current + 1) * 100).map((line, i) => (
             <span className={styles.line} key={i}>
-              {onLine ? (
-                <button
-                  type="button"
-                  aria-label={`评论第 ${current * 100 + i + 1} 行`}
-                  onClick={() => onLine(current * 100 + i + 1)}
-                >
-                  {current * 100 + i + 1}
-                </button>
-              ) : (
-                <span aria-hidden="true">{current * 100 + i + 1} </span>
-              )}
+              <span aria-hidden="true">{current * 100 + i + 1} </span>
               <code>
                 {line || '\u00a0'}
                 {'\n'}
@@ -633,7 +564,6 @@ function ArtifactReview({
   sessionId,
   workspaceId,
   tenantHeaders,
-  onDirty,
   onSelect,
   onContinued,
 }: {
@@ -641,25 +571,20 @@ function ArtifactReview({
   sessionId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
-  onDirty: (value: boolean) => void;
   onSelect: (id: string) => void;
   onContinued?: (runId: string) => void;
 }) {
-  const feedbackId = useId();
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
-    [feedback, setFeedback] = useState<ReviewFeedback[]>([]),
     [preview, setPreview] = useState<ArtifactPreview | null>(null);
-  const [sent, setSent] = useState<Set<string>>(new Set());
-  async function continueReview(review: ReviewContinuationInput) {
-    const key = review.kind === 'plan_review' ? 'plan' : review.feedbackId;
+  const [planSent, setPlanSent] = useState(false);
+  async function continuePlan(
+    review: Extract<ReviewContinuationInput, { kind: 'plan_review' }>,
+  ) {
     setBusy(true);
     setError('');
     try {
       const body = {
-        text:
-          review.kind === 'plan_review'
-            ? '认可本版计划并继续'
-            : '请 Rice 根据本批意见修订',
+        text: '认可本版计划并继续',
         deliveryMode: 'follow_up',
         attachmentIds: [],
         reviewContinuation: review,
@@ -675,33 +600,26 @@ function ArtifactReview({
           },
         ),
       );
-      setSent((old) => new Set([...old, key]));
-      setNotice(
-        '已创建后续任务，可在交互与任务记录中查看；并未授予新的执行权限。',
-      );
+      setPlanSent(true);
+      setNotice('计划确认已发送，可在对话中查看进展。');
       onContinued?.(result.run.id);
+      return true;
     } catch (e) {
       setError(
         e instanceof Error ? e.message : '后续任务提交失败，可安全重试。',
       );
+      return false;
     } finally {
       setBusy(false);
     }
   }
-  const [draft, setDraft] = useState<ReviewDraftInput | null>(null),
-    [dirty, setDirty] = useState(false),
-    [error, setError] = useState(''),
+  const [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false),
     [previewError, setPreviewError] = useState(''),
     [previewRetry, setPreviewRetry] = useState(0);
-  const [text, setText] = useState(''),
-    [anchor, setAnchor] = useState<Anchor>({ kind: 'whole' }),
-    [path, setPath] = useState(''),
-    [side, setSide] = useState<'before' | 'after'>('after');
-  const [start, setStart] = useState(1),
-    [end, setEnd] = useState(1),
-    [view, setView] = useState<'preview' | 'diff'>('preview'),
+  const [path, setPath] = useState('');
+  const [view, setView] = useState<'preview' | 'diff'>('preview'),
     [mode, setMode] = useState<'split' | 'unified'>('split'),
     [rawSide, setRawSide] = useState<'before' | 'after'>('after');
   const [previous, setPrevious] = useState<{
@@ -710,39 +628,9 @@ function ArtifactReview({
     } | null>(null),
     [ready, setReady] = useState(false);
   const generation = useRef(0),
-    composer = useRef<HTMLTextAreaElement>(null),
-    dirtyRef = useRef(false),
     pending = useRef<AbortController | null>(null);
   const endpoint = `/api/v1/sessions/${sessionId}/artifacts/${artifactId}`,
     query = `?workspaceId=${workspaceId}`;
-  dirtyRef.current = dirty || !!text;
-  useEffect(() => {
-    onDirty(dirty || !!text);
-    return () => onDirty(false);
-  }, [dirty, text, onDirty]);
-  const resetDraft = (a: WorkbenchArtifact, rows: ReviewFeedback[]) => {
-    const saved = [...rows].reverse().find((f) => f.state === 'draft');
-    setDraft(
-      saved
-        ? {
-            feedbackId: saved.id,
-            artifactId: a.id,
-            checksum: saved.checksum,
-            expectedRevision: saved.revision,
-            comments: saved.comments,
-          }
-        : {
-            feedbackId: crypto.randomUUID(),
-            artifactId: a.id,
-            checksum: a.object.checksum,
-            expectedRevision: 0,
-            comments: [],
-          },
-    );
-    setDirty(false);
-    setText('');
-    setAnchor({ kind: 'whole' });
-  };
   const refresh = useCallback(
     async (reset = false) => {
       const token = ++generation.current;
@@ -763,8 +651,6 @@ function ArtifactReview({
           throw Error('成果所属会话不匹配');
         if (token !== generation.current) return;
         setArtifact(result.artifact);
-        setFeedback(result.feedback);
-        if (reset) resetDraft(result.artifact, result.feedback);
         setReady(true);
       } catch (cause) {
         if (token === generation.current && !control.signal.aborted) {
@@ -864,102 +750,6 @@ function ArtifactReview({
       ? preview.changeset.files.find((f) => f.path === path)
       : null;
   const bodyText = preview?.kind === 'text' ? preview.text : null;
-  const supportsLines =
-    !!file ||
-    (!!artifact &&
-      bodyText !== null &&
-      ['text/plain', 'text/markdown', 'application/json'].includes(
-        artifact.object.mediaType,
-      ));
-  const useLines = useCallback(
-    (selectedSide: 'before' | 'after', a: number, b: number) => {
-      const target = file?.[selectedSide];
-      if (file && target)
-        setAnchor({
-          kind: 'lines',
-          path: file.path,
-          side: selectedSide,
-          startLine: a,
-          endLine: b,
-          checksum: target.checksum,
-        });
-      else if (artifact && supportsLines && selectedSide === 'after')
-        setAnchor({
-          kind: 'lines',
-          path: null,
-          side: 'after',
-          startLine: a,
-          endLine: b,
-          checksum: artifact.object.checksum,
-        });
-      else {
-        setNotice('此侧不支持当前版本的行评论，请使用整件意见。');
-        return;
-      }
-      setSide(selectedSide);
-      setStart(a);
-      setEnd(b);
-      composer.current?.focus();
-    },
-    [file, artifact?.id, supportsLines],
-  );
-  function addComment() {
-    if (!draft || !artifact || artifact.stale || !text.trim()) return;
-    const updated = {
-      ...draft,
-      comments: [...draft.comments, { id: crypto.randomUUID(), anchor, text }],
-    };
-    const parsed = ReviewDraftInputSchema.safeParse(updated);
-    if (!parsed.success) {
-      setError('每批最多 20 条意见，每条最多 4000 字；请检查评论范围。');
-      return;
-    }
-    setDraft(parsed.data);
-    setText('');
-    setDirty(true);
-    setNotice('已加入本地草稿，保存或提交后才会持久化。');
-  }
-  async function save(submit: boolean) {
-    if (!draft || busy || artifact?.stale) return;
-    setBusy(true);
-    setError('');
-    try {
-      const raw = (await workbenchJson(
-        `${endpoint}/feedback${query}`,
-        tenantHeaders,
-        {
-          method: submit ? 'POST' : 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(draft),
-        },
-      )) as { feedback: unknown };
-      const saved = ReviewFeedbackSchema.parse(raw.feedback);
-      if (saved.artifactId !== artifactId || saved.id !== draft.feedbackId)
-        throw Error('反馈回执不匹配');
-      setFeedback((rows) => [...rows.filter((f) => f.id !== saved.id), saved]);
-      setDirty(false);
-      setDraft(
-        submit
-          ? {
-              ...draft,
-              feedbackId: crypto.randomUUID(),
-              expectedRevision: 0,
-              comments: [],
-            }
-          : { ...draft, expectedRevision: saved.revision },
-      );
-      setNotice(
-        submit
-          ? '意见已提交，等待后续处理。它不是文件执行授权。'
-          : '草稿已保存，重新打开可继续编辑。',
-      );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '反馈保存失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-  const canEdit = ready && !artifact?.stale && !busy;
   return (
     <div>
       {error ? (
@@ -979,7 +769,7 @@ function ArtifactReview({
               sessionId={sessionId}
               workspaceId={workspaceId}
               headers={tenantHeaders}
-              disabled={busy || dirty}
+              disabled={busy}
               onContinued={onContinued}
             />
           ) : null}
@@ -1085,9 +875,6 @@ function ArtifactReview({
                 value={path}
                 onChange={(e) => {
                   setPath(e.target.value);
-                  setAnchor({ kind: 'whole' });
-                  setStart(1);
-                  setEnd(1);
                 }}
               >
                 {preview.changeset.files.map((f) => (
@@ -1113,7 +900,6 @@ function ArtifactReview({
                     <option value="unified">统一</option>
                   </select>
                 </label>
-                <span className={styles.muted}>选中同侧行号可定位评论</span>
               </div>
               <div className={styles.preview}>
                 <DiffBoundary key={`${artifact.id}/${path}`}>
@@ -1130,7 +916,6 @@ function ArtifactReview({
                       }
                       after={file ? (file.after?.text ?? null) : bodyText}
                       mode={mode}
-                      onSelect={useLines}
                     />
                   </Suspense>
                 </DiffBoundary>
@@ -1169,11 +954,6 @@ function ArtifactReview({
                 key={`${path}/${rawSide}`}
                 text={file[rawSide]?.text ?? ''}
                 label={`${rawSide === 'before' ? '修改前' : '修改后'}文本`}
-                onLine={
-                  file[rawSide]
-                    ? (line) => useLines(rawSide, line, line)
-                    : undefined
-                }
               />
             </details>
           ) : bodyText !== null ? (
@@ -1190,16 +970,8 @@ function ArtifactReview({
                   )
                 }
               >
-                <summary>原文与行级审查（分页）</summary>
-                <TextPage
-                  text={bodyText}
-                  label="成果正文（只读文本）"
-                  onLine={
-                    supportsLines
-                      ? (line) => useLines('after', line, line)
-                      : undefined
-                  }
-                />
+                <summary>查看原文（分页）</summary>
+                <TextPage text={bodyText} label="成果正文（只读文本）" />
               </details>
             </>
           ) : preview?.kind === 'image' ? (
@@ -1244,256 +1016,31 @@ function ArtifactReview({
               <p role="status">正在读取安全预览…</p>
             )
           ) : null}
-          <section className={styles.feedback} aria-label="版本反馈">
-            {artifact.kind === 'plan' ? (
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  disabled={!canEdit || dirty || sent.has('plan')}
-                  onClick={() =>
-                    void continueReview({
-                      kind: 'plan_review',
-                      artifactId,
-                      checksum: artifact.object.checksum,
-                    })
-                  }
-                >
-                  {sent.has('plan') ? '计划确认已发送' : '认可本版计划，继续'}
-                </button>
-                <small>
-                  认可计划不等于批准执行。需要修改时，在下方提交意见。
-                </small>
-              </div>
-            ) : null}
-            <h3>对此版本的意见</h3>
-            <p className={styles.muted}>
-              意见会绑定 v{artifact.version.version}
-              ，不会批准文件修改或命令执行。图片与非文本格式支持整件反馈。
-            </p>
-            {supportsLines ? (
-              <div className={styles.row}>
-                {file ? (
-                  <label>
-                    评论侧
-                    <select
-                      aria-label="评论侧"
-                      disabled={!canEdit}
-                      value={side}
-                      onChange={(e) =>
-                        setSide(e.target.value as 'before' | 'after')
-                      }
-                    >
-                      <option value="before">修改前</option>
-                      <option value="after">修改后</option>
-                    </select>
-                  </label>
-                ) : null}
-                <label>
-                  起始行
-                  <input
-                    aria-label="起始行"
-                    type="number"
-                    min={1}
-                    max={200001}
-                    value={start}
-                    disabled={!canEdit}
-                    onChange={(e) => setStart(Number(e.target.value))}
-                  />
-                </label>
-                <label>
-                  结束行
-                  <input
-                    aria-label="结束行"
-                    type="number"
-                    min={1}
-                    max={200001}
-                    value={end}
-                    disabled={!canEdit}
-                    onChange={(e) => setEnd(Number(e.target.value))}
-                  />
-                </label>
-                <button
-                  type="button"
-                  disabled={!canEdit}
-                  onClick={() => useLines(side, start, end)}
-                >
-                  定位行范围
-                </button>
-              </div>
-            ) : null}
-            <p className={styles.muted}>
-              位置：{reviewAnchorLabel(anchor)}{' '}
-              {anchor.kind !== 'whole' ? (
-                <button
-                  type="button"
-                  onClick={() => setAnchor({ kind: 'whole' })}
-                >
-                  改为整件意见
-                </button>
-              ) : null}
-            </p>
-            <label htmlFor={feedbackId} className={styles.hiddenLabel}>
-              评论内容
-            </label>
-            <textarea
-              id={feedbackId}
-              ref={composer}
-              value={text}
-              maxLength={4000}
-              disabled={!canEdit}
-              placeholder="提出修改意见，或说明需要澄清的地方…"
-              onChange={(e) => setText(e.target.value)}
-            />
-            <div className={styles.row}>
+          {artifact.kind === 'plan' ? (
+            <section className={styles.actions} aria-label="计划确认">
               <button
                 type="button"
-                disabled={
-                  !canEdit ||
-                  !text.trim() ||
-                  (draft?.comments.length ?? 0) >= 20
+                disabled={!ready || artifact.stale || busy || planSent}
+                onClick={() =>
+                  void continuePlan({
+                    kind: 'plan_review',
+                    artifactId,
+                    checksum: artifact.object.checksum,
+                  })
                 }
-                onClick={addComment}
               >
-                加入本批意见
+                {planSent ? '计划确认已发送' : '认可本版计划，继续'}
               </button>
-              <span className={styles.muted}>
-                {draft?.comments.length ?? 0}/20 条 ·{' '}
-                {dirty || text ? '尚未保存' : '无未保存编辑'}
-              </span>
-            </div>
-            {draft?.comments.map((c) => (
-              <div className={styles.comment} key={c.id}>
-                <small>{reviewAnchorLabel(c.anchor)}</small>
-                <p>{c.text}</p>
-                <button
-                  type="button"
-                  disabled={!canEdit}
-                  onClick={() => {
-                    setDraft({
-                      ...draft,
-                      comments: draft.comments.filter((x) => x.id !== c.id),
-                    });
-                    setDirty(true);
-                  }}
-                >
-                  移除此条
-                </button>
-              </div>
-            ))}
-            <div className={styles.row}>
-              <button
-                type="button"
-                disabled={!canEdit || !draft?.comments.length || !!text}
-                onClick={() => void save(false)}
-              >
-                保存草稿
-              </button>
-              <button
-                type="button"
-                className={styles.primary}
-                disabled={!canEdit || !draft?.comments.length || !!text}
-                onClick={() => void save(true)}
-              >
-                提交本批意见
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  if (
-                    !dirtyRef.current ||
-                    window.confirm('刷新会丢弃未保存编辑，继续吗？')
-                  )
-                    void refresh(true);
-                }}
-              >
-                刷新版本反馈
-              </button>
-            </div>
-            {notice ? (
-              <p role="status" className={styles.muted}>
-                {notice}
-              </p>
-            ) : null}
-          </section>
-          <section className={styles.history} aria-label="已保存反馈">
-            <h3>已保存反馈 · {feedback.length}</h3>
-            {feedback.length === 0 ? (
-              <p className={styles.muted}>暂无已保存的意见。</p>
-            ) : (
-              feedback.map((f) => (
-                <details key={f.id}>
-                  <summary>
-                    {f.state === 'draft'
-                      ? '草稿'
-                      : f.state === 'submitted'
-                        ? '已提交 · 待处理'
-                        : '已关联回应 · 待复核'}{' '}
-                    · {f.comments.length} 条{f.stale ? ' · 旧版本' : ''}
-                  </summary>
-                  {f.comments.map((c) => (
-                    <div className={styles.comment} key={c.id}>
-                      <small>{reviewAnchorLabel(c.anchor)}</small>
-                      <p>{c.text}</p>
-                    </div>
-                  ))}
-                  {f.state === 'submitted' && !f.stale ? (
-                    <button
-                      type="button"
-                      disabled={!canEdit || dirty || sent.has(f.id)}
-                      onClick={() =>
-                        void continueReview({
-                          kind: 'version_feedback',
-                          artifactId,
-                          checksum: f.checksum,
-                          feedbackId: f.id,
-                        })
-                      }
-                    >
-                      {sent.has(f.id)
-                        ? '修订请求已发送'
-                        : '请 Rice 根据本批意见修订'}
-                    </button>
-                  ) : null}
-                  {f.state === 'draft' ? (
-                    <button
-                      type="button"
-                      disabled={!canEdit}
-                      onClick={() => {
-                        if (
-                          !dirtyRef.current ||
-                          window.confirm('切换到已保存草稿，放弃未保存编辑？')
-                        ) {
-                          setDraft({
-                            feedbackId: f.id,
-                            artifactId,
-                            checksum: f.checksum,
-                            expectedRevision: f.revision,
-                            comments: f.comments,
-                          });
-                          setText('');
-                          setDirty(false);
-                        }
-                      }}
-                    >
-                      继续此草稿
-                    </button>
-                  ) : null}
-                  {f.resultArtifactId ? (
-                    <>
-                      <p>{f.resolution}</p>
-                      <button
-                        type="button"
-                        onClick={() => onSelect(f.resultArtifactId!)}
-                      >
-                        查看回应版本
-                      </button>
-                    </>
-                  ) : null}
-                </details>
-              ))
-            )}
-          </section>
+              <small>
+                认可计划不等于批准执行。需要调整时，直接在对话中说明。
+              </small>
+              {notice ? (
+                <p role="status" className={styles.muted}>
+                  {notice}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
         </>
       )}
     </div>

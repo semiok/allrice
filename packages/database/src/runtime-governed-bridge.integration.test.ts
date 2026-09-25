@@ -2588,7 +2588,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     ).rejects.toThrow('feedback_limit');
   });
   it.skipIf(process.env.ALLRICE_WORKBENCH_BROWSER_TEST !== '1')(
-    'P07 real Chromium and PostgreSQL: Cline diff, persisted review, stale versions and inert previews',
+    'P07 real Chromium and PostgreSQL: read-only Cline diff, stale versions and inert previews',
     async () => {
       const f = await artifactFixture(riceManifest());
       f.context.memberships = f.policyPayload.memberships;
@@ -2674,6 +2674,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       ).build;
       const output = await build({
         entryPoints: [resolve('apps/web/test/workbench-page.tsx')],
+        loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
         bundle: true,
         write: false,
         outdir: join(f.root, 'ui'),
@@ -2693,8 +2694,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         ),
       );
       let origin = '',
-        lostSave = false,
-        lostContinuation = false,
         writeCount = 0;
       const server = createServer((req, res) => {
         void (async () => {
@@ -2757,15 +2756,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
               f.sessionId,
               JSON.parse(Buffer.concat(chunks).toString()),
             );
-            if (lostContinuation) {
-              lostContinuation = false;
-              res.writeHead(503).end(
-                JSON.stringify({
-                  error: { message: '合成 ACK 丢失，可重试' },
-                }),
-              );
-              return;
-            }
             res.end(JSON.stringify(result));
             return;
           }
@@ -2828,11 +2818,6 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
                 f.storage,
                 database,
               );
-              if (lostSave) {
-                lostSave = false;
-                res.statusCode = 503;
-                return {};
-              }
               return { feedback };
             }
             return {
@@ -2889,11 +2874,14 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           if (!r.url().startsWith(origin)) external.push(r.url());
         });
         await page.goto(origin);
+        const activeContent = page.locator(
+          '[data-dockkit-host="dock"]:not([hidden])',
+        );
         await page
           .getByRole('button', { name: '工件与审查', exact: true })
           .click();
-        await page
-          .getByLabel('工件版本', { exact: true })
+        await activeContent
+          .getByLabel('成果版本', { exact: true })
           .selectOption(change.id);
         await page.waitForSelector('[data-cline-diff] diffs-container');
         await page.waitForFunction(() => {
@@ -2906,182 +2894,45 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           );
         });
         expect(
-          await page
+          await activeContent
             .getByText('比较范围：本次 Changeset 提案', { exact: false })
+            .first()
             .isVisible(),
         ).toBe(true);
-        await page
-          .locator(
-            '[data-cline-diff] diffs-container [data-additions] [data-column-number="1"]',
-          )
-          .click();
-        expect(
-          await page.getByLabel('起始行', { exact: true }).inputValue(),
-        ).toBe('1');
-        expect(
-          await page.getByLabel('评论侧', { exact: true }).inputValue(),
-        ).toBe('after');
-        await page
-          .getByText('位置：answer.ts · 修改后 L1', { exact: false })
-          .waitFor();
         await page.screenshot({ path: join(evidenceDir, 'desktop-diff.png') });
-        await page
-          .getByLabel('评论内容', { exact: true })
-          .fill('请加上这行的测试。');
-        await page.getByRole('button', { name: '加入本批意见' }).click();
-        lostSave = true;
-        await page
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        await page.getByRole('alert').waitFor();
-        await page
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        await page.getByText('草稿已保存，重新打开可继续编辑。').waitFor();
-        const saved = await listArtifactFeedback(
-          f.context,
-          f.sessionId,
-          change.id,
-          database,
-        );
-        expect(saved).toHaveLength(1);
-        expect(saved[0]!.revision).toBe(1);
-        expect(saved[0]!.comments[0]!.anchor).toMatchObject({
-          path: 'answer.ts',
-          side: 'after',
-          startLine: 1,
-          endLine: 1,
-        });
-        await page.reload();
-        await page
-          .getByRole('button', { name: '工件与审查', exact: true })
-          .click();
-        await page
-          .getByLabel('工件版本', { exact: true })
-          .selectOption(change.id);
-        await page.getByRole('button', { name: '移除此条' }).waitFor();
-        await page
-          .getByRole('button', { name: '提交本批意见', exact: true })
-          .click();
-        await page
-          .getByText('意见已提交，等待后续处理。它不是文件执行授权。')
-          .waitFor();
+        expect(await activeContent.getByRole('textbox').count()).toBe(0);
         expect(
-          (
-            await listArtifactFeedback(
-              f.context,
-              f.sessionId,
-              change.id,
-              database,
-            )
-          )[0]!.state,
-        ).toBe('submitted');
-        await page.getByText('已提交 · 待处理', { exact: false }).click();
-        lostContinuation = true;
-        await page
-          .getByRole('button', {
-            name: '请 Rice 根据本批意见修订',
-            exact: true,
-          })
-          .click();
-        await page
-          .getByText('合成 ACK 丢失，可重试', { exact: true })
-          .waitFor();
-        await page
-          .getByRole('button', {
-            name: '请 Rice 根据本批意见修订',
-            exact: true,
-          })
-          .click();
-        await page
-          .getByRole('button', { name: '修订请求已发送', exact: true })
-          .waitFor();
+          await activeContent
+            .getByRole('link', { name: '下载此版本' })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await listArtifactFeedback(
+            f.context,
+            f.sessionId,
+            change.id,
+            database,
+          ),
+        ).toHaveLength(0);
         expect(
           await database`select response_id from allrice_review_continuations where organization_id=${f.context.organizationId}`,
-        ).toHaveLength(1);
+        ).toHaveLength(0);
         expect(
           await database`select id from allrice_runtime_operations where organization_id=${f.context.organizationId}`,
         ).toHaveLength(0);
-        await page
-          .getByLabel('工件版本', { exact: true })
+        await activeContent
+          .getByLabel('成果版本', { exact: true })
           .selectOption(textArtifact.id);
-        await page.getByLabel('评论内容', { exact: true }).fill('全局意见');
-        await page.getByRole('button', { name: '加入本批意见' }).click();
-        await page
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        await page.getByText('草稿已保存，重新打开可继续编辑。').waitFor();
-        // A second window must not replace a newer revision with its old draft.
-        const peer = await browser.newPage({
-          viewport: { width: 1450, height: 1050 },
-        });
-        await peer.goto(origin);
-        await peer
-          .getByRole('button', { name: '工件与审查', exact: true })
-          .click();
-        await peer
-          .getByLabel('工件版本', { exact: true })
-          .selectOption(textArtifact.id);
-        await peer.getByRole('button', { name: '移除此条' }).waitFor();
-        await peer
-          .getByLabel('评论内容', { exact: true })
-          .fill('第二个窗口的旧草稿');
-        await peer.getByRole('button', { name: '加入本批意见' }).click();
-        await page
-          .getByLabel('评论内容', { exact: true })
-          .fill('第一个窗口的补充');
-        await page.getByRole('button', { name: '加入本批意见' }).click();
-        await page
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        await expect
-          .poll(
-            async () =>
-              (
-                await listArtifactFeedback(
-                  f.context,
-                  f.sessionId,
-                  textArtifact.id,
-                  database,
-                )
-              )[0]?.revision,
-          )
-          .toBe(2);
-        await peer
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        await peer
-          .getByRole('alert')
-          .filter({ hasText: '版本或草稿已变化' })
-          .waitFor();
-        const currentDraft = await listArtifactFeedback(
-          f.context,
-          f.sessionId,
-          textArtifact.id,
-          database,
-        );
-        expect(currentDraft).toHaveLength(1);
-        expect(currentDraft[0]!.comments.map((c) => c.text)).toEqual([
-          '全局意见',
-          '第一个窗口的补充',
-        ]);
-        await peer.close();
         const revisedDoc = await f.publish(
           'doc-revision',
           'first line\nrevised line',
           textArtifact.object.id,
         );
-        await page
-          .getByRole('button', { name: '刷新版本反馈', exact: true })
-          .click();
-        await page.getByText('旧版本 · 仅查看').waitFor();
-        expect(
-          await page
-            .getByRole('button', { name: '提交本批意见', exact: true })
-            .isDisabled(),
-        ).toBe(true);
+        await activeContent.getByText('旧版本 · 仅查看').waitFor();
         await page.getByRole('button', { name: '查看最新版本' }).click();
-        await page.getByText('revised line', { exact: false }).waitFor();
+        await activeContent
+          .getByText('revised line', { exact: false })
+          .waitFor();
         expect(
           (
             await getWorkbenchArtifact(
@@ -3095,40 +2946,39 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         await page
           .getByRole('button', { name: '刷新列表', exact: true })
           .click();
-        await page
-          .getByLabel('工件版本', { exact: true })
+        await activeContent
+          .getByLabel('成果版本', { exact: true })
           .selectOption(htmlArtifact.id);
-        await page.getByText(html, { exact: false }).first().waitFor();
-        await page
-          .getByLabel('工件版本', { exact: true })
+        await activeContent.getByText(html, { exact: false }).first().waitFor();
+        await activeContent
+          .getByLabel('成果版本', { exact: true })
           .selectOption(svgArtifact.id);
-        await page.getByText(svg, { exact: false }).first().waitFor();
+        await activeContent.getByText(svg, { exact: false }).first().waitFor();
         expect(
           await page.evaluate(() => Reflect.get(globalThis, 'P07_ATTACK')),
         ).toBeUndefined();
         expect(external).toEqual([]);
-        await page
-          .getByLabel('工件版本', { exact: true })
+        await activeContent
+          .getByLabel('成果版本', { exact: true })
           .selectOption(largeArtifact.id);
-        await page
+        await activeContent
           .getByText('文件过长，已停用富 Diff。', { exact: false })
           .waitFor();
-        expect(await page.locator('[data-cline-diff]').count()).toBe(0);
-        await page
+        expect(await activeContent.locator('[data-cline-diff]').count()).toBe(
+          0,
+        );
+        await activeContent
           .getByText('查看完整前后文本（分页）', { exact: true })
           .click();
         await page
           .getByRole('button', { name: '下一页正文', exact: true })
           .click();
-        await page
-          .getByRole('button', { name: '评论第 101 行', exact: true })
-          .click();
-        expect(
-          await page.getByLabel('起始行', { exact: true }).inputValue(),
-        ).toBe('101');
-        expect(await page.locator('pre button').count()).toBe(100);
+        await activeContent
+          .getByText('2/201 页 · 20001 行', { exact: true })
+          .waitFor();
+        expect(await activeContent.locator('pre button').count()).toBe(0);
         await page.setViewportSize({ width: 390, height: 844 });
-        const dialog = page.getByRole('dialog', { name: '工件与审查工作台' });
+        const dialog = page.getByRole('dialog', { name: '交付成果' });
         await dialog.waitFor();
         expect(
           await page.evaluate(
@@ -3149,7 +2999,7 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
             .evaluate((e) => e === document.activeElement),
         ).toBe(true);
         expect(errors).toEqual([]);
-        expect(writeCount).toBe(6);
+        expect(writeCount).toBe(0);
         console.info(
           'P07 browser evidence:',
           evidenceDir,

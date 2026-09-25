@@ -18,11 +18,12 @@ export async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  hour: '2-digit',
+  minute: '2-digit',
+});
 export function formatTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return messageTimeFormatter.format(new Date(value));
 }
 
 export async function fileToBase64(file: File) {

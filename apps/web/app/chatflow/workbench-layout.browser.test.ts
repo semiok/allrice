@@ -8,6 +8,7 @@ import { officePreview } from '@allrice/office-runtime';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
+  type MessageFeedbackItem,
   McpConnectionSchema,
   type McpConnection,
   OfficeRenderResponseSchema,
@@ -274,6 +275,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       artifactReads: 0,
+      messageFeedback: [] as MessageFeedbackItem[],
+      feedbackError: false,
+      feedbackWrites: 0,
+      feedbackReview: { status: 'new', note: '' },
       contentError: false,
       officePreview: null as ArtifactPreview | null,
       files: [] as WorkspaceFile[],
@@ -316,6 +321,101 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
+      if (path.endsWith('/message-feedback')) {
+        if (route.request().method() === 'GET')
+          return answer({
+            ok: true,
+            value: { items: path.includes(A) ? state.messageFeedback : [] },
+          });
+        if (state.feedbackError) return answer({}, 503);
+        state.feedbackWrites++;
+        const body = route.request().postDataJSON();
+        if (route.request().method() === 'DELETE') {
+          state.messageFeedback = [];
+          return answer({ ok: true, value: { absent: true } });
+        }
+        const saved: MessageFeedbackItem = {
+          messageId: body.messageId,
+          rating: body.rating,
+          ...(body.note ? { note: body.note } : {}),
+          ...(body.category ? { category: body.category } : {}),
+          version: id(950 + state.feedbackWrites),
+          createdAt: Date.parse(now),
+          updatedAt: Date.parse(now),
+        };
+        state.messageFeedback = [saved];
+        return answer({ ok: true, value: saved });
+      }
+      if (path.startsWith('/api/v1/admin/tenant-feedback')) {
+        const entry = state.messageFeedback[0];
+        const row = entry && {
+          id: entry.messageId,
+          version: entry.version,
+          helpful: entry.rating === 'positive',
+          reason: entry.note,
+          category: entry.category,
+          organization_name: '测试租户',
+          workspace_name: '工作区',
+          actor_name: '测试用户',
+          employee_name: 'Office 文档助手',
+          employee_version: 1,
+          updated_at: now,
+          review_status: state.feedbackReview.status,
+          review_note: state.feedbackReview.note,
+          response_preview: '报告已经完成',
+          question: '制作一份报告',
+          answer: '报告已经完成',
+          model: 'synthetic',
+          run_id: run,
+          session_id: A,
+          run_status: 'succeeded',
+        };
+        if (route.request().method() === 'PATCH') {
+          const body = route.request().postDataJSON();
+          state.feedbackReview = { status: body.status, note: body.note };
+          return answer({ updated: true });
+        }
+        if (path.endsWith('/tenant-feedback'))
+          return answer({
+            items: row ? [row] : [],
+            total: row ? 1 : 0,
+            pending: state.feedbackReview.status === 'new' ? 1 : 0,
+            page: 1,
+            organizations: [{ id: org, name: '测试租户' }],
+            employees: [{ id: id(7), name: 'Office 文档助手' }],
+          });
+        return answer({ feedback: row });
+      }
+      if (
+        !options.queue &&
+        path.endsWith('/messages') &&
+        route.request().method() === 'POST'
+      ) {
+        const body = route.request().postDataJSON();
+        state.messageInputs.push(body);
+        return answer({
+          run: { id: run },
+          delivery: 'immediate',
+          fallbackRunId: null,
+          created: true,
+          userMessage: {
+            id: id(300),
+            role: 'user',
+            content: { text: body.text },
+            status: 'completed',
+            runId: run,
+            createdAt: now,
+          },
+          assistantMessage: {
+            id: id(500),
+            role: 'assistant',
+            content: { text: '正在处理…' },
+            status: 'pending',
+            runId: run,
+            createdAt: now,
+          },
+        });
+      }
       if (options.queue && route.request().method() === 'POST') {
         if (path.endsWith('/messages')) {
           const body = route.request().postDataJSON();
@@ -926,6 +1026,115 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   }, 30_000);
+
+  it('native feedback hover, copy, rating dialog, retry, withdrawal and platform follow-up work together', async () => {
+    const f = await fixture();
+    try {
+      const row = f.page.locator(`#message-${id(20)}`);
+      const copy = row.getByRole('button', { name: '复制', exact: true });
+      await f.page.mouse.move(20, 20);
+      await expect
+        .poll(() =>
+          copy.locator('..').evaluate((n) => getComputedStyle(n).opacity),
+        )
+        .toBe('0');
+      await row.hover();
+      await copy.click();
+      await row.getByRole('button', { name: '已复制', exact: true }).waitFor();
+      expect(await row.getByRole('button', { name: /分支/ }).count()).toBe(0);
+      await row
+        .getByRole('button', { name: '有问题的回答', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '提交反馈',
+        exact: true,
+      });
+      await dialog.waitFor();
+      await dialog
+        .getByRole('button', { name: '任务结果', exact: true })
+        .click();
+      await dialog
+        .getByRole('textbox', { name: '反馈详情' })
+        .fill('请补充数据来源');
+      if (process.env.ALLRICE_FEEDBACK_SCREENSHOT)
+        await f.page.screenshot({
+          path: process.env.ALLRICE_FEEDBACK_SCREENSHOT + '-dialog.png',
+        });
+      f.state.feedbackError = true;
+      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await f.page.getByText('反馈保存失败', { exact: true }).waitFor();
+      expect(
+        await dialog.getByRole('textbox', { name: '反馈详情' }).inputValue(),
+      ).toBe('请补充数据来源');
+      f.state.feedbackError = false;
+      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      expect(f.state.messageFeedback[0]).toMatchObject({
+        rating: 'negative',
+        category: 'task-result',
+        note: '请补充数据来源',
+      });
+      await f.page.mouse.move(20, 20);
+      await expect
+        .poll(() =>
+          copy.locator('..').evaluate((n) => getComputedStyle(n).opacity),
+        )
+        .toBe('1');
+      await row.getByRole('button', { name: '取消标记', exact: true }).click();
+      await expect.poll(() => f.state.messageFeedback.length).toBe(0);
+      await row.getByRole('button', { name: '好的回答', exact: true }).click();
+      await dialog.getByRole('button', { name: '提交', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      await f.page.goto(`${origin}/?feedback-inbox=1`);
+      await f.page.getByRole('button', { name: /测试租户 · 测试用户/ }).click();
+      await f.page.getByRole('heading', { name: '对应问题' }).waitFor();
+      await f.page.getByText('制作一份报告', { exact: true }).waitFor();
+      await f.page
+        .getByRole('combobox', { name: '反馈处理状态', exact: true })
+        .selectOption('resolved');
+      await f.page
+        .getByRole('textbox', { name: '处理备注' })
+        .fill('已补充来源规则');
+      await f.page.getByRole('button', { name: '保存处理记录' }).click();
+      await expect
+        .poll(() => f.state.feedbackReview)
+        .toEqual({ status: 'resolved', note: '已补充来源规则' });
+      if (process.env.ALLRICE_FEEDBACK_SCREENSHOT)
+        await f.page.screenshot({
+          path: process.env.ALLRICE_FEEDBACK_SCREENSHOT + '-inbox.png',
+        });
+      expect(f.state.messageInputs).toHaveLength(0);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
+  it('artifact previews keep file actions and use the chat composer for revision requests', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(
+        await f.panel.getByRole('link', { name: '下载此版本' }).isVisible(),
+      ).toBe(true);
+      expect(await f.panel.getByRole('textbox').count()).toBe(0);
+      expect(await f.panel.getByText(/修改记录|让Rice修改/).count()).toBe(0);
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await input.fill('请把 report-10.md 的结论放在开头');
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      expect(await input.inputValue()).toBe('请把 report-10.md 的结论放在开头');
+      await input.press('Enter');
+      await expect.poll(() => f.state.messageInputs.length).toBe(1);
+      expect(f.state.messageInputs[0]?.text).toBe(
+        '请把 report-10.md 的结论放在开头',
+      );
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
 
   it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
@@ -3064,7 +3273,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('uses a narrow drawer, traps/restores focus, preserves drafts across resize, and has no horizontal overflow', async () => {
+  it('uses a narrow drawer, traps/restores focus, preserves preview state across resize, and has no horizontal overflow', async () => {
     const f = await fixture({ width: 390, artifacts: true });
     try {
       expect(await f.panel.count()).toBe(0);
@@ -3105,35 +3314,42 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.getAttribute('role'))
         .toBe('complementary');
-      const opinion =
-        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
-      await opinion.fill('保留我的意见');
+      const metadata = f.panel.locator('details').filter({
+        has: f.page.locator('summary', { hasText: '版本与基线标识' }),
+      });
+      await metadata.locator('summary').click();
       await f.page.setViewportSize({ width: 390, height: 844 });
       // Viewport acknowledgement precedes the matchMedia event/React commit.
       // Await the rendered drawer, rather than racing its previous wide role.
       await expect.poll(() => f.panel.getAttribute('role')).toBe('dialog');
-      expect(await opinion.inputValue()).toBe('保留我的意见');
+      expect(await metadata.getAttribute('open')).not.toBeNull();
       await f.page.screenshot({ path: '/tmp/met147-mobile.png' });
       expect(
         await f.page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       ).toBe(true);
-      f.page.once('dialog', (d) => d.dismiss());
       await f.page.keyboard.press('Escape');
-      expect(await opinion.inputValue()).toBe('保留我的意见');
+      expect(await f.panel.count()).toBe(0);
     } finally {
       await f.close();
     }
   });
 
-  it('MET160 native Dock preserves reviews across tabs, split, fullscreen, close and restored layout', async () => {
+  it('MET160 native Dock preserves previews across tabs, split, fullscreen, close and restored layout', async () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-      const note =
-        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
-      await note.fill('保留第一份成果的意见');
+      // Selecting a version pins it while newer artifacts arrive.
+      await f.panel
+        .getByRole('combobox', { name: '成果版本' })
+        .selectOption(id(10));
+      const metadata = f.panel
+        .locator('[data-dockkit-host="dock"]:not([hidden]) details')
+        .filter({
+          has: f.page.locator('summary', { hasText: '版本与基线标识' }),
+        });
+      await metadata.first().locator('summary').click();
       f.state.items.push(artifact(11));
       await f.reloadList();
       await f.panel
@@ -3151,8 +3367,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
         .toBe(2);
-      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
-      await note.nth(1).fill('第二份独立意见');
+      expect(await metadata.first().getAttribute('open')).not.toBeNull();
+      expect(await metadata.nth(1).getAttribute('open')).toBeNull();
       const divider = f.panel.locator('[data-dockkit-divider]');
       const box = (await divider.boundingBox())!;
       await f.page.mouse.move(box.x, box.y + 120);
@@ -3166,21 +3382,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel
         .getByRole('button', { name: '退出全屏', exact: true })
         .click();
-      expect(await note.first().inputValue()).toBe('保留第一份成果的意见');
-      expect(await note.nth(1).inputValue()).toBe('第二份独立意见');
-      const firstTab = f.panel.getByRole('tab', { name: /^report-10.md/ });
-      f.page.once('dialog', (dialog) => dialog.dismiss());
-      await firstTab
-        .getByRole('button', { name: '关闭标签', exact: true })
-        .click();
-      expect(await firstTab.count()).toBe(1);
+      expect(await metadata.first().getAttribute('open')).not.toBeNull();
+      expect(await metadata.nth(1).getAttribute('open')).toBeNull();
       await f.panel
         .getByRole('button', { name: '全屏查看', exact: true })
         .click();
       await f.page.screenshot({ path: '/tmp/allrice-met160-dock-split.png' });
-      // Leave the reviews clean before exercising persistence across reload.
-      await note.first().fill('');
-      await note.nth(1).fill('');
       await f.page.reload();
       await expect
         .poll(() => f.panel.locator('[data-dockkit-pane]').count())
@@ -3201,26 +3408,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
-  it('protects review drafts and explicit version selection on new artifacts, including list failure/retry', async () => {
+  it('protects explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
     try {
-      const opinion =
-        f.panel.getByPlaceholder('提出修改意见，或说明需要澄清的地方…');
-      await opinion.fill('需要补充来源');
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      await f.panel
+        .getByRole('combobox', { name: '成果版本' })
+        .selectOption(id(10));
       f.state.items.unshift(artifact(11));
       await f.reloadList();
       expect(
         await f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
       ).toBe(id(10));
       await f.panel.getByRole('button', { name: '查看新成果' }).waitFor();
-      expect(await opinion.inputValue()).toBe('需要补充来源');
+      expect(
+        await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
+      ).toBe(true);
       f.state.listError = true;
       await f.entry.click();
       await f.panel.getByRole('alert').waitFor();
-      expect(await opinion.inputValue()).toBe('需要补充来源');
+      expect(
+        await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
+      ).toBe(true);
       f.state.listError = false;
       await f.reloadList();
-      f.page.once('dialog', (d) => d.accept());
       await f.panel.getByRole('button', { name: '查看新成果' }).click();
       await expect
         .poll(() =>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { GovernanceConsole } from './governance-console';
 import { TenantAdministration } from './tenant-administration';
+import { TenantFeedback } from './tenant-feedback';
 import { RunUsageSummary } from './run-usage';
 import { RunTimingSummary } from './run-timing';
 import {
@@ -154,7 +155,12 @@ function tenantBridgeStatusLabel(tenant: TenantRuntimeItem) {
 
 export function RuntimeConsole() {
   const [view, setView] = useState<
-    'runtimes' | 'employees' | 'capabilities' | 'governance' | 'tenants'
+    | 'runtimes'
+    | 'employees'
+    | 'capabilities'
+    | 'governance'
+    | 'tenants'
+    | 'feedback'
   >('runtimes');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
@@ -173,7 +179,8 @@ export function RuntimeConsole() {
       requested === 'employees' ||
       requested === 'capabilities' ||
       requested === 'governance' ||
-      requested === 'tenants'
+      requested === 'tenants' ||
+      requested === 'feedback'
     ) {
       setView(requested);
     }
@@ -182,7 +189,12 @@ export function RuntimeConsole() {
   const selectView = useCallback(
     (
       next:
-        'runtimes' | 'employees' | 'capabilities' | 'governance' | 'tenants',
+        | 'runtimes'
+        | 'employees'
+        | 'capabilities'
+        | 'governance'
+        | 'tenants'
+        | 'feedback',
     ) => {
       setView(next);
       const url = new URL(window.location.href);
@@ -342,6 +354,12 @@ export function RuntimeConsole() {
 
       <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
         <button
+          aria-current={view === 'feedback' ? 'page' : undefined}
+          onClick={() => selectView('feedback')}
+        >
+          租户反馈
+        </button>
+        <button
           aria-current={view === 'tenants' ? 'page' : undefined}
           onClick={() => selectView('tenants')}
         >
@@ -373,7 +391,9 @@ export function RuntimeConsole() {
         </button>
       </nav>
 
-      {view === 'tenants' ? (
+      {view === 'feedback' ? (
+        <TenantFeedback />
+      ) : view === 'tenants' ? (
         <TenantAdministration />
       ) : view === 'employees' ? (
         <EmployeeProduction />

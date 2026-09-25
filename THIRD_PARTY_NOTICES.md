@@ -120,3 +120,10 @@ component, its unmodified stylesheet and bounded preview helper from commit
 are patched; the source, excerpt and patch hashes are recorded in the WebUI
 ledger. The DeepSeek MIT notice above applies. It uses the upstream-pinned
 MIT-licensed `@tanstack/react-virtual@3.14.9` package.
+
+Message footer and feedback UI retain the official `ui-chat/MessageIconActions`,
+calendar/clock helpers and `ui-message-feedback` components, controllers, locales
+and original CSS from the same `46a7f68b0922371ce7144b668b90e377d8e799f4` commit.
+The MIT notice above applies. The WebUI ledger records source hashes and minimal
+host type/React lifecycle patches. Allrice supplies tenant HTTP persistence and
+the platform feedback inbox; no DSH branch action is exposed.

@@ -64,7 +64,7 @@ function Fixture() {
         <ArtifactSummaryCards
           artifacts={w.artifacts}
           onOpen={(id) => {
-            if (w.confirmNavigation()) w.show(id);
+            w.show(id);
           }}
         />
       </section>
@@ -83,7 +83,6 @@ function Fixture() {
           onSelect={w.show}
           onClose={w.close}
           onReload={w.reload}
-          onDirtyChange={w.noteDirty}
           onContinued={() => void status.reload()}
         />
       ) : null}

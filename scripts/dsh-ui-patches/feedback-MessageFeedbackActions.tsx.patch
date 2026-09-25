@@ -1,0 +1,23 @@
+--- a/packages/client/ui-message-feedback/src/client/MessageFeedbackActions.tsx
++++ b/packages/client/ui-message-feedback/src/client/MessageFeedbackActions.tsx
+@@ -11,9 +11,9 @@
+ import {
+   IconDislikeFillRegular, IconDislikeOutlineRegular, IconLikeFillRegular, IconLikeOutlineRegular, Tooltip,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { MessageFeedbackRating } from '@deepseek-ai/dsh-message-feedback/types'
++import type { MessageFeedbackRating } from '../../feedback-native-types'
+ import type { MessageFeedbackActionFailure } from './controller.ts'
+-import type { MessageFeedbackActionProps } from './slots.ts'
++import type { MessageFeedbackActionProps } from '../../feedback-native-types'
+ import css from './MessageFeedbackActions.module.css'
+ 
+ /**
+@@ -41,7 +41,7 @@
+   }, [ensure])
+ 
+   const alive = useRef(true)
+-  useEffect(() => () => { alive.current = false }, [])
++  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+ 
+   const errorCopy = useCallback((result: MessageFeedbackActionFailure) => {
+     return result.error.code === 'version-conflict' ? t('error.conflict') : t('error.generic')

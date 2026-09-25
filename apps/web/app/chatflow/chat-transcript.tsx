@@ -31,6 +31,7 @@ import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
 import { WorkProcess } from './work-process';
+import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 
 interface ChatTranscriptProps {
@@ -213,7 +214,10 @@ export function ChatTranscript({
                       </div>
                     </div>
                   ) : (
-                    <div className={assistantUi.root}>
+                    <div
+                      className={assistantUi.root}
+                      data-actions-reveal="hover"
+                    >
                       <div className={styles.assistantIdentity}>
                         <i aria-hidden="true" />
                         <span>{employeeName}</span>
@@ -345,6 +349,14 @@ export function ChatTranscript({
                         <ArtifactSummaryCards
                           artifacts={linkedArtifacts}
                           onOpen={onOpenArtifact}
+                        />
+                      ) : null}
+                      {!messageIsRunning && responseText && message.runId ? (
+                        <AssistantMessageActions
+                          messageId={message.id}
+                          text={responseText}
+                          createdAt={message.createdAt}
+                          timing={timing}
                         />
                       ) : null}
                     </div>
