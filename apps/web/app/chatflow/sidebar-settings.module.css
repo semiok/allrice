@@ -23,6 +23,29 @@
   background: var(--dsw-alias-bg-layer-2);
   border-color: var(--dsw-alias-border-primary, #d9dce2);
 }
+
+.preferenceRow {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  justify-content: space-between;
+  padding: 20px 0 24px;
+  border-bottom: 1px solid var(--dsw-alias-border-primary, #e8e9ed);
+}
+.preferenceRow h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 500;
+}
+.preferenceRow p,
+.preferenceHint {
+  color: var(--dsw-alias-label-secondary);
+  margin: 0;
+}
+.preferenceHint {
+  margin-top: 20px;
+  font-size: 13px;
+}
 .section section,
 .section article {
   border-color: var(--dsw-alias-border-primary, #d9dce2);

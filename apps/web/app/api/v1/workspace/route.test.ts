@@ -1,17 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
-const mocks = vi.hoisted(() => ({ context: vi.fn(), workspace: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  context: vi.fn(),
+  workspace: vi.fn(),
+  preferences: vi.fn(),
+}));
 vi.mock('../../../../lib/identity/session', () => ({
   getRequestContext: mocks.context,
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   getEmployeeWorkspace: mocks.workspace,
+  getUserPreferences: mocks.preferences,
 }));
 import { GET } from './route';
 describe('workspace viewer identity for layout preferences', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.preferences.mockResolvedValue({
+      streamingOutput: false,
+      updatedAt: null,
+    });
     mocks.workspace.mockResolvedValue({
       workspaceId: 'workspace',
       organizationId: 'organization',
@@ -37,6 +46,7 @@ describe('workspace viewer identity for layout preferences', () => {
         organizationId: 'organization',
         viewerId: 'authenticated-user',
         canAdminister: false,
+        preferences: { streamingOutput: false, updatedAt: null },
       },
     });
     expect(mocks.workspace).toHaveBeenCalledWith(context, undefined);

@@ -203,6 +203,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       noSession?: boolean;
       noStorage?: boolean;
       running?: boolean;
+      streamingOutput?: boolean;
       queue?: boolean;
     } = {},
   ) {
@@ -213,6 +214,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    // Loading the development bundle can outlast interaction waits under CI load.
+    page.setDefaultNavigationTimeout(15_000);
     const employeeHistorySessions = [
       ...Array.from({ length: options.employeeHistoryCount ?? 7 }, (_, n) => ({
         ...session(id(600 + n)),
@@ -275,6 +278,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         authorization: 'normal_policy',
       })),
       viewer: user,
+      preferences: { [user]: options.streamingOutput ?? false } as Record<
+        string,
+        boolean
+      >,
+      preferenceError: false,
+      preferenceDelay: null as Promise<void> | null,
       workspace,
       omitSessionA: false,
       deepLinkDenied: false,
@@ -328,6 +337,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
+      if (path === '/api/v1/me/preferences') {
+        const viewerId = state.viewer;
+        if (state.preferenceDelay) await state.preferenceDelay;
+        if (state.preferenceError)
+          return answer({ error: { message: '保存失败，请重试' } }, 503);
+        if (route.request().method() === 'PATCH') {
+          const body = route.request().postDataJSON();
+          expect(Object.keys(body)).toEqual(['streamingOutput']);
+          state.preferences[viewerId] = body.streamingOutput;
+        }
+        return answer({
+          viewerId,
+          preferences: {
+            streamingOutput: state.preferences[viewerId] ?? false,
+            updatedAt: now,
+          },
+        });
+      }
       if (path.endsWith('/message-feedback')) {
         if (route.request().method() === 'GET')
           return answer({
@@ -508,6 +535,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             organizationId: org,
             workspaceId: state.workspace,
             viewerId: state.viewer,
+            preferences: {
+              streamingOutput: state.preferences[state.viewer] ?? false,
+              updatedAt: now,
+            },
             canAdminister: false,
             sessions: options.employeeHistory
               ? employeeHistorySessions
@@ -2162,8 +2193,126 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
+  it('saves the native streaming switch per account, defaults to unified output and never reveals live text while off', async () => {
     const f = await fixture({ running: true });
+    try {
+      const event = (
+        sequence: number,
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+      ): ChatFlowEventEnvelope => ({
+        schemaVersion: 3,
+        eventId: id(850 + sequence),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 1,
+        sequence,
+        cursor: `${run}:${sequence}`,
+        harness: 'dsh',
+        occurredAt: now,
+        sourceEvent: null,
+        type,
+        payload,
+      });
+      f.state.events = [
+        event(1, 'assistant.text.delta', {
+          replyId: 'first',
+          text: '正在核对本次数据。',
+        }),
+        event(2, 'tool.started', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '读取本次资料',
+        }),
+        event(3, 'assistant.text.delta', {
+          replyId: 'final',
+          text: '本次核对结果正确。',
+        }),
+      ];
+      f.state.streamEvents = f.state.events;
+      f.releaseStream();
+      const process = f.page.getByRole('region', {
+        name: '工作过程',
+        exact: true,
+      });
+      await process.waitFor();
+      expect(
+        await f.page.getByText('正在核对本次数据。', { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await f.page.getByText('本次核对结果正确。', { exact: true }).count(),
+      ).toBe(0);
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      const openPreferences = async () => {
+        await f.page.getByRole('button', { name: '设置', exact: true }).click();
+        await settings
+          .getByRole('button', { name: '个人偏好', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            settings.getByRole('switch', { name: '流式输出' }).isEnabled(),
+          )
+          .toBe(true);
+      };
+      await openPreferences();
+      const toggle = settings.getByRole('switch', { name: '流式输出' });
+      expect(await toggle.getAttribute('aria-checked')).toBe('false');
+      await f.page.screenshot({
+        path: '.local/feedback/personal-preferences.png',
+      });
+      f.state.preferenceError = true;
+      await toggle.click();
+      await settings.getByRole('alert').waitFor();
+      expect(await toggle.getAttribute('aria-checked')).toBe('false');
+      f.state.preferenceError = false;
+      await toggle.click();
+      await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('true');
+      await settings.getByRole('button', { name: '关闭设置' }).click();
+      await process.getByText('正在核对本次数据。', { exact: true }).waitFor();
+      await f.page.reload();
+      await process.getByText('正在核对本次数据。', { exact: true }).waitFor();
+      await openPreferences();
+      expect(await toggle.getAttribute('aria-checked')).toBe('true');
+      await toggle.click();
+      await expect
+        .poll(() => toggle.getAttribute('aria-checked'))
+        .toBe('false');
+      await settings.getByRole('button', { name: '关闭设置' }).click();
+      expect(
+        await f.page.getByText('正在核对本次数据。', { exact: true }).count(),
+      ).toBe(0);
+      f.state.events.push(
+        event(4, 'assistant.text.completed', {
+          replyId: 'final',
+          text: '本次核对结果正确。',
+        }),
+      );
+      f.state.messageStatus = 'completed';
+      await f.page.reload();
+      await f.page.getByText('本次核对结果正确。', { exact: true }).waitFor();
+      await process.getByRole('button').click();
+      expect(
+        await f.page.getByText('正在核对本次数据。', { exact: true }).count(),
+      ).toBe(0);
+      await openPreferences();
+      await toggle.click();
+      await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('true');
+      f.state.viewer = id(975);
+      await f.page.reload();
+      await openPreferences();
+      expect(await toggle.getAttribute('aria-checked')).toBe('false');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
+    const f = await fixture({ running: true, streamingOutput: true });
     try {
       const event = (
         sequence: number,

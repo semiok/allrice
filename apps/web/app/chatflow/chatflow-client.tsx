@@ -35,6 +35,7 @@ import {
   employeeIntroduction,
 } from './employee-navigation';
 import { useMonthlyQuota } from './use-monthly-quota';
+import { usePersonalPreferences } from './use-personal-preferences';
 import { MessageFeedbackProvider } from './message-feedback';
 import { ChatTranscript } from './chat-transcript';
 import { ConversationTurnNavigator } from './conversation-turn-navigator';
@@ -136,6 +137,7 @@ export function ChatFlowClient({
     workspace,
   } = useSession({ setError });
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
     setSettings(null);
   }, [settingsScope]);
@@ -955,6 +957,7 @@ export function ChatFlowClient({
         }
         onBridge={() => void loadBridgeDevices(true)}
         monthlyQuota={monthlyQuota}
+        preferences={preferences}
         activeId={activeId}
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
@@ -1149,6 +1152,7 @@ export function ChatFlowClient({
               ref={conversationScroll}
             >
               <ConversationTurnNavigator
+                streamingOutput={preferences.value.streamingOutput}
                 key={`turns/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
                 messages={history?.messages ?? []}
                 runViews={runViews}
@@ -1208,6 +1212,7 @@ export function ChatFlowClient({
                   headers={tenantHeaders}
                 >
                   <ChatTranscript
+                    streamingOutput={preferences.value.streamingOutput}
                     employeeName={activeEmployeeName}
                     atBottom={atTranscriptBottom}
                     localCommandsEnabled={localCommandsEnabled}

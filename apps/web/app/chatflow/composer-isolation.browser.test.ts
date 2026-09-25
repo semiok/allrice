@@ -433,6 +433,8 @@ suite(
       });
       const page: Page = await context.newPage();
       page.setDefaultTimeout(4000);
+      // Loading the development bundle can outlast interaction waits under CI load.
+      page.setDefaultNavigationTimeout(15_000);
       // These races deliberately leave the current draft/upload. Accept only
       // the new, explicit discard warning; unexpected dialogs remain failures.
       page.on('dialog', async (dialog) => {

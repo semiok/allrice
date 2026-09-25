@@ -24,6 +24,7 @@ export function projectWorkProgress(
   events: ChatFlowEventEnvelope[],
   fallback: string,
   running: boolean,
+  streamingOutput = true,
 ) {
   const current = currentAssistantEvents(events);
   const items = projectNativeExperience(current);
@@ -37,6 +38,12 @@ export function projectWorkProgress(
       ? completed.payload.text
       : fallback;
   const latest = replies.at(-1);
+  if (!streamingOutput)
+    return {
+      items,
+      parts: undefined,
+      finalText: running ? '' : finalText || latest?.text || '',
+    };
   // Legacy events have no reliable message boundary. Keep their familiar final
   // response instead of guessing which substring was an intermediate reply.
   const interleaved = replies.some((reply) => reply.id !== 'legacy');

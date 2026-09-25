@@ -43,6 +43,31 @@ const tool = (seq: number, type: 'tool.started' | 'tool.completed') =>
   });
 
 describe('native reading order adapted to Allrice', () => {
+  it('unified output hides live replies and delivers only the final answer while retaining tool status', () => {
+    const events = [
+      reply(1, 'a', '阶段进展'),
+      tool(2, 'tool.started'),
+      reply(3, 'b', '最终答复半段'),
+    ];
+    const live = projectWorkProgress(events, '', true, false);
+    expect(live.parts).toBeUndefined();
+    expect(live.finalText).toBe('');
+    expect(live.items).toHaveLength(1);
+    expect(live.items[0]?.status).toBe('started');
+    events.push(
+      event(4, 'assistant.text.completed', {
+        replyId: 'b',
+        text: '完整最终答复',
+      }),
+    );
+    expect(projectWorkProgress(events, '', false, false)).toMatchObject({
+      parts: undefined,
+      finalText: '完整最终答复',
+    });
+    expect(
+      projectWorkProgress(events, '', false, true).parts?.[0],
+    ).toMatchObject({ kind: 'reply', text: '阶段进展' });
+  });
   it('interleaves settled replies and tools without duplicates on replay; final stays outside the fold', () => {
     const first = reply(1, 'a', '先查看目录');
     const events = [
