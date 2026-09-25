@@ -121,7 +121,8 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     folder_missing: '电脑已连接。选择需要交给员工处理的文件夹即可。',
     environment_preparing:
       'Bridge 正在自动准备环境，稍后刷新即可查看结果；其他已就绪能力可继续使用。',
-    device_paused: '此能力已暂停。请在「设置 → 我的电脑」中开启；如果整台 Bridge 已暂停，请在本机恢复连接。',
+    device_paused:
+      '此能力已暂停。请在「设置 → 我的电脑」中开启；如果整台 Bridge 已暂停，请在本机恢复连接。',
     browser_unavailable:
       '独立浏览器暂未准备成功，请从 Bridge 菜单重新检查。缺少 Chrome 时，按提示安装后重试。',
     runner_missing:
