@@ -11,9 +11,11 @@ type Risk = McpConnection['tools'][number]['risk'];
 export function McpSettings({
   workspaceId,
   management,
+  summaryOnly = false,
 }: {
   workspaceId: string;
   management?: ManagedConnectorProps;
+  summaryOnly?: boolean;
 }) {
   const endpoint = management
     ? `/api/v1/admin/tenants/${management.organizationId}/mcp`
@@ -27,6 +29,7 @@ export function McpSettings({
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
@@ -40,6 +43,7 @@ export function McpSettings({
     setEmployees([]);
     setEnabled(false);
     setError('');
+    setLoading(true);
     fetch(
       `${endpoint}?workspaceId=${encodeURIComponent(workspaceId)}${subjectId ? `&subjectId=${subjectId}` : ''}`,
       {
@@ -69,6 +73,9 @@ export function McpSettings({
           setError(
             failure instanceof Error ? failure.message : '无法读取 MCP 配置。',
           );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
   }, [workspaceId, refresh, endpoint, subjectId]);
@@ -135,6 +142,39 @@ export function McpSettings({
       setRotation('');
     }
   }
+  if (summaryOnly)
+    return (
+      <section aria-label="已连接应用概览">
+        <h4>已连接应用</h4>
+        <button type="button" onClick={() => setRefresh((value) => value + 1)}>
+          刷新应用
+        </button>
+        {error ? <p role="alert">{error}</p> : null}
+        {connections
+          .filter((c) => !c.removed)
+          .map((c) => (
+            <article key={c.id}>
+              <strong>{c.name}</strong> ·{' '}
+              {!c.enabled || c.disconnected
+                ? '已断开'
+                : c.discoveryCode === 'MCP_AUTH_REQUIRED'
+                  ? '需要登录'
+                  : c.discoveryState === 'ready'
+                    ? '已连接'
+                    : c.discoveryState === 'error'
+                      ? '连接失败'
+                      : '正在准备'}
+              <small>{c.shared ? '共享应用' : '个人应用'}</small>
+            </article>
+          ))}
+        {loading ? <p role="status">正在读取应用…</p> : null}
+        {!loading && !error && !connections.some((c) => !c.removed) ? (
+          <p>
+            暂无应用连接。成员可以直接让员工连接所需应用，并在工作台「已连接应用」中管理。
+          </p>
+        ) : null}
+      </section>
+    );
   return (
     <section className={styles.panel} aria-label="云端 MCP 连接">
       {management ? (

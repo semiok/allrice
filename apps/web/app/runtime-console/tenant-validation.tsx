@@ -146,8 +146,8 @@ export function TenantValidation(
     }
   }
   return (
-    <section aria-label="租户验收与交付">
-      <h3>验收与交付</h3>
+    <section aria-label="租户运行检查">
+      <h3>运行检查</h3>
       <p>
         这里检查实际使用者的配置与历史结果，不冒用其身份发起任务、批准操作或借用其设备。调试页的模型试用成功不能替代租户本人验收。
       </p>
@@ -191,7 +191,7 @@ export function TenantValidation(
               </p>
             ))
           ) : (
-            <p>没有有效员工分配，请先发布并分配 Rice。</p>
+            <p>暂无在岗员工，请先在「AI 员工团队」中派驻员工。</p>
           )}
           <p>
             新 Run 使用当前分配，运行中或历史 Run
@@ -201,25 +201,25 @@ export function TenantValidation(
             <a
               href={`/runtime-console?view=tenants&organizationId=${organizationId}&workspaceId=${workspaceId}&tenantView=policy`}
             >
-              执行策略与角色配置
+              执行策略（开发者工具）
             </a>
             {' · '}
             <a
               href={`/runtime-console?view=tenants&organizationId=${organizationId}&workspaceId=${workspaceId}&tenantView=environments&subjectId=${subjectId}`}
             >
-              环境 / MCP / 设备指引
+              应用与电脑
             </a>
             {' · '}
             <a
               href={`/runtime-console?view=employees&workspaceId=${workspaceId}`}
             >
-              Rice 发布与回退
+              员工发布与回退
             </a>
             {' · '}
             <a
               href={`/runtime-console?view=tenants&organizationId=${organizationId}&workspaceId=${workspaceId}&tenantView=quotas&subjectId=${subjectId}`}
             >
-              调整内部额度
+              查看用量
             </a>
           </nav>
           <div className={styles.tableScroll}>

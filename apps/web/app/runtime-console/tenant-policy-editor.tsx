@@ -100,7 +100,9 @@ export function TenantPolicyEditor({
       const result = await response.json();
       if (!response.ok)
         throw Error(result.error?.message ?? '保存未确认，请刷新核对');
-      setNotice('策略已保存并审计；未开启平台执行开关，也未授予设备权限。');
+      setNotice(
+        '工作区规则已保存。成员的应用和电脑连接可在「连接与用量」查看。',
+      );
       setRefresh((value) => value + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存未确认');

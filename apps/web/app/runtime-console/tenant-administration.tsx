@@ -37,6 +37,7 @@ export function TenantAdministration() {
     | 'members'
     | 'policy'
     | 'environments'
+    | 'connection-debug'
     | 'quotas'
     | 'validation'
   >('employees');
@@ -90,12 +91,15 @@ export function TenantAdministration() {
             const requestedView = params.get('tenantView');
             setView(
               requestedView === 'environments' ||
+                requestedView === 'connection-debug' ||
                 requestedView === 'quotas' ||
                 requestedView === 'validation' ||
                 requestedView === 'members' ||
                 requestedView === 'employees'
                 ? requestedView
-                : 'policy',
+                : requestedView === 'policy'
+                  ? 'policy'
+                  : 'employees',
             );
           }
         }
@@ -187,9 +191,8 @@ export function TenantAdministration() {
             <strong>当前管理：{selected.name}</strong> /{' '}
             {selected.workspaces.find((w) => w.id === workspaceId)?.name ??
               '全部工作区'}
-            <small>租户 ID：{selected.id} · 不切换或冒用成员身份</small>
           </p>
-          <div className={styles.selectors}>
+          <nav className={styles.selectors} aria-label="租户管理栏目">
             <button
               disabled={busy || !workspaceId}
               aria-pressed={view === 'employees'}
@@ -212,52 +215,86 @@ export function TenantAdministration() {
                 }
               }}
             >
-              成员与角色
+              真人成员
             </button>
             <button
               disabled={busy || !workspaceId}
-              aria-pressed={view === 'policy'}
+              aria-pressed={view === 'environments' || view === 'quotas'}
               onClick={() => {
                 if (canSwitch()) {
-                  setView('policy');
+                  setView('environments');
                   setDirty(false);
                 }
               }}
             >
-              执行策略
+              连接与用量
             </button>
-            {(['environments', 'quotas', 'validation'] as const).map((v) => (
-              <button
-                key={v}
-                disabled={busy || !workspaceId}
-                aria-pressed={view === v}
-                onClick={() => {
-                  if (canSwitch()) {
-                    setView(v);
-                    setDirty(false);
-                  }
-                }}
-              >
-                {v === 'environments'
-                  ? '环境与连接器'
-                  : v === 'quotas'
-                    ? '分层额度'
-                    : '验收与交付'}
-              </button>
-            ))}
-            {workspaceId ? (
-              <a
-                href={`/runtime-console?view=employees&workspaceId=${workspaceId}`}
-                onClick={(event) => {
-                  if (!canSwitch()) event.preventDefault();
-                }}
-              >
-                员工生产后台 →
-              </a>
-            ) : (
-              <span>选择具体工作区后配置策略与发布。</span>
-            )}
-          </div>
+          </nav>
+          {view === 'environments' || view === 'quotas' ? (
+            <nav aria-label="连接与用量栏目">
+              {(['environments', 'quotas'] as const).map((v) => (
+                <button
+                  key={v}
+                  disabled={busy || !workspaceId}
+                  aria-pressed={view === v}
+                  onClick={() => {
+                    if (canSwitch()) {
+                      setView(v);
+                      setDirty(false);
+                    }
+                  }}
+                >
+                  {v === 'environments' ? '应用与电脑' : '用量'}
+                </button>
+              ))}
+            </nav>
+          ) : null}
+          <details
+            open={
+              view === 'policy' ||
+              view === 'validation' ||
+              view === 'connection-debug'
+            }
+          >
+            <summary>开发者工具</summary>
+            <nav aria-label="租户开发者工具">
+              {(['policy', 'connection-debug', 'validation'] as const).map(
+                (v) => (
+                  <button
+                    key={v}
+                    disabled={busy || !workspaceId}
+                    aria-pressed={view === v}
+                    onClick={() => {
+                      if (canSwitch()) {
+                        setView(v);
+                        setDirty(false);
+                      }
+                    }}
+                  >
+                    {
+                      {
+                        policy: '执行策略',
+                        'connection-debug': '连接配置',
+                        validation: '运行检查',
+                      }[v]
+                    }
+                  </button>
+                ),
+              )}
+              {workspaceId ? (
+                <a
+                  href={`/runtime-console?view=employees&workspaceId=${workspaceId}`}
+                  onClick={(event) => {
+                    if (!canSwitch()) event.preventDefault();
+                  }}
+                >
+                  员工生产后台 →
+                </a>
+              ) : (
+                <span>选择工作区后查看工程配置。</span>
+              )}
+            </nav>
+          </details>
           {view === 'employees' && workspaceId ? (
             <TenantEmployeeEditor
               key={`${organizationId}/${workspaceId}`}
@@ -267,12 +304,14 @@ export function TenantAdministration() {
               onBusy={setBusy}
             />
           ) : (view === 'environments' ||
+              view === 'connection-debug' ||
               view === 'quotas' ||
               view === 'validation') &&
             workspaceId ? (
             <TenantResourceEditor
               key={`${organizationId}/${workspaceId}/${view}`}
-              mode={view}
+              mode={view === 'connection-debug' ? 'environments' : view}
+              advanced={view === 'connection-debug'}
               organizationId={organizationId}
               workspaceId={workspaceId}
               onDirty={setDirty}

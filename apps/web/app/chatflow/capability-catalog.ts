@@ -107,13 +107,10 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
       '当前没有可用的员工配置。可在左侧选择已派驻员工，或等待新的员工派驻。',
     employee_policy:
       '当前员工未提供或已停用此能力。可在左侧选择具备该能力的员工继续处理。',
-    policy_missing:
-      '工作区缺少有效执行策略，请租户管理员与平台管理员核对策略配置。',
-    policy_denied:
-      '当前策略未允许此操作，或处于停用/仅计划状态；页面不能解除限制。',
+    policy_missing: '当前员工的工作区配置尚未准备完成，请稍后重试。',
+    policy_denied: '此操作已被工作区停用。其他已开启的能力仍可使用。',
     read_only: '当前角色不能发起执行，请向当前租户管理员申请权限。',
-    provider_unsupported:
-      '当前会话模型协议尚不支持此助手路径；请租户管理员核对模型配置。',
+    provider_unsupported: '当前会话的模型暂不支持助手，可由当前员工继续处理。',
     bridge_missing:
       '连接电脑后即可处理本地任务。点击下方按钮下载并配对 Bridge。',
     bridge_offline:
@@ -135,12 +132,11 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
       '当前账号的环境使用关系已停用或尚未准备完成；已有撤销不会自动恢复。',
     connection_on_demand:
       '可让员工按需连接应用。具体应用的登录与连接状态可在“已连接应用”查看。',
-    connection_missing:
-      '尚未配置可用连接器；需添加连接、发现工具、授权工具并绑定员工版本。',
+    connection_missing: '还没有可用的应用连接。请告诉员工需要连接哪个应用。',
     connection_unverified:
-      '连接发现未完成、失败或本地环境不匹配；请在连接设置核对并重新发现。',
+      '应用尚未连接成功，可在「设置 → 已连接应用」查看状态并重试。',
     connection_grant_missing:
-      '连接已发现，但缺少工具许可或当前员工版本的绑定。',
+      '此应用尚不能由当前员工使用，可让员工检查连接是否就绪。',
     invalid_configuration:
       '配置无法通过校验；请联系管理员核对，不会按可用处理。',
   };
