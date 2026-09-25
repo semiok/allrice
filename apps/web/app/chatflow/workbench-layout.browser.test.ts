@@ -1301,7 +1301,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       for (const [employeeId, initial] of [
         [id(7), 'R'],
         [id(17), 'O'],
-      ]) {
+      ] as const) {
         const row = f.page.locator(`[data-row-key="workspace:${employeeId}"]`);
         const letter = row.getByText(initial, { exact: true });
         const card = row.locator('..').locator('..');
