@@ -186,6 +186,10 @@ export function ArtifactWorkbench(props: Props) {
         onKeyDown={(event) => {
           if (
             event.defaultPrevented ||
+            // Native menus listen on the document. Escape from their anchor
+            // must close that menu before it can dismiss the surrounding pane.
+            (event.key === 'Escape' &&
+              document.querySelector('[role="menu"]')) ||
             (event.target instanceof Element &&
               event.target.closest('[role="menu"]'))
           )

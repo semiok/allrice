@@ -1260,6 +1260,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel
         .getByRole('button', { name: '历史版本', exact: true })
         .click();
+      await f.page.getByRole('menuitem', { name: /^v1 ·/ }).waitFor();
+      await f.page.keyboard.press('Escape');
+      expect(await f.panel.isVisible()).toBe(true);
+      await f.panel
+        .getByRole('button', { name: '历史版本', exact: true })
+        .click();
       await f.page.getByRole('menuitem', { name: /^v1 ·/ }).click();
       await expect
         .poll(() =>
