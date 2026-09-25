@@ -136,3 +136,10 @@ and original CSS from the same `46a7f68b0922371ce7144b668b90e377d8e799f4` commit
 The MIT notice above applies. The WebUI ledger records source hashes and minimal
 host type/React lifecycle patches. Allrice supplies tenant HTTP persistence and
 the platform feedback inbox; no DSH branch action is exposed.
+
+The document reader retains the unmodified ui-sidebar-documentpreview
+TextPreview.module.css from commit
+46a7f68b0922371ce7144b668b90e377d8e799f4 (0.1.7-rc.1), tracked in the WebUI
+ledger. The DeepSeek MIT notice above applies. PathLabel, FileTypeIcon, Menu,
+CodeBlock and toolbar icons are consumed from the published ui-primitives
+package; Allrice supplies authenticated file/version actions.

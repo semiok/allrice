@@ -12,6 +12,13 @@ import { WorkspaceFilePreview } from './workspace-file-preview';
 import { NativePdfPreview } from './native-pdf-preview';
 import { NativeImagePreview } from './native-image-preview';
 import { OfficePreview } from './office-preview';
+import {
+  DocumentToolbar,
+  DocumentVersions,
+  DocumentText,
+} from './document-reader';
+import reader from './document-reader.module.css';
+import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
 import {
   lazy,
@@ -22,7 +29,6 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useId,
   useState,
 } from 'react';
 import {
@@ -31,7 +37,6 @@ import {
 } from '@allrice/contracts';
 import {
   artifactKindLabel,
-  artifactExecutionLabels,
   parseArtifactDetail,
   parseArtifactPreview,
   workbenchJson,
@@ -179,6 +184,12 @@ export function ArtifactWorkbench(props: Props) {
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
         onKeyDown={(event) => {
+          if (
+            event.defaultPrevented ||
+            (event.target instanceof Element &&
+              event.target.closest('[role="menu"]'))
+          )
+            return;
           if (event.key === 'Escape') {
             event.stopPropagation();
             close();
@@ -277,6 +288,14 @@ export function ArtifactWorkbench(props: Props) {
                 {...props}
                 key={tab.id}
                 selectedId={tab.kind === 'artifact' ? tab.contentId : null}
+                onCatalog={() =>
+                  dock.open(
+                    GUIDE_KIND,
+                    pageAddress(GUIDE_KIND),
+                    '交付成果',
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  )
+                }
                 onFiles={() => {
                   props.onBrowseFiles?.();
                   dock.open(
@@ -316,30 +335,47 @@ export function ArtifactWorkbench(props: Props) {
 }
 
 function ArtifactTabBody(
-  props: Props & {
-    onFiles: () => void;
-  },
+  props: Props & { onFiles: () => void; onCatalog: () => void },
 ) {
-  const selectorId = useId();
   const artifactId = props.selectedId;
-  const select = props.onSelect;
+  if (artifactId && props.sessionId)
+    return (
+      <div className={reader.reader}>
+        {props.listError ? (
+          <p className={styles.error} role="alert">
+            {props.listError}
+          </p>
+        ) : null}
+        {props.noticeId && props.noticeId !== artifactId ? (
+          <p className={styles.notice} role="status">
+            新成果已就绪。
+            <button
+              type="button"
+              onClick={() => props.onSelect(props.noticeId!)}
+            >
+              查看新成果
+            </button>
+          </p>
+        ) : null}
+        <ArtifactReview
+          key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
+          artifactId={artifactId}
+          sessionId={props.sessionId}
+          workspaceId={props.workspaceId}
+          tenantHeaders={props.tenantHeaders}
+          onSelect={props.onSelect}
+          onContinued={props.onContinued}
+          onCatalog={props.onCatalog}
+          onReload={props.onReload}
+        />
+      </div>
+    );
   return (
     <div className={styles.body}>
-      {!artifactId ? (
+      <div className={styles.row}>
         <button type="button" onClick={props.onFiles}>
           工作区文件
         </button>
-      ) : null}
-      {props.noticeId && props.noticeId !== artifactId ? (
-        <p className={styles.notice} role="status">
-          新成果已就绪。
-          <button type="button" onClick={() => select(props.noticeId!)}>
-            查看新成果
-          </button>
-        </p>
-      ) : null}
-      <div className={styles.row}>
-        <label htmlFor={selectorId}>成果版本</label>
         <button
           type="button"
           disabled={props.listLoading || !props.sessionId}
@@ -353,68 +389,26 @@ function ArtifactTabBody(
           {props.listError}
         </p>
       ) : null}
-      {!artifactId && props.artifacts.length ? (
-        <div className={styles.catalog}>
-          {props.artifacts.map((artifact) => (
-            <button
-              type="button"
-              key={artifact.id}
-              onClick={() => select(artifact.id)}
-            >
-              {artifact.version.fileName} · v{artifact.version.version}
-            </button>
-          ))}
-        </div>
+      <ArtifactSummaryCards
+        artifacts={props.artifacts}
+        onOpen={props.onSelect}
+      />
+      {props.nextCursor ? (
+        <button
+          type="button"
+          disabled={props.listLoading}
+          onClick={() => void props.onReload(props.nextCursor!)}
+        >
+          加载更早成果
+        </button>
       ) : null}
-      {artifactId && props.sessionId ? (
-        <>
-          <select
-            id={selectorId}
-            className={styles.selector}
-            value={artifactId}
-            onChange={(e) => select(e.target.value)}
-          >
-            {!props.artifacts.some((a) => a.id === artifactId) ? (
-              <option value={artifactId}>所选版本</option>
-            ) : null}
-            {props.artifacts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {artifactKindLabel(a)} · {a.version.fileName} · v
-                {a.version.version}
-                {a.stale ? '（旧版）' : ''}
-              </option>
-            ))}
-          </select>
-          {props.nextCursor ? (
-            <button
-              type="button"
-              disabled={props.listLoading}
-              onClick={() => void props.onReload(props.nextCursor!)}
-            >
-              加载更早成果
-            </button>
-          ) : null}
-          <ArtifactReview
-            key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
-            artifactId={artifactId}
-            sessionId={props.sessionId}
-            workspaceId={props.workspaceId}
-            tenantHeaders={props.tenantHeaders}
-            onSelect={select}
-            onContinued={props.onContinued}
-          />
-        </>
-      ) : (
+      {!props.artifacts.length ? (
         <p className={styles.muted}>
           {props.listLoading
             ? '正在加载成果…'
-            : props.artifacts.length
-              ? '选择一份成果开始查看，可在多个标签或分栏中打开。'
-              : props.sessionId
-                ? '这个会话还没有成果。Rice 交付的报告、文件、修改提案与浏览器证据会显示在这里。'
-                : '开始或选择一项工作，交付物将在这里展示。这里不会自动执行命令或批准修改。'}
+            : '交付的报告、文件与修改方案会显示在这里。'}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -566,6 +560,8 @@ function ArtifactReview({
   tenantHeaders,
   onSelect,
   onContinued,
+  onCatalog,
+  onReload,
 }: {
   artifactId: string;
   sessionId: string;
@@ -573,6 +569,8 @@ function ArtifactReview({
   tenantHeaders: Record<string, string>;
   onSelect: (id: string) => void;
   onContinued?: (runId: string) => void;
+  onCatalog: () => void;
+  onReload: () => Promise<void>;
 }) {
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
     [preview, setPreview] = useState<ArtifactPreview | null>(null);
@@ -619,7 +617,7 @@ function ArtifactReview({
     [previewError, setPreviewError] = useState(''),
     [previewRetry, setPreviewRetry] = useState(0);
   const [path, setPath] = useState('');
-  const [view, setView] = useState<'preview' | 'diff'>('preview'),
+  const [view, setView] = useState<'preview' | 'diff' | 'source'>('preview'),
     [mode, setMode] = useState<'split' | 'unified'>('split'),
     [rawSide, setRawSide] = useState<'before' | 'after'>('after');
   const [previous, setPrevious] = useState<{
@@ -750,8 +748,12 @@ function ArtifactReview({
       ? preview.changeset.files.find((f) => f.path === path)
       : null;
   const bodyText = preview?.kind === 'text' ? preview.text : null;
+  const toolResult =
+    !!artifact &&
+    artifact.provenance.kind === 'legacy_deliverable' &&
+    isToolResultExport(artifact.version);
   return (
-    <div>
+    <div className={reader.reader} data-document-id={artifactId}>
       {error ? (
         <p className={styles.error} role="alert">
           {error}
@@ -761,286 +763,252 @@ function ArtifactReview({
         <p role="status">{error ? '成果暂不可用。' : '正在读取版本…'}</p>
       ) : (
         <>
-          <h3>{artifact.version.fileName}</h3>
-          {artifact.kind === 'changeset' ? (
-            <ChangesetPanel
-              key={artifact.id}
-              artifact={artifact}
-              sessionId={sessionId}
+          <DocumentToolbar
+            title={
+              toolResult
+                ? artifact.version.fileName.startsWith(
+                    'tool-result-web-search-',
+                  )
+                  ? '搜索资料'
+                  : '工具记录'
+                : artifact.version.fileName
+            }
+            downloadUrl={`/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(artifact.version.fileName)}`}
+            actions={[
+              { id: 'catalog', label: '查看所有成果' },
+              { id: 'refresh', label: '刷新文件' },
+              ...(bodyText !== null
+                ? [
+                    {
+                      id: 'source',
+                      label: view === 'source' ? '查看预览' : '查看源文本',
+                    },
+                  ]
+                : []),
+              ...(artifact.kind !== 'changeset' &&
+              artifact.version.parentVersionId
+                ? [
+                    {
+                      id: 'compare',
+                      label: view === 'diff' ? '查看预览' : '与上一版对比',
+                    },
+                  ]
+                : []),
+            ]}
+            onAction={(id) => {
+              if (id === 'catalog') onCatalog();
+              if (id === 'source')
+                setView((v) => (v === 'source' ? 'preview' : 'source'));
+              if (id === 'compare')
+                setView((v) => (v === 'diff' ? 'preview' : 'diff'));
+              if (id === 'refresh') {
+                void refresh(true);
+                setPreview(null);
+                setPreviewRetry((n) => n + 1);
+                void onReload();
+              }
+            }}
+          >
+            <DocumentVersions
+              objectId={artifact.object.id}
               workspaceId={workspaceId}
               headers={tenantHeaders}
-              disabled={busy}
-              onContinued={onContinued}
+              version={artifact.version.version}
+              onSelect={(version) => onSelect(version.id)}
             />
-          ) : null}
-          <div className={styles.meta}>
-            <span className={styles.badge}>
-              {artifactKindLabel(artifact)} · v{artifact.version.version}
-            </span>
-            <span
-              className={`${styles.badge} ${artifact.stale ? styles.stale : ''}`}
-            >
-              {artifact.stale ? '旧版本 · 仅查看' : '当前版本'}
-            </span>
-          </div>
-          {artifact.stale ? (
-            <p className={styles.muted}>
-              文件已有新版本，旧意见和旧批准不会自动作用于新内容。
-              <button
-                type="button"
-                onClick={() => onSelect(artifact.latestVersionId)}
-              >
-                查看最新版本
-              </button>
-            </p>
-          ) : null}
-          <div className={styles.scope}>
-            <p>
-              {artifact.kind === 'changeset'
-                ? '比较范围：本次 Changeset 提案（不是工作区总 Diff，也不是落盘成功回执）'
-                : view === 'diff'
-                  ? `比较范围：交付物 v${previous?.artifact.version.version ?? '…'} → v${artifact.version.version}`
-                  : '查看范围：这个交付物的精确版本'}
-            </p>
-            <p>
-              {artifact.provenance.kind === 'legacy_deliverable'
-                ? '来源：升级前交付物，历史 Run / 执行目标未记录'
-                : `来源：${artifact.provenance.kind === 'model_proposal' ? 'Rice 提案' : '工具结果'} · Run ${artifact.provenance.runId?.slice(0, 8)}`}
-            </p>
-            {artifact.execution ? (
-              <p>
-                目标：{artifactExecutionLabels(artifact.execution).target}
-                {artifact.execution.targetKind === 'rice_bridge' &&
-                artifact.execution.deviceId
-                  ? ` · ${artifact.execution.deviceId.slice(0, 8)}`
-                  : ''}
-                <br />
-                工作副本：
-                {artifactExecutionLabels(artifact.execution).workCopy} · 授权 v
-                {artifact.execution.grantVersion}（
-                {artifactExecutionLabels(artifact.execution).availability}）
-              </p>
-            ) : (
-              <p>
-                存放位置：SaaS 文件库
-                {artifact.provenance.kind === 'legacy_deliverable'
-                  ? '；历史执行位置未知'
-                  : ''}
-              </p>
-            )}
-            <details>
-              <summary>版本与基线标识</summary>
-              <code>
-                成果 {artifact.id}
-                <br />
-                SHA {artifact.object.checksum}
-                <br />
-                系列 {artifact.version.seriesId}
-                {artifact.execution ? (
-                  <>
-                    <br />
-                    目标 {artifact.execution.targetId}
-                    <br />
-                    工作副本 {artifact.execution.workCopy.id}
-                  </>
-                ) : null}
-              </code>
-            </details>
-          </div>
-          <div className={styles.row}>
-            <a
-              href={`/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(artifact.version.fileName)}`}
-              download
-            >
-              下载此版本
-            </a>
-            {artifact.kind !== 'changeset' &&
-            artifact.version.parentVersionId ? (
-              <button
-                type="button"
-                onClick={() =>
-                  setView((v) => (v === 'diff' ? 'preview' : 'diff'))
-                }
-              >
-                {view === 'diff' ? '查看正文' : '与上一版对比'}
-              </button>
-            ) : null}
-          </div>
-          {preview?.kind === 'changeset' ? (
-            <label>
-              提案文件
-              <select
-                aria-label="提案文件"
-                className={styles.selector}
-                value={path}
-                onChange={(e) => {
-                  setPath(e.target.value);
-                }}
-              >
-                {preview.changeset.files.map((f) => (
-                  <option key={f.path}>{f.path}</option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-          {view === 'diff' &&
-          (file || (bodyText !== null && previous?.preview.kind === 'text')) ? (
-            <>
-              <div className={styles.row}>
-                <label>
-                  Diff 布局
-                  <select
-                    aria-label="Diff 布局"
-                    value={mode}
-                    onChange={(e) =>
-                      setMode(e.target.value as 'split' | 'unified')
-                    }
-                  >
-                    <option value="split">并排</option>
-                    <option value="unified">统一</option>
-                  </select>
-                </label>
-              </div>
-              <div className={styles.preview}>
-                <DiffBoundary key={`${artifact.id}/${path}`}>
-                  <Suspense fallback={<p>正在加载 Diff…</p>}>
-                    <RichDiff
-                      key={`${artifact.id}/${path}/${previous?.artifact.id ?? ''}`}
-                      path={file?.path ?? artifact.version.fileName}
-                      before={
-                        file
-                          ? (file.before?.text ?? null)
-                          : previous?.preview.kind === 'text'
-                            ? previous.preview.text
-                            : null
-                      }
-                      after={file ? (file.after?.text ?? null) : bodyText}
-                      mode={mode}
-                    />
-                  </Suspense>
-                </DiffBoundary>
-              </div>
-              {file ? (
-                <p className={styles.muted}>
-                  修改前 {file.before?.checksum.slice(0, 19) ?? '新文件'} →
-                  修改后 {file.after?.checksum.slice(0, 19) ?? '删除提案'}
-                </p>
-              ) : null}
-            </>
-          ) : view === 'diff' && bodyText !== null ? (
-            <p className={styles.muted}>
-              {previous
-                ? '上一版不支持文本对比，可分别下载核对。'
-                : '正在读取上一版基线…'}
-            </p>
-          ) : null}
-          {file ? (
-            <details>
-              <summary>查看完整前后文本（分页）</summary>
-              <label>
-                文本侧
-                <select
-                  aria-label="文本侧"
-                  value={rawSide}
-                  onChange={(e) =>
-                    setRawSide(e.target.value as 'before' | 'after')
-                  }
-                >
-                  <option value="before">修改前</option>
-                  <option value="after">修改后</option>
-                </select>
-              </label>
-              <TextPage
-                key={`${path}/${rawSide}`}
-                text={file[rawSide]?.text ?? ''}
-                label={`${rawSide === 'before' ? '修改前' : '修改后'}文本`}
-              />
-            </details>
-          ) : bodyText !== null ? (
-            <>
-              {preview?.kind === 'text' &&
-              preview.mediaType === 'text/markdown' ? (
-                <SafeDocument text={bodyText} />
-              ) : null}
-              <details
-                open={
-                  !(
-                    preview?.kind === 'text' &&
-                    preview.mediaType === 'text/markdown'
-                  )
-                }
-              >
-                <summary>查看原文（分页）</summary>
-                <TextPage text={bodyText} label="成果正文（只读文本）" />
-              </details>
-            </>
-          ) : preview?.kind === 'image' ? (
-            <div className={styles.preview}>
-              {/* Static raster only; no remote URL, SVG or HTML insertion. */}
-              <NativeImagePreview
-                src={`data:${preview.mediaType};base64,${preview.base64}`}
-                alt={`${artifact.version.fileName} 静态预览`}
-              />
-            </div>
-          ) : preview?.kind === 'pdf' ? (
-            <NativePdfPreview base64={preview.base64} />
-          ) : preview?.kind === 'office' ? (
-            <OfficePreview preview={preview} key={preview.checksum} />
-          ) : preview?.kind === 'download_only' ? (
-            <div>
-              <p className={styles.muted}>{preview.reason}</p>
-              {['docx', 'xlsx', 'pptx'].includes(artifact.version.format) && (
+          </DocumentToolbar>
+          <div className={reader.content}>
+            {artifact.stale ? (
+              <p className={styles.muted}>
+                正在查看 v{artifact.version.version}。
                 <button
                   type="button"
-                  onClick={() => {
-                    setPreview(null);
-                    setPreviewRetry((n) => n + 1);
+                  onClick={() => onSelect(artifact.latestVersionId)}
+                >
+                  查看最新版本
+                </button>
+              </p>
+            ) : null}
+            {artifact.kind === 'changeset' ? (
+              <ChangesetPanel
+                key={artifact.id}
+                artifact={artifact}
+                sessionId={sessionId}
+                workspaceId={workspaceId}
+                headers={tenantHeaders}
+                disabled={busy}
+                onContinued={onContinued}
+              />
+            ) : null}
+            {preview?.kind === 'changeset' ? (
+              <label>
+                提案文件
+                <select
+                  aria-label="提案文件"
+                  className={styles.selector}
+                  value={path}
+                  onChange={(e) => {
+                    setPath(e.target.value);
                   }}
                 >
-                  重试预览
-                </button>
-              )}
-            </div>
-          ) : !preview ? (
-            previewError ? (
-              <div role="alert" className={styles.error}>
-                <p>{previewError}</p>
+                  {preview.changeset.files.map((f) => (
+                    <option key={f.path}>{f.path}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {view === 'diff' &&
+            (file ||
+              (bodyText !== null && previous?.preview.kind === 'text')) ? (
+              <>
+                <div className={styles.row}>
+                  <label>
+                    Diff 布局
+                    <select
+                      aria-label="Diff 布局"
+                      value={mode}
+                      onChange={(e) =>
+                        setMode(e.target.value as 'split' | 'unified')
+                      }
+                    >
+                      <option value="split">并排</option>
+                      <option value="unified">统一</option>
+                    </select>
+                  </label>
+                </div>
+                <div className={styles.preview}>
+                  <DiffBoundary key={`${artifact.id}/${path}`}>
+                    <Suspense fallback={<p>正在加载 Diff…</p>}>
+                      <RichDiff
+                        key={`${artifact.id}/${path}/${previous?.artifact.id ?? ''}`}
+                        path={file?.path ?? artifact.version.fileName}
+                        before={
+                          file
+                            ? (file.before?.text ?? null)
+                            : previous?.preview.kind === 'text'
+                              ? previous.preview.text
+                              : null
+                        }
+                        after={file ? (file.after?.text ?? null) : bodyText}
+                        mode={mode}
+                      />
+                    </Suspense>
+                  </DiffBoundary>
+                </div>
+                {file ? (
+                  <p className={styles.muted}>
+                    修改前 {file.before?.checksum.slice(0, 19) ?? '新文件'} →
+                    修改后 {file.after?.checksum.slice(0, 19) ?? '删除提案'}
+                  </p>
+                ) : null}
+              </>
+            ) : view === 'diff' && bodyText !== null ? (
+              <p className={styles.muted}>
+                {previous
+                  ? '上一版不支持文本对比，可分别下载核对。'
+                  : '正在读取上一版基线…'}
+              </p>
+            ) : null}
+            {file ? (
+              <details>
+                <summary>查看完整前后文本（分页）</summary>
+                <label>
+                  文本侧
+                  <select
+                    aria-label="文本侧"
+                    value={rawSide}
+                    onChange={(e) =>
+                      setRawSide(e.target.value as 'before' | 'after')
+                    }
+                  >
+                    <option value="before">修改前</option>
+                    <option value="after">修改后</option>
+                  </select>
+                </label>
+                <TextPage
+                  key={`${path}/${rawSide}`}
+                  text={file[rawSide]?.text ?? ''}
+                  label={`${rawSide === 'before' ? '修改前' : '修改后'}文本`}
+                />
+              </details>
+            ) : bodyText !== null && view !== 'diff' ? (
+              <DocumentText
+                text={bodyText}
+                fileName={artifact.version.fileName}
+                mediaType={
+                  preview?.kind === 'text' ? preview.mediaType : 'text/plain'
+                }
+                source={view === 'source'}
+                toolResult={toolResult}
+              />
+            ) : preview?.kind === 'image' ? (
+              <div className={styles.preview}>
+                {/* Static raster only; no remote URL, SVG or HTML insertion. */}
+                <NativeImagePreview
+                  src={`data:${preview.mediaType};base64,${preview.base64}`}
+                  alt={`${artifact.version.fileName} 静态预览`}
+                />
+              </div>
+            ) : preview?.kind === 'pdf' ? (
+              <NativePdfPreview base64={preview.base64} />
+            ) : preview?.kind === 'office' ? (
+              <OfficePreview preview={preview} key={preview.checksum} />
+            ) : preview?.kind === 'download_only' ? (
+              <div>
+                <p className={styles.muted}>{preview.reason}</p>
+                {['docx', 'xlsx', 'pptx'].includes(artifact.version.format) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreview(null);
+                      setPreviewRetry((n) => n + 1);
+                    }}
+                  >
+                    重试预览
+                  </button>
+                )}
+              </div>
+            ) : !preview ? (
+              previewError ? (
+                <div role="alert" className={styles.error}>
+                  <p>{previewError}</p>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewRetry((n) => n + 1)}
+                  >
+                    重试预览
+                  </button>
+                </div>
+              ) : (
+                <p role="status">正在读取安全预览…</p>
+              )
+            ) : null}
+            {artifact.kind === 'plan' ? (
+              <section className={styles.actions} aria-label="计划确认">
                 <button
                   type="button"
-                  onClick={() => setPreviewRetry((n) => n + 1)}
+                  disabled={!ready || artifact.stale || busy || planSent}
+                  onClick={() =>
+                    void continuePlan({
+                      kind: 'plan_review',
+                      artifactId,
+                      checksum: artifact.object.checksum,
+                    })
+                  }
                 >
-                  重试预览
+                  {planSent ? '计划确认已发送' : '认可本版计划，继续'}
                 </button>
-              </div>
-            ) : (
-              <p role="status">正在读取安全预览…</p>
-            )
-          ) : null}
-          {artifact.kind === 'plan' ? (
-            <section className={styles.actions} aria-label="计划确认">
-              <button
-                type="button"
-                disabled={!ready || artifact.stale || busy || planSent}
-                onClick={() =>
-                  void continuePlan({
-                    kind: 'plan_review',
-                    artifactId,
-                    checksum: artifact.object.checksum,
-                  })
-                }
-              >
-                {planSent ? '计划确认已发送' : '认可本版计划，继续'}
-              </button>
-              <small>
-                认可计划不等于批准执行。需要调整时，直接在对话中说明。
-              </small>
-              {notice ? (
-                <p role="status" className={styles.muted}>
-                  {notice}
-                </p>
-              ) : null}
-            </section>
-          ) : null}
+                <small>
+                  认可计划不等于批准执行。需要调整时，直接在对话中说明。
+                </small>
+                {notice ? (
+                  <p role="status" className={styles.muted}>
+                    {notice}
+                  </p>
+                ) : null}
+              </section>
+            ) : null}
+          </div>
         </>
       )}
     </div>

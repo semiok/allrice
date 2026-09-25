@@ -805,7 +805,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return answer({ files: state.files });
       }
       if (path.startsWith('/api/v1/files/') && path.endsWith('/versions'))
-        return answer({ versions: [] });
+        return answer({
+          versions: state.items
+            .filter(
+              (a) =>
+                a.version.seriesId ===
+                state.items.find((item) => path.includes(item.object.id))
+                  ?.version.seriesId,
+            )
+            .map((a) => a.version),
+        });
       if (path.startsWith('/api/v1/files/') && path.endsWith('/preview'))
         return state.files.some((file) => path.includes(file.id))
           ? answer(state.filePreview)
@@ -908,15 +917,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.items = [artifact(11)];
         finishStream();
       },
+      async fileAction(name: string) {
+        await panel
+          .getByRole('button', { name: '更多文件操作', exact: true })
+          .last()
+          .click();
+        await page.getByRole('menuitem', { name, exact: true }).click();
+      },
+      async selectArtifact(n: number) {
+        await panel
+          .getByRole('button', { name: '更多文件操作', exact: true })
+          .last()
+          .click();
+        await page
+          .getByRole('menuitem', { name: '查看所有成果', exact: true })
+          .click();
+        await panel
+          .getByRole('button', { name: new RegExp(`report-${n}\\.md`) })
+          .click();
+      },
       async reloadList() {
         await entry.click();
-        await expect
-          .poll(() =>
-            page
-              .getByRole('button', { name: '刷新列表', exact: true })
-              .isEnabled(),
-          )
-          .toBe(true);
+        await panel
+          .getByRole('button', { name: '更多文件操作', exact: true })
+          .last()
+          .waitFor();
       },
       async close() {
         finishStream();
@@ -1181,12 +1206,164 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
+  it('document reader keeps mobile actions visible, uses native menus and preserves exact version downloads', async () => {
+    const f = await fixture({ width: 390, artifacts: true });
+    try {
+      const older = artifact(10),
+        latest = artifact(11);
+      latest.version.seriesId = older.version.seriesId;
+      latest.version.version = 2;
+      latest.version.parentVersionId = older.id;
+      latest.version.parentObjectId = older.object.id;
+      older.stale = true;
+      older.latestVersionId = latest.id;
+      f.state.items = [latest, older];
+      await f.page.reload();
+      await f.entry.click();
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      const download = f.panel.getByRole('link', { name: '下载', exact: true });
+      expect(await download.getAttribute('href')).toContain(latest.object.id);
+      expect((await download.boundingBox())!.height).toBeGreaterThanOrEqual(40);
+      expect(
+        await f.panel
+          .getByText(/版本与基线标识|历史执行位置|SaaS 文件库|查看原文/)
+          .count(),
+      ).toBe(0);
+      await f.page.waitForFunction(() => {
+        const r = document
+          .querySelector('#artifact-workbench [aria-label="文件操作"]')!
+          .getBoundingClientRect();
+        return Math.abs(r.left) < 2 && r.right <= innerWidth + 1;
+      });
+      await f.page.screenshot({
+        path: '.local/reader/mobile.png',
+        animations: 'disabled',
+      });
+      await f.panel
+        .getByRole('region', { name: '文件正文', exact: true })
+        .evaluate((n) => {
+          n.parentElement!.scrollTop = 400;
+        });
+      expect(await download.isVisible()).toBe(true);
+      await f.fileAction('查看源文本');
+      await f.panel
+        .getByRole('region', { name: '源文本', exact: true })
+        .waitFor();
+      await f.panel
+        .getByRole('button', { name: '更多文件操作', exact: true })
+        .click();
+      await f.page
+        .getByRole('menuitem', { name: '查看预览', exact: true })
+        .focus();
+      await f.page.keyboard.press('Escape');
+      expect(await f.panel.isVisible()).toBe(true);
+      await f.panel
+        .getByRole('button', { name: '历史版本', exact: true })
+        .click();
+      await f.page.getByRole('menuitem', { name: /^v1 ·/ }).click();
+      await expect
+        .poll(() =>
+          f.panel
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        )
+        .toContain(older.object.id);
+      await f.panel
+        .getByRole('button', { name: '查看最新版本', exact: true })
+        .waitFor();
+      expect(
+        await f.page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      await f.page.screenshot({
+        path: '.local/reader/desktop.png',
+        animations: 'disabled',
+      });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('tool search records stay in process files and render readable output with original source links', async () => {
+    const f = await fixture();
+    try {
+      const raw = artifact(10);
+      raw.version.fileName = `tool-result-web-search-${raw.object.id}.txt`;
+      raw.version.changeSummary = `Tool result web.search; Run ${run}; call call-1`;
+      raw.provenance.kind = 'legacy_deliverable';
+      f.state.items = [raw];
+      f.state.files = [
+        {
+          id: raw.object.id,
+          fileName: raw.version.fileName,
+          mediaType: 'text/plain',
+          sizeBytes: 120,
+          visibility: 'private',
+          ownedByMe: true,
+          category: 'exports',
+          deliverableVersion: 1,
+        },
+      ];
+      f.state.filePreview = {
+        kind: 'text',
+        mediaType: 'text/plain',
+        text: JSON.stringify({
+          provider: 'fixture',
+          query: '官方公告',
+          output:
+            '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。',
+        }),
+      };
+      await f.page.reload();
+      expect(await f.panel.count()).toBe(0);
+      await f.page
+        .getByRole('button', { name: '工作区文件', exact: true })
+        .click();
+      const tree = f.panel.locator('[data-files-state="tree"]');
+      await tree.getByRole('button', { name: '交付文件', exact: true }).click();
+      expect(await tree.getByRole('button', { name: /搜索资料/ }).count()).toBe(
+        0,
+      );
+      await tree.getByRole('button', { name: '过程资料', exact: true }).click();
+      await tree.getByRole('button', { name: /^搜索资料 ·/ }).click();
+      await f.panel
+        .getByText('已经发布的公告摘录。', { exact: true })
+        .waitFor();
+      expect(
+        await f.panel
+          .getByRole('link', { name: '查看官方公告', exact: true })
+          .getAttribute('href'),
+      ).toBe('https://example.com/news');
+      expect(await f.panel.getByText(/"provider"/).count()).toBe(0);
+      await f.fileAction('查看源文本');
+      await expect
+        .poll(() =>
+          f.panel
+            .getByRole('region', { name: '源文本', exact: true })
+            .innerText(),
+        )
+        .toContain('provider');
+      expect(
+        await f.panel
+          .getByRole('link', { name: '下载', exact: true })
+          .getAttribute('href'),
+      ).toContain(raw.object.id);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('artifact previews keep file actions and use the chat composer for revision requests', async () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
       expect(
-        await f.panel.getByRole('link', { name: '下载此版本' }).isVisible(),
+        await f.panel
+          .getByRole('link', { name: '下载', exact: true })
+          .isVisible(),
       ).toBe(true);
       expect(await f.panel.getByRole('textbox').count()).toBe(0);
       expect(await f.panel.getByText(/修改记录|让Rice修改/).count()).toBe(0);
@@ -2343,7 +2520,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       expect(
         await f.panel
-          .getByRole('link', { name: '下载文件', exact: true })
+          .getByRole('link', { name: '下载', exact: true })
           .getAttribute('href'),
       ).toContain(id(901));
       f.state.filePreview = {
@@ -2351,13 +2528,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         mediaType: 'application/json',
         text: '{"native":true}',
       };
+      await f.fileAction('刷新文件');
       await f.panel
-        .getByRole('button', { name: '刷新文件', exact: true })
-        .click();
-      await f.panel
-        .getByRole('button', { name: '复制源码', exact: true })
+        .getByRole('button', { name: '复制文本', exact: true })
         .waitFor();
-      await f.panel.getByText('{"native":true}', { exact: true }).waitFor();
+      await expect
+        .poll(() =>
+          f.panel
+            .getByRole('region', { name: '文件正文', exact: true })
+            .innerText(),
+        )
+        .toContain('native');
       await f.panel.getByRole('tab', { name: /^工作区文件/ }).click();
       expect(
         await tree
@@ -2378,9 +2559,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .poll(() => tree.getByText('空目录', { exact: true }).count())
         .toBe(2);
       await f.panel.getByRole('tab', { name: /^上传的说明/ }).click();
-      await f.panel
-        .getByRole('button', { name: '刷新文件', exact: true })
-        .click();
+      await f.fileAction('刷新文件');
       await f.panel.getByRole('alert').waitFor();
       await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
       expect(await f.panel.count()).toBe(0);
@@ -3253,13 +3432,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
       f.state.items.unshift(artifact(11));
       // Trigger the same existing read-only refresh used after a completed turn.
-      await f.page
-        .getByRole('button', { name: '刷新列表', exact: true })
-        .click();
+      await f.fileAction('刷新文件');
       await composer.focus();
       await expect
         .poll(() =>
-          f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
+          f.panel
+            .locator('[data-document-id]:visible')
+            .last()
+            .getAttribute('data-document-id'),
         )
         .toBe(id(11));
       expect(await composer.evaluate((e) => e === document.activeElement)).toBe(
@@ -3653,15 +3833,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.getAttribute('role'))
         .toBe('complementary');
-      const metadata = f.panel.locator('details').filter({
-        has: f.page.locator('summary', { hasText: '版本与基线标识' }),
+      await f.fileAction('查看源文本');
+      const metadata = f.panel.getByRole('region', {
+        name: '源文本',
+        exact: true,
       });
-      await metadata.locator('summary').click();
       await f.page.setViewportSize({ width: 390, height: 844 });
       // Viewport acknowledgement precedes the matchMedia event/React commit.
       // Await the rendered drawer, rather than racing its previous wide role.
       await expect.poll(() => f.panel.getAttribute('role')).toBe('dialog');
-      expect(await metadata.getAttribute('open')).not.toBeNull();
+      expect(await metadata.isVisible()).toBe(true);
       await f.page.screenshot({ path: '/tmp/met147-mobile.png' });
       expect(
         await f.page.evaluate(
@@ -3680,15 +3861,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
       // Selecting a version pins it while newer artifacts arrive.
-      await f.panel
-        .getByRole('combobox', { name: '成果版本' })
-        .selectOption(id(10));
-      const metadata = f.panel
-        .locator('[data-dockkit-host="dock"]:not([hidden]) details')
-        .filter({
-          has: f.page.locator('summary', { hasText: '版本与基线标识' }),
-        });
-      await metadata.first().locator('summary').click();
+      await f.selectArtifact(10);
+      await f.fileAction('查看源文本');
+      const metadata = f.panel.getByRole('region', {
+        name: '源文本',
+        exact: true,
+      });
       f.state.items.push(artifact(11));
       await f.reloadList();
       await f.panel
@@ -3700,14 +3878,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.locator('[data-dockkit-pane]').count())
         .toBe(2);
-      await f.panel
-        .getByRole('button', { name: 'report-11.md · v1', exact: true })
-        .click();
+      await f.panel.getByRole('button', { name: /report-11\.md.*v1/ }).click();
       await expect
-        .poll(() => f.panel.getByRole('heading', { name: /COIN/ }).count())
+        .poll(() => f.panel.locator('[data-document-id]:visible').count())
         .toBe(2);
-      expect(await metadata.first().getAttribute('open')).not.toBeNull();
-      expect(await metadata.nth(1).getAttribute('open')).toBeNull();
+      expect(await metadata.count()).toBe(1);
+      expect(
+        await f.panel
+          .getByRole('region', { name: '文件正文', exact: true })
+          .count(),
+      ).toBe(1);
       const divider = f.panel.locator('[data-dockkit-divider]');
       const box = (await divider.boundingBox())!;
       await f.page.mouse.move(box.x, box.y + 120);
@@ -3721,8 +3901,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel
         .getByRole('button', { name: '退出全屏', exact: true })
         .click();
-      expect(await metadata.first().getAttribute('open')).not.toBeNull();
-      expect(await metadata.nth(1).getAttribute('open')).toBeNull();
+      expect(await metadata.count()).toBe(1);
+      expect(
+        await f.panel
+          .getByRole('region', { name: '文件正文', exact: true })
+          .count(),
+      ).toBe(1);
       await f.panel
         .getByRole('button', { name: '全屏查看', exact: true })
         .click();
@@ -3751,13 +3935,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-      await f.panel
-        .getByRole('combobox', { name: '成果版本' })
-        .selectOption(id(10));
+      await f.selectArtifact(10);
       f.state.items.unshift(artifact(11));
       await f.reloadList();
       expect(
-        await f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
+        await f.panel
+          .locator('[data-document-id]:visible')
+          .last()
+          .getAttribute('data-document-id'),
       ).toBe(id(10));
       await f.panel.getByRole('button', { name: '查看新成果' }).waitFor();
       expect(
@@ -3774,13 +3959,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel.getByRole('button', { name: '查看新成果' }).click();
       await expect
         .poll(() =>
-          f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
+          f.panel
+            .locator('[data-document-id]:visible')
+            .last()
+            .getAttribute('data-document-id'),
         )
         .toBe(id(11));
       f.state.items.unshift(artifact(12));
       await f.reloadList();
       expect(
-        await f.panel.getByRole('combobox', { name: '成果版本' }).inputValue(),
+        await f.panel
+          .locator('[data-document-id]:visible')
+          .last()
+          .getAttribute('data-document-id'),
       ).toBe(id(11));
       await f.panel.getByRole('button', { name: '查看新成果' }).waitFor();
     } finally {
@@ -3851,16 +4042,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('img,iframe,script,a[href^="javascript:"]')
           .count(),
       ).toBe(0);
-      f.state.text = '较长的安全原文\n'.repeat(1700);
+      f.state.text = '较长的安全原文\n'.repeat(4000);
       f.state.items.unshift(artifact(12));
       await f.reloadList();
-      await f.panel.getByLabel('正文（分页只读）', { exact: true }).waitFor();
-      expect(
-        await f.panel
-          .getByLabel('正文（分页只读）', { exact: true })
-          .locator('code')
-          .count(),
-      ).toBe(100);
+      const body = f.panel.getByRole('region', {
+        name: '文件正文',
+        exact: true,
+      });
+      await body.waitFor();
+      const firstLength = (await body.innerText()).length;
+      expect(firstLength).toBeLessThan(f.state.text.length);
+      await body.getByRole('button', { name: '加载更多内容' }).click();
+      expect((await body.innerText()).length).toBeGreaterThan(firstLength);
     } finally {
       await f.close();
     }

@@ -171,6 +171,7 @@ async function artifactRows(
   limit: number,
   before?: { createdAt: string; id: string },
   runId: string | null = null,
+  includeToolResults = true,
 ) {
   return db<
     ArtifactRow[]
@@ -186,6 +187,14 @@ async function artifactRows(
       and (o.retention_until is null or o.retention_until>clock_timestamp())
       and (${artifactId}::uuid is null or v.id=${artifactId}::uuid)
       and (${runId}::uuid is null or a.run_id=${runId}::uuid)
+      -- Oversized tool responses are stored for model paging, not delivered
+      -- files. Match both writer metadata and its exact object-bound filename.
+      -- Keep explicit reads and administrator inspection available.
+      and (${includeToolResults} or not (
+        a.version_id is null
+        and coalesce(v.change_summary, '') like 'Tool result %; Run %; call %'
+        and v.file_name = 'tool-result-' || replace(replace(split_part(v.change_summary, ';', 1), 'Tool result ', ''), '.', '-') || '-' || v.object_id::text || '.txt'
+      ))
       and (${before?.createdAt ?? null}::timestamptz is null or (v.created_at,v.id)<(${before?.createdAt ?? null}::timestamptz,${before?.id ?? null}::uuid))
     order by v.created_at desc,v.id desc limit ${limit}`;
 }
@@ -209,6 +218,8 @@ export async function listWorkbenchArtifacts(
       null,
       51,
       before,
+      null,
+      false,
     );
     const page = rows.slice(0, 50).map(mapArtifact),
       last = page.at(-1);
