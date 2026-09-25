@@ -305,6 +305,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     };
     for (const entry of skillEligibility) {
       if (entry.missingTools.length === 0 && entry.inactiveTools.length === 0) {
+        // A warm session already has these exact Skill versions registered.
+        if (!fresh) continue;
         await emit({
           type: 'native.event',
           presentation: 'context',

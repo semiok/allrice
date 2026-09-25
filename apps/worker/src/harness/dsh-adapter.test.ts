@@ -573,6 +573,41 @@ describe('DshHarnessAdapter', () => {
     );
   });
 
+  it('announces Skills only on cold load, including a changed Skill version', async () => {
+    const adapter = createAdapter();
+    const events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'first', events });
+    input.nativeSkills = [
+      {
+        id: randomUUID(),
+        name: 'synthetic-skill',
+        description: 'Synthetic skill.',
+        content: '# Synthetic',
+        checksum: `sha256:${'a'.repeat(64)}`,
+        invocation: { modelInvocable: true, userInvocable: true },
+        requiredToolRefs: [],
+      },
+    ];
+    const loaded = () =>
+      events.filter(
+        (event) =>
+          event.type === 'native.event' && event.label === 'Skill 已加载',
+      );
+    const first = await adapter.execute(input);
+    expect(loaded()).toHaveLength(1);
+    input.threadId = first.threadId;
+    input.kernel.userRequest = 'second';
+    events.length = 0;
+    const second = await adapter.execute(input);
+    expect(second.answer).toBe('turn-2');
+    expect(loaded()).toHaveLength(0);
+    input.nativeSkills[0]!.checksum = `sha256:${'b'.repeat(64)}`;
+    input.nativeSkills[0]!.content = '# Revised synthetic';
+    events.length = 0;
+    await adapter.execute(input);
+    expect(loaded()).toHaveLength(1);
+  });
+
   it('loads an authorized Skill once its required tool is active this turn', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];

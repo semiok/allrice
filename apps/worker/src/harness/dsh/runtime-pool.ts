@@ -235,6 +235,10 @@ export class DshRuntimePool {
         false,
       );
     }
+    const maxTokens =
+      input.input.assistants?.maxOutputTokens ??
+      input.input.maxOutputTokens ??
+      (input.input.assistants ? 16_000 : undefined);
     const fingerprint = createHash('sha256')
       .update(
         JSON.stringify({
@@ -243,9 +247,10 @@ export class DshRuntimePool {
           systemInstructions: input.systemInstructions,
           taskProgress: !!input.input.progress,
           durableQuestions: !!input.input.questionWait,
-          ...(input.input.assistants
-            ? { assistantRootRunId: input.input.assistants.rootRunId }
-            : {}),
+          // Run authority is rebound by the adapter and released by finish.
+          // Only process configuration belongs in the session reuse key.
+          assistantsEnabled: !!input.input.assistants,
+          maxTokens,
           nativeTools: input.input.tools
             .map((tool) => tool.name)
             .filter(isDshNativeTool)
@@ -339,11 +344,7 @@ export class DshRuntimePool {
         'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',
       ].join('\n\n'),
       DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
-      DSH_MAX_OUTPUT_TOKENS: String(
-        input.input.assistants?.maxOutputTokens ??
-          input.input.maxOutputTokens ??
-          16_000,
-      ),
+      DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
       ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
       ...(input.input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
     };
@@ -396,10 +397,7 @@ export class DshRuntimePool {
         model: input.snapshot.model,
         nativeTools,
         nativeSkills: input.nativeSkills,
-        maxTokens:
-          input.input.assistants?.maxOutputTokens ??
-          input.input.maxOutputTokens ??
-          (input.input.assistants ? 16_000 : undefined),
+        maxTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         requireTaskProgress: !!input.input.progress,
         requireDurableQuestions: !!input.input.questionWait,
