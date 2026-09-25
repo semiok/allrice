@@ -32,6 +32,9 @@ export function employeeAccentStyle(
     '--employee-start': color.value,
     '--employee-end': color.value,
     '--employee-foreground': employeeColorForeground(accent),
+    '--employee-avatar-foreground': ['blue', 'violet', 'gray'].includes(accent)
+      ? '#FFFFFF'
+      : employeeColorForeground(accent),
   } as CSSProperties;
 }
 

@@ -1,5 +1,9 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import {
+  IconChevronDownOutlineRegular,
+  IconChevronRightOutlineRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type { Session, Workspace } from './chatflow-types';
 import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
 import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
@@ -165,6 +169,25 @@ export function EmployeeSidebar({
               <div className={css.header}>
                 <ProjectRowItem
                   group={group}
+                  title={
+                    <span className={css.employeeTitle}>
+                      <span className={css.employeeName}>{group.label}</span>
+                      {employee?.isDefault && (
+                        <span className={css.defaultLabel}>默认</span>
+                      )}
+                      <IconChevronDownOutlineRegular
+                        className={css.expandIcon}
+                        size={12}
+                      />
+                    </span>
+                  }
+                  description={
+                    <span className={css.meta}>
+                      {[role, `${group.sessionCount} 个工作`]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  }
                   leading={
                     <span className={css.initial}>
                       {group.label.slice(0, 1)}
@@ -186,20 +209,10 @@ export function EmployeeSidebar({
                     title={`${group.label}介绍`}
                     onClick={() => onDetails(group.key)}
                   >
-                    ⓘ
+                    <span>详情</span>
+                    <IconChevronRightOutlineRegular size={13} />
                   </button>
                 )}
-              </div>
-              <div className={css.meta}>
-                <span>
-                  {[
-                    role,
-                    employee?.isDefault ? '默认' : null,
-                    `${group.sessionCount} 个工作`,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </span>
               </div>
             </div>
             {group.expanded && (
