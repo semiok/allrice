@@ -930,10 +930,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         exact: true,
       });
       expect(await palette.getByRole('radio').count()).toBe(10);
-      await palette.getByRole('radio', { name: '紫色', exact: true }).check();
-      await palette.screenshot({
-        path: '/tmp/allrice-employee-colors-editor.png',
-      });
+      await palette.getByRole('radio', { name: '鸢尾紫', exact: true }).check();
+      if (process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT)
+        await palette.screenshot({
+          path: process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT,
+        });
       await page.getByRole('button', { name: '工具', exact: true }).click();
       await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
       await page.getByText('本地项目预览', { exact: true }).waitFor();
@@ -964,7 +965,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page.getByRole('button', { name: '人设', exact: true }).click();
       expect(
         await page
-          .getByRole('radio', { name: '紫色', exact: true })
+          .getByRole('radio', { name: '鸢尾紫', exact: true })
           .isChecked(),
       ).toBe(true);
       const unreviewed = await context.request.post(

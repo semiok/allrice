@@ -7,6 +7,7 @@ import type {
 import type { CSSProperties } from 'react';
 import {
   employeeColorPalette,
+  employeeColorForeground,
   resolveEmployeeAccent,
   type EmployeeAccentColor,
 } from '@allrice/contracts';
@@ -27,8 +28,9 @@ export function employeeAccentStyle(
 ): CSSProperties {
   const color = employeeColorPalette[employeeAccent(name, configured)];
   return {
-    '--employee-start': color.start,
-    '--employee-end': color.end,
+    '--employee-start': color.value,
+    '--employee-end': color.value,
+    '--employee-foreground': employeeColorForeground,
   } as CSSProperties;
 }
 

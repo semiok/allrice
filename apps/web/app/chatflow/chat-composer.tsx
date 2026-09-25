@@ -220,7 +220,7 @@ export function ChatComposer({
             <span className={styles.providerChip}>{providerLabel}</span>
             <button
               aria-label="发送"
-              className={inputUi.primary}
+              className={`${inputUi.primary} ${styles.employeeSend}`}
               disabled={busy || !draft.trim()}
               onClick={() => void onSendMessage()}
               type="button"

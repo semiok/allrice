@@ -19,6 +19,7 @@ import {
   developmentWorkflowToolNames,
   SkillCapabilitySchema,
   employeeColorPalette,
+  employeeColorForeground,
   resolveEmployeeAccent,
   type EmployeeAccentColor,
 } from '@allrice/contracts';
@@ -888,7 +889,7 @@ export function EmployeeProduction() {
       <>
         <fieldset className={styles.employeeColors}>
           <legend>员工配色</legend>
-          <p>选择员工的识别色，保存并发布后同步到前台。</p>
+          <p>莫奈印象十色。选择员工的识别色，保存并发布后同步到前台。</p>
           <div className={styles.colorOptions}>
             {(
               Object.entries(employeeColorPalette) as [
@@ -906,7 +907,10 @@ export function EmployeeProduction() {
                 />
                 <span
                   className={styles.colorSwatch}
-                  style={{ backgroundColor: color.end }}
+                  style={{
+                    backgroundColor: color.value,
+                    color: employeeColorForeground,
+                  }}
                   aria-hidden="true"
                 >
                   {accent === id ? '✓' : ''}
@@ -917,7 +921,10 @@ export function EmployeeProduction() {
           </div>
           <div className={styles.colorPreview}>
             <span
-              style={{ backgroundColor: employeeColorPalette[accent].end }}
+              style={{
+                backgroundColor: employeeColorPalette[accent].value,
+                color: employeeColorForeground,
+              }}
               aria-hidden="true"
             >
               {draft.name.slice(0, 1)}
