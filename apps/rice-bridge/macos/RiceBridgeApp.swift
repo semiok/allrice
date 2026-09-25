@@ -40,6 +40,11 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
     // Command-V/C/X/A in AppKit's text-field editor, including modal alerts.
     private func installEditingMenu() {
         let menu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu(title: "Rice Bridge")
+        applicationMenu.addItem(NSMenuItem(title: "退出 Rice Bridge", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        applicationItem.submenu = applicationMenu
+        menu.addItem(applicationItem)
         let item = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
         let edit = NSMenu(title: "编辑")
         for (title, action, key) in [
