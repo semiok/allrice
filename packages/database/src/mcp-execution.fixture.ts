@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 /** Synthetic fixture only; never imported by the production Worker. */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -220,6 +221,18 @@ export async function createMcpExecutionFixture(
       },
       startedAt: now,
     });
+    await updateWorkAutomation(
+      context,
+      workspace,
+      { expectedRevision: 0, capability: 'cloud', enabled: false },
+      db,
+    );
+    await updateWorkAutomation(
+      context,
+      workspace,
+      { expectedRevision: 1, capability: 'computer', enabled: false },
+      db,
+    );
     await setRuntimePolicyControls(
       context,
       {

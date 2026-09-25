@@ -15,7 +15,7 @@ vi.mock('../../../../../lib/identity/session', () => ({
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof DatabaseModule>()),
-  localCommandFeatureEnabled: ports.enabled,
+  localOperationsFeatureEnabled: ports.enabled,
   listLocalCommandOperations: ports.list,
   cancelLocalCommandRun: ports.cancel,
 }));

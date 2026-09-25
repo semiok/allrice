@@ -3,6 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   BridgeDeviceSchema,
+  BridgeCommandPayloadSchema,
+  type BridgeCommandPayload,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   RuntimeLocalCommandSchema,
@@ -50,16 +52,21 @@ function id(key: string) {
   const hex = createHash('sha256').update(key).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
-export const localCommandFeatureEnabled = () =>
-  localCommandEnabled() &&
+export const localOperationsFeatureEnabled = () =>
   runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
   runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED');
+export const localCommandFeatureEnabled = () =>
+  localCommandEnabled() && localOperationsFeatureEnabled();
 
 /** Trusted Worker entry point. No browser-supplied binding, device or image. */
-export async function createLocalCommandOperation(
+async function createLocalBridgeToolOperation(
   input: {
     context: ExecutionContext;
     arguments: unknown;
+    file?: Extract<
+      BridgeCommandPayload,
+      { capability: 'local.fs.write' | 'local.fs.mkdir' }
+    >;
     callId: string;
     /** Internal Worker provenance only; deliberately absent from the public
      * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
@@ -68,15 +75,24 @@ export async function createLocalCommandOperation(
   },
   database: Database = getDatabase(),
 ) {
-  if (!localCommandFeatureEnabled())
+  if (
+    input.file
+      ? !(
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED')
+        )
+      : !localCommandFeatureEnabled()
+  )
     throw new RuntimePolicyError('runtime_policy_disabled');
-  const args = RuntimeLocalCommandToolInputSchema.parse(input.arguments);
+  const args = input.file
+    ? null
+    : RuntimeLocalCommandToolInputSchema.parse(input.arguments);
   if (input.assistant) {
     UuidSchema.parse(input.assistant.runId);
-    if (args.background)
+    if (args?.background)
       throw new RuntimePolicyError('assistant_authority_changed');
   }
-  if (args.background && !localServiceFeatureEnabled())
+  if (args?.background && !localServiceFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const ctx = input.context;
   const owner = ctx.policySnapshot.subjectId;
@@ -105,7 +121,7 @@ export async function createLocalCommandOperation(
       and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!row || row.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
-  const { candidate: requestedCandidate, ...commandArgs } = args;
+  const { candidate: requestedCandidate, ...commandArgs } = args ?? {};
   let ref = requestedCandidate;
   if (input.assistant && !ref) {
     // A development tester already has an immutable, server-assigned version.
@@ -174,47 +190,53 @@ export async function createLocalCommandOperation(
       'lastSeenAt',d.last_seen_at,'createdAt',d.created_at,'revokedAt',d.revoked_at) as device,
       t.id as target_id,g.id as grant_id,g.root_fingerprint,g.runtime_generation,g.label,p.profile
     from allrice_bridge_devices d
-    join allrice_bridge_runtime_profiles p on p.device_id=d.id and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
+    left join allrice_bridge_runtime_profiles p on p.device_id=d.id and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
     join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.state='online'
     join lateral (select * from allrice_bridge_folder_grants where device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null order by created_at desc limit 1) g on true
     where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${owner} and d.revoked_at is null
       and (${candidateTargetId}::uuid is null or t.id=${candidateTargetId}::uuid)
-      and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds' and p.reported_at>clock_timestamp()-interval '90 seconds'
+      and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds' and (${!!input.file} or p.reported_at>clock_timestamp()-interval '90 seconds')
     order by d.last_seen_at desc limit 1`;
   if (!target) throw new RuntimePolicyError('local_runner_unavailable');
   const device = BridgeDeviceSchema.parse(target.device);
-  const profile = RuntimeLocalCommandProfileSchema.parse(target.profile);
+  const profile = input.file
+    ? null
+    : RuntimeLocalCommandProfileSchema.parse(target.profile);
   if (
-    !profile.available ||
-    !isLocalCommandProfileForPlatform(device.platform, profile)
+    !input.file &&
+    (!profile?.available ||
+      !isLocalCommandProfileForPlatform(device.platform, profile))
   )
     throw new RuntimePolicyError('local_runner_unavailable');
-  if (args.diagnostics && !profile.features?.includes('project_diagnostics'))
+  if (args?.diagnostics && !profile?.features?.includes('project_diagnostics'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
-  if (args.dependencies && !profile.features?.includes('npm_dependencies'))
+  if (args?.dependencies && !profile?.features?.includes('npm_dependencies'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
-  if (args.background && !profile.features?.includes('background_services'))
+  if (args?.background && !profile?.features?.includes('background_services'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
-  if (candidate && !profile.features?.includes('changeset_candidate'))
+  if (candidate && !profile?.features?.includes('changeset_candidate'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
-  const payload = RuntimeLocalCommandSchema.parse({
-    capability: 'local.process.execute',
-    arguments: {
-      ...commandArgs,
-      ...(candidate ? { candidate } : {}),
-      imageDigest: profile.imageDigest,
-      isolation: profile.backend,
-      network: 'none',
-    },
-  });
-  localCommandCandidateEvidence(payload);
+  const payload =
+    input.file ??
+    RuntimeLocalCommandSchema.parse({
+      capability: 'local.process.execute',
+      arguments: {
+        ...commandArgs,
+        ...(candidate ? { candidate } : {}),
+        imageDigest: profile!.imageDigest,
+        isolation: profile!.backend,
+        network: 'none',
+      },
+    });
+  if (payload.capability === 'local.process.execute')
+    localCommandCandidateEvidence(payload);
   // Leave room for the operation snapshot inside the existing 512 KB ledger
   // envelope; do not enlarge transport limits for a code proposal.
   if (candidate && Buffer.byteLength(JSON.stringify(payload)) > 480_000)
     throw new RuntimePolicyError('candidate_payload_too_large');
   const key = input.assistant
     ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
-    : `local-command:${ctx.runId}:${input.callId}`;
+    : `${input.file ? payload.capability : 'local-command'}:${ctx.runId}:${input.callId}`;
   const operationId = id(key);
   const task = {
     scope: {
@@ -249,11 +271,16 @@ export async function createLocalCommandOperation(
       grantId: target.grant_id,
       grantVersion: target.runtime_generation,
       scopeDigest: `sha256:${target.root_fingerprint}`,
-      workCopy: { id: operationId, kind: 'local_copy' },
+      workCopy: input.file
+        ? { id: target.grant_id, kind: 'in_place' }
+        : { id: operationId, kind: 'local_copy' },
     },
     action: payload.capability,
     inputDigest: digest(payload),
-    command: localCommandBinding(payload),
+    command:
+      payload.capability === 'local.process.execute'
+        ? localCommandBinding(payload)
+        : null,
     baseline: [],
     dataScope: [],
   });
@@ -324,6 +351,31 @@ export async function createLocalCommandOperation(
   };
 }
 
+export function createLocalCommandOperation(
+  input: Omit<Parameters<typeof createLocalBridgeToolOperation>[0], 'file'>,
+  database: Database = getDatabase(),
+) {
+  return createLocalBridgeToolOperation(input, database);
+}
+export function createLocalFileOperation(
+  input: { context: ExecutionContext; payload: unknown; callId: string },
+  database: Database = getDatabase(),
+) {
+  const file = BridgeCommandPayloadSchema.parse(input.payload);
+  if (
+    file.capability !== 'local.fs.write' &&
+    file.capability !== 'local.fs.mkdir'
+  )
+    throw new RuntimePolicyError('invalid_tool_call');
+  // Explicit null means create-only; absence never permits an unconditional overwrite.
+  if (file.capability === 'local.fs.write')
+    file.arguments.expectedSha256 ??= null;
+  return createLocalBridgeToolOperation(
+    { context: input.context, arguments: null, callId: input.callId, file },
+    database,
+  );
+}
+
 /** Authoritative membership and owner checks shared by browser read/cancel. */
 export async function ownedLocalCommandRun(
   database: Database,
@@ -363,7 +415,7 @@ export async function listLocalCommandOperations(
     select op.id,op.snapshot,op.bridge_payload,a.runtime_request,a.runtime_response,a.runtime_revoked_at,a.runtime_consumed_at
     from allrice_runtime_operations op left join allrice_approval_requests a on a.resource_id=op.id and a.resource_type='runtime_operation' and a.organization_id=op.organization_id and a.workspace_id=op.workspace_id and a.actor_id=${context.actor.id}
     where op.run_id=${runId} and op.organization_id=${context.organizationId} and op.workspace_id=${context.workspaceId}
-      and op.bridge_payload->>'capability'='local.process.execute' order by op.created_at limit 32`;
+      and op.bridge_payload->>'capability' in ('local.process.execute','local.fs.write','local.fs.mkdir') order by op.created_at limit 32`;
   return Promise.all(
     rows.map(async (row) => {
       const output = await database<
@@ -373,10 +425,20 @@ export async function listLocalCommandOperations(
         { evidence: unknown }[]
       >`select payload->'evidence' as evidence from allrice_runtime_operation_receipts
       where operation_id=${row.id} and disposition='applied' and payload->'signal'->>'type' in ('operation.outcome','operation.stopped') order by received_at desc limit 1`;
-      const command = RuntimeLocalCommandSchema.parse(
+      const localCommand = RuntimeLocalCommandSchema.safeParse(
         row.bridge_payload,
-      ).arguments;
-      const [version] = command.candidate
+      );
+      const command = localCommand.success ? localCommand.data.arguments : null;
+      const file = localCommand.success
+        ? null
+        : BridgeCommandPayloadSchema.parse(row.bridge_payload);
+      if (
+        file &&
+        file.capability !== 'local.fs.write' &&
+        file.capability !== 'local.fs.mkdir'
+      )
+        throw new RuntimePolicyError('invalid_tool_call');
+      const [version] = command?.candidate
         ? await database<{ current: boolean }[]>`
         select not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version) as current
         from allrice_deliverable_versions v join allrice_storage_objects o on o.id=v.object_id
@@ -387,7 +449,8 @@ export async function listLocalCommandOperations(
       return {
         snapshot: RuntimeOperationSnapshotSchema.parse(row.snapshot),
         command,
-        candidateState: command.candidate
+        file,
+        candidateState: command?.candidate
           ? version
             ? version.current
               ? 'current'

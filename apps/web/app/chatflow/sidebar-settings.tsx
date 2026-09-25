@@ -9,6 +9,7 @@ import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
 import { MonthlyQuota } from './monthly-quota';
 import { ComputerSettings } from './computer-settings';
+import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 import styles from './sidebar-settings.module.css';
 
@@ -32,6 +33,7 @@ export function SidebarSettings({
   const [visited, setVisited] = useState(() => new Set(['account']));
   const rows = [
     { id: 'account', label: '账号与用量' },
+    { id: 'work', label: '员工工作方式' },
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
     ...(manifest.surfaces.includes('platform_admin')
@@ -92,6 +94,12 @@ export function SidebarSettings({
                   )}
                   {row.id === 'apps' && (
                     <ConnectedApps workspaceId={workspaceId} />
+                  )}
+                  {row.id === 'work' && (
+                    <WorkAutomationSettings
+                      key={workspaceId}
+                      workspaceId={workspaceId}
+                    />
                   )}
                   {row.id === 'computer' && (
                     <ComputerSettings

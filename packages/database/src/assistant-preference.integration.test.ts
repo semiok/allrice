@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Client from './core/client.ts';
@@ -67,6 +68,25 @@ suite(
       await expect(
         sendChatMessage(f.owner, f.workspace, f.session.id, input(true)),
       ).rejects.toMatchObject({ code: 'forbidden' });
+    });
+
+    it('global assistant OFF takes precedence over a task opt-in without blocking the main task', async () => {
+      const f = await createExperienceFixture(isolated.db);
+      await updateWorkAutomation(
+        f.owner,
+        f.workspace,
+        { expectedRevision: 0, capability: 'assistants', enabled: false },
+        isolated.db,
+      );
+      const sent = await sendChatMessage(
+        f.owner,
+        f.workspace,
+        f.session.id,
+        input(true),
+      );
+      const [row] =
+        await isolated.db`select input from allrice_runs where id=${sent.run.id}`;
+      expect(row!.input.assistantConfiguration.allowAssistants).toBe(false);
     });
 
     it('freezes explicit opt-out and keeps it stable across identical retries', async () => {

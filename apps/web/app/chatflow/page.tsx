@@ -1,7 +1,7 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { ChatFlowClient } from './chatflow-client';
 import {
-  localCommandFeatureEnabled,
+  localOperationsFeatureEnabled,
   localMcpEnabled,
   experienceReviewEnabled,
   assistantRuntimeEnabled,
@@ -13,7 +13,7 @@ export default function ChatFlowPage() {
   return (
     <ChatFlowClient
       workbenchEnabled={runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED')}
-      localCommandsEnabled={localCommandFeatureEnabled()}
+      localCommandsEnabled={localOperationsFeatureEnabled()}
       localMcpEnabled={localMcpEnabled()}
       experienceEnabled={experienceReviewEnabled()}
       assistantsEnabled={assistantRuntimeEnabled()}

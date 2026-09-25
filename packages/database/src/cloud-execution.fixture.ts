@@ -1,3 +1,4 @@
+import { updateWorkAutomation } from './work-automation.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
@@ -220,6 +221,18 @@ export async function createCloudExecutionFixture(
     },
     startedAt: now,
   });
+  await updateWorkAutomation(
+    context,
+    workspace,
+    { expectedRevision: 0, capability: 'cloud', enabled: false },
+    db,
+  );
+  await updateWorkAutomation(
+    context,
+    workspace,
+    { expectedRevision: 1, capability: 'computer', enabled: false },
+    db,
+  );
   await setRuntimePolicyControls(
     context,
     {

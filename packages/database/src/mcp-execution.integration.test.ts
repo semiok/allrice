@@ -890,6 +890,17 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     });
     expect(f.service.state.calls).toBe(0);
   });
+  it('MET-159 default automatic work executes a real HTTP MCP call without an approval', async () => {
+    const f = await fixture();
+    await db`delete from allrice_member_work_automation where organization_id=${f.org}`;
+    const op = await f.create();
+    expect(op.snapshot.status).toBe('ready');
+    expect((await f.execute(op)).status).toBe('succeeded');
+    expect(f.service.state.calls).toBe(1);
+    expect(
+      await db`select id from allrice_approval_requests where resource_id=${op.snapshot.binding.attempt.operationId}`,
+    ).toHaveLength(0);
+  });
   it('rechecks connector revocation and membership at dispatch', async () => {
     const f = await fixture(),
       c = await f.create();

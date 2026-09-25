@@ -22,7 +22,8 @@ export const capabilityLabels: Record<
   },
   changeset: {
     title: '文件修改与 Diff 审查',
-    description: '先展示 Changeset 与 Diff，批准精确文件版本后才落盘。',
+    description:
+      '先展示 Changeset 与 Diff，按你的工作方式自动应用或确认后保存。',
     prompt:
       '请针对【填写需要修改的文件与目标】生成 Changeset 和 Diff 供我审查；在获得这一次文件修改的明确批准前，不应用修改。发现版本冲突时停止并重新核对。',
   },
@@ -31,7 +32,7 @@ export const capabilityLabels: Record<
     description:
       '在 Bridge 的独立 Linux 副本中验证项目，不是宿主机任意 Shell。',
     prompt:
-      '请在已授权的 Bridge 沙箱副本中检查【填写项目与测试目标】，先提出精确命令、输入文件版本和执行范围供我审批，再执行并交付退出码与输出。不要操作宿主 Shell。',
+      '请在已授权的 Bridge 沙箱副本中检查【填写项目与测试目标】，提交精确命令、输入文件版本和执行范围，按我的工作方式执行并交付退出码与输出。不要操作宿主 Shell。',
   },
   cloud_command: {
     title: '云端沙箱计算',
@@ -42,16 +43,16 @@ export const capabilityLabels: Record<
   cloud_browser: {
     title: '云端浏览器工作区',
     description:
-      '专属云端浏览器、逐次审批、证据与人工接管，不使用个人 Cookie。',
+      '专属云端浏览器、按工作方式确认、证据与人工接管，不使用个人 Cookie。',
     prompt:
-      '请使用已授权的云端浏览器访问【填写目标 URL】，核查【填写目标】，记录 URL、时间和证据并交付成果。涉及提交或修改时等待精确审批；需要登录时交给我人工接管。',
+      '请使用已授权的云端浏览器访问【填写目标 URL】，核查【填写目标】，记录 URL、时间和证据并交付成果。涉及提交或修改时按我的工作方式执行；需要登录时交给我人工接管。',
   },
   local_browser: {
     title: '本地独立浏览器',
     description:
       '连接 Bridge 后自动准备独立浏览器，无需选择文件夹，不影响日常 Chrome。',
     prompt:
-      '请使用已授权 Bridge 上的独立浏览器核查【填写 URL 与目标】，不要使用个人 Chrome。涉及提交或修改时等待精确审批；设备离线时停止等待，不转交云端。',
+      '请使用已授权 Bridge 上的独立浏览器核查【填写 URL 与目标】，不要使用个人 Chrome。涉及提交或修改时按我的工作方式执行；设备离线时停止等待，不转交云端。',
   },
   cloud_mcp: {
     title: '应用连接',
@@ -64,7 +65,7 @@ export const capabilityLabels: Record<
     title: '本地应用工具',
     description: '通过已连接的电脑使用本地安装的应用服务。',
     prompt:
-      '请使用已授权的本地 MCP 工具完成【填写业务任务】，固定当前 Bridge、目录和版本，逐次请求审批；不要安装未知服务或迁移到云端。',
+      '请使用已授权的本地 MCP 工具完成【填写业务任务】，固定当前 Bridge、目录和版本，按我的工作方式执行；不要安装未知服务或迁移到云端。',
   },
   assistants: {
     title: '日常并行助手',
@@ -80,9 +81,9 @@ export const capabilityLabels: Record<
   development: {
     title: '受控开发协作',
     description:
-      'Rice 分派提案、候选版本沙箱测试与独立审查，汇总证据后交付；本地执行和写盘分别审批，共享根任务预算。',
+      'Rice 分派提案、候选版本沙箱测试与独立审查，汇总证据后交付；本地执行和写盘按工作方式确认，共享根任务预算。',
     prompt:
-      '请在我已授权的本地工作区完成【填写开发目标及目录范围】，组织有限助手生成候选修改、在 Bridge 沙箱测试同一候选版本，并交给未参与编写的助手独立审查。测试命令和最终文件修改分别等待我的审批，交付候选 SHA、真实测试结果与审查结论；设备离线时不要转交云端。',
+      '请在我已授权的本地工作区完成【填写开发目标及目录范围】，组织有限助手生成候选修改、在 Bridge 沙箱测试同一候选版本，并交给未参与编写的助手独立审查。测试命令和最终文件修改按我的工作方式执行，交付候选 SHA、真实测试结果与审查结论；设备离线时不要转交云端。',
   },
   teamwork: {
     title: 'Teamwork · 团队任务',

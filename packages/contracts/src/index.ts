@@ -83,3 +83,4 @@ export * from './runtime-feature-flags.ts';
 export * from './office-quality.ts';
 
 export * from './tenant-employees.ts';
+export * from './work-automation.ts';

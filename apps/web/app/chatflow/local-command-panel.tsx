@@ -5,6 +5,7 @@ import {
   RuntimeLocalCommandResultSchema,
   projectDiagnosticLabels,
   type RuntimeActionApprovalSnapshot,
+  type BridgeCommandPayload,
   type RuntimeLocalCommand,
   type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
@@ -14,7 +15,11 @@ import { CommandCandidatePreview } from './command-candidate-preview';
 
 interface Operation {
   snapshot: RuntimeOperationSnapshot;
-  command: RuntimeLocalCommand['arguments'];
+  command: RuntimeLocalCommand['arguments'] | null;
+  file?: Extract<
+    BridgeCommandPayload,
+    { capability: 'local.fs.write' | 'local.fs.mkdir' }
+  > | null;
   approval: RuntimeActionApprovalSnapshot | null;
   output: { sequence: number; stream: 'stdout' | 'stderr'; content: string }[];
   evidence: { summary: string; output?: unknown } | null;
@@ -29,8 +34,8 @@ const statusLabels: Record<string, string> = {
   running: '正在本地执行',
   cancel_requested: '正在停止，尚未确认',
   canceled: '已确认停止',
-  succeeded: '命令执行成功',
-  failed: '命令未成功',
+  succeeded: '执行成功',
+  failed: '执行未成功',
   unknown: '执行结果待核实',
   partial: '部分完成',
 };
@@ -102,7 +107,7 @@ export function LocalCommandPanel({
     if (busy || (decision !== 'cancel' && !request)) return;
     if (
       decision === 'approved' &&
-      op.command.candidate &&
+      op.command?.candidate &&
       op.candidateState !== 'current'
     )
       return;
@@ -186,102 +191,133 @@ export function LocalCommandPanel({
           >
             <header>
               <strong>
-                {op.command.diagnostics
+                {op.command?.diagnostics
                   ? '项目环境诊断 · 操作授权'
-                  : op.command.dependencies
+                  : op.command?.dependencies
                     ? '依赖准备与验证 · 操作授权'
-                    : '本地命令 · 操作授权'}
+                    : op.file
+                      ? '本地文件 · 操作授权'
+                      : '本地命令 · 操作授权'}
               </strong>
               <span>
                 {statusLabels[op.snapshot.status] ?? op.snapshot.status}
               </span>
             </header>
-            <p>
-              在你的电脑的 Linux
-              隔离副本中执行；项目进程无网络，不会写回原工作区。
-            </p>
-            {op.command.background && (
-              <LocalServiceCard
-                config={op.command.background}
-                service={op.service}
-                runId={runId}
-                workspaceId={workspaceId}
-                tenantHeaders={tenantHeaders}
-                onChanged={() => {
-                  setRevision((v) => v + 1);
-                  onServiceChanged?.();
-                }}
-              />
-            )}
-            {op.command.dependencies && (
-              <section aria-label="依赖安装授权范围">
+            {op.file ? (
+              <section aria-label="文件操作范围">
                 <p>
-                  先运行 npm
-                  ci，再执行下方验证命令；安装位置为本次临时隔离副本，结束后销毁，不安装到本机全局或原工作区。
+                  {op.file.capability === 'local.fs.mkdir'
+                    ? '新建文件夹'
+                    : '写入文件'}
+                  ：<code>{op.file.arguments.path}</code>
                 </p>
-                <p>
-                  安装生命周期脚本：
-                  {op.command.dependencies.scripts === 'disabled'
-                    ? '禁止（--ignore-scripts）'
-                    : '明确允许在隔离副本执行；仍无网络和主机权限'}
-                  。最多 8 个锁定包，归档合计不超过 128 KiB。
-                </p>
-                <ul>
-                  {op.command.dependencies.packages.map((p) => (
-                    <li key={`${p.name}@${p.version}`}>
-                      <code>
-                        {p.name}@{p.version}
-                      </code>
-                      <small>
-                        {p.archivePath
-                          ? `使用已授权归档：${p.archivePath}`
-                          : '由 Bridge 从 registry.npmjs.org 下载；不传送源码或凭证'}
-                      </small>
-                      <small>{p.integrity}</small>
-                    </li>
-                  ))}
-                </ul>
+                {op.file.capability === 'local.fs.write' ? (
+                  <>
+                    <small>
+                      {op.file.arguments.expectedSha256
+                        ? `仅覆盖此版本：${op.file.arguments.expectedSha256}`
+                        : '仅新建，不覆盖已有文件'}
+                    </small>
+                    <details>
+                      <summary>查看写入内容</summary>
+                      <pre>{op.file.arguments.content}</pre>
+                    </details>
+                  </>
+                ) : null}
               </section>
-            )}
-            {op.command.candidate && (
-              <CommandCandidatePreview
-                key={op.command.candidate.checksum}
-                candidate={op.command.candidate}
-                state={op.candidateState}
-              />
-            )}
-            <pre aria-label="待执行命令">
-              {op.command.executable}
-              {op.command.args.map((arg) => ` ${JSON.stringify(arg)}`).join('')}
-            </pre>
-            <p>
-              工作目录：<code>{op.command.path}</code> · 时限{' '}
-              {op.command.background
-                ? `服务硬期限 ${op.command.background.durationMs / 1000}`
-                : op.command.limits.timeoutMs / 1000}{' '}
-              秒 · 内存 {op.command.limits.memoryMiB} MiB · 最多{' '}
-              {op.command.limits.pids} 个进程
-            </p>
-            <details>
-              <summary>
-                查看 {op.command.files.length} 个输入文件及精确版本
-              </summary>
-              <ul>
-                {op.command.files.map((f) => (
-                  <li key={f.path}>
-                    <code>{f.path}</code>
-                    <small>{f.sha256}</small>
-                  </li>
-                ))}
-              </ul>
-              <small>工具链 {op.command.imageDigest}</small>
-            </details>
+            ) : null}
+            {op.command ? (
+              <>
+                <p>
+                  在你的电脑的 Linux
+                  隔离副本中执行；项目进程无网络，不会写回原工作区。
+                </p>
+                {op.command.background && (
+                  <LocalServiceCard
+                    config={op.command.background}
+                    service={op.service}
+                    runId={runId}
+                    workspaceId={workspaceId}
+                    tenantHeaders={tenantHeaders}
+                    onChanged={() => {
+                      setRevision((v) => v + 1);
+                      onServiceChanged?.();
+                    }}
+                  />
+                )}
+                {op.command.dependencies && (
+                  <section aria-label="依赖安装授权范围">
+                    <p>
+                      先运行 npm
+                      ci，再执行下方验证命令；安装位置为本次临时隔离副本，结束后销毁，不安装到本机全局或原工作区。
+                    </p>
+                    <p>
+                      安装生命周期脚本：
+                      {op.command.dependencies.scripts === 'disabled'
+                        ? '禁止（--ignore-scripts）'
+                        : '明确允许在隔离副本执行；仍无网络和主机权限'}
+                      。最多 8 个锁定包，归档合计不超过 128 KiB。
+                    </p>
+                    <ul>
+                      {op.command.dependencies.packages.map((p) => (
+                        <li key={`${p.name}@${p.version}`}>
+                          <code>
+                            {p.name}@{p.version}
+                          </code>
+                          <small>
+                            {p.archivePath
+                              ? `使用已授权归档：${p.archivePath}`
+                              : '由 Bridge 从 registry.npmjs.org 下载；不传送源码或凭证'}
+                          </small>
+                          <small>{p.integrity}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {op.command?.candidate && (
+                  <CommandCandidatePreview
+                    key={op.command.candidate.checksum}
+                    candidate={op.command.candidate}
+                    state={op.candidateState}
+                  />
+                )}
+                <pre aria-label="待执行命令">
+                  {op.command.executable}
+                  {op.command.args
+                    .map((arg) => ` ${JSON.stringify(arg)}`)
+                    .join('')}
+                </pre>
+                <p>
+                  工作目录：<code>{op.command.path}</code> · 时限{' '}
+                  {op.command.background
+                    ? `服务硬期限 ${op.command.background.durationMs / 1000}`
+                    : op.command.limits.timeoutMs / 1000}{' '}
+                  秒 · 内存 {op.command.limits.memoryMiB} MiB · 最多{' '}
+                  {op.command.limits.pids} 个进程
+                </p>
+                <details>
+                  <summary>
+                    查看 {op.command.files.length} 个输入文件及精确版本
+                  </summary>
+                  <ul>
+                    {op.command.files.map((f) => (
+                      <li key={f.path}>
+                        <code>{f.path}</code>
+                        <small>{f.sha256}</small>
+                      </li>
+                    ))}
+                  </ul>
+                  <small>工具链 {op.command.imageDigest}</small>
+                </details>
+              </>
+            ) : null}
             {pending && (
               <div className={styles.actions}>
                 <button
                   disabled={
                     busy !== null ||
-                    (!!op.command.candidate && op.candidateState !== 'current')
+                    (!!op.command?.candidate && op.candidateState !== 'current')
                   }
                   type="button"
                   onClick={() => void act(op, 'approved')}
@@ -295,7 +331,7 @@ export function LocalCommandPanel({
                 >
                   拒绝
                 </button>
-                <small>此授权仅适用于上面的命令、参数、文件版本和环境。</small>
+                <small>此授权仅适用于上面显示的操作、文件版本和环境。</small>
               </div>
             )}
             {op.approval?.response && (
@@ -315,7 +351,7 @@ export function LocalCommandPanel({
                   type="button"
                   onClick={() => void act(op, 'cancel')}
                 >
-                  停止本轮本地命令
+                  停止本轮本地操作
                 </button>
               )}
             {op.evidence && <p>{op.evidence.summary}</p>}

@@ -12,6 +12,8 @@ import {
 
 import {
   ConversationRuntimeError,
+  getDatabase,
+  readWorkAutomation,
   acquireConversationRuntime,
   admitModelExecution,
   assertProviderAvailable,
@@ -240,6 +242,16 @@ export async function executeEmployeeRun({
     ownerId: execution.job.ownerId,
     configChecksum,
   });
+  const workAutomation = await getDatabase().begin((transaction) =>
+    readWorkAutomation(transaction, {
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId!,
+      userId: execution.job.ownerId,
+    }),
+  );
+  const assistantConfiguration = workAutomation.settings.assistants
+    ? input.assistantConfiguration
+    : undefined;
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
     employeeVersionId: input.employeeVersionId,
@@ -247,6 +259,7 @@ export async function executeEmployeeRun({
     userMessageId: input.userMessageId,
     assistantMessageId: input.assistantMessageId,
     resolved,
+    workAutomation: workAutomation.settings,
   };
   const kernel = assembleEmployeeKernel({ ...kernelInput, checkpoint });
   const harnessImages = await loadHarnessImages(kernel.imageAttachments);
@@ -618,7 +631,7 @@ export async function executeEmployeeRun({
     const modelBudgetScope = {
       verifiedSubscription: !!subscriptionSnapshot,
       governedAssistants:
-        objectInput(input.assistantConfiguration).allowAssistants === true,
+        objectInput(assistantConfiguration).allowAssistants === true,
       workflow: routeDecision.selectedKind === 'workflow',
     };
     const taskProgress =
@@ -635,12 +648,11 @@ export async function executeEmployeeRun({
       assertSubscriptionQuotaNotExhausted(codexStatus.quota);
     assertAssistantProviderOutputBound(
       providerSnapshot,
-      objectInput(input.assistantConfiguration).allowAssistants === true,
+      objectInput(assistantConfiguration).allowAssistants === true,
       subscriptionSnapshot,
     );
     const assistantPriceSnapshot = preflightAssistantPricing({
-      enabled:
-        objectInput(input.assistantConfiguration).allowAssistants === true,
+      enabled: objectInput(assistantConfiguration).allowAssistants === true,
       sessionId: input.sessionId,
       deadlineAt: execution.job.timeoutAt,
       modelSnapshot: frozenModelSnapshot,
@@ -768,7 +780,7 @@ export async function executeEmployeeRun({
     ).filter(
       (tool) =>
         !tool.name.startsWith('assistant.') ||
-        objectInput(input.assistantConfiguration).allowAssistants === true,
+        objectInput(assistantConfiguration).allowAssistants === true,
     );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
@@ -789,7 +801,7 @@ export async function executeEmployeeRun({
       systemInstructions: [
         kernel.systemInstructions,
         `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
-        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Explicitly granted exact-approval adapters, including local.process.execute, cloud.process.execute and cloud.mcp.call, are selected by the native DSH Agent Loop and require their own exact, durable per-call approval. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
+        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Granted execution adapters, including local.process.execute, cloud.process.execute and cloud.mcp.call, are selected by the native DSH Agent Loop. The platform applies the member work settings above to each operation. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
       ].join('\n\n'),
       authorizedMemoryContext: [
         kernel.authorizedMemoryContext,
@@ -813,7 +825,7 @@ export async function executeEmployeeRun({
         ? executionSnapshot.modelSnapshot?.runLimits
         : undefined;
     const assistants = productionAssistantController({
-      configuration: input.assistantConfiguration,
+      configuration: assistantConfiguration,
       context: execution.context,
       worker: workflowLease,
       runLimits,

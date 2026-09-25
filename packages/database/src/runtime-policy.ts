@@ -13,6 +13,7 @@ import {
   runtimeGovernedActions,
   UuidSchema,
   McpError,
+  WorkAutomationSchema,
   type RequestContext,
   type RuntimeActionApprovalRequest,
   type RuntimeActionApprovalResponse,
@@ -21,6 +22,7 @@ import {
 import type postgres from 'postgres';
 
 import { getDatabase } from './core/client.ts';
+import { readWorkAutomation } from './work-automation.ts';
 import {
   requireTenantAdministrationAuthority,
   requireTenantAdministrationTarget,
@@ -518,13 +520,46 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
       input.binding,
       options.resolveCurrentBinding,
     );
+    const memberAutomation =
+      input.phase === 'create'
+        ? await readWorkAutomation(transaction, {
+            organizationId: options.context.organizationId,
+            workspaceId: options.context.workspaceId!,
+            userId: options.context.actor.id,
+          })
+        : await operationWorkAutomation(
+            transaction,
+            binding.attempt.operationId,
+          );
     const decision = evaluateRuntimePolicy(
       controls,
       binding,
       options.platformDeniedActions,
+      memberAutomation?.available !== false
+        ? memberAutomation?.settings
+        : undefined,
     );
     if (decision.effect === 'deny')
       throw new RuntimePolicyError(decision.reason);
+    // First create admission precedes insertion; the second is in the same
+    // transaction after insertion. Only that final admission stores this fact.
+    if (input.phase === 'create' && memberAutomation?.available) {
+      const recorded =
+        await transaction`update allrice_runtime_operations set member_automation=${transaction.json(memberAutomation)} where id=${binding.attempt.operationId} and member_automation is null returning id`;
+      if (recorded.length)
+        await audit(
+          transaction,
+          options.context,
+          binding.attempt.operationId,
+          'runtime.confirmation.recorded',
+          decision.reason,
+          {
+            revision: memberAutomation.revision,
+            settings: memberAutomation.settings,
+            effect: decision.effect,
+          },
+        );
+    }
     const digest = runtimePolicyDigest(binding);
     const rows = await transaction<ApprovalRow[]>`
       select * from allrice_approval_requests where organization_id = ${options.context.organizationId}
@@ -618,6 +653,19 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
   };
 }
 
+async function operationWorkAutomation(tx: Transaction, operationId: string) {
+  const [row] = await tx<
+    { member_automation: { revision: number; settings: unknown } | null }[]
+  >`select to_jsonb(o)->'member_automation' as member_automation from allrice_runtime_operations o where id=${operationId}`;
+  return row?.member_automation
+    ? {
+        available: true,
+        revision: row.member_automation.revision,
+        settings: WorkAutomationSchema.parse(row.member_automation.settings),
+      }
+    : null;
+}
+
 export async function requestRuntimeActionApproval(
   options: RuntimePolicyOptions,
   bindingInput: unknown,
@@ -653,6 +701,8 @@ export async function requestRuntimeActionApproval(
       controls,
       binding,
       options.platformDeniedActions,
+      (await operationWorkAutomation(transaction, binding.attempt.operationId))
+        ?.settings,
     );
     if (decision.effect !== 'ask')
       throw new RuntimePolicyError('approval_not_applicable');

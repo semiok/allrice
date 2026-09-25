@@ -10,10 +10,10 @@ describe('ChatFlow server local command capability', () => {
     ['0', '0', '0', false],
     ['1', '0', '1', false],
     ['1', '1', '0', false],
-    ['0', '1', '1', false],
+    ['0', '1', '1', true],
     ['1', '1', '1', true],
   ])(
-    'uses the same three flags as the API (%s/%s/%s)',
+    'keeps file confirmation available without the command runner (%s/%s/%s)',
     (command, policy, ledger, enabled) => {
       vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', command);
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', policy);

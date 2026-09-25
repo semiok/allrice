@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 import { RuntimeActionBindingSchema } from './identity.ts';
+import {
+  workAutomationGroup,
+  type WorkAutomation,
+} from '../work-automation.ts';
 
 /** Exact identifiers only: no glob, regex, script or prompt-based permissions. */
 export const RuntimePolicyControlsSchema = z
@@ -62,6 +66,7 @@ export function evaluateRuntimePolicy(
   controlsInput: unknown,
   bindingInput: unknown,
   platformDeniedActions: readonly string[] = [],
+  automation?: WorkAutomation,
 ): RuntimePolicyDecision {
   const controls = RuntimePolicyControlsSchema.safeParse(controlsInput);
   const binding = RuntimeActionBindingSchema.safeParse(bindingInput);
@@ -72,6 +77,7 @@ export function evaluateRuntimePolicy(
     controls.data,
     action,
     platformDeniedActions,
+    automation,
   );
 }
 
@@ -80,6 +86,7 @@ export function runtimePolicyActionDecision(
   controlsInput: unknown,
   action: string,
   platformDeniedActions: readonly string[] = [],
+  automation?: WorkAutomation,
 ): RuntimePolicyDecision {
   const controls = RuntimePolicyControlsSchema.safeParse(controlsInput);
   if (!controls.success)
@@ -93,9 +100,28 @@ export function runtimePolicyActionDecision(
   if (controls.data.mode === 'plan_only' && !readActions.has(action))
     return { effect: 'deny', reason: 'plan_only' };
   const matches = controls.data.rules.filter((rule) => rule.action === action);
-  // A narrower/later Allow can never erase an applicable hard Deny or Ask.
+  // An explicit Deny remains authoritative. Confirmation follows the member setting.
   if (matches.some((rule) => rule.effect === 'deny'))
     return { effect: 'deny', reason: 'tenant_deny' };
+  // Current member preferences choose confirmation within an already allowed
+  // action. They never register a tool, lift a Deny, or widen a resource grant.
+  const group = workAutomationGroup(action);
+  if (
+    automation &&
+    group &&
+    matches.some(
+      (rule) =>
+        rule.effect === 'allow' ||
+        (group !== 'assistants' && rule.effect === 'ask'),
+    )
+  ) {
+    if (group === 'assistants' && !automation.assistants)
+      return { effect: 'deny', reason: 'member_assistants_disabled' };
+    if (group !== 'assistants')
+      return automation[group]
+        ? { effect: 'allow', reason: 'member_scope_automation' }
+        : { effect: 'ask', reason: 'member_confirmation_required' };
+  }
   // The existing assistant authority requires explicit Allow and rejects Ask;
   // there is no per-delegation approval/resume path to advertise.
   if (
@@ -105,8 +131,8 @@ export function runtimePolicyActionDecision(
     return { effect: 'deny', reason: 'delegation_requires_explicit_allow' };
   if (matches.some((rule) => rule.effect === 'ask'))
     return { effect: 'ask', reason: 'exact_approval_required' };
-  // B2 command execution always needs an exact, single-use approval, even if
-  // a tenant's broad tool rule is Allow. Unknown tools still fail registration.
+  // Legacy operations without a captured member setting retain their original
+  // exact-approval semantics; upgrading cannot approve an existing operation.
   if (
     [
       'local.process.execute',

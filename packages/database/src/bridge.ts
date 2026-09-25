@@ -908,6 +908,11 @@ export async function dispatchBridgeCommand(input: {
   timeoutMs?: number;
 }) {
   const payload = BridgeCommandPayloadSchema.parse(input.payload);
+  if (
+    payload.capability === 'local.fs.write' ||
+    payload.capability === 'local.fs.mkdir'
+  )
+    throw new BridgeDataError('command_unavailable');
   const workspaceId = input.context.workspaceId;
   if (!workspaceId) throw new BridgeDataError('device_offline');
   const ownerId = input.context.policySnapshot.subjectId;

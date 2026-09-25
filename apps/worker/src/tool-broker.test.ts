@@ -19,6 +19,8 @@ const {
   createTraceableMemory,
   createDefaultManagedBrowserTask,
   dispatchBridgeCommand,
+  createLocalFileOperation,
+  waitLocalCommandOperation,
   getToolBrokerFile,
   isManagedBrowserTaskCancelRequested,
   listToolBrokerFiles,
@@ -35,6 +37,8 @@ const {
   createTraceableMemory: vi.fn(),
   createDefaultManagedBrowserTask: vi.fn(),
   dispatchBridgeCommand: vi.fn(),
+  createLocalFileOperation: vi.fn(),
+  waitLocalCommandOperation: vi.fn(),
   getToolBrokerFile: vi.fn(),
   isManagedBrowserTaskCancelRequested: vi.fn(),
   listToolBrokerFiles: vi.fn(),
@@ -54,6 +58,8 @@ vi.mock('@allrice/database', () => ({
   createDefaultManagedBrowserTask,
   createAutomationFromExecutionContext: vi.fn(),
   dispatchBridgeCommand,
+  createLocalFileOperation,
+  waitLocalCommandOperation,
   getToolBrokerFile,
   isManagedBrowserTaskCancelRequested,
   listToolBrokerFiles,
@@ -108,6 +114,8 @@ function executionContext(): ExecutionContext {
 describe('Codex hosted search Tool Broker integration', () => {
   beforeEach(() => {
     dispatchBridgeCommand.mockReset();
+    createLocalFileOperation.mockReset();
+    waitLocalCommandOperation.mockReset();
     getToolBrokerFile.mockReset();
     isManagedBrowserTaskCancelRequested.mockReset();
     listToolBrokerFiles.mockReset();
@@ -369,14 +377,10 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(result.summary).toBe('AI-what · 已读取 README.md');
     expect(riceToolRisk('local.fs.write')).toBe('managed_write');
 
-    dispatchBridgeCommand.mockResolvedValue({
-      output: {
-        path: 'src/rice.ts',
-        created: false,
-        sha256: `sha256:${'b'.repeat(64)}`,
-      },
-      summary: '已更新 src/rice.ts',
-      workspaceLabel: 'AI-what',
+    createLocalFileOperation.mockResolvedValue({ workspaceLabel: 'AI-what' });
+    waitLocalCommandOperation.mockResolvedValue({
+      status: 'succeeded',
+      result: { path: 'src/rice.ts' },
     });
     const writeCallId = randomUUID();
     await executeRiceTool({
@@ -393,7 +397,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         },
       },
     });
-    expect(dispatchBridgeCommand).toHaveBeenLastCalledWith({
+    expect(createLocalFileOperation).toHaveBeenLastCalledWith({
       context,
       payload: {
         capability: 'local.fs.write',
@@ -403,7 +407,7 @@ describe('Codex hosted search Tool Broker integration', () => {
           expectedSha256: `sha256:${'a'.repeat(64)}`,
         },
       },
-      idempotencyKey: `tool:${context.runId}:${writeCallId}`,
+      callId: writeCallId,
     });
   });
 

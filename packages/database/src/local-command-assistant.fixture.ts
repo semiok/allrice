@@ -1,3 +1,4 @@
+import { readWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 /** Synthetic PostgreSQL/Bridge fixture only, never a production entrypoint. */
 import { randomUUID } from 'node:crypto';
 import {
@@ -50,6 +51,25 @@ export async function createAssistantLocalCommandFixture(
     },
   });
   const { db } = f;
+  const automation = await db.begin((tx) =>
+    readWorkAutomation(tx, {
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      userId: f.user,
+    }),
+  );
+  if (automation.available)
+    await updateWorkAutomation(
+      f.context,
+      f.workspace,
+      {
+        expectedRevision: automation.revision,
+        capability: 'computer',
+        enabled: false,
+      },
+      db,
+    );
+
   const deviceId = randomUUID(),
     grantId = randomUUID(),
     targetId = randomUUID();

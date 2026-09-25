@@ -84,6 +84,17 @@ suite(
       await admin?.end({ timeout: 5 });
       vi.unstubAllEnvs();
     });
+    it('MET-159 default automatic work admits the existing local MCP runner', async () => {
+      const f = await fixture();
+      await db`delete from allrice_member_work_automation where organization_id=${f.org}`;
+      const run = await f.newRun(),
+        op = await run.create();
+      expect(op.snapshot.status).toBe('ready');
+      expect(await f.claim()).not.toBeNull();
+      expect(
+        await db`select id from allrice_approval_requests where resource_id=${op.snapshot.binding.attempt.operationId}`,
+      ).toHaveLength(0);
+    });
     it('persists only scoped local references and keeps cloud transport unable to see this binding', async () => {
       const f = await fixture();
       const [record] =
