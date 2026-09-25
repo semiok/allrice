@@ -19,6 +19,7 @@ import { TenantValidation } from './tenant-validation';
 import styles from './tenant-administration.module.css';
 
 export type TenantResourceProps = {
+  advanced?: boolean;
   organizationId: string;
   workspaceId: string;
   onDirty: (dirty: boolean) => void;
@@ -102,6 +103,14 @@ export function TenantResourceEditor(
           ) {
             setSubjectId(requested!);
             initialSubject.current = true;
+          } else if (!requested) {
+            const first = data.members.find(
+              (m) => m.active && m.userStatus === 'active',
+            );
+            if (first) {
+              setSubjectId(first.userId);
+              initialSubject.current = true;
+            }
           }
         }
       } catch (e) {
@@ -142,14 +151,14 @@ export function TenantResourceEditor(
     <section
       aria-label={
         props.mode === 'quotas'
-          ? '分层额度管理'
+          ? '用量管理'
           : props.mode === 'validation'
             ? '租户验收管理'
-            : '环境与连接器管理'
+            : '应用与电脑管理'
       }
     >
       <label>
-        实际使用者
+        查看成员
         <select
           aria-label="实际使用者"
           value={subjectId}
@@ -165,7 +174,7 @@ export function TenantResourceEditor(
             }
           }}
         >
-          <option value="">请选择使用者（不会切换登录身份）</option>
+          <option value="">请选择成员</option>
           {users.map((u) => (
             <option key={u.userId} value={u.userId}>
               {u.displayName} · {u.email}
@@ -182,9 +191,8 @@ export function TenantResourceEditor(
       {subjectId ? (
         <>
           <p>
-            管理员仍使用自己的身份操作；授权使用者：
+            当前查看：
             {users.find((u) => u.userId === subjectId)?.displayName}
-            。不更改其成员角色。
           </p>
           {props.mode === 'quotas' ? (
             <Quotas
@@ -213,9 +221,7 @@ export function TenantResourceEditor(
           )}
         </>
       ) : (
-        <p>
-          选择使用者后查看其生效配置。此处不提供冒用身份或自动授权设备的操作。
-        </p>
+        <p>选择成员，查看其应用连接、电脑和用量。</p>
       )}
     </section>
   );
@@ -335,11 +341,11 @@ function Quotas({
   }
   return (
     <div>
-      <h3>用量统计与资源限制</h3>
+      <h3>用量</h3>
       <p>
         {data?.subscription.tokenPolicy === 'observe'
-          ? 'Codex 订阅的 Token 和月请求次数仅统计，不因内部月额度拦截。下方月限额仅用于 API；并发与任务活跃时长仍用于运行保护。'
-          : '组织总额度、租户资源限额和用户限额共同约束新任务；提高用户额度不会绕过组织额度。员工/Provider 限额仍由原运行准入检查。'}
+          ? 'Codex 订阅的 Token 和请求次数仅作统计。API 用量按已设置的额度执行。'
+          : '查看本月已使用的资源；需要时可展开调整额度。'}
       </p>
       <button
         disabled={busy}
@@ -357,174 +363,190 @@ function Quotas({
           <p>
             统计周期：{new Date(data.periodStart).toLocaleDateString()} 至{' '}
             {new Date(data.resetsAt).toLocaleDateString()}
-            。缓存是输入的一部分，已计入总量，不重复相加。未知不是 0。
           </p>
-          <div className={styles.tableScroll}>
-            <table>
-              <thead>
-                <tr>
-                  <th>限额层级</th>
-                  <th>
-                    来源 /{' '}
-                    {data.subscription.tokenPolicy === 'observe'
-                      ? 'API'
-                      : '生效'}{' '}
-                    Token 上限
-                  </th>
-                  <th>已记录总量 / 其中缓存</th>
-                  <th>未知用量 / 风险预留</th>
-                  <th>月路由请求数（非原生模型调用数）</th>
-                  <th>本层任务活跃时限</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.quotas.map((q) => (
-                  <tr key={q.scope}>
-                    <td>
-                      {labels[q.scope]}
-                      <small>
-                        {q.usageScope === 'organization'
-                          ? '全组织月累计'
-                          : '当前工作区月累计'}
-                      </small>
-                    </td>
-                    <td>
-                      {q.source === 'tenant_override'
-                        ? '显式覆盖'
-                        : q.source === 'platform_override'
-                          ? '继承平台对象配置'
-                          : '继承平台默认'}
-                      <br />
-                      {q.effective.monthlyTokenLimit.toLocaleString()}
-                    </td>
-                    <td>
-                      {q.usedTokens.toLocaleString()} /{' '}
-                      {q.cachedInputTokens === null
-                        ? '未知'
-                        : q.cachedInputTokens.toLocaleString()}
-                    </td>
-                    <td>
-                      {q.unknownUsageRuns} 笔 /{' '}
-                      {q.reservedTokens.toLocaleString()} Token
-                    </td>
-                    <td>{q.usedRuns.toLocaleString()}</td>
-                    <td>
-                      {q.scope === 'organization'
-                        ? '不设置任务时限'
-                        : q.source === 'platform_default'
-                          ? '继承（无显式策略时默认 1 小时）'
-                          : q.effective.maxRuntimeMs === 0
-                            ? '不限制'
-                            : `${q.effective.maxRuntimeMs / 60000} 分钟`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p>{data.subscription.message}</p>
-          <label>
-            调整对象
-            <select
-              aria-label="调整额度对象"
-              disabled={busy}
-              value={scope}
-              onChange={(e) => {
-                if (
-                  dirty &&
-                  !window.confirm('切换对象将放弃未保存修改，是否继续？')
-                )
-                  return;
-                const v = e.target.value as AdminTenantQuota['scope'];
-                setScope(v);
-                setLimits({
-                  ...data.quotas.find((q) => q.scope === v)!.effective,
-                });
-                setInherit(false);
-                setReason('');
-                setDirty(false);
-              }}
-            >
-              {Object.entries(labels).map(([id, label]) => (
-                <option key={id} value={id}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {row && limits ? (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void save();
-              }}
-            >
-              <fieldset disabled={busy}>
-                {scope !== 'organization' ? (
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={inherit}
-                      onChange={(e) => {
-                        setInherit(e.target.checked);
-                        setDirty(true);
-                      }}
-                    />
-                    移除此租户对象覆盖，恢复平台配置/默认值（不清除账本）
-                  </label>
-                ) : (
-                  <p>
-                    此处只修改组织月 Token
-                    与调用次数；组织美分限额保持原值，订阅不据此推算费用。
-                  </p>
-                )}
-                {scope !== 'organization' ? (
-                  <label>
-                    任务活跃时限（新任务生效）
-                    <select
-                      aria-label="任务活跃时限"
-                      value={limits.maxRuntimeMs}
-                      disabled={inherit}
-                      onChange={(e) => {
-                        setLimits({
-                          ...limits,
-                          maxRuntimeMs: Number(e.target.value),
-                        });
-                        setDirty(true);
-                      }}
-                    >
-                      <option value={1800000}>30 分钟</option>
-                      <option value={3600000}>1 小时（默认）</option>
-                      <option value={0}>不限制</option>
-                      {![0, 1800000, 3600000].includes(limits.maxRuntimeMs) ? (
-                        <option value={limits.maxRuntimeMs}>
-                          原自定义值：{limits.maxRuntimeMs / 60000} 分钟
-                        </option>
-                      ) : null}
-                    </select>
-                    <small>
-                      仅整项任务已确认挂起的审批/设备等待暂停计时；仍在工作的助手继续计时。不限制不解除单次工具超时、并发或官方额度限制。多个显式策略取最严格值，移除覆盖才会继承。
-                    </small>
-                  </label>
+          {data.quotas
+            .filter((q) => q.scope === 'user')
+            .map((q) => (
+              <article key={q.scope} aria-label="成员用量概览">
+                <p>
+                  本工作区已记录 Token：
+                  <strong>{q.usedTokens.toLocaleString()}</strong>
+                </p>
+                <p>
+                  本工作区请求次数：
+                  <strong>{q.usedRuns.toLocaleString()}</strong>
+                </p>
+                <p>
+                  正在运行：{q.activeRuns === null ? '暂未统计' : q.activeRuns}
+                </p>
+                {q.unknownUsageRuns > 0 ? (
+                  <p>{q.unknownUsageRuns} 次请求的用量仍待确认。</p>
                 ) : null}
-                {(
-                  [
-                    'monthlyTokenLimit',
-                    'monthlyRunLimit',
-                    ...(scope === 'organization' ? [] : ['concurrentRunLimit']),
-                  ] as (keyof TenantQuotaLimits)[]
-                ).map((key) => (
-                  <label key={key}>
-                    {
+              </article>
+            ))}
+          <p>{data.subscription.message}</p>
+          <details>
+            <summary>额度详情与调整</summary>
+            <div className={styles.tableScroll}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>限额层级</th>
+                    <th>
+                      来源 /{' '}
+                      {data.subscription.tokenPolicy === 'observe'
+                        ? 'API'
+                        : '生效'}{' '}
+                      Token 上限
+                    </th>
+                    <th>已记录总量 / 其中缓存</th>
+                    <th>未知用量 / 风险预留</th>
+                    <th>月路由请求数（非原生模型调用数）</th>
+                    <th>本层任务活跃时限</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.quotas.map((q) => (
+                    <tr key={q.scope}>
+                      <td>
+                        {labels[q.scope]}
+                        <small>
+                          {q.usageScope === 'organization'
+                            ? '全组织月累计'
+                            : '当前工作区月累计'}
+                        </small>
+                      </td>
+                      <td>
+                        {q.source === 'tenant_override'
+                          ? '显式覆盖'
+                          : q.source === 'platform_override'
+                            ? '继承平台对象配置'
+                            : '继承平台默认'}
+                        <br />
+                        {q.effective.monthlyTokenLimit.toLocaleString()}
+                      </td>
+                      <td>
+                        {q.usedTokens.toLocaleString()} /{' '}
+                        {q.cachedInputTokens === null
+                          ? '未知'
+                          : q.cachedInputTokens.toLocaleString()}
+                      </td>
+                      <td>
+                        {q.unknownUsageRuns} 笔 /{' '}
+                        {q.reservedTokens.toLocaleString()} Token
+                      </td>
+                      <td>{q.usedRuns.toLocaleString()}</td>
+                      <td>
+                        {q.scope === 'organization'
+                          ? '不设置任务时限'
+                          : q.source === 'platform_default'
+                            ? '继承（无显式策略时默认 1 小时）'
+                            : q.effective.maxRuntimeMs === 0
+                              ? '不限制'
+                              : `${q.effective.maxRuntimeMs / 60000} 分钟`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <label>
+              调整对象
+              <select
+                aria-label="调整额度对象"
+                disabled={busy}
+                value={scope}
+                onChange={(e) => {
+                  if (
+                    dirty &&
+                    !window.confirm('切换对象将放弃未保存修改，是否继续？')
+                  )
+                    return;
+                  const v = e.target.value as AdminTenantQuota['scope'];
+                  setScope(v);
+                  setLimits({
+                    ...data.quotas.find((q) => q.scope === v)!.effective,
+                  });
+                  setInherit(false);
+                  setReason('');
+                  setDirty(false);
+                }}
+              >
+                {Object.entries(labels).map(([id, label]) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {row && limits ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void save();
+                }}
+              >
+                <fieldset disabled={busy}>
+                  {scope !== 'organization' ? (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={inherit}
+                        onChange={(e) => {
+                          setInherit(e.target.checked);
+                          setDirty(true);
+                        }}
+                      />
+                      移除此租户对象覆盖，恢复平台配置/默认值（不清除账本）
+                    </label>
+                  ) : (
+                    <p>
+                      此处只修改组织月 Token
+                      与调用次数；组织美分限额保持原值，订阅不据此推算费用。
+                    </p>
+                  )}
+                  {scope !== 'organization' ? (
+                    <label>
+                      任务活跃时限（新任务生效）
+                      <select
+                        aria-label="任务活跃时限"
+                        value={limits.maxRuntimeMs}
+                        disabled={inherit}
+                        onChange={(e) => {
+                          setLimits({
+                            ...limits,
+                            maxRuntimeMs: Number(e.target.value),
+                          });
+                          setDirty(true);
+                        }}
+                      >
+                        <option value={1800000}>30 分钟</option>
+                        <option value={3600000}>1 小时（默认）</option>
+                        <option value={0}>不限制</option>
+                        {![0, 1800000, 3600000].includes(
+                          limits.maxRuntimeMs,
+                        ) ? (
+                          <option value={limits.maxRuntimeMs}>
+                            原自定义值：{limits.maxRuntimeMs / 60000} 分钟
+                          </option>
+                        ) : null}
+                      </select>
+                      <small>
+                        仅整项任务已确认挂起的审批/设备等待暂停计时；仍在工作的助手继续计时。不限制不解除单次工具超时、并发或官方额度限制。多个显式策略取最严格值，移除覆盖才会继承。
+                      </small>
+                    </label>
+                  ) : null}
+                  {(
+                    [
+                      'monthlyTokenLimit',
+                      'monthlyRunLimit',
+                      ...(scope === 'organization'
+                        ? []
+                        : ['concurrentRunLimit']),
+                    ] as (keyof TenantQuotaLimits)[]
+                  ).map((key) => (
+                    <label key={key}>
                       {
-                        monthlyTokenLimit: '月 Token 上限',
-                        monthlyRunLimit: '月路由请求次数上限（API）',
-                        concurrentRunLimit: '并发运行上限',
-                        maxRuntimeMs: '单次运行最长毫秒数',
-                      }[key]
-                    }
-                    <input
-                      aria-label={
                         {
                           monthlyTokenLimit: '月 Token 上限',
                           monthlyRunLimit: '月路由请求次数上限（API）',
@@ -532,39 +554,52 @@ function Quotas({
                           maxRuntimeMs: '单次运行最长毫秒数',
                         }[key]
                       }
-                      type="number"
+                      <input
+                        aria-label={
+                          {
+                            monthlyTokenLimit: '月 Token 上限',
+                            monthlyRunLimit: '月路由请求次数上限（API）',
+                            concurrentRunLimit: '并发运行上限',
+                            maxRuntimeMs: '单次运行最长毫秒数',
+                          }[key]
+                        }
+                        type="number"
+                        required
+                        min={key === 'maxRuntimeMs' ? 1000 : 1}
+                        step="1"
+                        value={limits[key]}
+                        disabled={inherit}
+                        onChange={(e) => {
+                          setLimits({
+                            ...limits,
+                            [key]: Number(e.target.value),
+                          });
+                          setDirty(true);
+                        }}
+                      />
+                    </label>
+                  ))}
+                  <label>
+                    修改原因
+                    <input
+                      aria-label="额度修改原因"
                       required
-                      min={key === 'maxRuntimeMs' ? 1000 : 1}
-                      step="1"
-                      value={limits[key]}
-                      disabled={inherit}
+                      minLength={5}
+                      maxLength={500}
+                      value={reason}
                       onChange={(e) => {
-                        setLimits({ ...limits, [key]: Number(e.target.value) });
+                        setReason(e.target.value);
                         setDirty(true);
                       }}
                     />
                   </label>
-                ))}
-                <label>
-                  修改原因
-                  <input
-                    aria-label="额度修改原因"
-                    required
-                    minLength={5}
-                    maxLength={500}
-                    value={reason}
-                    onChange={(e) => {
-                      setReason(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                </label>
-                <button disabled={!dirty || reason.trim().length < 5}>
-                  保存额度
-                </button>
-              </fieldset>
-            </form>
-          ) : null}
+                  <button disabled={!dirty || reason.trim().length < 5}>
+                    保存额度
+                  </button>
+                </fieldset>
+              </form>
+            ) : null}
+          </details>
         </>
       ) : null}
     </div>
@@ -678,9 +713,72 @@ function Environments(props: ScopedProps) {
       setBusy(false);
     }
   }
+  if (!props.advanced)
+    return (
+      <div>
+        <h3>应用与电脑</h3>
+        <p>
+          员工可按需连接应用。成员在工作台设置中登录账号、管理电脑或断开连接。
+        </p>
+        <McpSettings
+          workspaceId={workspaceId}
+          summaryOnly
+          management={{
+            organizationId,
+            subjectId,
+            reason: '',
+            onDirty,
+            onBusy,
+          }}
+        />
+        <h4>已连接电脑</h4>
+        <button disabled={busy} onClick={() => void load()}>
+          刷新电脑状态
+        </button>
+        {error ? <p role="alert">{error}</p> : null}
+        {!data && !error ? <p role="status">正在读取电脑…</p> : null}
+        {data?.devices.map((d) => (
+          <article key={d.id}>
+            <strong>{d.name}</strong> ·{' '}
+            {d.status === 'online' ? '在线' : '离线'}
+            <p>
+              已选择文件夹：
+              {d.folderGrants.map((f) => f.label).join('、') || '尚未选择'}
+            </p>
+            {d.lastSeenAt ? (
+              <small>最近连接：{new Date(d.lastSeenAt).toLocaleString()}</small>
+            ) : null}
+          </article>
+        ))}
+        {data && !data.devices.length ? (
+          <p>
+            还没有连接电脑。需要处理本地文件时，在工作台「设置 → 我的电脑」连接
+            Bridge 即可。
+          </p>
+        ) : null}
+        {data ? (
+          <>
+            <h4>云端工作</h4>
+            {data.prerequisites
+              .filter((rs) =>
+                ['cloud_command', 'cloud_browser'].includes(rs[0]?.id ?? ''),
+              )
+              .map((rs) => {
+                const r = rs.find((item) => item.state !== 'ready') ?? rs[0]!;
+                return (
+                  <p key={r.id}>
+                    {capabilityLabels[r.id].title} ·{' '}
+                    {capabilityStateLabels[r.state]}
+                  </p>
+                );
+              })}
+          </>
+        ) : null}
+      </div>
+    );
   return (
     <div>
-      <h3>环境与连接器</h3>
+      <h3>连接配置（开发者工具）</h3>
       <p>
         云端可独立使用，不要求安装
         Bridge。本地离线不会自动转云、上传文件或重放未知结果。
@@ -692,8 +790,8 @@ function Environments(props: ScopedProps) {
       {guide ? (
         <aside aria-label="设备确认指引">
           <p>
-            请让所选使用者在自己的电脑登录租户前台 → 本地工作区 →
-            生成配对码/选择工作区。平台管理员不会替他生成配对凭证。
+            成员在工作台「设置 → 我的电脑」下载并配对
+            Bridge，然后选择要交给员工处理的文件夹。
           </p>
           <p>
             <a href="/api/v1/bridge/client/macos-arm64" download>
@@ -705,9 +803,8 @@ function Environments(props: ScopedProps) {
             </a>
           </p>
           <p>
-            设备主人在 Bridge 菜单确认工作区、沙箱和独立浏览器；MCP
-            本地凭证只在设备保存。这里不能开启宿主 Shell、读取个人 Chrome
-            登录态或代选目录。
+            配对后自动准备浏览器和计算环境。成员可在「设置 →
+            我的电脑」开启或关闭本地能力。
           </p>
         </aside>
       ) : null}
@@ -776,7 +873,7 @@ function Environments(props: ScopedProps) {
         <>
           <p>
             检查时间：{new Date(data.observedAt).toLocaleString()}
-            。设备本地开关仍须本人确认；服务端授权不等于设备已开启。
+            。电脑连接和能力状态以设备实际报告为准。
           </p>
           {data.devices.map((d) => (
             <article key={d.id}>
@@ -822,7 +919,7 @@ function Environments(props: ScopedProps) {
                   <a
                     href={`/runtime-console?view=tenants&organizationId=${organizationId}&workspaceId=${workspaceId}`}
                   >
-                    前往该租户的执行策略与 Rice 发布
+                    查看已派驻员工
                   </a>
                 ) : null}
               </article>

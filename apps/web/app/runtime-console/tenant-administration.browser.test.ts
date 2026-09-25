@@ -244,12 +244,61 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     page.on('pageerror', (e) => failures.push(e.stack ?? e.message));
     await page.goto(origin);
     await page.getByLabel('管理租户').selectOption(snow.organizationId);
-    await page.getByRole('button', { name: '成员与角色', exact: true }).click();
+    await page.getByRole('button', { name: '真人成员', exact: true }).click();
     await page
       .getByRole('button', { name: '编辑 Snow fixture', exact: true })
       .waitFor();
     return { page, context };
   }
+  it('shows three tenant sections and a read-only connection overview without exposing engineering forms', async () => {
+    const { page, context } = await pageFor(platform, 390);
+    try {
+      expect(
+        await page
+          .getByRole('navigation', { name: '租户管理栏目', exact: true })
+          .getByRole('button')
+          .allTextContents(),
+      ).toEqual(['AI 员工团队', '真人成员', '连接与用量']);
+      expect(
+        await page
+          .getByRole('button', { name: '执行策略', exact: true })
+          .count(),
+      ).toBe(0);
+      await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      const start = requests.length;
+      await page
+        .getByRole('button', { name: '连接与用量', exact: true })
+        .click();
+      await page.getByRole('region', { name: '已连接应用概览' }).waitFor();
+      await page
+        .getByRole('heading', { name: '已连接电脑', exact: true })
+        .waitFor();
+      expect(await page.getByLabel('环境修改原因').count()).toBe(0);
+      expect(await page.getByLabel('授权执行目标').count()).toBe(0);
+      expect(
+        await page
+          .getByRole('button', { name: '保存连接', exact: true })
+          .count(),
+      ).toBe(0);
+      await page.getByRole('button', { name: '用量', exact: true }).click();
+      await page.getByRole('article', { name: '成员用量概览' }).waitFor();
+      expect(
+        await page
+          .getByRole('spinbutton', { name: '月 Token 上限', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        requests.slice(start).every((request) => request.startsWith('GET ')),
+      ).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+    } finally {
+      await context.close();
+    }
+  });
   it('deploys, selects a default and withdraws a published employee through the real UI without a mandatory note', async () => {
     const source = await createEmployeeAdministrationFixture(fixture.db);
     await fixture.db`update allrice_workspaces set name='Deployment fixture workspace' where id=${source.workspaceId}`;
@@ -338,7 +387,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         `${origin}/runtime-console?view=tenants&organizationId=${a.target.organizationId}&workspaceId=${a.target.workspaceId}&tenantView=validation&subjectId=${a.target.subjectId}`,
       );
       await page
-        .getByRole('heading', { name: '验收与交付', exact: true })
+        .getByRole('heading', { name: '运行检查', exact: true })
         .waitFor();
       expect(
         await page.getByLabel('实际使用者', { exact: true }).inputValue(),
@@ -385,7 +434,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           )
         ).status(),
       ).toBe(404);
-      await page.getByRole('link', { name: '调整内部额度' }).click();
+      await page.getByRole('link', { name: '查看用量' }).click();
+      await page.getByText('额度详情与调整', { exact: true }).click();
       await page.getByLabel('月 Token 上限', { exact: true }).waitFor();
       expect(
         await page.getByLabel('实际使用者', { exact: true }).inputValue(),
@@ -420,10 +470,14 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     const { page, context } = await pageFor();
     try {
       await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
-      await page.getByRole('button', { name: '分层额度', exact: true }).click();
+      await page
+        .getByRole('button', { name: '连接与用量', exact: true })
+        .click();
+      await page.getByRole('button', { name: '用量', exact: true }).click();
       await page
         .getByLabel('实际使用者', { exact: true })
         .selectOption(snow.user.id);
+      await page.getByText('额度详情与调整', { exact: true }).click();
       await page.getByLabel('月 Token 上限', { exact: true }).fill('5000000');
       await page
         .getByLabel('额度修改原因')
@@ -520,9 +574,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     const { page, context } = await pageFor();
     try {
       await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
-      await page
-        .getByRole('button', { name: '环境与连接器', exact: true })
-        .click();
+      await page.getByText('开发者工具', { exact: true }).click();
+      await page.getByRole('button', { name: '连接配置', exact: true }).click();
       await page
         .getByLabel('实际使用者', { exact: true })
         .selectOption(snow.user.id);
@@ -627,6 +680,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     const { page, context } = await pageFor();
     try {
       await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      await page.getByText('开发者工具', { exact: true }).click();
       await page.getByRole('button', { name: '执行策略', exact: true }).click();
       await page.getByLabel('启用工作区策略').check();
       await page
@@ -648,9 +702,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button', { name: '确认保存策略', exact: true })
         .click();
       await page
-        .getByText('策略已保存并审计；未开启平台执行开关，也未授予设备权限。', {
-          exact: true,
-        })
+        .getByText(
+          '工作区规则已保存。成员的应用和电脑连接可在「连接与用量」查看。',
+          {
+            exact: true,
+          },
+        )
         .waitFor();
       await page
         .getByText('当前版本：1 · 保存将创建版本 2', { exact: true })
@@ -708,10 +765,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       ).toBe(400);
       await page.reload();
       await page.getByLabel('管理租户').selectOption(snow.organizationId);
-      await page
-        .getByRole('button', { name: '成员与角色', exact: true })
-        .click();
+      await page.getByRole('button', { name: '真人成员', exact: true }).click();
       await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
+      await page.getByText('开发者工具', { exact: true }).click();
       await page.getByRole('button', { name: '执行策略', exact: true }).click();
       await page
         .getByText('当前版本：1 · 保存将创建版本 2', { exact: true })
@@ -1021,9 +1077,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await ensureBootstrapPortalPrincipal(snow.input, fixture.db);
       await page.reload();
       await page.getByLabel('管理租户').selectOption(snow.organizationId);
-      await page
-        .getByRole('button', { name: '成员与角色', exact: true })
-        .click();
+      await page.getByRole('button', { name: '真人成员', exact: true }).click();
       await page
         .getByRole('row')
         .filter({ hasText: 'Snow fixture' })
