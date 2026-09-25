@@ -36,6 +36,17 @@ const thirdPartyErrorGuard = `
 export const metadata: Metadata = {
   title: 'AllRice',
   description: 'AI workspace for enterprise employees',
+  icons: {
+    icon: [
+      { url: '/favicon.ico?v=rice-star-1', sizes: '16x16 32x32 48x48' },
+      {
+        url: '/brand/allrice-icon-v1.svg',
+        type: 'image/svg+xml',
+        sizes: 'any',
+      },
+    ],
+    apple: { url: '/brand/apple-touch-icon-v1.png', sizes: '180x180' },
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

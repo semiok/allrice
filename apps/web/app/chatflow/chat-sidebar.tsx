@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { AllriceBrand } from '../../components/allrice-brand';
+import { AllriceMark } from '../../components/allrice-mark';
 
 import type { SaasCapabilityManifest } from '@allrice/contracts';
 import { SidebarSettings } from './sidebar-settings';
@@ -123,14 +125,7 @@ export function ChatSidebar({
               onClick={() => onNewSession()}
               type="button"
             >
-              <span className={sidebarUi.brandIdentity}>
-                <span className={styles.allRiceMark}>R</span>
-                <span
-                  className={`${sidebarUi.brandName} ${sidebarUi.fallbackBrandName}`}
-                >
-                  AllRice
-                </span>
-              </span>
+              <AllriceBrand />
             </button>
           ) : null}
           <button
@@ -142,7 +137,7 @@ export function ChatSidebar({
             {collapsed ? (
               <>
                 <span className={`${sidebarUi.railMark} ${styles.railMark}`}>
-                  R
+                  <AllriceMark />
                 </span>
                 <span
                   aria-hidden="true"
