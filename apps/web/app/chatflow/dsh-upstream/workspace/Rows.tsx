@@ -201,12 +201,15 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' |
  * @param props.t - the browser root's locale seat.
  * @returns the row element.
  */
-export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, leading, actions, drag, home, t }: {
+export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, leading, title, description, actions, drag, home, t }: {
   group: GroupNode
   containsCurrentDescendant?: boolean
   onToggle: () => void
   onCreate?: () => void
   leading?: ReactNode
+  /** Optional host identity slots; native row interaction stays unchanged. */
+  title?: ReactNode
+  description?: ReactNode
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
   actions?: { rename: () => void; delete: () => void } | undefined
   /** Present only for real Workspace rows in the grouped view. */
@@ -254,7 +257,8 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
         <IconTriangleRightFillRegular className={clsx(css.arrow, row.expanded && css.arrowOpen)} />
       </span>
       <span className={css.projectText}>
-        <span className={css.title}>{label}</span>
+        <span className={css.title}>{title ?? label}</span>
+        {description}
       </span>
       <span className={css.rowActions}>
         {actions !== undefined && (

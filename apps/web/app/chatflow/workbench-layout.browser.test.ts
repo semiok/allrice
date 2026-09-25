@@ -1166,8 +1166,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page
           .locator('[data-accent="violet"]')
-          .evaluate((node) => getComputedStyle(node).color),
-      ).toBe('rgb(9, 13, 22)');
+          .getByText('R', { exact: true })
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+      ).toBe('rgb(139, 92, 246)');
       await f.page
         .getByRole('button', { name: '查看Rice详情', exact: true })
         .click();
@@ -1314,6 +1315,45 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it('employee card hover preserves initials and position while highlighting the card', async () => {
     const f = await fixture({ employeeCount: 2, employeeHistory: true });
     try {
+      const selected = f.page.locator(
+        '[data-row-key^="session:"][aria-selected="true"]',
+      );
+      const other = f.page
+        .locator('[data-row-key^="session:"][aria-selected="false"]')
+        .first();
+      await selected.waitFor();
+      await other.hover();
+      await expect
+        .poll(() =>
+          other.evaluate((node) => getComputedStyle(node).backgroundColor),
+        )
+        .toBe('rgb(233, 236, 241)');
+      expect(
+        await selected.evaluate(
+          (node) => getComputedStyle(node).backgroundColor,
+        ),
+      ).toBe('rgb(225, 230, 237)');
+      await selected.hover();
+      await expect
+        .poll(() =>
+          selected.evaluate((node) => getComputedStyle(node).backgroundColor),
+        )
+        .toBe('rgb(216, 223, 232)');
+      await f.page.mouse.move(1000, 900);
+      if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT) {
+        await f.page.locator('#chat-sidebar').screenshot({
+          path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}.png`,
+        });
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        await f.page.locator('#chat-sidebar').screenshot({
+          path: `${process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-dark.png`,
+        });
+        await f.page.evaluate(() =>
+          document.body.removeAttribute('data-ds-dark-theme'),
+        );
+      }
       for (const [employeeId, initial] of [
         [id(7), 'R'],
         [id(17), 'O'],
@@ -1324,15 +1364,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.mouse.move(1000, 900);
         await expect.poll(() => letter.isVisible()).toBe(true);
         const before = await letter.boundingBox();
-        const shadow = await card.evaluate(
-          (e) => getComputedStyle(e).boxShadow,
-        );
+        await expect
+          .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
+          .toBe('rgb(240, 242, 245)');
         await row.hover();
         expect(await letter.isVisible()).toBe(true);
         expect(await letter.boundingBox()).toEqual(before);
         await expect
-          .poll(() => card.evaluate((e) => getComputedStyle(e).boxShadow))
-          .not.toBe(shadow);
+          .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
+          .toBe('rgb(233, 236, 241)');
+        expect(await card.evaluate((e) => getComputedStyle(e).boxShadow)).toBe(
+          'none',
+        );
         const expanded = await row.getAttribute('aria-expanded');
         await row.click();
         await expect

@@ -66,9 +66,9 @@
           "source": "packages/client/ui-workspace/src/client/rows/Rows.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx",
           "upstreamSha256": "2b2f59907bbaf167d96db1af267ac5778a35313d0a8f4199c9666e93485b2a53",
-          "sha256": "93f582f33a80add8b06f1ee9bfdc095d549c30e5d18776f664e51534d452b9c1",
+          "sha256": "b091ec9fc2f35bd8272618c3b220d90d43a69cafe733d403664dcfdd4955d720",
           "patch": "scripts/dsh-ui-patches/Rows.tsx.patch",
-          "patchSha256": "2ddf001e9a8ce7ad97d58cde4bfe60d2aefa48eea9d19198057df5be56b1d320"
+          "patchSha256": "fac535173012e96ad60b1d55d750e20361d3b784c086e5bd6f38e32037086835"
         },
         {
           "source": "packages/client/ui-workspace/src/client/rows/Rows.module.css",
@@ -337,9 +337,9 @@
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
           "upstreamSha256": "6a0fe6d492ab2aeed06123d7bc1ae6fe78b6c76a26e9d1611a9c8c79dfcc7603",
-          "sha256": "c2c7b53da9de653a19c95d00e589ece2e984a8db2a0d8af131ba507107486e55",
+          "sha256": "fe54a653c50233d4e078604375ba8427107eb0d68ad3c25d9046d18df84b4960",
           "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.tsx.patch",
-          "patchSha256": "3e468d145f904006d4cffa642a1f17684a9c14ff3c8ad497238aa0556f7d3212"
+          "patchSha256": "110b18bc5fefbdba63eddadbd619b09dd9905be0bd3f80afb3e6f21c8896fe67"
         },
         {
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.module.css",

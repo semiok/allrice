@@ -4,6 +4,11 @@
    selector deliberately wins that tie so a long transcript cannot grow the
    document and move the header, sidebar footer, or composer off screen. */
 main.shell {
+  --allrice-sidebar-bg: #f8f9fb;
+  --allrice-employee-bg: #f0f2f5;
+  --allrice-sidebar-hover: #e9ecf1;
+  --allrice-session-selected: #e1e6ed;
+  --allrice-session-selected-hover: #d8dfe8;
   position: fixed;
   inset: 0;
   width: 100%;
@@ -47,7 +52,16 @@ main.shell {
 
 .sidebar,
 .sidebarCollapsed {
+  --dsw-specific-sidebar-fill: var(--allrice-sidebar-bg);
   min-width: 0;
+}
+
+:global(body[data-ds-dark-theme]) .shell {
+  --allrice-sidebar-bg: #191b20;
+  --allrice-employee-bg: #24272d;
+  --allrice-sidebar-hover: #30353d;
+  --allrice-session-selected: #39414c;
+  --allrice-session-selected-hover: #444e5c;
 }
 
 .sidebarBackdrop {
