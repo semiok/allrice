@@ -123,10 +123,17 @@ const developerMenu = (item) => {
     ui(['key up option']);
   }
 };
-const status = () =>
-  ui([
-    'get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"',
-  ]);
+const status = () => {
+  try {
+    return ui([
+      'get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"',
+    ]);
+  } catch (error) {
+    // The core can connect before AppKit has exposed its initial window.
+    if (String(error.stderr).includes('(-1728)')) return '';
+    throw error;
+  }
+};
 async function wait(predicate) {
   for (let i = 0; i < 100; i++) {
     if (await predicate()) return;

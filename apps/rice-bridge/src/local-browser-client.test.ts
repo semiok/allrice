@@ -1,9 +1,11 @@
 import { createServer, type RequestListener } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalBrowserHttpAuthority } from './local-browser-client.js';
 const close: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
   for (const stop of close.splice(0)) await stop();
 });
 async function fixture(handler: RequestListener) {
@@ -21,6 +23,48 @@ async function fixture(handler: RequestListener) {
   });
 }
 describe('P22 real HTTP authority transport', () => {
+  it('does not wait for a failed response stream to finish cancellation', async () => {
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(new ReadableStream({ cancel }), { status: 502 }),
+      ),
+    );
+    const client = new LocalBrowserHttpAuthority({
+      server: 'https://saas.example',
+      token: 'synthetic',
+    });
+    await expect(client.claim(randomUUID(), false)).rejects.toThrow(
+      'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+  it.each(['caller', 'deadline'])(
+    'settles on %s cancellation even when fetch never settles',
+    async (kind) => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn<typeof fetch>(
+        () => new Promise<Response>(() => {}),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const client = new LocalBrowserHttpAuthority({
+        server: 'https://saas.example',
+        token: 'synthetic',
+      });
+      const shutdown = new AbortController();
+      const pending = client.claim(randomUUID(), false, false, shutdown.signal);
+      const rejected = expect(pending).rejects.toThrow(
+        'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+      );
+      if (kind === 'caller') shutdown.abort();
+      else await vi.advanceTimersByTimeAsync(2500);
+      await rejected;
+      expect(fetchMock.mock.calls[0]?.[1]?.signal.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
   it.each(['headers', 'body'])(
     'caller stop aborts an actual pending claim %s',
     async (phase) => {
