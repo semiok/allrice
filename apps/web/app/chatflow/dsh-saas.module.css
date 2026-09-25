@@ -1266,74 +1266,6 @@ div.composerTools {
   overflow-wrap: anywhere;
 }
 
-.assistantCopy :global(p),
-.assistantCopy :global(ul),
-.assistantCopy :global(ol),
-.assistantCopy :global(blockquote),
-.assistantCopy :global(pre),
-.assistantCopy :global(table) {
-  margin: 0;
-}
-
-.assistantCopy :global(h1),
-.assistantCopy :global(h2),
-.assistantCopy :global(h3),
-.assistantCopy :global(h4) {
-  margin: 0 0 12px;
-  color: var(--dsw-alias-label-primary);
-  font-size: 1em;
-  line-height: inherit;
-}
-
-.assistantCopy :global(ul),
-.assistantCopy :global(ol) {
-  padding-left: 24px;
-}
-
-.assistantCopy :global(a) {
-  color: var(--dsw-alias-state-business-primary);
-  text-decoration: none;
-}
-
-.assistantCopy :global(a:hover),
-.assistantCopy :global(a:focus-visible) {
-  text-decoration: underline;
-}
-
-.assistantCopy :global(code) {
-  border-radius: 5px;
-  background: var(--dsw-alias-markdown-code-block);
-  padding: 1px 5px;
-  font-family: var(--ds-font-family-code);
-  font-size: 0.9em;
-}
-
-.assistantCopy :global(pre) {
-  overflow-x: auto;
-  border-radius: 12px;
-  background: var(--dsw-alias-markdown-code-block);
-  padding: 12px 16px;
-}
-
-.assistantCopy :global(pre code) {
-  background: transparent;
-  padding: 0;
-}
-
-.assistantCopy :global(table) {
-  display: block;
-  max-width: 100%;
-  overflow-x: auto;
-  border-collapse: collapse;
-}
-
-.assistantCopy :global(th),
-.assistantCopy :global(td) {
-  padding: 6px 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  text-align: left;
-}
-
 .failedMessage {
   margin-top: 6px;
   color: var(--dsw-alias-state-danger-label, #d54941);
@@ -1985,14 +1917,8 @@ div.composerTools {
 .processStatus {
   color: var(--dsw-alias-label-secondary);
 }
-.assistantCopy[data-streaming='true'] > :last-child::after {
-  content: '▍';
-  color: var(--dsw-alias-label-secondary);
-  animation: nativeEventPulse 1s ease-in-out infinite;
-}
 @media (prefers-reduced-motion: reduce) {
-  .processPulse,
-  .assistantCopy[data-streaming='true'] > :last-child::after {
+  .processPulse {
     animation: none;
   }
 }
@@ -2035,18 +1961,14 @@ div.composerTools {
   }
 }
 
-/* Public intermediate replies use the same native Markdown as the final answer. */
+/* The native Markdown component owns typography and streaming layout. */
 .processReply {
+  min-width: 0;
   color: var(--dsw-alias-label-primary);
-  margin: 12px 0 16px;
-  line-height: 1.7;
 }
-
-.processDetails.processFlow {
-  max-height: none;
-  overflow: visible;
-  padding-left: 0;
-}
-.processFlow .processReply {
-  font-size: var(--dsw-font-size-message, 14px);
+.processFlow {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
 }

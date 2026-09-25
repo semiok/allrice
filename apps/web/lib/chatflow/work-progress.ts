@@ -1,4 +1,5 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
+import { nativeProcessGroups } from './native-process-groups';
 import {
   assistantReplies,
   currentAssistantEvents,
@@ -15,11 +16,10 @@ export type WorkProgressPart =
       id: string;
       sequence: number;
       items: NativeExperienceItem[];
+      closed?: boolean;
     };
 
-/** Adapt durable Allrice events to DSH's process → reply → process reading order.
- * Renderers remain the existing native DisclosureRow and AssistantMarkdown.
- */
+/** Adapt durable Allrice events to the official DSH process grouping. */
 export function projectWorkProgress(
   events: ChatFlowEventEnvelope[],
   fallback: string,
@@ -59,10 +59,13 @@ export function projectWorkProgress(
     (latest.text === finalText || completed?.payload.replyId === latest.id)
       ? latest.id
       : undefined;
-  const ordered = [
-    ...replies
-      .filter((reply) => reply.id !== finalReplyId)
-      .map((reply) => ({ ...reply, kind: 'reply' as const })),
+  const ordered: WorkProgressPart[] = [
+    ...replies.map((reply) => ({
+      ...reply,
+      id: `reply:${reply.id}`,
+      text: reply.id === finalReplyId ? finalText : reply.text,
+      kind: 'reply' as const,
+    })),
     ...items
       .filter((item) =>
         ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
@@ -74,12 +77,13 @@ export function projectWorkProgress(
         items: [item],
       })),
   ].sort((a, b) => a.sequence - b.sequence);
-  const parts: WorkProgressPart[] = [];
-  for (const part of ordered) {
-    const previous = parts.at(-1);
-    if (part.kind === 'steps' && previous?.kind === 'steps')
-      previous.items.push(...part.items);
-    else parts.push(part);
-  }
+  if (finalText && !finalReplyId)
+    ordered.push({
+      kind: 'reply',
+      id: 'final-reply',
+      sequence: (current.at(-1)?.sequence ?? 0) + 1,
+      text: finalText,
+    });
+  const parts = nativeProcessGroups(ordered, running);
   return { items, parts, finalText };
 }

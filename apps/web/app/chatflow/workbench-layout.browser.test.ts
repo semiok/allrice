@@ -204,6 +204,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       noStorage?: boolean;
       running?: boolean;
       streamingOutput?: boolean;
+      controlledStream?: boolean;
       queue?: boolean;
     } = {},
   ) {
@@ -320,6 +321,41 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       finishStream = done;
     });
     page.on('pageerror', (e) => errors.push(e.message));
+    if (options.controlledStream)
+      await page.addInitScript(() => {
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          const url = new URL(String(input), location.origin);
+          if (
+            !url.pathname.endsWith('/events') ||
+            url.searchParams.has('format')
+          )
+            return originalFetch(input, init);
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const push = (event: Event) =>
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    (event as CustomEvent<string>).detail,
+                  ),
+                );
+              window.addEventListener('allrice-test-stream', push);
+              document.documentElement.dataset.streamReady = 'true';
+              init?.signal?.addEventListener(
+                'abort',
+                () => {
+                  window.removeEventListener('allrice-test-stream', push);
+                  controller.close();
+                },
+                { once: true },
+              );
+            },
+          });
+          return new Response(stream, {
+            headers: { 'Content-Type': 'text/event-stream' },
+          });
+        };
+      });
     if (options.noStorage)
       await page.addInitScript(() => {
         Object.defineProperty(window, 'localStorage', {
@@ -2369,6 +2405,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page.getByText('我先检查项目目录。', { exact: true }).count(),
       ).toBe(1);
+      const steps = process.getByRole('region', {
+        name: '工作步骤',
+        exact: true,
+      });
+      await steps.getByRole('button').click();
       const text = await process.innerText();
       expect(text.indexOf('我先检查项目目录。')).toBeLessThan(
         text.indexOf('已读取入口文件'),
@@ -2376,7 +2417,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(text.indexOf('已读取入口文件')).toBeLessThan(
         text.indexOf('入口文件已确认。'),
       );
-      expect(await process.getByRole('button').count()).toBe(0);
+      expect(await steps.getByRole('button').count()).toBe(1);
       await f.page.screenshot({ path: '.local/feedback/interleaved-live.png' });
       f.state.events.push(
         event(6, 'assistant.text.completed', {
@@ -2386,23 +2427,131 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       );
       f.state.messageStatus = 'completed';
       await f.page.reload();
-      const toggle = process.getByRole('button');
+      const toggle = steps.getByRole('button');
       await toggle.waitFor();
       await f.page.getByText('入口文件已确认。', { exact: true }).waitFor();
-      expect(
-        await process.getByText('我先检查项目目录。', { exact: true }).count(),
-      ).toBe(0);
-      await toggle.click();
       await process.getByText('我先检查项目目录。', { exact: true }).waitFor();
+      await toggle.click();
       expect(
-        await process.getByText('入口文件已确认。', { exact: true }).count(),
-      ).toBe(0);
+        await process
+          .getByText('我先检查项目目录。', { exact: true })
+          .isVisible(),
+      ).toBe(true);
+      expect(
+        await process
+          .getByText('入口文件已确认。', { exact: true })
+          .isVisible(),
+      ).toBe(true);
       expect(
         await f.page.getByText('入口文件已确认。', { exact: true }).count(),
       ).toBe(1);
       expect(
         await process.getByRole('list', { name: '工作步骤' }).count(),
       ).toBe(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('native streaming preserves settled paragraphs and reading position across deltas and completion', async () => {
+    const f = await fixture({
+      running: true,
+      streamingOutput: true,
+      controlledStream: true,
+    });
+    try {
+      await f.page.waitForFunction(
+        () => document.documentElement.dataset.streamReady === 'true',
+      );
+      const push = async (
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+      ) => {
+        const sequence = f.state.events.length + 1;
+        const event: ChatFlowEventEnvelope = {
+          schemaVersion: 3,
+          eventId: id(800 + sequence),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence,
+          cursor: `${run}:${sequence}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: null,
+          type,
+          payload,
+        };
+        f.state.events.push(event);
+        await f.page.evaluate(
+          (body) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', { detail: body }),
+            ),
+          `data: ${JSON.stringify(event)}\n\n`,
+        );
+      };
+      await push('assistant.text.delta', {
+        replyId: 'first',
+        text: '我先读取资料。',
+      });
+      await push('tool.completed', {
+        toolCallId: 'read',
+        name: 'read',
+        summary: '已读取报告',
+      });
+      let text =
+        '固定首段。\n\n' +
+        Array.from({ length: 24 }, (_, i) => `第 ${i + 1} 段分析。`).join(
+          '\n\n',
+        ) +
+        '\n\n正在汇总';
+      await push('assistant.text.delta', { replyId: 'last', text });
+      const reply = f.page.locator('[data-work-reply="reply:last"]');
+      await reply.getByText('固定首段。', { exact: true }).waitFor();
+      const firstParagraph = await reply
+        .getByText('固定首段。', { exact: true })
+        .elementHandle();
+      const scroll = f.page.locator('[data-conversation-scroll]');
+      await scroll.evaluate((element) => {
+        element.scrollTop = 0;
+        element.dispatchEvent(new Event('scroll'));
+      });
+      for (let i = 1; i <= 3; i++) {
+        const delta = `，追加结果 ${i}`;
+        text += delta;
+        await push('assistant.text.delta', { replyId: 'last', text: delta });
+        await expect.poll(() => reply.innerText()).toContain(delta);
+        expect(
+          await firstParagraph!.evaluate((element) => element.isConnected),
+        ).toBe(true);
+        expect(
+          await scroll.evaluate((element) => element.scrollTop),
+        ).toBeLessThan(20);
+      }
+      f.state.messageStatus = 'completed';
+      f.state.reply = text;
+      await push('assistant.text.completed', { replyId: 'last', text });
+      await push('run.succeeded', {});
+      await expect
+        .poll(() =>
+          f.page.getByRole('button', { name: '复制', exact: true }).count(),
+        )
+        .toBe(1);
+      expect(
+        await firstParagraph!.evaluate((element) => element.isConnected),
+      ).toBe(true);
+      expect(
+        await f.page.getByText('固定首段。', { exact: true }).count(),
+      ).toBe(1);
+      expect(
+        await f.page.getByText('我先读取资料。', { exact: true }).isVisible(),
+      ).toBe(true);
+      expect(
+        await scroll.evaluate((element) => element.scrollTop),
+      ).toBeLessThan(20);
     } finally {
       await f.close();
     }
@@ -2950,8 +3099,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const link = f.page.getByRole('link', { name: '下载报告', exact: true });
       await expect
         .poll(() => link.getAttribute('href'))
-        .toBe(`${path}?name=report-10.md`);
-      expect(await link.getAttribute('target')).toBeNull();
+        .toBe(`${origin}${path}?name=report-10.md`);
+      // Native Markdown opens HTTP links without navigating away from the chat.
+      expect(await link.getAttribute('target')).toBe('_blank');
+      expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
       expect(
         await f.page
           .getByRole('link', { name: '原始来源', exact: true })
