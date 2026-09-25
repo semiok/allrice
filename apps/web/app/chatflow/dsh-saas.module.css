@@ -79,22 +79,13 @@ main.shell {
   box-shadow: 10px 0 40px #0003;
 }
 
-.allRiceMark,
 .railMark {
   display: inline-grid;
   place-items: center;
   flex: none;
-  background: var(--dsw-alias-button-info-fill);
-  color: #fff;
-  font-weight: 700;
-}
-
-.allRiceMark,
-.railMark {
+  color: var(--dsw-alias-label-primary);
   width: 24px;
   height: 24px;
-  border-radius: 7px;
-  font-size: 13px;
 }
 
 .sidebarToggle {

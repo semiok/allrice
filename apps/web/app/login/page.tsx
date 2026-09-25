@@ -1,4 +1,5 @@
 import { headers } from 'next/headers';
+import { AllriceMark } from '../../components/allrice-mark';
 
 import {
   portalAuthEnabled,
@@ -18,7 +19,9 @@ export default async function LoginPage() {
     <main className="auth-shell">
       <section className="auth-brand-panel">
         <div className="auth-brand-top">
-          <span className="auth-mark">R</span>
+          <span className="auth-mark" role="img" aria-label="Allrice">
+            <AllriceMark size={38} />
+          </span>
           <span>ALLRICE / 01</span>
         </div>
         <div className="auth-brand-copy">

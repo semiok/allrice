@@ -54,9 +54,7 @@
 
 .auth-mark {
   align-items: center;
-  background: var(--auth-lime);
-  border-radius: 12px;
-  color: var(--auth-deep);
+  color: #f8f6ef;
   display: inline-flex;
   font-size: 1.05rem;
   height: 42px;

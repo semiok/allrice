@@ -33,16 +33,11 @@
 .brand {
   gap: 12px;
 }
-.brand > span {
+.brand > svg {
   width: 38px;
   height: 38px;
-  display: grid;
-  place-items: center;
-  border-radius: 11px;
-  background: #f5f6f7;
-  color: #17181a;
-  font-weight: 850;
-  letter-spacing: -1px;
+  flex: none;
+  color: #f8f6ef;
 }
 .brand div {
   align-items: flex-start;

@@ -1,0 +1,50 @@
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dsw-alias-label-primary, #24251f);
+  white-space: nowrap;
+}
+
+.brand > svg {
+  flex: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  box-sizing: border-box;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 3%, transparent);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.035em;
+}
+
+.wordmark {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.055em;
+}
+
+.i {
+  position: relative;
+}
+
+.i svg {
+  position: absolute;
+  width: 0.18em;
+  height: 0.26em;
+  left: 50%;
+  top: 0.05em;
+  transform: translateX(-50%);
+  fill: #f2bd16;
+}

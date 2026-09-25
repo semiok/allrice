@@ -16,6 +16,8 @@ const publicPaths = new Set([
   '/api/v1/auth/login',
   '/api/health/live',
   '/api/health/ready',
+  '/brand/allrice-icon-v1.svg',
+  '/brand/apple-touch-icon-v1.png',
 ]);
 
 const bridgeDevicePaths = new Set([
