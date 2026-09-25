@@ -374,22 +374,30 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             showError(state["errorCode"] as? String ?? "BRIDGE_NOT_RUNNING")
             return
         }
+        // The distribution selects the pairing service. Its one-time code
+        // resolves the tenant, user and workspace on that service.
+        guard let server = Bundle.main.object(forInfoDictionaryKey: "AllRicePairingServerURL") as? String,
+              !server.isEmpty else {
+            showError("DESKTOP_SERVER_INVALID")
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "配对 Rice Bridge"
-        alert.informativeText = "在你的 AllRice 网页生成配对码。配对会保存在此 Mac，以后无需重复输入。"
+        alert.informativeText = "在 AllRice 网页复制配对码，粘贴到这里即可连接。配对会保存在这台 Mac，以后无需重复输入。"
         alert.addButton(withTitle: "配对并连接"); alert.addButton(withTitle: "取消")
         let stack = NSStackView()
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
-        let server = NSTextField(string: "https://allrice-dsh.bplabs.xyz")
         let code = NSTextField(string: "")
         code.placeholderString = "8 位配对码（有无横杠均可）"
-        for (caption, field) in [("服务地址", server), ("配对码", code)] {
-            stack.addArrangedSubview(NSTextField(labelWithString: caption))
-            field.frame.size = NSSize(width: 350, height: 24)
-            field.widthAnchor.constraint(equalToConstant: 350).isActive = true
-            stack.addArrangedSubview(field)
-        }
-        stack.frame = NSRect(x: 0, y: 0, width: 350, height: 112)
+        stack.addArrangedSubview(NSTextField(labelWithString: "配对码"))
+        code.frame.size = NSSize(width: 350, height: 24)
+        code.widthAnchor.constraint(equalToConstant: 350).isActive = true
+        stack.addArrangedSubview(code)
+        let destination = NSTextField(labelWithString: "连接至：\(server)")
+        destination.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        destination.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(destination)
+        stack.frame = NSRect(x: 0, y: 0, width: 350, height: 80)
         alert.accessoryView = stack
         alert.window.initialFirstResponder = code
         NSApp.activate(ignoringOtherApps: true)
@@ -397,7 +405,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             pairing = true
             refreshMenu()
             showStatus()
-            send("pair", fields: ["server": server.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), "code": code.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)]) { response in
+            send("pair", fields: ["server": server, "code": code.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)]) { response in
                 self.pairing = false
                 self.refreshMenu()
                 self.showStatus()
@@ -530,7 +538,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate {
             "BRIDGE_PIPE_UNAVAILABLE": "窗口与 Bridge 核心的连接已中断。请退出应用后重新打开，并在状态窗口核对配对结果。",
             "DESKTOP_BUSY": "Bridge 正在启动或处理其他操作，请稍后重试。",
             "DESKTOP_PAIRING_CODE_INVALID": "请输入网页生成的 8 位配对码；中间横杠可带可不带。",
-            "DESKTOP_SERVER_INVALID": "请填写 HTTPS 服务地址，不包含用户名、密码或额外路径。",
+            "DESKTOP_SERVER_INVALID": "安装包的服务地址配置无效，请从 AllRice 网页重新下载 Rice Bridge。",
             "DESKTOP_CREDENTIAL_UNAVAILABLE": "本机已有配对，但凭证暂不可读。请检查 Keychain，不要重新配对或删除配置。",
             "DESKTOP_REVOKED_CLEANUP_PENDING": "此前解除配对已在服务端生效，但旧凭证或配置尚未完全清理；不代表之后的新配对被撤销。请保留诊断记录，不要使用旧令牌重试撤销。",
             "DESKTOP_CONFIG_INVALID": "本机配置无法安全读取，请保留原文件并检查诊断。",
