@@ -62,6 +62,7 @@ export function EmployeeSidebar({
   return (
     <div
       className={css.root}
+      data-collapsed={collapsed || undefined}
       role="tree"
       aria-label="员工与工作"
       onPointerOver={(event) => prepareSession(event.target)}
