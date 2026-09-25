@@ -200,8 +200,16 @@ if !reaped {
     }
 }
 let groupDeadline = nowMs() + 2000
-while kill(-child, 0) == 0 && nowMs() < groupDeadline { usleep(25_000) }
-let confirmed = reaped && kill(-child, 0) == -1 && errno == ESRCH
+var groupGone = false
+repeat {
+    let result = kill(-child, 0)
+    let failure = errno
+    if result == -1 && failure == ESRCH { groupGone = true; break }
+    // macOS may return EPERM while sandboxed Chrome descendants are exiting.
+    // That is not proof of absence, nor a reason to abandon the bounded wait.
+    usleep(25_000)
+} while nowMs() < groupDeadline
+let confirmed = reaped && groupGone
 let recorded = writeStatus(["version": 1, "nonce": nonce, "helperPid": Int(getpid()), "parentPid": Int(originalParent),
     "childPid": Int(child), "startedAt": started, "stopped": confirmed, "exitStatus": Int(childStatus), "forced": forced])
 exit(confirmed && recorded ? 0 : 71)
