@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.0",
-  "contentChecksum": "sha256:5dc796b71dd1bc7a8a66dbbc5936ed3fbdec2fdadd428d13f8d3ffb81e050516",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=5dc796b71dd1bc7a8a66dbbc5936ed3fbdec2fdadd428d13f8d3ffb81e050516",
+  "version": "1.0.1",
+  "contentChecksum": "sha256:c26c7972b977abd2de33fb4c2b70d98ff48d92c133ba3088924298ae6e49e3b3",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=c26c7972b977abd2de33fb4c2b70d98ff48d92c133ba3088924298ae6e49e3b3",
   "license": "Apache-2.0",
-  "reviewedBy": "MET-131/P19 reviewed B4 source",
+  "reviewedBy": "MET-155 existing cloud reconciliation workflow",
   "resources": [
     {
       "path": "references/format.md",
@@ -55,5 +55,5 @@
       "imageDigest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
     }
   ],
-  "checksum": "sha256:749b1ec90835638cd512b38dee9d4156968718dca6247a203f1c5ecec1ba83eb"
+  "checksum": "sha256:23ee58cc797e8d5cb4425dce8a0d9342000d28a444626b919d766e57380691ce"
 }
