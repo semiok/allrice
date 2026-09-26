@@ -98,7 +98,9 @@ describe('development control call identity', () => {
         expect(first.text).toContain('only dispatches after approval');
         expect(first.text).toContain('Do not pass assignmentId');
       } else {
-        expect(first.text).toContain('Frozen development instructions (1.0.0,');
+        expect(first.text).toContain(
+          `Frozen development instructions (${skill.bundle!.version},`,
+        );
         expect(first.text).toContain(
           '依据成员当前工作方式决定自动执行或等待确认',
         );

@@ -114,7 +114,7 @@ suite('MET155 development SOP publication and rollback', () => {
       byteLength: bytes.length,
       checksum: skillBytesChecksum(bytes),
     });
-    bundle.version = skill.version = '1.0.1';
+    bundle.version = skill.version = '99.0.0';
     const { checksum, ...payload } = bundle;
     bundle.checksum = skillBundleChecksum(payload);
     expect(bundle.checksum).not.toBe(checksum);

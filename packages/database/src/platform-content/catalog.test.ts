@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DevelopmentCommandSchema } from '@allrice/contracts';
 
 import {
   loadPlatformContentCatalog,
@@ -7,6 +8,29 @@ import {
 } from './catalog.js';
 
 describe('platform content catalog', () => {
+  it('validates the shipped development review example against the actual tool contract', async () => {
+    const catalog = await loadPlatformContentCatalog();
+    const skill = catalog.skills.find(
+      (s) => s.name === 'development-cooperation',
+    )!;
+    const resource = skill.bundle!.resources.find(
+      (r) => r.path === 'references/review.md',
+    )!;
+    const markdown = Buffer.from(resource.contentBase64, 'base64').toString(
+      'utf8',
+    );
+    const example = markdown.match(/```json\n([\s\S]*?)\n```/)![1]!;
+    const resolved = example
+      .replaceAll('$CANDIDATE_ID', '00000000-0000-4000-8000-000000000001')
+      .replaceAll('$CANDIDATE_DIGEST', `sha256:${'a'.repeat(64)}`)
+      .replaceAll('$TEST_OPERATION_ID', '00000000-0000-4000-8000-000000000002');
+    const command = JSON.parse(resolved);
+    expect(DevelopmentCommandSchema.safeParse(command).success).toBe(true);
+    expect(
+      DevelopmentCommandSchema.safeParse({ ...command, verdict: 'revise' })
+        .success,
+    ).toBe(true);
+  });
   it('loads every current production Skill from its canonical source file', async () => {
     const catalog = await loadPlatformContentCatalog();
 

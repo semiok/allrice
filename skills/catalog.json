@@ -243,7 +243,7 @@
       "name": "development-cooperation",
       "contentFile": "skills/development-cooperation/SKILL.md",
       "bundleFile": "skills/development-cooperation/bundle.json",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "checksum": "sha256:c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
       "source": "allrice",
       "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/development-cooperation?content-sha256=c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
