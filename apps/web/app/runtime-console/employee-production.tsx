@@ -432,10 +432,7 @@ export function EmployeeProduction() {
     });
   }
 
-  function selectCapabilities(
-    kind: 'nativeSkillIds' | 'toolNames',
-    values: string[],
-  ) {
+  function selectSkills(values: string[]) {
     invalidateReview();
     setDraft((current) => {
       if (!current) return current;
@@ -447,16 +444,8 @@ export function EmployeeProduction() {
           ...current,
           capabilities: {
             ...current.capabilities,
-            [kind]: values,
-            explicitToolNames:
-              kind === 'toolNames'
-                ? [
-                    ...explicit.filter((name) => values.includes(name)),
-                    ...values.filter(
-                      (name) => !current.capabilities.toolNames.includes(name),
-                    ),
-                  ]
-                : explicit,
+            nativeSkillIds: values,
+            explicitToolNames: explicit,
           },
         },
         directory?.skills ?? [],
@@ -1090,7 +1079,7 @@ export function EmployeeProduction() {
               disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
             }))}
             selected={draft.capabilities.nativeSkillIds}
-            onChange={(value) => selectCapabilities('nativeSkillIds', value)}
+            onChange={selectSkills}
           />
         ) : (
           <p className={styles.notice}>
@@ -1332,25 +1321,9 @@ export function EmployeeProduction() {
         <p className={styles.muted}>
           自动装配的工具随所选能力生效；选择“单独保留”后，移除相关技能也会保留该工具。
         </p>
-        <div className={styles.actions}>
-          <button
-            className={styles.button}
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              selectCapabilities('toolNames', [
-                ...new Set([
-                  ...draft.capabilities.toolNames,
-                  'assistant.development',
-                ]),
-              ])
-            }
-          >
-            添加开发协作工具
-          </button>
-        </div>
         <p className={styles.muted}>
-          仅修改当前草稿；保存并发布后生效，本地操作仍需授权。
+          完整开发协作可在技能页选择
+          development-cooperation，按同一流程装配并发布。单独工具也可按需选择。
         </p>
         <details className={styles.muted}>
           <summary>配置帮助</summary>

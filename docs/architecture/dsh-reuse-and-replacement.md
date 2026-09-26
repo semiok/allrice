@@ -52,6 +52,10 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 ## 本轮复核
 
+### MET-155 PR2：开发协作流程资源化
+
+2026-09-27，复用既有 DSH Subagents、冻结 Skill Bundle、候选账本、沙箱及交付能力。新增 Allrice `development-cooperation` Skill 承载现有角色 SOP；Worker 从本次冻结资源读取对应角色说明，保留真实引用和程序校验。后台统一从技能页装配，移除开发工具专用装配按钮。未选择新 Skill 的旧包保留兼容提示。没有新建 Team 或开发执行框架；具体职责与回退见 [PR2 ADR](allrice-3.0/development-skill-adr.md)。
+
 ### MET-155 PR1：复用现有能力装配与发布
 
 2026-09-26，基于 main `bb4cc68`，引擎 `0.1.5-rc.3` / Web UI `0.1.7-rc.1` 均保持不变。继续使用已有 manifest、Skill Bundle、`requiredToolRefs`、草稿装配器和发布冻结链路；没有重写 DSH Skill 执行。实际补充仅为 Allrice 的手选工具来源、静态依赖收敛和后台解释。取消 Skill 只移除无其他来源的自动依赖，历史工具不猜测删除；编辑来源不进入运行包或 DSH 复用指纹。
