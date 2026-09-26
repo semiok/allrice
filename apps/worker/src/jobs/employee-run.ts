@@ -825,6 +825,7 @@ export async function executeEmployeeRun({
         ? executionSnapshot.modelSnapshot?.runLimits
         : undefined;
     const assistants = productionAssistantController({
+      nativeSkills: resolved.nativeSkills,
       configuration: assistantConfiguration,
       context: execution.context,
       worker: workflowLease,

@@ -10,6 +10,7 @@ import {
   type AssistantPriceSnapshot,
   type AssistantSubscriptionSnapshot,
   type DshExecutionSnapshot,
+  type DshNativeSkillSnapshot,
   type ExecutionContext,
   type RuntimeTaskRef,
   type StoragePort,
@@ -62,6 +63,7 @@ function assertPriceProvider(
 /** Server-owned admission and budget assembly. The browser's preference never
  * supplies authority, tool sets, native IDs, budget amounts or a worker lease. */
 export function productionAssistantController(input: {
+  nativeSkills?: readonly DshNativeSkillSnapshot[];
   configuration: unknown;
   context: ExecutionContext;
   worker: Omit<AssistantWorkerLease, 'generation'>;
@@ -368,6 +370,7 @@ export function productionAssistantController(input: {
         ),
       );
       const bridge = createAssistantWorkerBridge({
+        nativeSkills: input.nativeSkills,
         runtime,
         task,
         worker,

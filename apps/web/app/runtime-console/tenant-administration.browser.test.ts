@@ -832,11 +832,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       const original = await directory();
       await page.getByRole('button', { name: '工具', exact: true }).click();
       await page
-        .getByRole('button', {
-          name: '添加开发协作工具',
+        .getByRole('checkbox', {
+          name: '受控开发提案、测试与独立审查',
           exact: true,
         })
-        .click();
+        .check();
       expect(
         await page
           .getByRole('checkbox', { name: /受控开发提案、测试与独立审查/ })

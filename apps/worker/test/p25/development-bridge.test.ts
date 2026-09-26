@@ -2,81 +2,114 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { runtimePolicyDigest, type AssistantRuntime } from '@allrice/database';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
+import { loadPlatformContentCatalog } from '../../../../packages/database/src/platform-content/catalog.ts';
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
 describe('development control call identity', () => {
-  it('persists approval request guidance in the tester message, including recovery dispatch', async () => {
-    const runId = randomUUID(),
-      childRunId = randomUUID();
-    const parent = {
-      runId,
-      nativeSessionId: 'root',
-      allowedTools: ['assistant.delegate', 'assistant.development'],
-    };
-    const child = {
-      runId: childRunId,
-      parentRunId: runId,
-      nativeSessionId: 'tester',
-      allowedTools: [
-        'assistant.development',
-        'assistant.report',
-        'local.process.execute',
-      ],
-    };
-    let persistedText = '';
-    const provision = vi.fn(async (input: { text: string }) => {
-      persistedText = input.text;
-      return { instance: child };
-    });
-    const onProposal = vi.fn();
-    const bridge = createAssistantWorkerBridge({
-      runtime: {
-        getTree: async () => ({
-          instances: [parent, child],
-          configuration: { maxDepth: 1 },
-        }),
-        reserveUsage: async () => ({ reserved: true }),
-        settleUsage: async () => {},
-        provision,
-        claimMessage: async () => ({
-          dispatch: true,
-          instance: child,
-          message: { text: persistedText },
-        }),
-      } as unknown as AssistantRuntime,
-      task: { rootRunId: runId, scope: {} } as Options['task'],
-      context: {} as Options['context'],
-      worker: {} as Options['worker'],
-      wireNames: {},
-      readOnlyTools: new Set(),
-      onProposal,
-      onDevelopment: vi.fn(),
-    });
-    const callId = randomUUID();
-    const first = await bridge.handle('delegate', {
-      nativeSessionId: 'root',
-      callId,
-      arguments: {
-        label: 'tester',
-        text: 'Wait for exact web approval.',
-        tools: child.allowedTools,
-        development: JSON.stringify({
-          role: 'test',
-          expectedHead: {
-            artifactId: randomUUID(),
-            digest: `sha256:${'a'.repeat(64)}`,
-          },
-        }),
-      },
-    });
-    expect(first.text).toContain('to REQUEST approval');
-    expect(first.text).toContain('only dispatches after approval');
-    expect(first.text).toContain('Do not pass assignmentId');
-    expect(first.text).not.toContain('"assignmentId":');
-    const recovered = await bridge.messageDispatch(callId);
-    expect(recovered.text).toBe(first.text);
-    expect(onProposal).not.toHaveBeenCalled();
-  });
+  it.each(['legacy', 'frozen-skill'] as const)(
+    'persists %s tester instructions through recovery dispatch',
+    async (source) => {
+      const skill = (await loadPlatformContentCatalog()).skills.find(
+        (s) => s.name === 'development-cooperation',
+      )!;
+      const runId = randomUUID(),
+        childRunId = randomUUID();
+      const parent = {
+        runId,
+        nativeSessionId: 'root',
+        allowedTools: ['assistant.delegate', 'assistant.development'],
+      };
+      const child = {
+        runId: childRunId,
+        parentRunId: runId,
+        nativeSessionId: 'tester',
+        allowedTools: [
+          'assistant.development',
+          'assistant.report',
+          'local.process.execute',
+        ],
+      };
+      let persistedText = '';
+      const provision = vi.fn(async (input: { text: string }) => {
+        persistedText = input.text;
+        return { instance: child };
+      });
+      const onProposal = vi.fn();
+      const bridge = createAssistantWorkerBridge({
+        nativeSkills:
+          source === 'legacy'
+            ? []
+            : [
+                {
+                  id: skill.id,
+                  name: skill.name,
+                  description: skill.description,
+                  content: skill.content,
+                  checksum: skill.checksum,
+                  bundle: skill.bundle,
+                  requiredToolRefs: skill.requiredToolRefs,
+                  invocation: {
+                    modelInvocable: skill.modelInvocable,
+                    userInvocable: skill.userInvocable,
+                  },
+                },
+              ],
+        runtime: {
+          getTree: async () => ({
+            instances: [parent, child],
+            configuration: { maxDepth: 1 },
+          }),
+          reserveUsage: async () => ({ reserved: true }),
+          settleUsage: async () => {},
+          provision,
+          claimMessage: async () => ({
+            dispatch: true,
+            instance: child,
+            message: { text: persistedText },
+          }),
+        } as unknown as AssistantRuntime,
+        task: { rootRunId: runId, scope: {} } as Options['task'],
+        context: {} as Options['context'],
+        worker: {} as Options['worker'],
+        wireNames: {},
+        readOnlyTools: new Set(),
+        onProposal,
+        onDevelopment: vi.fn(),
+      });
+      const callId = randomUUID();
+      const first = await bridge.handle('delegate', {
+        nativeSessionId: 'root',
+        callId,
+        arguments: {
+          label: 'tester',
+          text: 'Wait for exact web approval.',
+          tools: child.allowedTools,
+          development: JSON.stringify({
+            role: 'test',
+            expectedHead: {
+              artifactId: randomUUID(),
+              digest: `sha256:${'a'.repeat(64)}`,
+            },
+          }),
+        },
+      });
+      if (source === 'legacy') {
+        expect(first.text).toContain('to REQUEST approval');
+        expect(first.text).toContain('only dispatches after approval');
+        expect(first.text).toContain('Do not pass assignmentId');
+      } else {
+        expect(first.text).toContain('Frozen development instructions (1.0.0,');
+        expect(first.text).toContain(
+          '依据成员当前工作方式决定自动执行或等待确认',
+        );
+        expect(first.text).not.toContain('only dispatches after approval');
+      }
+      expect(first.text).not.toContain('"assignmentId":');
+      const recovered = await bridge.messageDispatch(callId);
+      expect(recovered.text).toBe(first.text);
+      expect(onProposal).not.toHaveBeenCalled();
+    },
+  );
   it('rejects malformed verifier assignments with usable guidance before creating a child', async () => {
     const runId = randomUUID();
     const provision = vi.fn();

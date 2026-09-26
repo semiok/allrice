@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "contentChecksum": "sha256:c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/development-cooperation?content-sha256=c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
+  "license": "Apache-2.0",
+  "reviewedBy": "MET-155 existing governed Subagents workflow",
+  "resources": [
+    {
+      "path": "references/delivery.md",
+      "mediaType": "text/markdown",
+      "byteLength": 912,
+      "checksum": "sha256:951266ae2f23838649dbdf09f7c143d98879fad85dc1ca9d25e8e45f52a4a4d7"
+    },
+    {
+      "path": "references/edit.md",
+      "mediaType": "text/markdown",
+      "byteLength": 722,
+      "checksum": "sha256:6629fe8c789920bd70e2b857f190e13d5975fe8defa7cb229cdac02c9ebc4219"
+    },
+    {
+      "path": "references/review.md",
+      "mediaType": "text/markdown",
+      "byteLength": 605,
+      "checksum": "sha256:bc4a8fc43e14d84f0e578005de50073638a4cb1668c0611229050b59a1a601ad"
+    },
+    {
+      "path": "references/test.md",
+      "mediaType": "text/markdown",
+      "byteLength": 791,
+      "checksum": "sha256:60f34554bfff59121d2a23f506770a2bfa088463b24c6fc6428cb35b1c5fb6a7"
+    },
+    {
+      "path": "references/workflow.md",
+      "mediaType": "text/markdown",
+      "byteLength": 1326,
+      "checksum": "sha256:b138696f12dddac7fc45b562ca93eccd86c80bbebfb3dc6cd91b57199478de2f"
+    }
+  ],
+  "dependencies": [
+    {
+      "kind": "tool",
+      "name": "assistant.development"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.skill.read"
+    }
+  ],
+  "checksum": "sha256:9070ae30b3a196e270a9c5cb6cd75247d0ae32b3b27f8202be1ffa4ba2ff0f2d"
+}
