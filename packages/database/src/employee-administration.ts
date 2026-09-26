@@ -3,7 +3,8 @@ import {
   employeeToolCatalog,
   rapidEmployeeIterationEnabled,
   employeePublicationPolicy,
-  developmentWorkflowToolNames,
+  resolveEmployeeToolDependencies,
+  type EmployeeToolService,
   employeeToolConfigurationErrors,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
@@ -29,33 +30,25 @@ import { workbenchEnabled } from './artifact-review.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 
 export function listEmployeeToolAvailability() {
-  const gated: Record<string, boolean> = {
-    'local.process.execute': localCommandFeatureEnabled(),
-    'local.process.status':
-      localCommandFeatureEnabled() && localServiceFeatureEnabled(),
-    'local.process.stop':
-      localCommandFeatureEnabled() && localServiceFeatureEnabled(),
-    'cloud.process.execute': cloudExecutionEnabled(),
-    'cloud.mcp.call': mcpExecutionEnabled(),
-    'local.mcp.discover': localMcpEnabled(),
-    'local.mcp.call': localMcpEnabled(),
-    'browser.workspace': browserControlEnabled(),
-    'local.browser.workspace': localBrowserEnabled(),
-    'local.preview.open': localPreviewEnabled(),
-    'workspace.reconciliation.export':
-      runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
-      workbenchEnabled(),
+  const services: Record<EmployeeToolService, () => boolean> = {
+    assistants: assistantRuntimeEnabled,
+    workbench: workbenchEnabled,
+    changeset: changesetFeatureEnabled,
+    local_command: localCommandFeatureEnabled,
+    local_service: localServiceFeatureEnabled,
+    cloud_execution: cloudExecutionEnabled,
+    cloud_mcp: mcpExecutionEnabled,
+    local_mcp: localMcpEnabled,
+    cloud_browser: browserControlEnabled,
+    local_browser: localBrowserEnabled,
+    local_preview: localPreviewEnabled,
+    cloud_runner: () => runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED'),
   };
   return employeeToolCatalog.map((tool) => ({
     ...tool,
-    released:
-      tool.canonicalName === 'assistant.development'
-        ? assistantRuntimeEnabled() &&
-          workbenchEnabled() &&
-          changesetFeatureEnabled()
-        : tool.canonicalName.startsWith('assistant.')
-          ? assistantRuntimeEnabled()
-          : (gated[tool.canonicalName] ?? true),
+    released: (tool.requirements.services ?? []).every((service) =>
+      services[service](),
+    ),
   }));
 }
 
@@ -129,18 +122,11 @@ export async function reviewEmployeePublication(
         : [],
       warnings: string[] = [];
     errors.push(...employeeToolConfigurationErrors(definition));
-    if (definition.capabilities.toolNames.includes('assistant.development')) {
-      const missing = developmentWorkflowToolNames.filter(
-        (name) => !definition.capabilities.toolNames.includes(name),
-      );
-      if (missing.length)
-        warnings.push(
-          `开发协作完整链路尚缺工具：${missing.join('、')}；不能将仅提案配置视为测试与交付已就绪。`,
-        );
-      warnings.push(
-        '开发协作需要连接 Rice Bridge、选择项目目录并准备测试沙箱；可在租户工作台连接设备。',
-      );
-    }
+    const missing = resolveEmployeeToolDependencies(
+      definition.capabilities.toolNames,
+    ).filter((name) => !definition.capabilities.toolNames.includes(name));
+    if (missing.length)
+      warnings.push(`完整工作流程尚缺工具：${missing.join('、')}。`);
     if (employee.status !== 'testing' || !checksum)
       errors.push(
         '请先保存并编译当前草稿；已发布版本需另存新草稿后才能再次发布。',
@@ -164,22 +150,19 @@ export async function reviewEmployeePublication(
     const tools = listEmployeeToolAvailability().filter((tool) =>
       definition.capabilities.toolNames.includes(tool.canonicalName),
     );
+    for (const tool of tools)
+      if (tool.requirements.setupHint)
+        warnings.push(tool.requirements.setupHint);
     // Registry hints only: a registered target never proves a user's current
     // device grant, liveness, sandbox, connector or per-operation authorization.
     const requiredKinds = [
       ...new Set(
         tools.flatMap((tool) =>
-          tool.target === 'bridge'
+          tool.environment === 'device'
             ? ['rice_bridge']
-            : tool.canonicalName === 'cloud.mcp.call'
-              ? ['cloud_mcp']
-              : [
-                    'cloud.process.execute',
-                    'browser.workspace',
-                    'workspace.reconciliation.export',
-                  ].includes(tool.canonicalName)
-                ? ['cloud_sandbox']
-                : [],
+            : tool.environment === 'cloud'
+              ? ['cloud_sandbox']
+              : [],
         ),
       ),
     ];
@@ -205,11 +188,11 @@ export async function reviewEmployeePublication(
         );
         if (!matches.length)
           warnings.push(
-            `${target.organizationName} / ${target.name}：尚未连接 ${kind === 'rice_bridge' ? 'Rice Bridge，请在租户工作台连接设备并选择目录' : kind === 'cloud_mcp' ? 'MCP 服务，请在租户管理中添加连接' : '云端执行环境，请在租户管理中配置环境'}。`,
+            `${target.organizationName} / ${target.name}：${kind === 'rice_bridge' ? '使用本地能力时，请在设置 → 我的电脑连接 Bridge 并选择所需目录' : '云端执行环境尚未登记，请在能力与环境查看自动准备状态；实际就绪后即可使用'}。`,
           );
         else
           warnings.push(
-            `${target.organizationName} / ${target.name}：${kind} 目标登记状态 ${[...new Set(matches.map((row) => row.state))].join('、')}；实际使用者的权限、设备在线与沙箱条件仍在运行时核对。`,
+            `${target.organizationName} / ${target.name}：${kind === 'rice_bridge' ? '电脑' : '云端环境'}已登记；实际连接与准备状态以成员工作台的能力与环境为准。`,
           );
       }
     for (const tool of tools)
@@ -217,10 +200,6 @@ export async function reviewEmployeePublication(
         (rapidIteration ? errors : warnings).push(
           `${tool.label}：执行服务当前已暂停，恢复后即可发布使用。`,
         );
-    if (definition.capabilities.toolNames.includes('workspace.export.create'))
-      warnings.push(
-        `Changeset 是工件提案，不是直接写盘工具；精确审批与 local.fs.changeset 动作${changesetFeatureEnabled() ? '仍需设备授权' : '尚未开放'}。`,
-      );
     const policies = targets.map((target) => {
       const parsed = RuntimePolicyControlsSchema.safeParse(target.controls);
       const controls = rapidIteration
@@ -244,7 +223,7 @@ export async function reviewEmployeePublication(
           (action.action === 'assistant.delegate' && action.effect !== 'allow')
         )
           warnings.push(
-            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），可在租户管理中配置${action.action === 'assistant.delegate' ? '为允许；助手委派不支持审批态' : ''}。`,
+            `${target.organizationName} / ${target.name}：${action.action} 当前${action.effect === 'deny' ? '策略禁止' : '策略不满足执行条件'}（${action.reason}），请检查该租户的执行设置${action.action === 'assistant.delegate' ? '；助手委派需要允许执行' : ''}。`,
           );
       return {
         id: target.id,

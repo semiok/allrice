@@ -5,16 +5,123 @@ import {
   RuntimePolicyControlsSchema,
 } from './runtime-v2/policy.ts';
 
+export type EmployeeToolService =
+  | 'assistants'
+  | 'workbench'
+  | 'changeset'
+  | 'local_mcp'
+  | 'cloud_mcp'
+  | 'local_command'
+  | 'local_service'
+  | 'cloud_execution'
+  | 'cloud_browser'
+  | 'local_browser'
+  | 'local_preview'
+  | 'cloud_runner';
+type ToolRequirements = {
+  requiredTools?: readonly AllRiceToolName[];
+  // Existing proposal-only configurations remain readable. These additional
+  // tools are assembled for the complete workflow, not new execution grants.
+  workflowTools?: readonly AllRiceToolName[];
+  capabilities?: readonly PlatformEmployeeDefinition['securityPolicy']['deniedCapabilities'][number][];
+  serviceIdentity?: boolean;
+  policyActions?: readonly string[];
+  services?: readonly EmployeeToolService[];
+  environment?: 'device' | 'cloud' | 'connection_on_demand';
+  setupHint?: string;
+};
+
+/** Static composition over the existing Broker manifest. Runtime readiness
+ * and authorization remain facts supplied by their existing owners. */
+const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
+  'assistant.development': {
+    requiredTools: [
+      'assistant.delegate',
+      'assistant.report',
+      'workspace.export.create',
+    ],
+    workflowTools: ['local.fs.list', 'local.fs.read', 'local.process.execute'],
+    policyActions: [
+      'assistant.delegate',
+      'local.process.execute',
+      'local.fs.changeset',
+    ],
+    services: ['assistants', 'workbench', 'changeset'],
+    environment: 'device',
+    setupHint:
+      '开发协作使用已连接的电脑和已选项目目录，测试环境由 Bridge 自动准备；可在设置 → 我的电脑查看状态。',
+  },
+  'local.mcp.call': {
+    requiredTools: ['local.mcp.discover'],
+    capabilities: ['storage:write'],
+    serviceIdentity: true,
+    services: ['local_mcp'],
+  },
+  'local.mcp.discover': {
+    requiredTools: ['local.mcp.call'],
+    capabilities: ['storage:write'],
+    serviceIdentity: true,
+    services: ['local_mcp'],
+  },
+  'cloud.mcp.call': {
+    capabilities: ['network:outbound'],
+    serviceIdentity: true,
+    services: ['cloud_mcp'],
+    environment: 'connection_on_demand',
+    setupHint:
+      '员工可按需连接应用；需要登录时在任务中继续，已连接应用可在设置中管理。无需预先创建 MCP 连接。',
+  },
+  'local.process.execute': { services: ['local_command'] },
+  'local.process.status': { services: ['local_command', 'local_service'] },
+  'local.process.stop': { services: ['local_command', 'local_service'] },
+  'cloud.process.execute': {
+    services: ['cloud_execution'],
+    environment: 'cloud',
+  },
+  'browser.workspace': {
+    policyActions: ['cloud.browser.observe', 'cloud.browser.act'],
+    services: ['cloud_browser'],
+    environment: 'cloud',
+  },
+  'local.browser.workspace': {
+    policyActions: ['local.browser.observe', 'local.browser.act'],
+    services: ['local_browser'],
+  },
+  'local.preview.open': {
+    policyActions: ['local.browser.observe', 'local.browser.act'],
+    services: ['local_preview'],
+  },
+  'workspace.reconciliation.export': {
+    services: ['cloud_runner', 'workbench'],
+    environment: 'cloud',
+  },
+};
+
+export function employeeToolRequirements(name: string): ToolRequirements {
+  return (
+    requirements[name as AllRiceToolName] ??
+    (name.startsWith('assistant.') ? { services: ['assistants'] } : {})
+  );
+}
+
+export function resolveEmployeeToolDependencies(names: readonly string[]) {
+  const resolved = new Set(names);
+  // Set iteration visits additions and terminates even for mutual dependencies.
+  for (const name of resolved) {
+    const rule = employeeToolRequirements(name);
+    for (const dependency of [
+      ...(rule.requiredTools ?? []),
+      ...(rule.workflowTools ?? []),
+    ])
+      resolved.add(dependency);
+  }
+  return [...resolved];
+}
+
 /** Root workflow tools, not a grant or a child tool allowlist. */
-export const developmentWorkflowToolNames = [
+export const developmentWorkflowToolNames = resolveEmployeeToolDependencies([
   'assistant.development',
-  'assistant.delegate',
-  'assistant.report',
-  'workspace.export.create',
-  'local.fs.list',
-  'local.fs.read',
-  'local.process.execute',
-] as const satisfies readonly AllRiceToolName[];
+]);
 
 // Presentation only. Registration, capability and risk come from the Broker manifest.
 const labels: Partial<Record<AllRiceToolName, string>> = {
@@ -67,19 +174,15 @@ export const employeeToolCatalog = allRiceToolManifest.map((tool) => ({
         tool.canonicalName.startsWith('browser.')
       ? ('cloud' as const)
       : ('saas' as const),
+  requirements: employeeToolRequirements(tool.canonicalName),
+  environment:
+    employeeToolRequirements(tool.canonicalName).environment ??
+    (tool.canonicalName.startsWith('local.') ? ('device' as const) : undefined),
   policyActions:
-    tool.canonicalName === 'assistant.development'
-      ? ['assistant.delegate', 'local.process.execute', 'local.fs.changeset']
-      : tool.canonicalName === 'browser.workspace'
-        ? ['cloud.browser.observe', 'cloud.browser.act']
-        : tool.canonicalName === 'local.browser.workspace' ||
-            tool.canonicalName === 'local.preview.open'
-          ? ['local.browser.observe', 'local.browser.act']
-          : (runtimeGovernedActions as readonly string[]).includes(
-                tool.canonicalName,
-              )
-            ? [tool.canonicalName]
-            : [],
+    employeeToolRequirements(tool.canonicalName).policyActions ??
+    ((runtimeGovernedActions as readonly string[]).includes(tool.canonicalName)
+      ? [tool.canonicalName]
+      : []),
 }));
 export const configurableEmployeeToolNames = new Set<string>(
   employeeToolCatalog.map((tool) => tool.canonicalName),
@@ -98,8 +201,12 @@ export function employeeToolConfigurationErrors(
       errors.push(`未注册工具：${name}`);
       continue;
     }
-    if (definition.securityPolicy.deniedCapabilities.includes(tool.capability))
-      errors.push(`工具 ${name} 所需能力 ${tool.capability} 已被员工策略禁止`);
+    for (const capability of [
+      tool.capability,
+      ...(tool.requirements.capabilities ?? []),
+    ])
+      if (definition.securityPolicy.deniedCapabilities.includes(capability))
+        errors.push(`工具 ${name} 所需能力 ${capability} 已被员工策略禁止`);
     if (tool.target === 'bridge') {
       if (definition.securityPolicy.bridgeAccess === 'none')
         errors.push(`Bridge 已禁用，但员工仍配置了 ${name}`);
@@ -111,14 +218,10 @@ export function employeeToolConfigurationErrors(
     }
   }
   if (new Set(names).size !== names.length) errors.push('工具清单包含重复项');
-  if (names.includes('assistant.development')) {
-    for (const required of [
-      'assistant.delegate',
-      'assistant.report',
-      'workspace.export.create',
-    ]) {
+  for (const name of names) {
+    for (const required of employeeToolRequirements(name).requiredTools ?? []) {
       if (!names.includes(required))
-        errors.push(`受控开发协作缺少必需工具：${required}`);
+        errors.push(`工具 ${name} 缺少必需工具：${required}`);
     }
   }
   return errors;
@@ -129,9 +232,38 @@ export function employeeToolConfigurationErrors(
  * a device directory, connector credential or individual external operation. */
 export type EmployeeSkillChoice = {
   id: string;
+  name?: string;
   requiredToolRefs: readonly string[];
   replaces?: readonly string[];
 };
+
+export function employeeToolDependencySources(
+  definition: PlatformEmployeeDefinition,
+  skills: readonly EmployeeSkillChoice[],
+) {
+  const sources: Record<string, string[]> = {};
+  const add = (names: string[], label: string) => {
+    for (const name of names) sources[name] = [...(sources[name] ?? []), label];
+  };
+  const selected = new Set(
+    resolveEmployeeSkillIds(definition.capabilities.nativeSkillIds, skills),
+  );
+  for (const skill of skills.filter((skill) => selected.has(skill.id)))
+    add(
+      resolveEmployeeToolDependencies(skill.requiredToolRefs),
+      skill.name ?? skill.id,
+    );
+  for (const name of definition.capabilities.explicitToolNames ??
+    definition.capabilities.toolNames)
+    add(
+      resolveEmployeeToolDependencies([name]).filter(
+        (dependency) => dependency !== name,
+      ),
+      employeeToolCatalog.find((tool) => tool.canonicalName === name)?.label ??
+        name,
+    );
+  return sources;
+}
 
 /** Only new drafts are upgraded. Published packages retain their frozen IDs. */
 export function resolveEmployeeSkillIds(
@@ -171,27 +303,30 @@ export function assembleEmployeeCapabilities(
     skills,
   );
   const selectedSkills = new Set(nativeSkillIds);
-  const names = new Set([
-    ...definition.capabilities.toolNames,
-    ...skills
-      .filter((skill) => selectedSkills.has(skill.id))
-      .flatMap((skill) => [...skill.requiredToolRefs]),
-  ]);
-  if (names.has('assistant.development')) {
-    for (const name of developmentWorkflowToolNames) names.add(name);
-  }
-  const localMcp =
-    names.has('local.mcp.call') || names.has('local.mcp.discover');
-  if (localMcp) {
-    names.add('local.mcp.call');
-    names.add('local.mcp.discover');
-  }
+  // With no provenance, preserve every historical tool as an explicit choice.
+  const explicitToolNames = [
+    ...new Set(
+      definition.capabilities.explicitToolNames ??
+        definition.capabilities.toolNames,
+    ),
+  ];
+  const names = new Set(
+    resolveEmployeeToolDependencies([
+      ...explicitToolNames,
+      ...skills
+        .filter((skill) => selectedSkills.has(skill.id))
+        .flatMap((skill) => [...skill.requiredToolRefs]),
+    ]),
+  );
   const tools = employeeToolCatalog.filter((tool) =>
     names.has(tool.canonicalName),
   );
-  const capabilities = new Set<string>(tools.map((tool) => tool.capability));
-  if (localMcp) capabilities.add('storage:write');
-  if (names.has('cloud.mcp.call')) capabilities.add('network:outbound');
+  const capabilities = new Set<string>(
+    tools.flatMap((tool) => [
+      tool.capability,
+      ...(tool.requirements.capabilities ?? []),
+    ]),
+  );
   const bridgeTools = tools.filter((tool) => tool.target === 'bridge');
   const bridgeAccess = bridgeTools.some(
     (tool) => tool.capability !== 'storage:read',
@@ -206,19 +341,21 @@ export function assembleEmployeeCapabilities(
       ...definition.capabilities,
       nativeSkillIds,
       toolNames: [...names],
+      explicitToolNames,
     },
     securityPolicy: {
       ...definition.securityPolicy,
       bridgeAccess,
-      connectorIdentityModes:
-        localMcp || names.has('cloud.mcp.call')
-          ? [
-              ...new Set([
-                ...definition.securityPolicy.connectorIdentityModes,
-                'service' as const,
-              ]),
-            ]
-          : definition.securityPolicy.connectorIdentityModes,
+      connectorIdentityModes: tools.some(
+        (tool) => tool.requirements.serviceIdentity,
+      )
+        ? [
+            ...new Set([
+              ...definition.securityPolicy.connectorIdentityModes,
+              'service' as const,
+            ]),
+          ]
+        : definition.securityPolicy.connectorIdentityModes,
       deniedCapabilities: definition.securityPolicy.deniedCapabilities.filter(
         (capability) => !capabilities.has(capability),
       ),

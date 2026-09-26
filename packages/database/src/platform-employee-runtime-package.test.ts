@@ -6,6 +6,7 @@ import {
   PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS,
   PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
   PlatformEmployeeRuntimeProfileSchema,
+  PlatformEmployeeDefinitionSchema,
 } from '@allrice/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -92,6 +93,23 @@ const skills = [
     reviewed_at: new Date('2026-08-31T00:00:00.000Z'),
   },
 ];
+
+it('keeps legacy definition bytes and runtime identity independent of tool selection provenance', () => {
+  const legacy = PlatformEmployeeDefinitionSchema.parse(definition);
+  expect(Object.hasOwn(legacy.capabilities, 'explicitToolNames')).toBe(false);
+  expect(legacy).toEqual(definition);
+  const original = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: legacy,
+    skills,
+  });
+  const edited = structuredClone(legacy);
+  edited.capabilities.explicitToolNames = ['web.search'];
+  expect(
+    buildEmployeeRuntimePackage({ revision: 7, definition: edited, skills }),
+  ).toEqual(original);
+  expect(frozenPackageSkills(original)).toHaveLength(1);
+});
 
 function validFrozenExecutionSnapshot() {
   const content = '# Web Research\n\n先搜索，再交叉核验并附来源。';

@@ -1,6 +1,7 @@
 import {
   workspaceCapabilityIds,
   developmentWorkflowToolNames,
+  resolveEmployeeToolDependencies,
   type WorkspaceCapability,
   type WorkspaceCapabilityId,
   type RuntimePolicyControls,
@@ -101,7 +102,7 @@ const definitions: Record<
   },
   local_mcp: {
     target: 'local',
-    tools: ['local.mcp.discover', 'local.mcp.call'],
+    tools: resolveEmployeeToolDependencies(['local.mcp.call']),
     capabilities: ['secret:use', 'storage:write'],
     actions: ['local.mcp.discover', 'local.mcp.call'],
     authorization: 'per_action',

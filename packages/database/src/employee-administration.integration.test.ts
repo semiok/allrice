@@ -306,6 +306,65 @@ suite('MET-151 policy and exact employee publication administration', () => {
       }).join(),
     ).toContain('未注册');
   });
+  it('publishes an on-demand MCP Skill without a precreated connection and can remove its last automatic tools', async () => {
+    const oldEnvironment = process.env.ALLRICE_ENV;
+    process.env.ALLRICE_ENV = 'development';
+    try {
+      const f = await setup();
+      const requiredToolRefs = ['workspace.skill.read', 'cloud.mcp.call'];
+      await fixture.db`update allrice_platform_dsh_skills
+        set required_tool_refs=${fixture.db.json(requiredToolRefs)} where id=${f.skillId}`;
+      const selected = assembleEmployeeCapabilities(
+        {
+          ...f.definition,
+          capabilities: {
+            ...f.definition.capabilities,
+            toolNames: [],
+            explicitToolNames: [],
+          },
+        },
+        [{ id: f.skillId, requiredToolRefs }],
+      );
+      await savePlatformEmployeeDraft(f.employeeId, { definition: selected });
+      expect((await compilePlatformEmployee(f.employeeId)).valid).toBe(true);
+      const first = await f.review();
+      expect(first.valid, first.errors.join('\n')).toBe(true);
+      expect(first.warnings.join()).toContain('无需预先创建 MCP 连接');
+      expect(first.warnings.join()).not.toMatch(
+        /尚未连接 MCP|租户管理中添加连接/,
+      );
+      expect((await f.publish(first)).valid).toBe(true);
+      const frozen = await f.revision(first.revisionId);
+      const removed = assembleEmployeeCapabilities(
+        {
+          ...selected,
+          capabilities: { ...selected.capabilities, nativeSkillIds: [] },
+        },
+        [],
+      );
+      // A retained, unused identity preference must not keep tools alive or
+      // block publication, even if the administrator now forbids secret use.
+      removed.securityPolicy.deniedCapabilities = ['secret:use'];
+      expect(removed.securityPolicy.connectorIdentityModes).toContain(
+        'service',
+      );
+      await savePlatformEmployeeDraft(f.employeeId, { definition: removed });
+      expect((await compilePlatformEmployee(f.employeeId)).valid).toBe(true);
+      const second = await f.review();
+      expect(second.valid).toBe(true);
+      expect(second.warnings.join()).not.toContain('MCP');
+      expect((await f.publish(second)).valid).toBe(true);
+      const current = await f.revision(second.revisionId);
+      expect(current.definition.capabilities.toolNames).toEqual([]);
+      expect(current.runtime_profile.runtimePackage.skills).toEqual([]);
+      expect((await f.revision(first.revisionId)).runtime_profile).toEqual(
+        frozen.runtime_profile,
+      );
+    } finally {
+      if (oldEnvironment === undefined) delete process.env.ALLRICE_ENV;
+      else process.env.ALLRICE_ENV = oldEnvironment;
+    }
+  });
   it('creates/version-checks policy atomically, preserves exact approval and audits the actual issuer without tenant membership', async () => {
     const f = await setup();
     expect((await f.read()).version).toBeNull();
@@ -410,7 +469,8 @@ suite('MET-151 policy and exact employee publication administration', () => {
     expect(r.diff.length).toBeGreaterThan(0);
     expect(r.targets[0]!.actions.every((a) => a.effect === 'deny')).toBe(true);
     expect(r.warnings.join()).toContain('策略禁止');
-    expect(r.warnings.join()).toContain('云端执行环境，请在租户管理中配置环境');
+    expect(r.warnings.join()).toContain('云端执行环境尚未登记');
+    expect(r.warnings.join()).not.toContain('租户管理中配置');
     expect(r.policyVersions[f.workspaceId]).toBeNull();
     expect(await f.assigned()).toBe(0);
     expect((await f.read()).controls).toBeNull();

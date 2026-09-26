@@ -16,7 +16,7 @@ import {
   employeeToolCatalog,
   assembleEmployeeCapabilities,
   upgradeEmployeeSkillBindings,
-  developmentWorkflowToolNames,
+  employeeToolDependencySources,
   SkillCapabilitySchema,
   employeeColorPalette,
   employeeColorForeground,
@@ -437,17 +437,53 @@ export function EmployeeProduction() {
     values: string[],
   ) {
     invalidateReview();
-    setDraft((current) =>
-      current
-        ? assembleEmployeeCapabilities(
-            {
-              ...current,
-              capabilities: { ...current.capabilities, [kind]: values },
-            },
-            directory?.skills ?? [],
-          )
-        : current,
-    );
+    setDraft((current) => {
+      if (!current) return current;
+      const explicit =
+        current.capabilities.explicitToolNames ??
+        current.capabilities.toolNames;
+      return assembleEmployeeCapabilities(
+        {
+          ...current,
+          capabilities: {
+            ...current.capabilities,
+            [kind]: values,
+            explicitToolNames:
+              kind === 'toolNames'
+                ? [
+                    ...explicit.filter((name) => values.includes(name)),
+                    ...values.filter(
+                      (name) => !current.capabilities.toolNames.includes(name),
+                    ),
+                  ]
+                : explicit,
+          },
+        },
+        directory?.skills ?? [],
+      );
+    });
+  }
+
+  function retainTool(name: string, retain: boolean) {
+    invalidateReview();
+    setDraft((current) => {
+      if (!current) return current;
+      const explicit =
+        current.capabilities.explicitToolNames ??
+        current.capabilities.toolNames;
+      return assembleEmployeeCapabilities(
+        {
+          ...current,
+          capabilities: {
+            ...current.capabilities,
+            explicitToolNames: retain
+              ? [...new Set([...explicit, name])]
+              : explicit.filter((tool) => tool !== name),
+          },
+        },
+        directory?.skills ?? [],
+      );
+    });
   }
 
   async function refresh() {
@@ -833,6 +869,10 @@ export function EmployeeProduction() {
   }
 
   let panel: React.ReactNode;
+  const toolSources = employeeToolDependencySources(draft, directory.skills);
+  const explicitTools = new Set(
+    draft.capabilities.explicitToolNames ?? draft.capabilities.toolNames,
+  );
   const trialLinks = trialTargets.map((target) => {
     const workspace = directory.workspaces.find(
       (item) => item.id === target.workspaceId,
@@ -1038,6 +1078,9 @@ export function EmployeeProduction() {
             <span>每个已选 Skill 作为独立、不可变的发布快照传入运行时</span>
           </div>
         </div>
+        <p className={styles.muted}>
+          取消技能会移除仅由它带入的工具；其他技能所需和手动保留的工具不受影响。历史配置中的工具继续保留。
+        </p>
         {directory.skills.length ? (
           <Checks
             items={directory.skills.map((skill) => ({
@@ -1236,19 +1279,59 @@ export function EmployeeProduction() {
             ? '勾选工具后保存并发布即可启用；所需的员工能力和执行策略会自动配置。'
             : '选择员工工具，保存并发布后生效。'}
         </p>
-        <Checks
-          items={(
+        <div className={styles.checks}>
+          {(
             directory.tools ??
             employeeToolCatalog.map((tool) => ({ ...tool, released: false }))
-          ).map((tool) => ({
-            id: tool.canonicalName,
-            label: tool.label,
-            detail: `${tool.canonicalName} · ${tool.target} · ${tool.capability} · ${tool.released ? '可用 · 发布后生效' : '服务已暂停，暂不可执行'}`,
-            disabled: busy,
-          }))}
-          selected={draft.capabilities.toolNames}
-          onChange={(value) => selectCapabilities('toolNames', value)}
-        />
+          ).map((tool) => {
+            const name = tool.canonicalName;
+            const sources = toolSources[name] ?? [];
+            const selected = draft.capabilities.toolNames.includes(name);
+            return (
+              <div className={styles.toolChoice} key={name}>
+                <label className={styles.check}>
+                  <input
+                    type="checkbox"
+                    aria-label={tool.label}
+                    checked={selected}
+                    disabled={busy || sources.length > 0}
+                    onChange={(event) => retainTool(name, event.target.checked)}
+                  />
+                  <span>
+                    <strong>{tool.label}</strong>
+                    <small>
+                      {tool.released
+                        ? '可用 · 发布后生效'
+                        : '服务已暂停，暂不可执行'}
+                    </small>
+                    {sources.length ? (
+                      <small>
+                        所需能力：{[...new Set(sources)].join('、')}
+                        {explicitTools.has(name)
+                          ? ' · 已单独保留'
+                          : ' · 自动装配'}
+                      </small>
+                    ) : null}
+                  </span>
+                </label>
+                {sources.length > 0 ? (
+                  <button
+                    type="button"
+                    className={styles.button}
+                    disabled={busy}
+                    aria-label={`${explicitTools.has(name) ? '取消单独保留' : '单独保留'} ${tool.label}`}
+                    onClick={() => retainTool(name, !explicitTools.has(name))}
+                  >
+                    {explicitTools.has(name) ? '取消单独保留' : '单独保留'}
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+        <p className={styles.muted}>
+          自动装配的工具随所选能力生效；选择“单独保留”后，移除相关技能也会保留该工具。
+        </p>
         <div className={styles.actions}>
           <button
             className={styles.button}
@@ -1258,7 +1341,7 @@ export function EmployeeProduction() {
               selectCapabilities('toolNames', [
                 ...new Set([
                   ...draft.capabilities.toolNames,
-                  ...developmentWorkflowToolNames,
+                  'assistant.development',
                 ]),
               ])
             }
@@ -1272,11 +1355,14 @@ export function EmployeeProduction() {
         <details className={styles.muted}>
           <summary>配置帮助</summary>
           <p>
-            添加后，先保存草稿并完成试用，再检查并发布。发布检查会提示开发协作所需的工具缺项。
+            {directory.rapidIteration
+              ? '添加后保存并发布即可使用；配置预览只检查只读行为，完整试用请进入已派驻员工的工作台。'
+              : '添加后保存草稿，按发布检查完成当前版本验证，再发布到目标租户。'}
           </p>
           <p>
-            在租户管理中确认使用成员拥有助手委派权限；本地命令和文件修改分别审批。员工的
-            Rice Bridge 需设为受控读写，并由设备主人确认工作目录和独立沙箱。
+            成员继承已派驻员工的能力，执行跟随设置中的“员工工作方式”。使用本地项目时，在“我的电脑”连接
+            Bridge
+            并选择项目目录，测试环境会自动准备；缺项可在“能力与环境”查看。
           </p>
         </details>
       </>
@@ -1621,15 +1707,10 @@ export function EmployeeProduction() {
             {review.targets.map((target) => (
               <p key={target.id}>
                 <a
-                  href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}`}
+                  href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}&tenantView=employees`}
                 >
-                  配置 {target.organizationName} / {target.name} 策略 →
-                </a>
-                {' · '}
-                <a
-                  href={`/runtime-console?view=tenants&organizationId=${target.organizationId}&workspaceId=${target.id}&tenantView=validation`}
-                >
-                  检查该租户实际使用者与交付 →
+                  查看 {target.organizationName} / {target.name} 的 AI 员工团队
+                  →
                 </a>
               </p>
             ))}
