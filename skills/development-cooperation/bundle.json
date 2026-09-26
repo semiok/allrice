@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "contentChecksum": "sha256:c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
   "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/development-cooperation?content-sha256=c16815542822e040c3d2b02b1dd19366f77d05fb803716e89265ee7f97c7fb27",
   "license": "Apache-2.0",
@@ -21,20 +21,20 @@
     {
       "path": "references/review.md",
       "mediaType": "text/markdown",
-      "byteLength": 605,
-      "checksum": "sha256:bc4a8fc43e14d84f0e578005de50073638a4cb1668c0611229050b59a1a601ad"
+      "byteLength": 1191,
+      "checksum": "sha256:efaa7d78a2a0bf751be9bbcf3c6b01cb99d98afc1942e7a308e7680fa6bc3f59"
     },
     {
       "path": "references/test.md",
       "mediaType": "text/markdown",
-      "byteLength": 791,
-      "checksum": "sha256:60f34554bfff59121d2a23f506770a2bfa088463b24c6fc6428cb35b1c5fb6a7"
+      "byteLength": 1200,
+      "checksum": "sha256:4f7177032c126fec412336e8549237e634ea45fb88d1cc4879792b3a7183aeb2"
     },
     {
       "path": "references/workflow.md",
       "mediaType": "text/markdown",
-      "byteLength": 1326,
-      "checksum": "sha256:b138696f12dddac7fc45b562ca93eccd86c80bbebfb3dc6cd91b57199478de2f"
+      "byteLength": 2118,
+      "checksum": "sha256:3ef273a2d71d38484e9b4e03edcae8cd6bd838d416bc13c1d01eb3eca066bfa3"
     }
   ],
   "dependencies": [
@@ -47,5 +47,5 @@
       "name": "workspace.skill.read"
     }
   ],
-  "checksum": "sha256:9070ae30b3a196e270a9c5cb6cd75247d0ae32b3b27f8202be1ffa4ba2ff0f2d"
+  "checksum": "sha256:d78ed51b856e20df1a9029fbe24732eee7a34501db098e797cf0237b5c8f61f8"
 }
