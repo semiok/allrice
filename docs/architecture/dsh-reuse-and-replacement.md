@@ -52,6 +52,10 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 ## 本轮复核
 
+### MET-155 PR3：保留已有对账实现，统一配置与工作方式
+
+2026-09-27，业务对账沿用现成的冻结脚本、云端执行与 XLSX 导出，使用 PR1 同一依赖装配和发布链路。仅升级 SOP 到 1.0.1，使其遵循成员自动工作设置，消除不必要的预先等待审批；没有重写脚本、Office 或报表引擎。三批实际删除/保留范围和验收要求见 [PR3 记录](allrice-3.0/reconciliation-and-acceptance.md)。
+
 ### MET-155 PR2：开发协作流程资源化
 
 2026-09-27，复用既有 DSH Subagents、冻结 Skill Bundle、候选账本、沙箱及交付能力。新增 Allrice `development-cooperation` Skill 承载现有角色 SOP；Worker 从本次冻结资源读取对应角色说明，保留真实引用和程序校验。后台统一从技能页装配，移除开发工具专用装配按钮。未选择新 Skill 的旧包保留兼容提示。没有新建 Team 或开发执行框架；具体职责与回退见 [PR2 ADR](allrice-3.0/development-skill-adr.md)。
