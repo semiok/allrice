@@ -61,9 +61,9 @@ describe('platform employee production contract', () => {
     const definition = PlatformEmployeeDefinitionSchema.parse(riceDefinition);
     definition.capabilities.toolNames = ['assistant.development'];
     expect(employeeToolConfigurationErrors(definition)).toEqual([
-      '受控开发协作缺少必需工具：assistant.delegate',
-      '受控开发协作缺少必需工具：assistant.report',
-      '受控开发协作缺少必需工具：workspace.export.create',
+      '工具 assistant.development 缺少必需工具：assistant.delegate',
+      '工具 assistant.development 缺少必需工具：assistant.report',
+      '工具 assistant.development 缺少必需工具：workspace.export.create',
     ]);
     definition.capabilities.toolNames = [...developmentWorkflowToolNames];
     expect(employeeToolConfigurationErrors(definition)).toContain(

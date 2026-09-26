@@ -696,3 +696,14 @@
     grid-template-columns: 1fr;
   }
 }
+.toolChoice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.toolChoice > label {
+  flex: 1 1 220px;
+  min-width: 0;
+}

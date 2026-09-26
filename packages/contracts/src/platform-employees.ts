@@ -80,6 +80,12 @@ export const PlatformEmployeeDefinitionSchema = z
         workflowRevisionIds: z.array(UuidSchema).max(32),
         knowledgeRevisionIds: z.array(UuidSchema).max(32),
         toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
+        // Editing provenance only; absent on historical definitions. Never
+        // default it or include it in the immutable runtime package.
+        explicitToolNames: z
+          .array(z.string().trim().min(1).max(160))
+          .max(64)
+          .optional(),
         connectorRefs: z.array(z.string().trim().min(1).max(200)).max(32),
       })
       .strict(),

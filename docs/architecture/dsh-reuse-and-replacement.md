@@ -52,6 +52,12 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 ## 本轮复核
 
+### MET-155 PR1：复用现有能力装配与发布
+
+2026-09-26，基于 main `bb4cc68`，引擎 `0.1.5-rc.3` / Web UI `0.1.7-rc.1` 均保持不变。继续使用已有 manifest、Skill Bundle、`requiredToolRefs`、草稿装配器和发布冻结链路；没有重写 DSH Skill 执行。实际补充仅为 Allrice 的手选工具来源、静态依赖收敛和后台解释。取消 Skill 只移除无其他来源的自动依赖，历史工具不猜测删除；编辑来源不进入运行包或 DSH 复用指纹。
+
+后台沿用 MET-159 的默认开放、按需连接和成员设置，清理手动配置 MCP、重复成员授权和固定逐次审批的过时指引。真实浏览器经 HTTP / PostgreSQL 验证共享依赖、单独保留、发布与回退；职责、兼容及验证边界见 [PR1 ADR](allrice-3.0/capability-configuration-adr.md)。PR2 / PR3 继续复用现有开发协作与对账交付，不为 3.0 重建已完成的 Office 或工作台。
+
 ### MET-160：官方 UI 复用与后续同步
 
 设置入口复用官方 `Modal` 与 `SettingsRoot` 双栏导航：账号用量、已连接应用与电脑配对统一进入设置，普通成员无需管理员角色或额外浏览器授权表单。完整设置插件绑定 DSH 宿主 `remote.settings` / ConfigForm / onboarding，故保留原生面板源码并接 Allrice 既有业务组件；不复制宿主模型/插件配置为无效租户开关。来源与补丁纳入同一 UI 同步账本。

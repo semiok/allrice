@@ -467,7 +467,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       });
       const result = await compilePlatformEmployee(denied.id);
       expect(result.valid).toBe(false);
-      expect(result.errors.join(' ')).toContain('Service Connector');
+      expect(result.errors).toContain(
+        `工具 cloud.mcp.call 所需能力 ${cap} 已被员工策略禁止`,
+      );
     }
     const tenantIds = await draft({
       ...base,
@@ -483,9 +485,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       ...base,
       capabilities: { ...base.capabilities, toolNames: ['web.fetch'] },
     });
-    expect(
-      (await compilePlatformEmployee(noMcp.id)).errors.join(' '),
-    ).toContain('Service Connector');
+    const withoutMcp = await compilePlatformEmployee(noMcp.id);
+    expect(withoutMcp.valid).toBe(true);
+    expect(withoutMcp.runtimeProfile?.toolNames).toEqual(['web.fetch']);
     const allowed = await draft(base);
     expect((await compilePlatformEmployee(allowed.id)).valid).toBe(true);
     const trial = await queuePlatformEmployeeTestRun(allowed.id, {

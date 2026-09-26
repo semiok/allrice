@@ -26,9 +26,16 @@ import { tenantValidationHttp } from '../../lib/tenant-administration/validation
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
-import { GET as employeeLifecycle } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
+import {
+  GET as employeeLifecycle,
+  POST as employeeLifecycleAction,
+} from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
+import {
+  frozenPackageSkills,
+  readFrozenSkillResource,
+} from '../../../../packages/database/src/skill-bundles.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
 vi.mock('../../lib/storage/runtime', () => ({
@@ -134,7 +141,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
               ? !parts[5]
                 ? await employeeDirectory(request)
                 : parts[6] === 'lifecycle'
-                  ? await employeeLifecycle(request, {
+                  ? await (
+                      request.method === 'POST'
+                        ? employeeLifecycleAction
+                        : employeeLifecycle
+                    )(request, {
                       params: Promise.resolve({ employeeId: parts[5]! }),
                     })
                   : await employeeAdministrationHttp(
@@ -903,6 +914,202 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   });
+  it('persists shared and explicit dependencies through UI selection, removal, publication and rollback', async () => {
+    const oldEnvironment = process.env.ALLRICE_ENV;
+    process.env.ALLRICE_ENV = 'development';
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    const otherSkill = await createEmployeeAdministrationFixture(fixture.db);
+    await fixture.db`update allrice_workspaces set name='MET155 second Skill workspace' where id=${otherSkill.workspaceId}`;
+    await fixture.db`update allrice_workspaces set name='MET155 dependency workspace' where id=${f.workspaceId}`;
+    await fixture.db`update allrice_memberships set role='member' where user_id=${f.ownerId}`;
+    await fixture.db`update allrice_platform_dsh_skills
+      set required_tool_refs='["workspace.skill.read", "web.search", "workspace.file.read"]' where id=${f.skillId}`;
+    await fixture.db`update allrice_platform_dsh_skills
+      set required_tool_refs='["workspace.skill.read", "web.fetch"]' where id=${otherSkill.skillId}`;
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: {
+        ...f.definition,
+        name: 'MET155 dependency fixture',
+        capabilities: {
+          ...f.definition.capabilities,
+          nativeSkillIds: [],
+          toolNames: ['workspace.file.list'],
+        },
+      },
+    });
+    const { page, context } = await pageFor();
+    try {
+      const open = async () => {
+        await page.goto(
+          `${origin}/runtime-console?view=employees&workspaceId=${f.workspaceId}`,
+        );
+        await page
+          .getByRole('button')
+          .filter({ hasText: 'MET155 dependency fixture' })
+          .click();
+      };
+      const tab = (name: string) =>
+        page.getByRole('button', { name, exact: true }).click();
+      const skill = (id: string) =>
+        page.getByRole('checkbox', { name: new RegExp(`p18-${id}`) });
+      const tool = (name: string) =>
+        page.getByRole('checkbox', { name: new RegExp(name) });
+      const directory = async () =>
+        (
+          await (
+            await context.request.get(
+              `${origin}/api/v1/admin/platform-employees`,
+            )
+          ).json()
+        ).employees.find(
+          (employee: { id: string }) => employee.id === f.employeeId,
+        );
+      const save = async () => {
+        const response = page.waitForResponse(
+          (r) =>
+            r.url() ===
+              `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+            r.request().method() === 'PUT',
+        );
+        await tab('保存草稿');
+        const result = await response;
+        expect(result.status()).toBe(200);
+        expect((await result.json()).validation.valid).toBe(true);
+        await expect
+          .poll(() =>
+            page
+              .getByRole('button', { name: '保存草稿', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+      };
+      const publish = async () => {
+        await tab('发布租户');
+        await page
+          .getByRole('checkbox', { name: /MET155 dependency workspace/ })
+          .check();
+        const response = page.waitForResponse(
+          (r) =>
+            r.url().endsWith(`/${f.employeeId}/publish`) &&
+            r.request().method() === 'POST',
+        );
+        await tab('保存并发布所选能力');
+        const result = await response;
+        expect(result.status()).toBe(200);
+        expect((await result.json()).valid).toBe(true);
+        await expect
+          .poll(() =>
+            page
+              .getByRole('button', { name: '保存并发布所选能力', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+      };
+      const tenantVersion = async () => {
+        const [row] =
+          await fixture.db`select a.id, v.manifest from allrice_employee_assignments a
+          join allrice_employee_versions v on v.id=a.employee_version_id
+          where a.workspace_id=${f.workspaceId} and a.active`;
+        return row!;
+      };
+      await open();
+      await tab('技能');
+      await skill(f.skillId).check();
+      await skill(otherSkill.skillId).check();
+      await tab('工具');
+      expect(await tool('读取已冻结 Skill').isChecked()).toBe(true);
+      expect(await tool('读取已冻结 Skill').isDisabled()).toBe(true);
+      await page
+        .getByRole('button', { name: '单独保留 联网搜索', exact: true })
+        .click();
+      await save();
+      await open();
+      await tab('工具');
+      expect(await tool('联网搜索').isChecked()).toBe(true);
+      expect(
+        (await directory()).currentDraft.definition.capabilities
+          .explicitToolNames,
+      ).toEqual(['workspace.file.list', 'web.search']);
+      await page.screenshot({
+        path: '/tmp/met155-dependency-tools.png',
+        fullPage: true,
+      });
+      await publish();
+      const first = await directory();
+      const firstPublished = await f.revision(first.currentPublished.id);
+      const tenantFirst = await tenantVersion();
+      const member = await authenticateSession(
+        (await createSession(f.ownerId)).token,
+        { organizationId: f.organizationId, workspaceId: f.workspaceId },
+      );
+      const workspace = await getEmployeeWorkspace(member!, f.workspaceId);
+      expect(
+        workspace.employees.some((employee) => employee.id === tenantFirst.id),
+      ).toBe(true);
+      await createChatSession(member!, {
+        workspaceId: f.workspaceId,
+        employeeAssignmentId: tenantFirst.id,
+        title: 'MET155 frozen capability verification',
+      });
+      const frozen = frozenPackageSkills(tenantFirst.manifest.runtimePackage);
+      expect(frozen).toHaveLength(2);
+      const resource = readFrozenSkillResource(
+        frozen,
+        `p18-${f.skillId}`,
+        'references/rules.txt',
+      );
+      expect(Buffer.from(resource.contentBase64, 'base64').toString()).toBe(
+        'Reviewed A\n',
+      );
+      expect(resource.bundleChecksum).toBe(f.a.checksum);
+
+      await tab('技能');
+      await skill(f.skillId).uncheck();
+      await tab('工具');
+      expect(await tool('读取工作区文件').isChecked()).toBe(false);
+      expect(await tool('读取已冻结 Skill').isChecked()).toBe(true);
+      expect(await tool('联网搜索').isChecked()).toBe(true);
+      await save();
+      await open();
+      await tab('技能');
+      await skill(otherSkill.skillId).uncheck();
+      await tab('工具');
+      expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
+      expect(await tool('读取网页').isChecked()).toBe(false);
+      expect(await tool('工作区文件列表').isChecked()).toBe(true);
+      expect(await tool('联网搜索').isChecked()).toBe(true);
+      await publish();
+      expect((await tenantVersion()).manifest.runtimePackage.skills).toEqual(
+        [],
+      );
+      expect(
+        (await directory()).currentPublished.definition.capabilities.toolNames,
+      ).toEqual(['workspace.file.list', 'web.search']);
+      expect(
+        (await f.revision(first.currentPublished.id)).runtime_profile,
+      ).toEqual(firstPublished.runtime_profile);
+
+      await page
+        .getByLabel('回滚原因', { exact: true })
+        .fill('Verify frozen capability rollback');
+      page.once('dialog', (dialog) => void dialog.accept());
+      await tab('回滚到上一发布');
+      await page
+        .getByText(/已回滚到发布 revision/)
+        .first()
+        .waitFor();
+      expect((await tenantVersion()).manifest.runtimePackage).toEqual(
+        tenantFirst.manifest.runtimePackage,
+      );
+      expect((await directory()).currentPublished.id).toBe(
+        first.currentPublished.id,
+      );
+    } finally {
+      await context.close();
+      if (oldEnvironment === undefined) delete process.env.ALLRICE_ENV;
+      else process.env.ALLRICE_ENV = oldEnvironment;
+    }
+  }, 60000);
   it('reads real Skills and canonical tools, reviews an exact scope, rejects changed policy then publishes after fresh confirmation', async () => {
     const f = await createEmployeeAdministrationFixture(fixture.db);
     await savePlatformEmployeeDraft(f.employeeId, {

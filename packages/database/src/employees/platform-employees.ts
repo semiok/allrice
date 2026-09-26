@@ -1310,22 +1310,9 @@ export async function compilePlatformEmployee(
         `Skill 缺少所需工具：${[...new Set(missingRequiredTools)].join(', ')}`,
       );
     }
-    if (
-      definition.securityPolicy.connectorIdentityModes.includes('service') &&
-      ((!definition.capabilities.toolNames.includes('cloud.mcp.call') &&
-        !['local.mcp.discover', 'local.mcp.call'].every((name) =>
-          definition.capabilities.toolNames.includes(name),
-        )) ||
-        definition.securityPolicy.deniedCapabilities.includes('secret:use') ||
-        (definition.capabilities.toolNames.includes('cloud.mcp.call') &&
-          definition.securityPolicy.deniedCapabilities.includes(
-            'network:outbound',
-          )))
-    ) {
-      errors.push(
-        'Service Connector 需要声明云端或本地 MCP 工具并许可相应能力；本地无需网络，租户连接仍须逐项绑定',
-      );
-    }
+    // Tool prerequisites (including connector capabilities) are checked by the
+    // shared catalog above. An unused identity mode is not an executable tool
+    // grant and must not prevent removing the last connector Skill.
     if (definition.capabilities.workflowRevisionIds.length > 0) {
       errors.push(
         '平台 Workflow 发布目录尚未启用，不能引用租户 Workflow revision',
