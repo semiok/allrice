@@ -4389,12 +4389,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
-  it(
-    'automatically presents a newly completed SSE delivery, but never reopens a panel the user closed',
+  it.each([false, true])(
+    'automatically presents a newly completed SSE delivery with its full answer, but never reopens a panel the user closed (streaming=%s)',
     { timeout: 20_000 },
-    async () => {
+    async (streamingOutput) => {
       for (const closed of [false, true]) {
-        const f = await fixture({ running: true, artifacts: closed });
+        const f = await fixture({
+          running: true,
+          artifacts: closed,
+          streamingOutput,
+        });
         try {
           await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
           if (closed) {
@@ -4411,7 +4415,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           await composer.fill('我的后续问题');
           f.finishRun();
-          await f.page.getByText('展开完整回复', { exact: true }).waitFor();
+          const transcript = f.page.locator('[data-chat-scroll]');
+          await transcript.getByRole('heading', { name: /COIN/ }).waitFor();
+          expect(await transcript.getByRole('table').isVisible()).toBe(true);
+          expect(
+            await transcript
+              .getByText('多步研究结果与引用说明。'.repeat(100), {
+                exact: true,
+              })
+              .isVisible(),
+          ).toBe(true);
+          expect(
+            await transcript.getByText('展开完整回复', { exact: true }).count(),
+          ).toBe(0);
           expect(
             await composer.evaluate((e) => e === document.activeElement),
           ).toBe(true);
@@ -4521,47 +4537,60 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('shows a real report in a persistent third column, leaves composer focus alone and summarizes the center', async () => {
-    const f = await fixture({ artifacts: true });
-    try {
-      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-      expect(await f.panel.getByRole('table').count()).toBe(1);
-      expect(
-        await f.page.getByText('展开完整回复', { exact: true }).count(),
-      ).toBe(1);
-      expect(
-        await f.page.evaluate(
-          () =>
-            getComputedStyle(
-              document.querySelector('main')!,
-            ).gridTemplateColumns.split(' ').length,
-        ),
-      ).toBe(3);
-      const composer = f.page.getByRole('textbox', {
-        name: '给 Rice 的消息',
-      });
-      await composer.fill('继续核对来源');
-      await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
-      f.state.items.unshift(artifact(11));
-      // Trigger the same existing read-only refresh used after a completed turn.
-      await f.fileAction('刷新文件');
-      await composer.focus();
-      await expect
-        .poll(() =>
-          f.panel
-            .locator('[data-document-id]:visible')
-            .last()
-            .getAttribute('data-document-id'),
-        )
-        .toBe(id(11));
-      expect(await composer.evaluate((e) => e === document.activeElement)).toBe(
-        true,
-      );
-      expect(await composer.inputValue()).toBe('继续核对来源');
-    } finally {
-      await f.close();
-    }
-  });
+  it.each([false, true])(
+    'shows a real report in a persistent third column, leaves composer focus alone and keeps the full historical answer visible (streaming=%s)',
+    async (streamingOutput) => {
+      const f = await fixture({ artifacts: true, streamingOutput });
+      try {
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(await f.panel.getByRole('table').count()).toBe(1);
+        expect(
+          await f.page.getByText('展开完整回复', { exact: true }).count(),
+        ).toBe(0);
+        const transcript = f.page.locator('[data-chat-scroll]');
+        expect(
+          await transcript.getByRole('heading', { name: /COIN/ }).isVisible(),
+        ).toBe(true);
+        expect(await transcript.getByRole('table').isVisible()).toBe(true);
+        expect(
+          await transcript
+            .getByText('多步研究结果与引用说明。'.repeat(100), { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await f.page.evaluate(
+            () =>
+              getComputedStyle(
+                document.querySelector('main')!,
+              ).gridTemplateColumns.split(' ').length,
+          ),
+        ).toBe(3);
+        const composer = f.page.getByRole('textbox', {
+          name: '给 Rice 的消息',
+        });
+        await composer.fill('继续核对来源');
+        await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
+        f.state.items.unshift(artifact(11));
+        // Trigger the same existing read-only refresh used after a completed turn.
+        await f.fileAction('刷新文件');
+        await composer.focus();
+        await expect
+          .poll(() =>
+            f.panel
+              .locator('[data-document-id]:visible')
+              .last()
+              .getAttribute('data-document-id'),
+          )
+          .toBe(id(11));
+        expect(
+          await composer.evaluate((e) => e === document.activeElement),
+        ).toBe(true);
+        expect(await composer.inputValue()).toBe('继续核对来源');
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it(
     'remembers explicit closure and sidebar preferences per user/workspace, including blocked storage fallback',
