@@ -87,3 +87,4 @@ export {
   recordManagedCloudEnvironment,
   type ManagedCloudEnvironmentReport,
 } from './tenant-employee-access.ts';
+export * from './organization-activity.ts';

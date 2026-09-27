@@ -457,6 +457,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       ).toBe(a.target.subjectId);
       await page.getByLabel('选择验收 Run').selectOption(a.task.runId);
       await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
+      await page.getByText('技术详情', { exact: true }).click();
+      await page.getByText('执行记录与审批详情', { exact: true }).click();
       const text = await page
         .getByRole('region', { name: '真实任务检查结果' })
         .innerText();

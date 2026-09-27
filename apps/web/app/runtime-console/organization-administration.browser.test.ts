@@ -5,7 +5,10 @@ import { resolve } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
+import {
+  assistantFixtureStorage,
+  createAssistantFixtureDatabase,
+} from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -15,13 +18,19 @@ import {
   importOrganizationPeople,
   getEmployeeWorkspace,
 } from '@allrice/database';
+import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
+import { organizationActivityHttp } from '../../lib/organization-administration/activity-http';
+import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
 import { organizationAdministrationHttp } from '../../lib/organization-administration/http';
 import { organizationAssignmentsHttp } from '../../lib/organization-administration/assignments-http';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 
-const ports = vi.hoisted(() => ({ context: vi.fn() }));
+const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
 vi.mock('../../lib/identity/session', () => ({
   getRequestContext: ports.context,
+}));
+vi.mock('../../lib/storage/runtime', () => ({
+  getStorageAdapter: ports.storage,
 }));
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' &&
@@ -36,8 +45,10 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     adminToken: string;
   const failures: string[] = [];
   beforeAll(async () => {
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
     const p = await ensureBootstrapPortalPrincipal({
       organizationSlug: 'allrice-platform',
       organizationName: 'Platform',
@@ -102,16 +113,20 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                     ? 'people'
                     : undefined;
           const response =
-            parts[6] === 'ai-employees'
-              ? await organizationAssignmentsHttp(request, parts[5]!)
-              : await organizationAdministrationHttp(
-                  request,
-                  parts[5],
-                  parts[7],
-                  action,
-                );
+            parts[4] === 'activity'
+              ? await organizationActivityHttp(request)
+              : parts[4] === 'tenants' && parts[6] === 'validation'
+                ? await tenantValidationHttp(request, parts[5]!)
+                : parts[6] === 'ai-employees'
+                  ? await organizationAssignmentsHttp(request, parts[5]!)
+                  : await organizationAdministrationHttp(
+                      request,
+                      parts[5],
+                      parts[7],
+                      action,
+                    );
           res.writeHead(response.status, Object.fromEntries(response.headers));
-          res.end(await response.text());
+          res.end(Buffer.from(await response.arrayBuffer()));
           return;
         }
         const asset = assets.get(url.pathname);
@@ -156,6 +171,96 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
+  });
+
+  it('navigates company -> person -> work -> file, retains expanded detail on refresh, and rejects foreign downloads', async () => {
+    const a = await tenantValidationFixture(fixture.db),
+      b = await tenantValidationFixture(fixture.db);
+    await fixture.db`update allrice_organizations set name='星米工作动态' where id=${a.target.organizationId}`;
+    await fixture.db`update allrice_users set display_name='小雪动态' where id=${a.target.subjectId}`;
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 1100 },
+    });
+    await context.addCookies([
+      { name: 'fixture_session', value: adminToken, url: origin },
+    ]);
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    try {
+      await page.goto(`${origin}/runtime-console?view=activity`);
+      await page
+        .getByRole('button', { name: '查看 星米工作动态', exact: true })
+        .click();
+      await page
+        .getByRole('button', { name: '查看 小雪动态 的工作', exact: true })
+        .click();
+      await page
+        .getByRole('button', { name: '查看工作与成果', exact: true })
+        .click();
+      await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
+      await page.getByText('技术详情', { exact: true }).click();
+      await page
+        .getByRole('button', {
+          name: 'evidence.txt · v1 · document',
+          exact: true,
+        })
+        .click();
+      const preview = page.getByRole('region', { name: '只读交付物预览' });
+      await preview.waitFor();
+      await page.evaluate(() => {
+        document
+          .querySelector('[aria-label="真实任务检查结果"]')
+          ?.setAttribute('data-retained', 'yes');
+      });
+      for (const name of ['刷新工作动态', '刷新工作列表', '刷新工作详情']) {
+        const button = page.getByRole('button', { name, exact: true });
+        await button.click();
+        await expect.poll(() => button.isEnabled()).toBe(true);
+        expect(await page.locator('[data-retained="yes"]').count()).toBe(1);
+        expect(
+          await page
+            .locator('details')
+            .filter({ has: page.getByText('技术详情', { exact: true }) })
+            .getAttribute('open'),
+        ).not.toBeNull();
+        expect(await preview.innerText()).toContain(
+          'Isolated fixture, not a real model answer.',
+        );
+      }
+      const link = await page
+        .getByRole('link', { name: '下载', exact: true })
+        .getAttribute('href');
+      const download = await context.request.get(`${origin}${link}`);
+      expect(download.status()).toBe(200);
+      expect(download.headers()['content-disposition']).toContain('attachment');
+      expect(await download.text()).toContain(
+        'Isolated fixture, not a real model answer.',
+      );
+      expect(
+        (
+          await context.request.get(
+            `${origin}${link!.replace(a.artifact.artifactId, b.artifact.artifactId)}`,
+          )
+        ).status(),
+      ).toBe(404);
+      const member = await createSession(b.target.subjectId);
+      expect(
+        (
+          await context.request.get(`${origin}${link}`, {
+            headers: { cookie: `fixture_session=${member.token}` },
+          })
+        ).status(),
+      ).toBe(403);
+      await page.screenshot({
+        path: '.local/met161/pr5-activity.png',
+        fullPage: true,
+      });
+      expect(errors).toEqual([]);
+      expect(failures).toEqual([]);
+    } finally {
+      await context.close();
+    }
   });
 
   it('creates a company and employees, imports a spreadsheet, edits profiles, resets passwords and disables access', async () => {

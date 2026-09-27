@@ -31,7 +31,7 @@ import {
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
-  requireTenantManagementScope,
+  requireTenantInspectionScope,
   type TenantManagementTarget,
 } from './tenant-management-scope.ts';
 
@@ -277,7 +277,7 @@ export async function inspectTenantRunArtifacts(
     artifactId =
       artifactInput === null ? null : UuidSchema.parse(artifactInput);
   return db.begin(async (tx) => {
-    await requireTenantManagementScope(issuer, target, tx);
+    await requireTenantInspectionScope(issuer, target, tx);
     const [run] = await tx<
       { session_id: string }[]
     >`select e.session_id from allrice_employee_runs e

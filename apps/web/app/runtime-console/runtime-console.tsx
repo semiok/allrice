@@ -5,6 +5,7 @@ import { AllriceMark } from '../../components/allrice-mark';
 
 import { GovernanceConsole } from './governance-console';
 import { OrganizationAdministration } from './organization-administration';
+import { OrganizationActivity } from './organization-activity';
 import { TenantFeedback } from './tenant-feedback';
 import { RunUsageSummary } from './run-usage';
 import { RunTimingSummary } from './run-timing';
@@ -156,13 +157,14 @@ function tenantBridgeStatusLabel(tenant: TenantRuntimeItem) {
 
 export function RuntimeConsole() {
   const [view, setView] = useState<
+    | 'activity'
     | 'runtimes'
     | 'employees'
     | 'capabilities'
     | 'governance'
     | 'tenants'
     | 'feedback'
-  >('runtimes');
+  >('tenants');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -176,6 +178,7 @@ export function RuntimeConsole() {
   useEffect(() => {
     const requested = new URLSearchParams(window.location.search).get('view');
     if (
+      requested === 'activity' ||
       requested === 'runtimes' ||
       requested === 'employees' ||
       requested === 'capabilities' ||
@@ -190,6 +193,7 @@ export function RuntimeConsole() {
   const selectView = useCallback(
     (
       next:
+        | 'activity'
         | 'runtimes'
         | 'employees'
         | 'capabilities'
@@ -233,6 +237,7 @@ export function RuntimeConsole() {
   }, []);
 
   useEffect(() => {
+    if (view !== 'runtimes') return;
     void load().catch((reason: unknown) =>
       setError(reason instanceof Error ? reason.message : '加载失败'),
     );
@@ -241,7 +246,7 @@ export function RuntimeConsole() {
       5_000,
     );
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, view]);
 
   useEffect(() => {
     if (!data || !selectedTenantId) {
@@ -259,7 +264,7 @@ export function RuntimeConsole() {
   }, [data, selectedTenantId]);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedId || view !== 'runtimes') {
       setTimeline(null);
       return;
     }
@@ -294,7 +299,7 @@ export function RuntimeConsole() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [selectedId]);
+  }, [selectedId, view]);
 
   const selected = useMemo(
     () => data?.runtimes.find((item) => item.session.id === selectedId) ?? null,
@@ -343,23 +348,13 @@ export function RuntimeConsole() {
         <div className={styles.brand}>
           <AllriceMark size={38} />
           <div>
-            <strong>AllRice Runtime Console</strong>
-            <small>真实 Worker Runtime · DSH Native</small>
+            <strong>Allrice 管理后台</strong>
+            <small>公司、员工与工作动态</small>
           </div>
         </div>
       </header>
 
-      <DshReleaseSummary
-        onOpenCapabilities={() => selectView('capabilities')}
-      />
-
-      <nav className={styles.viewNav} aria-label="Runtime Console 菜单">
-        <button
-          aria-current={view === 'feedback' ? 'page' : undefined}
-          onClick={() => selectView('feedback')}
-        >
-          租户反馈
-        </button>
+      <nav className={styles.viewNav} aria-label="管理后台菜单">
         <button
           aria-current={view === 'tenants' ? 'page' : undefined}
           onClick={() => selectView('tenants')}
@@ -373,26 +368,63 @@ export function RuntimeConsole() {
           AI 员工
         </button>
         <button
-          aria-current={view === 'runtimes' ? 'page' : undefined}
-          onClick={() => selectView('runtimes')}
+          aria-current={view === 'activity' ? 'page' : undefined}
+          onClick={() => selectView('activity')}
         >
-          Runtime 状态
+          工作动态
         </button>
         <button
-          aria-current={view === 'capabilities' ? 'page' : undefined}
+          aria-current={
+            ['capabilities', 'governance', 'runtimes', 'feedback'].includes(
+              view,
+            )
+              ? 'page'
+              : undefined
+          }
           onClick={() => selectView('capabilities')}
         >
-          版本与能力
-        </button>
-        <button
-          aria-current={view === 'governance' ? 'page' : undefined}
-          onClick={() => selectView('governance')}
-        >
-          模型治理
+          平台设置
         </button>
       </nav>
+      {['capabilities', 'governance', 'runtimes', 'feedback'].includes(
+        view,
+      ) && (
+        <nav className={styles.viewNav} aria-label="平台设置">
+          <button
+            aria-current={view === 'capabilities' ? 'page' : undefined}
+            onClick={() => selectView('capabilities')}
+          >
+            版本与能力
+          </button>
+          <button
+            aria-current={view === 'governance' ? 'page' : undefined}
+            onClick={() => selectView('governance')}
+          >
+            模型与用量
+          </button>
+          <button
+            aria-current={view === 'runtimes' ? 'page' : undefined}
+            onClick={() => selectView('runtimes')}
+          >
+            运行技术详情
+          </button>
+          <button
+            aria-current={view === 'feedback' ? 'page' : undefined}
+            onClick={() => selectView('feedback')}
+          >
+            员工反馈
+          </button>
+        </nav>
+      )}
+      {view === 'capabilities' && (
+        <DshReleaseSummary
+          onOpenCapabilities={() => selectView('capabilities')}
+        />
+      )}
 
-      {view === 'feedback' ? (
+      {view === 'activity' ? (
+        <OrganizationActivity />
+      ) : view === 'feedback' ? (
         <TenantFeedback />
       ) : view === 'tenants' ? (
         <OrganizationAdministration />
