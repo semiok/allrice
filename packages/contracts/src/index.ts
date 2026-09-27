@@ -30,6 +30,7 @@ export * from './task-native-wait.ts';
 export * from './automation.ts';
 export * from './authorization.ts';
 export * from './tenant-administration.ts';
+export * from './organization-administration.ts';
 export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';
 export * from './capabilities.ts';

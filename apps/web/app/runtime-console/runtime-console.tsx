@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AllriceMark } from '../../components/allrice-mark';
 
 import { GovernanceConsole } from './governance-console';
-import { TenantAdministration } from './tenant-administration';
+import { OrganizationAdministration } from './organization-administration';
 import { TenantFeedback } from './tenant-feedback';
 import { RunUsageSummary } from './run-usage';
 import { RunTimingSummary } from './run-timing';
@@ -364,7 +364,7 @@ export function RuntimeConsole() {
           aria-current={view === 'tenants' ? 'page' : undefined}
           onClick={() => selectView('tenants')}
         >
-          租户管理
+          组织管理
         </button>
         <button
           aria-current={view === 'employees' ? 'page' : undefined}
@@ -395,7 +395,7 @@ export function RuntimeConsole() {
       {view === 'feedback' ? (
         <TenantFeedback />
       ) : view === 'tenants' ? (
-        <TenantAdministration />
+        <OrganizationAdministration />
       ) : view === 'employees' ? (
         <EmployeeProduction />
       ) : view === 'capabilities' ? (
