@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   BrowserProfileSchema,
@@ -15,6 +15,17 @@ import { nativeSandboxConfig } from './sandbox-settings.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import { bridgeVersion } from './version.js';
+
+export function sandboxLaunchEnvironment(binary: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    // The menu-bar app intentionally starts core with a system-only PATH.
+    // Colima also needs Homebrew's limactl (and its VM helpers). Make that
+    // installation visible only to this child, without importing shell config
+    // or changing the environment used by Bridge's other capabilities.
+    PATH: `${dirname(binary)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+  };
+}
 
 export function initialBridgeEnvironment(paused = false): BridgeEnvironment {
   return {
@@ -111,6 +122,7 @@ export async function resumeExistingSandbox(
     }
     signal.throwIfAborted();
     await promisify(execFile)(path, ['start', '--profile', 'allrice-b2'], {
+      env: sandboxLaunchEnvironment(binary),
       timeout: 60_000,
       maxBuffer: 256_000,
       signal,
