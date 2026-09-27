@@ -160,7 +160,7 @@ describe('AllRice DSH protocol runtime', () => {
     expect(exportTool.parameters.parentObjectId.type).toBe('string');
     expect(exportTool.parameters.changeSummary.type).toBe('string');
     expect(runtimeSource).toContain(
-      'pass its object ID as parentObjectId and summarize the revision in changeSummary',
+      'pass parentObjectId and top-level changeSummary to preserve immutable lineage',
     );
   });
 
