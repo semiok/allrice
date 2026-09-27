@@ -8,6 +8,43 @@ import {
 } from './event-projector.js';
 
 describe('safeDshSourcePayload', () => {
+  it('retains public task names and states, strips unrelated data and preserves clearing', () => {
+    const source = nativeEventView({
+      seq: 20,
+      type: 'todo/write',
+      data: {
+        todos: [
+          { content: '核对资料', status: 'completed', reasoning: 'private' },
+          {
+            content: '生成文件',
+            status: 'in_progress',
+            arguments: { secret: 'private' },
+          },
+          { content: '检查交付', status: 'pending' },
+        ],
+        credential: 'private',
+      },
+    });
+    expect(source?.sourcePayload).toEqual({
+      count: 3,
+      completed: 1,
+      todos: [
+        { content: '核对资料', status: 'completed' },
+        { content: '生成文件', status: 'in_progress' },
+        { content: '检查交付', status: 'pending' },
+      ],
+    });
+    expect(JSON.stringify(source)).not.toContain('private');
+    expect(
+      safeDshSourcePayload({ type: 'todo/write', data: { todos: [] } }),
+    ).toEqual({ count: 0, completed: 0, todos: [] });
+    expect(
+      safeDshSourcePayload({
+        type: 'todo/write',
+        data: { todos: [{ content: 'bad', status: 'invented' }] },
+      }),
+    ).not.toHaveProperty('todos');
+  });
   it('keeps tool presentation metadata without exposing arguments or results', () => {
     const callPayload = safeDshSourcePayload({
       seq: 7,

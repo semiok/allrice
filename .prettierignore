@@ -37,3 +37,6 @@ apps/web/app/chatflow/dsh-upstream/feedback/
 
 # Pinned official conversation grouping; verified with recorded compatibility patches.
 apps/web/app/chatflow/dsh-upstream/process/
+
+# Native DSH task plan panel; source and lifecycle patch verified in the UI ledger.
+apps/web/app/chatflow/dsh-upstream/todo/
