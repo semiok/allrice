@@ -335,3 +335,17 @@ describe('legacy navigation compatibility', () => {
     }
   });
 });
+
+it('drops credentials in legacy navigation but preserves invitation activation tokens', () => {
+  const host = 'allrice-snow.bplabs.xyz';
+  const response = proxy(
+    new NextRequest(
+      `https://${host}/chatflow?session=kept&password=not-forwarded&sessionToken=not-forwarded&access_token=not-forwarded&next=%2Fworkspace%3Ftoken%3Dnot-forwarded`,
+      { headers: { host } },
+    ),
+  );
+  const location = new URL(response.headers.get('location')!);
+  expect(location.searchParams.get('session')).toBe('kept');
+  expect(location.searchParams.get('next')).toBe('/workspace');
+  expect(location.href).not.toContain('not-forwarded');
+});

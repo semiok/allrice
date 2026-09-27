@@ -1,3 +1,4 @@
+import { safeNavigationQuery } from './navigation-query';
 /** Preserve employee trial navigation after tenant login, never redirect off-site. */
 export function loginDestination(
   next: string | null,
@@ -13,7 +14,7 @@ export function loginDestination(
         target.pathname,
       )
     )
-      return target.pathname + target.search;
+      return target.pathname + safeNavigationQuery(target);
   } catch {
     /* Invalid navigation hints do not change the login destination. */
   }
