@@ -29,7 +29,10 @@ export async function refreshManagedCloudEnvironments(workerId: string) {
           reason: 'platform_cloud_paused',
         };
       try {
-        const verified = await new CloudRunnerBackend().preflight();
+        const backend = new CloudRunnerBackend();
+        const verified = await backend.preflight();
+        const capacity = await backend.capacity();
+        if (capacity.slots === 0) throw Error('cloud_resources_insufficient');
         return {
           available: true,
           reason: null,
@@ -39,7 +42,7 @@ export async function refreshManagedCloudEnvironments(workerId: string) {
             runtimeChecksum:
               'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
             network: 'none',
-            maximumConcurrency: 1,
+            maximumConcurrency: capacity.slots,
           }),
         };
       } catch {

@@ -60,7 +60,11 @@ export function taskClockPhase(input: {
     return 'terminal';
   if (input.modelInFlight) return 'active';
   const terminal = new Set(['succeeded', 'failed', 'canceled', 'partial']);
-  const blocked = new Set(['waiting_user', 'waiting_device']);
+  const blocked = new Set([
+    'waiting_user',
+    'waiting_device',
+    'waiting_resource',
+  ]);
   const liveOps = input.operations.filter((op) => !terminal.has(op.status));
   if (liveOps.some((op) => !blocked.has(op.status))) return 'active';
   if (input.progressPaused) return 'waiting';
@@ -103,13 +107,37 @@ export async function refreshTaskClock(tx: Tx, runId: string) {
   const instances = await tx<
     { run_id: string; status: string }[]
   >`select run_id,status from allrice_assistant_instances where root_run_id=${runId}`;
-  const operations = await tx<{ agent_id: string; status: string }[]>`
-    select coalesce(snapshot->>'agentInstanceId',run_id::text) as agent_id,snapshot->>'status' as status
+  const operations = await tx<
+    { id?: string; agent_id: string; status: string }[]
+  >`
+    select id,coalesce(snapshot->>'agentInstanceId',run_id::text) as agent_id,snapshot->>'status' as status
     from allrice_runtime_operations where root_run_id=${runId}`;
   const questions =
     await tx`select 1 from allrice_task_questions where run_id=${runId} and pending limit 1`;
   if (questions.length)
     operations.push({ agent_id: runId, status: 'waiting_user' });
+  const [resourceTable] =
+    await tx`select to_regclass(format('%I.allrice_task_resource_waits',current_schema())) is not null as available`;
+  const resourceWaits = resourceTable?.available
+    ? await tx<
+        { call_id: string; operation_id: string | null; agent_id: string }[]
+      >`
+    select distinct w.call_id,w.operation_id,coalesce(u.run_id,w.run_id)::text as agent_id
+    from allrice_task_resource_waits w join allrice_jobs j on j.id=w.job_id
+    left join allrice_assistant_usage u on u.root_run_id=w.run_id and u.native_call_id=w.call_id and u.metric='tool_calls'
+    where w.run_id=${runId} and w.state='waiting' and j.status='running'
+      and j.lease_token=w.lease_token and j.worker_id=w.worker_id and j.lease_expires_at>clock_timestamp()`
+    : [];
+  const resourceCalls = resourceWaits.map((w) => w.call_id);
+  if (resourceWaits.length) {
+    const ids = resourceWaits.flatMap((w) =>
+      w.operation_id ? [w.operation_id] : [],
+    );
+    for (const op of operations)
+      if (op.id && ids.includes(op.id)) op.status = 'waiting_resource';
+    for (const w of resourceWaits)
+      operations.push({ agent_id: w.agent_id, status: 'waiting_resource' });
+  }
   const [model] = await tx<
     { active: boolean }[]
   >`select exists(select 1 from allrice_assistant_model_admissions
@@ -118,6 +146,7 @@ export async function refreshTaskClock(tx: Tx, runId: string) {
     { active: boolean }[]
   >`select exists(select 1 from allrice_assistant_usage u
     where u.root_run_id=${runId} and u.metric='tool_calls' and u.amount>0 and u.settled_amount is null
+      ${resourceCalls.length ? tx`and u.native_call_id not in ${tx(resourceCalls)}` : tx``}
       and not exists(select 1 from allrice_task_operation_calls c join allrice_runtime_operations o on o.id=c.operation_id
         where c.run_id=u.root_run_id and c.agent_id=u.run_id and c.native_call_id=u.native_call_id
           and o.snapshot->>'status' in ('waiting_user','waiting_device'))) as active`;
@@ -131,6 +160,7 @@ export async function refreshTaskClock(tx: Tx, runId: string) {
     progressPaused = !!progress?.pause_id;
     const [calls] =
       await tx`select exists(select 1 from allrice_task_calls c where c.run_id=${runId} and c.finished_at is null
+      ${resourceCalls.length ? tx`and not (c.kind='tool' and c.call_id in ${tx(resourceCalls)} and (select count(*) from allrice_task_calls collision where collision.run_id=c.run_id and collision.call_id=c.call_id and collision.kind='tool' and collision.finished_at is null)=1)` : tx``}
       and not exists(select 1 from allrice_task_operation_calls b join allrice_runtime_operations o on o.id=b.operation_id
         where b.run_id=c.run_id and b.native_call_id=c.call_id
           and (exists(select 1 from allrice_assistant_instances i where i.run_id=b.agent_id and i.native_session_id=c.native_session_id)

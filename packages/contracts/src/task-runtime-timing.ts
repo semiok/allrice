@@ -10,6 +10,7 @@ export const TaskRuntimeTimingSchema = z
     timeoutMs: milliseconds,
     remainingMs: milliseconds.nullable(),
     phase: z.enum(['queued', 'active', 'waiting', 'terminal']),
+    resourceWaiting: z.number().int().nonnegative().optional(),
     sources: z.array(
       z.object({ scope: z.string(), timeoutMs: milliseconds }).strict(),
     ),

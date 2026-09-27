@@ -1,5 +1,4 @@
 import { HandlerError } from '../../errors.js';
-import { observeCodexTokens } from '@allrice/database';
 import type { HarnessExecutionResult } from '../adapter.js';
 import {
   attachAssistantFailureDiagnostics,
@@ -59,7 +58,7 @@ export class AssistantExecutionUnresolvedError extends HandlerError {
   ) {
     super(
       'ASSISTANT_EXECUTION_UNRESOLVED',
-      '助手执行或用量尚未核对；已保存可用证据，未确认整项任务成功。',
+      '助手执行结果尚未确认；已保存可用成果，待恢复执行状态。',
       false,
     );
     attachAssistantFailureDiagnostics(this, diagnostics);
@@ -72,17 +71,9 @@ export function assertAssistantTaskComplete(
   result: HarnessExecutionResult,
   verifiedSubscription = false,
 ) {
+  void verifiedSubscription; // Compatibility with older callers; policy applies to every route.
   if (!result.assistantStatus) return;
   const diagnostics = getAssistantFailureDiagnostics(result);
-  if (
-    result.usageComplete !== true &&
-    !observeCodexTokens(verifiedSubscription)
-  )
-    throw new AssistantExecutionUnresolvedError(
-      result.usage,
-      false,
-      diagnostics,
-    );
   if (result.assistantStatus === 'partial') {
     const error = new HandlerError(
       'ASSISTANT_PARTIAL_RESULT',

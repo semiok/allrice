@@ -120,7 +120,7 @@ integration(
       return { f, children, request, tree, usage };
     }
 
-    it('records actual output above a soft subscription reservation and cancels without erasing unknown sibling usage', async () => {
+    it('records output over old capacity and continues without erasing unknown sibling usage', async () => {
       const { f, children, tree, usage } = await layout();
       const child = children[0]!;
       await f.runtime.settleUsage({
@@ -129,7 +129,7 @@ integration(
         callId: child.callId,
         amounts: { ...child.amounts, output_tokens: 13000 },
       });
-      expect((await tree()).cancelRequested).toBe(true);
+      expect((await tree()).cancelRequested).toBe(false);
       expect(
         (await tree()).budgets.find((b) => b.metric === 'output_tokens'),
       ).toMatchObject({ spent: 13246, reserved: 4000, usageComplete: false });
@@ -151,70 +151,59 @@ integration(
           callId: randomUUID(),
           requestedOutputTokens: 1,
         }),
-      ).rejects.toThrow('canceled');
+      ).resolves.toMatchObject({ prepared: true });
     });
 
-    it('rejects parent 4000 with only 3754 free and rolls back every dimension without touching child reservations', async () => {
-      const { f, request, tree, usage } = await layout();
-      const before = { tree: await tree(), usage: await usage() };
-      const denied = request(f.rootRunId, 4000);
-      await expect(f.runtime.reserveUsage(denied)).rejects.toThrow(
-        'budget_exhausted',
-      );
-      expect({ tree: await tree(), usage: await usage() }).toEqual(before);
-      expect(
-        (await usage()).filter((row) => row.call_id === denied.callId),
-      ).toHaveLength(0);
-      expect(
-        (await tree()).budgets.every((b) => b.spent + b.reserved <= b.capacity),
-      ).toBe(true);
-    });
-
-    it('serializes competing exact-remainder requests and rolls back a full-capacity rejection', async () => {
+    it('admits parent output above the old remainder and preserves child receipts', async () => {
       const { f, request, tree, usage } = await layout();
       const existing = await usage();
-      // This is an explicit test input to the CURRENT reservation API, not an
-      // automatic grant, changed provider limit, or implemented dynamic policy.
-      const calls = [request(f.rootRunId, 3754), request(f.rootRunId, 3754)];
-      const results = await Promise.allSettled(
-        calls.map((call) => f.runtime.reserveUsage(call)),
+      const call = request(f.rootRunId, 4000);
+      await expect(f.runtime.reserveUsage(call)).resolves.toEqual({
+        reserved: true,
+      });
+      expect((await usage()).filter((r) => r.call_id !== call.callId)).toEqual(
+        existing,
       );
       expect(
-        results.filter((result) => result.status === 'fulfilled'),
-      ).toHaveLength(1);
-      const loser = results.findIndex((result) => result.status === 'rejected');
-      expect(results[loser]).toMatchObject({
-        reason: { code: 'budget_exhausted' },
-      });
-      expect(
-        (await usage()).filter((row) => row.call_id === calls[loser]!.callId),
-      ).toHaveLength(0);
-      const accepted = calls[1 - loser]!;
-      const full = { tree: await tree(), usage: await usage() };
-      expect(
-        full.tree.budgets.find((b) => b.metric === 'output_tokens'),
+        (await tree()).budgets.find((b) => b.metric === 'output_tokens'),
       ).toMatchObject({
         capacity: 12000,
         spent: 246,
-        reserved: 11754,
+        reserved: 12000,
+        usageComplete: false,
+      });
+    });
+    it('serializes distinct and duplicate reservations without enforcing old capacity', async () => {
+      const { f, request, tree, usage } = await layout();
+      const existing = await usage();
+      const calls = [request(f.rootRunId, 4000), request(f.rootRunId, 4000)];
+      expect(
+        await Promise.all(calls.map((call) => f.runtime.reserveUsage(call))),
+      ).toEqual([{ reserved: true }, { reserved: true }]);
+      const before = { tree: await tree(), usage: await usage() };
+      expect(
+        before.tree.budgets.find((b) => b.metric === 'output_tokens'),
+      ).toMatchObject({
+        capacity: 12000,
+        spent: 246,
+        reserved: 16000,
         usageComplete: false,
       });
       expect(
-        full.usage.filter((row) => row.call_id !== accepted.callId),
+        before.usage.filter(
+          (row) => !calls.some((call) => call.callId === row.call_id),
+        ),
       ).toEqual(existing);
-      await expect(f.runtime.reserveUsage(accepted)).resolves.toEqual({
+      await expect(f.runtime.reserveUsage(calls[0]!)).resolves.toEqual({
         reserved: false,
       });
       await expect(
         f.runtime.reserveUsage({
-          ...accepted,
-          amounts: { ...accepted.amounts, output_tokens: 3753 },
+          ...calls[0]!,
+          amounts: { ...calls[0]!.amounts, output_tokens: 3999 },
         }),
       ).rejects.toThrow('conflict');
-      await expect(
-        f.runtime.reserveUsage(request(f.rootRunId, 1)),
-      ).rejects.toThrow('budget_exhausted');
-      expect({ tree: await tree(), usage: await usage() }).toEqual(full);
+      expect({ tree: await tree(), usage: await usage() }).toEqual(before);
     });
 
     it('keeps omitted child output unknown through partial settlement, a fresh service, and cancellation', async () => {
@@ -228,15 +217,14 @@ integration(
           amounts: { model_calls: 1, tool_calls: 0, input_tokens: 1 },
         });
       }
-      const before = { tree: await tree(), usage: await usage() };
       const restarted = createAssistantRuntime({
         database: database.db,
         authorize: assertAssistantAuthority,
       });
       await expect(
         restarted.reserveUsage(request(f.rootRunId, 4000)),
-      ).rejects.toThrow('budget_exhausted');
-      expect({ tree: await tree(), usage: await usage() }).toEqual(before);
+      ).resolves.toEqual({ reserved: true });
+      const before = { tree: await tree(), usage: await usage() };
       await restarted.cancelRoot(f.context, {
         runId: f.rootRunId,
         requestId: randomUUID(),
@@ -258,7 +246,7 @@ integration(
         (await tree()).budgets.find((b) => b.metric === 'output_tokens'),
       ).toMatchObject({
         spent: 246,
-        reserved: 8000,
+        reserved: 12000,
         usageComplete: false,
       });
     });

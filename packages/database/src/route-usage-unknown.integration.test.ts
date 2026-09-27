@@ -196,9 +196,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
       cacheUsageKnown: false,
       usageComplete: false,
     });
-    expect(() => assertQuotaAvailable(quota)).toThrow(
-      'MODEL_TOKEN_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(quota)).not.toThrow();
   });
 
   it('known → null and repeated/concurrent retries update one durable ledger row, not duplicate runs or tokens', async () => {
@@ -266,9 +264,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
       cacheUsageKnown: false,
       usageComplete: false,
     });
-    expect(() => assertQuotaAvailable(quota)).toThrow(
-      'MODEL_TOKEN_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(quota)).not.toThrow();
   });
 
   it('keeps NULL cost sticky even when total/cache completeness were already known', async () => {
@@ -291,9 +287,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
       cacheUsageKnown: true,
       usageComplete: true,
     });
-    expect(() => assertQuotaAvailable(quota)).toThrow(
-      'MODEL_COST_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(quota)).not.toThrow();
   });
 
   it.each(['cacheUsageKnown', 'usageComplete'] as const)(
@@ -314,9 +308,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
       );
       expect(quota[flag]).toBe(false);
       if (flag === 'usageComplete')
-        expect(() => assertQuotaAvailable(quota)).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota)).not.toThrow();
     },
   );
 
@@ -386,9 +378,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
       cacheUsageKnown: false,
       usageComplete: false,
     });
-    expect(() => assertQuotaAvailable(quota)).toThrow(
-      'MODEL_TOKEN_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(quota)).not.toThrow();
   });
 
   it('rejects cross-organization and same-organization cross-workspace completion without corrupting either bill', async () => {
@@ -486,9 +476,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
       usageComplete: true,
       cacheUsageKnown: true,
     });
-    expect(() => assertQuotaAvailable(quota)).toThrow(
-      'MODEL_COST_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(quota)).not.toThrow();
     const otherQuota = await getOrganizationModelQuota(
       other.task.scope.organizationId,
       database.db,
@@ -514,9 +502,7 @@ integration('route usage unknown cost and completeness (real PG)', () => {
     );
     expect(quota.usageComplete).toBe(false);
     expect(quota.unknownCostRuns).toBe(0);
-    expect(() => assertQuotaAvailable(quota)).toThrow(
-      'MODEL_TOKEN_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(quota)).not.toThrow();
   });
 
   it('preserves unknown cache breakdown independently of known total input and an explicitly supplied cost', async () => {

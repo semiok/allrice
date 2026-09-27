@@ -6,7 +6,6 @@ import {
   DshExecutionSnapshotSchema,
   ModelRunLimitsSchema,
   allRiceToolManifest,
-  estimateAssistantUsageCost,
   type AssistantPriceSnapshot,
   type AssistantSubscriptionSnapshot,
   type DshExecutionSnapshot,
@@ -34,7 +33,6 @@ import type { HarnessExecutionInput } from '../adapter.js';
 import { createAssistantWorkerBridge } from './assistant-bridge.js';
 import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 import { assertAssistantProviderOutputBound } from './assistant-provider.js';
-import { assertSubscriptionQuotaNotExhausted } from '../../subscription-quota-admission.js';
 
 import { assistantModelCallCapacity } from './assistant-call-limits.js';
 
@@ -88,9 +86,10 @@ export function productionAssistantController(input: {
   if (!configuration.allowAssistants) return undefined;
   if (!assistantRuntimeEnabled()) throw Error('assistant_runtime_disabled');
   const limits = ModelRunLimitsSchema.parse(input.runLimits ?? {});
-  const priceSnapshot = input.priceSnapshot
-    ? AssistantPriceSnapshotSchema.parse(input.priceSnapshot)
-    : undefined;
+  const priceSnapshot =
+    input.priceSnapshot?.price.currency === 'USD'
+      ? AssistantPriceSnapshotSchema.parse(input.priceSnapshot)
+      : undefined;
   const subscriptionSnapshot = input.subscriptionSnapshot
     ? AssistantSubscriptionSnapshotSchema.parse(input.subscriptionSnapshot)
     : undefined;
@@ -98,8 +97,6 @@ export function productionAssistantController(input: {
     throw Error('assistant_billing_mode_conflict');
   // The existing RouteOutcome/monthly quota ledger has no currency column.
   // It cannot safely aggregate arbitrary ISO currencies, even with valid tariffs.
-  if (priceSnapshot && priceSnapshot.price.currency !== 'USD')
-    throw Error('assistant_price_currency_unsupported');
   const pricingProvider = input.serverPricingProviderSnapshot
     ? DshExecutionSnapshotSchema.parse(input.serverPricingProviderSnapshot)
     : undefined;
@@ -113,36 +110,6 @@ export function productionAssistantController(input: {
     limits.maxInputTokens,
     limits.maxTotalTokens - outputCapacity,
   );
-  // Constrain every call to one verified tariff band BEFORE model preparation.
-  // Whole-root token capacities also provide the conservative monetary bound.
-  const priceBound = priceSnapshot
-    ? estimateAssistantUsageCost(priceSnapshot, {
-        inputTokens: inputCapacity,
-        outputTokens: outputCapacity,
-        cacheReadTokens: null,
-        cacheWriteTokens: null,
-        usageComplete: true,
-      })
-    : undefined;
-  // The downstream legacy ledger is numeric(14,6) cents. Refuse a tariff whose
-  // whole-root upper bound cannot be represented; never overflow or report zero.
-  if (
-    priceBound?.costPicounits !== undefined &&
-    (priceBound.costPicounits === null ||
-      BigInt(priceBound.costPicounits) > 999999999999990000n)
-  )
-    throw Error('assistant_cost_projection_out_of_range');
-  if (limits.maxCostCents !== null && !subscriptionSnapshot) {
-    if (!priceBound?.costPicounits)
-      throw Error('assistant_cost_bound_unavailable');
-    // Frozen token capacities are shared by the entire tree, never renewed per
-    // child. Their conservative price bound must fit the full monetary cap.
-    if (
-      BigInt(priceBound.costPicounits) >
-      BigInt(limits.maxCostCents) * 10000000000n
-    )
-      throw Error('assistant_cost_bound_exceeds_limit');
-  }
   const allowedTools = input.tools.map((tool) => tool.name);
   if (!allowedTools.includes('assistant.delegate'))
     throw Error('assistant_authority_missing');
@@ -163,13 +130,8 @@ export function productionAssistantController(input: {
   return {
     rootRunId: input.context.runId,
     ...(subscriptionSnapshot ? { subscriptionSnapshot } : {}),
-    maxOutputTokens: Math.max(
-      1,
-      Math.floor(
-        Math.min(limits.maxOutputTokens, limits.maxTotalTokens - 1) /
-          (configuration.maxConcurrent + 1),
-      ),
-    ),
+    // A per-response protocol setting, never a shared lifetime budget.
+    maxOutputTokens: limits.maxOutputTokens,
     async bind(nativeSessionId, generation, onToolCall, inspect) {
       // The Worker queue lease also carries leaseMs (and may grow other queue
       // fields). Project the assistant authority explicitly: never spread that
@@ -254,12 +216,6 @@ export function productionAssistantController(input: {
           pricingProvider ??
             DshExecutionSnapshotSchema.parse(row.provider_snapshot),
         );
-        // Never run across an unquoted tariff interval or silently replace the
-        // frozen price midway. The job's actual durable deadline is authoritative.
-        if (
-          Date.parse(priceSnapshot.price.expiresAt) < row.timeout_at.getTime()
-        )
-          throw Error('assistant_price_expires_before_deadline');
       }
       let subscriptionSnapshotDigest: string | undefined;
       if (subscriptionSnapshot) {
@@ -299,9 +255,8 @@ export function productionAssistantController(input: {
           digest: runtimePolicyDigest(row.execution_spec),
         },
       };
-      // Shared call limits still bound runaway loops. Token capacities remain
-      // historical configuration; verified subscriptions observe actual usage
-      // without enforcing these capacities (server policy, not model input).
+      // Preserve historical capacities for snapshot compatibility. All routes
+      // observe usage; the shared progress guard handles unproductive loops.
       const budgets: RuntimeBudgetLimit[] = [
         {
           metric: 'model_calls',
@@ -353,7 +308,14 @@ export function productionAssistantController(input: {
       };
       const frozenPrice =
         pricing && priceSnapshot
-          ? await pricing.freeze({ ...priceIdentity, snapshot: priceSnapshot })
+          ? await pricing
+              .freeze({ ...priceIdentity, snapshot: priceSnapshot })
+              .catch(() => {
+                console.warn('assistant_pricing_snapshot_unavailable', {
+                  rootRunId: task.rootRunId,
+                });
+                return undefined;
+              })
           : undefined;
       // Explicit finite queries only. A read_only label does not make a root-
       // owned Browser/Bridge operation cancelable as a child operation.
@@ -377,13 +339,6 @@ export function productionAssistantController(input: {
         context,
         wireNames,
         readOnlyTools,
-        beforeModelDispatch: subscriptionSnapshot
-          ? async () => {
-              const [status] = await db<{ subscription_quota: unknown }[]>`
-                select subscription_quota from allrice_provider_status where provider='codex'`;
-              assertSubscriptionQuotaNotExhausted(status?.subscription_quota);
-            }
-          : undefined,
         supportedChildTools: new Set([
           ...readOnlyTools,
           'assistant.delegate',
@@ -467,7 +422,12 @@ export function productionAssistantController(input: {
         finish: async () => {
           // The adapter joins/stops native loops first. Read receipts while the
           // worker is still live, then let finalization verify the durable tree.
-          const costs = await pricing?.summarize(priceIdentity);
+          const costs = await pricing?.summarize(priceIdentity).catch(() => {
+            console.warn('assistant_pricing_summary_unavailable', {
+              rootRunId: task.rootRunId,
+            });
+            return undefined;
+          });
           const outcome = await runtime.finalizeRoot({
             scope: task.scope,
             rootRunId: task.rootRunId,
@@ -483,7 +443,14 @@ export function productionAssistantController(input: {
               subscriptionSnapshotDigest,
               actualCostKnown: false as const,
             };
-          if (!costs) return outcome;
+          if (!costs)
+            return {
+              ...outcome,
+              costBasis: 'unknown' as const,
+              costEstimateAvailable: false,
+              estimatedCostCents: null,
+              actualCostKnown: false as const,
+            };
           const known =
             outcome.usageComplete &&
             costs.usageComplete &&

@@ -4,8 +4,6 @@ import type { ExecutionContext } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { refreshTaskClock } from './task-clock.ts';
 import { cancelAssistantRootTransaction } from './assistant-runtime.ts';
-import { runtimeLedgerInputDigest } from './runtime-ledger/ledger.ts';
-import { verifiedRootSubscription } from './subscription-token-accounting.ts';
 import {
   initialProgressState,
   observeProgress,
@@ -78,20 +76,6 @@ export function createTaskProgressRuntime(
           and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and r.owner_id=${context.delegatedBy.id}
         for update of j`;
       if (!job) throw Error('task_progress_lease_lost');
-      if (
-        !(await verifiedRootSubscription(
-          tx,
-          {
-            rootRunId: runId,
-            scope: {
-              organizationId: context.organizationId,
-              workspaceId: context.workspaceId!,
-            },
-          },
-          runtimeLedgerInputDigest,
-        ))
-      )
-        throw Error('task_progress_subscription_required');
       await tx`insert into allrice_task_progress(run_id) values(${runId}) on conflict do nothing`;
       const [row] = await tx<
         { state: ProgressState; pause_id: string | null; canceled: boolean }[]

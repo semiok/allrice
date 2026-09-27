@@ -159,8 +159,32 @@ describe('governed native model admission recovery', () => {
     },
   );
 
+  it.each(['stop', 'tool-calls'])(
+    'allows the next call after %s with missing usage and confirmed execution settlement',
+    async (kind) => {
+      const f = fixture(async () => ({
+        settled: true,
+        tokenUsageObservational: true,
+      }));
+      await f.prepare();
+      await f.execute(undefined, false, { kind });
+      await expect(f.prepare()).resolves.toEqual({ maxTokens: 3754 });
+      const settlements = f.bridge.mock.calls.filter(
+        ([method]) => method === 'model-settle',
+      );
+      expect(settlements).toHaveLength(1);
+      expect(settlements[0][1]).not.toHaveProperty('inputTokens');
+      expect(settlements[0][1]).not.toHaveProperty('outputTokens');
+    },
+  );
+
   it.each([
-    ['API accounting', { settled: true }, 'TRANSPORT', []],
+    [
+      'legacy acknowledgement without policy',
+      { settled: true },
+      'TRANSPORT',
+      [],
+    ],
     [
       'unconfirmed settlement',
       { settled: false, tokenUsageObservational: true },

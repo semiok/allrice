@@ -468,17 +468,13 @@ describe('ordinary follow-up subscription quota semantics, no database or provid
   });
 
   it('admits known subscription tokens even when the cash allowance is zero', () => {
-    expect(() => assertQuotaAvailable(quota())).toThrow(
-      'MODEL_COST_QUOTA_EXCEEDED',
-    );
+    expect(() => assertQuotaAvailable(quota())).not.toThrow();
     expect(() => assertQuotaAvailable(quota(), 'subscription')).not.toThrow();
   });
 
   it('does not reinterpret historical unknown API cash when admitting subscriptions', () => {
     const mixed = { ...quota(), usedCostCents: null, unknownCostRuns: 1 };
-    expect(() => assertQuotaAvailable(mixed)).toThrow(
-      'MODEL_COST_USAGE_UNKNOWN',
-    );
+    expect(() => assertQuotaAvailable(mixed)).not.toThrow();
     expect(() => assertQuotaAvailable(mixed, 'subscription')).not.toThrow();
     expect(mixed).toMatchObject({ usedCostCents: null, unknownCostRuns: 1 });
   });

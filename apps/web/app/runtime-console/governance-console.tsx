@@ -521,9 +521,9 @@ export function GovernanceConsole() {
           <GovernanceUsageSummary quota={quota} />
           {tokenPolicy === 'observe' ? (
             <p>
-              Codex 订阅 Token 仅统计，不受内部任务/月度 Token
-              上限及未知用量阻断，无需人工预算预留。Token 限额配置仅用于按量
-              API；并发、运行超时、调用次数和权限审批继续生效。
+              所有模型的
+              Token、模型和工具调用次数、费用仅统计，历史用量上限不再中断执行。任务默认
+              1 小时，无进展保护与实际资源并发限制继续生效。
             </p>
           ) : null}
           {unknownUsage.length > 0 ? (
@@ -555,11 +555,12 @@ export function GovernanceConsole() {
               />
             </label>
             <label>
-              Token 上限
+              历史 Token 上限（不执行）
               <input
                 min={1}
                 type="number"
                 value={quota.monthlyTokenLimit}
+                readOnly={tokenPolicy === 'observe'}
                 onChange={(event) =>
                   setQuota({
                     ...quota,
@@ -569,11 +570,12 @@ export function GovernanceConsole() {
               />
             </label>
             <label>
-              API 成本上限（分，订阅不适用）
+              历史费用上限（分，不执行）
               <input
                 min={0}
                 type="number"
                 value={quota.monthlyCostLimitCents}
+                readOnly={tokenPolicy === 'observe'}
                 onChange={(event) =>
                   setQuota({
                     ...quota,

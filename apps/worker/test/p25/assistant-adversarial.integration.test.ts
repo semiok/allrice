@@ -201,7 +201,7 @@ integration(
       ).rejects.toThrow();
     });
 
-    it('budget overrun produces the same instance tombstones as explicit root cancellation', async () => {
+    it('usage overage does not produce cancellation tombstones', async () => {
       const f = await assistantFixture(database.db),
         child = (await f.delegate()).instance,
         callId = randomUUID();
@@ -228,9 +228,9 @@ integration(
         },
       });
       const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
-      expect(tree.cancelRequested).toBe(true);
+      expect(tree.cancelRequested).toBe(false);
       expect(
-        tree.instances.every((row) => row.cancelRequestedAt !== null),
+        tree.instances.every((row) => row.cancelRequestedAt === null),
       ).toBe(true);
     });
 
@@ -350,7 +350,7 @@ integration(
       ).toBe('dispatching');
     });
 
-    it('actual over-budget native stream drains the root tree and prevents a late model wake', async () => {
+    it('overage leaves the native stream running; explicit cancellation drains it and prevents a late wake', async () => {
       const f = await assistantFixture(database.db),
         hold = gate();
       const bridge = createAssistantWorkerBridge({
@@ -405,6 +405,11 @@ integration(
             output_tokens: 1,
           },
         });
+        expect((await bridge.tree()).cancelRequested).toBe(false);
+        await f.runtime.cancelRoot(f.context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        });
         const cancellation = await bridge.cancellation();
         expect(cancellation.instances.length).toBeGreaterThan(0);
         await client.call('p25/drain', cancellation);
@@ -422,7 +427,7 @@ integration(
       }
     }, 60000);
 
-    it('actual native pre-dispatch budget rejection is drained as unused while the preceding HTTP call stays counted', async () => {
+    it('native calls continue past old capacity and retain truthful usage through explicit stop', async () => {
       const f = await assistantFixture(database.db);
       const bridge = createAssistantWorkerBridge({
         runtime: f.runtime,
@@ -452,17 +457,17 @@ integration(
         await client
           .call('prompt', {
             id: f.nativeSessionId,
-            text: 'Second call must never reach HTTP',
+            text: 'Second call proceeds beyond the old token allowance',
           })
           .catch(() => {});
         await client.call('idle', { id: f.nativeSessionId });
         await client.call('p25/flush');
-        expect(native.requests).toHaveLength(1);
+        expect(native.requests).toHaveLength(2);
         const admissions =
           await database.db`select dispatched_at from allrice_assistant_model_admissions where root_run_id=${f.task.rootRunId}`;
         expect(admissions).toHaveLength(2);
         expect(admissions.filter((a) => a.dispatched_at === null)).toHaveLength(
-          1,
+          0,
         );
         await f.runtime.cancelRoot(f.context, {
           runId: f.task.runId,
@@ -471,14 +476,14 @@ integration(
         await client.call('p25/drain', await bridge.cancellation());
         await client.call('p25/flush');
         expect(await f.runtime.readFailureUsage(f.base)).toEqual({
-          usage: { inputTokens: 20, cachedInputTokens: 0, outputTokens: 5 },
+          usage: { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10 },
           usageComplete: true,
           cacheUsageKnown: false,
         });
         expect(
           (await bridge.tree()).instances.every((i) => i.stoppedAt !== null),
         ).toBe(true);
-        expect(native.requests).toHaveLength(1);
+        expect(native.requests).toHaveLength(2);
       } finally {
         await native.close();
       }

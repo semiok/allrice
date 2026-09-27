@@ -51,8 +51,8 @@ export interface AssistantWorkerBridgeOptions {
     call: HarnessToolCall,
     childRunId: string,
   ) => Promise<HarnessToolResult>;
-  /** Pricing evidence only, after durable token settlement. A rejected receipt
-   * must not ACK the model call or release the native no-replay guard. */
+  /** Pricing telemetry only, after durable execution/token settlement. Failure
+   * to record a price must not invalidate the confirmed execution receipt. */
   onModelUsage?: (input: {
     runId: string;
     callId: string;
@@ -178,19 +178,28 @@ export function createAssistantWorkerBridge(
           ...(outputTokens === null ? {} : { output_tokens: outputTokens }),
         },
       });
-      if (options.onModelUsage)
-        await options.onModelUsage({
-          runId: instance.runId,
-          callId,
-          requestDigest: requestDigest!,
-          usage: {
-            inputTokens,
-            outputTokens,
-            cacheReadTokens: null,
-            cacheWriteTokens: null,
-            usageComplete: inputTokens !== null && outputTokens !== null,
-          },
-        });
+      if (options.onModelUsage) {
+        try {
+          await options.onModelUsage({
+            runId: instance.runId,
+            callId,
+            requestDigest: requestDigest!,
+            usage: {
+              inputTokens,
+              outputTokens,
+              cacheReadTokens: null,
+              cacheWriteTokens: null,
+              usageComplete: inputTokens !== null && outputTokens !== null,
+            },
+          });
+        } catch {
+          console.warn('assistant_pricing_receipt_unavailable', {
+            rootRunId: task.rootRunId,
+            runId: instance.runId,
+            callId,
+          });
+        }
+      }
       return {
         settled: true,
         ...(receipt?.tokenUsageObservational === true

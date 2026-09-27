@@ -91,7 +91,9 @@ export function WorkProcess({
   const waiting = timing?.phase === 'waiting';
   const title = microStatus
     ? waiting
-      ? '等待处理…'
+      ? timing?.resourceWaiting
+        ? '等待计算资源…'
+        : '等待处理…'
       : process.active
         ? '执行中…'
         : streaming

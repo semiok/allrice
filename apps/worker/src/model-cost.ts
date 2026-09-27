@@ -25,17 +25,23 @@ export function estimateModelCostCents(input: {
   outputTokens: number;
   pricing?: ReturnType<typeof readModelPricing>;
 }) {
-  const price = (input.pricing ?? readModelPricing())[
-    `${input.provider}:${input.model}`
-  ];
-  if (!price) return 0;
+  // Pricing is optional telemetry. A missing/invalid tariff must neither stop
+  // useful work nor turn an unknown cost into a reported zero.
+  let pricing: ReturnType<typeof readModelPricing>;
+  try {
+    pricing = input.pricing ?? readModelPricing();
+  } catch {
+    return null;
+  }
+  const price = pricing[`${input.provider}:${input.model}`];
+  if (!price) return null;
   const billableInput = Math.max(
     0,
     input.inputTokens - input.cachedInputTokens,
   );
-  return (
+  const cost =
     (billableInput * price.inputCentsPerMillion +
       input.outputTokens * price.outputCentsPerMillion) /
-    1_000_000
-  );
+    1_000_000;
+  return Number.isFinite(cost) && cost >= 0 ? cost : null;
 }

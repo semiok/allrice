@@ -6,7 +6,7 @@ import {
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
 import { isPlatformAdmin } from './model-pool.ts';
-import { observeCodexTokens } from '../codex-token-policy.ts';
+import { observesExecutionUsage } from '../execution-usage-policy.ts';
 
 export class UsageBudgetReviewError extends Error {
   constructor(
@@ -78,7 +78,7 @@ export async function listUnknownSubscriptionUsage(
     reservedTokens:
       r.reserved_tokens === null ? null : Number(r.reserved_tokens),
     approved: r.approved === true,
-    tokenObservationOnly: observeCodexTokens(r.subscription === true),
+    tokenObservationOnly: observesExecutionUsage(),
     eligible:
       r.subscription === true &&
       r.terminal_ordinary === true &&

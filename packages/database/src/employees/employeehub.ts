@@ -1271,21 +1271,15 @@ export async function prepareEmployeeRunBinding(input: {
         ? null
         : modelSnapshot.baseUrl,
   });
-  const taskRuntimePolicy =
-    modelSnapshot.authMode === 'chatgpt_subscription' &&
-    ['codex', 'openai-codex'].includes(modelSnapshot.provider) &&
-    modelSnapshot.baseUrl === null &&
-    modelSnapshot.credentialReference
-      ? await freezeTaskRuntimePolicy(
-          {
-            organizationId: input.context.organizationId,
-            userId: actorId,
-            employeeId: assignment.employee_id,
-            connectionId: modelSnapshot.connectionId,
-          },
-          sql,
-        )
-      : undefined;
+  const taskRuntimePolicy = await freezeTaskRuntimePolicy(
+    {
+      organizationId: input.context.organizationId,
+      userId: actorId,
+      employeeId: assignment.employee_id,
+      connectionId: modelSnapshot.connectionId,
+    },
+    sql,
+  );
   const selectedRuntimePolicy = EmployeeRuntimePolicySchema.parse({
     ...runtimePolicy(manifest.data),
     harness: 'dsh',
