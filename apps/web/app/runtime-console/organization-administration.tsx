@@ -12,8 +12,9 @@ import {
   OrganizationImportSchema,
   type ManagedOrganization,
   type OrganizationPerson,
+  type OrganizationAiTarget,
 } from '@allrice/contracts';
-import { TenantEmployeeEditor } from './tenant-employee-editor';
+import { OrganizationAiAssignments } from './organization-ai-assignments';
 import { TenantResourceEditor } from './tenant-resource-editor';
 import styles from './tenant-administration.module.css';
 
@@ -281,6 +282,12 @@ export function OrganizationPeople({
     'new' | 'bulk' | OrganizationPerson | null
   >(null);
   const [reset, setReset] = useState<OrganizationPerson | null>(null);
+  const [selectedPeople, setSelectedPeople] = useState<string[]>([]);
+  const [aiTarget, setAiTarget] = useState<{
+    target: OrganizationAiTarget;
+    title: string;
+  } | null>(null);
+  const editing = !!editor || !!reset || !!aiTarget;
   const controller = useRef<AbortController | null>(null);
   const base = `/api/v1/admin/organizations/${organization.id}/people`;
   const load = useCallback(
@@ -344,9 +351,9 @@ export function OrganizationPeople({
     }
   }
   useEffect(() => {
-    onBusy(busy || !!editor || !!reset);
+    onBusy(busy || editing);
     return () => onBusy(false);
-  }, [busy, editor, reset, onBusy]);
+  }, [busy, editing, onBusy]);
   function savePerson(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -375,20 +382,14 @@ export function OrganizationPeople({
     <section aria-label="公司员工">
       <div className={styles.selectors}>
         <h3>员工账号</h3>
-        <button
-          disabled={busy || !!editor || !!reset}
-          onClick={() => setEditor('new')}
-        >
+        <button disabled={busy || editing} onClick={() => setEditor('new')}>
           添加员工
         </button>
-        <button
-          disabled={busy || !!editor || !!reset}
-          onClick={() => setEditor('bulk')}
-        >
+        <button disabled={busy || editing} onClick={() => setEditor('bulk')}>
           批量导入
         </button>
         <button
-          disabled={busy || loading || !!editor || !!reset}
+          disabled={busy || loading || editing}
           onClick={() => void load()}
         >
           刷新员工
@@ -398,6 +399,7 @@ export function OrganizationPeople({
           onSubmit={(e) => {
             e.preventDefault();
             setQuery(String(new FormData(e.currentTarget).get('search') ?? ''));
+            setSelectedPeople([]);
           }}
         >
           <label>
@@ -406,10 +408,10 @@ export function OrganizationPeople({
               name="search"
               placeholder="姓名、英文账号或岗位"
               maxLength={160}
-              disabled={busy || !!editor || !!reset}
+              disabled={busy || editing}
             />
           </label>
-          <button disabled={busy || !!editor || !!reset}>查找</button>
+          <button disabled={busy || editing}>查找</button>
         </form>
       </div>
       <p>
@@ -419,6 +421,49 @@ export function OrganizationPeople({
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
       {loading && <p role="status">正在读取员工…</p>}
+      <div className={styles.selectors}>
+        <button
+          disabled={busy || editing || !selectedPeople.length}
+          onClick={() =>
+            setAiTarget({
+              target: { type: 'selected', userIds: selectedPeople },
+              title: `已选 ${selectedPeople.length} 人的 AI 员工`,
+            })
+          }
+        >
+          配置已选员工的 AI · {selectedPeople.length}
+        </button>
+        <button
+          disabled={busy || editing || !query.trim()}
+          onClick={() =>
+            setAiTarget({
+              target: { type: 'search', search: query },
+              title: `符合「${query}」的员工`,
+            })
+          }
+        >
+          配置筛选结果的 AI
+        </button>
+        <button
+          disabled={busy || editing}
+          onClick={() =>
+            setAiTarget({
+              target: { type: 'all' },
+              title: '全公司员工的 AI 配发',
+            })
+          }
+        >
+          配置全公司员工的 AI
+        </button>
+      </div>
+      {aiTarget && (
+        <OrganizationAiAssignments
+          organization={organization}
+          target={aiTarget.target}
+          title={aiTarget.title}
+          onClose={() => setAiTarget(null)}
+        />
+      )}
       {editor === 'bulk' ? (
         <BulkPeopleImport
           busy={busy}
@@ -545,6 +590,22 @@ export function OrganizationPeople({
         <table>
           <thead>
             <tr>
+              <th>
+                <input
+                  type="checkbox"
+                  aria-label="选择当前列表员工"
+                  disabled={busy || editing || !people.length}
+                  checked={
+                    people.length > 0 &&
+                    people.every((p) => selectedPeople.includes(p.userId))
+                  }
+                  onChange={(e) =>
+                    setSelectedPeople(
+                      e.target.checked ? people.map((p) => p.userId) : [],
+                    )
+                  }
+                />
+              </th>
               <th>员工</th>
               <th>岗位与职能</th>
               <th>状态</th>
@@ -554,6 +615,21 @@ export function OrganizationPeople({
           <tbody>
             {people.map((p) => (
               <tr key={p.userId}>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`选择 ${p.displayName}`}
+                    checked={selectedPeople.includes(p.userId)}
+                    disabled={busy || editing}
+                    onChange={(e) =>
+                      setSelectedPeople((old) =>
+                        e.target.checked
+                          ? [...old, p.userId]
+                          : old.filter((id) => id !== p.userId),
+                      )
+                    }
+                  />
+                </td>
                 <td>
                   <strong>{p.displayName}</strong>
                   <small>{p.username ?? '待迁移英文账号'}</small>
@@ -574,19 +650,30 @@ export function OrganizationPeople({
                 <td>
                   <div className={styles.selectors}>
                     <button
-                      disabled={busy || !!editor || !!reset}
+                      disabled={busy || editing}
+                      onClick={() =>
+                        setAiTarget({
+                          target: { type: 'selected', userIds: [p.userId] },
+                          title: `${p.displayName} 的 AI 员工`,
+                        })
+                      }
+                    >
+                      AI 员工
+                    </button>
+                    <button
+                      disabled={busy || editing}
                       onClick={() => setEditor(p)}
                     >
                       编辑
                     </button>
                     <button
-                      disabled={busy || !!editor || !!reset}
+                      disabled={busy || editing}
                       onClick={() => setReset(p)}
                     >
                       重置密码
                     </button>
                     <button
-                      disabled={busy || !!editor || !!reset}
+                      disabled={busy || editing}
                       onClick={() =>
                         void mutate(
                           `${base}/${p.userId}/status`,
@@ -614,7 +701,10 @@ export function OrganizationPeople({
         <p>没有匹配的员工。可以添加员工或从表格批量导入。</p>
       )}
       {next && (
-        <button disabled={busy || loading} onClick={() => void load(next)}>
+        <button
+          disabled={busy || loading || editing}
+          onClick={() => void load(next)}
+        >
           更多员工
         </button>
       )}
@@ -736,7 +826,7 @@ function CompanyConfiguration({
       <summary>公司 AI 员工、应用与用量</summary>
       {open && (
         <>
-          {organization.workspaces.length > 1 && (
+          {view !== 'employees' && organization.workspaces.length > 1 && (
             <label>
               历史工作区
               <select
@@ -782,11 +872,9 @@ function CompanyConfiguration({
           </nav>
           {workspaceId &&
             (view === 'employees' ? (
-              <TenantEmployeeEditor
-                key={`${workspaceId}/employees`}
-                organizationId={organization.id}
-                workspaceId={workspaceId}
-                onDirty={setDirty}
+              <OrganizationAiAssignments
+                organization={organization}
+                defaults
                 onBusy={setBusy}
               />
             ) : (

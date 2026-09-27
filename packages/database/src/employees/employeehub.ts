@@ -192,6 +192,9 @@ export interface EmployeeRunBinding {
   >;
   promptSnapshot: {
     systemPrompt: string;
+    organizationContext?: ReturnType<
+      typeof EmployeePromptSnapshotSchema.parse
+    >['organizationContext'];
     conversation: { role: string; text: string }[];
     memories: { id: string; content: string }[];
     userRequest: string;
@@ -756,6 +759,7 @@ export async function manageEmployeeAssignments(
   const userIds = [...new Set(update.userIds)].sort();
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
+    await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${context.organizationId}:${workspaceId}`},0))`;
     const employees = await transaction<
       {
         id: string;
@@ -801,7 +805,7 @@ export async function manageEmployeeAssignments(
       userIds.length === 0
         ? await transaction<{ user_id: string }[]>`
             update allrice_employee_assignments
-            set active = false, is_default = false, updated_at = now()
+            set active = false, is_default = false, selection_mode='exclude', updated_at = now()
             where organization_id = ${context.organizationId}
               and workspace_id = ${workspaceId}
               and employee_id = ${employee.id} and active
@@ -809,7 +813,7 @@ export async function manageEmployeeAssignments(
           `
         : await transaction<{ user_id: string }[]>`
             update allrice_employee_assignments
-            set active = false, is_default = false, updated_at = now()
+            set active = false, is_default = false, selection_mode='exclude', updated_at = now()
             where organization_id = ${context.organizationId}
               and workspace_id = ${workspaceId}
               and employee_id = ${employee.id} and active
@@ -820,15 +824,15 @@ export async function manageEmployeeAssignments(
       await transaction`
         insert into allrice_employee_assignments (
           organization_id, workspace_id, employee_id, employee_version_id,
-          user_id, is_default, active, assigned_by, assigned_at
+          user_id, is_default, active, assigned_by, assigned_at, selection_mode
         ) values (
           ${context.organizationId}, ${workspaceId}, ${employee.id},
           ${employee.version_id}, ${assignedUserId}, false, true,
-          ${actorId}, now()
+          ${actorId}, now(), 'include'
         )
         on conflict (organization_id, workspace_id, user_id, employee_id)
         do update set employee_version_id = excluded.employee_version_id,
-          active = true, assigned_by = excluded.assigned_by,
+          active = true, selection_mode='include', assigned_by = excluded.assigned_by,
           assigned_at = excluded.assigned_at, updated_at = now()
       `;
     }
@@ -858,6 +862,7 @@ export async function manageEmployeeAssignments(
           and rice.organization_id = ${context.organizationId}
           and rice.workspace_id = ${workspaceId}
           and rice.user_id = ${removed.user_id}
+          and rice.active and rice.selection_mode<>'exclude'
           and not exists (
             select 1 from allrice_employee_assignments current_default
             where current_default.organization_id = rice.organization_id
@@ -893,6 +898,7 @@ export async function updateEmployeeStatus(
   const employeeId = UuidSchema.parse(employeeIdInput);
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
+    await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${context.organizationId}:${workspaceId}`},0))`;
     const employees = await transaction<{ id: string; employee_key: string }[]>`
       select id, employee_key from allrice_employees
       where id = ${employeeId}
@@ -912,6 +918,12 @@ export async function updateEmployeeStatus(
       update allrice_employees set status = ${update.status}, updated_at = now()
       where id = ${employee.id}
     `;
+    if (update.status === 'archived') {
+      await transaction`update allrice_platform_employee_tenant_assignments
+        set active=false,is_default=false,updated_at=clock_timestamp()
+        where organization_id=${context.organizationId} and workspace_id=${workspaceId}
+          and tenant_employee_id=${employee.id} and active`;
+    }
     const removed =
       update.status === 'archived'
         ? await transaction<{ user_id: string }[]>`
@@ -936,6 +948,7 @@ export async function updateEmployeeStatus(
           and rice.organization_id = ${context.organizationId}
           and rice.workspace_id = ${workspaceId}
           and rice.user_id = ${assignment.user_id}
+          and rice.active and rice.selection_mode<>'exclude'
           and not exists (
             select 1 from allrice_employee_assignments current_default
             where current_default.organization_id = rice.organization_id
@@ -1200,6 +1213,13 @@ export async function prepareEmployeeRunBinding(input: {
     storedUserProfile,
     userProfilePolicy,
   );
+  const [person] = await sql`
+    select o.name as company_name,o.business_context,coalesce(p.display_name,u.display_name) as display_name,
+      coalesce(p.job_title,'') as job_title,coalesce(p.responsibilities,'') as responsibilities
+    from allrice_organizations o join allrice_users u on u.id=${actorId}
+    left join allrice_organization_people p on p.organization_id=o.id and p.user_id=u.id
+    where o.id=${input.context.organizationId} and o.archived_at is null`;
+  if (!person) throw new EmployeeHubError('not_found');
   const modelSnapshot = await freezeSessionModelSnapshot({
     organizationId: input.context.organizationId,
     workspaceId: input.workspaceId,
@@ -1399,6 +1419,15 @@ export async function prepareEmployeeRunBinding(input: {
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
       ...input.promptSnapshot,
       systemPrompt: manifest.data.systemPrompt,
+      organizationContext: {
+        organizationId: input.context.organizationId,
+        userId: actorId,
+        companyName: person.company_name,
+        businessContext: person.business_context,
+        displayName: person.display_name,
+        jobTitle: person.job_title,
+        responsibilities: person.responsibilities,
+      },
     }),
   };
 }

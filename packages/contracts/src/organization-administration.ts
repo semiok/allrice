@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { EmailSchema, PasswordSchema, UsernameSchema } from './identity.ts';
+import { UuidSchema } from './common.ts';
+import type { AdminTenantEmployee } from './tenant-employees.ts';
 
 export const OrganizationInputSchema = z
   .object({
@@ -71,4 +73,51 @@ export interface OrganizationPerson {
   status: 'active' | 'invited' | 'disabled';
   membershipActive: boolean;
   version: string;
+}
+
+export const OrganizationAiTargetSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('all') }).strict(),
+  z
+    .object({
+      type: z.literal('selected'),
+      userIds: z.array(UuidSchema).min(1).max(1000),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('search'),
+      search: z.string().trim().min(1).max(160),
+    })
+    .strict(),
+]);
+export type OrganizationAiTarget = z.infer<typeof OrganizationAiTargetSchema>;
+export const OrganizationAiChangeSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    employeeId: UuidSchema,
+    revisionId: UuidSchema,
+    expectedVersion: z
+      .string()
+      .regex(/^[a-f0-9]{32}$/)
+      .nullable(),
+    action: z.enum(['include', 'exclude', 'inherit', 'default']),
+    target: OrganizationAiTargetSchema.default({ type: 'all' }),
+    defaultEnabled: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (v) => v.action !== 'default' || typeof v.defaultEnabled === 'boolean',
+    { message: 'Default roster changes require defaultEnabled' },
+  );
+
+export interface OrganizationAiCatalog {
+  organizationId: string;
+  workspaceId: string;
+  targetCount: number;
+  employees: (AdminTenantEmployee & {
+    inheritedByDefault: boolean;
+    targetAssignedCount: number;
+    targetExcludedCount: number;
+    targetIncludedCount: number;
+  })[];
 }

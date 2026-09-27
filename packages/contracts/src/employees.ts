@@ -543,6 +543,18 @@ export const EmployeeRunStatusSchema = z.enum([
 export const EmployeePromptSnapshotSchema = z
   .object({
     systemPrompt: z.string().min(1).max(10_000),
+    organizationContext: z
+      .object({
+        organizationId: UuidSchema,
+        userId: UuidSchema,
+        companyName: z.string().max(160),
+        businessContext: z.string().max(8000),
+        displayName: z.string().max(120),
+        jobTitle: z.string().max(160),
+        responsibilities: z.string().max(8000),
+      })
+      .strict()
+      .optional(),
     conversation: z
       .array(
         z

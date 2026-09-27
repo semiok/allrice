@@ -38,6 +38,7 @@ import { platformSkillReplacements } from '../platform-content/replacements.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
 import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
+import { isPlatformAdmin } from '../platform-authority.ts';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -1448,6 +1449,7 @@ export async function materializePlatformEmployeeRevision(
     definition: PlatformEmployeeDefinition;
     workspaceIds: string[];
     actorLabel: string;
+    inheritByDefault?: boolean;
   },
 ) {
   const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse(
@@ -1492,7 +1494,16 @@ export async function materializePlatformEmployeeRevision(
         membership.created_at, membership.id
       limit 1
     `;
-    const actorId = actors[0]?.id;
+    const issuer = UuidSchema.safeParse(input.actorLabel);
+    const actorId =
+      actors[0]?.id ??
+      (issuer.success &&
+      (await isPlatformAdmin(
+        { actor: { type: 'user', id: issuer.data } },
+        transaction,
+      ))
+        ? issuer.data
+        : undefined);
     if (!actorId)
       throw new Error(`workspace_has_no_active_member:${workspaceId}`);
     if (
@@ -1574,14 +1585,14 @@ export async function materializePlatformEmployeeRevision(
       insert into allrice_platform_employee_tenant_assignments (
         employee_id, revision_id, organization_id, workspace_id,
         tenant_employee_id, tenant_employee_version_id, active, is_default,
-        assigned_by_label
+        assigned_by_label, inherit_by_default
       ) values (
         ${input.employeeId}, ${input.revision.id}, ${workspace.organization_id},
         ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
         not exists(select 1 from allrice_platform_employee_tenant_assignments current_default
           where current_default.organization_id=${workspace.organization_id} and current_default.workspace_id=${workspace.id}
             and current_default.active and current_default.is_default),
-        ${input.actorLabel}
+        ${input.actorLabel}, ${input.inheritByDefault ?? true}
       )
       on conflict (employee_id, workspace_id) do update set
         revision_id = excluded.revision_id,

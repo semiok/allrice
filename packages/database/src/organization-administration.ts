@@ -114,8 +114,8 @@ export async function createManagedOrganization(
     await requireTenantAdministrationAuthority(context, tx);
     const id = randomUUID(),
       workspaceId = randomUUID();
-    await tx`insert into allrice_organizations(id,slug,name,business_context)
-      values(${id},${`company-${id}`},${value.name},${value.businessContext})`;
+    await tx`insert into allrice_organizations(id,slug,name,business_context,managed_employee_roster)
+      values(${id},${`company-${id}`},${value.name},${value.businessContext},true)`;
     await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${id},'default','默认工作区')`;
     await tx`update allrice_organizations set default_workspace_id=${workspaceId} where id=${id}`;
     await audit(tx, context, id, 'organization.created', id);

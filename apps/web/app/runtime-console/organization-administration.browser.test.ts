@@ -11,8 +11,13 @@ import {
   createSession,
   ensureBootstrapPortalPrincipal,
   login,
+  createManagedOrganization,
+  importOrganizationPeople,
+  getEmployeeWorkspace,
 } from '@allrice/database';
 import { organizationAdministrationHttp } from '../../lib/organization-administration/http';
+import { organizationAssignmentsHttp } from '../../lib/organization-administration/assignments-http';
+import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../lib/identity/session', () => ({
@@ -96,12 +101,15 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                   : parts[6] === 'people' && !parts[7]
                     ? 'people'
                     : undefined;
-          const response = await organizationAdministrationHttp(
-            request,
-            parts[5],
-            parts[7],
-            action,
-          );
+          const response =
+            parts[6] === 'ai-employees'
+              ? await organizationAssignmentsHttp(request, parts[5]!)
+              : await organizationAdministrationHttp(
+                  request,
+                  parts[5],
+                  parts[7],
+                  action,
+                );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(await response.text());
           return;
@@ -260,6 +268,116 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         },
       );
       expect(forged.status()).toBe(403);
+      expect(errors).toEqual([]);
+      expect(failures).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  }, 60000);
+  it('edits company defaults and selected employees through the real assignment API without granting other people', async () => {
+    const admin = (await authenticateSession(adminToken))!;
+    const c = await createManagedOrganization(admin, { name: '批量配发公司' });
+    const source = await createEmployeeAdministrationFixture(fixture.db);
+    await source.preview();
+    expect((await source.publish()).valid).toBe(true);
+    await importOrganizationPeople(admin, c.organizationId, {
+      people: [
+        {
+          username: 'assignment-snow',
+          displayName: '配发小雪',
+          jobTitle: '财务',
+        },
+        {
+          username: 'assignment-drink',
+          displayName: '配发小李',
+          jobTitle: '运营',
+        },
+      ],
+    });
+    const context = await browser.newContext({
+      viewport: { width: 1360, height: 1000 },
+    });
+    await context.addCookies([
+      { name: 'fixture_session', value: adminToken, url: origin },
+    ]);
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    try {
+      await page.goto(`${origin}?organizationId=${c.organizationId}`);
+      await page
+        .getByRole('heading', { name: '批量配发公司', exact: true })
+        .waitFor();
+      await page.getByLabel('选择 配发小雪', { exact: true }).check();
+      await page.getByRole('button', { name: '配置已选员工的 AI · 1' }).click();
+      const editor = page.getByRole('region', {
+        name: '员工 AI 配发',
+        exact: true,
+      });
+      const ai = editor
+        .getByRole('row')
+        .filter({ hasText: source.definition.name });
+      await ai.getByRole('button', { name: '添加', exact: true }).click();
+      await editor
+        .getByRole('status')
+        .filter({ hasText: '已更新 1 名员工' })
+        .waitFor();
+      await expect.poll(() => ai.textContent()).toContain('1 / 1 人当前可用');
+      const a = (await authenticateSession(
+        (await login({ username: 'assignment-snow', password: 'admin@321' }))
+          .session.token,
+      ))!;
+      const b = (await authenticateSession(
+        (await login({ username: 'assignment-drink', password: 'admin@321' }))
+          .session.token,
+      ))!;
+      expect(
+        (await getEmployeeWorkspace(a, c.defaultWorkspaceId)).employees,
+      ).toHaveLength(1);
+      expect(
+        (await getEmployeeWorkspace(b, c.defaultWorkspaceId)).employees,
+      ).toHaveLength(0);
+      await ai.getByRole('button', { name: '移除', exact: true }).click();
+      await expect.poll(() => ai.textContent()).toContain('0 / 1 人当前可用');
+      await editor.getByRole('button', { name: '完成', exact: true }).click();
+      await page.getByText('公司 AI 员工、应用与用量', { exact: true }).click();
+      const defaults = page.getByRole('region', {
+        name: '公司默认 AI 员工',
+        exact: true,
+      });
+      await defaults
+        .getByLabel(`默认配发 ${source.definition.name}`, { exact: true })
+        .click();
+      await expect
+        .poll(() =>
+          defaults
+            .getByRole('row')
+            .filter({ hasText: source.definition.name })
+            .textContent(),
+        )
+        .toContain('1 / 2 人当前可用');
+      await page.reload();
+      await page
+        .getByRole('row')
+        .filter({ hasText: 'assignment-snow' })
+        .getByRole('button', { name: 'AI 员工', exact: true })
+        .click();
+      await expect.poll(() => ai.textContent()).toContain('1 人已明确移除');
+      await ai
+        .getByRole('button', { name: '跟随公司默认', exact: true })
+        .click();
+      await expect.poll(() => ai.textContent()).toContain('1 / 1 人当前可用');
+      expect(
+        (await getEmployeeWorkspace(a, c.defaultWorkspaceId)).employees,
+      ).toHaveLength(1);
+      expect(
+        (await getEmployeeWorkspace(b, c.defaultWorkspaceId)).employees,
+      ).toHaveLength(1);
+      if (process.env.ALLRICE_ORG_SCREENSHOT)
+        await page.screenshot({
+          path: process.env.ALLRICE_ORG_SCREENSHOT,
+          fullPage: true,
+        });
       expect(errors).toEqual([]);
       expect(failures).toEqual([]);
     } finally {
