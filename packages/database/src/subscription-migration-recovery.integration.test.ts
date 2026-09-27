@@ -1,3 +1,4 @@
+import * as organizationContext from './employees/organization-context.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
@@ -144,7 +145,17 @@ integration('subscription incremental migration and cold SQL readers', () => {
       throughMigration: '0096_assistant_pricing.sql',
       allowCiDatabase: true,
     });
-    task = await fixture.prepareOrdinaryTask('Migration fixture. No model.');
+    // This seed represents a Run created by the 0096 binary, before company
+    // profiles existed. Only omit that future optional snapshot field while
+    // constructing legacy data; all subscription readers/writers remain real.
+    const legacyContext = vi
+      .spyOn(organizationContext, 'readEmployeeOrganizationContext')
+      .mockResolvedValueOnce(undefined);
+    try {
+      task = await fixture.prepareOrdinaryTask('Migration fixture. No model.');
+    } finally {
+      legacyContext.mockRestore();
+    }
     const frozen = task.binding.executionSnapshot.modelSnapshot!;
     decision = RouteDecisionSchema.parse({
       schemaVersion: 1,
