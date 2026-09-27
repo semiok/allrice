@@ -272,6 +272,35 @@ suite('P15 actual SaaS-host dedicated VM + gVisor', () => {
     expect(r.result.output).not.toContain('synthetic_secret_value');
     expect(r.result.output).toContain('[REDACTED]');
   }, 20_000);
+  it('drains artifact output before exit and preserves rejection diagnostics', async () => {
+    const value = 'x'.repeat(512_000);
+    const result = await run(
+      "import fs from 'node:fs';fs.writeFileSync('output/result.txt','x'.repeat(512000))",
+      {
+        outputs: [
+          { path: 'result.txt', fileName: 'result.txt', format: 'txt' },
+        ],
+      },
+    );
+    expect(result.result.reason, result.result.output).toBe('completed');
+    expect(
+      Buffer.from(
+        result.result.artifacts[0]!.contentBase64,
+        'base64',
+      ).toString(),
+    ).toBe(value);
+    const missing = await run('void 0', {
+      outputs: [
+        { path: 'missing.txt', fileName: 'missing.txt', format: 'txt' },
+      ],
+    });
+    expect(missing.result.reason).toBe('failed');
+    expect(missing.result.output).toContain(
+      'Sandbox output validation failed:',
+    );
+    expect(missing.result.output).toContain('ENOENT');
+  }, 60000);
+
   it('copies a large authorized input through stdin, not Docker env/argv limits', async () => {
     const id = randomUUID();
     attempts.push(id);
