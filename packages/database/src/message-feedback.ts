@@ -96,7 +96,7 @@ export async function mutateMessageFeedback(
       : MessageFeedbackDeleteSchema.parse(raw);
   return getDatabase().begin(async (tx) => {
     // The session lock also serializes a first insert, for which no row exists yet.
-    await assertWorkbenchSession(tx, context, sessionId);
+    await assertWorkbenchSession(tx, context, sessionId, true);
     const [target] = await tx<
       { run_id: string }[]
     >`select er.run_id from allrice_employee_runs er

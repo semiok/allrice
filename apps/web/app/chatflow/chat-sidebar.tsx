@@ -1,6 +1,11 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import {
+  IconArchiveOutlineRegular,
+  IconChevronRightOutlineRegular,
+  Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import { AllriceBrand } from '../../components/allrice-brand';
 import { AllriceMark } from '../../components/allrice-mark';
 
@@ -10,6 +15,8 @@ import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
 
 import type { Session, Workspace } from './chatflow-types';
+import type { useSessionArchive } from './use-session-archive';
+import archiveCss from './session-archive.module.css';
 import { EmployeeSidebar } from './employee-sidebar';
 import { employeePreferenceKey } from './employee-navigation';
 import frameUi from './dsh-upstream/AppFrame.module.css';
@@ -17,6 +24,7 @@ import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatSidebarProps {
+  archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
   collapsed: boolean;
   overlay?: boolean;
@@ -37,6 +45,7 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({
+  archive,
   activeId,
   collapsed,
   overlay = false,
@@ -56,6 +65,11 @@ export function ChatSidebar({
   onPrepareSession,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
+  const showingArchive = archive?.filter === 'only';
+  const startNewSession = () => {
+    archive?.setFilter('default');
+    onNewSession();
+  };
   useEffect(() => {
     if (!overlay) return;
     const previous =
@@ -127,7 +141,7 @@ export function ChatSidebar({
             <button
               aria-label="开始新的工作"
               className={sidebarUi.brand}
-              onClick={() => onNewSession()}
+              onClick={startNewSession}
               type="button"
             >
               <AllriceBrand />
@@ -159,17 +173,51 @@ export function ChatSidebar({
           </button>
         </div>
 
-        <button
-          className={sidebarUi.newSession}
-          onClick={() => onNewSession()}
-          type="button"
-        >
-          <span aria-hidden="true">＋</span>
-          <span className={sidebarUi.newSessionLabel}>新的工作</span>
-        </button>
-
+        <div className={!collapsed ? archiveCss.newWorkActions : undefined}>
+          <button
+            className={`${sidebarUi.newSession} ${!collapsed ? archiveCss.newWorkButton : ''}`}
+            onClick={startNewSession}
+            type="button"
+          >
+            <span aria-hidden="true">＋</span>
+            <span className={sidebarUi.newSessionLabel}>新的工作</span>
+          </button>
+          {archive && !collapsed && (
+            <Tooltip label="查看归档" side="bottom" align="end">
+              <button
+                className={archiveCss.archiveButton}
+                type="button"
+                aria-label="查看归档"
+                aria-pressed={showingArchive}
+                onClick={() =>
+                  archive.setFilter(showingArchive ? 'default' : 'only')
+                }
+              >
+                <IconArchiveOutlineRegular size={18} />
+              </button>
+            </Tooltip>
+          )}
+        </div>
+        {showingArchive && !collapsed && (
+          <div className={archiveCss.archiveHeader}>
+            <button type="button" onClick={() => archive?.setFilter('default')}>
+              <IconChevronRightOutlineRegular
+                size={14}
+                className={archiveCss.backIcon}
+              />
+              返回当前工作
+            </button>
+            <span>已归档</span>
+          </div>
+        )}
+        {archive?.error && !collapsed && (
+          <p className={archiveCss.error} role="alert">
+            {archive.error}
+          </p>
+        )}
         <div className={sidebarUi.regionArea}>
           <EmployeeSidebar
+            archive={archive}
             key={
               employeePreferenceKey(workspace) ??
               `${workspace.organizationId}:${workspace.workspaceId}`
@@ -183,6 +231,17 @@ export function ChatSidebar({
             onDetails={onOpenEmployeeDetails}
           />
         </div>
+
+        {archive?.nextCursor && !collapsed && (
+          <button
+            className={archiveCss.more}
+            type="button"
+            onClick={archive.loadMore}
+            disabled={archive.loading}
+          >
+            {archive.loading ? '正在加载…' : '加载更早的工作'}
+          </button>
+        )}
 
         <div className={sidebarUi.footArea}>
           <SidebarSettings

@@ -41,5 +41,10 @@ apps/web/app/chatflow/dsh-upstream/process/
 # Pinned native delivery cards with recorded browser adapter patches.
 apps/web/app/chatflow/dsh-upstream/deliverables/
 
+# Pinned native archive components; exact source/patch bytes verified by dsh-ui.
+apps/web/app/chatflow/dsh-upstream/archive/ArchiveSession.tsx
+apps/web/app/chatflow/dsh-upstream/archive/RowActionToast.tsx
+apps/web/app/chatflow/dsh-upstream/archive/WorkspaceBrowser.module.css
+
 # Native DSH task plan panel; source and lifecycle patch verified in the UI ledger.
 apps/web/app/chatflow/dsh-upstream/todo/

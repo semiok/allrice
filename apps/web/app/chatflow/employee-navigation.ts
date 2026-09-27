@@ -11,7 +11,10 @@ import {
   resolveEmployeeAccent,
   type EmployeeAccentColor,
 } from '@allrice/contracts';
-import { deriveGroups } from './dsh-upstream/workspace/tree';
+import {
+  deriveGroups,
+  type ArchivedFilter,
+} from './dsh-upstream/workspace/tree';
 import type {
   SessionListState,
   WorkspaceView,
@@ -62,11 +65,21 @@ export function employeeIntroduction(
 
 export const employeeTranslate: WorkspaceBrowserProps['t'] = (key, params) => {
   const copy =
-    key === 'actions.newSession.aria'
-      ? '与 {name} 新建工作'
-      : key === 'copy'
-        ? '复制'
-        : zh[key];
+    key === 'close'
+      ? '关闭'
+      : key === 'cancel'
+        ? '取消'
+        : key === 'toast.archivedNotOpenable'
+          ? '已归档，可查看记录与成果；恢复后可继续工作'
+          : key === 'toast.stoppedAndArchived'
+            ? '已归档，并已请求停止相关工作。可'
+            : key === 'archive.confirm.desc'
+              ? '“{title}”仍有未完成的工作。归档将停止相关任务与助手、取消排队消息，并暂停该会话的定时任务。恢复会话不会自动重启这些工作。'
+              : key === 'actions.newSession.aria'
+                ? '与 {name} 新建工作'
+                : key === 'copy'
+                  ? '复制'
+                  : zh[key];
   return copy.replace(/\{(\w+)\}/g, (_, name: string) =>
     String(params?.[name] ?? ''),
   );
@@ -99,6 +112,7 @@ export function employeeGroups(
   sessions: Session[],
   activeId: string | null,
   expansion: Record<string, boolean>,
+  archivedFilter: ArchivedFilter = 'default',
 ) {
   const assignments = new Map(
     workspace.employees.map((employee) => [employee.id, employee]),
@@ -160,7 +174,11 @@ export function employeeGroups(
   return deriveGroups(
     list,
     nativeGroups,
-    { pinnedSessionIds: [], archivedSessionIds: [], archivedFilter: 'default' },
+    {
+      pinnedSessionIds: [],
+      archivedSessionIds: sessions.filter((s) => s.archivedAt).map((s) => s.id),
+      archivedFilter,
+    },
     statuses,
     {
       expandedGroups: ids.filter(

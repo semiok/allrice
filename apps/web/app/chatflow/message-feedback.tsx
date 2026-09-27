@@ -120,11 +120,13 @@ export function MessageFeedbackProvider({
   workspaceId,
   headers,
   children,
+  readOnly = false,
 }: {
   sessionId: string;
   workspaceId: string;
   headers: Record<string, string>;
   children: ReactNode;
+  readOnly?: boolean;
 }) {
   const [surface] = useState(() =>
     createFeedback(sessionId, workspaceId, headers),
@@ -143,9 +145,11 @@ export function MessageFeedbackProvider({
     };
   }, [surface]);
   return (
-    <FeedbackContext.Provider value={surface}>
+    <FeedbackContext.Provider value={readOnly ? null : surface}>
       {children}
-      <FeedbackDialog {...surface.dialogProps} t={feedbackTranslate} />
+      {!readOnly && (
+        <FeedbackDialog {...surface.dialogProps} t={feedbackTranslate} />
+      )}
     </FeedbackContext.Provider>
   );
 }

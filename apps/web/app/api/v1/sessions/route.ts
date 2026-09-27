@@ -20,6 +20,7 @@ export async function GET(request: Request) {
       await listChatSessions(context, workspaceId, {
         cursor: query.get('cursor') ?? undefined,
         includeArchived: query.get('archived') === 'true',
+        archivedOnly: query.get('archived') === 'only',
       }),
     );
   } catch (error) {

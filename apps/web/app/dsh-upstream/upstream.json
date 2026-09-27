@@ -74,7 +74,9 @@
           "source": "packages/client/ui-workspace/src/client/rows/Rows.module.css",
           "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.module.css",
           "upstreamSha256": "8f403afa300439b3be16c507871774c9d65047a81303b66013bbd458558dfdd9",
-          "sha256": "8f403afa300439b3be16c507871774c9d65047a81303b66013bbd458558dfdd9"
+          "sha256": "3382867d8f12d6258e9e80f144b75b583ef79622b45668002084ab184b834e7a",
+          "patch": "scripts/dsh-ui-patches/archive-Rows.module.css.patch",
+          "patchSha256": "e3580bdfdce3dcf071c51b55ce52e68d0706f717317fb98bcc587417b86fdfe7"
         },
         {
           "source": "packages/client/ui-workspace/src/client/tree.ts",
@@ -589,6 +591,38 @@
           "patchSha256": "a4ee7d82705db1e29512cc5ed4e539bb2d8f9db297302ed06cb8e1f6bc332ac8"
         }
       ]
+    },
+    {
+      "id": "session-archive",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-actions-toast-and-confirmation-with-allrice-session-adapter",
+      "files": [
+        {
+          "source": "packages/client/ui-workspace/src/client/session-actions/ArchiveSession.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/archive/ArchiveSession.tsx",
+          "upstreamSha256": "a4cb09ea9bdb2a53c1b9c2d0ef714096d98f5e8f8445e6262b00ac95a55c4b93",
+          "sha256": "4d247ea706cffa4eeb48df35bfabdeca5a50cebdb06562ed52373a75452844b3",
+          "patch": "scripts/dsh-ui-patches/archive-ArchiveSession.tsx.patch",
+          "patchSha256": "47ca926044f28bd7d391190d450533ab65fa45f7ad1252ba241533426193e913"
+        },
+        {
+          "source": "packages/client/ui-workspace/src/client/session-actions/RowActionToast.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/archive/RowActionToast.tsx",
+          "upstreamSha256": "14ba697834b8233a8ee696ca196084195268496f6dadab3343e0f3967a03c3c6",
+          "sha256": "9c6b3a70054c0d22e1c0adc480a510bf58858481879de4d590eba7513b834d66",
+          "patch": "scripts/dsh-ui-patches/archive-RowActionToast.tsx.patch",
+          "patchSha256": "e006bdd71a77abe40958429c66b92f26b821afe06e035e492eadbf81f9c8ca17"
+        },
+        {
+          "source": "packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/archive/WorkspaceBrowser.module.css",
+          "upstreamSha256": "fb45108daa1eb55f0daa51f0102d7b7518f41f736c16d19818ab9f70269033f8",
+          "sha256": "fb45108daa1eb55f0daa51f0102d7b7518f41f736c16d19818ab9f70269033f8"
+        }
+      ],
+      "packages": []
     },
     {
       "id": "native-task-plan",

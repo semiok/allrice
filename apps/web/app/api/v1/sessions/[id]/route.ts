@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  SessionActiveError,
   getChatSessionHistory,
   updateChatSession,
 } from '@allrice/database';
@@ -47,6 +48,18 @@ export async function PATCH(
     );
     return Response.json({ session });
   } catch (error) {
+    if (error instanceof SessionActiveError) {
+      return Response.json(
+        {
+          error: {
+            code: 'SESSION_ACTIVE',
+            message: error.message,
+            activity: error.activity,
+          },
+        },
+        { status: 409 },
+      );
+    }
     return storageErrorResponse(error);
   }
 }

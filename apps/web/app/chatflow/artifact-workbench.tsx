@@ -91,6 +91,7 @@ type Props = {
   onSelect: (id: string) => void;
   onClose: () => void;
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
+  readOnly?: boolean;
   onContinued?: (runId: string) => void;
 };
 
@@ -374,6 +375,7 @@ function ArtifactTabBody(
           workspaceId={props.workspaceId}
           tenantHeaders={props.tenantHeaders}
           onSelect={props.onSelect}
+          readOnly={props.readOnly}
           onContinued={props.onContinued}
           onCatalog={props.onCatalog}
           onReload={props.onReload}
@@ -563,6 +565,7 @@ function ArtifactReview({
   tenantHeaders,
   onSelect,
   onContinued,
+  readOnly = false,
   onCatalog,
   onReload,
 }: {
@@ -572,6 +575,7 @@ function ArtifactReview({
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   onSelect: (id: string) => void;
+  readOnly?: boolean;
   onContinued?: (runId: string) => void;
   onCatalog: () => void;
   onReload: () => Promise<void>;
@@ -582,6 +586,7 @@ function ArtifactReview({
   async function continuePlan(
     review: Extract<ReviewContinuationInput, { kind: 'plan_review' }>,
   ) {
+    if (readOnly) return false;
     setBusy(true);
     setError('');
     try {
@@ -869,7 +874,7 @@ function ArtifactReview({
                 sessionId={sessionId}
                 workspaceId={workspaceId}
                 headers={tenantHeaders}
-                disabled={busy}
+                disabled={busy || readOnly}
                 onContinued={onContinued}
               />
             ) : null}
@@ -1016,7 +1021,7 @@ function ArtifactReview({
                 <p role="status">正在读取安全预览…</p>
               )
             ) : null}
-            {artifact.kind === 'plan' ? (
+            {artifact.kind === 'plan' && !readOnly ? (
               <section className={styles.actions} aria-label="计划确认">
                 <button
                   type="button"

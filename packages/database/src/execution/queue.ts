@@ -361,6 +361,16 @@ export async function enqueueRun(
       };
     }
 
+    if (options.employeeBinding) {
+      const { assertWorkbenchSession } = await import('../artifact-review.ts');
+      await assertWorkbenchSession(
+        transaction,
+        { ...context, workspaceId },
+        options.employeeBinding.sessionId,
+        true,
+      );
+    }
+
     let delivery: 'immediate' | 'follow_up' | 'steer_pending' = 'immediate';
     let activeRunId: string | null = null;
     let expectedTurnId: string | null = null;
@@ -751,40 +761,55 @@ export async function cancelRun(
   }
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
-    // Persistent tree cutoff precedes job cancellation and native drain. No root
-    // row means an unchanged legacy single-agent Run.
-    await cancelAssistantRootTransaction(
+    await requestRunCancellationTransaction(
       transaction,
+      context,
       snapshot.id,
-      randomUUID(),
+      cancellation.reason,
     );
-    const rows = await transaction<JobRow[]>`
-      select * from allrice_jobs where run_id = ${snapshot.id} for update
-    `;
-    const job = rows[0];
-    if (!job) throw new QueueError('not_found');
-    if (job.status === 'canceled') return;
-    if (isTerminalJobStatus(job.status)) throw new QueueError('conflict');
-    await transaction`
-      update allrice_jobs
-      set cancel_requested_at = coalesce(cancel_requested_at, now()),
-          cancel_reason = ${cancellation.reason}, updated_at = now()
-      where id = ${job.id}
-    `;
-    await audit(transaction, {
-      organizationId: job.organization_id,
-      workspaceId: job.workspace_id,
-      actorId: requireUser(context),
-      action: 'run.cancel.request',
-      resourceType: 'run',
-      resourceId: snapshot.id,
-      decision: 'allowed',
-      reason: cancellation.reason,
-      requestId: context.requestId,
-      metadata: { jobId: job.id, status: job.status },
-    });
   });
   return getRun(context, workspaceId, runId);
+}
+
+/** Shared durable cancellation; callers must authorize the run owner. */
+export async function requestRunCancellationTransaction(
+  transaction: TransactionSql,
+  context: RequestContext,
+  runId: string,
+  reason: string,
+  ignoreTerminal = false,
+) {
+  // Persistent tree cutoff precedes job cancellation and native drain. No root
+  // row means an unchanged legacy single-agent Run.
+  await cancelAssistantRootTransaction(transaction, runId, randomUUID());
+  const rows = await transaction<JobRow[]>`
+      select * from allrice_jobs where run_id = ${runId} for update
+    `;
+  const job = rows[0];
+  if (!job) throw new QueueError('not_found');
+  if (job.status === 'canceled') return;
+  if (isTerminalJobStatus(job.status)) {
+    if (ignoreTerminal) return;
+    throw new QueueError('conflict');
+  }
+  await transaction`
+      update allrice_jobs
+      set cancel_requested_at = coalesce(cancel_requested_at, now()),
+          cancel_reason = ${reason}, updated_at = now()
+      where id = ${job.id}
+    `;
+  await audit(transaction, {
+    organizationId: job.organization_id,
+    workspaceId: job.workspace_id,
+    actorId: requireUser(context),
+    action: 'run.cancel.request',
+    resourceType: 'run',
+    resourceId: runId,
+    decision: 'allowed',
+    reason: reason,
+    requestId: context.requestId,
+    metadata: { jobId: job.id, status: job.status },
+  });
 }
 
 export async function claimNextJob(workerIdInput: string, leaseMs: number) {
@@ -1398,10 +1423,10 @@ export async function maintainQueue(limit = 100) {
   await wakeNativeQuestionWaits(limit, sql);
   const rows = await sql<JobRow[]>`
       select * from allrice_jobs
-      where status in ('queued', 'claimed', 'running', 'retry_wait')
+      where status in ('queued', 'claimed', 'running', 'retry_wait', 'waiting_approval')
         and (
           cancel_requested_at is not null
-          or timeout_at <= ${now}
+          or (status <> 'waiting_approval' and timeout_at <= ${now})
           or (status = 'retry_wait' and available_at <= ${now})
           or (status in ('claimed', 'running') and lease_expires_at <= ${now})
         )
@@ -1424,7 +1449,13 @@ export async function maintainQueue(limit = 100) {
       >`select * from allrice_jobs where id=${candidate.id} for update`;
       if (
         !job ||
-        !['queued', 'claimed', 'running', 'retry_wait'].includes(job.status)
+        ![
+          'queued',
+          'claimed',
+          'running',
+          'retry_wait',
+          'waiting_approval',
+        ].includes(job.status)
       )
         return;
       const action = queueMaintenanceAction(job, new Date());
