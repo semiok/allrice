@@ -562,9 +562,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       usageComplete: false,
       cacheUsageKnown: false,
     });
-    expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-      expect.objectContaining({ code: 'MODEL_TOKEN_USAGE_UNKNOWN' }),
-    );
+    expect(() => assertQuotaAvailable(quota, 'subscription')).not.toThrow();
     expect(await ledgerHistory()).toEqual(history);
     const [counts] = await cold`select
       (select count(*)::int from allrice_route_decisions) as decisions,

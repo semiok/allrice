@@ -103,13 +103,13 @@ describe('assistant pricing settlement acknowledgement', () => {
       }),
     );
   });
-  it('cannot acknowledge a model call when its pricing receipt is rejected', async () => {
+  it('acknowledges confirmed execution despite a pricing receipt failure', async () => {
     const f = fixture(async () => {
       throw Error('synthetic_receipt_conflict');
     });
-    await expect(f.bridge.handle('model-settle', f.params)).rejects.toThrow(
-      'synthetic_receipt_conflict',
-    );
+    await expect(f.bridge.handle('model-settle', f.params)).resolves.toEqual({
+      settled: true,
+    });
     expect(f.settleUsage).toHaveBeenCalledOnce();
   });
   it.each([undefined, 'wrong', `sha256:${'z'.repeat(64)}`])(

@@ -72,8 +72,8 @@ describe('model governance preflight', () => {
     ).toThrow('MODEL_RUNTIME_LIMIT_EXCEEDED');
     for (const policy of ['enforce', 'invalid']) {
       vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', policy);
-      expect(codexTokenPolicy()).toBe('enforce');
-      expect(() => assertQuotaAvailable(unknown, 'subscription')).toThrow();
+      expect(codexTokenPolicy()).toBe('observe');
+      expect(() => assertQuotaAvailable(unknown, 'subscription')).not.toThrow();
     }
   });
   it('returns safe defaults before a connection has governance rows', () => {
@@ -100,7 +100,7 @@ describe('model governance preflight', () => {
     });
   });
 
-  it('enforces each tenant quota independently', () => {
+  it('keeps task-count admission while ignoring token and cost ceilings', () => {
     expect(() => assertQuotaAvailable(quota)).not.toThrow();
     expect(() =>
       assertQuotaAvailable({ ...quota, usedRuns: quota.monthlyRunLimit }),
@@ -110,13 +110,13 @@ describe('model governance preflight', () => {
         ...quota,
         usedTokens: quota.monthlyTokenLimit,
       }),
-    ).toThrow(new ModelGovernanceError('MODEL_TOKEN_QUOTA_EXCEEDED'));
+    ).not.toThrow();
     expect(() =>
       assertQuotaAvailable({
         ...quota,
         usedCostCents: quota.monthlyCostLimitCents,
       }),
-    ).toThrow(new ModelGovernanceError('MODEL_COST_QUOTA_EXCEEDED'));
+    ).not.toThrow();
   });
 
   it('blocks a killed or open provider before execution', () => {
@@ -148,20 +148,20 @@ describe('model governance preflight', () => {
         usedCostCents: null,
         unknownCostRuns: 1,
       }),
-    ).toThrow(new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN'));
+    ).not.toThrow();
     expect(() =>
       assertQuotaAvailable({ ...quota, usedCostCents: 0, unknownCostRuns: 1 }),
-    ).toThrow(new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN'));
+    ).not.toThrow();
     expect(() =>
       assertQuotaAvailable({ ...quota, usageComplete: false }),
-    ).toThrow(new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN'));
+    ).not.toThrow();
     // Missing cache breakdown does not erase a known total token count.
     expect(() =>
       assertQuotaAvailable({ ...quota, cacheUsageKnown: false }),
     ).not.toThrow();
   });
 
-  it('enforces request, token, concurrency and runtime at every scope', () => {
+  it('retains task concurrency and runtime controls independently of token totals', () => {
     const resource = {
       scope: 'user' as const,
       scopeId: randomUUID(),
@@ -195,7 +195,7 @@ describe('model governance preflight', () => {
         requestedTokens: 20_000,
         requestedRuntimeMs: 30_000,
       }),
-    ).toThrow(new ModelGovernanceError('MODEL_TOKEN_QUOTA_EXCEEDED', 'user'));
+    ).not.toThrow();
     expect(() =>
       assertModelResourceAvailable({
         resources: [resource],

@@ -24,7 +24,7 @@ describe('model cost metering', () => {
     ).toBe(3);
   });
 
-  it('is explicitly zero when the platform has not configured a price', () => {
+  it('preserves unknown cost when the platform has not configured a price', () => {
     expect(
       estimateModelCostCents({
         provider: 'codex',
@@ -34,6 +34,6 @@ describe('model cost metering', () => {
         outputTokens: 500,
         pricing: {},
       }),
-    ).toBe(0);
+    ).toBeNull();
   });
 });

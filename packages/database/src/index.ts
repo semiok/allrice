@@ -72,6 +72,7 @@ export * from './local-browser-files.ts';
 export * from './local-preview.ts';
 export { localPreviewEnabled } from './local-preview-authority.ts';
 export * from './assistant-runtime.ts';
+export * from './execution-usage-policy.ts';
 export * from './assistant-authority.ts';
 export * from './assistant-output.ts';
 export * from './assistant-pricing.ts';
@@ -88,3 +89,5 @@ export {
   type ManagedCloudEnvironmentReport,
 } from './tenant-employee-access.ts';
 export * from './organization-activity.ts';
+
+export * from './execution-diagnostics.ts';

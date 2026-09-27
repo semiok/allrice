@@ -441,16 +441,15 @@ integration(
             completionReleased.release();
           }
           if (outcome.startsWith('unknown_')) {
-            await expect(execution).rejects.toMatchObject({
-              code: 'ASSISTANT_EXECUTION_UNRESOLVED',
-              retryable: false,
-              usage: { inputTokens: expect.any(Number) },
+            await expect(execution).resolves.toMatchObject({
+              assistantStatus: 'completed',
+              usageComplete: false,
             });
             const tree = await bridge.tree();
             expect(
               tree.instances.find((instance) => instance.parentRunId === null),
             ).toMatchObject({
-              status: 'unknown',
+              status: 'completed',
               stoppedAt: expect.any(String),
             });
             expect(tree.cancelRequested).toBe(false);
@@ -466,7 +465,7 @@ integration(
             expect(
               tree.results.every(
                 (result) =>
-                  !result.usageComplete && result.status === 'partial',
+                  !result.usageComplete && result.status === 'completed',
               ),
             ).toBe(true);
             return;
@@ -564,7 +563,9 @@ integration(
               await database.db`select a.*,i.label from allrice_assistant_model_admissions a join allrice_assistant_instances i on i.run_id=a.run_id where a.root_run_id=${f.rootRunId} order by a.prepared_at`;
             expect(admissions).toHaveLength(model.requests.length);
             expect(
-              admissions.some((a) => Number(a.granted_output_tokens) < 4000),
+              admissions.every(
+                (a) => Number(a.granted_output_tokens) === 12000,
+              ),
             ).toBe(true);
             for (const runId of [...new Set(admissions.map((a) => a.run_id))]) {
               const calls = admissions.filter((a) => a.run_id === runId);

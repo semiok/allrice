@@ -6,6 +6,7 @@ import {
   loadCloudCommandInputs,
   publishCloudOperationArtifacts,
   cloudStableId,
+  executionResourceObserver,
   getDatabase,
   runtimePolicyDigest,
   taskDeadlineOpen,
@@ -166,9 +167,21 @@ export async function runCloudCommandOperation(
           payload,
           options.storage,
         );
+        const observer = executionResourceObserver(
+          {
+            context: created.context,
+            leaseToken: created.jobLeaseToken,
+            attemptId,
+            callId: created.callId,
+            operationId,
+          },
+          db,
+        );
         outcome = await backend.execute(payload, files, {
           attemptId,
-          deadlineAt: created.deadlineAt,
+          deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+          isTurn: observer.isTurn,
+          observe: observer.observe,
           ...(options.signal ? { signal: options.signal } : {}),
           maintainLease,
           onCreated: async (id) => {

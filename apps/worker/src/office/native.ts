@@ -4,7 +4,11 @@ import {
   NativeOfficeExportSchema,
   type DeliveryFormat,
 } from '@allrice/contracts';
-import { getDatabase, getToolBrokerFile } from '@allrice/database';
+import {
+  getDatabase,
+  getToolBrokerFile,
+  executionResourceObserver,
+} from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
 import {
   CloudRunnerBackend,
@@ -61,6 +65,10 @@ export async function generateNativeOfficeExport(
     ctx = input.context;
   const leaseToken = input.managedBrowserJobLeaseToken;
   if (!leaseToken) officeError('任务执行租约不可用，请重试当前任务');
+  const observer = executionResourceObserver(
+    { context: ctx, leaseToken, attemptId, callId: input.call.id },
+    db,
+  );
   let nextCheck = 0,
     active = false;
   const maintainLease = async () => {
@@ -75,7 +83,9 @@ export async function generateNativeOfficeExport(
   try {
     const result = await backend.executeOffice(args, files, {
       attemptId,
-      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+      isTurn: observer.isTurn,
+      observe: observer.observe,
       ...(input.signal ? { signal: input.signal } : {}),
       maintainLease,
     });

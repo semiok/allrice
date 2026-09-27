@@ -543,7 +543,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByLabel('实际使用者', { exact: true })
         .selectOption(snow.user.id);
       await page.getByText('额度详情与调整', { exact: true }).click();
-      await page.getByLabel('月 Token 上限', { exact: true }).fill('5000000');
+      expect(
+        await page.getByLabel('月 Token 上限', { exact: true }).isEditable(),
+      ).toBe(false);
+      await page
+        .getByLabel('月路由请求次数上限（API）', { exact: true })
+        .fill('5000');
       await page
         .getByLabel('额度修改原因')
         .fill('Synthetic browser quota approval');
@@ -555,8 +560,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         )
         .waitFor();
       const [row] =
-        await fixture.db`select monthly_token_limit from allrice_model_resource_limits where organization_id=${snow.organizationId} and scope_type='user' and scope_id=${snow.user.id}`;
-      expect(row?.monthly_token_limit).toBe('5000000');
+        await fixture.db`select monthly_run_limit from allrice_model_resource_limits where organization_id=${snow.organizationId} and scope_type='user' and scope_id=${snow.user.id}`;
+      expect(row?.monthly_run_limit).toBe(5000);
       expect(
         await page
           .locator('table td')
@@ -616,11 +621,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .poll(async () =>
           Number(
             await page
-              .getByLabel('月 Token 上限', { exact: true })
+              .getByLabel('月路由请求次数上限（API）', { exact: true })
               .inputValue(),
           ),
         )
-        .toBe(2000000);
+        .toBe(2000);
     } finally {
       await context.close();
     }

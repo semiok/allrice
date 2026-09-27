@@ -1,5 +1,7 @@
 # MET-150 — Codex subscription chat stability
 
+> 2026-09-27：本文记录 MET-150 当时的订阅专属策略。后续 MET-162 将 Token、模型/工具调用和费用统一为所有执行路线仅统计，旧 `ALLRICE_CODEX_TOKEN_POLICY=enforce` 不再启用限制；默认 1 小时和无进展保护保留。见[现行方案](architecture/cloud-execution-scaling.md)。
+
 ## September 22 closeout boundary
 
 Final fixed-candidate validation `64413ba` also completed the real Snow/M5 development Run `0b72a009-0d70-4e2e-b903-07f23794637e`: one route attempt, three completed assistants, one successful physical command and a tested/reviewed formal delivery. Input 145,740 / output 5,559 were recorded completely; cache detail is unknown, not a certified zero. Internal Token statistics did not interrupt the task. Existing failed/unknown receipts were preserved without a manual Token reservation. PR #86 carries this policy together with the verified MET-144 fixes; after integration and Dev health/restoration verification, both scopes may close. Official quota UI remains MET-152, and Prod remains unchanged.

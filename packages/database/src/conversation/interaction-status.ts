@@ -176,6 +176,18 @@ async function sessionRunTimings(
     tx,
     runs.map((r) => r.run_id),
   );
+  const [resourceTable] =
+    await tx`select to_regclass(format('%I.allrice_task_resource_waits',current_schema())) is not null as available`;
+  const waiting =
+    resourceTable?.available && runs.length
+      ? await tx<
+          { run_id: string; n: number }[]
+        >`select w.run_id,count(*)::int as n
+    from allrice_task_resource_waits w join allrice_jobs j on j.id=w.job_id and j.lease_token=w.lease_token
+    where w.run_id in ${tx(runs.map((r) => r.run_id))} and w.state='waiting' and j.status='running'
+      and j.lease_expires_at>clock_timestamp() group by w.run_id`
+      : [];
+  const resourceCounts = new Map(waiting.map((w) => [w.run_id, w.n]));
   return [...clocks].map(([runId, clock]) => ({
     runId,
     timing: {
@@ -185,6 +197,7 @@ async function sessionRunTimings(
       timeoutMs: clock.timeoutMs,
       remainingMs: clock.remainingMs,
       phase: clock.phase,
+      resourceWaiting: resourceCounts.get(runId) ?? 0,
       sources: clock.sources.map(({ scope, timeoutMs }) => ({
         scope,
         timeoutMs,

@@ -118,22 +118,9 @@ export function createCloudOperationLedger(
       await transaction`insert into allrice_cloud_execution_attempts(operation_id,lease_token) values(${lease.snapshot.binding.attempt.operationId},${lease.leaseToken})`;
     },
     admission: async (input) => {
-      if (input.phase === 'dispatch') {
-        await input.transaction`select pg_advisory_xact_lock(20260908,15)`;
-        const { profile } = await checkCloudBindingAuthority(
-          input.transaction,
-          context,
-          input.binding,
-        );
-        const [count] = await input.transaction<
-          { n: string; own: string }[]
-        >`select count(*)::text as n,count(*) filter(where o.snapshot->'binding'->'execution'->>'grantId'=${input.binding.execution.grantId})::text as own from allrice_runtime_operations o left join allrice_cloud_execution_attempts a on a.operation_id=o.id where o.snapshot->'binding'->>'action'='cloud.process.execute' and o.id<>${input.binding.attempt.operationId} and a.cleanup_confirmed_at is null and (o.snapshot->>'status' in ('dispatched','running','cancel_requested','unknown') or a.container_id is not null)`;
-        if (
-          Number(count?.n ?? 0) >= 2 ||
-          Number(count?.own ?? 0) >= profile.maximumConcurrency
-        )
-          throw new RuntimePolicyError('cloud_capacity_unavailable');
-      }
+      // Physical capacity is acquired in the shared Office/cloud executor.
+      // Holding a global admission lock here cannot account for Office slots
+      // and turns normal resource waiting into an operation failure.
       return policy(input);
     },
   });
@@ -316,6 +303,7 @@ export async function createCloudCommandOperation(
     deadlineAt: run.timeout_at.toISOString(),
     context: ctx,
     jobLeaseToken: run.lease_token,
+    callId: input.callId,
   };
 }
 

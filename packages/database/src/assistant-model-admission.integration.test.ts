@@ -73,16 +73,16 @@ integration(
       }
       return { f, prepare, dispatch, pending };
     };
-    it('grants exactly 3754 under the root lock, freezes identity, and permits dispatch only once', async () => {
+    it('grants the full requested 4000 despite only 3754 historical remaining, freezes identity, and permits dispatch only once', async () => {
       const { f, prepare, dispatch } = await setup();
       const call = prepare();
       await expect(call.prepare()).resolves.toEqual({
         prepared: true,
-        outputTokens: 3754,
+        outputTokens: 4000,
       });
       await expect(call.prepare()).resolves.toEqual({
         prepared: false,
-        outputTokens: 3754,
+        outputTokens: 4000,
       });
       await expect(
         f.runtime.prepareModelUsage({
@@ -90,20 +90,20 @@ integration(
           requestedOutputTokens: 3999,
         }),
       ).rejects.toThrow('conflict');
-      await expect(dispatch(call, 4000)).rejects.toThrow('conflict');
-      await expect(dispatch(call, 3754)).resolves.toEqual({
+      await expect(dispatch(call, 3999)).rejects.toThrow('conflict');
+      await expect(dispatch(call, 4000)).resolves.toEqual({
         reserved: true,
-        outputTokens: 3754,
+        outputTokens: 4000,
       });
-      await expect(dispatch(call, 3754)).resolves.toEqual({
+      await expect(dispatch(call, 4000)).resolves.toEqual({
         reserved: false,
-        outputTokens: 3754,
+        outputTokens: 4000,
       });
-      await expect(dispatch(call, 3754, 101)).rejects.toThrow('conflict');
+      await expect(dispatch(call, 4000, 101)).rejects.toThrow('conflict');
       const [row] =
         await database.db`select * from allrice_assistant_model_admissions where call_id=${call.input.callId}`;
       expect(Number(row!.requested_output_tokens)).toBe(4000);
-      expect(Number(row!.granted_output_tokens)).toBe(3754);
+      expect(Number(row!.granted_output_tokens)).toBe(4000);
       expect(row!.dispatched_at).not.toBeNull();
       const budget = (
         await f.runtime.getTree(f.context, { runId: f.task.runId })
@@ -111,37 +111,39 @@ integration(
       expect(budget).toMatchObject({
         capacity: 12000,
         spent: 246,
-        reserved: 11754,
+        reserved: 12000,
       });
     });
-    it('concurrent preparations cannot overgrant and full-budget rejection rolls back every dimension', async () => {
+    it('admits distinct concurrent calls beyond old output capacity without resetting prior telemetry', async () => {
       const { f, prepare } = await setup();
-      const outcomes = await Promise.allSettled([
+      const outcomes = await Promise.all([
         prepare().prepare(),
         prepare().prepare(),
       ]);
-      expect(outcomes.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-      const success = outcomes.find((r) => r.status === 'fulfilled');
-      expect(success).toMatchObject({
-        value: { prepared: true, outputTokens: 3754 },
-      });
-      const before = await f.runtime.getTree(f.context, {
-        runId: f.task.runId,
-      });
-      await expect(prepare().prepare()).rejects.toThrow('budget_exhausted');
+      expect(outcomes).toEqual([
+        { prepared: true, outputTokens: 4000 },
+        { prepared: true, outputTokens: 4000 },
+      ]);
+      const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
       expect(
-        await f.runtime.getTree(f.context, { runId: f.task.runId }),
-      ).toEqual(before);
+        tree.budgets.find((b) => b.metric === 'output_tokens'),
+      ).toMatchObject({
+        capacity: 12000,
+        spent: 246,
+        reserved: 16000,
+        enforced: false,
+      });
+      expect(tree.cancelRequested).toBe(false);
     });
     it('concurrent same-call preparation and dispatch each admit exactly once; changed frozen request never replays', async () => {
       const { f, prepare, dispatch } = await setup();
       const call = prepare();
       const preparations = await Promise.all([call.prepare(), call.prepare()]);
       expect(preparations.map((r) => r.prepared).sort()).toEqual([false, true]);
-      expect(preparations.every((r) => r.outputTokens === 3754)).toBe(true);
+      expect(preparations.every((r) => r.outputTokens === 4000)).toBe(true);
       const dispatches = await Promise.all([
-        dispatch(call, 3754),
-        dispatch(call, 3754),
+        dispatch(call, 4000),
+        dispatch(call, 4000),
       ]);
       expect(dispatches.map((r) => r.reserved).sort()).toEqual([false, true]);
       const before = await f.runtime.getTree(f.context, {
@@ -153,7 +155,7 @@ integration(
           runId: f.task.runId,
           callId: call.input.callId,
           inputTokens: 100,
-          outputTokens: 3754,
+          outputTokens: 4000,
           requestDigest: `sha256:${'b'.repeat(64)}`,
         }),
       ).rejects.toThrow('conflict');
@@ -173,10 +175,10 @@ integration(
         (
           await f.runtime.getTree(f.context, { runId: f.task.runId })
         ).budgets.find((b) => b.metric === 'output_tokens'),
-      ).toMatchObject({ reserved: 11754, usageComplete: false });
-      await expect(dispatch(call, 3754)).resolves.toEqual({
+      ).toMatchObject({ reserved: 12000, usageComplete: false });
+      await expect(dispatch(call, 4000)).resolves.toEqual({
         reserved: false,
-        outputTokens: 3754,
+        outputTokens: 4000,
       });
     });
     it('binds both phases to the exact child, scope, generation, fence and original worker incarnation', async () => {
@@ -188,7 +190,7 @@ integration(
         runId: f.task.runId,
         callId: call.input.callId,
         inputTokens: 100,
-        outputTokens: 3754,
+        outputTokens: 4000,
         requestDigest: `sha256:${'a'.repeat(64)}`,
       };
       const before = await f.runtime.getTree(f.context, {
@@ -247,9 +249,7 @@ integration(
       const before = await f.runtime.getTree(f.context, {
         runId: f.task.runId,
       });
-      await expect(
-        dispatch(call, 3754, Number.MAX_SAFE_INTEGER),
-      ).rejects.toThrow('budget_exhausted');
+      await expect(dispatch(call, 4000, -1)).rejects.toThrow();
       expect(
         await f.runtime.getTree(f.context, { runId: f.task.runId }),
       ).toEqual(before);
@@ -267,12 +267,12 @@ integration(
         }),
       ).rejects.toThrow('conflict');
       f.revoke();
-      await expect(dispatch(call, 3754)).rejects.toThrow('revoked');
+      await expect(dispatch(call, 4000)).rejects.toThrow('revoked');
       await f.runtime.cancelRoot(f.context, {
         runId: f.task.runId,
         requestId: randomUUID(),
       });
-      await expect(dispatch(call, 3754)).rejects.toThrow();
+      await expect(dispatch(call, 4000)).rejects.toThrow();
       const [row] =
         await database.db`select dispatched_at,finished_at from allrice_assistant_model_admissions where call_id=${call.input.callId}`;
       expect(row).toMatchObject({ dispatched_at: null, finished_at: null });

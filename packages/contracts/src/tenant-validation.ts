@@ -67,6 +67,35 @@ export interface TenantRunInspection {
   artifacts: WorkbenchArtifact[];
   artifactsTruncated: boolean;
   development?: TenantDevelopmentInspection | null;
+  executionDiagnostics?: {
+    jobState: string;
+    workerId: string | null;
+    queueMs: number;
+    currentWait: string | null;
+    recentProgressAt: string | null;
+    resources: {
+      id: string;
+      callId: string;
+      state: string;
+      reason: string;
+      queuedAt: string;
+      startedAt: string | null;
+      finishedAt: string | null;
+      waitMs: number;
+      executionMs: number;
+      capacity: number | null;
+      backendId: string | null;
+      errorCode: string | null;
+    }[];
+    events: {
+      at: string;
+      stage: string;
+      attemptId: string | null;
+      reason: string | null;
+      errorCode: string | null;
+    }[];
+    truncated: boolean;
+  };
 }
 
 /** Read-only provenance, never a command approval or a new execution grant. */

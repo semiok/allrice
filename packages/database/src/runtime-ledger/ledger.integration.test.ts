@@ -332,16 +332,16 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     );
   });
 
-  it('serializes simultaneous reservations at the root with no oversubscription', async () => {
+  it('serializes simultaneous reservations at the root without a tool-count ceiling', async () => {
     const f = await fixture(3);
     const results = await Promise.allSettled(
       Array.from({ length: 12 }, () => ledger().createOperation(f.make())),
     );
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
-    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(9);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(12);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(0);
     expect(
       (await ledger().readBudget(f.scope, f.ids.runId)).budgets[0]!.reserved,
-    ).toBe(3);
+    ).toBe(12);
   });
 
   it('deduplicates concurrent create without reserving twice, rejects changed request', async () => {
@@ -556,9 +556,9 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
         receipt(lease, { type: 'operation.transport_ack' }),
       ),
     ).rejects.toThrow('lease_lost');
-    await expect(ledger().createOperation(f.make())).rejects.toThrow(
-      'budget_exhausted',
-    );
+    await expect(ledger().createOperation(f.make())).resolves.toMatchObject({
+      status: 'ready',
+    });
     await expect(
       ledger().settleUsage({
         scope: f.scope,
@@ -569,7 +569,7 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     ).rejects.toThrow('invalid_state');
     expect(
       (await ledger().readBudget(f.scope, f.ids.runId)).budgets[0]!.reserved,
-    ).toBe(1);
+    ).toBe(2);
     expect(
       (await ledger().recordReceipt(receipt(lease, outcome()))).snapshot.status,
     ).toBe('succeeded');
@@ -738,7 +738,7 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     ).toMatchObject({ reserved: 4, spent: 0 });
   });
 
-  it('records real overspend and durably requests cancellation for remaining operations', async () => {
+  it('records over-capacity call usage without canceling remaining operations', async () => {
     const f = await fixture(3);
     const input = f.make();
     const first = await dispatch(input);
@@ -751,7 +751,7 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
       observation: observation(input, 4),
     });
     const budget = await ledger().readBudget(f.scope, f.ids.runId);
-    expect(budget.cancelReason).toBe('budget_exhausted');
+    expect(budget.cancelReason).toBeNull();
     expect(budget.budgets[0]).toMatchObject({ reserved: 1, spent: 4 });
     expect(
       (
@@ -760,7 +760,7 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
           second.snapshot.binding.attempt.operationId,
         )
       ).status,
-    ).toBe('cancel_requested');
+    ).toBe('dispatched');
   });
 
   it('enforces persistent root deadline and requests cancellation rather than claiming OS stop', async () => {
@@ -820,17 +820,19 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
       parentRunId: f.ids.runId,
     };
     await dispatch(second);
-    await expect(ledger().createOperation(f.make())).rejects.toThrow(
-      'budget_exhausted',
-    );
+    await expect(ledger().createOperation(f.make())).resolves.toMatchObject({
+      status: 'ready',
+    });
     const cancellation = await ledger().cancelRoot(
       f.scope,
       f.ids.runId,
       randomUUID(),
     );
-    expect(cancellation.operations).toHaveLength(2);
+    expect(cancellation.operations).toHaveLength(3);
     expect(
-      cancellation.operations.every((op) => op.status === 'cancel_requested'),
+      cancellation.operations.every((op) =>
+        ['cancel_requested', 'canceled'].includes(op.status),
+      ),
     ).toBe(true);
     const inconsistent = f.make();
     inconsistent.snapshot.binding.task = {
