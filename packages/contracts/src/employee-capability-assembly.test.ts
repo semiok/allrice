@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import {
   assembleEmployeeCapabilities,
+  prepareEmployeeEditorDefinition,
   developmentWorkflowToolNames,
   employeePublicationPolicy,
   upgradeEmployeeSkillBindings,
@@ -201,3 +202,30 @@ it('publishing selected tools enables their rules while retaining unrelated rest
     ],
   });
 });
+
+it.each([
+  [[], 'none'],
+  [['local.fs.read'], 'read_only'],
+  [['local.fs.write'], 'read_write'],
+] as const)(
+  'prepares editor defaults from selected tools %j without modifying the published input',
+  (tools, bridgeAccess) => {
+    const original = definition();
+    original.capabilities.nativeSkillIds = [];
+    original.capabilities.toolNames = [...tools];
+    original.securityPolicy.bridgeAccess = 'read_write';
+    const result = prepareEmployeeEditorDefinition(original, []);
+    expect(result.securityPolicy.connectorIdentityModes).toEqual([
+      'user',
+      'service',
+    ]);
+    expect(result.securityPolicy.deniedCapabilities).toEqual([]);
+    expect(result.securityPolicy.bridgeAccess).toBe(bridgeAccess);
+    expect(original.securityPolicy.deniedCapabilities).toEqual([
+      'storage:write',
+      'secret:use',
+    ]);
+    expect(original.securityPolicy.connectorIdentityModes).toEqual(['user']);
+    expect(result.capabilities.toolNames).not.toContain('cloud.mcp.call');
+  },
+);

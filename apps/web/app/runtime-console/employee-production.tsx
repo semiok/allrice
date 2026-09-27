@@ -14,9 +14,7 @@ import {
   employeeReasoningSettings,
   switchEmployeeModelProvider,
   employeeToolCatalog,
-  assembleEmployeeCapabilities,
-  upgradeEmployeeSkillBindings,
-  SkillCapabilitySchema,
+  prepareEmployeeEditorDefinition,
   employeeColorPalette,
   employeeColorForeground,
   resolveEmployeeAccent,
@@ -92,8 +90,7 @@ const tabs = [
   ['knowledge', 'Knowledge'],
   ['model', '模型'],
   ['tools', '工具'],
-  ['security', '安全'],
-  ['debug', '调试'],
+  ['debug', '测试'],
   ['publish', '发布租户'],
 ] as const;
 
@@ -289,7 +286,7 @@ export function EmployeeProduction() {
           employee?.currentPublished?.definition;
         setDraft(
           definition
-            ? upgradeEmployeeSkillBindings(clone(definition), result.skills)
+            ? prepareEmployeeEditorDefinition(clone(definition), result.skills)
             : null,
         );
         const requestedWorkspace = new URLSearchParams(
@@ -404,7 +401,7 @@ export function EmployeeProduction() {
       employee.currentPublished?.definition;
     setDraft(
       definition
-        ? upgradeEmployeeSkillBindings(
+        ? prepareEmployeeEditorDefinition(
             clone(definition),
             directory?.skills ?? [],
           )
@@ -439,7 +436,7 @@ export function EmployeeProduction() {
       const explicit =
         current.capabilities.explicitToolNames ??
         current.capabilities.toolNames;
-      return assembleEmployeeCapabilities(
+      return prepareEmployeeEditorDefinition(
         {
           ...current,
           capabilities: {
@@ -460,7 +457,7 @@ export function EmployeeProduction() {
       const explicit =
         current.capabilities.explicitToolNames ??
         current.capabilities.toolNames;
-      return assembleEmployeeCapabilities(
+      return prepareEmployeeEditorDefinition(
         {
           ...current,
           capabilities: {
@@ -515,7 +512,7 @@ export function EmployeeProduction() {
       } else {
         setMessage(
           result.validation.warnings.join('\n') ||
-            '草稿已保存，模型、Skill、工具与安全配置检查通过。',
+            '草稿已保存，员工配置检查通过。',
         );
       }
     } catch (reason) {
@@ -763,11 +760,11 @@ export function EmployeeProduction() {
         (candidate) => candidate.id === previewWorkspaceId,
       );
       setMessage(
-        `已使用${workspace ? `「${workspace.name}」` : '所选租户'}的真实模型、Skill、Tool Broker 和在线 Bridge 试用当前配置；不会改变已发布版本。`,
+        `已保存草稿，测试任务已提交到${workspace ? `「${workspace.name}」` : '所选租户'}的环境。结果会显示在下方，租户正在使用的版本保持不变。`,
       );
       await loadTestRuns(selectedId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '当前配置试用失败');
+      setError(reason instanceof Error ? reason.message : '草稿测试启动失败');
     } finally {
       setBusy(false);
     }
@@ -974,7 +971,7 @@ export function EmployeeProduction() {
             </article>
             <article>
               <code>SOUL.md</code>
-              <span>行为准则、安全边界和员工确认偏好</span>
+              <span>行为准则和工作边界</span>
             </article>
             <article>
               <code>AGENTS.md</code>
@@ -1264,6 +1261,10 @@ export function EmployeeProduction() {
             ? '勾选工具后保存并发布即可启用；所需的员工能力和执行策略会自动配置。'
             : '选择员工工具，保存并发布后生效。'}
         </p>
+        <p className={styles.notice}>
+          只需选择技能和工具，所需能力与本地文件访问方式会自动配置。
+          是否自动执行，由使用者在前台「设置 → 员工工作方式」中决定。
+        </p>
         <EmployeeToolTree
           definition={draft}
           skills={directory.skills}
@@ -1279,7 +1280,7 @@ export function EmployeeProduction() {
           <summary>配置帮助</summary>
           <p>
             {directory.rapidIteration
-              ? '添加后保存并发布即可使用；配置预览只检查只读行为，完整试用请进入已派驻员工的工作台。'
+              ? '添加后保存并发布即可使用；草稿测试仅支持问答和读取资料，完整任务请进入租户工作台验证。'
               : '添加后保存草稿，按发布检查完成当前版本验证，再发布到目标租户。'}
           </p>
           <p>
@@ -1290,120 +1291,14 @@ export function EmployeeProduction() {
         </details>
       </>
     );
-  } else if (tab === 'security') {
-    panel = (
-      <div className={styles.grid}>
-        <label className={styles.field}>
-          <RuntimeFieldLabel label="员工确认偏好" runtimeSource="SOUL.md" />
-          <select
-            value={draft.securityPolicy.approvalPolicy}
-            onChange={(event) =>
-              update(['securityPolicy', 'approvalPolicy'], event.target.value)
-            }
-          >
-            <option value="confirm_side_effects">所有修改前询问</option>
-            <option value="confirm_external">对外操作前询问</option>
-            <option value="autonomous">授权范围内自动工作</option>
-          </select>
-          <small>
-            实际执行跟随成员在前台「员工工作方式」中的设置；需要新账号或新文件夹时仍申请授权。
-          </small>
-        </label>
-        <label className={styles.field}>
-          <span>Rice Bridge</span>
-          <select
-            value={draft.securityPolicy.bridgeAccess}
-            onChange={(event) =>
-              update(['securityPolicy', 'bridgeAccess'], event.target.value)
-            }
-          >
-            <option value="none">禁用</option>
-            <option value="read_only">只读</option>
-            <option value="read_write">受控读写</option>
-          </select>
-        </label>
-        <p className={`${styles.notice} ${styles.fieldWide}`}>
-          “受控读写”只允许已授权目录内的新建目录和文本文件原子写入；覆盖前必须校验
-          SHA-256。AllRice 始终执行租户隔离、Tool Broker
-          权限交集和审计。这里不会开放 Shell、删除或 Git
-          写操作，也不会把模型密钥下发给租户或 Bridge。
-        </p>
-        <fieldset className={styles.fieldWide} disabled={busy}>
-          <legend>允许的连接器身份</legend>
-          <p>
-            仅约束员工可使用的身份类型，不创建连接、保存凭证或绑定员工版本。
-          </p>
-          {(['user', 'service'] as const).map((mode) => (
-            <label className={styles.check} key={mode}>
-              <input
-                type="checkbox"
-                aria-label={`允许连接器身份 ${mode}`}
-                checked={draft.securityPolicy.connectorIdentityModes.includes(
-                  mode,
-                )}
-                onChange={(event) =>
-                  update(
-                    ['securityPolicy', 'connectorIdentityModes'],
-                    event.target.checked
-                      ? [...draft.securityPolicy.connectorIdentityModes, mode]
-                      : draft.securityPolicy.connectorIdentityModes.filter(
-                          (value) => value !== mode,
-                        ),
-                  )
-                }
-              />
-              <span>
-                {mode === 'user'
-                  ? '使用者身份（user）'
-                  : '租户服务身份（service，云端 MCP）'}
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        <fieldset className={styles.fieldWide} disabled={busy}>
-          <legend>员工禁止能力</legend>
-          <p>
-            勾选表示禁止，优先于工具清单。解除禁止只修改草稿，需重新试用和发布；
-            不会自动授予连接器、设备、租户或单次操作权限。
-          </p>
-          {SkillCapabilitySchema.options.map((capability) => (
-            <label className={styles.check} key={capability}>
-              <input
-                type="checkbox"
-                aria-label={`禁止 ${capability}`}
-                checked={draft.securityPolicy.deniedCapabilities.includes(
-                  capability,
-                )}
-                onChange={(event) =>
-                  update(
-                    ['securityPolicy', 'deniedCapabilities'],
-                    event.target.checked
-                      ? [...draft.securityPolicy.deniedCapabilities, capability]
-                      : draft.securityPolicy.deniedCapabilities.filter(
-                          (value) => value !== capability,
-                        ),
-                  )
-                }
-              />
-              <span>{capability}</span>
-            </label>
-          ))}
-          <p>
-            MCP 工具使用
-            secret:use。解除这项禁止仅允许受控连接器使用已授权凭证，
-            不允许模型读取密钥，也不改变模型订阅或 API 配置。
-          </p>
-        </fieldset>
-      </div>
-    );
   } else if (tab === 'debug') {
     panel = (
       <>
         <p className={styles.notice}>
-          配置预览会保存当前草稿，并验证模型和只读工具。需要写入或执行命令的技能在此预览中不会加载。完整能力请发布后在租户工作台真实试用。
+          在这里测试当前草稿的回复效果，结果显示在下方。仅支持问答和读取资料，生成文件、修改数据等完整任务请发布后在租户工作台验证。
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
-          <span>预览环境</span>
+          <span>测试使用的租户</span>
           <select
             value={previewWorkspaceId}
             onChange={(event) => setPreviewWorkspaceId(event.target.value)}
@@ -1416,9 +1311,7 @@ export function EmployeeProduction() {
             ))}
           </select>
           {previewWorkspace ? (
-            <small>
-              Bridge 与本地工作区状态请在“Runtime 状态”中按租户查看。
-            </small>
+            <small>使用所选租户已连接的模型和工具进行测试。</small>
           ) : null}
         </label>
         <label className={`${styles.field} ${styles.fieldWide}`}>
@@ -1428,32 +1321,38 @@ export function EmployeeProduction() {
             onChange={(event) => setTestPrompt(event.target.value)}
           />
         </label>
-        <div className={styles.actions}>
+        <div className={styles.testAction}>
           <button
             className={styles.button}
             data-primary="true"
             disabled={busy || !testPrompt.trim() || !previewWorkspaceId}
             onClick={() => void runDraftPreview()}
           >
-            {busy ? '启动中…' : '运行只读配置预览'}
+            {busy ? '正在启动测试…' : '测试草稿'}
           </button>
+          <span>自动保存草稿，不影响租户正在使用的版本。</span>
         </div>
-        {directory.rapidIteration ? (
-          <div className={styles.actions}>
-            <button
-              className={styles.button}
-              data-primary="true"
-              disabled={busy || !previewWorkspaceId}
-              onClick={() => void publishSelected([previewWorkspaceId])}
-            >
-              发布到所选租户并真实试用
-            </button>
-            {trialLinks}
+        <section className={styles.publishEntry} aria-label="让租户使用">
+          <div>
+            <strong>让租户使用</strong>
+            <p>到发布页选择租户并发布，然后进入工作台使用完整能力。</p>
           </div>
-        ) : null}
+          <button
+            className={styles.button}
+            disabled={busy}
+            onClick={() => {
+              invalidateReview();
+              if (previewWorkspaceId)
+                setSelectedWorkspaces([previewWorkspaceId]);
+              setTab('publish');
+            }}
+          >
+            前往发布
+          </button>
+        </section>
         <div className={styles.testRuns}>
           {testRuns.length === 0 ? (
-            <p className={styles.muted}>还没有配置试用记录。</p>
+            <p className={styles.muted}>还没有草稿测试记录。</p>
           ) : (
             testRuns.map((run) => (
               <article className={styles.testRun} key={run.id}>
@@ -1464,7 +1363,7 @@ export function EmployeeProduction() {
                 <p className={styles.testPrompt}>{run.input.prompt}</p>
                 {run.input.workspaceId ? (
                   <small className={styles.muted}>
-                    预览环境：
+                    测试租户：
                     {directory.workspaces.find(
                       (workspace) => workspace.id === run.input.workspaceId,
                     )?.name ?? run.input.workspaceId}
@@ -1572,7 +1471,7 @@ export function EmployeeProduction() {
               {busy ? '正在保存并发布…' : '保存并发布所选能力'}
             </button>
             <p>
-              发布会自动保存草稿、检查依赖并启用所选工具。配置预览可选，不再作为发布前置条件。
+              发布会自动保存草稿、检查依赖并启用所选工具。草稿测试可选，不作为发布前置条件。
             </p>
             {trialLinks}
           </div>

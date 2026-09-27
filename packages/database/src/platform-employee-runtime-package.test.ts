@@ -357,6 +357,8 @@ describe('platform employee runtime package', () => {
     expect(first.files.agentsMd).toContain('用户不需要点名 Skill');
     expect(first.files.identityMd).toContain('通用工作伙伴');
     expect(first.files.soulMd).toContain('不编造执行结果');
+    expect(first.files.soulMd).toContain('本次运行注入的成员设置为准');
+    expect(first.files.soulMd).not.toContain('操作确认策略：');
     expect(first.files.userMd).toContain('动态注入');
     expect(first.skills[0]?.content).toContain('交叉核验');
     expect(first.runtimeManifest.skillGovernance[0]).toMatchObject({

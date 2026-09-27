@@ -5,6 +5,7 @@ import type postgres from 'postgres';
 import {
   PlatformEmployeeDefinitionSchema,
   assembleEmployeeCapabilities,
+  prepareEmployeeEditorDefinition,
   upgradeEmployeeSkillBindings,
   rapidEmployeeIterationEnabled,
   employeePublicationPolicy,
@@ -286,12 +287,15 @@ export async function createPlatformEmployeeDraft(
         `;
     const source = sourceRows[0];
     if (!source) throw new Error('platform_employee_clone_source_not_found');
-    const definition = PlatformEmployeeDefinitionSchema.parse({
-      ...PlatformEmployeeDefinitionSchema.parse(source.definition),
-      key: parsed.key,
-      name: parsed.name,
-      description: `${parsed.name} 的平台管理员草稿。`,
-    });
+    const definition = prepareEmployeeEditorDefinition(
+      PlatformEmployeeDefinitionSchema.parse({
+        ...PlatformEmployeeDefinitionSchema.parse(source.definition),
+        key: parsed.key,
+        name: parsed.name,
+        description: `${parsed.name} 的平台管理员草稿。`,
+      }),
+      await listPlatformNativeSkills(transaction),
+    );
     const employees = await transaction<{ id: string }[]>`
       insert into allrice_platform_employees (
         employee_key, name, description, status,
@@ -1129,8 +1133,8 @@ export async function savePlatformEmployeeDraft(
     : [];
   const definition = PlatformEmployeeDefinitionSchema.parse({
     ...assembleEmployeeCapabilities(rawDefinition, skills),
-    // An explicit security edit must not be silently undone by a server save.
-    // Interactive tool/Skill selection updates these fields together in the UI.
+    // Preserve policy fields from legacy/API clients. The simplified admin
+    // editor prepares tool-derived defaults before sending its draft.
     securityPolicy: rawDefinition.securityPolicy,
   });
   await sql.begin(async (transaction) => {
