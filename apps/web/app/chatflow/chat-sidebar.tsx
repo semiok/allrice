@@ -10,6 +10,8 @@ import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
 
 import type { Session, Workspace } from './chatflow-types';
+import type { useSessionArchive } from './use-session-archive';
+import archiveCss from './session-archive.module.css';
 import { EmployeeSidebar } from './employee-sidebar';
 import { employeePreferenceKey } from './employee-navigation';
 import frameUi from './dsh-upstream/AppFrame.module.css';
@@ -17,6 +19,7 @@ import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatSidebarProps {
+  archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
   collapsed: boolean;
   overlay?: boolean;
@@ -37,6 +40,7 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({
+  archive,
   activeId,
   collapsed,
   overlay = false,
@@ -168,8 +172,28 @@ export function ChatSidebar({
           <span className={sidebarUi.newSessionLabel}>新的工作</span>
         </button>
 
+        {archive && !collapsed && (
+          <div className={archiveCss.filter}>
+            <label>
+              显示
+              <select
+                aria-label="工作记录筛选"
+                value={archive.filter}
+                onChange={(event) =>
+                  archive.setFilter(event.target.value as typeof archive.filter)
+                }
+              >
+                <option value="default">当前工作</option>
+                <option value="only">已归档</option>
+                <option value="show">全部工作</option>
+              </select>
+            </label>
+            {archive.error && <p role="alert">{archive.error}</p>}
+          </div>
+        )}
         <div className={sidebarUi.regionArea}>
           <EmployeeSidebar
+            archive={archive}
             key={
               employeePreferenceKey(workspace) ??
               `${workspace.organizationId}:${workspace.workspaceId}`
@@ -183,6 +207,17 @@ export function ChatSidebar({
             onDetails={onOpenEmployeeDetails}
           />
         </div>
+
+        {archive?.nextCursor && !collapsed && (
+          <button
+            className={archiveCss.more}
+            type="button"
+            onClick={archive.loadMore}
+            disabled={archive.loading}
+          >
+            {archive.loading ? '正在加载…' : '加载更早的工作'}
+          </button>
+        )}
 
         <div className={sidebarUi.footArea}>
           <SidebarSettings

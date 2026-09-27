@@ -1,4 +1,6 @@
 'use client';
+import { useSessionArchive } from './use-session-archive';
+import archiveCss from './session-archive.module.css';
 
 import {
   useCallback,
@@ -123,6 +125,7 @@ export function ChatFlowClient({
 
   const {
     activeId,
+    updateSession,
     captureSelection,
     createSession,
     newSessionEmployee,
@@ -137,6 +140,17 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   } = useSession({ setError });
+  const archive = useSessionArchive({
+    workspace,
+    headers: tenantHeaders,
+    onUpdated: updateSession,
+    selectedSession:
+      history?.session ?? workspace?.sessions.find((s) => s.id === activeId),
+  });
+  const sessionArchived = Boolean(
+    history?.session.archivedAt ??
+    workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
+  );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
@@ -427,7 +441,7 @@ export function ChatFlowClient({
 
   async function sendMessage() {
     const text = draft.trim();
-    if (!workspace || !text || busy) return;
+    if (!workspace || !text || busy || sessionArchived) return;
     const action = sessionActions.begin('composer');
     if (!action) return;
     const draftAttachments = [...pendingAttachments];
@@ -697,7 +711,14 @@ export function ChatFlowClient({
   }
 
   async function answerUserQuestion(answer: UserQuestionAnswerSubmission) {
-    if (!workspace || !activeId || !pendingUserQuestion || questionBusy) return;
+    if (
+      !workspace ||
+      !activeId ||
+      !pendingUserQuestion ||
+      questionBusy ||
+      sessionArchived
+    )
+      return;
     const action = sessionActions.begin('question');
     if (!action) return;
     setQuestionBusy(true);
@@ -777,8 +798,14 @@ export function ChatFlowClient({
     return <WorkspaceStartup error={error} />;
   }
 
-  const sessions = workspace.sessions.filter((session) => !session.archivedAt);
-  const activeSession = sessions.find((session) => session.id === activeId);
+  const sessions = archive.sessions;
+  const activeSession = history?.session
+    ? {
+        ...workspace.sessions.find((s) => s.id === activeId),
+        ...archive.sessions.find((s) => s.id === activeId),
+        ...history.session,
+      }
+    : workspace.sessions.find((session) => session.id === activeId);
   const activeEmployee = activeSession
     ? employeeForSession(workspace, activeSession)
     : newSessionEmployee;
@@ -829,6 +856,7 @@ export function ChatFlowClient({
     .at(-1);
   const historyLoading = activeId !== null && history === null;
   const isEmptyConversation =
+    !sessionArchived &&
     !historyLoading &&
     !history?.messages.length &&
     !hasQueuedMessages &&
@@ -946,7 +974,9 @@ export function ChatFlowClient({
           onSelect={startEmployeeSession}
         />
       )}
+      {archive.overlays}
       <ChatSidebar
+        archive={archive}
         settingsSection={
           settings?.scope === settingsScope ? settings.section : null
         }
@@ -1203,6 +1233,7 @@ export function ChatFlowClient({
                   </button>
                 ) : null}
                 <MessageFeedbackProvider
+                  readOnly={sessionArchived}
                   key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
                   sessionId={activeId!}
                   workspaceId={workspace.workspaceId}
@@ -1240,7 +1271,7 @@ export function ChatFlowClient({
               >
                 <QueuedMessagesDock
                   key={`${workspace.organizationId}/${activeId}`}
-                  items={history?.queuedMessages ?? []}
+                  items={sessionArchived ? [] : (history?.queuedMessages ?? [])}
                   busy={busy}
                   canEdit={!draft.trim() && pendingAttachments.length === 0}
                   canSteer={Boolean(
@@ -1250,7 +1281,20 @@ export function ChatFlowClient({
                   )}
                   updateQueue={updateQueue}
                 />
-                {pendingUserQuestion ? (
+                {sessionArchived ? (
+                  <div className={archiveCss.readOnly} role="status">
+                    <span>已归档 · 可以查看记录和交付成果</span>
+                    {(!activeSession?.ownerId ||
+                      activeSession.ownerId === workspace.viewerId) && (
+                      <button
+                        type="button"
+                        onClick={() => activeId && archive.restore(activeId)}
+                      >
+                        恢复并继续
+                      </button>
+                    )}
+                  </div>
+                ) : pendingUserQuestion ? (
                   <UserQuestionComposer
                     busy={questionBusy}
                     error={error}
@@ -1270,6 +1314,7 @@ export function ChatFlowClient({
 
       {workbenchEnabled && hasWorkbenchContent ? (
         <ArtifactWorkbench
+          readOnly={sessionArchived}
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}

@@ -161,12 +161,20 @@ export const UpdateChatSessionInputSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
     archived: z.boolean().optional(),
+    stopActivity: z.boolean().optional(),
     visibility: VisibilitySchema.optional(),
   })
   .strict()
   .refine(
-    (value) => Object.keys(value).length > 0,
+    (value) =>
+      value.title !== undefined ||
+      value.archived !== undefined ||
+      value.visibility !== undefined,
     'at least one update is required',
+  )
+  .refine(
+    (value) => !value.stopActivity || value.archived === true,
+    'stopActivity requires archiving',
   );
 
 // User intent, not a tool grant or a budget supplied by the browser. Effective
