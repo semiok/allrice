@@ -253,7 +253,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
       await admin.unsafe(`drop schema "${schema}" cascade`);
     await admin?.end({ timeout: 5 });
   });
-  it('uses the published model in existing chats, repairs stale provider/auth caches, and keeps previously frozen snapshots intact', async () => {
+  it('inherits platform models despite employee publication and repairs legacy session caches', async () => {
     const f = await fixture();
     const context = {
       actor: { type: 'user' as const, id: f.ownerId },
@@ -328,9 +328,9 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
 
     expect(
       workspace.sessionModels.find((x) => x.sessionId === sessionId),
-    ).toMatchObject({ provider: 'openai-codex', reasoningEffort: 'high' });
+    ).toMatchObject({ provider: 'openai-codex', reasoningEffort: 'xhigh' });
     const next = await freezeSessionModelSnapshot(scope);
-    expect(next.reasoningEffort).toBe('high');
+    expect(next.reasoningEffort).toBe('xhigh');
     expect(original.reasoningEffort).toBe('xhigh');
     // Preparing a Run already bound to the prior employee version cannot rewind
     // the current Session's model cache after a concurrent publication.
@@ -341,13 +341,13 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     expect(boundOld.reasoningEffort).toBe('xhigh');
     const [current] =
       await db`select snapshot from allrice_session_model_snapshots where session_id=${sessionId}`;
-    expect(current!.snapshot.reasoningEffort).toBe('high');
+    expect(current!.snapshot.reasoningEffort).toBe('xhigh');
     await expect(
       freezeSessionModelSnapshot({ ...scope, workspaceId: randomUUID() }),
     ).rejects.toMatchObject({ code: 'not_found' });
 
-    // Non-platform legacy employees keep their explicit frozen route, including
-    // unsupported historical auth (which still cannot authorize execution).
+    // Legacy session caches also inherit the platform route for the next Run;
+    // historical Run snapshots are not changed by this cache repair.
     const plain = workspace.employees.find(
       (employee) => employee.id !== assignment!.id,
     )!;
@@ -362,9 +362,12 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
       authMode: 'chatgpt_subscription',
     };
     await db`update allrice_session_model_snapshots set snapshot=${db.json(legacySnapshot)} where session_id=${legacyId}`;
-    expect(await freezeSessionModelSnapshot(legacyScope)).toEqual(
-      legacySnapshot,
-    );
+    expect(await freezeSessionModelSnapshot(legacyScope)).toMatchObject({
+      provider: 'openai-codex',
+      model: original.model,
+      reasoningEffort: original.reasoningEffort,
+    });
+    expect(legacySnapshot.provider).toBe('gemini');
   });
   it('does not publish resource B using the successful trial for resource A on the same draft', async () => {
     const f = await fixture(),
