@@ -1,3 +1,4 @@
+import { safeNavigationQuery } from './navigation-query';
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
@@ -190,6 +191,6 @@ export function legacyPortalNavigation(request: {
     return null;
   const destination = new URL('https://allrice.bplabs.xyz');
   destination.pathname = url.pathname;
-  destination.search = url.search;
+  destination.search = safeNavigationQuery(url);
   return destination;
 }
