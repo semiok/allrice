@@ -1,16 +1,16 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import Link from 'next/link';
 import {
+  Button,
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import type { SaasCapabilityManifest } from '@allrice/contracts';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
 import { MonthlyQuota } from './monthly-quota';
+import { AccountPasswordSettings } from './account-password-settings';
 import { ComputerSettings } from './computer-settings';
 import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
@@ -20,7 +20,6 @@ import styles from './sidebar-settings.module.css';
 export function SidebarSettings({
   capabilities,
   collapsed,
-  manifest,
   workspaceId,
   monthlyQuota,
   preferences,
@@ -31,7 +30,6 @@ export function SidebarSettings({
 }: {
   capabilities: ReactNode;
   collapsed: boolean;
-  manifest: SaasCapabilityManifest;
   workspaceId: string;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
   preferences: ReturnType<typeof usePersonalPreferences>;
@@ -41,6 +39,23 @@ export function SidebarSettings({
   onBridge: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
+  async function logout() {
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      const response = await fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (!response.ok) throw new Error('logout_failed');
+      window.location.replace('/login');
+    } catch {
+      setLogoutError('退出登录失败，请重试。');
+      setLoggingOut(false);
+    }
+  }
   const rows = [
     { id: 'account', label: '账号与用量' },
     { id: 'work', label: '员工工作方式' },
@@ -48,9 +63,6 @@ export function SidebarSettings({
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
     { id: 'preferences', label: '个人偏好' },
-    ...(manifest.surfaces.includes('platform_admin')
-      ? [{ id: 'platform', label: '平台管理' }]
-      : []),
   ];
   const close = () => onSectionChange(null);
   return (
@@ -103,9 +115,7 @@ export function SidebarSettings({
                       <div className={styles.preferenceRow}>
                         <div>
                           <h3>流式输出</h3>
-                          <p>
-                            关闭时，任务结束后统一展示回复。打开后，实时显示文字和阶段性回复。
-                          </p>
+                          <p>实时展示文字和阶段性回复；关闭后统一展示。</p>
                         </div>
                         <Switch
                           label="流式输出"
@@ -140,13 +150,41 @@ export function SidebarSettings({
                     </>
                   )}
                   {row.id === 'account' && (
-                    <MonthlyQuota
-                      expanded
-                      providerLabel={providerLabel}
-                      data={monthlyQuota.data}
-                      failed={monthlyQuota.failed}
-                      onRefresh={() => void monthlyQuota.reload()}
-                    />
+                    <>
+                      <div className={styles.accountActions}>
+                        <span
+                          className={styles.accountAvatar}
+                          aria-hidden="true"
+                        >
+                          {(monthlyQuota.data?.displayName ?? 'U')
+                            .slice(0, 1)
+                            .toUpperCase()}
+                        </span>
+                        <div className={styles.accountIdentity}>
+                          <strong>
+                            {monthlyQuota.data?.displayName ?? '当前账号'}
+                          </strong>
+                          <p>管理你的账号与使用情况</p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={loggingOut}
+                          onClick={() => void logout()}
+                        >
+                          {loggingOut ? '正在退出…' : '退出登录'}
+                        </Button>
+                      </div>
+                      {logoutError && <p role="alert">{logoutError}</p>}
+                      <MonthlyQuota
+                        expanded
+                        providerLabel={providerLabel}
+                        data={monthlyQuota.data}
+                        failed={monthlyQuota.failed}
+                        onRefresh={() => void monthlyQuota.reload()}
+                      />
+                      <AccountPasswordSettings />
+                    </>
                   )}
                   {row.id === 'apps' && (
                     <ConnectedApps workspaceId={workspaceId} />
@@ -166,11 +204,6 @@ export function SidebarSettings({
                         onBridge();
                       }}
                     />
-                  )}
-                  {row.id === 'platform' && (
-                    <Link href="/runtime-console?view=governance">
-                      打开平台管理
-                    </Link>
                   )}
                 </div>
               ));

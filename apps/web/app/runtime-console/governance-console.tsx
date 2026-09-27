@@ -9,11 +9,16 @@ import type {
 } from '@allrice/contracts';
 import { CodexSubscriptionQuota } from './codex-subscription-quota';
 import {
+  CodexAuthorizationPanel,
+  type CodexAuthorization,
+} from './codex-authorization';
+import {
   UnknownUsageReviewCard,
   type UnknownUsageReview,
 } from './unknown-usage-review';
 
 import styles from './governance-console.module.css';
+import { PlatformModelSettingsPanel } from './platform-model-settings';
 
 interface Connection {
   id: string;
@@ -30,12 +35,7 @@ interface Provider {
   runtimeSupported?: boolean;
 }
 
-interface Authorization {
-  id: string;
-  state: string;
-  verificationUri: string | null;
-  userCode: string | null;
-}
+type Authorization = CodexAuthorization;
 
 interface ProviderGovernance {
   connectionId: string;
@@ -236,9 +236,28 @@ export function GovernanceConsole() {
         }),
       );
       setAuthorization(result.authorization);
-      setNotice('授权流程已交给 Worker。数据库不会保存订阅令牌。');
+      setNotice('正在准备授权码，请在下方完成授权。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '授权启动失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelAuthorization() {
+    if (!authorization) return;
+    setBusy(true);
+    try {
+      const result = await readJson<{ authorization: Authorization }>(
+        await fetch(
+          `/api/v1/admin/providers/codex/authorize?flowId=${encodeURIComponent(authorization.id)}`,
+          { method: 'DELETE' },
+        ),
+      );
+      setAuthorization(result.authorization);
+      setNotice('已取消本次授权流程。');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '暂时无法取消授权');
     } finally {
       setBusy(false);
     }
@@ -355,6 +374,7 @@ export function GovernanceConsole() {
         <i>Platform admin</i>
       </header>
 
+      <PlatformModelSettingsPanel />
       <section className={styles.providers}>
         <div className={styles.sectionHeading}>
           <div>
@@ -408,13 +428,6 @@ export function GovernanceConsole() {
                       <dd>{governance?.consecutiveFailures ?? 0}</dd>
                     </div>
                     <div>
-                      <dt>发布阶段</dt>
-                      <dd>
-                        {operation?.releaseStage ?? 'experimental'}
-                        {operation?.productionApproved ? ' · 已审批' : ''}
-                      </dd>
-                    </div>
-                    <div>
                       <dt>30 天运行 / 失败</dt>
                       <dd>
                         {operation?.runs ?? 0} / {operation?.failures ?? 0}
@@ -432,31 +445,13 @@ export function GovernanceConsole() {
                   {provider?.key === 'codex' ? (
                     <div className={styles.codexAuth}>
                       <CodexSubscriptionQuota quota={codexQuota} />
-                      {authorization?.state === 'awaiting_user' &&
-                      authorization.userCode &&
-                      authorization.verificationUri ? (
-                        <button
-                          onClick={() => {
-                            void navigator.clipboard.writeText(
-                              authorization.userCode!,
-                            );
-                            window.open(
-                              authorization.verificationUri!,
-                              '_blank',
-                              'noopener,noreferrer',
-                            );
-                          }}
-                        >
-                          复制代码并打开授权页 · {authorization.userCode}
-                        </button>
-                      ) : (
-                        <button
-                          disabled={busy}
-                          onClick={() => void startCodexAuthorization()}
-                        >
-                          在 DSH 中授权 Codex 订阅
-                        </button>
-                      )}
+                      <CodexAuthorizationPanel
+                        status={codexStatus}
+                        authorization={authorization}
+                        busy={busy}
+                        onStart={() => void startCodexAuthorization()}
+                        onCancel={() => void cancelAuthorization()}
+                      />
                     </div>
                   ) : null}
                   {governance ? (
@@ -488,19 +483,6 @@ export function GovernanceConsole() {
                           重置熔断
                         </button>
                       ) : null}
-                      {!governance.productionApproved ? (
-                        <button
-                          disabled={busy}
-                          onClick={() =>
-                            void updateProvider(connection.id, {
-                              releaseStage: 'production',
-                              productionApproved: true,
-                            })
-                          }
-                        >
-                          批准进入生产
-                        </button>
-                      ) : null}
                     </footer>
                   ) : null}
                 </article>
@@ -521,9 +503,9 @@ export function GovernanceConsole() {
           <GovernanceUsageSummary quota={quota} />
           {tokenPolicy === 'observe' ? (
             <p>
-              Codex 订阅 Token 仅统计，不受内部任务/月度 Token
-              上限及未知用量阻断，无需人工预算预留。Token 限额配置仅用于按量
-              API；并发、运行超时、调用次数和权限审批继续生效。
+              所有模型的
+              Token、模型和工具调用次数、费用仅统计，历史用量上限不再中断执行。任务默认
+              1 小时，无进展保护与实际资源并发限制继续生效。
             </p>
           ) : null}
           {unknownUsage.length > 0 ? (
@@ -555,11 +537,12 @@ export function GovernanceConsole() {
               />
             </label>
             <label>
-              Token 上限
+              历史 Token 上限（不执行）
               <input
                 min={1}
                 type="number"
                 value={quota.monthlyTokenLimit}
+                readOnly={tokenPolicy === 'observe'}
                 onChange={(event) =>
                   setQuota({
                     ...quota,
@@ -569,11 +552,12 @@ export function GovernanceConsole() {
               />
             </label>
             <label>
-              API 成本上限（分，订阅不适用）
+              历史费用上限（分，不执行）
               <input
                 min={0}
                 type="number"
                 value={quota.monthlyCostLimitCents}
+                readOnly={tokenPolicy === 'observe'}
                 onChange={(event) =>
                   setQuota({
                     ...quota,

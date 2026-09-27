@@ -1,5 +1,7 @@
+export * from './image-generation.ts';
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
+export * from './work-methods.ts';
 export * from './user-preferences.ts';
 export type HealthStatus = 'live' | 'ready' | 'not_ready';
 
@@ -30,6 +32,7 @@ export * from './task-native-wait.ts';
 export * from './automation.ts';
 export * from './authorization.ts';
 export * from './tenant-administration.ts';
+export * from './organization-administration.ts';
 export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';
 export * from './capabilities.ts';
@@ -87,3 +90,8 @@ export * from './office-quality.ts';
 export * from './tenant-employees.ts';
 export * from './work-automation.ts';
 export * from './task-plan.ts';
+
+export * from './session-reference.ts';
+export * from './organization-activity.ts';
+export * from './operations-resources.ts';
+export * from './platform-model-settings.ts';

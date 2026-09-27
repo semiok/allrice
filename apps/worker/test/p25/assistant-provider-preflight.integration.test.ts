@@ -754,28 +754,27 @@ integration(
           );
           return recordActual(proposed, database.db);
         });
-        const succeeds = persisted === 'subscription' && usageComplete;
-        if (succeeds)
-          execute.mockImplementationOnce(async (input) => {
-            expect(input.assistants).toBeUndefined();
-            expect(input.providerSnapshot).toMatchObject({
-              provider: 'dsh',
-              route: target.provider,
-              model: target.model,
-              credentialReference: target.credentialReference,
-              baseUrl: target.baseUrl,
-            });
-            return {
-              answer: 'Synthetic ordinary replay result',
-              provider: target.provider,
-              model: target.model,
-              usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
-              usageComplete: true,
-              cacheUsageKnown: false,
-            };
+        const subscription = persisted === 'subscription';
+        execute.mockImplementationOnce(async (input) => {
+          expect(input.assistants).toBeUndefined();
+          expect(input.providerSnapshot).toMatchObject({
+            provider: 'dsh',
+            route: target.provider,
+            model: target.model,
+            credentialReference: target.credentialReference,
+            baseUrl: target.baseUrl,
           });
+          return {
+            answer: 'Synthetic ordinary replay result',
+            provider: target.provider,
+            model: target.model,
+            usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
+            usageComplete: true,
+            cacheUsageKnown: false,
+          };
+        });
         const pending = executeEmployeeRun(job);
-        if (succeeds)
+        if (subscription)
           await expect(pending).resolves.toMatchObject({
             billingMode: 'subscription',
             costBasis: 'not_applicable',
@@ -785,11 +784,9 @@ integration(
             usage: { inputTokens: 10, outputTokens: 3 },
           });
         else
-          await expect(pending).rejects.toMatchObject({
-            code: usageComplete
-              ? 'MODEL_COST_USAGE_UNKNOWN'
-              : 'MODEL_TOKEN_USAGE_UNKNOWN',
-            retryable: false,
+          await expect(pending).resolves.toMatchObject({
+            usageComplete: true,
+            usage: { inputTokens: 10, outputTokens: 3 },
           });
         expect(state.record).toHaveBeenCalledTimes(1);
         const kernel = assembleEmployeeKernel({
@@ -820,12 +817,10 @@ integration(
           // estimate includes current member work instructions. A persisted
           // API route must still use its frozen total budget on replay.
           requestedTokens:
-            persisted === 'subscription'
-              ? initialInputTokens + modelSnapshot!.runLimits.maxOutputTokens
-              : modelSnapshot!.runLimits.maxTotalTokens,
+            initialInputTokens + modelSnapshot!.runLimits.maxOutputTokens,
           requestedRuntimeMs: modelSnapshot!.runLimits.timeoutMs,
         });
-        expect(execute).toHaveBeenCalledTimes(succeeds ? 1 : 0);
+        expect(execute).toHaveBeenCalledTimes(1);
         expect(acquire).not.toHaveBeenCalled();
         noNativeAccess();
         expect(await prior.read()).toEqual(prior.before);
@@ -837,38 +832,32 @@ integration(
           left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
           where d.run_id=${f.rootRunId}`;
         expect(row).toMatchObject({
-          status: succeeds ? 'succeeded' : 'failed',
-          error_code: succeeds
-            ? null
-            : usageComplete
-              ? 'MODEL_COST_USAGE_UNKNOWN'
-              : 'MODEL_TOKEN_USAGE_UNKNOWN',
+          status: 'succeeded',
+          error_code: null,
           model_connection_id: target.connectionId,
-          input_tokens: succeeds ? 10 : 0,
-          output_tokens: succeeds ? 3 : 0,
+          input_tokens: 10,
+          output_tokens: 3,
           usage_complete: true,
-          snapshot_digest: succeeds ? expect.stringMatching(/^sha256:/) : null,
+          snapshot_digest: subscription
+            ? expect.stringMatching(/^sha256:/)
+            : null,
         });
-        if (succeeds) expect(row!.cost_cents).toBeNull();
-        else {
-          // Existing pre-dispatch failure semantics: this newly recorded route
-          // is one failed attempt with known zero usage, never another unknown.
-          expect(row!.cost_cents).not.toBeNull();
-          expect(Number(row!.cost_cents)).toBe(0);
-        }
+        // The synthetic successful API reply has measured tokens but no
+        // tariff. Cost stays unknown; a subscription remains not-applicable.
+        expect(row!.cost_cents).toBeNull();
         expect(
           await getOrganizationModelQuota(f.org, database.db),
         ).toMatchObject({
           usedRuns: 2,
-          usedTokens: succeeds ? 33 : 20,
+          usedTokens: 33,
           usedCostCents: null,
-          unknownCostRuns: 1,
-          subscriptionRuns: succeeds ? 1 : 0,
+          unknownCostRuns: subscription ? 1 : 2,
+          subscriptionRuns: subscription ? 1 : 0,
           usageComplete,
         });
       },
     );
-    it('records a rejected replay of an already frozen subscription as N/A with unknown historical tokens, not cash zero', async () => {
+    it('executes a frozen subscription replay despite historical unknown usage and keeps its N/A price', async () => {
       const { f, job, modelSnapshot } = await fixture({
         compatible: true,
         subscriptionFallback: true,
@@ -898,23 +887,25 @@ integration(
         ).toMatchObject({ frozen: true });
         return recordActual(proposed, database.db);
       });
-      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
-          code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-          retryable: false,
-        });
-        expect(errors).not.toHaveBeenCalled();
-      } finally {
-        errors.mockRestore();
-      }
-      expect(execute).not.toHaveBeenCalled();
+      execute.mockResolvedValueOnce({
+        answer: 'Synthetic completed replay',
+        provider:
+          state.provider!.provider === 'dsh'
+            ? state.provider!.route
+            : 'openai-codex',
+        model: state.provider!.model,
+        usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
+        usageComplete: true,
+        cacheUsageKnown: false,
+      });
+      await expect(executeEmployeeRun(job)).resolves.toMatchObject({
+        billingMode: 'subscription',
+        costBasis: 'not_applicable',
+      });
+      expect(execute).toHaveBeenCalledOnce();
       expect(acquire).not.toHaveBeenCalled();
       noNativeAccess();
-      expect(state.complete).toHaveBeenCalledTimes(1);
-      expect(state.complete.mock.calls[0]![0]).toMatchObject({
-        undispatched: { subscriptionSnapshotCreated: false },
-      });
+      expect(state.complete).toHaveBeenCalledOnce();
       expect(await prior.read()).toEqual(prior.before);
       const [row] = await database.db`
         select d.status,d.error_code,d.cost_cents as route_cost,l.cost_cents,
@@ -922,19 +913,19 @@ integration(
         from allrice_route_decisions d join allrice_model_usage_ledger l on l.route_decision_id=d.id
         where d.run_id=${f.rootRunId}`;
       expect(row).toEqual({
-        status: 'failed',
-        error_code: 'MODEL_TOKEN_USAGE_UNKNOWN',
+        status: 'succeeded',
+        error_code: null,
         route_cost: null,
         cost_cents: null,
-        usage_complete: false,
+        usage_complete: true,
         cache_usage_known: false,
-        input_tokens: 0,
-        output_tokens: 0,
+        input_tokens: 10,
+        output_tokens: 3,
       });
       expect(await getOrganizationModelQuota(f.org, database.db)).toMatchObject(
         {
           usedRuns: 2,
-          usedTokens: 20,
+          usedTokens: 33,
           unknownCostRuns: 1,
           subscriptionRuns: 1,
           usageComplete: false,
@@ -1045,9 +1036,7 @@ integration(
           usageComplete: false,
           cacheUsageKnown: false,
         });
-        expect(() => assertQuotaAvailable(quota)).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota)).not.toThrow();
         const captured = state.complete.mock.calls[0]![0] as Parameters<
           typeof completeActual
         >[0];
@@ -1307,9 +1296,7 @@ integration(
           usageComplete: false,
           cacheUsageKnown: false,
         });
-        expect(() => assertQuotaAvailable(quota)).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota)).not.toThrow();
         expect(state.complete.mock.calls[0]![0].outcome).toMatchObject({
           status: canceled ? 'canceled' : 'failed',
           failureCategory: null,
@@ -1365,22 +1352,25 @@ integration(
       },
     );
     it.each([undefined, '{invalid-secret-payload'])(
-      'missing or invalid configured price fails before adapter with known-zero real accounting (%s)',
+      'missing or invalid configured price reaches execution without inventing a cash receipt (%s)',
       async (encoded) => {
         const { f, job } = await fixture({ compatible: true });
         vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', encoded);
         vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'USD');
-        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
-          code: 'ASSISTANT_PRICE_UNAVAILABLE',
-          retryable: false,
-        });
-        expect(execute).not.toHaveBeenCalled();
-        expect(acquire).not.toHaveBeenCalled();
-        expect(state.controller).not.toHaveBeenCalled();
+        await expect(executeEmployeeRun(job)).rejects.toBe(lateError);
+        expect(execute).toHaveBeenCalledOnce();
+        expect(state.controller).toHaveBeenCalledOnce();
+        expect(
+          state.controller.mock.calls[0]![0].priceSnapshot,
+        ).toBeUndefined();
         noNativeAccess();
-        expect((await knownZero(f.org)).error_code).toBe(
-          'ASSISTANT_PRICE_UNAVAILABLE',
-        );
+        const { row } = await accounting(f.org);
+        expect(row).toMatchObject({
+          decision_cost: null,
+          ledger_cost: null,
+          decision_complete: false,
+          ledger_complete: false,
+        });
       },
     );
     it('a synthetic complete whole-tree priced result persists its upper bound and leaves the next ordinary Run quota available', async () => {
@@ -1460,23 +1450,18 @@ integration(
         },
       );
     });
-    it('rejects matching CNY config before execution instead of mixing it into the currency-less organization ledger', async () => {
+    it('runs without projecting CNY prices into the currency-less ledger', async () => {
       const { f, job } = await fixture({ compatible: true, price: true });
       const synthetic = JSON.parse(process.env.ALLRICE_ASSISTANT_PRICING_JSON!);
       synthetic.entries[0].currency = 'CNY';
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', JSON.stringify(synthetic));
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'CNY');
-      await expect(executeEmployeeRun(job)).rejects.toMatchObject({
-        code: 'ASSISTANT_PRICE_CURRENCY_UNSUPPORTED',
-        retryable: false,
-      });
-      expect(execute).not.toHaveBeenCalled();
-      expect(acquire).not.toHaveBeenCalled();
-      expect(state.controller).not.toHaveBeenCalled();
+      await expect(executeEmployeeRun(job)).rejects.toBe(lateError);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(state.controller.mock.calls[0]![0].priceSnapshot).toBeUndefined();
       noNativeAccess();
-      expect((await knownZero(f.org)).error_code).toBe(
-        'ASSISTANT_PRICE_CURRENCY_UNSUPPORTED',
-      );
+      const { row } = await accounting(f.org);
+      expect(row).toMatchObject({ decision_cost: null, ledger_cost: null });
     });
     it('a mismatched priced result cannot silently fall back to the ordinary missing-price zero', async () => {
       const { f, job } = await fixture({ compatible: true, price: true });
@@ -1495,8 +1480,8 @@ integration(
         costCurrency: 'USD',
         priceSnapshotDigest: `sha256:${'c'.repeat(64)}`,
       });
-      await expect(executeEmployeeRun(job)).rejects.toMatchObject({
-        code: 'ASSISTANT_PRICE_RESULT_UNVERIFIED',
+      await expect(executeEmployeeRun(job)).resolves.toMatchObject({
+        assistantStatus: 'completed',
       });
       const { row, quota } = await accounting(f.org);
       expect(row).toMatchObject({
@@ -1508,9 +1493,7 @@ integration(
         ledger_cache: false,
       });
       expect(quota).toMatchObject({ usedCostCents: null, unknownCostRuns: 1 });
-      expect(() => assertQuotaAvailable(quota)).toThrow(
-        'MODEL_COST_USAGE_UNKNOWN',
-      );
+      expect(() => assertQuotaAvailable(quota)).not.toThrow();
       noNativeAccess();
     });
     it('retains the existing assistant+workflow denial before dispatch and records known zero', async () => {

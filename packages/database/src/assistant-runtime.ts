@@ -25,11 +25,10 @@ import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import { createDevelopmentCooperation } from './development-cooperation.ts';
 import { refreshTaskClock, readTaskClock } from './task-clock.ts';
 import {
-  observesRootTokens,
+  observesExecutionUsage,
   isTokenMetric,
   isCallMetric,
-  observesRootCalls,
-} from './subscription-token-accounting.ts';
+} from './execution-usage-policy.ts';
 
 type Tx = RuntimeLedgerTransaction;
 const json = (tx: Tx, value: unknown) =>
@@ -216,16 +215,8 @@ export function createAssistantRuntime(
     );
     const clock = await refreshTaskClock(tx, rootRunId);
     if (clock) root.deadline_at = clock.deadlineAt;
-    root.observeTokens = await observesRootTokens(
-      tx,
-      root.task,
-      runtimeLedgerInputDigest,
-    );
-    root.observeCalls = await observesRootCalls(
-      tx,
-      root.task,
-      runtimeLedgerInputDigest,
-    );
+    root.observeTokens = observesExecutionUsage();
+    root.observeCalls = observesExecutionUsage();
     return root;
   }
   const observesMetric = (root: Root, metric: string) =>
@@ -238,7 +229,7 @@ export function createAssistantRuntime(
       from allrice_assistant_usage where root_run_id=${root.root_run_id}
         and (${runId ?? null}::uuid is null or run_id=${runId ?? null}) and settled_amount is null
       union all
-      select true from allrice_runtime_reservations u
+      select o.snapshot->>'status' not in ('succeeded','failed','partial','canceled') as blocking from allrice_runtime_reservations u
       join allrice_runtime_operations o on o.id=u.operation_id
       where u.root_run_id=${root.root_run_id} and u.settled_amount is null
         and (${runId ?? null}::uuid is null or o.initial_snapshot->>'agentInstanceId'=${runId ?? null})`;
@@ -1265,6 +1256,7 @@ export function createAssistantRuntime(
         if (admission)
           await tx`update allrice_assistant_model_admissions set finished_at=coalesce(finished_at,clock_timestamp()) where call_id=${input.callId}`;
         await refreshTaskClock(tx, root.root_run_id);
+        return { tokenUsageObservational: root.observeTokens };
       });
     },
     async recordResult(input: {

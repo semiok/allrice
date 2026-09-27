@@ -208,7 +208,10 @@ export const CreatePlatformEmployeeInputSchema = z
 
 export const PublishPlatformEmployeeInputSchema = z
   .object({
-    workspaceIds: z.array(UuidSchema).min(1).max(500),
+    // Explicit targets remain for trusted bootstrap/legacy callers. The admin
+    // editor publishes to existing assignments and never creates assignments.
+    workspaceIds: z.array(UuidSchema).min(1).max(500).optional(),
+    scope: z.literal('assigned').optional(),
     expectedRevisionId: UuidSchema.optional(),
     expectedPublishedRevisionId: UuidSchema.nullable().optional(),
     expectedPackageChecksum: z

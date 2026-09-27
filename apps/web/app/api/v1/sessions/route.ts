@@ -21,6 +21,7 @@ export async function GET(request: Request) {
         cursor: query.get('cursor') ?? undefined,
         employeeAssignmentId: query.get('employeeAssignmentId') ?? undefined,
         includeEmployeeGroups: !query.has('employeeAssignmentId'),
+        query: (query.get('q') ?? '').slice(0, 240),
         includeArchived: query.get('archived') === 'true',
         archivedOnly: query.get('archived') === 'only',
       }),

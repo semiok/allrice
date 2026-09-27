@@ -322,6 +322,7 @@ export const ExternalActionSchema = z
   .strict();
 
 export const DeliveryFormatSchema = z.enum([
+  'png',
   'markdown',
   'text',
   'html',

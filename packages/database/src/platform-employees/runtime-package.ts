@@ -277,10 +277,13 @@ export function buildEmployeeRuntimePackage(input: {
     identityMd: [
       `# IDENTITY.md - ${definition.name}`,
       '',
+      `- 名称：${definition.name}`,
       `- 身份：${definition.identity.role}`,
       `- 使命：${definition.identity.mission}`,
       `- 工作方式：${definition.identity.workStyle}`,
       `- 默认语言：${definition.identity.outputLanguage}`,
+      '',
+      '自我介绍时使用上述名称和身份。平台名称、工具名称和历史回复中的称呼不改变当前员工身份。',
     ].join('\n'),
     soulMd: [
       '# SOUL.md - 行为与边界',
@@ -291,7 +294,7 @@ export function buildEmployeeRuntimePackage(input: {
       '## 安全边界',
       markdownList(definition.identity.safetyBoundaries),
       '',
-      `- 操作确认策略：${definition.securityPolicy.approvalPolicy}`,
+      '- 操作确认由当前使用者在「设置 → 员工工作方式」中决定；执行以本次运行注入的成员设置为准。需要新账号或新文件夹时申请授权。',
       '- Skill 说明能力，但不扩大当前租户、工作区、工具或数据授权。',
     ].join('\n'),
     userMd: [

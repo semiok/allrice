@@ -180,7 +180,7 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
     const f = await fixture();
     await f.create('first');
     await db`update allrice_runtime_budgets set capacity=1 where root_run_id=${f.run}`;
-    await expect(f.create('second')).rejects.toThrow('budget_exhausted');
+    await expect(f.create('second')).resolves.toBeDefined();
   });
   it('fences stale execution when the same Worker acquires a new job lease', async () => {
     const f = await fixture(),
@@ -246,7 +246,7 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
         .budgets[0]!.reserved,
     ).toBe(1);
   });
-  it('serializes competing reservations and target capacity across independent calls', async () => {
+  it('admits concurrent identities and leaves shared physical capacity to the executor', async () => {
     const f = await fixture();
     await f.create('seed');
     await db`update allrice_runtime_budgets set capacity=2 where root_run_id=${f.run}`;
@@ -254,8 +254,8 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       f.create('racer-a'),
       f.create('racer-b'),
     ]);
-    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    expect(raced.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    expect(raced.filter((r) => r.status === 'rejected')).toHaveLength(0);
     const g = await fixture();
     const operations = await Promise.all([
       g.create('one'),
@@ -273,8 +273,8 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
         }),
       ),
     );
-    expect(dispatched.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
-    expect(dispatched.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect(dispatched.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
+    expect(dispatched.filter((r) => r.status === 'rejected')).toHaveLength(0);
     // No script started; cancel the synthetic admissions for later suite cases.
     await operations[0]!.ledger.cancelRoot(
       operations[0]!.snapshot.binding.task.scope,

@@ -35,6 +35,13 @@ describe('Worker capability facts', () => {
       'configured',
     );
     expect(
+      result.components.find((c) => c.id === 'allrice-session-reference'),
+    ).toMatchObject({
+      packageName: '@deepseek-ai/dsh-session-reference',
+      version: result.version,
+      state: 'configured',
+    });
+    expect(
       result.components.every((c) => c.version && c.state === 'configured'),
     ).toBe(true);
   });
@@ -55,12 +62,15 @@ describe('Worker capability facts', () => {
   name: '@allrice/nonexistent-plugin'
 `);
     const result = readWorkerCapabilities(randomUUID(), { profilePath });
-    expect(result.components.map((c) => c.state)).toEqual([
-      'configured',
-      'disabled',
-      'conditional',
-      'missing',
-    ]);
+    expect(
+      result.components
+        .filter((c) => c.id !== 'allrice-session-reference')
+        .map((c) => c.state),
+    ).toEqual(['configured', 'disabled', 'conditional', 'missing']);
+    expect(
+      result.components.find((c) => c.id === 'allrice-session-reference')
+        ?.state,
+    ).toBe('configured');
     expect(JSON.stringify(result)).not.toMatch(
       /synthetic-secret|SYNTHETIC_FLAG|must not execute/,
     );

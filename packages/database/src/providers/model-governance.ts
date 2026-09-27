@@ -15,7 +15,7 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
-import { codexTokenPolicy, observeCodexTokens } from '../codex-token-policy.ts';
+import { codexTokenPolicy } from '../codex-token-policy.ts';
 import { isPlatformAdmin } from './model-pool.ts';
 import {
   usageBudgetReviewMatches,
@@ -246,34 +246,8 @@ export function assertQuotaAvailable(
   ) {
     throw new ModelGovernanceError('MODEL_RUN_QUOTA_EXCEEDED');
   }
-  // Missing receipts remain unknown in the ledger, not an account-wide lock.
-  if (observeCodexTokens(billingMode === 'subscription')) return;
-  if (
-    quota.usedTokens + (quota.reservedTokenBudget ?? 0) >=
-      quota.monthlyTokenLimit ||
-    quota.usedTokens + (quota.reservedTokenBudget ?? 0) + requestedTokens >
-      quota.monthlyTokenLimit
-  ) {
-    throw new ModelGovernanceError('MODEL_TOKEN_QUOTA_EXCEEDED');
-  }
-  if (
-    !quota.usageComplete &&
-    !(
-      billingMode === 'subscription' &&
-      quota.subscriptionBudgetAdmissionComplete === true
-    )
-  )
-    throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
-  // Only the caller's verified subscription route can omit cash admission.
-  // Only separately approved terminal subscription exceptions allow unknown
-  // usage. Their organization budget holds are additional to known tokens;
-  // actual usage stays incomplete. Orphan/lease/resource checks still apply.
-  if (billingMode === 'subscription') return;
-  if (quota.usedCostCents === null || quota.unknownCostRuns > 0)
-    throw new ModelGovernanceError('MODEL_COST_USAGE_UNKNOWN');
-  if (quota.usedCostCents >= quota.monthlyCostLimitCents) {
-    throw new ModelGovernanceError('MODEL_COST_QUOTA_EXCEEDED');
-  }
+  // Token and cost receipts are telemetry, never task admission criteria.
+  void requestedTokens;
 }
 
 export function assertProviderAvailable(
@@ -604,15 +578,6 @@ export function assertModelResourceAvailable(input: {
         resource.scope,
       );
     }
-    if (
-      !observeCodexTokens(input.billingMode === 'subscription') &&
-      resource.usedTokens + input.requestedTokens > resource.monthlyTokenLimit
-    ) {
-      throw new ModelGovernanceError(
-        'MODEL_TOKEN_QUOTA_EXCEEDED',
-        resource.scope,
-      );
-    }
     if (resource.activeRuns >= resource.concurrentRunLimit) {
       throw new ModelGovernanceError(
         'MODEL_RESOURCE_CONCURRENCY_EXCEEDED',
@@ -620,7 +585,7 @@ export function assertModelResourceAvailable(input: {
       );
     }
     if (
-      !(input.billingMode === 'subscription' && input.frozenTaskClock) &&
+      !input.frozenTaskClock &&
       (input.billingMode !== 'subscription' ||
         resource.runtimeLimitExplicit !== false) &&
       resource.maxRuntimeMs > 0 &&
@@ -633,49 +598,6 @@ export function assertModelResourceAvailable(input: {
       );
     }
   }
-}
-
-/** Closed/invalid roots can outlive a crashed Worker's monthly projection.
- * Read their durable dispatched-call holds, never a raw provider error or every
- * positive reservation. Live bounded in-flight work and undispatched preparation
- * remain admissible; this query neither settles holds nor acquires runtime locks.
- */
-async function assertNoOrphanedAssistantUsage(
-  organizationId: string,
-  sql: postgres.TransactionSql,
-) {
-  const [unknown] = await sql`
-    select 1 from allrice_runtime_roots rt
-    join allrice_assistant_roots ar on ar.root_run_id=rt.root_run_id
-    join allrice_runs r on r.id=rt.root_run_id
-      and r.organization_id=rt.organization_id and r.workspace_id=rt.workspace_id
-    join allrice_assistant_model_admissions a on a.root_run_id=rt.root_run_id
-    join allrice_assistant_usage u on u.root_run_id=a.root_run_id
-      and u.run_id=a.run_id and u.call_id=a.call_id
-    left join allrice_assistant_instances main on main.run_id=rt.root_run_id
-      and main.root_run_id=rt.root_run_id
-    left join allrice_jobs j on j.id=ar.worker_job_id and j.run_id=rt.root_run_id
-      and j.organization_id=rt.organization_id and j.workspace_id=rt.workspace_id
-    where rt.organization_id=${organizationId}
-      and a.dispatched_at is not null
-      and u.metric in ('input_tokens','output_tokens')
-      and u.amount>0 and u.settled_amount is null
-      and (
-        rt.cancel_request_id is not null or rt.deadline_at<=clock_timestamp()
-        or ar.revoked_at is not null
-        or r.state not in ('queued','running','waiting_approval')
-        or main.run_id is null or main.stopped_at is not null
-        or main.status in ('completed','partial','failed','canceled','unknown')
-        or j.id is null or j.status<>'running'
-        or j.cancel_requested_at is not null or j.timeout_at<=clock_timestamp()
-        or j.lease_expires_at is null or j.lease_expires_at<=clock_timestamp()
-        or j.worker_id is distinct from ar.worker_id or j.lease_token is null
-        or ar.worker_lease_digest is distinct from
-          ('sha256:' || encode(sha256(convert_to(to_json(j.lease_token)::text,'UTF8')),'hex'))
-      )
-    limit 1
-  `;
-  if (unknown) throw new ModelGovernanceError('MODEL_TOKEN_USAGE_UNKNOWN');
 }
 
 export async function admitModelExecution(input: {
@@ -727,8 +649,6 @@ export async function admitModelExecution(input: {
       billing?.subscription === true ? 'subscription' : 'token_metered',
       values.requestedTokens,
     );
-    if (!observeCodexTokens(billing?.subscription === true))
-      await assertNoOrphanedAssistantUsage(values.organizationId, transaction);
     const resources = await Promise.all(
       scopes.map(([scope, scopeId]) =>
         resourceStatus(
@@ -749,7 +669,7 @@ export async function admitModelExecution(input: {
       requestedTokens: values.requestedTokens,
       requestedRuntimeMs: values.requestedRuntimeMs,
       frozenTaskClock:
-        billing?.subscription === true && input.runId !== undefined
+        input.runId !== undefined
           ? !!(
               await transaction`select 1 from allrice_task_clocks c join allrice_runs r on r.id=c.run_id
             where c.run_id=${UuidSchema.parse(input.runId)} and c.organization_id=${values.organizationId}
@@ -777,12 +697,10 @@ export async function admitModelExecution(input: {
         allowlistedOrganizationIds: release.allowlisted_organization_ids,
         productionApproved: release.production_approved,
       });
-      const allowed =
-        release.release_stage !== 'disabled' &&
-        (process.env.ALLRICE_ENV !== 'production' ||
-          (release.release_stage === 'production' &&
-            release.production_approved) ||
-          release.allowlisted_organization_ids.includes(values.organizationId));
+      // A connected model needs no additional production approval. Keep an
+      // explicit legacy disabled state effective; authorization, tenant scope,
+      // connection status and the emergency stop are enforced independently.
+      const allowed = release.release_stage !== 'disabled';
       if (!allowed) {
         throw new ModelGovernanceError('PROVIDER_NOT_RELEASED', 'provider');
       }

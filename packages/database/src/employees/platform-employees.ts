@@ -1,3 +1,4 @@
+import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type postgres from 'postgres';
@@ -5,6 +6,7 @@ import type postgres from 'postgres';
 import {
   PlatformEmployeeDefinitionSchema,
   assembleEmployeeCapabilities,
+  prepareEmployeeEditorDefinition,
   upgradeEmployeeSkillBindings,
   rapidEmployeeIterationEnabled,
   employeePublicationPolicy,
@@ -38,6 +40,13 @@ import { platformSkillReplacements } from '../platform-content/replacements.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
 import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
+import { isPlatformAdmin } from '../platform-authority.ts';
+import {
+  employeePublicationTargets,
+  employeePublicationReceipt,
+  EmployeePublicationTargetError,
+} from './publication-targets.ts';
+import { normalizeDraftPlatformPolicy } from '../platform-employees/identity.ts';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -285,12 +294,22 @@ export async function createPlatformEmployeeDraft(
         `;
     const source = sourceRows[0];
     if (!source) throw new Error('platform_employee_clone_source_not_found');
-    const definition = PlatformEmployeeDefinitionSchema.parse({
-      ...PlatformEmployeeDefinitionSchema.parse(source.definition),
-      key: parsed.key,
-      name: parsed.name,
-      description: `${parsed.name} 的平台管理员草稿。`,
-    });
+    const sourceDefinition = PlatformEmployeeDefinitionSchema.parse(
+      source.definition,
+    );
+    const definition = prepareEmployeeEditorDefinition(
+      PlatformEmployeeDefinitionSchema.parse({
+        ...sourceDefinition,
+        modelPolicy: await platformEmployeeModelPolicy(),
+        systemPrompt: normalizeDraftPlatformPolicy(
+          sourceDefinition.systemPrompt,
+        ),
+        key: parsed.key,
+        name: parsed.name,
+        description: `${parsed.name} 的平台管理员草稿。`,
+      }),
+      await listPlatformNativeSkills(transaction),
+    );
     const employees = await transaction<{ id: string }[]>`
       insert into allrice_platform_employees (
         employee_key, name, description, status,
@@ -1120,16 +1139,28 @@ export async function savePlatformEmployeeDraft(
   actorLabel = 'platform-admin',
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
+  const modelPolicy = await platformEmployeeModelPolicy();
+  const raw =
+    input && typeof input === 'object'
+      ? (input as Record<string, unknown>)
+      : null;
+  const submitted = raw?.definition;
+  const normalized =
+    raw && submitted && typeof submitted === 'object'
+      ? { ...raw, definition: { ...submitted, modelPolicy } }
+      : input;
   const { definition: rawDefinition, expectedRevisionId } =
-    UpdatePlatformEmployeeInputSchema.parse(input);
+    UpdatePlatformEmployeeInputSchema.parse(normalized);
   const sql = getDatabase();
   const skills = rawDefinition.capabilities.nativeSkillIds.length
     ? await listPlatformNativeSkills(sql)
     : [];
   const definition = PlatformEmployeeDefinitionSchema.parse({
     ...assembleEmployeeCapabilities(rawDefinition, skills),
-    // An explicit security edit must not be silently undone by a server save.
-    // Interactive tool/Skill selection updates these fields together in the UI.
+    modelPolicy,
+    systemPrompt: normalizeDraftPlatformPolicy(rawDefinition.systemPrompt),
+    // Preserve policy fields from legacy/API clients. The simplified admin
+    // editor prepares tool-derived defaults before sending its draft.
     securityPolicy: rawDefinition.securityPolicy,
   });
   await sql.begin(async (transaction) => {
@@ -1221,6 +1252,7 @@ export async function compilePlatformEmployee(
     );
     const definition = PlatformEmployeeDefinitionSchema.parse({
       ...upgraded,
+      modelPolicy: await platformEmployeeModelPolicy(),
       securityPolicy: rawDefinition.securityPolicy,
     });
     const errors: string[] = [];
@@ -1448,6 +1480,8 @@ export async function materializePlatformEmployeeRevision(
     definition: PlatformEmployeeDefinition;
     workspaceIds: string[];
     actorLabel: string;
+    inheritByDefault?: boolean;
+    preserveCurrentPolicy?: boolean;
   },
 ) {
   const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse(
@@ -1492,7 +1526,16 @@ export async function materializePlatformEmployeeRevision(
         membership.created_at, membership.id
       limit 1
     `;
-    const actorId = actors[0]?.id;
+    const issuer = UuidSchema.safeParse(input.actorLabel);
+    const actorId =
+      actors[0]?.id ??
+      (issuer.success &&
+      (await isPlatformAdmin(
+        { actor: { type: 'user', id: issuer.data } },
+        transaction,
+      ))
+        ? issuer.data
+        : undefined);
     if (!actorId)
       throw new Error(`workspace_has_no_active_member:${workspaceId}`);
     if (
@@ -1509,6 +1552,7 @@ export async function materializePlatformEmployeeRevision(
         previous?.controls,
         input.definition.capabilities.toolNames,
         (previous?.version ?? 0) + 1,
+        input.preserveCurrentPolicy,
       );
       const unchanged =
         previous &&
@@ -1574,14 +1618,14 @@ export async function materializePlatformEmployeeRevision(
       insert into allrice_platform_employee_tenant_assignments (
         employee_id, revision_id, organization_id, workspace_id,
         tenant_employee_id, tenant_employee_version_id, active, is_default,
-        assigned_by_label
+        assigned_by_label, inherit_by_default
       ) values (
         ${input.employeeId}, ${input.revision.id}, ${workspace.organization_id},
         ${workspace.id}, ${tenantEmployeeId}, ${tenantVersionId}, true,
         not exists(select 1 from allrice_platform_employee_tenant_assignments current_default
           where current_default.organization_id=${workspace.organization_id} and current_default.workspace_id=${workspace.id}
             and current_default.active and current_default.is_default),
-        ${input.actorLabel}
+        ${input.actorLabel}, ${input.inheritByDefault ?? true}
       )
       on conflict (employee_id, workspace_id) do update set
         revision_id = excluded.revision_id,
@@ -1708,11 +1752,24 @@ export async function publishPlatformEmployee(
   input: unknown,
   actorLabel = 'platform-admin',
   administrationContext?: RequestContext,
-) {
+): Promise<
+  Awaited<ReturnType<typeof compilePlatformEmployee>> & {
+    workspaceIds?: string[];
+    trialTargets?: { workspaceId: string; employeeId: string }[];
+    receipt?: Awaited<ReturnType<typeof employeePublicationReceipt>>;
+  }
+> {
   const rapidIteration = rapidEmployeeIterationEnabled();
   const employeeId = UuidSchema.parse(employeeIdInput);
   const parsed = PublishPlatformEmployeeInputSchema.parse(input);
-  const { workspaceIds } = parsed;
+  if (administrationContext)
+    await requireTenantAdministrationAuthority(
+      administrationContext,
+      getDatabase(),
+    );
+  const assignedScope =
+    parsed.scope === 'assigned' || parsed.workspaceIds === undefined;
+  const workspaceIds = assignedScope ? [] : parsed.workspaceIds!;
   const compilation = await compilePlatformEmployee(
     employeeId,
     actorLabel,
@@ -1790,7 +1847,7 @@ export async function publishPlatformEmployee(
     from allrice_workspaces workspace
     join allrice_organizations organization
       on organization.id = workspace.organization_id
-    where workspace.id in ${sql(uniqueWorkspaceIds)}
+    where workspace.id=any(${sql.array(uniqueWorkspaceIds)}::uuid[])
       and workspace.archived_at is null
       and organization.archived_at is null
       and organization.slug <> 'allrice-platform'
@@ -1863,97 +1920,119 @@ export async function publishPlatformEmployee(
       return rejected;
     }
   }
-  const published = await sql.begin(async (transaction) => {
-    if (administrationContext)
-      await requireTenantAdministrationAuthority(
-        administrationContext,
-        transaction,
-      );
-    const [employee] = await transaction<
-      {
-        current_draft_revision_id: string | null;
-        current_published_revision_id: string | null;
-      }[]
-    >`
+  const published = await sql
+    .begin(async (transaction) => {
+      if (administrationContext)
+        await requireTenantAdministrationAuthority(
+          administrationContext,
+          transaction,
+        );
+      const [employee] = await transaction<
+        {
+          current_draft_revision_id: string | null;
+          current_published_revision_id: string | null;
+        }[]
+      >`
       select current_draft_revision_id,current_published_revision_id from allrice_platform_employees
       where id = ${employeeId} and status <> 'archived'
       for update
     `;
-    if (employee?.current_draft_revision_id !== compilation.revisionId)
-      throw new Error('platform_employee_publish_snapshot_changed');
-    if (
-      parsed.expectedPublishedRevisionId !== undefined &&
-      parsed.expectedPublishedRevisionId !==
-        employee.current_published_revision_id
-    )
-      throw new Error('platform_employee_publish_snapshot_changed');
-    const revisions = await transaction<RevisionRow[]>`
+      if (employee?.current_draft_revision_id !== compilation.revisionId)
+        throw new Error('platform_employee_publish_snapshot_changed');
+      if (
+        parsed.expectedPublishedRevisionId !== undefined &&
+        parsed.expectedPublishedRevisionId !==
+          employee.current_published_revision_id
+      )
+        throw new Error('platform_employee_publish_snapshot_changed');
+      // Discover the roster only after taking the same employee lock as an
+      // assignment change. Publication never grants an unassigned workspace.
+      const uniqueWorkspaceIds = assignedScope
+        ? (await employeePublicationTargets(transaction, employeeId)).map(
+            (t) => t.id,
+          )
+        : [...new Set(workspaceIds)].sort();
+      const revisions = await transaction<RevisionRow[]>`
       select * from allrice_platform_employee_revisions
       where id = ${compilation.revisionId} and employee_id = ${employeeId}
         and status = 'testing' and published_at is null
       for update
     `;
-    const revision = revisions[0];
-    if (!revision?.runtime_profile)
-      throw new Error('platform_employee_not_compiled');
-    const definition = PlatformEmployeeDefinitionSchema.parse(
-      revision.definition,
-    );
-    const profile = PlatformEmployeeRuntimeProfileSchema.parse(
-      revision.runtime_profile,
-    );
-    if (
-      profile.runtimePackage?.checksum !== packageChecksum ||
-      checksum(profile) !== checksum(compilation.runtimeProfile)
-    )
-      throw new Error('platform_employee_publish_snapshot_changed');
-    validatePlatformEmployeeTestExecutionSnapshot({
-      runtimeProfile: profile,
-      definition,
-      nativeSkills: profile.runtimePackage.skills,
-      packageChecksum,
-    });
-    // Recheck authority after obtaining the publication locks. The initial
-    // UI-facing checks do not authorize a later transaction or another draft.
-    const targets = await transaction<
-      { id: string; organization_id: string }[]
-    >`
-      select workspace.id,workspace.organization_id from allrice_workspaces workspace
+      const revision = revisions[0];
+      if (!revision?.runtime_profile)
+        throw new Error('platform_employee_not_compiled');
+      const definition = PlatformEmployeeDefinitionSchema.parse(
+        revision.definition,
+      );
+      const profile = PlatformEmployeeRuntimeProfileSchema.parse(
+        revision.runtime_profile,
+      );
+      if (
+        profile.runtimePackage?.checksum !== packageChecksum ||
+        checksum(profile) !== checksum(compilation.runtimeProfile)
+      )
+        throw new Error('platform_employee_publish_snapshot_changed');
+      validatePlatformEmployeeTestExecutionSnapshot({
+        runtimeProfile: profile,
+        definition,
+        nativeSkills: profile.runtimePackage.skills,
+        packageChecksum,
+      });
+      // Recheck authority after obtaining the publication locks. The initial
+      // UI-facing checks do not authorize a later transaction or another draft.
+      const targets = await transaction<
+        { id: string; organization_id: string; organization_name: string }[]
+      >`
+      select workspace.id,workspace.organization_id,organization.name as organization_name from allrice_workspaces workspace
       join allrice_organizations organization on organization.id = workspace.organization_id
-      where workspace.id in ${transaction(uniqueWorkspaceIds)}
+      where workspace.id=any(${transaction.array(uniqueWorkspaceIds)}::uuid[])
         and workspace.archived_at is null and organization.archived_at is null
         and organization.slug <> 'allrice-platform'
       for share of workspace, organization
     `;
-    if (targets.length !== uniqueWorkspaceIds.length)
-      throw new Error('platform_employee_publish_workspace_unavailable');
-    if (parsed.policyVersions) {
-      if (Object.keys(parsed.policyVersions).length !== targets.length)
-        throw new Error('platform_employee_publish_policy_changed');
+      if (targets.length !== uniqueWorkspaceIds.length)
+        throw new Error('platform_employee_publish_workspace_unavailable');
+      // Match assignment/membership writers: deployment lock before policy lock.
       for (const target of [...targets].sort((a, b) =>
         a.id.localeCompare(b.id),
-      )) {
-        await transaction`select pg_advisory_xact_lock(hashtextextended(${`runtime-policy:${target.organization_id}:${target.id}`},0))`;
-        const [policy] = await transaction<
-          { version: number }[]
-        >`select version from allrice_runtime_policy_controls where organization_id=${target.organization_id} and workspace_id=${target.id} for share`;
-        if (parsed.policyVersions[target.id] !== (policy?.version ?? null))
+      ))
+        await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${target.organization_id}:${target.id}`},0))`;
+      if (
+        assignedScope &&
+        JSON.stringify(
+          (await employeePublicationTargets(transaction, employeeId)).map(
+            (t) => t.id,
+          ),
+        ) !== JSON.stringify([...uniqueWorkspaceIds].sort())
+      )
+        throw new Error('platform_employee_publish_snapshot_changed');
+      if (parsed.policyVersions) {
+        if (Object.keys(parsed.policyVersions).length !== targets.length)
           throw new Error('platform_employee_publish_policy_changed');
+        for (const target of [...targets].sort((a, b) =>
+          a.id.localeCompare(b.id),
+        )) {
+          await transaction`select pg_advisory_xact_lock(hashtextextended(${`runtime-policy:${target.organization_id}:${target.id}`},0))`;
+          const [policy] = await transaction<
+            { version: number }[]
+          >`select version from allrice_runtime_policy_controls where organization_id=${target.organization_id} and workspace_id=${target.id} for share`;
+          if (parsed.policyVersions[target.id] !== (policy?.version ?? null))
+            throw new Error('platform_employee_publish_policy_changed');
+        }
       }
-    }
-    let assertFreshPublication = async () => {};
-    if (!rapidIteration) {
-      const providers = await transaction<{ checked_at: Date }[]>`
+      let assertFreshPublication = async () => {};
+      if (!rapidIteration) {
+        const providers = await transaction<{ checked_at: Date }[]>`
       select checked_at from allrice_provider_status
       where provider = 'codex' and status = 'connected'
         and checked_at >= clock_timestamp() - interval '120 seconds'
       for share
     `;
-      if (profile.provider !== 'openai-codex' || !providers[0])
-        throw new Error('platform_employee_publish_provider_unavailable');
-      const exactTests = await transaction<
-        { id: string; completed_at: Date }[]
-      >`
+        if (profile.provider !== 'openai-codex' || !providers[0])
+          throw new Error('platform_employee_publish_provider_unavailable');
+        const exactTests = await transaction<
+          { id: string; completed_at: Date }[]
+        >`
       select id, completed_at from allrice_platform_employee_test_runs
       where id = ${successfulTests[0]!.id} and employee_id = ${employeeId}
         and revision_id = ${revision.id} and frozen_package_checksum = ${packageChecksum}
@@ -1961,73 +2040,109 @@ export async function publishPlatformEmployee(
         and completed_at >= clock_timestamp() - interval '24 hours'
       for share
     `;
-      if (!exactTests[0])
-        throw new Error('platform_employee_publish_test_unavailable');
-      assertFreshPublication = async () => {
-        // WHERE predicates can have been evaluated before a row-lock wait.
-        // Read the DB wall clock after all locks, and again before committing.
-        const [clock] = await transaction<
-          { at: Date }[]
-        >`select clock_timestamp() as at`;
-        const at = clock!.at.getTime();
-        if (providers[0]!.checked_at.getTime() < at - 120_000)
-          throw new Error('platform_employee_publish_provider_unavailable');
-        if (exactTests[0]!.completed_at.getTime() < at - 86_400_000)
+        if (!exactTests[0])
           throw new Error('platform_employee_publish_test_unavailable');
-      };
-      await assertFreshPublication();
-    }
+        assertFreshPublication = async () => {
+          // WHERE predicates can have been evaluated before a row-lock wait.
+          // Read the DB wall clock after all locks, and again before committing.
+          const [clock] = await transaction<
+            { at: Date }[]
+          >`select clock_timestamp() as at`;
+          const at = clock!.at.getTime();
+          if (providers[0]!.checked_at.getTime() < at - 120_000)
+            throw new Error('platform_employee_publish_provider_unavailable');
+          if (exactTests[0]!.completed_at.getTime() < at - 86_400_000)
+            throw new Error('platform_employee_publish_test_unavailable');
+        };
+        await assertFreshPublication();
+      }
 
-    await materializePlatformEmployeeRevision(transaction, {
-      employeeId,
-      revision,
-      definition,
-      workspaceIds: uniqueWorkspaceIds,
-      actorLabel,
-    });
-    await transaction`
+      for (const target of [...targets].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      )) {
+        try {
+          await materializePlatformEmployeeRevision(transaction, {
+            employeeId,
+            revision,
+            definition,
+            workspaceIds: [target.id],
+            actorLabel,
+            preserveCurrentPolicy: assignedScope,
+          });
+        } catch (error) {
+          if (!assignedScope) throw error;
+          throw new EmployeePublicationTargetError(
+            target.id,
+            target.organization_name,
+          );
+        }
+      }
+      await transaction`
       update allrice_platform_employee_revisions
       set status = 'published', published_by_label = ${actorLabel},
         published_at = now()
       where id = ${revision.id}
     `;
-    await transaction`
+      await transaction`
       update allrice_platform_employees
       set status = 'published', current_published_revision_id = ${revision.id},
         updated_by_label = ${actorLabel}, updated_at = now()
       where id = ${employeeId}
     `;
-    await recordPlatformEmployeeAuditInTransaction(transaction, {
-      employeeId,
-      action: 'employee.published',
-      actorLabel,
-      details: {
-        revisionId: revision.id,
-        workspaceIds: uniqueWorkspaceIds,
-        testRunId: successfulTests[0]?.id ?? null,
-        packageChecksum,
-      },
-    });
-    await assertFreshPublication();
-    const trialTargets = await transaction<
-      { workspaceId: string; employeeId: string }[]
-    >`
+      const receipt = await employeePublicationReceipt(
+        transaction,
+        employeeId,
+        uniqueWorkspaceIds,
+      );
+      await recordPlatformEmployeeAuditInTransaction(transaction, {
+        employeeId,
+        action: 'employee.published',
+        actorLabel,
+        details: {
+          revisionId: revision.id,
+          workspaceIds: uniqueWorkspaceIds,
+          testRunId: successfulTests[0]?.id ?? null,
+          packageChecksum,
+          receipt,
+        },
+      });
+      await assertFreshPublication();
+      const trialTargets = await transaction<
+        { workspaceId: string; employeeId: string }[]
+      >`
       select workspace_id as "workspaceId", tenant_employee_id as "employeeId"
       from allrice_platform_employee_tenant_assignments where employee_id=${employeeId}
-        and revision_id=${revision.id} and active and workspace_id in ${transaction(uniqueWorkspaceIds)}`;
-    return {
-      valid: true,
-      employeeId,
-      revisionId: revision.id,
-      workspaceIds: uniqueWorkspaceIds,
-      trialTargets,
-      runtimeProfile: PlatformEmployeeRuntimeProfileSchema.parse(
-        revision.runtime_profile,
-      ),
-      errors: [],
-      warnings: [],
-    };
-  });
+        and revision_id=${revision.id} and active and workspace_id=any(${transaction.array(uniqueWorkspaceIds)}::uuid[])`;
+      return {
+        valid: true,
+        employeeId,
+        revisionId: revision.id,
+        workspaceIds: uniqueWorkspaceIds,
+        trialTargets,
+        receipt,
+        runtimeProfile: PlatformEmployeeRuntimeProfileSchema.parse(
+          revision.runtime_profile,
+        ),
+        errors: [],
+        warnings: [],
+      };
+    })
+    .catch(async (error) => {
+      if (error instanceof EmployeePublicationTargetError)
+        await recordPlatformEmployeeAudit({
+          employeeId,
+          action: 'employee.publish_rejected',
+          actorLabel,
+          details: {
+            revisionId: compilation.revisionId,
+            errors: [error.message],
+            failedWorkspaceId: error.workspaceId,
+            updatedCompanyCount: 0,
+            atomic: true,
+          },
+        });
+      throw error;
+    });
   return published;
 }
 
@@ -2083,35 +2198,48 @@ export async function rollbackPlatformEmployee(
     const definition = PlatformEmployeeDefinitionSchema.parse(
       target.definition,
     );
-    const targets = await transaction<{ workspace_id: string }[]>`
-      select workspace_id
-      from allrice_platform_employee_tenant_assignments
-      where employee_id = ${employeeId} and active
-      order by active desc, updated_at desc, workspace_id
-    `;
-    const workspaceIds = [...new Set(targets.map((row) => row.workspace_id))];
+    const targets = await employeePublicationTargets(transaction, employeeId);
+    const workspaceIds = targets.map((t) => t.id);
     if (
       expectedWorkspaceIds &&
       JSON.stringify([...new Set(expectedWorkspaceIds)].sort()) !==
         JSON.stringify([...workspaceIds].sort())
     )
       throw new Error('platform_employee_publish_snapshot_changed');
-    if (workspaceIds.length === 0)
-      throw new Error('platform_employee_rollback_has_no_tenant_targets');
     const available = await transaction<
       { id: string }[]
     >`select w.id from allrice_workspaces w
-      join allrice_organizations o on o.id=w.organization_id where w.id in ${transaction(workspaceIds)}
+      join allrice_organizations o on o.id=w.organization_id where w.id=any(${transaction.array(workspaceIds)}::uuid[])
       and w.archived_at is null and o.archived_at is null and o.slug<>'allrice-platform' for share of w,o`;
     if (available.length !== workspaceIds.length)
       throw new Error('platform_employee_publish_workspace_unavailable');
-    await materializePlatformEmployeeRevision(transaction, {
-      employeeId,
-      revision: target,
-      definition,
-      workspaceIds,
-      actorLabel,
-    });
+    for (const scope of targets)
+      await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${scope.organization_id}:${scope.id}`},0))`;
+    if (
+      JSON.stringify(
+        (await employeePublicationTargets(transaction, employeeId)).map(
+          (t) => t.id,
+        ),
+      ) !== JSON.stringify(workspaceIds)
+    )
+      throw new Error('platform_employee_publish_snapshot_changed');
+    for (const scope of targets) {
+      try {
+        await materializePlatformEmployeeRevision(transaction, {
+          employeeId,
+          revision: target,
+          definition,
+          workspaceIds: [scope.id],
+          actorLabel,
+          preserveCurrentPolicy: true,
+        });
+      } catch {
+        throw new EmployeePublicationTargetError(
+          scope.id,
+          scope.organization_name,
+        );
+      }
+    }
     await transaction`
       update allrice_platform_employees
       set status = 'published', current_draft_revision_id = ${target.id},
@@ -2125,6 +2253,11 @@ export async function rollbackPlatformEmployee(
       revision: target.revision,
       previousRevisionId: employee.current_published_revision_id,
       workspaceIds,
+      receipt: await employeePublicationReceipt(
+        transaction,
+        employeeId,
+        workspaceIds,
+      ),
     };
     await recordPlatformEmployeeAuditInTransaction(transaction, {
       employeeId,

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import {
-  AssistantPricingError,
   SessionModelSnapshotSchema,
   canonicalRuntimeBridgeJson,
   estimateAssistantUsageCost,
@@ -83,7 +82,6 @@ export function preflightAssistantPricing(input: {
   // The text-only tariff is an API pricing constraint, not a vision limit.
   // Verify subscription identity first; native DSH still admits the images.
   if (preflightAssistantSubscription(input)) return undefined;
-  if (input.hasNonTextInput) deny('ASSISTANT_PRICE_TEXT_ONLY');
   const parsed = SessionModelSnapshotSchema.safeParse(input.modelSnapshot);
   if (!parsed.success) deny('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
   const frozen = parsed.data;
@@ -133,6 +131,8 @@ export function preflightAssistantPricing(input: {
       : runtime.baseUrl !== baseUrl)
   )
     deny('ASSISTANT_PRICE_ROUTE_UNVERIFIED');
+  // Unsupported/missing prices are unknown telemetry, not execution admission.
+  if (input.hasNonTextInput) return undefined;
   const encoded = process.env.ALLRICE_ASSISTANT_PRICING_JSON;
   const currency = process.env.ALLRICE_ASSISTANT_PRICING_CURRENCY;
   if (
@@ -141,10 +141,10 @@ export function preflightAssistantPricing(input: {
     !currency ||
     !/^[A-Z]{3}$/.test(currency)
   )
-    deny('ASSISTANT_PRICE_UNAVAILABLE');
+    return undefined;
   // Legacy organization ledgers have no currency column. This projection is
   // USD only, explicitly configured; never mix currency units or convert FX.
-  if (currency !== 'USD') deny('ASSISTANT_PRICE_CURRENCY_UNSUPPORTED');
+  if (currency !== 'USD') return undefined;
   try {
     const snapshot = selectAssistantPriceSnapshot({
       catalog: JSON.parse(encoded),
@@ -162,20 +162,9 @@ export function preflightAssistantPricing(input: {
         modality: 'text',
       },
     });
-    const deadline = Date.parse(input.deadlineAt);
-    if (
-      !Number.isFinite(deadline) ||
-      deadline < Date.parse(snapshot.selectedAt) ||
-      deadline > Date.parse(snapshot.price.expiresAt)
-    )
-      deny('ASSISTANT_PRICE_UNAVAILABLE');
     return snapshot;
-  } catch (error) {
-    deny(
-      error instanceof AssistantPricingError
-        ? error.code
-        : 'ASSISTANT_PRICE_UNAVAILABLE',
-    );
+  } catch {
+    return undefined;
   }
 }
 
@@ -201,13 +190,18 @@ export function assistantResultCostCents(
 ): number | null {
   if (result.usageComplete !== true || result.costEstimateAvailable === false)
     return null;
-  const expected = estimateAssistantUsageCost(snapshot, {
-    inputTokens: result.usage.inputTokens,
-    outputTokens: result.usage.outputTokens,
-    cacheReadTokens: null,
-    cacheWriteTokens: null,
-    usageComplete: true,
-  });
+  let expected;
+  try {
+    expected = estimateAssistantUsageCost(snapshot, {
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      usageComplete: true,
+    });
+  } catch {
+    return null;
+  }
   if (
     !result.assistantStatus ||
     result.costEstimateAvailable !== true ||
@@ -225,10 +219,6 @@ export function assistantResultCostCents(
     result.estimatedCostCents > 99999999.999999 ||
     result.estimatedCostCents !== Number(expected.costCentsDecimal)
   )
-    throw new HandlerError(
-      'ASSISTANT_PRICE_RESULT_UNVERIFIED',
-      '助手费用估算与冻结依据不一致，费用保持待核对。',
-      false,
-    );
+    return null; // Keep unverified monetary telemetry unknown; route identity is checked at dispatch.
   return result.estimatedCostCents;
 }

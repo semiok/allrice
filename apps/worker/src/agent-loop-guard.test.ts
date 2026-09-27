@@ -33,6 +33,13 @@ describe('agent loop guard', () => {
     for (let i = 0; i < 200; i++)
       expect(() => guard.observe(toolEvent(i))).not.toThrow();
   });
+  it('allows more than 80 distinct useful calls without durable enrollment', () => {
+    const guard = new AgentLoopGuard();
+    for (let i = 0; i < 200; i++)
+      expect(() =>
+        guard.observe(toolEvent(i, { query: String(i) })),
+      ).not.toThrow();
+  });
   it('retains a rate-based event flood stop rather than an unlimited buffer', () => {
     const guard = new AgentLoopGuard(
       {

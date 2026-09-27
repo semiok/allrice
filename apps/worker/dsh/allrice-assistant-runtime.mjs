@@ -34,6 +34,15 @@ const stopKinds = new Set([
   'tool-calls',
   'unknown',
 ]);
+// Match the pinned native provider's bounded recovery policy. This only releases
+// accounting admission; DSH still owns whether, when and how often to retry.
+const retryableModelFailures = new Set([
+  'TRANSPORT',
+  'TIMEOUT',
+  'SERVER',
+  'RATE_LIMIT',
+  'EMPTY_RESPONSE',
+]);
 function ownData(value, key) {
   if (!value || typeof value !== 'object' || types.isProxy(value)) return;
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -365,22 +374,17 @@ export function createGovernedAssistantNativeRuntime(
     }
   }
   const modelAdmissions = new Map();
-  // Supported native proposal seam: return a new config BEFORE prepareCall
-  // freezes maxTokens. Never mutate the prepared llm/stream request.
-  ctx.on('agent/request', async ({ agent, signal }, next) => {
-    const config = await next();
-    if (!bindings.has(agent.id)) return config;
-    if (modelAdmissions.has(agent.id))
+  async function prepareModel(id, requested, signal) {
+    if (modelAdmissions.has(id))
       throw Error('assistant_model_unknown_no_replay');
-    const requested = config.maxTokens;
     if (!Number.isSafeInteger(requested) || requested <= 0)
       throw Error('assistant_model_output_bound_required');
     await Promise.all([...pendingWrites]);
-    await checkpoints(agent.id);
+    await checkpoints(id);
     const callId = randomUUID();
     const prepared = await bridge(
       'model-prepare',
-      { nativeSessionId: agent.id, callId, outputTokens: requested },
+      { nativeSessionId: id, callId, outputTokens: requested },
       signal,
     );
     if (!prepared.prepared) throw Error('assistant_model_unknown_no_replay');
@@ -390,11 +394,21 @@ export function createGovernedAssistantNativeRuntime(
       prepared.outputTokens > requested
     )
       throw Error('assistant_model_output_grant_invalid');
-    modelAdmissions.set(agent.id, {
+    modelAdmissions.set(id, {
       callId,
       outputTokens: prepared.outputTokens,
     });
-    return { ...config, maxTokens: prepared.outputTokens };
+    return prepared.outputTokens;
+  }
+  // Supported native proposal seam: return a new config BEFORE prepareCall
+  // freezes maxTokens. Never mutate the prepared llm/stream request.
+  ctx.on('agent/request', async ({ agent, signal }, next) => {
+    const config = await next();
+    if (!bindings.has(agent.id)) return config;
+    return {
+      ...config,
+      maxTokens: await prepareModel(agent.id, config.maxTokens, signal),
+    };
   });
   ctx.on('llm/stream', async function* (options, next) {
     const id = options.sessionId;
@@ -407,6 +421,15 @@ export function createGovernedAssistantNativeRuntime(
     }
     await Promise.all([...pendingWrites]);
     await checkpoints(id);
+    // Pinned dsh-compaction-basic deliberately calls llm.stream directly with
+    // purpose=compaction, without agent/request. Admit this native auxiliary
+    // call through the same ledger; never bypass accounting or rewrite DSH's
+    // prepared summarization envelope. A smaller API grant cannot fund it.
+    if (options.purpose === 'compaction') {
+      const granted = await prepareModel(id, options.maxTokens, options.signal);
+      if (granted !== options.maxTokens)
+        throw Error('assistant_compaction_output_budget_exhausted');
+    }
     const admission = modelAdmissions.get(id);
     if (!admission || options.maxTokens !== admission.outputTokens)
       throw Error('assistant_model_preparation_required');
@@ -453,6 +476,7 @@ export function createGovernedAssistantNativeRuntime(
     let usage;
     let observedOutput = false;
     let stopKind = 'unknown';
+    let modelFailureCode;
     let settlementThrew = false;
     let settlementError;
     try {
@@ -461,6 +485,7 @@ export function createGovernedAssistantNativeRuntime(
         if (chunk.type === 'finish') {
           const kind = ownData(chunk.reason, 'kind');
           stopKind = stopKinds.has(kind) ? kind : 'unknown';
+          modelFailureCode = failureCode(ownData(chunk.reason, 'failure'));
           if (['error', 'aborted', 'max-tokens'].includes(stopKind))
             failure(
               id,
@@ -535,16 +560,21 @@ export function createGovernedAssistantNativeRuntime(
           entry.settlementConfirmed = acknowledgement?.settled === true;
         }
       }
-      // Native provider recovery may request another model call after a 5xx or
-      // interrupted stream. A settlement ACK only confirms that UNKNOWN was
-      // durably recorded; it does not prove the first request did not execute.
-      // Keep the admission as a no-replay tombstone until BOTH token dimensions
-      // are known. The existing agent/request guard then rejects recovery before
-      // another prepare/dispatch. Unbound ordinary chat keeps its retry policy.
+      // Usage uncertainty does not imply execution uncertainty. A normal native
+      // finish (or a retryable empty failure) may continue under a NEW call ID
+      // after the execution receipt is durably acknowledged. Keep unknown usage
+      // unknown; missing ACKs and ambiguous partial failures remain unreplayable.
+      const observedUsageOnly =
+        acknowledgement?.tokenUsageObservational === true &&
+        (['stop', 'tool-calls'].includes(stopKind) ||
+          (!observedOutput &&
+            stopKind === 'error' &&
+            retryableModelFailures.has(modelFailureCode)));
       if (
         acknowledgement?.settled === true &&
-        settled.inputTokens !== undefined &&
-        settled.outputTokens !== undefined
+        ((settled.inputTokens !== undefined &&
+          settled.outputTokens !== undefined) ||
+          observedUsageOnly)
       )
         modelAdmissions.delete(id);
     }

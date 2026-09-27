@@ -73,7 +73,7 @@ describe('Gemini historical records do not imply OAuth authority', () => {
     ).toBe(false);
     expect(
       modelProviderRuntimeSupported({ key: 'gemini', authMode: 'api_key' }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       modelProviderRuntimeSupported({
         key: 'codex',

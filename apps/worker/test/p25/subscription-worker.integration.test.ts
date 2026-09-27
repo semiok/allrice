@@ -85,6 +85,7 @@ integration(
       async (mode) => {
         const unknownUsage = ![
           'complete',
+          'quota_exhausted',
           'image_with_assistants',
           'startup_undispatched',
           'failed_known_usage',
@@ -309,17 +310,6 @@ integration(
             onHarnessEvent: async () => {},
             workflowLease: task.workflowLease,
           });
-          if (mode === 'quota_exhausted') {
-            await expect(pending).rejects.toMatchObject({
-              code: 'CODEX_SUBSCRIPTION_QUOTA_EXHAUSTED',
-            });
-            expect(execute).not.toHaveBeenCalled();
-            expect(DshRuntimePool.prototype.acquire).not.toHaveBeenCalled();
-            const [proof] =
-              await fixture.db`select count(*)::int as count from allrice_route_subscription_snapshots`;
-            expect(proof?.count).toBe(0);
-            return;
-          }
           if (mode.startsWith('failed_'))
             await expect(pending).rejects.toMatchObject({
               code: 'ASSISTANT_BUDGET_EXHAUSTED',

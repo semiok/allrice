@@ -1,4 +1,5 @@
 import { isPlatformAdmin } from './platform-authority.ts';
+import type postgres from 'postgres';
 import {
   randomBytes,
   randomUUID,
@@ -12,6 +13,9 @@ import {
   CreateInvitationInputSchema,
   EmailSchema,
   LoginInputSchema,
+  PasswordSchema,
+  UsernameSchema,
+  ChangePasswordInputSchema,
   UuidSchema,
   type Membership,
   type RequestContext,
@@ -29,6 +33,7 @@ const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 
 interface UserRow {
   id: string;
+  username: string | null;
   email: string;
   display_name: string;
   password_hash: string;
@@ -69,6 +74,7 @@ export class IdentityError extends Error {
     public readonly code:
       | 'authentication_failed'
       | 'authorization_denied'
+      | 'portal_account_mismatch'
       | 'invitation_invalid'
       | 'tenant_context_invalid',
   ) {
@@ -86,7 +92,7 @@ function derivePassword(password: string, salt: Buffer) {
 }
 
 export async function hashPassword(password: string) {
-  const parsed = LoginInputSchema.shape.password.parse(password);
+  const parsed = PasswordSchema.parse(password);
   const salt = randomBytes(16);
   const derived = await derivePassword(parsed, salt);
   return [
@@ -116,7 +122,7 @@ export async function verifyPassword(password: string, encoded: string) {
   }
   const expected = Buffer.from(hashValue, 'base64url');
   const actual = await derivePassword(
-    LoginInputSchema.shape.password.parse(password),
+    PasswordSchema.parse(password),
     Buffer.from(saltValue, 'base64url'),
   );
   return expected.length === actual.length && timingSafeEqual(expected, actual);
@@ -330,11 +336,10 @@ export async function acceptInvitation(input: unknown) {
   });
 }
 
-export async function createSession(userId: string) {
+async function insertSession(sql: postgres.TransactionSql, userId: string) {
   const parsedUserId = UuidSchema.parse(userId);
   const token = makeOpaqueToken();
   const expiresAt = new Date(Date.now() + sessionLifetimeMs);
-  const sql = getDatabase();
   const rows = await sql<{ id: string }[]>`
     insert into allrice_sessions (user_id, token_hash, expires_at)
     values (${parsedUserId}, ${hashOpaqueToken(token)}, ${expiresAt})
@@ -343,6 +348,16 @@ export async function createSession(userId: string) {
   const session = rows[0];
   if (!session) throw new Error('session creation failed');
   return { id: session.id, token, expiresAt: expiresAt.toISOString() };
+}
+
+export async function createSession(userId: string) {
+  return getDatabase().begin(async (transaction) => {
+    const [user] = await transaction<UserRow[]>`
+      select id, status from allrice_users where id=${UuidSchema.parse(userId)} for update`;
+    if (user?.status !== 'active')
+      throw new IdentityError('authentication_failed');
+    return insertSession(transaction, user.id);
+  });
 }
 
 /**
@@ -448,25 +463,121 @@ export async function ensureBootstrapPortalPrincipal(
   });
 }
 
-export async function login(input: unknown) {
+export async function login(
+  input: unknown,
+  expectedEmail?: string,
+  expectedAccountKind?: 'employee' | 'platform_admin',
+) {
   const credentials = LoginInputSchema.parse(input);
-  const sql = getDatabase();
-  const users = await sql<UserRow[]>`
-    select id, email, display_name, password_hash, status
-    from allrice_users where email = ${credentials.email}
-  `;
-  const user = users[0];
-  if (
-    !user ||
-    user.status !== 'active' ||
-    !(await verifyPassword(credentials.password, user.password_hash))
-  ) {
+  return getDatabase().begin(async (transaction) => {
+    // Password verification and session creation serialize with password reset.
+    const [user] = await transaction<UserRow[]>`
+      select id, username, email, display_name, password_hash, status
+      from allrice_users
+      where (${credentials.username ?? null}::text is not null and username=${credentials.username ?? null})
+         or (${credentials.email ?? null}::text is not null and lower(email)=${credentials.email ?? null})
+      for update`;
+    if (
+      !user ||
+      user.status !== 'active' ||
+      (expectedEmail &&
+        user.email.toLowerCase() !== EmailSchema.parse(expectedEmail)) ||
+      !(await verifyPassword(credentials.password, user.password_hash))
+    )
+      throw new IdentityError('authentication_failed');
+    const [membership] = await transaction`
+      select m.id from allrice_memberships m
+      join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+      where m.user_id=${user.id} and m.active
+      and (m.workspace_id is null or exists (select 1 from allrice_workspaces w
+        where w.id=m.workspace_id and w.archived_at is null)) limit 1`;
+    if (!membership) throw new IdentityError('authorization_denied');
+    if (expectedAccountKind) {
+      const admin = await isPlatformAdmin(
+        { actor: { type: 'user', id: user.id } },
+        transaction,
+      );
+      if (admin !== (expectedAccountKind === 'platform_admin'))
+        throw new IdentityError('portal_account_mismatch');
+    }
+    return {
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        displayName: user.display_name,
+      },
+      session: await insertSession(transaction, user.id),
+    };
+  });
+}
+
+/** Trusted bootstrap/migration only. Re-running never resets an existing login. */
+export async function initializeAccountLogin(input: {
+  userId: string;
+  username: string;
+  password: string;
+}) {
+  const username = UsernameSchema.parse(input.username);
+  const passwordHash = await hashPassword(input.password);
+  return getDatabase().begin(async (transaction) => {
+    const [user] = await transaction<UserRow[]>`
+      select id, username, status from allrice_users where id=${UuidSchema.parse(input.userId)} for update`;
+    if (user?.status !== 'active')
+      throw new IdentityError('authentication_failed');
+    if (user.username) return { username: user.username, initialized: false };
+    await transaction`update allrice_users set username=${username}, password_hash=${passwordHash}, updated_at=now()
+      where id=${user.id}`;
+    await transaction`update allrice_sessions set revoked_at=now() where user_id=${user.id} and revoked_at is null`;
+    return { username, initialized: true };
+  });
+}
+
+/** Transitional portal lookup: membership remains authoritative after migration. */
+export async function getLegacyPortalAccount(input: {
+  email: string;
+  organizationSlug: string;
+  workspaceSlug: string;
+}) {
+  const [row] = await getDatabase()<
+    {
+      id: string;
+      username: string | null;
+      organization_id: string;
+      workspace_id: string;
+    }[]
+  >`select u.id, u.username, o.id as organization_id, w.id as workspace_id
+    from allrice_users u
+    join allrice_memberships m on m.user_id=u.id and m.active
+    join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+    join allrice_workspaces w on w.organization_id=o.id and w.archived_at is null
+      and (m.workspace_id is null or m.workspace_id=w.id)
+    where lower(u.email)=${EmailSchema.parse(input.email)}
+      and o.slug=${input.organizationSlug} and w.slug=${input.workspaceSlug} limit 1`;
+  return row ?? null;
+}
+
+export async function changePassword(context: RequestContext, input: unknown) {
+  const value = ChangePasswordInputSchema.parse(input);
+  if (context.actor.type !== 'user')
     throw new IdentityError('authentication_failed');
-  }
-  return {
-    user: { id: user.id, email: user.email, displayName: user.display_name },
-    session: await createSession(user.id),
-  };
+  const userId = context.actor.id;
+  const passwordHash = await hashPassword(value.newPassword);
+  await getDatabase().begin(async (transaction) => {
+    const [user] = await transaction<UserRow[]>`
+      select id, password_hash, status from allrice_users where id=${userId} for update`;
+    const [session] = await transaction`
+      select id from allrice_sessions where id=${context.sessionId} and user_id=${userId}
+        and revoked_at is null and expires_at>now()`;
+    if (
+      !session ||
+      user?.status !== 'active' ||
+      !(await verifyPassword(value.currentPassword, user.password_hash))
+    )
+      throw new IdentityError('authentication_failed');
+    await transaction`update allrice_users set password_hash=${passwordHash}, updated_at=now() where id=${userId}`;
+    await transaction`update allrice_sessions set revoked_at=now() where user_id=${userId} and revoked_at is null`;
+  });
 }
 
 export async function authenticateSession(
@@ -486,10 +597,13 @@ export async function authenticateSession(
   const session = sessions[0];
   if (!session) return null;
   const memberships = await sql<MembershipRow[]>`
-    select id, user_id, organization_id, workspace_id, role, active
-    from allrice_memberships
-    where user_id = ${session.user_id} and active = true
-    order by created_at, id
+    select m.id, m.user_id, m.organization_id, m.workspace_id, m.role, m.active
+    from allrice_memberships m
+    join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+    where m.user_id = ${session.user_id} and m.active = true
+      and (m.workspace_id is null or exists (select 1 from allrice_workspaces w
+        where w.id=m.workspace_id and w.archived_at is null))
+    order by m.created_at, m.id
   `;
   const organizationId = tenant.organizationId
     ? UuidSchema.safeParse(tenant.organizationId)

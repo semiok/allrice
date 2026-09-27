@@ -15,23 +15,11 @@
 .group {
   margin-bottom: 16px;
 }
-.avatar,
-.pickerCard {
+.avatar {
   --employee-start: #3b82f6;
   --employee-end: #3b82f6;
   --employee-foreground: #090d16;
   background-color: var(--employee-start);
-}
-.pickerCard {
-  background-image:
-    radial-gradient(ellipse at 100% 0, #ffffff0c, transparent 65%),
-    repeating-radial-gradient(
-      circle at 110% -40%,
-      transparent 0 22px,
-      #ffffff0a 23px 24px,
-      transparent 25px 47px
-    ),
-    linear-gradient(115deg, var(--employee-start), var(--employee-end));
 }
 .employeeCard {
   container: employee-card / inline-size;
@@ -271,102 +259,66 @@
     pointer-events: auto;
   }
 }
-.pickerDialog {
-  width: min(680px, 100%);
-  border-radius: 24px;
-  color: var(--dsw-alias-label-primary);
-}
-.pickerDialog > header {
-  align-items: center;
-  padding: 26px 28px 22px;
-  border-bottom: 0;
-}
-.pickerDialog > header h2 {
-  margin-top: 6px;
-  font-size: 22px;
-  line-height: 30px;
-  font-weight: 600;
-  letter-spacing: -0.4px;
-}
-.pickerDialog > header p {
-  font-size: 12px;
-  line-height: 18px;
-}
-.pickerDialog > header button {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--dsw-alias-fill-tertiary);
-}
-.pickerBody {
-  padding: 0 28px 22px;
-}
 .picker {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
-  gap: 16px;
-  padding: 4px;
-  margin: -4px;
+  gap: 10px;
+  padding: 3px;
+  margin: -3px;
 }
 .pickerCard {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  min-width: 0;
-  min-height: 208px;
-  text-align: left;
-  border: 1px solid #ffffff14;
-  border-radius: 18px;
-  padding: 22px;
-  color: var(--employee-foreground);
-  cursor: pointer;
-  font-family: inherit;
-  transition:
-    transform 160ms ease,
-    box-shadow 160ms ease;
-  box-shadow: 0 4px 12px #13234b0d;
-}
-.pickerCard:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px #13234b24;
-}
-.pickerCard:active {
-  transform: translateY(0);
-}
-.pickerCardTop {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: 14px;
+  min-width: 0;
+  width: 100%;
+  padding: 18px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--allrice-employee-bg);
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 140ms ease;
+}
+.pickerCard:hover {
+  background: var(--allrice-sidebar-hover);
+}
+.pickerCard:active {
+  background: var(--allrice-session-selected);
 }
 .pickerInitial {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: #ffffff18;
-  border: 1px solid #ffffff26;
-  font-size: 18px;
+  flex: 0 0 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--employee-start);
+  color: var(--employee-avatar-foreground);
+  font-size: 20px;
   font-weight: 600;
 }
+.pickerCopy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
+}
+.pickerHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .pickerBadge {
-  padding: 3px 8px;
-  border-radius: 20px;
-  background: #ffffff18;
-  color: var(--employee-foreground);
+  color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
   line-height: 18px;
 }
 .pickerName {
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 26px;
+  line-height: 24px;
   overflow-wrap: anywhere;
 }
 .pickerDescription {
@@ -374,36 +326,25 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  margin-top: 8px;
-  color: var(--employee-foreground);
-  font-size: 13px;
-  line-height: 21px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 19px;
   overflow-wrap: anywhere;
 }
 .pickerAction {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: auto;
-  padding-top: 22px;
-  color: var(--employee-foreground);
+  flex: none;
+  gap: 4px;
+  color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
-  line-height: 18px;
 }
 .pickerAction > span {
-  font-size: 20px;
+  opacity: 0;
 }
-.hint {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 20px 0 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 18px;
+.pickerCard:hover .pickerAction > span,
+.pickerCard:focus-visible .pickerAction > span {
+  opacity: 1;
 }
 .pickerShortcuts {
   display: inline-flex;
@@ -416,39 +357,20 @@
   border-radius: 4px;
   font: inherit;
 }
-
 .pickerCard:focus-visible {
-  outline: 2px solid var(--employee-foreground);
-  outline-offset: 3px;
+  outline: 2px solid #4678e9;
+  outline-offset: 2px;
 }
 .avatar:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: -2px;
 }
 @media (max-width: 560px) {
-  .pickerDialog > header {
-    padding: 22px 20px 18px;
-  }
-  .pickerDialog > header h2 {
-    font-size: 20px;
-  }
-  .pickerBody {
-    padding: 0 20px 20px;
-  }
-  .picker {
-    grid-template-columns: 1fr;
-    gap: 12px;
-  }
   .pickerCard {
-    min-height: 0;
-    padding: 18px;
+    gap: 12px;
+    padding: 16px 14px;
   }
-  .pickerCardTop {
-    margin-bottom: 12px;
-  }
-  .pickerAction {
-    padding-top: 16px;
-  }
+  .pickerAction > span,
   .pickerShortcuts {
     display: none;
   }

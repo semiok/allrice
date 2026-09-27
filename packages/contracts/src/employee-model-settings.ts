@@ -5,7 +5,6 @@ type Effort = ModelPolicy['reasoningEffort'];
 
 export const EMPLOYEE_PROVIDER_OPTIONS = [
   { value: 'openai-codex', label: 'Codex 订阅' },
-  { value: 'gemini', label: 'Gemini API' },
 ] as const;
 
 /** The levels connected by this AllRice release, not every vendor API level.
@@ -30,25 +29,11 @@ export function employeeReasoningSettings(provider: string, model: string) {
     ) {
       efforts = ['low', 'medium', 'high', 'xhigh'];
     }
-  } else if (provider === 'gemini') {
-    // pi-ai 0.82.1 maps Pro medium to HIGH. Do not advertise a distinct
-    // medium until that adapter supports it, even though Google's API does.
-    if (/^gemini-3(?:\.1)?-pro-preview(?:-customtools)?$/.test(id)) {
-      efforts = ['low', 'high'];
-    } else if (
-      /^gemini-3\.(?:[5678]-flash|[15]-flash-lite)$/.test(id) ||
-      id === 'gemini-3-flash-preview'
-    ) {
-      efforts = ['low', 'medium', 'high'];
-    }
   }
   return {
     efforts,
     defaultEffort: (efforts.includes('medium') ? 'medium' : 'high') as Effort,
-    label:
-      provider === 'gemini'
-        ? '思考级别（thinkingLevel）'
-        : '推理强度（reasoning effort）',
+    label: '推理强度（reasoning effort）',
   };
 }
 
@@ -56,7 +41,7 @@ export function employeeModelPolicyProblem(policy: ModelPolicy): string | null {
   if (
     !EMPLOYEE_PROVIDER_OPTIONS.some((item) => item.value === policy.provider)
   ) {
-    return '该 Provider 已从新配置入口移除，请选择 Codex 订阅或 Gemini API；历史记录不受影响。';
+    return '该 Provider 已从新配置入口移除，请使用平台统一的 Codex 订阅配置；历史记录不受影响。';
   }
   const settings = employeeReasoningSettings(policy.provider, policy.model);
   if (!settings.efforts.length) {
@@ -73,7 +58,7 @@ export function switchEmployeeModelProvider(
   provider: (typeof EMPLOYEE_PROVIDER_OPTIONS)[number]['value'],
 ): ModelPolicy {
   if (policy.provider === provider) return policy;
-  const model = provider === 'gemini' ? 'gemini-3.8-flash' : 'gpt-5.6-luna';
+  const model = 'gpt-5.6-luna';
   const settings = employeeReasoningSettings(provider, model);
   return {
     ...policy,
@@ -82,10 +67,7 @@ export function switchEmployeeModelProvider(
     reasoningEffort: settings.efforts.includes(policy.reasoningEffort)
       ? policy.reasoningEffort
       : settings.defaultEffort,
-    credentialReference:
-      provider === 'gemini'
-        ? 'deployment:gemini-default'
-        : 'deployment:codex-default',
+    credentialReference: 'deployment:codex-default',
     baseUrl: null,
     fallbackModels: [],
   };

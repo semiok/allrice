@@ -40,14 +40,20 @@ jobs:
       - name: Verify tenant workspace and composer ownership in Chromium
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts
       - name: Verify tenant management UI, HTTP authorization and PostgreSQL persistence
         # Synthetic principals in disposable schemas, never real tenant permissions.
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/tenant-administration.integration.test.ts packages/database/src/tenant-employees.integration.test.ts packages/database/src/tenant-inheritance.integration.test.ts packages/database/src/employee-administration.integration.test.ts packages/database/src/tenant-resources.integration.test.ts packages/database/src/tenant-validation.integration.test.ts packages/database/src/user-monthly-quota.integration.test.ts packages/database/src/user-preferences.integration.test.ts apps/web/app/runtime-console/tenant-administration.browser.test.ts apps/web/app/chatflow/work-automation.browser.test.ts packages/database/src/work-automation.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/tenant-administration.integration.test.ts packages/database/src/tenant-employees.integration.test.ts packages/database/src/tenant-inheritance.integration.test.ts packages/database/src/employee-administration.integration.test.ts packages/database/src/tenant-resources.integration.test.ts packages/database/src/tenant-validation.integration.test.ts packages/database/src/user-monthly-quota.integration.test.ts packages/database/src/user-preferences.integration.test.ts apps/web/app/runtime-console/tenant-administration.browser.test.ts apps/web/app/chatflow/work-automation.browser.test.ts packages/database/src/work-automation.integration.test.ts packages/database/src/workspace/session-references.integration.test.ts
+      - name: Verify organization and employee account management in Chromium
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_RUN_BROWSER_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/organization-administration.integration.test.ts packages/database/src/organization-employee-assignments.integration.test.ts packages/database/src/organization-publication.integration.test.ts packages/database/src/organization-activity.integration.test.ts packages/database/src/organization-migration.integration.test.ts apps/web/app/runtime-console/organization-administration.browser.test.ts
 
   validate:
     runs-on: ubuntu-latest
@@ -98,6 +104,11 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run packages/database/src/runtime-ledger/ledger.integration.test.ts
+      - name: Verify unified account login and password lifecycle
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run --maxWorkers=2 packages/database/src/unified-login.integration.test.ts apps/web/lib/identity/unified-login.integration.test.ts
       - name: Verify Worker capability heartbeats and actual tenant publications
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -107,7 +118,7 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/session-archive.integration.test.ts packages/database/src/task-clock.integration.test.ts packages/database/src/task-progress.integration.test.ts packages/database/src/task-native-wait.integration.test.ts apps/worker/test/p25/task-wait-worker.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/session-archive.integration.test.ts packages/database/src/task-clock.integration.test.ts packages/database/src/execution-diagnostics.integration.test.ts packages/database/src/operations-resources.integration.test.ts packages/database/src/task-progress.integration.test.ts packages/database/src/task-native-wait.integration.test.ts apps/worker/test/p25/task-wait-worker.integration.test.ts
       - name: Verify governed Bridge policy and real HTTP journal integration
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -125,6 +136,11 @@ jobs:
         # These suites use their own synthetic MCP server and random PG schemas.
         # This Linux CI job does not provision the dedicated macOS/runsc test VM.
         run: pnpm exec vitest run packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts packages/database/src/workspace-access.integration.test.ts tests/integration/mcp-revocation.integration.test.ts
+      - name: Verify platform model inheritance and image receipts
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/platform-model-settings.integration.test.ts apps/worker/test/met163/image-generation.integration.test.ts
       - name: Verify frozen Skill bundles and rollback against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1

@@ -1,8 +1,11 @@
+export * from './image-operations.ts';
 export * from './core/client.ts';
 export * from './codex-token-policy.ts';
 export * from './identity.ts';
 export * from './user-preferences.ts';
 export * from './tenant-administration.ts';
+export * from './organization-administration.ts';
+export * from './organization-employee-assignments.ts';
 export * from './employee-administration.ts';
 export * from './data.ts';
 export * from './workspace.ts';
@@ -70,6 +73,7 @@ export * from './local-browser-files.ts';
 export * from './local-preview.ts';
 export { localPreviewEnabled } from './local-preview-authority.ts';
 export * from './assistant-runtime.ts';
+export * from './execution-usage-policy.ts';
 export * from './assistant-authority.ts';
 export * from './assistant-output.ts';
 export * from './assistant-pricing.ts';
@@ -85,3 +89,7 @@ export {
   recordManagedCloudEnvironment,
   type ManagedCloudEnvironmentReport,
 } from './tenant-employee-access.ts';
+export * from './organization-activity.ts';
+
+export * from './execution-diagnostics.ts';
+export * from './operations-resources.ts';

@@ -39,6 +39,8 @@ export async function POST(
     if (error instanceof ArtifactReviewError) {
       const messages: Record<string, string> = {
         queued_message_started: '这条消息已开始处理，不能再从队列修改。',
+        queued_references_require_turn:
+          '引用会话的消息需要作为下一轮任务处理。',
         queued_attachments_require_turn: '含附件的消息需要作为下一轮任务处理。',
         input_turn_changed: '当前回合已结束或发生变化，消息仍保留在队列中。',
       };

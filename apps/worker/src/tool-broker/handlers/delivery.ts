@@ -6,10 +6,12 @@ import {
   publishWorkbenchArtifact,
   publishWorkbenchChangesetProposal,
   workbenchEnabled,
+  ArtifactPublicationRollbackError,
 } from '@allrice/database';
 import {
   ChangesetProposalSchema,
   DeliveryFormatSchema,
+  NativeOfficeExportSchema,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { officeFormat } from '@allrice/office-runtime';
@@ -18,7 +20,7 @@ import { generateOfficeExport } from '../../office/export.js';
 import { generateNativeOfficeExport } from '../../office/native.js';
 import { checkOfficeExport } from '../../office/quality.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
-import { HandlerError } from '../../errors.js';
+import { confirmToolFailure, HandlerError } from '../../errors.js';
 import { stringValue } from '../input-values.js';
 import type { RiceToolHandler } from '../types.js';
 
@@ -57,6 +59,23 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   const content =
     hasOffice || hasPython ? '' : stringValue(args.content, 'content');
+  const python = hasPython
+    ? NativeOfficeExportSchema.parse(args.python)
+    : undefined;
+  if (
+    typeof args.changeSummary === 'string' &&
+    python?.changeSummary != null &&
+    args.changeSummary !== python.changeSummary
+  )
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      '外层 changeSummary 与 python.changeSummary 不一致，请只保留一个修改说明。',
+      false,
+    );
+  const changeSummary =
+    typeof args.changeSummary === 'string'
+      ? args.changeSummary
+      : python?.changeSummary;
   if (content.length > 200_000) {
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
@@ -65,7 +84,25 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   }
   const generated = hasPython
-    ? await generateNativeOfficeExport(input, format, args.python)
+    ? await generateNativeOfficeExport(input, format, python).catch(
+        (error: unknown) => {
+          // The native sandbox has stopped and rejected the document. No managed
+          // file publication has started. DSH may correct the script in a new call.
+          // Transport/cleanup errors remain unknown; never infer from retryability.
+          if (
+            error instanceof HandlerError &&
+            ['OFFICE_DOCUMENT_INVALID', 'OFFICE_RUNTIME_UNAVAILABLE'].includes(
+              error.code,
+            )
+          )
+            confirmToolFailure(error, {
+              runId: input.context.runId,
+              callId: input.call.id,
+              toolName: input.call.name,
+            });
+          throw error;
+        },
+      )
     : hasOffice
       ? await generateOfficeExport(input, format, args.office)
       : {
@@ -145,29 +182,49 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
-      ...(typeof args.changeSummary === 'string'
-        ? { changeSummary: args.changeSummary }
-        : {}),
+      ...(typeof changeSummary === 'string' ? { changeSummary } : {}),
     };
-    const artifact =
-      kind === 'changeset'
-        ? await publishWorkbenchChangesetProposal(
-            {
-              ...publication,
-              proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
-            },
-            storage,
-          )
-        : await publishWorkbenchArtifact(
-            {
-              ...publication,
-              kind,
-              format,
-              bytes,
-              mediaType: generated.mediaType,
-            },
-            storage,
+    const artifact = await (async () => {
+      try {
+        return kind === 'changeset'
+          ? await publishWorkbenchChangesetProposal(
+              {
+                ...publication,
+                proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
+              },
+              storage,
+            )
+          : await publishWorkbenchArtifact(
+              {
+                ...publication,
+                kind,
+                format,
+                bytes,
+                mediaType: generated.mediaType,
+              },
+              storage,
+            );
+      } catch (error) {
+        if (
+          error instanceof ArtifactPublicationRollbackError &&
+          error.runId === input.context.runId &&
+          error.callId === input.call.id
+        ) {
+          const failure = new HandlerError(
+            'TOOL_PUBLICATION_ROLLED_BACK',
+            '文件登记发生临时冲突，本次已回滚且未发布文件；请重试相同文件。',
+            true,
           );
+          confirmToolFailure(failure, {
+            runId: input.context.runId,
+            callId: input.call.id,
+            toolName: input.call.name,
+          });
+          throw failure;
+        }
+        throw error;
+      }
+    })();
     return {
       modelContent: JSON.stringify({
         ...officeResult,
@@ -219,9 +276,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
-      ...(typeof args.changeSummary === 'string'
-        ? { changeSummary: args.changeSummary }
-        : {}),
+      ...(typeof changeSummary === 'string' ? { changeSummary } : {}),
       object,
     });
     return {
@@ -234,8 +289,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         seriesId: registered.seriesId,
         version: registered.version,
         parentObjectId: registered.parentObjectId,
-        changeSummary:
-          typeof args.changeSummary === 'string' ? args.changeSummary : null,
+        changeSummary: typeof changeSummary === 'string' ? changeSummary : null,
         downloadUrl: `/api/v1/files/${object.id}/download?name=${encodeURIComponent(fileName)}`,
         versionsUrl: `/api/v1/files/${object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),

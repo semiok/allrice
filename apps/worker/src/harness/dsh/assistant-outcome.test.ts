@@ -25,7 +25,7 @@ describe('assistant completion at the Worker success boundary', () => {
       usageComplete: false,
     };
     expect(() => assertAssistantTaskComplete(missing, true)).not.toThrow();
-    expect(() => assertAssistantTaskComplete(missing, false)).toThrow();
+    expect(() => assertAssistantTaskComplete(missing, false)).not.toThrow();
     expect(() =>
       assertAssistantTaskComplete(
         { ...missing, assistantStatus: 'partial' },
@@ -57,7 +57,7 @@ describe('assistant completion at the Worker success boundary', () => {
       20,
     );
   });
-  it.each(['completed', 'partial'] as const)(
+  it.each(['partial'] as const)(
     'preserves the safe sidecar from a %s result when usage is incomplete',
     (assistantStatus) => {
       const incomplete = { ...result, assistantStatus, usageComplete: false };
@@ -85,10 +85,8 @@ describe('assistant completion at the Worker success boundary', () => {
         error = failure;
       }
       expect(error).toMatchObject({
-        code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+        code: 'ASSISTANT_PARTIAL_RESULT',
         retryable: false,
-        usageComplete: false,
-        usage: result.usage,
       });
       expect(getAssistantFailureDiagnostics(error)).toEqual(diagnostics);
       expect(JSON.stringify(incomplete)).not.toContain('USAGE_INCOMPLETE');
@@ -120,14 +118,14 @@ describe('assistant completion at the Worker success boundary', () => {
       }),
     );
   });
-  it('preserves confirmed usage when unresolved accounting blocks completion', () => {
+  it('keeps unknown accounting without blocking a confirmed completion', () => {
     expect(() =>
       assertAssistantTaskComplete({
         ...result,
         assistantStatus: 'completed',
         usageComplete: false,
       }),
-    ).toThrow(AssistantExecutionUnresolvedError);
+    ).not.toThrow();
     const error = new AssistantExecutionUnresolvedError(result.usage);
     expect(error).toMatchObject({
       code: 'ASSISTANT_EXECUTION_UNRESOLVED',

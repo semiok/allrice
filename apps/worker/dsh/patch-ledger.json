@@ -96,6 +96,13 @@
       "kind": "upstream-source-patch",
       "path": "patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch",
       "reason": "Inject the Worker-owned pinned HTTP fetch and official MCP SDK OAuth provider into the native published client. Reuse native discovery, tool naming, schemas, registry and execution; disable reconnection so uncertain remote writes are not replayed. Existing SDK connections retain frozen-name compatibility until retired."
+    },
+    {
+      "id": "allrice-session-reference-v1",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-session-references.mjs",
+      "reason": "Adapt server-authorized frozen Allrice message text to the native SessionReferenceResolver. Use an isolated query port and native pre-step durable context; no runtime journal discovery, new tools or additional model loop. Platform ACL, input idempotency, visibility and queued-start rechecks remain authoritative."
     }
   ]
 }

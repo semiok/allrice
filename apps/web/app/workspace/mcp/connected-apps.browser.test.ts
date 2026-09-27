@@ -122,6 +122,7 @@ suite('member connected-apps page', () => {
     });
     try {
       await page.goto(origin);
+      await page.getByText('管理连接', { exact: true }).click();
       await page.getByRole('button', { name: '填写连接凭据' }).click();
       await page
         .getByLabel('应用访问令牌')

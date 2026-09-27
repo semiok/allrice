@@ -90,6 +90,7 @@ export async function listToolBrokerFiles(
   const rows = await sql<
     (ResourceRow & {
       file_name: string;
+      checksum: string;
       media_type: string;
       size_bytes: number | string;
       category: 'uploads' | 'exports';
@@ -99,7 +100,7 @@ export async function listToolBrokerFiles(
   >`
     select o.id, o.organization_id, o.workspace_id, o.owner_id, o.visibility,
       coalesce(deliverable.file_name, max(f.file_name), '未命名文件') as file_name,
-      o.media_type, o.size_bytes, o.category,
+      o.media_type, o.checksum, o.size_bytes, o.category,
       deliverable.version as deliverable_version, o.created_at
     from allrice_storage_objects o
     left join allrice_file_references f on f.object_id = o.id
@@ -125,6 +126,7 @@ export async function listToolBrokerFiles(
       id: row.id,
       fileName: row.file_name,
       mediaType: row.media_type,
+      checksum: row.checksum,
       sizeBytes: Number(row.size_bytes),
       visibility: row.visibility,
       category: row.category,

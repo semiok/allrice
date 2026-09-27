@@ -1,0 +1,48 @@
+.root {
+  margin-top: 20px;
+  min-width: 0;
+}
+.root summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.root p {
+  color: var(--muted, #8f939b);
+  font-size: 13px;
+}
+.scroll {
+  overflow: auto;
+  margin-top: 12px;
+  max-width: 100%;
+}
+.scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+.scroll th,
+.scroll td {
+  padding: 10px;
+  border-bottom: 1px solid #8884;
+  white-space: nowrap;
+}
+.scroll caption {
+  text-align: left;
+  margin-bottom: 8px;
+}
+
+.root button {
+  padding: 7px 12px;
+  border: 1px solid var(--line, #404349);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.root button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

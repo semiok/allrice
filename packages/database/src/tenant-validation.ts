@@ -8,6 +8,7 @@ import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import {
   requireTenantManagementScope,
+  requireTenantInspectionScope,
   type TenantManagementTarget,
 } from './tenant-management-scope.ts';
 import { getAdminTenantEnvironments } from './tenant-environments.ts';
@@ -18,7 +19,7 @@ import { inspectTenantDevelopment } from './tenant-development-inspection.ts';
 // Do not expose provider configuration, raw event payloads or encrypted inputs.
 // Persisted output has already passed runtime redaction; mask common credential
 // forms once more at this new display boundary, without decrypting any secret.
-const diagnosticText = (text: string) =>
+export const diagnosticText = (text: string) =>
   text
     .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{12,}/g, '[REDACTED]')
@@ -106,7 +107,7 @@ export async function inspectTenantRun(
 ): Promise<TenantRunInspection> {
   const runId = UuidSchema.parse(runInput),
     { organizationId, workspaceId, subjectId } = target;
-  await requireTenantManagementScope(issuer, target, db);
+  await requireTenantInspectionScope(issuer, target, db);
   const [row] = await db<
     {
       session_id: string;
@@ -161,10 +162,80 @@ export async function inspectTenantRun(
     db,
   );
   await db.begin(async (tx) => {
-    await requireTenantManagementScope(issuer, target, tx);
+    await requireTenantInspectionScope(issuer, target, tx);
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
       values(${organizationId},${workspaceId},${issuer.actor.id},'tenant.run.inspected','run',${runId},'recorded','explicit_tenant_user_run_inspection',${tx.json({ subjectId, readOnly: true })})`;
   });
+  const [job] =
+    await db`select status,worker_id,created_at,coalesce(claimed_at,(select started_at from allrice_runs where id=${runId})) as claimed_at,heartbeat_at,completed_at from allrice_jobs where run_id=${runId} and organization_id=${organizationId} and workspace_id=${workspaceId}`;
+  const waits = await db`select *,
+    extract(epoch from (coalesce(started_at,finished_at,clock_timestamp())-queued_at))*1000 as wait_ms,
+    case when started_at is null then 0 else extract(epoch from (coalesce(finished_at,clock_timestamp())-started_at))*1000 end as execution_ms
+    from allrice_task_resource_waits where run_id=${runId} and organization_id=${organizationId} and workspace_id=${workspaceId}
+    order by queued_at desc,id limit 101`;
+  const diagnostics =
+    await db`select occurred_at,reason,metadata from allrice_audit_events
+    where organization_id=${organizationId} and workspace_id=${workspaceId} and resource_id=${runId} and action='execution.diagnostic'
+    order by occurred_at desc,id desc limit 201`;
+  const [pending] =
+    await db`select kind,started_at from allrice_task_calls where run_id=${runId} and finished_at is null order by started_at desc limit 1`;
+  const [progress] =
+    await db`select max(finished_at) as at from allrice_task_calls where run_id=${runId}`;
+  const validWait = waits.find(
+    (w) =>
+      w.state === 'waiting' && ['running', 'claimed'].includes(job?.status),
+  );
+  const diagnosticsView = job
+    ? {
+        jobState: job.status,
+        workerId: job.worker_id,
+        queueMs: Math.max(
+          0,
+          (job.claimed_at ?? job.completed_at ?? new Date()).getTime() -
+            job.created_at.getTime(),
+        ),
+        currentWait:
+          validWait?.reason ??
+          (job.status === 'queued'
+            ? 'worker_capacity'
+            : job.status === 'running' && pending?.kind === 'model'
+              ? 'model_response'
+              : null),
+        recentProgressAt: progress?.at?.toISOString() ?? null,
+        resources: waits.slice(0, 100).map((w) => ({
+          id: w.id,
+          callId: w.call_id,
+          state: w.state,
+          reason: w.reason,
+          queuedAt: w.queued_at.toISOString(),
+          startedAt: w.started_at?.toISOString() ?? null,
+          finishedAt: w.finished_at?.toISOString() ?? null,
+          waitMs: Number(w.wait_ms),
+          executionMs: Number(w.execution_ms),
+          capacity: w.capacity,
+          backendId: w.backend_id,
+          errorCode: w.error_code,
+        })),
+        events: diagnostics
+          .slice(0, 200)
+          .reverse()
+          .map((e) => ({
+            at: e.occurred_at.toISOString(),
+            stage: e.reason,
+            attemptId:
+              typeof e.metadata.attemptId === 'string'
+                ? e.metadata.attemptId
+                : null,
+            reason:
+              typeof e.metadata.reason === 'string' ? e.metadata.reason : null,
+            errorCode:
+              typeof e.metadata.errorCode === 'string'
+                ? e.metadata.errorCode
+                : null,
+          })),
+        truncated: waits.length > 100 || diagnostics.length > 200,
+      }
+    : undefined;
   return {
     ...target,
     inspectorId: issuer.actor.id,
@@ -203,5 +274,6 @@ export async function inspectTenantRun(
     artifacts: artifacts.artifacts,
     artifactsTruncated: artifacts.truncated,
     development,
+    executionDiagnostics: diagnosticsView,
   };
 }

@@ -41,6 +41,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "framework:verify": "pnpm dsh:golden-replay && pnpm exec vitest run packages/contracts/src/runtime-contract.test.ts packages/contracts/src/framework.test.ts apps/worker/src/harness/runtime-contract.test.ts packages/ui/src/runtime-events.test.ts",
+    "identity:migrate-portals": "tsx scripts/migrate-organization-accounts.ts",
     "identity:bootstrap": "pnpm --filter @allrice/database identity:bootstrap",
     "lint": "eslint . --max-warnings=0",
     "met62:verify": "pnpm acceptance:release-gate",

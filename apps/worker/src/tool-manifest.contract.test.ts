@@ -108,8 +108,10 @@ describe('AllRice worker tool manifest contract', () => {
         ),
       ).href
     );
-    expect(workbenchNativeTools).toHaveLength(1);
-    const native = workbenchNativeTools[0];
+    const native = workbenchNativeTools.find(
+      (tool: { canonicalName: string }) =>
+        tool.canonicalName === 'workspace.export.create',
+    );
     const broker = riceToolDefinitions.find(
       (tool) => tool.name === native.canonicalName,
     )!;

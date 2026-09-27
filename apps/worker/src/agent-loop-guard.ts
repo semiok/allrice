@@ -15,7 +15,6 @@ export class AgentLoopGuardError extends Error {
 
 export class AgentLoopGuard {
   private events = 0;
-  private toolCalls = 0;
   private readonly signatures = new Map<string, number>();
   private readonly startedAt = Date.now();
   private callsObserved = false;
@@ -27,6 +26,7 @@ export class AgentLoopGuard {
   constructor(
     private readonly limits: {
       maxEvents: number;
+      /** Deprecated compatibility field; useful calls have no cumulative cap. */
       maxToolCalls: number;
       maxIdenticalToolCalls: number;
       maxRuntimeMs: number;
@@ -41,7 +41,7 @@ export class AgentLoopGuard {
 
   observe(event: HarnessEvent, now = Date.now()) {
     // Protect event throughput, not the accumulated lifetime of a healthy task.
-    if (this.callsObserved && now - this.windowStart >= 60000) {
+    if (now - this.windowStart >= 60000) {
       this.events = 0;
       this.windowStart = now;
     }
@@ -56,11 +56,7 @@ export class AgentLoopGuard {
       throw new AgentLoopGuardError('AGENT_RUNTIME_LIMIT_EXCEEDED');
     }
     if (event.type !== 'tool.started') return;
-    this.toolCalls += 1;
     if (this.callsObserved) return;
-    if (this.toolCalls > this.limits.maxToolCalls) {
-      throw new AgentLoopGuardError('AGENT_TOOL_LOOP_DETECTED');
-    }
     const signature = createHash('sha256')
       .update(event.name)
       .update('\0')

@@ -39,7 +39,7 @@ const render = (op: CloudOperationView, busy = false) =>
 describe('Cloud/MCP approval presentation', () => {
   it('distinguishes a third-party send from chat/local execution and escapes parameters', () => {
     const html = render(view());
-    expect(html).toContain('第三方 MCP 工具');
+    expect(html).toContain('应用工具');
     expect(html).toContain('发送给此第三方服务');
     expect(html).toContain('批准这一次执行');
     expect(html).not.toContain('<script>');
@@ -103,7 +103,7 @@ describe('Cloud/MCP approval presentation', () => {
       trusted: false,
     };
     const html = render(op);
-    expect(cloudOperationDisplayStatus(op)).toBe('执行已返回成功');
+    expect(cloudOperationDisplayStatus(op)).toBe('执行成功');
     expect(html).toContain('saved:synthetic;call-count:1');
     expect(html).not.toContain('请求停止本轮全部操作');
     expect(op.result.trusted).toBe(false);
@@ -141,9 +141,15 @@ describe('Cloud/MCP approval presentation', () => {
       },
     };
     const html = render(op, true);
-    expect(html).toContain('云端隔离计算');
-    expect(html).toContain('禁止联网');
+    expect(html).toContain('云端计算');
+    expect(html).toContain('不联网');
     expect(html).toContain('input.json');
+    expect(html).toContain('计划输出：');
+    expect(html).toMatch(/<details[^>]*open=""[^>]*><summary><span>运行详情/);
+    op.snapshot.status = 'succeeded';
+    expect(render(op)).not.toMatch(
+      /<details[^>]*open=""[^>]*><summary><span>运行详情/,
+    );
     expect(html).toContain('256');
     expect(html).toContain('disabled=""');
     expect(html).toContain('批准这一次执行');

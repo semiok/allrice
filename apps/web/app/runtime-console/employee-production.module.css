@@ -540,6 +540,36 @@
   gap: 12px;
 }
 
+.testAction,
+.publishEntry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.testAction span,
+.publishEntry p {
+  color: #aab0b8;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.publishEntry {
+  justify-content: space-between;
+  padding: 18px 0;
+  border-top: 1px solid #34383d;
+  border-bottom: 1px solid #34383d;
+}
+
+.publishEntry p {
+  margin: 5px 0 0;
+}
+
+.publishEntry .button {
+  flex-shrink: 0;
+}
+
 .testRun {
   padding: 16px;
   background: #1c1f22;

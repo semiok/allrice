@@ -286,12 +286,12 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
         }),
       ),
     );
-    expect(calls.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
+    expect(calls.filter((r) => r.status === 'fulfilled')).toHaveLength(10);
     const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
     expect(tree.budgets.find((b) => b.metric === 'model_calls')?.reserved).toBe(
-      3,
+      10,
     );
-    await expect(f.delegate()).rejects.toThrow('budget_exhausted');
+    await expect(f.delegate()).resolves.toMatchObject({ created: true });
     const rows = await fixture.db<
       { call_id: string }[]
     >`select distinct call_id from allrice_assistant_usage where root_run_id=${f.task.runId} and metric='model_calls' and settled_amount is null`;
@@ -309,7 +309,7 @@ integration('P25 governed assistant ledger — isolated real PostgreSQL', () => 
       await f.runtime.getTree(f.context, { runId: f.task.runId })
     ).budgets.find((b) => b.metric === 'model_calls');
     expect(budget).toMatchObject({
-      reserved: 2,
+      reserved: 10,
       spent: 1,
       usageComplete: false,
     });

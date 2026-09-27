@@ -56,6 +56,14 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 “能力与环境”从聊天标题栏移入原生设置的独立分区，采用官方 `IconSparkleMedium`，与现有导航图标区分。沿用原能力内容与状态来源，打开检查一次、手动刷新；准备任务保留已有草稿，连接应用在同一个设置面板内切换，本地电脑配对继续使用现有入口。图标补丁与摘要登记在 `native-settings` UI 账本。验收覆盖真实 PostgreSQL 的跨员工翻页和隔离、桌面/触屏展开滚动、失败重试、旧响应丢弃，以及能力状态、草稿和焦点行为。
 
+## 执行用量原则（2026-09-27）
+
+用户确认：**默认单任务 1 小时时限保留；Token、模型/工具调用次数和费用仅统计，不在执行过程中按累计用量中断任务。** 此原则覆盖订阅、API、父任务、子助手与原生压实，不再通过 `ALLRICE_CODEX_TOKEN_POLICY` 恢复旧用量限制。
+
+缺失用量/价格保留未知，不冒充零，也不作为已完成任务失败的原因。真实执行、交付和子任务完成仍须确认，部分完成与未知副作用不能因已有文件而写成功。死循环、无进展、租约、授权、单次操作超时、实际 CPU/内存和模型协议边界保留。未来按租户任务次数或使用天数限制，放在新任务入口，避免中断已接受的正常任务。
+
+沙箱容量满载应持久排队，容量在启动时按实际执行节点计算，内存压力暂停新领取；预热仅在实测有收益时使用现有 Docker 后端的轻量实现，继续复用 DSH Office 指南、脚本及检查器。详见[云端执行与并发调度方案](cloud-execution-scaling.md)。
+
 ## 会话归档接入（2026-09-27）
 
 复用 UI `0.1.7-rc.1` / `46a7f68b0922371ce7144b668b90e377d8e799f4` 的 `ArchiveSession`（悬停按钮、菜单和运行中确认）、`RowActionToast`（撤销、归档筛选入口）、原生行与 `ArchivedFilter`。已核对官方插件入口：依赖 DSH `remote`、Session/Workspace Host 控制器和 slot 宿主；本仓沿用已验证的员工树源码接入，组件行为与样式保留，只适配导入和宿主类型。固定源码、摘要与可重放补丁登记在同一 UI 账本。
@@ -67,6 +75,14 @@ Allrice 将归档状态接到既有 `allrice_chat_sessions.archived_at`，普通
 运行中确认基于服务端真实任务和定时任务。归档事务与任务准入共用会话锁，复用停止按钮的持久化助手取消和队列取消请求，同时暂停会话绑定的定时任务；恢复不撤销取消请求、不重启定时任务。停止请求在后台收尾，提示不把请求发出写成进程已经退出。验证使用隔离 PostgreSQL 和无模型 Chromium 场景，不用租户真实任务测试停止。
 
 ## 本轮复核
+
+### 文件交付链接与 Office 参数兼容（2026-09-27）
+
+后续 ETH Run `dc51dbd1` 的首次 Excel 沙箱执行返回失败、无诊断输出；重试交付三个文件且原生 turn 已 completed，但 Allrice 未结算第一次失败的写工具调用，最终错误标为 `ASSISTANT_EXECUTION_UNRESOLVED`。补齐的是 Allrice 记账接线：原生 Office 在文件发布前确认失败时，由执行处理器给当前 Run/调用绑定失败回执，按一次失败尝试结算，允许 DSH 自行修正后正常完成；发布、传输、清理结果不确定时仍不能冒充已完成。首次 Excel 原脚本单独重放通过并保留 6 条公式，现有证据不足以归因于公式或图表；沙箱补齐退出状态和校验诊断，并在退出前排空输出管道，避免丢失大文件或错误报告。DSH 原生文档库、检查器与重试流程继续复用。
+
+Run `851fafd3` 一次成功、无工具失败，仅返回示例文字和图表代码；随后 `f0adbe4a` 的 Excel/PPT 导出分别遇到嵌套 `python.changeSummary` 未声明及 `python.sourceObjectId=null` 类型错误，共四次校验失败后成功。补充模型可见的原生参数声明和 Broker 契约：接受这两个无歧义的元数据写法，保留修改说明，冲突说明明确报错；未知输入文件与校验和检查照旧。清理运行提示中仍推荐旧 `office.kind=edit` 的内容，默认使用现有 DSH Python Office 工作流程。未重写文档执行或渲染。
+
+前端直接使用 `@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1` 已导出的 `MarkdownDelegateProvider` 接入现有成果 Dock，保持原生 Markdown 链接、键盘与修饰键行为。补齐该版 `design-platform.css` 的 `--dsw-alias-link` 蓝色映射，避免旧主题使链接继承正文黑色。普通点击当前 Run 已核实的文件链接打开侧栏预览，下载仍由既有 DocumentToolbar 提供；其他网页保留外链行为。历史回复里重复转义的斜杠仅在匹配已鉴权成果 ID 时修复。验证使用真实 DSH 协议参数回放及浏览器点击、主题颜色和精确版本下载检查。
 
 ### 原生任务清单：复用 TodoPanel 与 todo_write
 
@@ -118,7 +134,17 @@ Allrice 将归档状态接到既有 `allrice_chat_sessions.archived_at`，普通
 
 以下记录保留 MET-154 当时的实现与验收事实，其中“本轮不接入”“临时配置已恢复”不构成后续默认关闭的政策。后续升级和能力接入执行上面的“默认开放”原则。
 
+## ChatFlow 原生交付卡片与连续文档预览（2026-09-27）
+
+预览状态修复：沿用原生 Dock 的当前标签判断，仅在可见的计划/修改审查中刷新动态状态；普通已发布文件和隐藏标签停止五秒轮询。读取错误独立于提交/对比错误，成功后清除过期读取提示；短暂后台失败保留已加载页面，权限撤销仍清除内容，首次失败提供重试入口。成果列表错误仅在列表展示，避免把可用文件误报为服务不可用。
+
+固定 WebUI `0.1.7-rc.1` / `46a7f68b0922371ce7144b668b90e377d8e799f4`，复用 `ui-deliverables` 的 `PresentedFileCard` 和原生响应式卡片 CSS，以及已安装的 `FileTypeIcon`、`Menu`。官方完整插件的文件动作槽依赖 DSH Host 的工作区路径、事件订阅和本机应用打开服务；Allrice 浏览器已有鉴权文件对象与服务端交付事实，因此保留卡片的独立预览按钮、动作槽和原生布局，只将桌面 Host 状态接线替换为既有侧栏预览与鉴权下载。没有复制文件管理器或桌面打开服务；来源、源码哈希和最小适配补丁纳入 `dsh-ui:verify`。
+
+Office 继续使用已接入的页面渲染与公式结果。所有已渲染页面共用现有 DSH `ZoomViewport`，保留原生适应宽度、比例菜单及手势缩放，删除逐页按钮和重复成功说明。Allrice 仅补灰色画布、白纸阴影、连续页间距及实际错误/截断提示；计算详情默认折叠，零公式不占一行。最多八页的既有预览限制仍明确提示，完整文件可从卡片菜单或侧栏下载。
+
 ## ChatFlow 原生正文与过程分组（2026-09-25）
+
+2026-09-27 用户消息气泡补齐原生换行规则：现有 `MessageItem.module.css` 仍固定在 `b150a551`，直接展示文本时缺少长 JSON/URL 的断行及原文空白保留；官方 `ui-chat` 在 `46a7f68b0922371ce7144b668b90e377d8e799f4` 已由气泡设置 `white-space: pre-wrap` 和 `word-break: break-word`。Allrice 的 `userBubble` 薄适配仅补齐这两条原生规则，保留已固定的气泡尺寸、字号和源码校验；后续同步新版气泡时删除此适配。换行仅影响显示，不改变消息正文或复制内容。
 
 正文直接使用 `@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1` 已导出的 `MarkdownText`，退役 Allrice 的 react-markdown 正文渲染、重复排版 CSS 和自有闪烁光标。流式文字原样交给官方增量解析器，复用其已完成块缓存；不在每次追加时重新做 Allrice 全文 Markdown 解析。
 
@@ -286,7 +312,7 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 | `cap-sdk-image` / 图片准入         | rc.3 [SDK][sdk]新增 encoded-image 准入；Allrice 已有附件桥接                                                 | 适配后替换。通过附件顺序、伪 MIME、超限及撤权路径，再删除重叠代码。                                                                                                                                                                                                                                                                                                     |
 | `cap-compaction` / 压缩            | 旧版已有 compaction；Allrice 已调用 `ctx.compaction.compactNow`，不是新能力                                  | 保留原生复用。验证新 [压缩策略][compaction]的安全区间、模型路由、手动 busy 拒绝和上下文投影；不自建摘要主循环。                                                                                                                                                                                                                                                         |
 | `cap-plan-goal` / Plan、Goal       | [Plan][plan]、[Goal][goal]在旧版已有，Allrice 未启用它们的产品流程                                           | 明确不接入本轮运行面；研究 SOP/上下文表达。未来必须映射精确审批、权威时钟与取消，不另建自动重启循环。                                                                                                                                                                                                                                                                   |
-| `cap-session-reference` / 会话引用 | 旧版已有 [Session Reference][reference]；Allrice 使用授权后的历史检索                                        | 可复用待验证。引用解析可以借鉴，但必须证明租户隔离、会话 ACL、冻结 Skill 和只读范围，才能替换自有引用适配。                                                                                                                                                                                                                                                             |
+| `cap-session-reference` / 会话引用 | 旧版已有 [Session Reference][reference]；Allrice 已接入显式会话选择和原生引用快照                            | 已复用 `SessionReferenceResolver.prepare` 的文本投影、节选、警告和持久背景消息；见下方 `allrice-session-reference-v1`。已有标题检索工具继续保留。                                                                                                                                                                                                                       |
 | `cap-code-mode` / Code Mode        | 旧版已有 [tool presentation][presentation]；“代码式展示”不能等同执行沙箱                                     | 明确不接入本轮运行面。需区分展示、PTC 执行与本地命令权限；新执行权限另列产品范围。                                                                                                                                                                                                                                                                                      |
 | `cap-ptc` / PTC workflow           | [workflow-ptc][ptc]存在于 alpha.2，不在 rc.3 包组合                                                          | 明确不接入。可研究编排表达；Node VM 不是安全边界，文件策略不限制网络，总时限仍需调用方管理。须在既有隔离执行器中验证授权、取消、账本和计时，才讨论替代。                                                                                                                                                                                                                |
 | `cap-office` / Office Skill        | [skill-office][office]，固定 `00102833dfaee1da9f48a3a8eae9d34005a75218` / alpha.2；运行引擎仍为 rc.3         | MET-157 PR1 复用 DOCX/XLSX/PPTX 工作方法为单一 Office Skill 的冻结内部资源，合并旧文档阅读与交付入口，默认启用现有读写链路；MIT 来源与改动见 [Office provenance](../../skills/office/references/provenance.md)。未引入上游 Python 执行器；PR2 已扩展原生表格/图表和定点原包编辑；PR3 已接入真实公式求值与租户页面预览，Dev 闭环验收单独记录，不把渲染成功当成排版正确。 |
@@ -295,6 +321,17 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 | `cap-completion-wakeup` / 连续唤醒 | [alpha.2][alpha-release]修正连续后台/一次性助手完成后的默认唤醒上限；不推定 rc.3 已有该修复                  | 可复用待验证。逐次结果都需同一授权父节点与 durable delivery ID；验证长协作、取消、重复结算和用量，才删旧唤醒包装。                                                                                                                                                                                                                                                      |
 
 本表条目由 MET-154 完成本轮复核，后续能力模块/Skill 封装由 MET-155 承接。按首要原则推进接入与默认开放，不因模块化尚未完成而推迟可用能力交付。暂停或回退针对具体问题，保留正在使用的依赖、数据和已开放的其他能力。
+
+### allrice-session-reference-v1
+
+- ID：`allrice-session-reference-v1`；**原生服务复用，保留平台适配**。Worker 直接依赖现有锁文件中的 `@deepseek-ai/dsh-session-reference@0.1.5-rc.3`，不升级引擎、不修改上游源码。
+- 租户入口：输入框“＋ → 引用会话”，标题搜索、分页、最多三个来源、可移除标签。普通排队任务携带引用；编辑恢复标签；含引用不能作为 steer 发送。支持不同员工的有权读取会话，附件单独添加。
+- 权威：[数据库适配](../../packages/database/src/workspace/session-references.ts)检查当前成员、租户、工作区、来源可见性和归档状态。发送时锁定来源并捕获正文；目标不能扩大来源可见范围，后续也不能通过修改目标可见范围公开私有引用。排队任务开始再次检查授权，不静默跳过已失效来源。
+- 持久化：迁移 `0112_session_references.sql` 为消息增加服务端快照列；浏览器只提交唯一会话 ID，消息 API 只返回标签。第一次成功提交保留快照和摘要哈希，幂等重试使用原快照。冻结员工 prompt snapshot 携带来源，不扩展员工工具、Skill 或文件权限。
+- 复用：[运行时适配](../../apps/worker/dsh/allrice-session-references.mjs)仅对显式授权快照开放独立 `readSurface`，调用官方 resolver；以原生 `session-reference` 背景消息紧跟对应用户消息进入原生 pre-step 和持久日志。Allrice 正文投影没有 DSH 原始日志序号，明确使用 `capturedThroughSeq: null` 并省略 native format version，平台保留真实消息 ID、捕获时间和哈希，不伪造日志事实。
+- 内容：只捕获已完成的用户/员工正文，不含工具日志、系统消息、附件字节或递归引用。每来源最多最近 200 条、64 KiB 文字；原生预览再限制 12 KiB，附真实截断说明。未挂载 spill 文件存储，超出预览的内容不会通过文件工具隐式开放。引用增加模型上下文，但不另调用模型生成摘要。
+- 验证：真实 PostgreSQL 的快照/幂等/越权/可见性/撤权用例，真实 rc.3 stdio 和 JSONL 重启回放用例，以及桌面与窄屏选择/移除/发送浏览器用例。
+- 回退：新增列可保留；使用新消息内容字段后旧版严格 schema 不能直接读取新消息，需先停用引用入口并使用兼容读取版本，不能声称任意旧二进制可无损降级。
 
 ## 持续维护规则
 
@@ -308,6 +345,7 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 4. 上游新版本的研究快照放在 `dsh-upgrades/`，从本页链接；机器发行文件只随实际兼容实现更新。历史日志夹具保持原字节，不用新版本重新生成来冒充兼容。
 5. 不以“减少多少代码/节省多少 token”替代行为验收；有测量再填写收益。PR-2 已更新候选依赖及发行事实；PR-3 只删除一段重复转换，不减少 ledger 条目或物理补丁数量，不改变工具集合。
 6. 本轮新增或重新评估的能力需记录默认开放状态；未开放项写明具体技术缺口或已知问题、负责工单与下一步。不能把“入口已展示”作为“能力已开放”的验收结果，不能在验收结束后无故关闭已可用能力。
+7. Office 验收必须从租户聊天入口完成三格式并发生成、交付和预览/下载，不能用单个工具或已有文件代替整项任务。DSH 的并发调用由 Allrice 沙箱按实际容量排队，继续复用上游 Office 脚本与检查器；见 [2026-09-27 并发交付回归](allrice-2.0/office-concurrent-export-incident.md)。
 
 [met154]: https://linear.app/metasnowsky/issue/MET-154
 [persistence]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/session/session-persistence-jsonl/README.md
@@ -336,3 +374,9 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 ### Office 原生工具接入补齐（MET-157 PR3）
 
 `allrice-office-native-v1`：将 `workspace.file.list` 接入现有 DSH 原生工具循环；补齐 `workspace.document.read.includeStructure` 与 `workspace.export.create.office`，`content` 与 `office` 二选一。使用现有 DSH 注册接口与 Allrice Broker，不增加 Agent 循环或权限开关。真实固定版本 DSH 子进程回归覆盖文件列表返回、结构读取、三种格式生成和原文件定点编辑，防止仅后端支持而模型接口缺失。
+
+引用上下文在入队时随原生 inbox 消息持久化；pre-step 接纳后移除适配器暂存字段，紧接用户消息插入原生 session-reference 消息。进程在接纳前重启也能从 inbox 恢复固定内容，无需重读来源或依赖内存映射。
+
+#### 2026-09-27 · MET-160 设置视觉适配复核
+
+复核官方 `native-settings` 0.1.7-rc.1（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。沿用 Modal、焦点锁定、Esc 和恢复焦点；AllRice 的 `settings-design.module.css` 负责冷灰外观与尺寸，窄屏以原生 select 切换同一 sections slot。`SettingsRoot.tsx` 的样式接入及移动导航补丁、源码摘要已更新到 UI 账本。账号退出、连接管理、电脑能力开关与个人偏好仍由 AllRice 原业务组件处理，无新增 DSH 宿主权限。

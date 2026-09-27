@@ -1,5 +1,8 @@
 'use client';
 
+import type { SessionReference } from '@allrice/contracts';
+import { SessionReferenceChips } from './session-reference-picker';
+
 import type { MutableRefObject, RefObject, ReactNode } from 'react';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
@@ -15,6 +18,9 @@ import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatComposerProps {
+  sessionReferences?: SessionReference[];
+  onOpenSessionReferences?: () => void;
+  onRemoveSessionReference?: (id: string) => void;
   employeeName: string;
   attachmentMenuOpen: boolean;
   busy: boolean;
@@ -46,6 +52,9 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  sessionReferences = [],
+  onOpenSessionReferences,
+  onRemoveSessionReference,
   employeeName,
   attachmentMenuOpen,
   busy,
@@ -84,6 +93,11 @@ export function ChatComposer({
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
       {error ? <div className={inputUi.notice}>{error}</div> : null}
       <div className={inputUi.card}>
+        <SessionReferenceChips
+          references={sessionReferences}
+          onRemove={onRemoveSessionReference}
+          disabled={busy}
+        />
         {pendingAttachments.length ? (
           <PendingAttachmentRail
             attachments={pendingAttachments}
@@ -158,6 +172,22 @@ export function ChatComposer({
               </button>
               {attachmentMenuOpen ? (
                 <div className={styles.attachmentMenu} role="menu">
+                  {onOpenSessionReferences && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        onAttachmentMenuOpenChange(false);
+                        onOpenSessionReferences();
+                      }}
+                    >
+                      <span aria-hidden="true">＠</span>
+                      <span>
+                        <strong>引用会话</strong>
+                        <small>参考之前的工作内容</small>
+                      </span>
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       onAttachmentMenuOpenChange(false);

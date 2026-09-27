@@ -1,3 +1,4 @@
+import { safeNavigationQuery } from './navigation-query';
 /** Preserve employee trial navigation after tenant login, never redirect off-site. */
 export function loginDestination(
   next: string | null,
@@ -7,8 +8,17 @@ export function loginDestination(
   if (!next) return fallback;
   try {
     const target = new URL(next, origin);
-    if (target.origin === origin && target.pathname === '/chatflow')
-      return target.pathname + target.search;
+    if (
+      target.origin === origin &&
+      !(
+        new URL(origin).hostname === 'allrice.bplabs.xyz' &&
+        /^\/runtime-console(\/|$)/.test(target.pathname)
+      ) &&
+      /^\/(chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(
+        target.pathname,
+      )
+    )
+      return target.pathname + safeNavigationQuery(target);
   } catch {
     /* Invalid navigation hints do not change the login destination. */
   }

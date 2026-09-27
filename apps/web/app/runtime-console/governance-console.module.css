@@ -183,6 +183,7 @@
   margin-top: 10px;
 }
 .providerGrid button,
+.authorizationPanel button,
 .quotaForm button {
   background: #fff;
   border: 1px solid #cdd8d0;
@@ -195,6 +196,51 @@
 .codexAuth button {
   background: var(--green);
   color: #fff;
+}
+.codexAuth {
+  flex-direction: column;
+  align-items: stretch;
+}
+.authorizationPanel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.authorizationPanel p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.authorizationPanel summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+.authorizationFlow {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding-top: 12px;
+}
+.authorizationFlow p {
+  margin: 0;
+}
+.authorizationCode {
+  font-size: 20px;
+  letter-spacing: 2px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.authorizationActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.authorizationActions a {
+  font-size: 13px;
+  color: inherit;
+  text-decoration: underline;
 }
 .providerGrid .danger {
   color: #9a433e;
@@ -263,4 +309,19 @@
   .quotaForm {
     grid-template-columns: 1fr;
   }
+}
+
+.quotaForm select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+.quotaForm select option {
+  color: var(--ink);
+  background: #191a1d;
 }

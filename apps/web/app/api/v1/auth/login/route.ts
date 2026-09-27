@@ -1,8 +1,10 @@
 import { cookies } from 'next/headers';
 
 import {
-  createSession,
   ensureBootstrapPortalPrincipal,
+  getLegacyPortalAccount,
+  initializeAccountLogin,
+  isPlatformAdmin,
   login,
 } from '@allrice/database';
 
@@ -17,7 +19,9 @@ import {
 import { identityErrorResponse } from '../../../../../lib/identity/responses';
 import {
   portalAuthEnabled,
+  isUnifiedPortalHost,
   resolvePortal,
+  portalAccountKind,
 } from '../../../../../lib/portal/config';
 import {
   createPortalSession,
@@ -30,7 +34,11 @@ export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
   try {
-    if (portalAuthEnabled()) {
+    const accountKind = portalAccountKind(request.headers.get('host'));
+    if (
+      portalAuthEnabled() &&
+      !isUnifiedPortalHost(request.headers.get('host'))
+    ) {
       const portal = resolvePortal(request.headers.get('host'));
       if (!portal)
         return apiProblem({
@@ -43,16 +51,29 @@ export async function POST(request: Request) {
         username?: unknown;
         password?: unknown;
       };
-      if (!verifyPortalCredentials(portal, input.username, input.password)) {
-        return authenticationRequiredProblem('Authentication failed');
+      let account = await getLegacyPortalAccount(portal.principal);
+      if (!account?.username) {
+        if (!verifyPortalCredentials(portal, input.username, input.password))
+          return authenticationRequiredProblem('Authentication failed');
+        const principal = await ensureBootstrapPortalPrincipal(
+          portal.principal,
+        );
+        await initializeAccountLogin({
+          userId: principal.user.id,
+          username: portal.username,
+          password: String(input.password),
+        });
+        account = await getLegacyPortalAccount(portal.principal);
       }
-      const principal = await ensureBootstrapPortalPrincipal(portal.principal);
-      const databaseSession = await createSession(principal.user.id);
+      if (!account)
+        return authenticationRequiredProblem('Authentication failed');
+      const result = await login(input, portal.principal.email, accountKind);
+      const databaseSession = result.session;
       const portalSession = createPortalSession({
         portal,
-        subject: principal.user.id,
-        organizationId: principal.organizationId,
-        workspaceId: principal.workspaceId,
+        subject: result.user.id,
+        organizationId: account.organization_id,
+        workspaceId: account.workspace_id,
       });
       const cookieStore = await cookies();
       cookieStore.set(sessionCookieName, databaseSession.token, {
@@ -65,17 +86,23 @@ export async function POST(request: Request) {
         expires: portalSession.expiresAt,
       });
       return Response.json({
-        user: principal.user,
+        user: result.user,
         portal: { key: portal.key, kind: portal.kind },
         homePath: portal.homePath,
       });
     }
-    const result = await login(await request.json());
+    const result = await login(await request.json(), undefined, accountKind);
     (await cookies()).set(sessionCookieName, result.session.token, {
       ...sessionCookieOptions,
       expires: new Date(result.session.expiresAt),
     });
-    return Response.json({ user: result.user });
+    const admin = await isPlatformAdmin({
+      actor: { type: 'user', id: result.user.id },
+    });
+    return Response.json({
+      user: result.user,
+      homePath: admin ? '/runtime-console' : '/chatflow',
+    });
   } catch (error) {
     return identityErrorResponse(error);
   }

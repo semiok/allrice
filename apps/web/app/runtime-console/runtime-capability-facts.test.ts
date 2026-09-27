@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import capabilityCatalog from '../../../../packages/dsh-runtime-diff/capabilities.json';
 import {
   runtimeCapabilityFacts,
   integratedCapabilityStatus,
@@ -86,6 +87,61 @@ const data = (): RuntimeCapabilityResponse => ({
   ],
 });
 describe('live capability projection', () => {
+  it('recognizes every integrated catalog entry', () => {
+    const integrated = capabilityCatalog.groups.find(
+      (group) => group.id === 'integrated',
+    )!;
+    for (const capability of integrated.items) {
+      expect(
+        integratedCapabilityStatus(capability.id, data()),
+        capability.id,
+      ).not.toBe('接入状态待核对');
+    }
+  });
+  it('reports session references from all online Workers, without requiring tenant publication', () => {
+    const input = data();
+    input.publications = [];
+    input.workers[0]!.components.push({
+      id: 'allrice-session-reference',
+      packageName: '@deepseek-ai/dsh-session-reference',
+      version: '0.1.5-rc.3',
+      state: 'configured',
+    });
+    expect(integratedCapabilityStatus('session-reference', input)).toBe(
+      '已接入',
+    );
+    input.workers.push({
+      ...input.workers[0]!,
+      workerId: 'older-worker',
+      components: [],
+    });
+    expect(integratedCapabilityStatus('session-reference', input)).toBe(
+      'Worker 配置不一致',
+    );
+    input.workers[1]!.online = false;
+    expect(integratedCapabilityStatus('session-reference', input)).toBe(
+      '已接入',
+    );
+    input.workers[0]!.online = false;
+    expect(integratedCapabilityStatus('session-reference', input)).toBe(
+      '运行状态未知',
+    );
+  });
+  it.each(['missing', 'disabled', 'conditional'] as const)(
+    'does not label %s session-reference components as integrated',
+    (state) => {
+      const input = data();
+      input.workers[0]!.components.push({
+        id: 'allrice-session-reference',
+        packageName: '@deepseek-ai/dsh-session-reference',
+        version: state === 'missing' ? null : '0.1.5-rc.3',
+        state,
+      });
+      expect(integratedCapabilityStatus('session-reference', input)).toBe(
+        '运行组件未配置',
+      );
+    },
+  );
   it('counts actual configuration and published Skill IDs, not static catalog entries', () => {
     const input = data();
     input.publications.push({

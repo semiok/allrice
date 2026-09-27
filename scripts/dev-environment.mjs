@@ -17,7 +17,7 @@ export function loadDevelopmentEnvironment() {
   process.env.ALLRICE_WORKER_POLL_INTERVAL_MS ||= '1000';
   process.env.ALLRICE_WORKER_LEASE_MS ||= '30000';
   process.env.ALLRICE_WORKER_HEARTBEAT_MS ||= '10000';
-  process.env.ALLRICE_WORKER_CONCURRENCY ||= '1';
+  process.env.ALLRICE_WORKER_CONCURRENCY ||= 'auto';
   process.env.ALLRICE_EXECUTION_ROOT ||= fileURLToPath(
     new URL('../.local/executions', import.meta.url),
   );

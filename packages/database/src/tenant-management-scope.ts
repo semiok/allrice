@@ -16,6 +16,23 @@ export interface TenantManagementTarget {
 export type ManagementSql =
   ReturnType<typeof getDatabase> | postgres.TransactionSql;
 
+/** Historical inspection does not restore a disabled account or allow actions. */
+export async function requireTenantInspectionScope(
+  issuer: RequestContext,
+  target: TenantManagementTarget,
+  sql: ManagementSql,
+) {
+  const organizationId = UuidSchema.parse(target.organizationId),
+    workspaceId = UuidSchema.parse(target.workspaceId),
+    subjectId = UuidSchema.parse(target.subjectId);
+  await requireTenantAdministrationAuthority(issuer, sql);
+  await requireTenantAdministrationTarget(sql, organizationId, workspaceId);
+  const [person] =
+    await sql`select id from allrice_memberships where organization_id=${organizationId} and user_id=${subjectId}
+    and (workspace_id is null or workspace_id=${workspaceId}) limit 1`;
+  if (!person) throw new DataAccessError('not_found');
+}
+
 export async function requireTenantManagementScope(
   issuer: RequestContext,
   target: TenantManagementTarget,

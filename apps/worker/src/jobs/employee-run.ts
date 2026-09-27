@@ -70,7 +70,6 @@ import {
   checkCompletedModelBudget,
   modelAdmissionTokenEstimate,
 } from '../model-result-budget.js';
-import { assertSubscriptionQuotaNotExhausted } from '../subscription-quota-admission.js';
 import {
   preflightAssistantPricing,
   assistantResultCostCents,
@@ -217,6 +216,9 @@ export async function executeEmployeeRun({
         employeeVersionId: input.employeeVersionId,
         provider: resolved.providerSnapshot,
         systemPrompt: resolved.promptSnapshot.systemPrompt,
+        ...(resolved.promptSnapshot.organizationContext
+          ? { organizationContext: resolved.promptSnapshot.organizationContext }
+          : {}),
         skills: resolved.nativeSkills
           .map(
             (skill) =>
@@ -376,10 +378,23 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.capabilitySnapshot
         : null;
-    const allowedToolNames =
+    const employeeToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
-        ? executionSnapshot.employee.definition.capabilityBindings.toolNames
+        ? executionSnapshot.employee.definition.capabilityBindings.toolNames.filter(
+            (name) => !name.startsWith('image.'),
+          )
         : undefined;
+    const imageConfiguration =
+      executionSnapshot.schemaVersion === 2
+        ? executionSnapshot.modelSnapshot?.platformSettings?.configuration
+        : null;
+    const allowedToolNames =
+      employeeToolNames &&
+      imageConfiguration?.imagesEnabled &&
+      employeeToolNames.includes('workspace.export.create') &&
+      resolved.grantedCapabilities.includes('model:invoke')
+        ? [...employeeToolNames, 'image.generate', 'image.edit']
+        : employeeToolNames;
     const authorizedTools = riceToolDefinitionsForCapabilities(
       resolved.grantedCapabilities,
       allowedToolNames,
@@ -635,7 +650,6 @@ export async function executeEmployeeRun({
       workflow: routeDecision.selectedKind === 'workflow',
     };
     const taskProgress =
-      subscriptionSnapshot &&
       executionSnapshot.schemaVersion === 2 &&
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
@@ -644,8 +658,6 @@ export async function executeEmployeeRun({
           })
         : undefined;
     if (taskProgress) loopGuard.observeCallsOnly();
-    if (subscriptionSnapshot)
-      assertSubscriptionQuotaNotExhausted(codexStatus.quota);
     assertAssistantProviderOutputBound(
       providerSnapshot,
       objectInput(assistantConfiguration).allowAssistants === true,
@@ -1412,7 +1424,7 @@ export async function executeEmployeeRun({
               model: result.model,
               ...result.usage,
             });
-    const budgetWarning = checkCompletedModelBudget({
+    checkCompletedModelBudget({
       ...modelBudgetScope,
       limits: runLimits,
       result,
@@ -1477,7 +1489,6 @@ export async function executeEmployeeRun({
               result.cacheUsageKnown === true && priorWaitUsage.cacheUsageKnown,
           }
         : {}),
-      ...(budgetWarning ? { budgetWarning } : {}),
       citations: [...knowledge.citations, ...workflowCitations].filter(
         (citation, index, values) =>
           values.findIndex(

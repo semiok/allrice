@@ -96,7 +96,7 @@ export function WorkAutomationSettings({
   return (
     <section aria-label="员工工作方式设置">
       <p>
-        在你的员工、应用和电脑已授权范围内自动执行。需要新账号、新文件夹或扩大范围时，再向你申请。
+        在已授权范围内自动工作。新增账号、文件夹或扩大范围时，员工会再向你确认。
       </p>
       {error ? (
         <p role="alert">
@@ -139,7 +139,7 @@ export function WorkAutomationSettings({
             </div>
           ))}
           <p>
-            对后续发起的操作生效。已发起的操作继续按当时的授权处理；可在任务中停止。电脑是否可用由「我的电脑」中的能力开关控制。
+            仅影响你在当前工作区的后续操作；进行中的工作可在任务中停止。电脑能力开关在「我的电脑」管理。
           </p>
         </>
       ) : null}

@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 
 import {
   EmployeeModelPolicySchema,
-  EmployeeManifestSchema,
   ModelCatalogEntrySchema,
   ModelConnectionSchema,
   ModelProviderSchema,
@@ -18,7 +17,6 @@ import {
   UpsertEmployeeModelPolicyInputSchema,
   UpsertModelConnectionInputSchema,
   type EmployeeModelPolicy,
-  type SessionModelSnapshot,
   type ModelCatalogEntry,
   type ModelConnection,
   type ModelProvider,
@@ -27,50 +25,11 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { readPlatformModelSettings } from './platform-model-settings.ts';
 
 const defaultProviderId = '51000000-0000-4000-8000-000000000001';
 const defaultConnectionId = '52000000-0000-4000-8000-000000000001';
 const defaultModelId = '53000000-0000-4000-8000-000000000001';
-
-// Platform publication updates a session's employee version. Its old model
-// cache must not override the published model; queued Runs keep their own copy.
-function publishedSessionModel(manifestInput: unknown) {
-  const parsed = EmployeeManifestSchema.safeParse(manifestInput);
-  if (
-    !parsed.success ||
-    parsed.data.schemaVersion !== 2 ||
-    !parsed.data.runtimePackage
-  )
-    return null;
-  const provider = parsed.data.provider;
-  if (provider.provider !== 'dsh') return null;
-  return {
-    provider: provider.route,
-    model: provider.model,
-    reasoningEffort: provider.reasoningEffort,
-    authMode:
-      provider.route === 'openai-codex'
-        ? ('chatgpt_subscription' as const)
-        : ('api_key' as const),
-    credentialReference: provider.credentialReference,
-    baseUrl: provider.baseUrl,
-  };
-}
-
-function matchesPublishedModel(
-  snapshot: SessionModelSnapshot,
-  published: NonNullable<ReturnType<typeof publishedSessionModel>>,
-) {
-  return (
-    (snapshot.provider === 'codex' ? 'openai-codex' : snapshot.provider) ===
-      published.provider &&
-    snapshot.model === published.model &&
-    snapshot.reasoningEffort === published.reasoningEffort &&
-    snapshot.authMode === published.authMode &&
-    snapshot.credentialReference === published.credentialReference &&
-    snapshot.baseUrl === published.baseUrl
-  );
-}
 
 interface ProviderRow {
   id: string;
@@ -318,13 +277,15 @@ export async function listModelPool(context: RequestContext) {
             updatedAt: provider.updatedAt,
           };
     }),
-    connections: connectionRows.map((row) =>
-      mapConnection({
-        ...row,
-        credential_reference: platformAdmin ? row.credential_reference : null,
-        base_url: platformAdmin ? row.base_url : null,
-      }),
-    ),
+    connections: connectionRows
+      .filter((row) => providerRows.some((p) => p.id === row.provider_id))
+      .map((row) =>
+        mapConnection({
+          ...row,
+          credential_reference: platformAdmin ? row.credential_reference : null,
+          base_url: platformAdmin ? row.base_url : null,
+        }),
+      ),
     models: catalogRows.map(mapCatalogEntry),
     defaultSelection: {
       providerId: defaultProviderId,
@@ -357,6 +318,18 @@ export async function createModelConnection(
 ) {
   const actorId = await requirePlatformAdmin(context);
   const connection = UpsertModelConnectionInputSchema.parse(input);
+  const [provider] = await getDatabase()<
+    ProviderRow[]
+  >`select * from allrice_model_providers where id=${connection.providerId}`;
+  if (
+    !provider ||
+    !provider.enabled ||
+    !modelProviderRuntimeSupported({
+      key: provider.provider_key,
+      authMode: provider.auth_mode,
+    })
+  )
+    throw new DataAccessError('grant_invalid');
   if (connection.scope !== 'platform' || connection.organizationId !== null) {
     throw new DataAccessError('authorization_denied');
   }
@@ -408,6 +381,18 @@ export async function updateModelConnection(input: {
   `;
   const current = currentRows[0];
   if (!current) throw new DataAccessError('not_found');
+  const [provider] = await sql<
+    ProviderRow[]
+  >`select * from allrice_model_providers where id=${current.provider_id}`;
+  if (
+    !provider ||
+    !provider.enabled ||
+    !modelProviderRuntimeSupported({
+      key: provider.provider_key,
+      authMode: provider.auth_mode,
+    })
+  )
+    throw new DataAccessError('grant_invalid');
   const rows = await sql<ConnectionRow[]>`
     update allrice_model_connections set
       name = ${update.name ?? current.name},
@@ -669,10 +654,7 @@ async function resolveFrozenTarget(input: {
     })
   )
     throw new DataAccessError('grant_invalid');
-  if (
-    selection.provider_key === 'gemini' &&
-    process.env.ALLRICE_GEMINI_API_ENABLED !== '1'
-  )
+  if (selection.provider_key === 'gemini')
     throw new DataAccessError('grant_invalid');
   if (
     selection.harness === 'dsh' &&
@@ -713,12 +695,8 @@ export async function freezeSessionModelSnapshot(input: {
   employeeVersionId?: string;
 }) {
   const sql = getDatabase();
-  const existing = await sql<{ snapshot: unknown }[]>`
-    select snapshot from allrice_session_model_snapshots
-    where organization_id = ${input.organizationId}
-      and workspace_id = ${input.workspaceId}
-      and session_id = ${input.sessionId}
-  `;
+  const platformSettings = await readPlatformModelSettings();
+  const configuration = platformSettings.configuration;
   const sessions = await sql<
     {
       employee_id: string;
@@ -745,69 +723,34 @@ export async function freezeSessionModelSnapshot(input: {
   `;
   const session = sessions[0];
   if (!session) throw new DataAccessError('not_found');
-  const published = publishedSessionModel(session.manifest);
-  if (existing[0]) {
-    const cached = SessionModelSnapshotSchema.parse(existing[0].snapshot);
-    if (!published || matchesPublishedModel(cached, published)) return cached;
-  }
   const policy = await ensureDefaultPolicy({
     organizationId: input.organizationId,
     workspaceId: input.workspaceId,
     employeeId: session.employee_id,
     actorId: session.owner_id,
   });
-  let connectionId = policy.connectionId;
-  let modelCatalogEntryId = policy.modelCatalogEntryId;
-  if (published) {
-    const providerKeys =
-      published.provider === 'openai-codex'
-        ? ['codex', 'openai-codex']
-        : published.provider === 'deepseek-official'
-          ? ['deepseek', 'deepseek-official']
-          : [published.provider];
-    const targets = await sql<{ connection_id: string; model_id: string }[]>`
-      select c.id as connection_id, m.id as model_id
-      from allrice_model_connections c
-      join allrice_model_providers p on p.id = c.provider_id
-      join allrice_model_catalog_entries m on m.provider_id = p.id
-      where ${
-        published.provider === 'openai-compatible'
-          ? sql`p.provider_key not in ('codex','openai-codex','gemini','deepseek','deepseek-official')`
-          : sql`p.provider_key in ${sql(providerKeys)}`
-      }
-        and p.auth_mode = ${published.authMode}
-        and m.model = ${published.model}
-        and c.credential_reference = ${published.credentialReference}
-        and c.base_url is not distinct from ${published.baseUrl}
-        and (c.scope = 'platform' or c.organization_id = ${input.organizationId})
-        and c.status = 'ready' and p.enabled and m.enabled
-      order by c.priority, c.id, m.id limit 1
-    `;
-    if (!targets[0]) throw new DataAccessError('grant_invalid');
-    connectionId = targets[0].connection_id;
-    modelCatalogEntryId = targets[0].model_id;
-  }
+  const connectionId = configuration.connectionId;
+  const [catalog] = await sql<{ id: string }[]>`
+    select m.id from allrice_model_catalog_entries m
+    join allrice_model_connections c on c.provider_id=m.provider_id
+    where c.id=${connectionId} and c.scope='platform' and m.model=${configuration.workModel}
+      and m.enabled and m.reasoning_efforts ? ${configuration.reasoningEffort}`;
+  if (!catalog) throw new DataAccessError('grant_invalid');
+  const modelCatalogEntryId = catalog.id;
   const selection = await resolveFrozenTarget({
     organizationId: input.organizationId,
     connectionId,
     modelCatalogEntryId,
-    reasoningEffort: published?.reasoningEffort ?? policy.reasoningEffort,
+    reasoningEffort: configuration.reasoningEffort,
   });
-  const resolvedFallbacks = await Promise.all(
-    policy.fallbackTargets.map((fallback) =>
-      resolveFrozenTarget({
-        organizationId: input.organizationId,
-        connectionId: fallback.connectionId,
-        modelCatalogEntryId: fallback.modelCatalogEntryId,
-        reasoningEffort: fallback.reasoningEffort,
-      }),
-    ),
-  );
+  if (selection.provider !== 'openai-codex')
+    throw new DataAccessError('grant_invalid');
   const snapshot = SessionModelSnapshotSchema.parse({
     schemaVersion: 1,
     sessionId: input.sessionId,
     employeeId: session.employee_id,
-    policyRevision: policy.revision,
+    policyRevision: platformSettings.revision,
+    platformSettings,
     connectionId: selection.connectionId,
     modelCatalogEntryId: selection.modelCatalogEntryId,
     harness: selection.harness,
@@ -817,11 +760,11 @@ export async function freezeSessionModelSnapshot(input: {
     reasoningEffort: selection.reasoningEffort,
     credentialReference: selection.credentialReference,
     baseUrl: selection.baseUrl,
-    fallbackPolicy: policy.fallbackPolicy,
-    fallbackTargets: policy.fallbackTargets,
-    fallbackOn: policy.fallbackOn,
-    runLimits: policy.runLimits,
-    resolvedFallbacks,
+    fallbackPolicy: 'disabled',
+    fallbackTargets: [],
+    fallbackOn: [],
+    runLimits: { ...policy.runLimits, timeoutMs: configuration.timeoutMs },
+    resolvedFallbacks: [],
     frozenAt: new Date().toISOString(),
   });
   const inserted = await sql<{ snapshot: unknown }[]>`
@@ -831,7 +774,7 @@ export async function freezeSessionModelSnapshot(input: {
       frozen_at
     ) values (
       ${input.sessionId}, ${input.organizationId}, ${input.workspaceId},
-      ${session.employee_id}, ${policy.revision}, ${connectionId},
+      ${session.employee_id}, ${platformSettings.revision}, ${connectionId},
       ${modelCatalogEntryId}, ${sql.json(snapshot)},
       ${new Date(snapshot.frozenAt)}
     ) on conflict (session_id) do update
@@ -839,7 +782,7 @@ export async function freezeSessionModelSnapshot(input: {
         model_catalog_entry_id = excluded.model_catalog_entry_id,
         policy_revision = excluded.policy_revision,
         snapshot = excluded.snapshot, frozen_at = excluded.frozen_at
-      where ${Boolean(published)}
+      where allrice_session_model_snapshots.policy_revision <= excluded.policy_revision
         and exists (
           select 1 from allrice_chat_sessions s
           where s.id = excluded.session_id
@@ -849,17 +792,7 @@ export async function freezeSessionModelSnapshot(input: {
         )
     returning snapshot
   `;
-  // A concurrent publication may advance the Session while an already-bound
-  // Run is being prepared. Return its selected version, without rewinding the cache.
-  return SessionModelSnapshotSchema.parse(
-    inserted[0]?.snapshot ??
-      (published
-        ? snapshot
-        : (existing[0]?.snapshot ??
-          (
-            await sql<
-              { snapshot: unknown }[]
-            >`select snapshot from allrice_session_model_snapshots where session_id=${input.sessionId} and organization_id=${input.organizationId} and workspace_id=${input.workspaceId}`
-          )[0]?.snapshot)),
-  );
+  // Return this Run's frozen configuration even if a concurrent newer Run
+  // already advanced the session's display cache.
+  return SessionModelSnapshotSchema.parse(inserted[0]?.snapshot ?? snapshot);
 }
