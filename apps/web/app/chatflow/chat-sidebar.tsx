@@ -1,6 +1,11 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import {
+  IconArchiveOutlineRegular,
+  IconChevronRightOutlineRegular,
+  Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import { AllriceBrand } from '../../components/allrice-brand';
 import { AllriceMark } from '../../components/allrice-mark';
 
@@ -60,6 +65,11 @@ export function ChatSidebar({
   onPrepareSession,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
+  const showingArchive = archive?.filter === 'only';
+  const startNewSession = () => {
+    archive?.setFilter('default');
+    onNewSession();
+  };
   useEffect(() => {
     if (!overlay) return;
     const previous =
@@ -131,7 +141,7 @@ export function ChatSidebar({
             <button
               aria-label="开始新的工作"
               className={sidebarUi.brand}
-              onClick={() => onNewSession()}
+              onClick={startNewSession}
               type="button"
             >
               <AllriceBrand />
@@ -163,33 +173,47 @@ export function ChatSidebar({
           </button>
         </div>
 
-        <button
-          className={sidebarUi.newSession}
-          onClick={() => onNewSession()}
-          type="button"
-        >
-          <span aria-hidden="true">＋</span>
-          <span className={sidebarUi.newSessionLabel}>新的工作</span>
-        </button>
-
-        {archive && !collapsed && (
-          <div className={archiveCss.filter}>
-            <label>
-              显示
-              <select
-                aria-label="工作记录筛选"
-                value={archive.filter}
-                onChange={(event) =>
-                  archive.setFilter(event.target.value as typeof archive.filter)
+        <div className={!collapsed ? archiveCss.newWorkActions : undefined}>
+          <button
+            className={`${sidebarUi.newSession} ${!collapsed ? archiveCss.newWorkButton : ''}`}
+            onClick={startNewSession}
+            type="button"
+          >
+            <span aria-hidden="true">＋</span>
+            <span className={sidebarUi.newSessionLabel}>新的工作</span>
+          </button>
+          {archive && !collapsed && (
+            <Tooltip label="查看归档" side="bottom" align="end">
+              <button
+                className={archiveCss.archiveButton}
+                type="button"
+                aria-label="查看归档"
+                aria-pressed={showingArchive}
+                onClick={() =>
+                  archive.setFilter(showingArchive ? 'default' : 'only')
                 }
               >
-                <option value="default">当前工作</option>
-                <option value="only">已归档</option>
-                <option value="show">全部工作</option>
-              </select>
-            </label>
-            {archive.error && <p role="alert">{archive.error}</p>}
+                <IconArchiveOutlineRegular size={18} />
+              </button>
+            </Tooltip>
+          )}
+        </div>
+        {showingArchive && !collapsed && (
+          <div className={archiveCss.archiveHeader}>
+            <button type="button" onClick={() => archive?.setFilter('default')}>
+              <IconChevronRightOutlineRegular
+                size={14}
+                className={archiveCss.backIcon}
+              />
+              返回当前工作
+            </button>
+            <span>已归档</span>
           </div>
+        )}
+        {archive?.error && !collapsed && (
+          <p className={archiveCss.error} role="alert">
+            {archive.error}
+          </p>
         )}
         <div className={sidebarUi.regionArea}>
           <EmployeeSidebar

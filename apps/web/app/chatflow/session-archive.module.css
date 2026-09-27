@@ -1,25 +1,76 @@
-.filter {
-  padding: 8px 16px;
-  font-size: 12px;
-  color: var(--text-secondary);
+.newWorkActions {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  margin: 0 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-button-elevated-fill);
 }
-.filter label {
+.newWorkActions .newWorkButton {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 11px 0 0 11px;
+}
+.archiveButton {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  border: 0;
+  border-left: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 0 11px 11px 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.archiveButton:hover,
+.archiveButton[aria-pressed='true'] {
+  background: var(--dsw-alias-button-floating-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.archiveHeader {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
+  padding: 4px 4px 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
 }
-.filter select {
-  min-width: 0;
-  flex: 1;
-  color: inherit;
+.archiveHeader button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  border: 0;
   background: transparent;
-  border: 1px solid var(--border-color, #8884);
-  border-radius: 6px;
-  padding: 5px 8px;
+  color: inherit;
   font: inherit;
+  cursor: pointer;
 }
-.filter p {
-  margin: 8px 0 0;
+.backIcon {
+  transform: rotate(180deg);
+}
+.error {
+  padding: 0 4px;
+  margin: 4px 0 8px;
+  font-size: 12px;
+}
+.archiveButton:focus-visible,
+.archiveHeader button:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: -2px;
+}
+@media (hover: none) {
+  .newWorkActions .newWorkButton {
+    min-height: 44px;
+  }
+  .archiveButton {
+    width: 44px;
+  }
 }
 .more {
   margin: 4px 16px 10px;
