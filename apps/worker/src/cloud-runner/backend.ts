@@ -46,6 +46,38 @@ type Container = {
 };
 const attemptLabel = 'xyz.bplabs.allrice.cloud.attempt';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const slotOwnerLabel = 'xyz.bplabs.allrice.cloud.slot-owner';
+const slotDeadlineLabel = 'xyz.bplabs.allrice.cloud.slot-deadline';
+let watchdogAttestation: Promise<{ stdout: string }> | undefined;
+
+function attestWatchdog() {
+  // Concurrent Office calls share this read-only, expensive VM attestation.
+  // Do not cache it after completion: every new batch checks current health.
+  watchdogAttestation ??= promisify(execFile)(
+    '/usr/local/bin/colima',
+    [
+      'ssh',
+      '--profile',
+      'allrice-cloud-b4',
+      '--',
+      'sudo',
+      '/usr/local/lib/allrice-cloud/watchdog.py',
+      '--attest',
+    ],
+    {
+      timeout: 15000,
+      maxBuffer: 4096,
+      env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
+    },
+  )
+    .catch(() => {
+      throw new CloudRunnerError('CLOUD_WATCHDOG_UNAVAILABLE');
+    })
+    .finally(() => {
+      watchdogAttestation = undefined;
+    });
+  return watchdogAttestation;
+}
 /** The sandbox never receives host env/credentials. Output is untrusted data,
  * not a command or proof of success; Docker's stopped/exit state is authoritative.
  * Bounded artifact bytes are retained in daemon logs until durable publication. */
@@ -202,23 +234,7 @@ export class CloudRunnerBackend {
     // This is fixed trusted infrastructure attestation, never tenant-selected CLI.
     // The independent VM watchdog bounds execution even if Worker dies or the
     // tenant SIGSTOPs its in-container parent. No host credentials are copied in.
-    const { stdout } = await promisify(execFile)(
-      '/usr/local/bin/colima',
-      [
-        'ssh',
-        '--profile',
-        'allrice-cloud-b4',
-        '--',
-        'sudo',
-        '/usr/local/lib/allrice-cloud/watchdog.py',
-        '--attest',
-      ],
-      {
-        timeout: 5000,
-        maxBuffer: 4096,
-        env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
-      },
-    );
+    const { stdout } = await attestWatchdog();
     const attestation = JSON.parse(stdout);
     if (
       attestation.ready !== true ||
@@ -410,6 +426,113 @@ export class CloudRunnerBackend {
   }
 
   private async executeScript(
+    args: CloudCommandInput,
+    files: { path: string; contentBase64: string }[],
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    office: boolean,
+  ): Promise<CloudRunResult> {
+    const release = await this.acquireSlot(
+      options,
+      office ? officeSandboxImage : cloudToolchainImageV1,
+    );
+    try {
+      return await this.executeAdmittedScript(args, files, options, office);
+    } finally {
+      // An uncertain/live execution keeps its reservation until the watchdog
+      // stops it. Never admit a replacement merely because transport failed.
+      if (!(await this.inspect(options.attemptId))?.State.Running)
+        await release();
+    }
+  }
+
+  /** Docker names are atomic across Worker processes and databases sharing this
+   * dedicated VM. These stopped containers reserve the watchdog's two slots;
+   * they never execute code. Expired reservations need physical stop evidence. */
+  private async acquireSlot(
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    imageDigest: string,
+  ) {
+    if (!uuid.test(options.attemptId))
+      throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
+    const deadline = Date.parse(options.deadlineAt);
+    while (Number.isFinite(deadline) && Date.now() < deadline) {
+      if (options.signal?.aborted || !(await options.maintainLease()))
+        throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+      for (let slot = 0; slot < 2; slot++) {
+        const name = `allrice-cloud-slot-${slot}`;
+        try {
+          const c = await this.json<{ Id: string }>(
+            'POST',
+            `/containers/create?name=${name}`,
+            {
+              Image: imageDigest,
+              Entrypoint: ['/usr/local/bin/node'],
+              Cmd: ['--version'],
+              NetworkDisabled: true,
+              Labels: {
+                [slotOwnerLabel]: options.attemptId,
+                [slotDeadlineLabel]: String(deadline),
+              },
+              HostConfig: {
+                NetworkMode: 'none',
+                ReadonlyRootfs: true,
+                AutoRemove: false,
+              },
+            },
+          );
+          if (!/^[a-f0-9]{64}$/.test(c.Id))
+            throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
+          return async () => {
+            await this.call('DELETE', `/containers/${c.Id}?v=true`);
+          };
+        } catch (error) {
+          if (
+            !(error instanceof CloudRunnerError) ||
+            error.message !== 'CLOUD_DAEMON_409'
+          )
+            throw error;
+        }
+        let existing: Container;
+        try {
+          existing = await this.json<Container>(
+            'GET',
+            `/containers/${name}/json`,
+          );
+        } catch (error) {
+          if (
+            error instanceof CloudRunnerError &&
+            error.message === 'CLOUD_DAEMON_404'
+          )
+            continue;
+          throw error;
+        }
+        const owner = existing.Config.Labels[slotOwnerLabel];
+        const expires = Number(existing.Config.Labels[slotDeadlineLabel]);
+        if (
+          owner &&
+          uuid.test(owner) &&
+          Number.isFinite(expires) &&
+          expires <= Date.now() &&
+          !existing.State.Running &&
+          !(await this.inspect(owner))?.State.Running
+        ) {
+          await this.call('DELETE', `/containers/${existing.Id}?v=true`).catch(
+            (error) => {
+              if (
+                !(error instanceof CloudRunnerError) ||
+                error.message !== 'CLOUD_DAEMON_404'
+              )
+                throw error;
+            },
+          );
+        }
+      }
+      await delay(150);
+    }
+    throw new CloudRunnerError('CLOUD_CAPACITY_WAIT_TIMEOUT');
+  }
+
+  private async executeAdmittedScript(
     args: CloudCommandInput,
     files: { path: string; contentBase64: string }[],
     options: Parameters<CloudRunnerBackend['execute']>[2],

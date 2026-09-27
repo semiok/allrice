@@ -13,6 +13,43 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite('DSH native Office in the real task sandbox', () => {
+  it('queues three concurrent native Office exports within the two-slot VM limit', async () => {
+    const results = await Promise.all(
+      Object.entries(cases).map(async ([format, script]) => {
+        const backend = new CloudRunnerBackend(),
+          attemptId = randomUUID();
+        try {
+          return await backend.executeOffice(
+            CloudCommandInputSchema.parse({
+              script,
+              outputs: [
+                {
+                  path: `result.${format}`,
+                  fileName: `result.${format}`,
+                  format: 'txt',
+                },
+              ],
+              limits: { timeoutMs: 60000, memoryMiB: 512, cpuMillis: 1000 },
+            }),
+            [],
+            {
+              attemptId,
+              deadlineAt: new Date(Date.now() + 60000).toISOString(),
+              maintainLease: async () => true,
+            },
+          );
+        } finally {
+          await backend.stop(attemptId);
+          await backend.cleanup(attemptId);
+        }
+      }),
+    );
+    for (const result of results) {
+      expect(result.reason, result.output).toBe('completed');
+      expect(result.exitCode).toBe(0);
+      expect(result.artifacts).toHaveLength(1);
+    }
+  }, 90000);
   for (const [format, script] of Object.entries(cases)) {
     it(`executes native ${format} features and upstream package checks`, async () => {
       const backend = new CloudRunnerBackend(),
