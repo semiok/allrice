@@ -9,6 +9,18 @@
   font-size: 17px;
   font-weight: 500;
 }
+.accountActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.accountActions p {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+}
 .section input,
 .section select,
 .section textarea {
