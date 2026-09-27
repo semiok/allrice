@@ -62,9 +62,9 @@ describe('durable task plan replay', () => {
         event(1, [step('old')]),
         current,
         event(4, [{ content: 'invalid', status: 'made up' }], 2),
-      { ...event(5, [step('unrelated')], 2), sourceEvent: null },
-      legacy,
-      event(99, [step('late old attempt')]),
+        { ...event(5, [step('unrelated')], 2), sourceEvent: null },
+        legacy,
+        event(99, [step('late old attempt')]),
       ]),
     ).toEqual([step('retry')]);
     current.sourceEvent = null;
