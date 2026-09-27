@@ -29,6 +29,7 @@ import { tenantValidationHttp } from '../../lib/tenant-administration/validation
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
+import { GET as employeeTestRuns } from '../api/v1/admin/platform-employees/[employeeId]/test-runs/route';
 import {
   GET as employeeLifecycle,
   POST as employeeLifecycleAction,
@@ -152,23 +153,27 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
             parts[4] === 'platform-employees'
               ? !parts[5]
                 ? await employeeDirectory(request)
-                : parts[6] === 'lifecycle'
-                  ? await (
-                      request.method === 'POST'
-                        ? employeeLifecycleAction
-                        : employeeLifecycle
-                    )(request, {
+                : parts[6] === 'test-runs' && request.method === 'GET'
+                  ? await employeeTestRuns(request, {
                       params: Promise.resolve({ employeeId: parts[5]! }),
                     })
-                  : await employeeAdministrationHttp(
-                      request,
-                      parts[5]!,
-                      parts[6] === 'review'
-                        ? 'review'
-                        : parts[6] === 'publish'
-                          ? 'publish'
-                          : 'save',
-                    )
+                  : parts[6] === 'lifecycle'
+                    ? await (
+                        request.method === 'POST'
+                          ? employeeLifecycleAction
+                          : employeeLifecycle
+                      )(request, {
+                        params: Promise.resolve({ employeeId: parts[5]! }),
+                      })
+                    : await employeeAdministrationHttp(
+                        request,
+                        parts[5]!,
+                        parts[6] === 'review'
+                          ? 'review'
+                          : parts[6] === 'publish'
+                            ? 'publish'
+                            : 'save',
+                      )
               : parts[4] === 'platform-skills'
                 ? await employeeAdministrationHttp(request, parts[5]!, 'skill')
                 : ['quotas', 'environments', 'mcp', 'local-mcp'].includes(
@@ -919,21 +924,33 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByRole('button', { name: '安全', exact: true }).count(),
       ).toBe(0);
-      await page.getByRole('button', { name: '工具', exact: true }).click();
       await page
         .getByText('是否自动执行，由使用者在前台', { exact: false })
         .waitFor();
       const save = async () => {
-        const response = page.waitForResponse(
-          (r) =>
-            r.url() ===
-              `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
-            r.request().method() === 'PUT',
-        );
         await page
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        const result = await response;
+          .getByRole('heading', {
+            name: 'MET151 MCP safety fixture',
+            exact: true,
+          })
+          .waitFor();
+        const button = page.getByRole('button', {
+          name: '保存草稿',
+          exact: true,
+        });
+        // The tool tree is much taller than the former Security panel. Finish
+        // scrolling to the header before starting the HTTP response deadline.
+        await button.scrollIntoViewIfNeeded();
+        const [result] = await Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url() ===
+                `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+              r.request().method() === 'PUT',
+            { timeout: 30000 },
+          ),
+          button.click(),
+        ]);
         expect(result.status()).toBe(200);
         await expect
           .poll(() =>
@@ -977,6 +994,65 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .deniedCapabilities,
       ).toEqual([]);
     } finally {
+      await context.close();
+    }
+  });
+  it('opens the publish page from draft testing without saving, publishing, or losing unsaved edits', async () => {
+    const oldEnvironment = process.env.ALLRICE_ENV;
+    process.env.ALLRICE_ENV = 'development';
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await fixture.db`update allrice_workspaces set name='Draft test target' where id=${f.workspaceId}`;
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: { ...f.definition, name: 'Draft test navigation fixture' },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(`${origin}/runtime-console?view=employees`);
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'Draft test navigation fixture' })
+        .click();
+      await page
+        .getByLabel('名称', { exact: true })
+        .fill('Unsaved draft title');
+      await page.getByRole('button', { name: '测试', exact: true }).click();
+      await page.getByLabel('测试使用的租户').selectOption(f.workspaceId);
+      await page.getByText('还没有草稿测试记录。', { exact: true }).waitFor();
+      expect(
+        await page
+          .getByRole('button', { name: '测试草稿', exact: true })
+          .getAttribute('data-primary'),
+      ).toBe('true');
+      const navigation = page.getByRole('button', {
+        name: '前往发布',
+        exact: true,
+      });
+      expect(await navigation.getAttribute('data-primary')).toBeNull();
+      const before = await f.revision();
+      const requestStart = requests.length;
+      await navigation.click();
+      await page
+        .getByRole('heading', { name: '当前发布状态', exact: true })
+        .waitFor();
+      expect(
+        await page
+          .getByRole('checkbox', { name: /Draft test target/ })
+          .isChecked(),
+      ).toBe(true);
+      expect(
+        requests
+          .slice(requestStart)
+          .filter((request) => /^(POST|PUT|PATCH) /.test(request)),
+      ).toEqual([]);
+      expect(await f.revision()).toEqual(before);
+      expect(await f.assigned()).toBe(0);
+      await page.getByRole('button', { name: '基础', exact: true }).click();
+      expect(await page.getByLabel('名称', { exact: true }).inputValue()).toBe(
+        'Unsaved draft title',
+      );
+    } finally {
+      if (oldEnvironment === undefined) delete process.env.ALLRICE_ENV;
+      else process.env.ALLRICE_ENV = oldEnvironment;
       await context.close();
     }
   });
