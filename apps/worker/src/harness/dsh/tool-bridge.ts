@@ -8,8 +8,6 @@ export const dshToolEnvelopePrefix = '<allrice_tool_call>';
 const toolEnvelopePattern =
   /<allrice_tool_call>\s*([\s\S]*?)\s*<\/allrice_tool_call>/;
 
-export const maximumDshToolCallsPerTurn = 8;
-
 export const dshNativeToolNames: ReadonlySet<string> = new Set(
   allRiceToolManifest
     .filter((tool) => tool.transport !== 'envelope')

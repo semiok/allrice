@@ -255,7 +255,14 @@ function timestamp(value: Date | string | null) {
  * exposes durable runtime identity and lifecycle facts, never prompts,
  * credentials, tool arguments, host paths or raw provider configuration.
  */
-export async function listDshRuntimeInventory(limit = 100) {
+export async function listDshRuntimeInventory(
+  limit = 100,
+  scope: { organizationId?: string; ownerId?: string } = {},
+) {
+  const organizationId = scope.organizationId
+    ? UuidSchema.parse(scope.organizationId)
+    : null;
+  const ownerId = scope.ownerId ? UuidSchema.parse(scope.ownerId) : null;
   const safeLimit = z.number().int().min(1).max(500).parse(limit);
   const sql = getDatabase();
   const rows = await sql<DshRuntimeInventoryRow[]>`
@@ -319,6 +326,10 @@ export async function listDshRuntimeInventory(limit = 100) {
       limit 1
     ) runtime_process on true
     where session.archived_at is null
+      and organization.archived_at is null
+      and workspace.archived_at is null
+      and (${organizationId}::uuid is null or runtime.organization_id=${organizationId})
+      and (${ownerId}::uuid is null or runtime.owner_id=${ownerId})
     order by
       case
         when runtime_process.process_status = 'live' then 0
@@ -406,7 +417,13 @@ export async function listDshRuntimeInventory(limit = 100) {
  * active workspace, including workspaces that have not created a Session yet.
  * Bridge presence is resolved by tenant scope and never by AI employee.
  */
-export async function listTenantRuntimeInventory() {
+export async function listTenantRuntimeInventory(
+  scope: { organizationId?: string; ownerId?: string } = {},
+) {
+  const organizationId = scope.organizationId
+    ? UuidSchema.parse(scope.organizationId)
+    : null;
+  const ownerId = scope.ownerId ? UuidSchema.parse(scope.ownerId) : null;
   const sql = getDatabase();
   const rows = await sql<TenantRuntimeInventoryRow[]>`
     select organization.id as organization_id,
@@ -438,6 +455,7 @@ export async function listTenantRuntimeInventory() {
       where session.organization_id = workspace.organization_id
         and session.workspace_id = workspace.id
         and session.archived_at is null
+        and (${ownerId}::uuid is null or session.owner_id=${ownerId})
     ) session_stats on true
     left join lateral (
       select count(*)::integer as runtime_count,
@@ -465,6 +483,7 @@ export async function listTenantRuntimeInventory() {
       ) latest_process on true
       where runtime.organization_id = workspace.organization_id
         and runtime.workspace_id = workspace.id
+        and (${ownerId}::uuid is null or runtime.owner_id=${ownerId})
     ) runtime_stats on true
     left join lateral (
       select device.id, device.name, device.platform,
@@ -482,12 +501,14 @@ export async function listTenantRuntimeInventory() {
       where device.organization_id = workspace.organization_id
         and device.workspace_id = workspace.id
         and device.revoked_at is null
+        and (${ownerId}::uuid is null or device.owner_id=${ownerId})
       order by device.last_seen_at desc nulls last, device.created_at desc
       limit 1
     ) bridge on true
     where workspace.archived_at is null
       and organization.archived_at is null
       and organization.slug <> 'allrice-platform'
+      and (${organizationId}::uuid is null or organization.id=${organizationId})
     order by organization.name, workspace.name, workspace.id
   `;
   return rows.map((row) => ({

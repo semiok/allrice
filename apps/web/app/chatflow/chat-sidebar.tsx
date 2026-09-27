@@ -9,7 +9,6 @@ import {
 import { AllriceBrand } from '../../components/allrice-brand';
 import { AllriceMark } from '../../components/allrice-mark';
 
-import type { SaasCapabilityManifest } from '@allrice/contracts';
 import { SidebarSettings } from './sidebar-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
@@ -29,7 +28,6 @@ interface ChatSidebarProps {
   activeId: string | null;
   collapsed: boolean;
   overlay?: boolean;
-  manifest: SaasCapabilityManifest;
   sessions: Session[];
   workspace: Workspace;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
@@ -51,7 +49,6 @@ export function ChatSidebar({
   activeId,
   collapsed,
   overlay = false,
-  manifest,
   sessions,
   workspace,
   monthlyQuota,
@@ -249,7 +246,6 @@ export function ChatSidebar({
               `${workspace.organizationId}:${workspace.workspaceId}`
             }
             collapsed={collapsed}
-            manifest={manifest}
             workspaceId={workspace.workspaceId}
             monthlyQuota={monthlyQuota}
             preferences={preferences}

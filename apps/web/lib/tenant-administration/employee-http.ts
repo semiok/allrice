@@ -10,6 +10,7 @@ import {
   savePlatformEmployeeDraft,
   reviewEmployeePublication,
   readPlatformSkillForAdministration,
+  EmployeePublicationTargetError,
 } from '@allrice/database';
 import { requirePlatformAdminContext } from '../identity/platform-admin';
 import { sameOriginBrowserWrite } from '../identity/request-origin';
@@ -61,7 +62,11 @@ export async function employeeAdministrationHttp(
     const input = PublishPlatformEmployeeInputSchema.parse(body);
     if (action === 'review')
       return Response.json(
-        await reviewEmployeePublication(context, id, input.workspaceIds),
+        await reviewEmployeePublication(
+          context,
+          id,
+          input.scope === 'assigned' ? undefined : input.workspaceIds,
+        ),
         { headers: { 'Cache-Control': 'private, no-store' } },
       );
     if (
@@ -80,6 +85,13 @@ export async function employeeAdministrationHttp(
       await publishPlatformEmployee(id, input, context.actor.id, context),
     );
   } catch (error) {
+    if (error instanceof EmployeePublicationTargetError)
+      return apiProblem({
+        status: 409,
+        code: 'CONFLICT',
+        message: error.message,
+        retryable: true,
+      });
     if (error instanceof SyntaxError)
       return apiProblem({
         status: 400,

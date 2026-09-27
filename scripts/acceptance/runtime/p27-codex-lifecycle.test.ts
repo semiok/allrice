@@ -40,9 +40,8 @@ integration(
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
-      // Historical enforcement remains supported; explicitly select it instead
-      // of treating the new observation default as a regression.
-      vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
+      // Execution usage is observational for every route. Missing receipts
+      // stay unknown, but cannot block a new task or cancel completed work.
       database = await createAssistantFixtureDatabase();
       const [scope] = await database.db`select current_schema() as schema`;
       fixtureUrl.searchParams.set(
@@ -243,9 +242,7 @@ integration(
           unknownCostRuns: 0,
           usageComplete: false,
         });
-        expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota, 'subscription')).not.toThrow();
       });
     }, 60000);
     it('whole-tree cancellation rejects late wakes and only acknowledges the owned native stop', async () => {
@@ -305,11 +302,11 @@ integration(
           ),
         ).toBe(true);
         await expect(s.bound.finish!()).rejects.toThrow('canceled');
-        // No successful Worker projection exists; actual new-Run admission must
-        // still find the orphaned dispatched holds under the tenant lock.
-        await expect(admitModelExecution(s.nextAdmission)).rejects.toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        // The canceled tree stays canceled. Its missing usage must not block
+        // resource admission for an independent new task.
+        await expect(
+          admitModelExecution(s.nextAdmission),
+        ).resolves.toHaveLength(4);
       });
     }, 60000);
     it('missing native usage remains unknown; replacement controller quarantines and never replays the model', async () => {
@@ -324,7 +321,7 @@ integration(
           .toBe(2);
         const outcome = await s.finish();
         expect(outcome).toMatchObject({
-          status: 'unknown',
+          status: 'completed',
           usageComplete: false,
           costBasis: 'not_applicable',
         });
@@ -353,9 +350,7 @@ integration(
         const after = await s.bound.tree();
         expect(after.budgets).toEqual(before.budgets);
         const quota = await getOrganizationModelQuota(s.f.org, database.db);
-        expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota, 'subscription')).not.toThrow();
       });
     }, 60000);
     it.each(['membership', 'policy', 'employee'] as const)(
@@ -401,14 +396,14 @@ integration(
             scope: s.f.task.scope,
             rootRunId: s.f.rootRunId,
           });
-          await expect(admitModelExecution(s.nextAdmission)).rejects.toThrow(
-            'MODEL_TOKEN_USAGE_UNKNOWN',
-          );
+          await expect(
+            admitModelExecution(s.nextAdmission),
+          ).resolves.toHaveLength(4);
         });
       },
       60000,
     );
-    it('real over-reservation native usage is retained and cancels the root instead of being zeroed or marked missing', async () => {
+    it('retains real over-reservation usage while the sibling continues its authorized task', async () => {
       await scenario('over_budget', async (s) => {
         await s.start();
         await expect
@@ -416,81 +411,86 @@ integration(
           .toBe(3);
         s.releaseChild('A');
         await expect
-          .poll(async () => (await s.bound.tree()).cancelRequested, {
+          .poll(async () => (await s.bound.tree()).results.length, {
             timeout: 20000,
           })
-          .toBe(true);
+          .toBe(1);
         const tree = await s.bound.tree();
         expect(
-          tree.budgets.find((x) => x.metric === 'output_tokens'),
-        ).toMatchObject({ capacity: 6000, spent: 6006 });
-        expect(tree.instances.every((x) => x.cancelRequestedAt !== null)).toBe(
+          tree.budgets.find((x) => x.metric === 'output_tokens')!.spent,
+        ).toBeGreaterThan(6000);
+        expect(tree.cancelRequested).toBe(false);
+        expect(tree.instances.every((x) => x.cancelRequestedAt === null)).toBe(
           true,
         );
         const [receipt] =
-          await database.db`select settled_amount from allrice_assistant_usage where run_id=${s.children[0]!.runId} and metric='output_tokens' and settled_amount is not null`;
+          await database.db`select sum(settled_amount) as settled_amount from allrice_assistant_usage where run_id=${s.children[0]!.runId} and metric='output_tokens' and settled_amount is not null`;
         expect(Number(receipt!.settled_amount)).toBe(6001);
-        await s.drain();
-        const calls = s.native.requests.length;
+        expect(
+          tree.instances.find((x) => x.runId === s.children[1]!.runId)!
+            .stoppedAt,
+        ).toBeNull();
         s.releaseChild('B');
-        await s.client.call('p25/flush');
-        expect(s.native.requests.length).toBe(calls);
-        expect((await s.bound.tree()).instances.every((x) => x.stoppedAt)).toBe(
-          true,
-        );
-        await expect(s.bound.finish!()).rejects.toThrow('canceled');
-        // B was interrupted without a receipt. A's actual overage is retained;
-        // missing Worker projection cannot unlock another Run.
-        await expect(admitModelExecution(s.nextAdmission)).rejects.toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        await expect
+          .poll(
+            async () =>
+              (await s.bound.tree()).results.filter(
+                (x) => x.parentAdoptedSeq !== null,
+              ).length,
+            { timeout: 20000 },
+          )
+          .toBe(2);
+        const outcome = await s.finish();
+        expect(outcome).toMatchObject({
+          status: 'completed',
+          usageComplete: true,
+        });
+        await s.project(outcome);
+        await expect(
+          admitModelExecution(s.nextAdmission),
+        ).resolves.toHaveLength(4);
       });
     }, 60000);
     it.each(['unknown_usage', 'over_budget'] as const)(
       'observe mode keeps %s receipts and allows later work without canceling a delivered task',
       async (mode) => {
-        vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'observe');
-        try {
-          await scenario(mode, async (s) => {
-            await s.start();
-            s.releaseChild('A');
-            s.releaseChild('B');
-            await expect
-              .poll(
-                async () =>
-                  (await s.bound.tree()).results.filter(
-                    (r) => r.parentAdoptedSeq !== null,
-                  ).length,
-                { timeout: 20000 },
-              )
-              .toBe(2);
-            const outcome = await s.finish();
-            expect(outcome).toMatchObject({
-              status: 'completed',
-              usageComplete: mode !== 'unknown_usage',
-              billingMode: 'subscription',
-            });
-            const tree = await s.bound.tree();
-            expect(tree.cancelRequested).toBe(false);
-            if (mode === 'over_budget') {
-              const budget = tree.budgets.find(
-                (b) => b.metric === 'output_tokens',
-              )!;
-              expect(budget.spent).toBeGreaterThan(budget.capacity);
-            }
-            await s.project(outcome);
-            const quota = await getOrganizationModelQuota(s.f.org, database.db);
-            expect(quota.usageComplete).toBe(mode !== 'unknown_usage');
-            expect(() =>
-              assertQuotaAvailable(quota, 'subscription'),
-            ).not.toThrow();
-            await expect(
-              admitModelExecution(s.nextAdmission),
-            ).resolves.toHaveLength(4);
+        await scenario(mode, async (s) => {
+          await s.start();
+          s.releaseChild('A');
+          s.releaseChild('B');
+          await expect
+            .poll(
+              async () =>
+                (await s.bound.tree()).results.filter(
+                  (r) => r.parentAdoptedSeq !== null,
+                ).length,
+              { timeout: 20000 },
+            )
+            .toBe(2);
+          const outcome = await s.finish();
+          expect(outcome).toMatchObject({
+            status: 'completed',
+            usageComplete: mode !== 'unknown_usage',
+            billingMode: 'subscription',
           });
-        } finally {
-          vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
-        }
+          const tree = await s.bound.tree();
+          expect(tree.cancelRequested).toBe(false);
+          if (mode === 'over_budget') {
+            const budget = tree.budgets.find(
+              (b) => b.metric === 'output_tokens',
+            )!;
+            expect(budget.spent).toBeGreaterThan(budget.capacity);
+          }
+          await s.project(outcome);
+          const quota = await getOrganizationModelQuota(s.f.org, database.db);
+          expect(quota.usageComplete).toBe(mode !== 'unknown_usage');
+          expect(() =>
+            assertQuotaAvailable(quota, 'subscription'),
+          ).not.toThrow();
+          await expect(
+            admitModelExecution(s.nextAdmission),
+          ).resolves.toHaveLength(4);
+        });
       },
       60000,
     );

@@ -105,7 +105,7 @@ export const CloudExecutionProfileSchema = z
       'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
     ),
     network: z.literal('none'),
-    maximumConcurrency: z.number().int().min(1).max(2),
+    maximumConcurrency: z.number().int().min(1).max(32),
   })
   .strict();
 export type CloudExecutionProfile = z.infer<typeof CloudExecutionProfileSchema>;

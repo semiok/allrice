@@ -5,7 +5,13 @@ import {
   authenticationRequiredProblem,
   authorizationDeniedProblem,
 } from './lib/api-problem';
-import { portalAuthEnabled, resolvePortal } from './lib/portal/config';
+import {
+  isUnifiedPortalHost,
+  legacyPortalNavigation,
+  portalAuthEnabled,
+  resolvePortal,
+  normalizeHost,
+} from './lib/portal/config';
 import {
   portalSessionCookieName,
   verifyPortalSession,
@@ -14,6 +20,8 @@ import {
 const publicPaths = new Set([
   '/login',
   '/api/v1/auth/login',
+  '/accept-invitation',
+  '/api/v1/auth/invitations/accept',
   '/api/health/live',
   '/api/health/ready',
   '/brand/allrice-icon-v1.svg',
@@ -48,10 +56,23 @@ export function isBridgeDeviceApiPath(pathname: string) {
 }
 
 export function proxy(request: NextRequest) {
-  if (!portalAuthEnabled()) return NextResponse.next();
+  const destination = legacyPortalNavigation(request);
+  if (destination) {
+    const response = NextResponse.redirect(destination);
+    response.headers.set('Cache-Control', 'private, no-store');
+    response.headers.set('Referrer-Policy', 'no-referrer');
+    return response;
+  }
+  const unified = isUnifiedPortalHost(request.headers.get('host'));
+  if (
+    normalizeHost(request.headers.get('host')) === 'allrice.bplabs.xyz' &&
+    /^\/runtime-console(\/|$)/.test(request.nextUrl.pathname)
+  )
+    return NextResponse.redirect(new URL('/chatflow', request.url));
+  if (!portalAuthEnabled() && !unified) return NextResponse.next();
 
   const portal = resolvePortal(request.headers.get('host'));
-  if (!portal) {
+  if (!portal && !unified) {
     return new NextResponse('Unknown AllRice portal host', { status: 421 });
   }
 
@@ -59,10 +80,32 @@ export function proxy(request: NextRequest) {
     // This exact read-only endpoint authenticates its own scoped sync token.
     request.nextUrl.pathname === '/api/v1/internal/runtime-capabilities' ||
     publicPaths.has(request.nextUrl.pathname) ||
+    // Downloads validate their own scoped, expiring storage token. The sign
+    // endpoint remains protected by the current database session.
+    (['GET', 'HEAD'].includes(request.method) &&
+      /^\/api\/v1\/files\/[0-9a-f-]{36}$/.test(request.nextUrl.pathname)) ||
     isBridgeDeviceApiPath(request.nextUrl.pathname)
   ) {
     return NextResponse.next();
   }
+
+  // This is only a navigation gate. Every API verifies the database session and
+  // current authority; possession of a cookie never grants platform admin access.
+  if (unified) {
+    if (request.cookies.get('allrice_session')?.value)
+      return NextResponse.next();
+    if (request.nextUrl.pathname.startsWith('/api/'))
+      return authenticationRequiredProblem();
+    const login = new URL('/login', request.url);
+    if (request.nextUrl.pathname !== '/login')
+      login.searchParams.set(
+        'next',
+        request.nextUrl.pathname + request.nextUrl.search,
+      );
+    return NextResponse.redirect(login);
+  }
+  if (!portal)
+    return new NextResponse('Unknown AllRice portal host', { status: 421 });
 
   const session = verifyPortalSession(
     request.cookies.get(portalSessionCookieName)?.value,

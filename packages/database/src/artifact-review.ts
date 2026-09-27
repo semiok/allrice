@@ -31,7 +31,7 @@ import {
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
-  requireTenantManagementScope,
+  requireTenantInspectionScope,
   type TenantManagementTarget,
 } from './tenant-management-scope.ts';
 
@@ -46,6 +46,18 @@ export const workbenchEnabled = () =>
 export class ArtifactReviewError extends Error {
   constructor(readonly code: string) {
     super(code);
+  }
+}
+/** Issued only after PostgreSQL aborted publication and any private blob was
+ * confirmed removed. A lost commit acknowledgement must never create this. */
+export class ArtifactPublicationRollbackError extends Error {
+  constructor(
+    readonly runId: string,
+    readonly callId: string,
+    readonly sqlState: '40P01' | '40001',
+    cause: unknown,
+  ) {
+    super('artifact_publication_rolled_back', { cause });
   }
 }
 function fail(code: string): never {
@@ -277,7 +289,7 @@ export async function inspectTenantRunArtifacts(
     artifactId =
       artifactInput === null ? null : UuidSchema.parse(artifactInput);
   return db.begin(async (tx) => {
-    await requireTenantManagementScope(issuer, target, tx);
+    await requireTenantInspectionScope(issuer, target, tx);
     const [run] = await tx<
       { session_id: string }[]
     >`select e.session_id from allrice_employee_runs e
@@ -546,6 +558,8 @@ export async function publishWorkbenchArtifact(
     parentObjectId?: string;
     sourceFile?: ArtifactSourceFile;
     changeSummary?: string;
+    /** Server-only provider receipt and exact worker lease, never model arguments. */
+    trustedImageOperation?: { id: string; leaseToken: string };
     /** Server-only deterministic renderer input; never accepted by generic export HTTP/tool arguments. */
     trustedCloudDerivation?: {
       sourceArtifactId: string;
@@ -614,6 +628,10 @@ export async function publishWorkbenchArtifact(
         context.organizationId,
         context.workspaceId,
       );
+      // Same order as assistant admission/clock maintenance: root before job
+      // and session. Holding session first can deadlock with an assistant check
+      // which refreshes the job deadline before SHARE-locking the session.
+      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${context.runId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for update`;
       await development?.admit(tx);
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
       const source = input.sourceFile
@@ -679,6 +697,25 @@ export async function publishWorkbenchArtifact(
           ? 'workspace.reconciliation.export'
           : 'workspace.export.create';
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      if (input.trustedImageOperation) {
+        if (
+          input.format !== 'png' ||
+          input.mediaType !== 'image/png' ||
+          input.kind !== 'document'
+        )
+          fail('invalid_publication');
+        const [image] = await tx`select i.id from allrice_image_operations i
+          join allrice_jobs j on j.id=${context.jobId} and j.run_id=i.run_id
+          where i.id=${input.trustedImageOperation.id} and i.run_id=${context.runId}
+            and i.organization_id=${context.organizationId} and i.workspace_id=${context.workspaceId!}
+            and i.session_id=${input.sessionId} and i.owner_id=${owner} and i.status='running'
+            and i.source_object_id is not distinct from ${input.sourceFile?.objectId ?? null}::uuid
+            and i.source_checksum is not distinct from ${input.sourceFile?.checksum ?? null}::text
+            and j.worker_id=${context.worker.id} and j.lease_token::text=${input.trustedImageOperation.leaseToken}
+            for share of i,j`;
+        if (!image) fail('run_unavailable');
+      }
+
       if (derivedSource)
         await assertCloudDerivationLease(
           tx,
@@ -734,7 +771,10 @@ export async function publishWorkbenchArtifact(
         tx,
       );
       const provenance = {
-        kind: derivedSource ? 'tool_result' : 'model_proposal',
+        kind:
+          derivedSource || input.trustedImageOperation
+            ? 'tool_result'
+            : 'model_proposal',
         runId: publishingRunId,
         operationId: derivedSource?.provenance.operationId ?? null,
         stepId: null,
@@ -765,6 +805,7 @@ export async function publishWorkbenchArtifact(
       return artifact;
     });
   } catch (error) {
+    let cleanupConfirmed = !created;
     if (created) {
       // A lost commit acknowledgement is ambiguous. Query the same primary before
       // cleanup; if unavailable, retain the bounded orphan, never delete evidence.
@@ -773,11 +814,26 @@ export async function publishWorkbenchArtifact(
       >`select id from allrice_storage_objects where id=${created.id}`.catch(
         () => null,
       );
-      if (known && known.length === 0)
-        await storage
-          .delete({ ...created, immutable: false })
-          .catch(() => undefined);
+      if (known && known.length === 0) {
+        try {
+          await storage.delete({ ...created, immutable: false });
+          cleanupConfirmed = true;
+        } catch {
+          /* Preserve an unconfirmed private blob for reconciliation. */
+        }
+      }
     }
+    const sqlState =
+      error instanceof Error
+        ? Object.getOwnPropertyDescriptor(error, 'code')?.value
+        : undefined;
+    if (cleanupConfirmed && (sqlState === '40P01' || sqlState === '40001'))
+      throw new ArtifactPublicationRollbackError(
+        context.runId,
+        input.callId,
+        sqlState,
+        error,
+      );
     throw error;
   }
 }

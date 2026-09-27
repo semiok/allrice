@@ -1,0 +1,73 @@
+.dialog.dialog {
+  width: min(584px, 100%);
+  max-height: min(760px, calc(100dvh - 48px));
+  border-radius: 24px;
+  color: var(--dsw-alias-label-primary);
+}
+.dialog > header {
+  align-items: center;
+  padding: 26px 28px 22px;
+  border-bottom: 0;
+}
+.dialog > header h2 {
+  margin: 0;
+  font-size: 23px;
+  line-height: 32px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+.dialog > header p {
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.dialog > header button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--allrice-employee-bg);
+}
+.dialog > header button:hover {
+  background: var(--allrice-sidebar-hover);
+}
+.dialog > header button:focus-visible {
+  outline: 2px solid #4678e9;
+  outline-offset: 2px;
+}
+.body {
+  padding: 0 28px 22px;
+}
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 22px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+}
+@media (max-width: 560px) {
+  .dialog.dialog {
+    border-radius: 21px;
+  }
+  .dialog > header {
+    padding: 22px 20px 18px;
+  }
+  .dialog > header h2 {
+    font-size: 21px;
+  }
+  .body {
+    padding: 0 20px 20px;
+  }
+}
+@media (pointer: coarse) {
+  .dialog > header button {
+    width: 44px;
+    height: 44px;
+  }
+}

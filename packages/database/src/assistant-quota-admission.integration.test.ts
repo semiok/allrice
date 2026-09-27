@@ -198,22 +198,18 @@ integration(
         usedCostCents: null,
       });
       expect(() => assertQuotaAvailable(oldQuota)).not.toThrow();
-      await expect(admitModelExecution(f.admission)).rejects.toMatchObject({
-        code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-      });
+      await expect(admitModelExecution(f.admission)).resolves.toHaveLength(4);
     });
 
-    it('the existing fresh quota check already rejects a committed unknown projection', async () => {
+    it('new task admission preserves unknown projections without a usage lock', async () => {
       const f = await fixture();
       await unknownProjection(f);
       const quota = await getOrganizationModelQuota(f.a.org, database.db);
-      expect(() => assertQuotaAvailable(quota)).toThrow(
-        'MODEL_TOKEN_USAGE_UNKNOWN',
-      );
+      expect(() => assertQuotaAvailable(quota)).not.toThrow();
     });
 
     it.each(['terminal', 'expired'] as const)(
-      'refuses a new Run after a %s assistant root retains real unknown holds without a route projection',
+      'admits a new Run while preserving a %s root’s unknown holds',
       async (rootState) => {
         const f = await fixture();
         const call = await boundedInFlight(f);
@@ -264,9 +260,9 @@ integration(
           await database.db`select id from allrice_model_usage_ledger where organization_id=${f.a.org}`,
         ).toHaveLength(0);
         try {
-          await expect(admitModelExecution(f.admission)).rejects.toMatchObject({
-            code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-          });
+          await expect(admitModelExecution(f.admission)).resolves.toHaveLength(
+            4,
+          );
         } finally {
           expect(await reservations(f.a.rootRunId)).toEqual(before);
           expect(await budgets(f.a.rootRunId)).toEqual(beforeBudgets);
@@ -321,15 +317,13 @@ integration(
       expect(await reservations(f.a.rootRunId)).toEqual(before);
     });
 
-    it('detects a replaced job lease without reviving the prior dispatched holds', async () => {
+    it('admits distinct new tasks without reviving a replaced job lease or its holds', async () => {
       const f = await fixture();
       await boundedInFlight(f);
       const before = await reservations(f.a.rootRunId);
       const beforeBudgets = await budgets(f.a.rootRunId);
       await database.db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.a.worker.jobId}`;
-      await expect(admitModelExecution(f.admission)).rejects.toMatchObject({
-        code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-      });
+      await expect(admitModelExecution(f.admission)).resolves.toHaveLength(4);
       expect(await reservations(f.a.rootRunId)).toEqual(before);
       expect(await budgets(f.a.rootRunId)).toEqual(beforeBudgets);
     });
@@ -352,9 +346,7 @@ integration(
             runId: a.a.rootRunId,
           });
         }
-        await expect(admitModelExecution(a.admission)).rejects.toMatchObject({
-          code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-        });
+        await expect(admitModelExecution(a.admission)).resolves.toHaveLength(4);
         await expect(admitModelExecution(b.admission)).resolves.toHaveLength(4);
       },
     );
@@ -413,9 +405,7 @@ integration(
           release();
           await blocker;
           await writing;
-          await expect(admitting).rejects.toMatchObject({
-            code: 'MODEL_TOKEN_USAGE_UNKNOWN',
-          });
+          await expect(admitting).resolves.toHaveLength(4);
           expect(
             await getOrganizationModelQuota(f.a.org, database.db),
           ).toMatchObject({

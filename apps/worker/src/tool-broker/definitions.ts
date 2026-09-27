@@ -1,4 +1,5 @@
 import {
+  ImageToolInputSchema,
   OfficeExportSchema,
   NativeOfficeExportSchema,
   runtimeFeatureEnabled,
@@ -350,6 +351,14 @@ export const riceToolDefinitions = [
       additionalProperties: false,
     },
   },
+  ...(['generate', 'edit'] as const).map((action) => ({
+    name: `image.${action}` as const,
+    description:
+      action === 'generate'
+        ? '按用户要求生成一张图片并交付可下载 PNG。仅用于用户明确要求绘图；不用于普通看图理解。不要自动重复未知结果。'
+        : '修改明确选中的图片，另存新版本并保留原图。source 必须含文件 objectId 和服务端 checksum；先列文件确定版本，指代不清先问用户。不要自动重复未知结果。',
+    inputSchema: z.toJSONSchema(ImageToolInputSchema),
+  })),
   {
     name: 'workspace.export.create',
     description:
@@ -381,7 +390,7 @@ export const riceToolDefinitions = [
         python: {
           ...z.toJSONSchema(NativeOfficeExportSchema),
           description:
-            'Office 默认路径：执行 DSH 原生 Python 文档流程。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
+            'Office 默认路径：执行 DSH 原生 Python 文档流程。最小入参 {"fileName":"报告.xlsx","format":"xlsx","python":{"script":"...","inputs":[]}}。新文件省略 sourceObjectId（也接受 null）；修改说明优先放外层 changeSummary。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
         },
         office: {
           ...z.toJSONSchema(OfficeExportSchema),
@@ -588,6 +597,10 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (!definition.name.startsWith('image.') ||
+        (allowed?.has(definition.name) &&
+          capabilities.includes('model:invoke') &&
+          runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))) &&
       (!definition.name.startsWith('assistant.') ||
         (allowed?.has(definition.name) &&
           runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED'))) &&

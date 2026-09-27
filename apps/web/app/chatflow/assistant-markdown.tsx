@@ -1,10 +1,12 @@
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import {
+  MarkdownDelegateProvider,
   MarkdownText,
   type MarkdownLabels,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { WorkbenchArtifact } from '@allrice/contracts';
 import { markdownDeliveryText } from '../../lib/chatflow/markdown-delivery';
+import { artifactForDownloadLink } from '../../lib/chatflow/artifact-download-link';
 
 const labels: MarkdownLabels = {
   code: {
@@ -25,11 +27,13 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   streaming = false,
   allowRemoteImages = true,
   artifacts = noArtifacts,
+  onOpenArtifact,
 }: {
   text: string;
   streaming?: boolean;
   allowRemoteImages?: boolean;
   artifacts?: readonly WorkbenchArtifact[];
+  onOpenArtifact?: (id: string) => void;
 }) {
   const origin = typeof location === 'undefined' ? undefined : location.origin;
   const rendered = useMemo(
@@ -39,5 +43,19 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
         : markdownDeliveryText(text, artifacts, allowRemoteImages, origin),
     [text, artifacts, allowRemoteImages, streaming, origin],
   );
-  return <MarkdownText text={rendered} streaming={streaming} labels={labels} />;
+  const openLink = useCallback(
+    (href: string) => {
+      const artifact = artifactForDownloadLink(href, artifacts);
+      if (artifact && onOpenArtifact) onOpenArtifact(artifact.id);
+      else window.open(href, '_blank', 'noopener,noreferrer');
+    },
+    [artifacts, onOpenArtifact],
+  );
+  return (
+    <MarkdownDelegateProvider
+      openExternalLink={onOpenArtifact ? openLink : undefined}
+    >
+      <MarkdownText text={rendered} streaming={streaming} labels={labels} />
+    </MarkdownDelegateProvider>
+  );
 });

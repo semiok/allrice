@@ -72,7 +72,7 @@ describe('AllRice DSH protocol runtime', () => {
     await client.close();
     expect(await joining).toMatchObject({ code: 'DSH_RUNTIME_CLOSED' });
   });
-  it('initializes the actual Gemini API composition and legacy model alias without a model call', async () => {
+  it('rejects the retired Gemini composition without a model call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'allrice-gemini-protocol-'));
     roots.push(root);
     const client = new DshProtocolClient({
@@ -113,13 +113,7 @@ describe('AllRice DSH protocol runtime', () => {
         nativeTools: ['local.process.execute', 'web.search'],
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       }),
-    ).resolves.toEqual({
-      name: 'deepseek-harness-sdk-runtime',
-      version: DSH_DISTRIBUTION_CURRENT_VERSION,
-    });
-    await expect(client.interrupt('synthetic-not-live')).resolves.toMatchObject(
-      { interrupted: false },
-    );
+    ).rejects.toThrow();
   });
   it('treats every managed browser payload as immutable untrusted page data', async () => {
     const runtimeSource = await readFile(
@@ -160,7 +154,7 @@ describe('AllRice DSH protocol runtime', () => {
     expect(exportTool.parameters.parentObjectId.type).toBe('string');
     expect(exportTool.parameters.changeSummary.type).toBe('string');
     expect(runtimeSource).toContain(
-      'pass its object ID as parentObjectId and summarize the revision in changeSummary',
+      'pass parentObjectId and top-level changeSummary to preserve immutable lineage',
     );
   });
 
@@ -224,6 +218,8 @@ describe('AllRice DSH protocol runtime', () => {
         model: 'gpt-5.6-luna',
         nativeTools: [
           'web.search',
+          'image.generate',
+          'image.edit',
           'local.fs.list',
           'local.fs.search',
           'local.fs.read',

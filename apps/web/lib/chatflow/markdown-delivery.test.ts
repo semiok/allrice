@@ -8,6 +8,15 @@ const origin = 'https://allrice.example';
 const target = `${origin}${path}?name=${encodeURIComponent('报告.md')}`;
 
 describe('native Markdown SaaS delivery adaptation', () => {
+  it.each([1, 2])(
+    'repairs %i levels of escaped path separators from real deliveries',
+    (depth) => {
+      const escaped = path.replaceAll('/', '\\'.repeat(depth) + '/');
+      expect(
+        markdownDeliveryText(`[下载报告](${escaped})`, files, true, origin),
+      ).toBe(`[下载报告](<${target}>)`);
+    },
+  );
   it('keeps formatting while resolving only verified file links to the current host', () => {
     expect(
       markdownDeliveryText(

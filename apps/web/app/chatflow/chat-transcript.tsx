@@ -6,6 +6,7 @@ import {
   type WorkbenchArtifact,
   type InteractionStatus,
 } from '@allrice/contracts';
+import { SessionReferenceChips } from './session-reference-picker';
 import type { AssistantTreeView } from '@allrice/database';
 
 import { projectWorkProgress } from '../../lib/chatflow/work-progress';
@@ -146,12 +147,6 @@ export function ChatTranscript({
                 streamingOutput,
               );
               const responseText = progress.finalText;
-              const summarize =
-                !!onOpenArtifact &&
-                linkedArtifacts.length > 0 &&
-                message.status === 'completed' &&
-                !messageIsRunning &&
-                responseText.length > 600;
 
               return (
                 <div
@@ -210,13 +205,18 @@ export function ChatTranscript({
                       data-actions-reveal="hover"
                     >
                       <div className={messageUi.userStack}>
+                        <SessionReferenceChips
+                          references={message.content.sessionReferences ?? []}
+                        />
                         {message.attachments?.length ? (
                           <MessageImageGallery
                             attachments={message.attachments}
                             tenantHeaders={tenantHeaders}
                           />
                         ) : null}
-                        <div className={messageUi.bubble}>
+                        <div
+                          className={`${messageUi.bubble} ${styles.userBubble}`}
+                        >
                           {message.content.text}
                         </div>
                       </div>
@@ -245,6 +245,7 @@ export function ChatTranscript({
                         items={progress.items}
                         parts={progress.parts}
                         artifacts={linkedArtifacts}
+                        onOpenArtifact={onOpenArtifact}
                         timing={timing}
                         running={messageIsRunning}
                         streaming={streamingOutput && !!streamedText}
@@ -332,27 +333,12 @@ export function ChatTranscript({
                             (messageIsRunning && !!streamedText) || undefined
                           }
                         >
-                          {summarize ? (
-                            <>
-                              <p>
-                                本轮已交付 {linkedArtifacts.length}{' '}
-                                项成果，可在交付成果中查看与审查。
-                              </p>
-                              <details>
-                                <summary>展开完整回复</summary>
-                                <AssistantMarkdown
-                                  text={responseText}
-                                  artifacts={linkedArtifacts}
-                                />
-                              </details>
-                            </>
-                          ) : (
-                            <AssistantMarkdown
-                              text={responseText}
-                              streaming={streamingOutput && messageIsRunning}
-                              artifacts={linkedArtifacts}
-                            />
-                          )}
+                          <AssistantMarkdown
+                            text={responseText}
+                            streaming={streamingOutput && messageIsRunning}
+                            artifacts={linkedArtifacts}
+                            onOpenArtifact={onOpenArtifact}
+                          />
                         </div>
                       ) : null}
                       {message.content.budgetWarning &&
@@ -377,6 +363,7 @@ export function ChatTranscript({
                           messageId={message.id}
                           text={responseText}
                           createdAt={message.createdAt}
+                          workMethods={message.workMethods}
                         />
                       ) : null}
                     </div>

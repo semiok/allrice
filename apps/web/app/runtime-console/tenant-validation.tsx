@@ -18,12 +18,13 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { RunUsageSummary } from './run-usage';
+import { ExecutionDiagnostics } from './execution-diagnostics';
 import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
 import styles from './tenant-administration.module.css';
 
 export function TenantValidation(
-  props: TenantResourceProps & { subjectId: string },
+  props: TenantResourceProps & { subjectId: string; initialRunId?: string },
 ) {
   const { organizationId, workspaceId, subjectId } = props;
   const [data, setData] = useState<TenantValidationSummary | null>(null),
@@ -91,33 +92,45 @@ export function TenantValidation(
     }
   }, [base, deviceId, read]);
   useEffect(() => {
-    void refresh();
+    if (!props.initialRunId) void refresh();
     return () => request.current?.abort();
-  }, [refresh]);
-  async function inspect(id: string) {
-    request.current?.abort();
-    const c = new AbortController();
-    request.current = c;
-    setRun(id);
-    setDetail(null);
-    setPreview(null);
-    setArtifact('');
-    setError('');
-    setLoading(true);
-    try {
-      const value = await read<TenantRunInspection>(
-        `${base}&runId=${encodeURIComponent(id)}`,
-        c.signal,
-      );
-      if (value.run.id !== id) throw Error('Run 范围不匹配');
-      if (!c.signal.aborted) setDetail(value);
-    } catch (e) {
-      if (!c.signal.aborted)
-        setError(e instanceof Error ? e.message : 'Run 读取失败');
-    } finally {
-      if (!c.signal.aborted) setLoading(false);
-    }
-  }
+  }, [refresh, props.initialRunId]);
+  const inspect = useCallback(
+    async (id: string, preserve = false) => {
+      request.current?.abort();
+      const c = new AbortController();
+      request.current = c;
+      setRun(id);
+      if (!preserve) {
+        setDetail(null);
+        setPreview(null);
+        setArtifact('');
+      }
+      setError('');
+      setLoading(true);
+      try {
+        const value = await read<TenantRunInspection>(
+          `${base}&runId=${encodeURIComponent(id)}`,
+          c.signal,
+        );
+        if (value.run.id !== id) throw Error('Run 范围不匹配');
+        if (!c.signal.aborted) setDetail(value);
+      } catch (e) {
+        if (!c.signal.aborted) {
+          setDetail(null);
+          setPreview(null);
+          setArtifact('');
+          setError(e instanceof Error ? e.message : '工作读取失败');
+        }
+      } finally {
+        if (!c.signal.aborted) setLoading(false);
+      }
+    },
+    [base, read],
+  );
+  useEffect(() => {
+    if (props.initialRunId) void inspect(props.initialRunId);
+  }, [props.initialRunId, inspect]);
   async function inspectArtifact(id: string) {
     request.current?.abort();
     const c = new AbortController();
@@ -136,7 +149,7 @@ export function TenantValidation(
         preview: unknown;
       }>(`${base}&runId=${runId}&artifactId=${id}`, c.signal);
       if (value.runId !== runId || value.artifactId !== id)
-        throw Error('工件范围不匹配');
+        throw Error('成果范围不匹配');
       if (!c.signal.aborted) setPreview(parseArtifactPreview(value.preview));
     } catch (e) {
       if (!c.signal.aborted)
@@ -147,13 +160,25 @@ export function TenantValidation(
   }
   return (
     <section aria-label="租户运行检查">
-      <h3>运行检查</h3>
-      <p>
-        这里检查实际使用者的配置与历史结果，不冒用其身份发起任务、批准操作或借用其设备。调试页的模型试用成功不能替代租户本人验收。
-      </p>
-      <button disabled={loading} onClick={() => void refresh()}>
-        刷新配置与就绪检查
-      </button>
+      {!props.initialRunId && (
+        <>
+          <h3>运行检查</h3>
+          <p>
+            这里检查实际使用者的配置与历史结果，不冒用其身份发起任务、批准操作或借用其设备。调试页的模型试用成功不能替代租户本人验收。
+          </p>
+          <button disabled={loading} onClick={() => void refresh()}>
+            刷新配置与就绪检查
+          </button>
+        </>
+      )}
+      {props.initialRunId && (
+        <button
+          disabled={loading}
+          onClick={() => void inspect(props.initialRunId!, true)}
+        >
+          刷新工作详情
+        </button>
+      )}
       {loading ? <p role="status">读取中…</p> : null}
       {error ? <p role="alert">{error}</p> : null}
       {data ? (
@@ -279,7 +304,7 @@ export function TenantValidation(
                 {q.effective.monthlyTokenLimit.toLocaleString()} Token；风险预留{' '}
                 {q.reservedTokens.toLocaleString()}；
                 {data.quotas?.subscription.tokenPolicy === 'observe'
-                  ? 'Codex 订阅仅统计，不受此 Token 上限或预留阻断；其他执行保护仍生效'
+                  ? '所有模型的 Token 仅统计，不受此历史上限或预留阻断；任务时限与无进展保护仍生效'
                   : q.usedTokens + q.reservedTokens >=
                       q.effective.monthlyTokenLimit
                     ? '已达内部额度，请检查限制'
@@ -338,18 +363,25 @@ export function TenantValidation(
       ) : null}
       {detail ? (
         <section aria-label="真实任务检查结果">
-          <h4>
-            Run {detail.run.id.slice(0, 8)} · {detail.run.status}
-          </h4>
-          <p>
-            冻结员工版本：{detail.run.employeeVersionId}；Session：
-            {detail.run.sessionId}
-          </p>
-          <RunUsageSummary usage={detail.usage} runStatus={detail.run.status} />
-          {detail.development ? (
-            <DevelopmentInspection data={detail.development} />
-          ) : null}
+          <h4>工作详情与交付成果</h4>
           <details>
+            <summary>技术详情</summary>
+            <p>
+              冻结员工版本：{detail.run.employeeVersionId}；Session：
+              {detail.run.sessionId}
+            </p>
+            <RunUsageSummary
+              usage={detail.usage}
+              runStatus={detail.run.status}
+            />
+            {detail.executionDiagnostics ? (
+              <ExecutionDiagnostics data={detail.executionDiagnostics} />
+            ) : null}
+            {detail.development ? (
+              <DevelopmentInspection data={detail.development} />
+            ) : null}
+          </details>
+          <details open={!!props.initialRunId}>
             <summary>用户目标与交付回复</summary>
             <SafeDocument text={detail.userText ?? '无可展示目标'} />
             <SafeDocument text={detail.answerText ?? '尚无回复'} />
@@ -364,48 +396,50 @@ export function TenantValidation(
               </p>
             ))}
           </details>
-          <h5>实际执行与审批</h5>
-          {detail.operations.map((o) => (
-            <article key={o.id}>
-              <strong>
-                {o.action} · {o.status}
-              </strong>
-              <p>
-                Operation {o.id} · 实际设备 {o.deviceId ?? '云端'} · Target{' '}
-                {o.targetId}
-              </p>
-              {deviceId && o.deviceId !== deviceId ? (
-                <p role="alert">
-                  此操作绑定的不是当前观察设备，不能作为所选设备通过的证据。
+          <details>
+            <summary>执行记录与审批详情</summary>
+            {detail.operations.map((o) => (
+              <article key={o.id}>
+                <strong>
+                  {o.action} · {o.status}
+                </strong>
+                <p>
+                  Operation {o.id} · 实际设备 {o.deviceId ?? '云端'} · Target{' '}
+                  {o.targetId}
                 </p>
-              ) : null}
+                {deviceId && o.deviceId !== deviceId ? (
+                  <p role="alert">
+                    此操作绑定的不是当前观察设备，不能作为所选设备通过的证据。
+                  </p>
+                ) : null}
+                <p>
+                  审批：{o.approval ?? '无单次审批记录'}
+                  {o.expiresAt
+                    ? ` · 到期 ${new Date(o.expiresAt).toLocaleString()}`
+                    : ''}
+                  。已批不代表已执行；结果未知不重放。
+                </p>
+                {o.output ? (
+                  <details>
+                    <summary>命令输出前缀（只读、有界）</summary>
+                    <pre>{o.output}</pre>
+                    {o.outputTruncated ? (
+                      <p>输出已截断，完整记录保留在原执行日志。</p>
+                    ) : null}
+                  </details>
+                ) : null}
+              </article>
+            ))}
+            {!detail.operations.length ? (
               <p>
-                审批：{o.approval ?? '无单次审批记录'}
-                {o.expiresAt
-                  ? ` · 到期 ${new Date(o.expiresAt).toLocaleString()}`
-                  : ''}
-                。已批不代表已执行；结果未知不重放。
+                没有受控执行记录；不能把文本回复当作本地落盘或浏览器操作证据。
               </p>
-              {o.output ? (
-                <details>
-                  <summary>命令输出前缀（只读、有界）</summary>
-                  <pre>{o.output}</pre>
-                  {o.outputTruncated ? (
-                    <p>输出已截断，完整记录保留在原执行日志。</p>
-                  ) : null}
-                </details>
-              ) : null}
-            </article>
-          ))}
-          {!detail.operations.length ? (
-            <p>
-              没有受控执行记录；不能把文本回复当作本地落盘或浏览器操作证据。
-            </p>
-          ) : null}
-          {detail.operationsTruncated ? (
-            <p>只显示前 32 个操作，其余请到完整任务记录查看。</p>
-          ) : null}
-          <h5>真实发布工件</h5>
+            ) : null}
+            {detail.operationsTruncated ? (
+              <p>只显示前 32 个操作，其余请到完整任务记录查看。</p>
+            ) : null}
+          </details>
+          <h5>交付成果</h5>
           {detail.artifacts.map((a) => (
             <article key={a.id}>
               <button
@@ -414,16 +448,16 @@ export function TenantValidation(
               >
                 {a.version.fileName} · v{a.version.version} · {a.kind}
               </button>
-              <small>
-                {' '}
-                SHA-256 {a.object.checksum} · {a.object.sizeBytes} bytes
-              </small>
+              <small> {a.object.sizeBytes.toLocaleString()} 字节</small>
+              <a
+                href={`${base}&runId=${detail.run.id}&artifactId=${a.id}&download=1`}
+              >
+                下载
+              </a>
             </article>
           ))}
-          {!detail.artifacts.length ? (
-            <p>此 Run 没有已发布工件。回复内容不自动冒充正式文件。</p>
-          ) : null}
-          {detail.artifactsTruncated ? <p>仅展示前 50 份工件。</p> : null}
+          {!detail.artifacts.length ? <p>这项工作尚无已发布文件。</p> : null}
+          {detail.artifactsTruncated ? <p>仅展示前 50 份成果。</p> : null}
           {artifactId && preview ? (
             <section aria-label="只读交付物预览">
               <ReadOnlyArtifactPreview preview={preview} />

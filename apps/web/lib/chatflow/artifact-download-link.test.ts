@@ -8,6 +8,8 @@ const artifacts = [
 describe('verified Artifact links, not model-invented download hosts', () => {
   it.each([
     path,
+    path.replaceAll('/', '\\/'),
+    path.replaceAll('/', '\\\\/'),
     `https://allrice.example${path}`,
     `https://invented.invalid${path}?name=wrong&redirect=https://evil.example#fake`,
   ])('resolves a known current-Run file: %s', (href) => {

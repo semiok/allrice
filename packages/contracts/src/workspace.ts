@@ -1,4 +1,6 @@
+import { SessionReferenceSchema } from './session-reference.ts';
 import { z } from 'zod';
+import { WorkMethodSchema } from './work-methods.ts';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { officeMediaTypes } from './office-quality.ts';
@@ -79,6 +81,7 @@ export const ChatMessageContentSchema = z
       ])
       .optional(),
     citations: z.array(ChatCitationSchema).default([]),
+    sessionReferences: z.array(SessionReferenceSchema).max(3).optional(),
     interaction: z
       .union([
         z
@@ -106,6 +109,7 @@ export const ChatMessageContentSchema = z
 
 export const ChatMessageSchema = z
   .object({
+    workMethods: z.array(WorkMethodSchema).max(11).optional(),
     id: UuidSchema,
     sessionId: UuidSchema,
     ownerId: UuidSchema,
@@ -219,6 +223,7 @@ export const SendChatMessageInputSchema = z
     clientMessageId: UuidSchema,
     text: z.string().trim().min(1).max(40_000),
     attachmentIds: z.array(UuidSchema).max(20).default([]),
+    sessionReferenceIds: z.array(UuidSchema).max(3).optional(),
     deliveryMode: z.enum(['auto', 'steer', 'follow_up']).default('auto'),
     expectedTurnId: z.string().trim().min(1).max(255).optional(),
     expectedGeneration: z.number().int().nonnegative().optional(),
@@ -229,6 +234,20 @@ export const SendChatMessageInputSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.sessionReferenceIds?.length &&
+      (value.deliveryMode !== 'follow_up' ||
+        value.userQuestionAnswer ||
+        value.reviewContinuation ||
+        value.changesetAction ||
+        new Set(value.sessionReferenceIds).size !==
+          value.sessionReferenceIds.length)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'session references require an ordinary queued task and unique sources',
+      });
     if (
       value.assistantPreference &&
       (value.deliveryMode !== 'follow_up' ||

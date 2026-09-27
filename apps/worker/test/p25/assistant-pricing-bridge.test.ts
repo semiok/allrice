@@ -9,7 +9,11 @@ type Options = Parameters<typeof createAssistantWorkerBridge>[0];
 function fixture(onModelUsage?: Options['onModelUsage']) {
   const runId = randomUUID(),
     callId = randomUUID();
-  const settleUsage = vi.fn(async () => {});
+  const settleUsage = vi.fn<
+    (
+      input: Parameters<AssistantRuntime['settleUsage']>[0],
+    ) => Promise<{ tokenUsageObservational: boolean } | undefined>
+  >(async () => undefined);
   const runtime = {
     getTree: vi.fn(async () => ({
       instances: [{ nativeSessionId: 'synthetic-root', runId }],
@@ -36,6 +40,29 @@ function fixture(onModelUsage?: Options['onModelUsage']) {
 }
 
 describe('assistant pricing settlement acknowledgement', () => {
+  it.each([true, false])(
+    'uses only the authoritative settlement policy (%s)',
+    async (observational) => {
+      const f = fixture();
+      f.settleUsage.mockResolvedValue({
+        tokenUsageObservational: observational,
+      });
+      await expect(
+        f.bridge.handle('model-settle', {
+          ...f.params,
+          inputTokens: undefined,
+          outputTokens: undefined,
+          tokenUsageObservational: !observational,
+        }),
+      ).resolves.toEqual({
+        settled: true,
+        ...(observational ? { tokenUsageObservational: true } : {}),
+      });
+      expect(f.settleUsage.mock.calls[0]?.[0]).not.toHaveProperty(
+        'tokenUsageObservational',
+      );
+    },
+  );
   it('persists token settlement before pricing and never invents known cache zeros', async () => {
     const price = vi.fn(async () => {
       expect(f.settleUsage).toHaveBeenCalledOnce();
@@ -76,13 +103,13 @@ describe('assistant pricing settlement acknowledgement', () => {
       }),
     );
   });
-  it('cannot acknowledge a model call when its pricing receipt is rejected', async () => {
+  it('acknowledges confirmed execution despite a pricing receipt failure', async () => {
     const f = fixture(async () => {
       throw Error('synthetic_receipt_conflict');
     });
-    await expect(f.bridge.handle('model-settle', f.params)).rejects.toThrow(
-      'synthetic_receipt_conflict',
-    );
+    await expect(f.bridge.handle('model-settle', f.params)).resolves.toEqual({
+      settled: true,
+    });
     expect(f.settleUsage).toHaveBeenCalledOnce();
   });
   it.each([undefined, 'wrong', `sha256:${'z'.repeat(64)}`])(

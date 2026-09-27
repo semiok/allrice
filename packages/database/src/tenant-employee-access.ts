@@ -30,7 +30,8 @@ export async function synchronizeTenantEmployeeAccess(tx: Tx, scope: Scope) {
       and exists(select 1 from allrice_platform_employee_tenant_assignments d
         join allrice_employees e on e.id=d.tenant_employee_id
         where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id and d.tenant_employee_id=a.employee_id
-          and (not d.active or e.status<>'active' or not exists(
+          and (not d.active or e.status<>'active' or a.selection_mode='exclude'
+            or (a.selection_mode='inherit' and not d.inherit_by_default) or not exists(
             select 1 from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active'
             where m.organization_id=a.organization_id and m.user_id=a.user_id and m.active and m.role in ('admin','member')
               and (m.workspace_id is null or m.workspace_id=a.workspace_id))))`;
@@ -42,11 +43,18 @@ export async function synchronizeTenantEmployeeAccess(tx: Tx, scope: Scope) {
       select ${organizationId},${workspaceId},${d.tenant_employee_id},${d.tenant_employee_version_id},m.user_id,false,true,null
       from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active'
       where m.organization_id=${organizationId} and (m.workspace_id is null or m.workspace_id=${workspaceId})
-        and m.active and m.role in ('admin','member') group by m.user_id
+        and m.active and m.role in ('admin','member')
+        and (${d.inherit_by_default}=true or exists(select 1 from allrice_employee_assignments chosen
+          where chosen.organization_id=${organizationId} and chosen.workspace_id=${workspaceId}
+            and chosen.employee_id=${d.tenant_employee_id} and chosen.user_id=m.user_id and chosen.selection_mode='include'))
+        and not exists(select 1 from allrice_employee_assignments excluded
+          where excluded.organization_id=${organizationId} and excluded.workspace_id=${workspaceId}
+            and excluded.employee_id=${d.tenant_employee_id} and excluded.user_id=m.user_id and excluded.selection_mode='exclude')
+        group by m.user_id
       on conflict(organization_id,workspace_id,user_id,employee_id) do update
         set employee_version_id=excluded.employee_version_id,is_default=allrice_employee_assignments.active and allrice_employee_assignments.is_default,active=true,updated_at=clock_timestamp()
-        where not allrice_employee_assignments.active
-          or allrice_employee_assignments.employee_version_id<>excluded.employee_version_id`;
+        where allrice_employee_assignments.selection_mode<>'exclude' and (not allrice_employee_assignments.active
+          or allrice_employee_assignments.employee_version_id<>excluded.employee_version_id)`;
     // Preserve an existing personal default; new members inherit the workspace default.
     await tx`update allrice_employee_assignments a set is_default=true,updated_at=clock_timestamp()
       where a.organization_id=${organizationId} and a.workspace_id=${workspaceId} and a.employee_id=${d.tenant_employee_id}

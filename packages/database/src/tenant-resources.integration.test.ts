@@ -140,7 +140,7 @@ suite('MET-151 PR3 tenant resources (isolated PostgreSQL)', () => {
         requestedTokens: 5000001,
         requestedRuntimeMs: 1000,
       }),
-    ).toThrow('MODEL_TOKEN_QUOTA_EXCEEDED');
+    ).not.toThrow();
     const [audit] =
       await f.db`select actor_id,metadata from allrice_audit_events where action='tenant.quota.updated' and resource_id=${t.target.subjectId}`;
     expect(audit).toMatchObject({

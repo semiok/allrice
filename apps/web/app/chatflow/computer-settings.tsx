@@ -148,11 +148,15 @@ export function ComputerSettings({
   return (
     <>
       <p>
-        连接 Bridge
-        后，以下三项默认开启。你可以随时在这里关闭或重新开启；处理本地文件时，再选择需要交给员工的文件夹。
+        连接 Bridge 后，以下能力默认开启。处理本地文件时，再选择工作文件夹。
       </p>
       {error && <p role="alert">{error}</p>}
       {!computers && !error && <p role="status">正在读取电脑状态…</p>}
+      {computers?.length === 0 && (
+        <p className={styles.preferenceRow}>
+          还没有连接电脑。安装并配对 Bridge 后，可在这里管理本地能力。
+        </p>
+      )}
       {computers?.map((computer) => (
         <section
           key={computer.device.id}

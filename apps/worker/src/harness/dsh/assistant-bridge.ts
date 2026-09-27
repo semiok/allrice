@@ -11,7 +11,7 @@ import {
 import type { AssistantRuntime, AssistantWorkerLease } from '@allrice/database';
 import { runtimePolicyDigest } from '@allrice/database';
 import type { HarnessToolCall, HarnessToolResult } from '../adapter.js';
-import { HandlerError } from '../../errors.js';
+import { HandlerError, isConfirmedToolFailure } from '../../errors.js';
 import { riceToolRisk } from '../../tool-broker/definitions.js';
 import { developmentAssignmentMessage } from '../../development/assignment-instructions.js';
 
@@ -51,8 +51,8 @@ export interface AssistantWorkerBridgeOptions {
     call: HarnessToolCall,
     childRunId: string,
   ) => Promise<HarnessToolResult>;
-  /** Pricing evidence only, after durable token settlement. A rejected receipt
-   * must not ACK the model call or release the native no-replay guard. */
+  /** Pricing telemetry only, after durable execution/token settlement. Failure
+   * to record a price must not invalidate the confirmed execution receipt. */
   onModelUsage?: (input: {
     runId: string;
     callId: string;
@@ -167,7 +167,7 @@ export function createAssistantWorkerBridge(
             .regex(/^sha256:[a-f0-9]{64}$/)
             .parse(p.requestDigest)
         : undefined;
-      await runtime.settleUsage({
+      const receipt = await runtime.settleUsage({
         ...base,
         runId: instance.runId,
         callId,
@@ -178,20 +178,34 @@ export function createAssistantWorkerBridge(
           ...(outputTokens === null ? {} : { output_tokens: outputTokens }),
         },
       });
-      if (options.onModelUsage)
-        await options.onModelUsage({
-          runId: instance.runId,
-          callId,
-          requestDigest: requestDigest!,
-          usage: {
-            inputTokens,
-            outputTokens,
-            cacheReadTokens: null,
-            cacheWriteTokens: null,
-            usageComplete: inputTokens !== null && outputTokens !== null,
-          },
-        });
-      return { settled: true };
+      if (options.onModelUsage) {
+        try {
+          await options.onModelUsage({
+            runId: instance.runId,
+            callId,
+            requestDigest: requestDigest!,
+            usage: {
+              inputTokens,
+              outputTokens,
+              cacheReadTokens: null,
+              cacheWriteTokens: null,
+              usageComplete: inputTokens !== null && outputTokens !== null,
+            },
+          });
+        } catch {
+          console.warn('assistant_pricing_receipt_unavailable', {
+            rootRunId: task.rootRunId,
+            runId: instance.runId,
+            callId,
+          });
+        }
+      }
+      return {
+        settled: true,
+        ...(receipt?.tokenUsageObservational === true
+          ? { tokenUsageObservational: true }
+          : {}),
+      };
     }
     if (method === 'adopt-result') {
       await runtime.adoptResult({
@@ -282,12 +296,17 @@ export function createAssistantWorkerBridge(
       } catch (error) {
         // A returned read failure is a completed attempt, not an unknown tool
         // execution. Keep the failure visible to native DSH so it can recover.
-        // Proposals/writes still need their execution receipts; their exceptions
-        // do not prove whether the external operation happened.
+        // Writes require a receipt from the handler for this exact invocation;
+        // an arbitrary exception cannot prove whether publication happened.
         if (
           !isProposal &&
           (riceToolRisk(name) === 'read_only' ||
-            options.readOnlyTools.has(name))
+            options.readOnlyTools.has(name) ||
+            isConfirmedToolFailure(error, {
+              runId: instance.runId,
+              callId,
+              toolName: name,
+            }))
         )
           await runtime.settleUsage({
             ...base,

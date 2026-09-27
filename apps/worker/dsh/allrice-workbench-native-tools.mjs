@@ -1,11 +1,54 @@
 // Model-visible native declarations; publication and execution authority stay
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
 import {
+  ImageToolInputSchema,
   OfficeExportSchema,
   NativeOfficeExportSchema,
 } from '@allrice/contracts';
 
 export const workbenchNativeTools = [
+  ...['generate', 'edit'].map((action) => ({
+    canonicalName: `image.${action}`,
+    wireName: `image_${action}`,
+    timeoutMs: 320_000,
+    isConcurrencySafe: false,
+    presentation: 'tool',
+    description:
+      action === 'generate'
+        ? 'Generate one image only when the user requests drawing or image creation. Return the real downloadable PNG. Do not use for image understanding. Never retry unknown results.'
+        : 'Edit a specific authorized image and preserve its original version. Resolve source.objectId and checksum via workspace_file_list. Ask if the source is ambiguous. Never retry unknown results.',
+    validateArguments: (args) => ImageToolInputSchema.parse(args),
+    parameters: {
+      prompt: {
+        type: 'string',
+        required: true,
+        description:
+          'Detailed image creation or edit instructions, max 4000 characters.',
+      },
+      fileName: {
+        type: 'string',
+        required: true,
+        description: 'Human-readable PNG filename.',
+      },
+      source: {
+        type: 'object',
+        ...(action === 'edit' ? { required: true } : {}),
+        additionalProperties: false,
+        properties: {
+          objectId: {
+            type: 'string',
+            required: true,
+            description: 'Authorized exact source storage object UUID.',
+          },
+          checksum: {
+            type: 'string',
+            required: true,
+            description: 'Exact sha256 checksum returned by AllRice.',
+          },
+        },
+      },
+    },
+  })),
   {
     canonicalName: 'workspace.export.create',
     wireName: 'workspace_export_create',
@@ -109,13 +152,18 @@ export const workbenchNativeTools = [
             },
           },
           sourceObjectId: {
-            type: 'string',
+            oneOf: [{ type: 'string' }, { type: 'null' }],
             description:
-              'Object ID of the input file being revised, also listed in python.inputs.',
+              'For edits, the input object ID also listed in python.inputs. For new files omit this field or use null.',
+          },
+          changeSummary: {
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+            description:
+              'Optional version summary; the top-level changeSummary is preferred. Do not supply conflicting summaries.',
           },
         },
         description:
-          'Default Office workflow: {script: "Python code", inputs?: [{path, objectId, checksum}], sourceObjectId?: "edited input UUID"}. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
+          'Default Office workflow. New-file example: {fileName: "report.xlsx", format: "xlsx", python: {script: "Python code", inputs: []}}. For edits add inputs: [{path, objectId, checksum}] and sourceObjectId INSIDE python; for new files omit sourceObjectId or use null. Put changeSummary at the top level. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
       },
       office: {
         type: 'object',

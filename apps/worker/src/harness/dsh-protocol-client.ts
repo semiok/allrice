@@ -1,3 +1,4 @@
+import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 
@@ -173,11 +174,13 @@ export class DshProtocolClient {
     sessionId: string,
     text: string,
     images: readonly HarnessImageInput[] = [],
+    sessionReferences: readonly SessionReferenceSnapshot[] = [],
   ) {
     const result = await this.request('session/prompt', {
       sessionId,
       contentBlocks: [{ type: 'text', text }],
       images,
+      ...(sessionReferences.length ? { sessionReferences } : {}),
     });
     if (typeof result.messageId !== 'string' || !result.messageId) {
       throw new HandlerError(
@@ -305,6 +308,15 @@ export class DshProtocolClient {
 
   async cancelCodexAuthorization() {
     return this.request('provider/cancel-codex', undefined, 10_000);
+  }
+
+  async generateCodexImage(input: {
+    workModel: string;
+    imageModel: string;
+    prompt: string;
+    source?: { mediaType: string; data: string };
+  }) {
+    return this.request('provider/image-generation', input, 310_000);
   }
 
   async searchCodexWeb(query: string, maxResults = 5) {

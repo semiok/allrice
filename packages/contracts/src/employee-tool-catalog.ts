@@ -363,12 +363,36 @@ export function assembleEmployeeCapabilities(
   };
 }
 
+/** Admin editor defaults: selected tools determine employee capabilities.
+ * This prepares an editable draft; it does not grant tenant resources, change
+ * member confirmation settings, or rewrite an immutable published version.
+ * Keep assembleEmployeeCapabilities separate for legacy policy-aware callers.
+ */
+export function prepareEmployeeEditorDefinition(
+  definition: PlatformEmployeeDefinition,
+  skills: readonly EmployeeSkillChoice[],
+): PlatformEmployeeDefinition {
+  return assembleEmployeeCapabilities(
+    {
+      ...definition,
+      securityPolicy: {
+        ...definition.securityPolicy,
+        bridgeAccess: 'none',
+        connectorIdentityModes: ['user', 'service'],
+        deniedCapabilities: [],
+      },
+    },
+    skills,
+  );
+}
+
 /** Workspace execution settings resulting from an explicit employee publication.
  * Unselected actions retain their rules; exact-operation approvals stay intact. */
 export function employeePublicationPolicy(
   current: unknown,
   toolNames: readonly string[],
   version: number,
+  preserveExisting = false,
 ) {
   const previous = RuntimePolicyControlsSchema.safeParse(current);
   const selected = new Set(toolNames);
@@ -379,13 +403,24 @@ export function employeePublicationPolicy(
   );
   return RuntimePolicyControlsSchema.parse({
     version,
-    enabled: true,
-    mode: 'execute',
+    enabled:
+      preserveExisting && previous.success ? previous.data.enabled : true,
+    mode: preserveExisting && previous.success ? previous.data.mode : 'execute',
     rules: [
       ...(previous.success
-        ? previous.data.rules.filter((rule) => !actions.has(rule.action))
+        ? previous.data.rules.filter(
+            (rule) => preserveExisting || !actions.has(rule.action),
+          )
         : []),
-      ...[...actions].sort().map((action) => ({ action, effect: 'allow' })),
+      ...[...actions]
+        .filter(
+          (action) =>
+            !preserveExisting ||
+            !previous.success ||
+            !previous.data.rules.some((rule) => rule.action === action),
+        )
+        .sort()
+        .map((action) => ({ action, effect: 'allow' })),
     ],
   });
 }

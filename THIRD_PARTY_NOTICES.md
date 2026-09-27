@@ -143,3 +143,9 @@ TextPreview.module.css from commit
 ledger. The DeepSeek MIT notice above applies. PathLabel, FileTypeIcon, Menu,
 CodeBlock and toolbar icons are consumed from the published ui-primitives
 package; Allrice supplies authenticated file/version actions.
+
+Delivery cards retain ui-deliverables PresentedFileCard and its responsive
+stylesheet from the same 0.1.7-rc.1 commit under dsh-upstream/deliverables.
+Recorded patches replace desktop Host status/actions with Allrice authenticated
+browser actions and keep the native card button clear of legacy panel styles.
+The MIT notice above applies; hashes and patches are in the WebUI ledger.

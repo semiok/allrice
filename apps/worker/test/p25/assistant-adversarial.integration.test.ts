@@ -9,6 +9,8 @@ import {
   createAssistantFixtureDatabase,
 } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
+import { confirmToolFailure } from '../../src/errors.js';
+import type { HarnessToolResult } from '../../src/harness/adapter.js';
 import { gate, p24Fixture } from '../p24/fixture.js';
 
 const integration =
@@ -41,12 +43,14 @@ integration(
       'proposal',
       'unknown-tool',
       'settlement-failed',
+      'confirmed-export',
+      'foreign-receipt',
     ] as const)(
       'accounts a returned query failure without releasing uncertain execution: %s',
       async (mode) => {
         const f = await assistantFixture(database.db);
         const error = new Error('Synthetic handler failure');
-        const handler = vi.fn(async () => {
+        const handler = vi.fn(async (): Promise<HarnessToolResult> => {
           throw error;
         });
         const settle =
@@ -61,7 +65,11 @@ integration(
           context: f.context,
           worker: f.worker,
           wireNames: {},
-          readOnlyTools: new Set(mode === 'unknown-tool' ? [] : ['read']),
+          readOnlyTools: new Set(
+            ['known-read', 'proposal', 'settlement-failed'].includes(mode)
+              ? ['read']
+              : [],
+          ),
           onRootTool: handler,
         });
         const method = mode === 'proposal' ? 'proposal' : 'tool';
@@ -71,6 +79,15 @@ integration(
           name: 'read',
           arguments: {},
         };
+        if (mode === 'confirmed-export' || mode === 'foreign-receipt') {
+          // A failed Office attempt before publication, followed by a corrected
+          // call, must not poison finalization with unresolved tool accounting.
+          confirmToolFailure(error, {
+            runId: mode === 'foreign-receipt' ? randomUUID() : f.task.runId,
+            callId: request.callId,
+            toolName: request.name,
+          });
+        }
         await expect(bridge.handle(method, request)).rejects.toThrow(
           mode === 'settlement-failed'
             ? 'Synthetic database unavailable'
@@ -81,7 +98,7 @@ integration(
           await database.db`select metric,settled_amount,result_digest from allrice_assistant_usage where root_run_id=${f.task.runId}`;
         expect(rows).toHaveLength(4);
         for (const row of rows) {
-          if (mode === 'known-read') {
+          if (mode === 'known-read' || mode === 'confirmed-export') {
             expect(Number(row.settled_amount)).toBe(
               row.metric === 'tool_calls' ? 1 : 0,
             );
@@ -95,9 +112,18 @@ integration(
         // an already-accounted failure. A model retry uses a fresh call ID.
         await expect(bridge.handle(method, request)).rejects.toThrow();
         expect(handler).toHaveBeenCalledTimes(1);
+        if (mode === 'confirmed-export') {
+          handler.mockImplementation(async () => ({
+            modelContent: 'Corrected export',
+            summary: 'Corrected export',
+          }));
+          await bridge.handle('tool', { ...request, callId: randomUUID() });
+          expect(handler).toHaveBeenCalledTimes(2);
+        }
+        const complete = mode === 'known-read' || mode === 'confirmed-export';
         expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({
-          status: mode === 'known-read' ? 'completed' : 'unknown',
-          usageComplete: mode === 'known-read',
+          status: complete ? 'completed' : 'unknown',
+          usageComplete: complete,
         });
       },
     );
@@ -175,7 +201,7 @@ integration(
       ).rejects.toThrow();
     });
 
-    it('budget overrun produces the same instance tombstones as explicit root cancellation', async () => {
+    it('usage overage does not produce cancellation tombstones', async () => {
       const f = await assistantFixture(database.db),
         child = (await f.delegate()).instance,
         callId = randomUUID();
@@ -202,9 +228,9 @@ integration(
         },
       });
       const tree = await f.runtime.getTree(f.context, { runId: f.task.runId });
-      expect(tree.cancelRequested).toBe(true);
+      expect(tree.cancelRequested).toBe(false);
       expect(
-        tree.instances.every((row) => row.cancelRequestedAt !== null),
+        tree.instances.every((row) => row.cancelRequestedAt === null),
       ).toBe(true);
     });
 
@@ -324,7 +350,7 @@ integration(
       ).toBe('dispatching');
     });
 
-    it('actual over-budget native stream drains the root tree and prevents a late model wake', async () => {
+    it('overage leaves the native stream running; explicit cancellation drains it and prevents a late wake', async () => {
       const f = await assistantFixture(database.db),
         hold = gate();
       const bridge = createAssistantWorkerBridge({
@@ -379,6 +405,11 @@ integration(
             output_tokens: 1,
           },
         });
+        expect((await bridge.tree()).cancelRequested).toBe(false);
+        await f.runtime.cancelRoot(f.context, {
+          runId: f.task.runId,
+          requestId: randomUUID(),
+        });
         const cancellation = await bridge.cancellation();
         expect(cancellation.instances.length).toBeGreaterThan(0);
         await client.call('p25/drain', cancellation);
@@ -396,7 +427,7 @@ integration(
       }
     }, 60000);
 
-    it('actual native pre-dispatch budget rejection is drained as unused while the preceding HTTP call stays counted', async () => {
+    it('native calls continue past old capacity and retain truthful usage through explicit stop', async () => {
       const f = await assistantFixture(database.db);
       const bridge = createAssistantWorkerBridge({
         runtime: f.runtime,
@@ -426,17 +457,17 @@ integration(
         await client
           .call('prompt', {
             id: f.nativeSessionId,
-            text: 'Second call must never reach HTTP',
+            text: 'Second call proceeds beyond the old token allowance',
           })
           .catch(() => {});
         await client.call('idle', { id: f.nativeSessionId });
         await client.call('p25/flush');
-        expect(native.requests).toHaveLength(1);
+        expect(native.requests).toHaveLength(2);
         const admissions =
           await database.db`select dispatched_at from allrice_assistant_model_admissions where root_run_id=${f.task.rootRunId}`;
         expect(admissions).toHaveLength(2);
         expect(admissions.filter((a) => a.dispatched_at === null)).toHaveLength(
-          1,
+          0,
         );
         await f.runtime.cancelRoot(f.context, {
           runId: f.task.runId,
@@ -445,14 +476,14 @@ integration(
         await client.call('p25/drain', await bridge.cancellation());
         await client.call('p25/flush');
         expect(await f.runtime.readFailureUsage(f.base)).toEqual({
-          usage: { inputTokens: 20, cachedInputTokens: 0, outputTokens: 5 },
+          usage: { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10 },
           usageComplete: true,
           cacheUsageKnown: false,
         });
         expect(
           (await bridge.tree()).instances.every((i) => i.stoppedAt !== null),
         ).toBe(true);
-        expect(native.requests).toHaveLength(1);
+        expect(native.requests).toHaveLength(2);
       } finally {
         await native.close();
       }

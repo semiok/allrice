@@ -95,7 +95,7 @@ async function snapshot(
       tokenPolicy: codexTokenPolicy(),
       message:
         codexTokenPolicy() === 'observe'
-          ? 'Codex 订阅 Token 与月请求次数仅统计：不因内部月额度或缺少用量回执阻断聊天，无需人工预留。以下月限额仅对按量 API 生效。并发、任务活跃时限、单次操作超时与操作授权仍生效；Codex 官方额度不能由 Token 推算。'
+          ? '所有模型的 Token、模型和工具调用次数、费用仅统计，回执缺失不阻断任务。历史 Token 上限不再执行；任务准入次数、实际资源并发、默认 1 小时时限与无进展保护分别管理。'
           : '此页是 AllRice 内部月额度；Codex 官方窗口需按实际订阅账号查询，不能由 Token 推算。',
     },
   };

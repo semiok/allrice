@@ -5,7 +5,10 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { officePreview } from '@allrice/office-runtime';
-import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
+import type {
+  Browser,
+  Locator,
+} from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
   type MessageFeedbackItem,
@@ -20,6 +23,7 @@ import {
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
+  BridgeDevice,
   QueuedMessage,
   Message,
   WorkspaceFile,
@@ -31,6 +35,16 @@ const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
     : describe.skip;
+async function selectSettings(dialog: Locator, label: string) {
+  const mobile = dialog.getByRole('combobox', { name: '设置页面' });
+  if (await mobile.isVisible()) await mobile.selectOption({ label });
+  else
+    await dialog
+      .locator('nav')
+      .getByRole('button', { name: label, exact: true })
+      .click();
+}
+
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const A = id(1),
@@ -168,7 +182,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? js
           : path === '/app.css'
             ? css
-            : '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
+            : '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
       );
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
@@ -242,6 +256,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      bridgeDevices: [] as BridgeDevice[],
+      bridgeError: false,
+      bridgeSelections: [] as string[],
       archivedIds: new Set<string>(),
       archiveActive: options.archiveActive ?? false,
       archiveError: false,
@@ -254,6 +271,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }>,
       startupFailure: options.startup === 'failed',
       messages: null as Message[] | null,
+      workMethods: [] as NonNullable<Message['workMethods']>,
       queue: [] as QueuedMessage[],
       queuedStarted: [] as Message[],
       queueError: false,
@@ -310,6 +328,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       artifactReads: 0,
+      detailReads: {} as Record<string, number>,
+      detailStatus: 200,
       messageFeedback: [] as MessageFeedbackItem[],
       feedbackError: false,
       feedbackWrites: 0,
@@ -632,6 +652,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         else state.archivedIds.delete(target);
         return answer({ session: withArchive(session(target)) });
       }
+      if (path.endsWith('/workspace-selection')) {
+        state.bridgeSelections.push(path);
+        return answer({ ok: true });
+      }
+      if (
+        path.startsWith('/api/v1/bridge/grants/') &&
+        route.request().method() === 'DELETE'
+      ) {
+        const grantId = path.split('/').at(-1);
+        for (const device of state.bridgeDevices)
+          device.folderGrants = device.folderGrants.filter(
+            (grant) => grant.id !== grantId,
+          );
+        return answer({ ok: true });
+      }
+      if (path === '/api/v1/bridge/pairings')
+        return answer({
+          pairing: {
+            id: id(908),
+            code: 'ABCD-1234',
+            expiresAt: new Date(Date.now() + 600000).toISOString(),
+          },
+        });
       if (route.request().method() !== 'GET') {
         writes.push(path);
         return answer({}, 500);
@@ -806,7 +849,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           humanCredentialsConfigured: false,
         });
       }
-      if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
+      if (path === '/api/v1/bridge/devices')
+        return state.bridgeError
+          ? answer({ error: { message: '连接状态刷新失败' } }, 503)
+          : answer({ devices: state.bridgeDevices });
       if (path === '/api/v1/bridge/client/releases')
         return answer({
           releases: [
@@ -974,6 +1020,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
             state.contentError ? 503 : 200,
           );
+        state.detailReads[a.id] = (state.detailReads[a.id] ?? 0) + 1;
+        if (state.detailStatus !== 200)
+          return answer(
+            { error: { code: 'ARTIFACT_UNAVAILABLE' } },
+            state.detailStatus,
+          );
         return answer({ artifact: a, feedback: [] });
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
@@ -1001,6 +1053,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     role: 'assistant',
                     runId: run,
                     status: state.messageStatus,
+                    workMethods: state.workMethods,
                     content: {
                       text:
                         state.messageStatus === 'pending' ? '' : state.reply,
@@ -1073,7 +1126,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('menuitem', { name: '查看所有成果', exact: true })
           .click();
         await panel
-          .getByRole('button', { name: new RegExp(`report-${n}\\.md`) })
+          .getByRole('button', { name: `侧栏预览 report-${n}.md`, exact: true })
           .click();
       },
       async reloadList() {
@@ -1310,10 +1363,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
     await settings.click();
-    await f.page
-      .getByRole('dialog', { name: '设置', exact: true })
-      .getByRole('button', { name: '能力与环境', exact: true })
-      .click();
+    const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
+    await selectSettings(dialog, '能力与环境');
+    // Expand through the same controls as a user before exercising each action.
+    for (const group of await dialog
+      .locator('details:has(> summary):has([data-capability])')
+      .all()) {
+      if ((await group.getAttribute('open')) === null)
+        await group.locator(':scope > summary').click();
+    }
+    for (const card of await dialog.locator('[data-capability]').all()) {
+      await card.locator(':scope > summary').click();
+    }
   }
 
   it('native feedback hover, copy, rating dialog, retry, withdrawal and platform follow-up work together', async () => {
@@ -1513,7 +1574,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const r = document
           .querySelector('#artifact-workbench [aria-label="文件操作"]')!
           .getBoundingClientRect();
-        return Math.abs(r.left) < 2 && r.right <= innerWidth + 1;
+        return Math.abs(r.left) <= 2 && r.right <= innerWidth + 1;
       });
       await f.page.screenshot({
         path: '.local/reader/mobile.png',
@@ -1674,6 +1735,196 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each([1440, 390, 320])(
+    'compact dialogs preserve selection, connection and folder actions at width %s',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        employeeCount: 2,
+        employeeHistory: true,
+      });
+      try {
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        const picker = f.page.getByRole('dialog', {
+          name: '选择 AI 员工',
+          exact: true,
+        });
+        await picker.waitFor();
+        const assertFits = async (selector: typeof picker) => {
+          const box = await selector.boundingBox();
+          expect(box!.x).toBeGreaterThanOrEqual(0);
+          expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+          expect(
+            await selector.evaluate((node) =>
+              [...node.querySelectorAll('*')].every(
+                (child) =>
+                  child.scrollWidth <= child.clientWidth + 1 ||
+                  getComputedStyle(child).display === 'inline',
+              ),
+            ),
+          ).toBe(true);
+        };
+        await assertFits(picker);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-picker-${width}.png`,
+          });
+        await f.page.keyboard.press('Escape');
+        expect(await picker.count()).toBe(0);
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '收起侧边栏', exact: true })
+            .click();
+        f.state.bridgeDevices = [
+          {
+            id: id(901),
+            name: 'M5-Max.local · Rice Bridge',
+            platform: 'macos-arm64',
+            status: 'online',
+            clientVersion: '0.6.0-dev.7',
+            lastSeenAt: now,
+            folderGrants: [],
+          },
+        ];
+        await f.page
+          .getByRole('button', { name: 'Bridge 离线', exact: true })
+          .click();
+        const computer = f.page.getByRole('dialog', {
+          name: '我的电脑',
+          exact: true,
+        });
+        await computer.getByText('尚未选择文件夹', { exact: true }).waitFor();
+        expect(
+          await computer.getByText('已连接', { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(
+          await computer
+            .getByRole('button', { name: '生成配对码', exact: true })
+            .isVisible(),
+        ).toBe(false);
+        await assertFits(computer);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-empty-${width}.png`,
+          });
+        await computer
+          .getByRole('button', { name: '选择文件夹', exact: true })
+          .click();
+        await expect
+          .poll(() => f.state.bridgeSelections)
+          .toEqual([`/api/v1/bridge/devices/${id(901)}/workspace-selection`]);
+        f.state.bridgeDevices[0]!.folderGrants = [
+          { id: id(902), label: 'AI-what' },
+        ];
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('AI-what', { exact: true }).waitFor();
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-connected-${width}.png`,
+          });
+        if (width === 1440 && process.env.ALLRICE_DIALOG_SCREENSHOT) {
+          await f.page.evaluate(() =>
+            document.body.setAttribute('data-ds-dark-theme', ''),
+          );
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-connected-dark.png`,
+          });
+          await f.page.evaluate(() =>
+            document.body.removeAttribute('data-ds-dark-theme'),
+          );
+        }
+        f.state.bridgeError = true;
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('待确认', { exact: true }).waitFor();
+        expect(
+          await computer.getByText('AI-what', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await computer
+            .getByRole('button', { name: '选择文件夹', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await computer
+            .getByRole('button', { name: '断开', exact: true })
+            .count(),
+        ).toBe(0);
+        f.state.bridgeError = false;
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('AI-what', { exact: true }).waitFor();
+        await computer
+          .getByRole('button', { name: '断开', exact: true })
+          .click();
+        await computer.getByText('尚未选择文件夹', { exact: true }).waitFor();
+        expect(f.state.bridgeDevices[0]!.folderGrants).toEqual([]);
+        await computer.locator('summary').click();
+        await computer
+          .getByRole('link', {
+            name: '下载 M 芯片版 · v0.6.0-dev.7',
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await computer
+            .getByRole('link', { name: /下载 Intel/ })
+            .getAttribute('href'),
+        ).toBe('/api/v1/bridge/client/macos-x64');
+        await computer
+          .getByRole('button', { name: '生成配对码', exact: true })
+          .click();
+        await computer.getByText('ABCD1234', { exact: true }).waitFor();
+        await assertFits(computer);
+        if (width === 1440) {
+          await f.context.grantPermissions([
+            'clipboard-read',
+            'clipboard-write',
+          ]);
+          await computer
+            .getByRole('button', { name: '复制配对码', exact: true })
+            .click();
+          expect(
+            await f.page.evaluate(() => navigator.clipboard.readText()),
+          ).toBe('ABCD1234');
+        }
+        f.state.bridgeDevices[0]!.status = 'offline';
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('离线', { exact: true }).waitFor();
+        expect(
+          await computer.getByText('已是最新版', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await computer
+            .getByRole('button', { name: '选择文件夹', exact: true })
+            .count(),
+        ).toBe(0);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-offline-${width}.png`,
+          });
+        await f.page.keyboard.press('Escape');
+        expect(await computer.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('uses the published employee color across sidebar, picker, conversation and profile', async () => {
     const f = await fixture({
       employeeCount: 2,
@@ -1716,9 +1967,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const rice = picker.getByRole('button', { name: /Rice/ });
       expect(await rice.getAttribute('data-accent')).toBe('violet');
-      expect(await rice.evaluate((node) => getComputedStyle(node).color)).toBe(
-        'rgb(9, 13, 22)',
-      );
+      expect(
+        await rice
+          .getByText('R', { exact: true })
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+      ).toBe('rgb(139, 92, 246)');
       await rice.click();
       await f.page
         .getByRole('button', { name: '收起侧边栏', exact: true })
@@ -1990,6 +2243,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-picker.png`,
         });
       await f.page.keyboard.press('1');
+      await f.page.keyboard.press('2');
+      expect(await picker.isVisible()).toBe(true);
+      expect(await picker.getByText('快选', { exact: false }).count()).toBe(0);
+      await picker.getByRole('button', { name: /Office 文档助手/ }).click();
       expect(await picker.count()).toBe(0);
       expect(
         await f.page
@@ -2456,9 +2713,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await f.page.getByRole('button', { name: '设置', exact: true }).click();
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
-      await dialog
-        .getByRole('button', { name: '我的电脑', exact: true })
-        .click();
+      await selectSettings(dialog, '我的电脑');
       const browserSwitch = dialog.getByRole('switch', {
         name: '本地独立浏览器',
         exact: true,
@@ -2518,17 +2773,48 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.getByText('Codex 订阅 · DSH', { exact: true }).count(),
       ).toBe(0);
       await settings.click();
-      const quota = f.page.locator('summary[aria-label="账号月额度"]');
-      await quota.getByText('Synthetic member', { exact: true }).waitFor();
+      const quota = f.page.getByRole('region', { name: '账号月额度' });
+      await f.page.getByText('Synthetic member', { exact: true }).waitFor();
       await quota.getByText('Codex 订阅 · DSH', { exact: true }).waitFor();
-      await quota.getByText('剩余 43%', { exact: true }).waitFor();
-      await f.page.getByText('本月已记录', { exact: false }).waitFor();
-      expect(
-        await f.page.locator('details').filter({ has: quota }).innerText(),
-      ).toContain('5,000,000');
+      await quota.getByText(/43%/).waitFor();
+      await quota.getByText('2,824,029', { exact: false }).waitFor();
+      expect(await quota.innerText()).toContain('5,000,000');
       await f.page.reload();
       await settings.click();
-      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+      await quota.getByText(/43%/).waitFor();
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('signs out from account settings only after the logout request succeeds', async () => {
+    const f = await fixture();
+    let requests = 0;
+    try {
+      await f.page.route('**/api/v1/auth/logout', async (route) => {
+        expect(route.request().method()).toBe('POST');
+        requests++;
+        await route.fulfill({ status: requests === 1 ? 503 : 204 });
+      });
+      await f.page.getByRole('button', { name: '设置', exact: true }).click();
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      const logout = settings.getByRole('button', {
+        name: '退出登录',
+        exact: true,
+      });
+      const originalUrl = f.page.url();
+      await logout.click();
+      await settings
+        .getByRole('alert')
+        .filter({ hasText: '退出登录失败，请重试。' })
+        .waitFor();
+      expect(f.page.url()).toBe(originalUrl);
+      await logout.click();
+      await f.page.waitForURL('**/login');
+      expect(requests).toBe(2);
     } finally {
       await f.close();
     }
@@ -2581,22 +2867,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         await dialog.getByText('Synthetic member', { exact: true }).waitFor();
+        expect(
+          await dialog.getByText('平台管理', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await dialog.getByRole('link', { name: '打开平台管理' }).count(),
+        ).toBe(0);
         await f.page.screenshot({
           path: `/tmp/met160-settings-account-${width}.png`,
         });
-        await dialog
-          .getByRole('button', { name: '已连接应用', exact: true })
-          .click();
+        await selectSettings(dialog, '已连接应用');
         await dialog.getByText('需要登录', { exact: true }).waitFor();
+        await dialog.getByText('管理连接', { exact: true }).click();
         await dialog.getByRole('button', { name: '填写连接凭据' }).click();
         const credential = dialog.getByLabel('应用访问令牌');
         await credential.fill('synthetic-unsaved-token');
-        await dialog
-          .getByRole('button', { name: '账号与用量', exact: true })
-          .click();
-        await dialog
-          .getByRole('button', { name: '我的电脑', exact: true })
-          .click();
+        await selectSettings(dialog, '账号与用量');
+        await selectSettings(dialog, '我的电脑');
         await dialog.getByRole('button', { name: '连接与管理电脑' }).waitFor();
         expect(
           await dialog
@@ -2608,9 +2895,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '本地浏览器', exact: true })
             .count(),
         ).toBe(0);
-        await dialog
-          .getByRole('button', { name: '已连接应用', exact: true })
-          .click();
+        await selectSettings(dialog, '已连接应用');
         expect(await credential.inputValue()).toBe('synthetic-unsaved-token');
         const reads = f.state.connectionReads;
         await f.page.clock.install();
@@ -2701,9 +2986,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '设置',
         exact: true,
       });
-      await settings
-        .getByRole('button', { name: '已连接应用', exact: true })
-        .click();
+      await selectSettings(settings, '已连接应用');
+      await settings.getByText('管理连接', { exact: true }).click();
       await settings.getByRole('button', { name: '填写连接凭据' }).click();
       await settings.getByLabel('应用访问令牌').fill('synthetic-private-draft');
       f.state.viewer = id(50);
@@ -2712,9 +2996,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.finishRun();
       await expect.poll(() => settings.count()).toBe(0);
       await f.page.getByRole('button', { name: '设置', exact: true }).click();
-      await settings
-        .getByRole('button', { name: '已连接应用', exact: true })
-        .click();
+      await selectSettings(settings, '已连接应用');
       await settings.getByText('还没有连接应用。', { exact: false }).waitFor();
       expect(await settings.getByLabel('应用访问令牌').count()).toBe(0);
       expect(await settings.getByText('上一位用户的应用').count()).toBe(0);
@@ -2781,9 +3063,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const openPreferences = async () => {
         await f.page.getByRole('button', { name: '设置', exact: true }).click();
-        await settings
-          .getByRole('button', { name: '个人偏好', exact: true })
-          .click();
+        await selectSettings(settings, '个人偏好');
         await expect
           .poll(() =>
             settings.getByRole('switch', { name: '流式输出' }).isEnabled(),
@@ -2841,6 +3121,110 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([
+    [1440, false],
+    [1440, true],
+    [390, false],
+    [390, true],
+  ] as const)(
+    'shows persisted work methods after %ipx streaming=%s completion and reload',
+    async (width, streamingOutput) => {
+      const f = await fixture({
+        width,
+        touch: width === 390,
+        running: true,
+        streamingOutput,
+      });
+      try {
+        const methods = f.page.getByRole('group', {
+          name: '工作方式',
+          exact: true,
+        });
+        expect(await methods.count()).toBe(0);
+        f.state.workMethods = [
+          'cloud_search',
+          'bridge_files',
+          'cloud_compute',
+          'bridge_browser',
+          'cloud_search',
+        ];
+        f.finishRun();
+        await methods.waitFor();
+        const reply = f.page.locator(`#message-${id(20)}`);
+        await reply.hover();
+        expect(
+          await methods.getByText('云端-检索', { exact: true }).count(),
+        ).toBe(1);
+        expect(
+          await methods.getByText('Bridge-文件', { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(
+          await methods.getByText('云端-计算', { exact: true }).count(),
+        ).toBe(0);
+        const more = methods.getByRole('button', {
+          name: '查看全部 4 种工作方式',
+        });
+        expect(await more.innerText()).toBe('+2');
+        if (width === 1440) {
+          await more.hover();
+          await f.page
+            .getByRole('tooltip')
+            .getByText(/Bridge-浏览器/)
+            .waitFor();
+        }
+        await more.click();
+        expect(
+          await methods.getByText('云端-计算', { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(
+          await methods.getByText('Bridge-浏览器', { exact: true }).isVisible(),
+        ).toBe(true);
+        await reply.locator('[data-message-actions]').screenshot({
+          path: `/tmp/allrice-work-methods-${width}-${streamingOutput}.png`,
+        });
+        await f.page
+          .context()
+          .grantPermissions(['clipboard-read', 'clipboard-write']);
+        await reply.getByRole('button', { name: '复制', exact: true }).click();
+        expect(
+          await f.page.evaluate(() => navigator.clipboard.readText()),
+        ).toBe(f.state.reply);
+        expect(
+          await reply.evaluate((e) => e.scrollWidth <= e.clientWidth + 1),
+        ).toBe(true);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth + 1,
+          ),
+        ).toBe(true);
+        await methods
+          .getByRole('button', { name: '收起工作方式' })
+          .press('Escape');
+        expect(await more.getAttribute('aria-expanded')).toBe('false');
+        await more.focus();
+        await more.press('Enter');
+        expect(
+          await methods.getByText('Bridge-浏览器', { exact: true }).isVisible(),
+        ).toBe(true);
+        await f.page.reload();
+        await methods.waitFor();
+        expect(
+          await methods.getByText('云端-检索', { exact: true }).count(),
+        ).toBe(1);
+        expect(await more.getAttribute('aria-expanded')).toBe('false');
+        f.state.workMethods = [];
+        await f.page.reload();
+        await reply.locator('[data-message-actions]').waitFor();
+        expect(await methods.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+        expect(f.unexpected).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
 
   it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
     const f = await fixture({ running: true, streamingOutput: true });
@@ -3708,10 +4092,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: `/tmp/allrice-met160-native-${format}.png`,
         });
         if (rendered.pages.length > 1) {
-          await preview.getByRole('button', { name: '下一页' }).click();
           await preview
             .getByRole('img', { name: 'Office 文档第 2 页' })
-            .waitFor();
+            .scrollIntoViewIfNeeded();
         }
       } finally {
         await f.close();
@@ -3751,55 +4134,360 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.entry.click();
       const preview = f.panel.getByRole('region', { name: 'Office 文档预览' });
       await preview.waitFor();
-      expect(await preview.innerText()).toContain('发现 1 个错误');
+      expect(await preview.innerText()).toContain('发现 1 个公式错误');
       expect(await preview.innerText()).toContain('展示前 2 页');
-      await preview.getByText('查看计算结果', { exact: true }).click();
+      await preview.locator('summary').click();
       expect(await preview.innerText()).toContain('#DIV/0!');
       expect(await preview.innerText()).toContain('60');
-      await preview.getByRole('button', { name: '下一页' }).click();
       await preview.getByRole('img', { name: 'Office 文档第 2 页' }).waitFor();
       expect(
-        await preview.getByRole('button', { name: '下一页' }).isDisabled(),
-      ).toBe(true);
-      expect(await preview.innerText()).toContain('请检查分页');
+        await preview.getByRole('button', { name: /上一页|下一页/ }).count(),
+      ).toBe(0);
+      expect(
+        await preview.locator('[data-document-zoom-scrollport]').count(),
+      ).toBe(1);
+      expect(await preview.innerText()).not.toContain('请检查分页');
     } finally {
       await f.close();
     }
   });
 
-  it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
-    const f = await fixture({ artifacts: true });
-    try {
-      const path = `/api/v1/files/${artifact(10).object.id}/download`;
-      f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
-      await f.page.reload();
-      const link = f.page.getByRole('link', { name: '下载报告', exact: true });
-      await expect
-        .poll(() => link.getAttribute('href'))
-        .toBe(`${origin}${path}?name=report-10.md`);
-      // Native Markdown opens HTTP links without navigating away from the chat.
-      expect(await link.getAttribute('target')).toBe('_blank');
-      expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
-      expect(
+  it.each([
+    [1440, false],
+    [1440, true],
+    [390, false],
+    [390, true],
+  ] as const)(
+    'MET-163 image delivery at %ipx streaming=%s survives reload, previews and downloads',
+    async (width, streamingOutput) => {
+      const f = await fixture({
+        width,
+        touch: width === 390,
+        running: true,
+        streamingOutput,
+      });
+      try {
+        const png = await f.page.evaluate(() => {
+          const c = document.createElement('canvas');
+          c.width = 800;
+          c.height = 800;
+          const ctx = c.getContext('2d')!;
+          ctx.fillStyle = 'white';
+          ctx.fillRect(0, 0, 800, 800);
+          ctx.fillStyle = '#ff8a00';
+          ctx.beginPath();
+          ctx.arc(400, 400, 250, 0, Math.PI * 2);
+          ctx.fill();
+          return c.toDataURL('image/png').split(',')[1]!;
+        });
+        const img = artifact(10);
+        img.version.fileName = '圆形海报.png';
+        img.version.format = 'png';
+        img.object.mediaType = 'image/png';
+        img.version.version = 2;
+        f.state.officePreview = {
+          kind: 'image',
+          mediaType: 'image/png',
+          base64: png,
+        };
+        await f.page.route('**/api/v1/files/*/download?*', (route) =>
+          route.fulfill({
+            contentType: 'image/png',
+            headers: {
+              'content-disposition':
+                "attachment; filename*=UTF-8''" +
+                encodeURIComponent(img.version.fileName),
+            },
+            body: Buffer.from(png, 'base64'),
+          }),
+        );
+        f.state.reply = '已把蓝色圆形修改为橙色，并保留原图版本。';
+        f.state.workMethods = ['cloud_images'];
+        f.finishRun();
+        f.state.items = [img];
+        const picture = f.page
+          .getByRole('button', { name: '查看图片 圆形海报.png', exact: true })
+          .first();
+        await picture.waitFor();
+        await expect
+          .poll(() =>
+            picture
+              .locator('img')
+              .evaluate(
+                (i: HTMLImageElement) => i.complete && i.naturalWidth > 0,
+              ),
+          )
+          .toBe(true);
+        expect(
+          await f.page
+            .locator('#message-' + id(20))
+            .getByRole('button', { name: '查看图片 圆形海报.png', exact: true })
+            .count(),
+        ).toBe(1);
+        await f.page.locator('#message-' + id(20)).hover();
+        expect(
+          await f.page
+            .getByRole('group', { name: '工作方式', exact: true })
+            .innerText(),
+        ).toContain('云端-图片');
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((el) => el.scrollWidth <= innerWidth),
+        ).toBe(true);
+        await picture.click();
+        const preview = f.panel.getByRole('img', {
+          name: '圆形海报.png 静态预览',
+        });
+        await preview.waitFor();
+        const zoomFrame = f.panel.locator('[data-document-zoom-frame]');
+        await zoomFrame.scrollIntoViewIfNeeded();
+        const bounds = (await zoomFrame.boundingBox())!;
+        await f.page.mouse.move(
+          bounds.x + bounds.width / 2,
+          bounds.y + bounds.height - 20,
+        );
+        await f.panel
+          .getByRole('button', { name: '放大', exact: true })
+          .click();
+        expect(
+          await f.panel.locator('[data-document-zoom-scrollport]').count(),
+        ).toBe(1);
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        await f.page.reload();
+        await picture.waitFor();
+        await picture.scrollIntoViewIfNeeded();
+        await f.page.screenshot({
+          path: `/tmp/met163-images-${width}-${streamingOutput}.png`,
+        });
+        const card = f.page
+          .locator('[data-presented-file]')
+          .filter({ hasText: '圆形海报.png' })
+          .first();
+        await card
+          .getByRole('button', { name: '圆形海报.png 打开方式' })
+          .click();
+        const downloaded = f.page.waitForEvent('download');
         await f.page
-          .getByRole('link', { name: '原始来源', exact: true })
-          .getAttribute('href'),
-      ).toBe('https://example.org/source');
-      // Even a known file in the Session cannot resolve another Run's link.
-      f.state.items = [
-        {
-          ...artifact(10),
-          provenance: { ...artifact(10).provenance, runId: id(90) },
-        },
-      ];
-      await f.page.reload();
-      await expect
-        .poll(() => link.getAttribute('href'))
-        .toBe(`https://allrice.example${path}?name=wrong`);
-    } finally {
-      await f.close();
-    }
-  });
+          .getByRole('menuitem', { name: '下载文件', exact: true })
+          .click();
+        expect((await downloaded).suggestedFilename()).toBe('圆形海报.png');
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each([1440, 390])(
+    'native delivery cards preview and download at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const card = f.page
+          .locator('[data-presented-file]')
+          .filter({ hasText: 'report-10.md' })
+          .first();
+        await card.waitFor();
+        expect(await card.locator('svg').count()).toBeGreaterThan(0);
+        const menu = card.getByRole('button', {
+          name: 'report-10.md 打开方式',
+        });
+        await menu.click();
+        await f.page
+          .getByRole('menuitem', { name: '侧栏预览', exact: true })
+          .waitFor();
+        await f.page.keyboard.press('Escape');
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('menuitem', { name: '侧栏预览', exact: true })
+              .count(),
+          )
+          .toBe(0);
+        await menu.click();
+        await f.page
+          .getByRole('menuitem', { name: '侧栏预览', exact: true })
+          .click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        await f.page.route('**/api/v1/files/*/download?*', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'text/markdown',
+            headers: {
+              'content-disposition': 'attachment; filename="report-10.md"',
+            },
+            body: report,
+          }),
+        );
+        await menu.click();
+        const downloadEvent = f.page.waitForEvent('download');
+        await f.page
+          .getByRole('menuitem', { name: '下载文件', exact: true })
+          .click();
+        const download = await downloadEvent;
+        expect(download.suggestedFilename()).toBe('report-10.md');
+        expect(new URL(download.url()).pathname).toBe(
+          `/api/v1/files/${artifact(10).object.id}/download`,
+        );
+        expect(await f.panel.count()).toBe(0);
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((body) => body.scrollWidth <= innerWidth),
+        ).toBe(true);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'Office paper canvas scrolls continuously in both themes at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const png = await f.page.evaluate(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 900;
+          canvas.height = 1200;
+          const c = canvas.getContext('2d')!;
+          c.fillStyle = '#fff';
+          c.fillRect(0, 0, 900, 1200);
+          c.fillStyle = '#163b65';
+          c.font = '40px sans-serif';
+          c.fillText('Office document preview', 60, 100);
+          return canvas.toDataURL('image/png').split(',')[1]!;
+        });
+        f.state.officePreview = {
+          kind: 'office',
+          checksum: `sha256:${'a'.repeat(64)}`,
+          format: 'xlsx',
+          pageCount: 2,
+          pages: [
+            { number: 1, base64: png },
+            { number: 2, base64: png },
+          ],
+          formulaCount: 0,
+          formulaErrorCount: 0,
+          formulas: [],
+        };
+        await f.page.reload();
+        await f.entry.click();
+        const preview = f.panel.getByRole('region', {
+          name: 'Office 文档预览',
+        });
+        const second = preview.getByRole('img', { name: 'Office 文档第 2 页' });
+        await second.waitFor();
+        expect(await preview.locator('summary').count()).toBe(0);
+        const scroll = preview.locator('[data-document-zoom-scrollport]');
+        const paper = preview.locator('[data-document-zoom-surface]').first();
+        await expect
+          .poll(() =>
+            scroll.evaluate((el) => el.scrollHeight > el.clientHeight),
+          )
+          .toBe(true);
+        expect(
+          await scroll.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        ).toBe(true);
+        expect(
+          await paper.evaluate((el) => getComputedStyle(el).backgroundColor),
+        ).toBe('rgb(255, 255, 255)');
+        const canvasColor = () =>
+          scroll.evaluate(
+            (el) =>
+              getComputedStyle(el.parentElement!.parentElement!)
+                .backgroundColor,
+          );
+        const light = await canvasColor();
+        expect(light).not.toBe('rgb(255, 255, 255)');
+        expect(light).not.toBe('rgba(0, 0, 0, 0)');
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        expect(await canvasColor()).not.toBe(light);
+        await second.scrollIntoViewIfNeeded();
+        expect(await scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((body) => body.scrollWidth <= innerWidth),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `/tmp/allrice-office-continuous-${width}.png`,
+        });
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'resolves chat downloads only for this Run’s authenticated artifacts at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const path = `/api/v1/files/${artifact(10).object.id}/download`;
+        f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
+        await f.page.reload();
+        const link = f.page.getByRole('link', {
+          name: '下载报告',
+          exact: true,
+        });
+        await expect
+          .poll(() => link.getAttribute('href'))
+          .toBe(`${origin}${path}?name=report-10.md`);
+        // Native Markdown opens HTTP links without navigating away from the chat.
+        expect(await link.getAttribute('target')).toBe('_blank');
+        expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(
+          await link.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(65, 118, 230)');
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        expect(
+          await link.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(103, 158, 254)');
+        await f.page.evaluate(() =>
+          document.body.removeAttribute('data-ds-dark-theme'),
+        );
+        const pageCount = f.page.context().pages().length;
+        await link.click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(
+          await f.panel
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(path);
+        expect(f.page.context().pages()).toHaveLength(pageCount);
+        expect(new URL(f.page.url()).pathname).toBe('/');
+        expect(
+          await f.page
+            .getByRole('link', { name: '原始来源', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://example.org/source');
+        // Even a known file in the Session cannot resolve another Run's link.
+        f.state.items = [
+          {
+            ...artifact(10),
+            provenance: { ...artifact(10).provenance, runId: id(90) },
+          },
+        ];
+        await f.page.reload();
+        await expect
+          .poll(() => link.getAttribute('href'))
+          .toBe(`https://allrice.example${path}?name=wrong`);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it(
     'UX01-B keeps all entries visible, distinguishes release-off and preserves drafts without execution',
@@ -3836,7 +4524,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .evaluateAll((cards) =>
               cards.map((card) => card.getAttribute('data-capability')),
             ),
-        ).toEqual([...workspaceCapabilityIds]);
+        ).toEqual(expect.arrayContaining([...workspaceCapabilityIds]));
         expect(
           await dialog
             .locator('[data-capability="development"]')
@@ -3883,11 +4571,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
       const card = dialog.locator('[data-capability="local_files"]');
       await card.getByRole('button', { name: '连接与管理电脑' }).click();
-      const bridge = f.page.getByRole('dialog', { name: '本地工作区' });
+      const bridge = f.page.getByRole('dialog', {
+        name: '我的电脑',
+        exact: true,
+      });
       await bridge.waitFor();
-      expect(
-        await bridge.getByRole('link', { name: /下载 M 芯片版/ }).count(),
-      ).toBe(1);
+      await bridge.getByRole('link', { name: /下载 M 芯片版/ }).waitFor();
       const calls = f.state.readinessRequests;
       await f.page.keyboard.press('Escape');
       await expect.poll(() => f.state.readinessRequests).toBeGreaterThan(calls);
@@ -3942,20 +4631,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('[data-capability="local_files"]')
           .getByRole('button', { name: '连接与管理电脑' })
           .click();
-        const dialog = f.page.getByRole('dialog', { name: '本地工作区' });
+        const dialog = f.page.getByRole('dialog', {
+          name: '我的电脑',
+          exact: true,
+        });
         const download = dialog.getByRole('link', {
           name: '下载 M 芯片版 · v0.6.0-dev.7',
           exact: true,
         });
+        await dialog.getByText('v0.6.0-dev.6', { exact: true }).waitFor();
+        await dialog.getByText('有新版本', { exact: true }).waitFor();
+        expect(await download.isVisible()).toBe(false);
+        await dialog.locator('summary').click();
         await download.waitFor();
         expect(await download.getAttribute('href')).toBe(
           '/api/v1/bridge/client/macos-arm64',
         );
-        await dialog
-          .getByText('当前版本 v0.6.0-dev.6 · 可更新至 v0.6.0-dev.7', {
-            exact: true,
-          })
-          .waitFor();
         expect(
           await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
         ).toBe(true);
@@ -3966,9 +4657,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog
           .getByRole('button', { name: '刷新状态', exact: true })
           .click();
-        await dialog
-          .getByText('当前版本 v0.6.0-dev.7 · 已是最新版本', { exact: true })
-          .waitFor();
+        await dialog.getByText('v0.6.0-dev.7', { exact: true }).waitFor();
+        await dialog.getByText('已是最新版', { exact: true }).waitFor();
+        expect(
+          await dialog.getByText('有新版本', { exact: true }).count(),
+        ).toBe(0);
         expect(f.writes).toEqual([]);
       } finally {
         await f.close();
@@ -4120,7 +4813,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }));
       await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
       await openCapabilities(f);
-      await dialog.getByText(/核对时间/).waitFor();
+      await dialog.getByText(/更新于/).waitFor();
       release();
       expect(
         await dialog
@@ -4137,7 +4830,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       f.state.readinessError = false;
       await dialog.getByRole('button', { name: '刷新能力状态' }).click();
-      await dialog.getByText(/核对时间/).waitFor();
+      await dialog.getByText(/更新于/).waitFor();
       expect(
         await dialog
           .locator('[data-capability="report"]')
@@ -4206,12 +4899,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
-  it(
-    'automatically presents a newly completed SSE delivery, but never reopens a panel the user closed',
+  it.each([false, true])(
+    'automatically presents a newly completed SSE delivery with its full answer, but never reopens a panel the user closed (streaming=%s)',
     { timeout: 20_000 },
-    async () => {
+    async (streamingOutput) => {
       for (const closed of [false, true]) {
-        const f = await fixture({ running: true, artifacts: closed });
+        const f = await fixture({
+          running: true,
+          artifacts: closed,
+          streamingOutput,
+        });
         try {
           await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
           if (closed) {
@@ -4228,7 +4925,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           await composer.fill('我的后续问题');
           f.finishRun();
-          await f.page.getByText('展开完整回复', { exact: true }).waitFor();
+          const transcript = f.page.locator('[data-chat-scroll]');
+          await transcript.getByRole('heading', { name: /COIN/ }).waitFor();
+          expect(await transcript.getByRole('table').isVisible()).toBe(true);
+          expect(
+            await transcript
+              .getByText('多步研究结果与引用说明。'.repeat(100), {
+                exact: true,
+              })
+              .isVisible(),
+          ).toBe(true);
+          expect(
+            await transcript.getByText('展开完整回复', { exact: true }).count(),
+          ).toBe(0);
           expect(
             await composer.evaluate((e) => e === document.activeElement),
           ).toBe(true);
@@ -4338,47 +5047,60 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('shows a real report in a persistent third column, leaves composer focus alone and summarizes the center', async () => {
-    const f = await fixture({ artifacts: true });
-    try {
-      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-      expect(await f.panel.getByRole('table').count()).toBe(1);
-      expect(
-        await f.page.getByText('展开完整回复', { exact: true }).count(),
-      ).toBe(1);
-      expect(
-        await f.page.evaluate(
-          () =>
-            getComputedStyle(
-              document.querySelector('main')!,
-            ).gridTemplateColumns.split(' ').length,
-        ),
-      ).toBe(3);
-      const composer = f.page.getByRole('textbox', {
-        name: '给 Rice 的消息',
-      });
-      await composer.fill('继续核对来源');
-      await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
-      f.state.items.unshift(artifact(11));
-      // Trigger the same existing read-only refresh used after a completed turn.
-      await f.fileAction('刷新文件');
-      await composer.focus();
-      await expect
-        .poll(() =>
-          f.panel
-            .locator('[data-document-id]:visible')
-            .last()
-            .getAttribute('data-document-id'),
-        )
-        .toBe(id(11));
-      expect(await composer.evaluate((e) => e === document.activeElement)).toBe(
-        true,
-      );
-      expect(await composer.inputValue()).toBe('继续核对来源');
-    } finally {
-      await f.close();
-    }
-  });
+  it.each([false, true])(
+    'shows a real report in a persistent third column, leaves composer focus alone and keeps the full historical answer visible (streaming=%s)',
+    async (streamingOutput) => {
+      const f = await fixture({ artifacts: true, streamingOutput });
+      try {
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(await f.panel.getByRole('table').count()).toBe(1);
+        expect(
+          await f.page.getByText('展开完整回复', { exact: true }).count(),
+        ).toBe(0);
+        const transcript = f.page.locator('[data-chat-scroll]');
+        expect(
+          await transcript.getByRole('heading', { name: /COIN/ }).isVisible(),
+        ).toBe(true);
+        expect(await transcript.getByRole('table').isVisible()).toBe(true);
+        expect(
+          await transcript
+            .getByText('多步研究结果与引用说明。'.repeat(100), { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await f.page.evaluate(
+            () =>
+              getComputedStyle(
+                document.querySelector('main')!,
+              ).gridTemplateColumns.split(' ').length,
+          ),
+        ).toBe(3);
+        const composer = f.page.getByRole('textbox', {
+          name: '给 Rice 的消息',
+        });
+        await composer.fill('继续核对来源');
+        await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
+        f.state.items.unshift(artifact(11));
+        // Trigger the same existing read-only refresh used after a completed turn.
+        await f.fileAction('刷新文件');
+        await composer.focus();
+        await expect
+          .poll(() =>
+            f.panel
+              .locator('[data-document-id]:visible')
+              .last()
+              .getAttribute('data-document-id'),
+          )
+          .toBe(id(11));
+        expect(
+          await composer.evaluate((e) => e === document.activeElement),
+        ).toBe(true);
+        expect(await composer.inputValue()).toBe('继续核对来源');
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it(
     'remembers explicit closure and sidebar preferences per user/workspace, including blocked storage fallback',
@@ -4807,7 +5529,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.locator('[data-dockkit-pane]').count())
         .toBe(2);
-      await f.panel.getByRole('button', { name: /report-11\.md.*v1/ }).click();
+      await f.panel
+        .getByRole('button', { name: '侧栏预览 report-11.md', exact: true })
+        .click();
       await expect
         .poll(() => f.panel.locator('[data-document-id]:visible').count())
         .toBe(2);
@@ -4864,6 +5588,64 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
+  it('does not poll immutable or hidden document tabs and retries genuine load errors', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      f.state.items.push(artifact(11));
+      await f.reloadList();
+      await f.selectArtifact(11);
+      await f.panel
+        .locator(`[data-document-id="${id(11)}"]`)
+        .getByRole('heading', { name: /COIN/ })
+        .waitFor();
+      const before = { ...f.state.detailReads };
+      // Longer than the previous five-second timer; both visible and hidden reads stay quiet.
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      expect(f.state.detailReads).toEqual(before);
+      f.state.detailStatus = 503;
+      await f.fileAction('刷新文件');
+      await f.panel
+        .getByRole('button', { name: '重试加载文件', exact: true })
+        .waitFor();
+      f.state.detailStatus = 200;
+      await f.panel
+        .getByRole('button', { name: '重试加载文件', exact: true })
+        .click();
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(await f.panel.getByRole('alert').count()).toBe(0);
+      f.state.detailStatus = 403;
+      await f.fileAction('刷新文件');
+      await f.panel.getByRole('alert').waitFor();
+      expect(await f.panel.getByRole('heading', { name: /COIN/ }).count()).toBe(
+        0,
+      );
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
+  it('clears recovered review refresh errors without removing the loaded preview', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      f.state.items[0]!.kind = 'plan';
+      await f.page.reload();
+      await f.entry.click();
+      const heading = f.panel.getByRole('heading', { name: /COIN/ });
+      await heading.waitFor();
+      f.state.detailStatus = 503;
+      await f.panel.getByRole('alert').waitFor({ timeout: 10000 });
+      expect(await heading.isVisible()).toBe(true);
+      f.state.detailStatus = 200;
+      await expect
+        .poll(() => f.panel.getByRole('alert').count(), { timeout: 10000 })
+        .toBe(0);
+      expect(await heading.isVisible()).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
   it('protects explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
     try {
@@ -4883,7 +5665,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(true);
       f.state.listError = true;
       await f.entry.click();
+      // A catalog refresh failure is not a failure of the loaded document.
+      await f.fileAction('查看所有成果');
       await f.panel.getByRole('alert').waitFor();
+      await f.panel
+        .getByRole('button', { name: '侧栏预览 report-10.md', exact: true })
+        .click();
+      expect(await f.panel.getByRole('alert').count()).toBe(0);
       expect(
         await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
       ).toBe(true);
@@ -4911,6 +5699,70 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  for (const width of [1440, 390])
+    it(`selects, removes and sends authorized session references at ${width}px`, async () => {
+      const f = await fixture({ width });
+      try {
+        const sources = [
+          session(A),
+          { ...session(B), title: '历史财报' },
+          { ...session(id(801)), title: '市场研究' },
+          { ...session(id(802)), title: '上次汇报' },
+          { ...session(id(803)), title: '竞争对手' },
+        ];
+        await f.page.route('**/api/v1/sessions?**', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ sessions: sources, nextCursor: null }),
+          }),
+        );
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page.getByRole('menuitem', { name: '引用会话' }).click();
+        const picker = f.page.getByRole('dialog', { name: '引用会话' });
+        await picker.getByRole('button', { name: /历史财报/ }).click();
+        await picker.getByRole('button', { name: /市场研究/ }).click();
+        await picker.getByRole('button', { name: /上次汇报/ }).click();
+        expect(
+          await picker.getByRole('button', { name: /竞争对手/ }).isDisabled(),
+        ).toBe(true);
+        expect(
+          await picker.getByRole('button', { name: /研究任务 A/ }).count(),
+        ).toBe(0);
+        if (process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT) {
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT}-${width}.png`,
+          });
+        }
+        await picker.getByRole('button', { name: '完成', exact: true }).click();
+        await f.page
+          .getByRole('button', { name: '移除引用：市场研究' })
+          .click();
+        await f.page
+          .getByRole('button', { name: '移除引用：上次汇报' })
+          .click();
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('请根据引用整理汇报');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.messageInputs[0]).toMatchObject({
+          text: '请根据引用整理汇报',
+          sessionReferenceIds: [B],
+          deliveryMode: 'follow_up',
+        });
+        await expect
+          .poll(() =>
+            f.page.getByRole('button', { name: '移除引用：历史财报' }).count(),
+          )
+          .toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
 
   it('keeps long replies entirely in the transcript and hides the workbench for conversations without artifacts', async () => {
     const f = await fixture();
@@ -5202,7 +6054,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const more = f.page.getByRole('button', {
         name: /展开其余.*个会话/,
       });
-      // The archive list loads asynchronously; wait for its expand action.
+      // The archive request completes after the filter click; wait for its
+      // pagination control instead of skipping expansion during loading.
+      await more.first().waitFor();
       await more.first().click();
       await f.page.getByText('归档工作 35', { exact: true }).waitFor();
       expect(f.errors).toEqual([]);

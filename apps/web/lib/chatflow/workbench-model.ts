@@ -127,14 +127,16 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
   throw Error('预览格式无效');
 }
 export const artifactKindLabel = (a: WorkbenchArtifact) =>
-  ({
-    document: '文档',
-    plan: '计划',
-    changeset: '修改提案',
-    command_output: '命令输出',
-    browser_capture: '浏览器截图',
-    file: '文件',
-  })[a.kind];
+  a.object.mediaType.startsWith('image/')
+    ? '图片'
+    : {
+        document: '文档',
+        plan: '计划',
+        changeset: '修改提案',
+        command_output: '命令输出',
+        browser_capture: '浏览器截图',
+        file: '文件',
+      }[a.kind];
 export function boundedRichDiff(before: string | null, after: string | null) {
   const texts = [before ?? '', after ?? ''];
   return (

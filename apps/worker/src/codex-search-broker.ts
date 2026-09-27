@@ -42,10 +42,12 @@ function searchEnvironment(root: string) {
   };
 }
 
-export async function searchCodexHostedWeb(query: string, maxResults = 5) {
+export async function createCodexProviderClient(
+  purpose = 'codex-hosted-search',
+) {
   const executionRoot = resolve(
     process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions',
-    'codex-hosted-search',
+    purpose,
   );
   const home = platformHome();
   await Promise.all([
@@ -57,7 +59,7 @@ export async function searchCodexHostedWeb(query: string, maxResults = 5) {
     args: [resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs')],
     cwd: executionRoot,
     environment: searchEnvironment(executionRoot),
-    requestTimeoutMs: 70_000,
+    requestTimeoutMs: 310_000,
   });
   try {
     await client.initialize({
@@ -70,6 +72,16 @@ export async function searchCodexHostedWeb(query: string, maxResults = 5) {
       maxTokens: 256,
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
     });
+    return client;
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
+}
+
+export async function searchCodexHostedWeb(query: string, maxResults = 5) {
+  const client = await createCodexProviderClient();
+  try {
     return await client.searchCodexWeb(query, maxResults);
   } finally {
     await client.close();

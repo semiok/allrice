@@ -4,121 +4,89 @@ import {
   checkCompletedModelBudget,
   modelAdmissionTokenEstimate,
 } from './model-result-budget.js';
-import { ModelRunLimitsSchema } from '@allrice/contracts';
 import type { HarnessExecutionResult } from './harness/adapter.js';
 
-describe('MET-150 completed subscription budget accounting', () => {
+describe('execution usage is telemetry across all billing routes', () => {
   afterEach(() => vi.unstubAllEnvs());
   const result: HarnessExecutionResult = {
-    provider: 'openai-codex',
+    provider: 'fixture',
     model: 'fixture',
     answer: 'Complete answer',
-    usageComplete: true,
+    assistantStatus: 'completed',
+    usageComplete: false,
     usage: {
-      inputTokens: 478_964,
+      inputTokens: 1_500_000,
       cachedInputTokens: 377_856,
-      outputTokens: 10_210,
+      outputTokens: 32_000,
     },
   };
-  const input = {
-    limits: {
-      timeoutMs: 300_000,
-      maxInputTokens: 120_000,
-      maxOutputTokens: 16_000,
-      maxTotalTokens: 136_000,
-      maxCostCents: null,
-    },
-    result,
-    verifiedSubscription: true,
-    governedAssistants: false,
-    costCents: null,
+  const limits = {
+    timeoutMs: 3_600_000,
+    maxInputTokens: 120_000,
+    maxOutputTokens: 16_000,
+    maxTotalTokens: 136_000,
+    maxCostCents: 1,
   };
-  it('observes complete ordinary subscription usage without a cumulative ceiling or receipt rewrite', () => {
-    const before = structuredClone(result);
-    expect(checkCompletedModelBudget(input)).toBeUndefined();
-    expect(result).toEqual(before);
-  });
   it.each([
-    { inputTokens: 203_744, cachedInputTokens: 173_568, outputTokens: 4_677 },
-    { inputTokens: 1_500_000, cachedInputTokens: 0, outputTokens: 32_000 },
+    { verifiedSubscription: false, governedAssistants: false },
+    { verifiedSubscription: false, governedAssistants: true },
+    { verifiedSubscription: true, governedAssistants: false },
+    { verifiedSubscription: true, governedAssistants: true },
+    { verifiedSubscription: false, workflow: true },
   ])(
-    'does not replace the old threshold with 1M or a cumulative output ceiling: %j',
-    (usage) => {
-      expect(
-        checkCompletedModelBudget({ ...input, result: { ...result, usage } }),
-      ).toBeUndefined();
-    },
-  );
-  it('uses current input plus a single-call output allowance at admission, not a frozen cumulative default', () => {
-    const limits = ModelRunLimitsSchema.parse({});
-    const before = structuredClone(limits);
-    expect(
-      modelAdmissionTokenEstimate({
-        ...input,
-        limits,
-        estimatedInputTokens: 2_000,
-      }),
-    ).toBe(18_000);
-    expect(
-      modelAdmissionTokenEstimate({
-        ...input,
-        limits: { ...limits, maxTotalTokens: 1_000_000 },
-        estimatedInputTokens: 2_000,
-      }),
-    ).toBe(18_000);
-    expect(limits).toEqual(before);
-  });
-  it.each([{ verifiedSubscription: false }])(
-    'keeps admission/root limits for non-ordinary routes: %j',
+    'finishes useful work over old limits without inventing receipts: %j',
     (scope) => {
+      const before = structuredClone(result);
+      for (const costCents of [null, 10_000]) {
+        expect(
+          checkCompletedModelBudget({ ...scope, limits, result, costCents }),
+        ).toBeUndefined();
+      }
+      expect(() =>
+        assertInitialModelInputBudget({
+          ...scope,
+          limits,
+          estimatedInputTokens: 500_000,
+        }),
+      ).not.toThrow();
       expect(
         modelAdmissionTokenEstimate({
-          ...input,
           ...scope,
-          estimatedInputTokens: 2_000,
+          limits,
+          estimatedInputTokens: 2000,
         }),
-      ).toBe(136_000);
+      ).toBe(18000);
+      expect(result).toEqual(before);
     },
   );
-  it('retains the initial input limit and rejects invalid estimates', () => {
-    expect(() =>
-      assertInitialModelInputBudget({
-        ...input,
-        estimatedInputTokens: 120_000,
-      }),
-    ).not.toThrow();
-    for (const estimatedInputTokens of [-1, NaN, Infinity]) {
-      expect(() =>
-        assertInitialModelInputBudget({ ...input, estimatedInputTokens }),
-      ).toThrow();
-    }
-    for (const estimatedInputTokens of [-1, NaN, Infinity]) {
-      expect(() =>
-        modelAdmissionTokenEstimate({ ...input, estimatedInputTokens }),
-      ).toThrow();
-    }
-  });
-  it('does not warn for within-budget completed work', () => {
+  it('cannot reactivate cumulative quotas with the obsolete Codex switch', () => {
+    vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
     expect(
       checkCompletedModelBudget({
-        ...input,
-        result: {
-          ...result,
-          usage: {
-            inputTokens: 5_000,
-            cachedInputTokens: 4_000,
-            outputTokens: 100,
-          },
-        },
+        verifiedSubscription: true,
+        limits,
+        result,
+        costCents: null,
       }),
     ).toBeUndefined();
   });
-  it.each([{ verifiedSubscription: false }])(
-    'never softens unverified or governed assistant outcomes: %j',
-    (patch) => {
-      expect(() => checkCompletedModelBudget({ ...input, ...patch })).toThrow(
-        'Frozen model run budget',
-      );
+  it.each([-1, NaN, Infinity])(
+    'rejects malformed telemetry input: %s',
+    (estimatedInputTokens) => {
+      expect(() =>
+        assertInitialModelInputBudget({
+          verifiedSubscription: false,
+          limits,
+          estimatedInputTokens,
+        }),
+      ).toThrow();
+      expect(() =>
+        modelAdmissionTokenEstimate({
+          verifiedSubscription: false,
+          limits,
+          estimatedInputTokens,
+        }),
+      ).toThrow();
     },
   );
   it.each([
@@ -127,94 +95,14 @@ describe('MET-150 completed subscription budget accounting', () => {
       result: { ...result, assistantStatus: 'partial' as const },
       code: 'ASSISTANT_PARTIAL_RESULT',
     },
-  ])(
-    'preserves actual incomplete failures without mislabeling them as token limits: $code',
-    ({ result, code }) => {
-      try {
-        checkCompletedModelBudget({ ...input, result });
-        expect.unreachable();
-      } catch (error) {
-        expect(error).toMatchObject({ code });
-      }
-    },
-  );
-  it('separates output and API money limits', () => {
-    expect(
+  ])('retains actual incomplete outcomes: $code', ({ result, code }) => {
+    expect(() =>
       checkCompletedModelBudget({
-        ...input,
-        workflow: true,
-        result: { ...result, usage: { ...result.usage, outputTokens: 16_001 } },
-      }),
-    ).toBeUndefined();
-    try {
-      checkCompletedModelBudget({
-        ...input,
         verifiedSubscription: false,
-        result: {
-          ...result,
-          usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 10 },
-        },
-        limits: { ...input.limits, maxCostCents: 10 },
-        costCents: 11,
-      });
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toMatchObject({ code: 'MODEL_COST_BUDGET_EXCEEDED' });
-    }
-  });
-  it.each([{ governedAssistants: true }, { workflow: true }, {}])(
-    'records subscription use without capping tokens or inventing missing receipts: %j',
-    (scope) => {
-      const incomplete = {
-        ...result,
-        usageComplete: false,
-        assistantStatus: 'completed' as const,
-      };
-      const before = structuredClone(incomplete);
-      expect(() =>
-        assertInitialModelInputBudget({
-          ...input,
-          ...scope,
-          estimatedInputTokens: 500_000,
-        }),
-      ).not.toThrow();
-      expect(
-        checkCompletedModelBudget({ ...input, ...scope, result: incomplete }),
-      ).toBeUndefined();
-      expect(incomplete).toEqual(before);
-      expect(
-        modelAdmissionTokenEstimate({
-          ...input,
-          ...scope,
-          estimatedInputTokens: 2000,
-        }),
-      ).toBe(18_000);
-    },
-  );
-  it('keeps explicit rollback and unverified/API input protection', () => {
-    vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
-    expect(() =>
-      checkCompletedModelBudget({ ...input, governedAssistants: true }),
-    ).toThrow();
-    expect(() =>
-      checkCompletedModelBudget({
-        ...input,
-        result: { ...result, usageComplete: false },
+        limits,
+        result,
+        costCents: null,
       }),
-    ).toThrow();
-    expect(() =>
-      assertInitialModelInputBudget({
-        ...input,
-        estimatedInputTokens: 120_001,
-      }),
-    ).toThrow();
-    vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'observe');
-    expect(() =>
-      assertInitialModelInputBudget({
-        ...input,
-        verifiedSubscription: false,
-        estimatedInputTokens: 120_001,
-      }),
-    ).toThrow();
+    ).toThrow(expect.objectContaining({ code }));
   });
 });

@@ -169,6 +169,36 @@ function jsonbLikeRoundTrip(value: unknown): unknown {
 }
 
 describe('platform employee runtime package', () => {
+  it('uses the configured employee name and persona in each newly built identity', () => {
+    const office = {
+      ...definition,
+      key: 'office',
+      name: 'Office 文档助手',
+      identity: {
+        ...definition.identity,
+        role: '文档助手',
+        mission: '整理资料并制作报告、表格与演示文稿。',
+      },
+    };
+    const first = buildEmployeeRuntimePackage({
+      revision: 1,
+      definition: office,
+      skills,
+    });
+    const renamed = buildEmployeeRuntimePackage({
+      revision: 2,
+      definition: { ...office, name: '文档小助理' },
+      skills,
+    });
+    expect(first.files.identityMd).toContain('- 名称：Office 文档助手');
+    expect(first.files.identityMd).toContain('- 身份：文档助手');
+    expect(first.files.identityMd).toContain(office.identity.mission);
+    expect(first.files.identityMd).not.toContain('Rice');
+    expect(renamed.files.identityMd).toContain('- 名称：文档小助理');
+    expect(renamed.files.identityMd).not.toContain('Office 文档助手');
+    expect(renamed.checksum).not.toBe(first.checksum);
+    expect(first.files.identityMd).toContain('- 名称：Office 文档助手');
+  });
   it('keeps v1 resource-free package identities readable after JSONB reordering', () => {
     const pkg = buildEmployeeRuntimePackage({
       revision: 7,
@@ -357,6 +387,8 @@ describe('platform employee runtime package', () => {
     expect(first.files.agentsMd).toContain('用户不需要点名 Skill');
     expect(first.files.identityMd).toContain('通用工作伙伴');
     expect(first.files.soulMd).toContain('不编造执行结果');
+    expect(first.files.soulMd).toContain('本次运行注入的成员设置为准');
+    expect(first.files.soulMd).not.toContain('操作确认策略：');
     expect(first.files.userMd).toContain('动态注入');
     expect(first.skills[0]?.content).toContain('交叉核验');
     expect(first.runtimeManifest.skillGovernance[0]).toMatchObject({

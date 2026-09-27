@@ -59,6 +59,12 @@
   font-size: 14px;
   line-height: 1.75;
 }
+.content.officeContent {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
 .code {
   /* A file viewport has square sticky edges; text must not peek around them. */
   --dsl-code-block-border-radius: 0px;

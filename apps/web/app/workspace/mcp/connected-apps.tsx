@@ -175,60 +175,66 @@ export function ConnectedApps({
               >
                 重新连接
               </button>
-            ) : (
-              <button
-                disabled={!!busy}
-                onClick={() => void mutate(c, 'disconnect')}
-              >
-                断开连接
-              </button>
-            )}
-            {c.managed && !c.disconnected && (
-              <button
-                disabled={!!busy}
-                onClick={() => {
-                  setCredentialId(c.id);
-                  setCredential('');
+            ) : null}
+          </div>
+          <details className={styles.manage}>
+            <summary>管理连接</summary>
+            <div className={styles.actions}>
+              {!c.disconnected && c.enabled && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => void mutate(c, 'disconnect')}
+                >
+                  断开连接
+                </button>
+              )}
+              {c.managed && !c.disconnected && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => {
+                    setCredentialId(c.id);
+                    setCredential('');
+                  }}
+                >
+                  {c.credentialConfigured ? '更新凭据' : '填写连接凭据'}
+                </button>
+              )}
+              {!c.removed && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => void mutate(c, 'delete')}
+                >
+                  删除连接
+                </button>
+              )}
+            </div>
+            {credentialId === c.id && c.managed && !c.disconnected && (
+              <form
+                className={styles.credential}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void mutate(c, 'credential');
                 }}
               >
-                {c.credentialConfigured ? '更新凭据' : '填写连接凭据'}
-              </button>
+                <label>
+                  应用访问令牌
+                  <input
+                    type="password"
+                    value={credential}
+                    onChange={(e) => setCredential(e.target.value)}
+                    autoComplete="off"
+                    minLength={8}
+                    maxLength={4096}
+                    required
+                  />
+                </label>
+                <p>
+                  适用于提供访问令牌的应用。只保存在连接凭据中，不发送到聊天。连接成功后员工会继续当前任务。
+                </p>
+                <button disabled={!!busy || !credential}>保存并连接</button>
+              </form>
             )}
-            {!c.removed && (
-              <button
-                disabled={!!busy}
-                onClick={() => void mutate(c, 'delete')}
-              >
-                删除连接
-              </button>
-            )}
-          </div>
-          {credentialId === c.id && c.managed && !c.disconnected && (
-            <form
-              className={styles.credential}
-              onSubmit={(e) => {
-                e.preventDefault();
-                void mutate(c, 'credential');
-              }}
-            >
-              <label>
-                应用访问令牌
-                <input
-                  type="password"
-                  value={credential}
-                  onChange={(e) => setCredential(e.target.value)}
-                  autoComplete="off"
-                  minLength={8}
-                  maxLength={4096}
-                  required
-                />
-              </label>
-              <p>
-                适用于提供访问令牌的应用。只保存在连接凭据中，不发送到聊天。连接成功后员工会继续当前任务。
-              </p>
-              <button disabled={!!busy || !credential}>保存并连接</button>
-            </form>
-          )}
+          </details>
         </article>
       ))}
     </section>

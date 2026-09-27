@@ -8,6 +8,7 @@ import {
   IconBranchOutlineMedium, IconFollowsystemOutlineMedium, IconLinkOutlineMedium, IconSlidersTwoOutlineMedium, IconSparkleMedium,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import css from './SettingsRoot.module.css'
+import design from '../../settings-design.module.css'
 
 /** Nav glyph by section id; unknown ids fall back to the settings gear. */
 function navIcon(id: string) {
@@ -72,13 +73,14 @@ export function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }:
   }, [])
 
   return (
-    <Modal open headless title="设置" onClose={onClose} className={css.panel}
+    <Modal open headless title="设置" onClose={onClose} className={clsx(css.panel, design.panel)}
       onKeyDownCapture={event => {
         if (event.key === 'Escape') { event.stopPropagation(); onClose() }
       }}
     >
         <nav className={css.nav}>
           <div className={css.navTitle} id={titleId}>{renderSlot('settings.header', {})}</div>
+          <select className={design.mobileNav} aria-label="设置页面" value={active} onChange={event => onSelect(event.target.value)}>{rows.map(row => <option key={row.id} value={row.id}>{row.label}</option>)}</select>
           <div className={css.navList}>
             {rows.map(row => (
               <button

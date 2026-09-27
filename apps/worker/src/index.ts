@@ -1,4 +1,6 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { startExecutionPressureLog } from './execution-pressure.js';
+import { detectWorkerCapacity } from './worker-capacity.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -68,7 +70,9 @@ const heartbeatMs = integerSetting(
   250,
   Math.max(250, leaseMs - 100),
 );
-const concurrency = integerSetting('ALLRICE_WORKER_CONCURRENCY', 1, 1, 32);
+process.env.ALLRICE_SERVICE_ROLE = 'worker';
+const capacity = detectWorkerCapacity();
+const concurrency = capacity.concurrency;
 const workerId = UuidSchema.parse(
   process.env.ALLRICE_WORKER_ID ?? randomUUID(),
 );
@@ -78,6 +82,11 @@ const codexAuthorizationBroker = new CodexAuthorizationBroker(
   executionRoot,
 );
 
+const stopPressureLog = startExecutionPressureLog(
+  executionRoot,
+  workerId,
+  capacity,
+);
 let databaseReady = false;
 let lastDatabaseError: string | undefined;
 let stopping = false;
@@ -251,6 +260,7 @@ async function tick() {
   try {
     await maintainQueue();
     while (!stopping && activeExecutions.size < concurrency) {
+      if ((process.availableMemory?.() ?? Infinity) < 256 * 1024 ** 2) break;
       const job = await claimNextJob(workerId, leaseMs);
       const leaseToken = job?.lease?.token;
       if (!job || !leaseToken) break;
@@ -354,6 +364,7 @@ server.listen(port, '0.0.0.0', () => {
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
     workerId,
     concurrency,
+    capacity,
     leaseMs,
   });
 });
@@ -361,6 +372,7 @@ server.listen(port, '0.0.0.0', () => {
 async function shutdown(signal: string) {
   console.info(`[M5] received ${signal}; stopping worker`);
   stopping = true;
+  stopPressureLog();
   clearInterval(readinessTimer);
   clearInterval(codexProviderStatusTimer);
   clearInterval(dshRuntimeInventoryTimer);

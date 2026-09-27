@@ -1,3 +1,4 @@
+import { safeNavigationQuery } from './navigation-query';
 export type PortalKind = 'platform_admin' | 'tenant';
 
 export interface PortalDefinition {
@@ -24,9 +25,14 @@ const definitions: readonly PortalDefinition[] = [
   {
     key: 'runtime-console',
     kind: 'platform_admin',
-    title: 'AllRice Runtime Console',
-    subtitle: '查看真实 Worker DSH Runtime、Session 与原生事件。',
-    hosts: ['allrice-dsh.bplabs.xyz', 'allrice-dsh.traditionow.ai'],
+    title: 'Allrice 管理后台',
+    subtitle: '使用管理员账号登录，管理公司、员工与平台配置。',
+    hosts: [
+      'allrice-admin.bplabs.xyz',
+      'allrice-admin.traditionow.ai',
+      'allrice-dsh.bplabs.xyz',
+      'allrice-dsh.traditionow.ai',
+    ],
     username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
     passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
     homePath: '/runtime-console',
@@ -50,7 +56,6 @@ const definitions: readonly PortalDefinition[] = [
       'allrice-snow.bplabs.xyz',
       'allrice-snow.traditionow.ai',
       // Migration aliases retained until the four-domain rollout is accepted.
-      'allrice.bplabs.xyz',
       'allrice.traditionow.ai',
       'rice.traditionow.ai',
     ],
@@ -106,7 +111,18 @@ export function normalizeHost(value: string | null | undefined) {
   return first.split(':')[0] ?? '';
 }
 
+/** The shared entry never selects a person or organization from its hostname. */
+export function isUnifiedPortalHost(host: string | null | undefined) {
+  const value = normalizeHost(host);
+  return (
+    value === 'allrice.bplabs.xyz' ||
+    (['localhost', '127.0.0.1', '::1'].includes(value) &&
+      (process.env.ALLRICE_LOCAL_PORTAL ?? 'unified') === 'unified')
+  );
+}
+
 export function resolvePortal(host: string | null | undefined) {
+  if (isUnifiedPortalHost(host)) return null;
   const normalized = normalizeHost(host);
   if (
     normalized === 'localhost' ||
@@ -124,6 +140,19 @@ export function resolvePortal(host: string | null | undefined) {
   );
 }
 
+/** Public employee and admin entries accept only their own account kind.
+ * Unconfigured localhost keeps the development harness usable with either role.
+ */
+export function portalAccountKind(host: string | null | undefined) {
+  if (normalizeHost(host) === 'allrice.bplabs.xyz') return 'employee' as const;
+  const portal = resolvePortal(host);
+  return portal?.kind === 'platform_admin'
+    ? ('platform_admin' as const)
+    : portal?.kind === 'tenant'
+      ? ('employee' as const)
+      : undefined;
+}
+
 export function portalPublicView(portal: PortalDefinition) {
   return {
     key: portal.key,
@@ -135,22 +164,56 @@ export function portalPublicView(portal: PortalDefinition) {
   };
 }
 
-/** Link to a configured tenant portal; identity is established by that portal. */
-export function tenantTrialPortal(organizationSlug: string, origin: string) {
-  const portal = definitions.find(
-    (item) =>
-      item.kind === 'tenant' &&
-      item.principal.organizationSlug === organizationSlug,
-  );
-  if (!portal) return null;
+/** All companies share the same account portal; the login selects membership. */
+export function tenantTrialPortal(_organizationSlug: string, origin: string) {
   const source = new URL(origin);
-  const family = source.hostname.endsWith('.bplabs.xyz')
-    ? '.bplabs.xyz'
-    : source.hostname.endsWith('.traditionow.ai')
-      ? '.traditionow.ai'
-      : null;
-  const host = family
-    ? portal.hosts.find((host) => host.endsWith(family))
-    : null;
-  return host ? `https://${host}/chatflow` : null;
+  return ['localhost', '127.0.0.1', '[::1]'].includes(source.hostname)
+    ? `${source.origin}/chatflow`
+    : 'https://allrice.bplabs.xyz/chatflow';
+}
+
+/** Deployment bootstrap only. Never expose these values through publicPortal. */
+export function legacyPortalMigrationAccounts() {
+  return definitions.map((portal) => ({
+    email: portal.principal.email,
+    username: portal.username,
+    organizationSlug: portal.principal.organizationSlug,
+    workspaceSlug: portal.principal.workspaceSlug,
+    kind:
+      portal.kind === 'tenant'
+        ? ('employee' as const)
+        : ('platform_admin' as const),
+    ...(portal.kind === 'platform_admin'
+      ? { initialPassword: process.env[portal.passwordEnvironmentVariable] }
+      : {}),
+  }));
+}
+
+/** Navigation only; device credentials, callbacks and downloads keep their host. */
+export function legacyPortalNavigation(request: {
+  url: string;
+  method: string;
+  headers: Headers;
+}) {
+  if (!['GET', 'HEAD'].includes(request.method)) return null;
+  const host = request.headers.get('host'),
+    portal = resolvePortal(host);
+  if (!portal || !portal.hosts.includes(normalizeHost(host))) return null;
+  if (normalizeHost(host) === 'allrice-admin.bplabs.xyz') return null;
+  const url = new URL(request.url);
+  if (
+    url.pathname !== '/' &&
+    !/^\/(login|accept-invitation|chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(
+      url.pathname,
+    )
+  )
+    return null;
+  const destination = new URL(
+    portal.kind === 'platform_admin'
+      ? 'https://allrice-admin.bplabs.xyz'
+      : 'https://allrice.bplabs.xyz',
+  );
+  destination.pathname = url.pathname;
+  destination.search = safeNavigationQuery(url);
+  return destination;
 }
