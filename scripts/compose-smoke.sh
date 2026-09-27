@@ -7,6 +7,8 @@ proxy_port="${ALLRICE_PROXY_PORT:-18080}"
 keep_compose="${ALLRICE_KEEP_COMPOSE:-0}"
 
 export ALLRICE_PROXY_PORT="${proxy_port}"
+# The disposable bootstrap account manages shared configuration as a platform admin.
+export ALLRICE_PLATFORM_ADMIN_EMAILS="${ALLRICE_PLATFORM_ADMIN_EMAILS:+${ALLRICE_PLATFORM_ADMIN_EMAILS},}phase0-smoke@example.com"
 export ALLRICE_STORAGE_SIGNING_SECRET="${ALLRICE_STORAGE_SIGNING_SECRET:-allrice-compose-smoke-signing-secret}"
 export ALLRICE_WORKER_POLL_INTERVAL_MS="${ALLRICE_WORKER_POLL_INTERVAL_MS:-250}"
 export ALLRICE_WORKER_LEASE_MS="${ALLRICE_WORKER_LEASE_MS:-3000}"

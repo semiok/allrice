@@ -151,7 +151,7 @@ suite(
         store.review(f.owner, c.id, decision(c)),
       ).rejects.toMatchObject({ code: 'identity_denied' });
     });
-    it('shares only owner-approved rewritten text to a current workspace admin; ordinary reply cannot approve', async () => {
+    it('shares only owner-approved rewritten text to a current platform administrator; ordinary reply cannot approve', async () => {
       const f = await fixture();
       const c = await store.create(f.owner, {
         ...f.input,
@@ -265,7 +265,7 @@ suite(
       if (kind === 'owner-inactive')
         await db`update allrice_users set status='disabled' where id=${f.user}`;
       if (kind === 'reviewer-demoted')
-        await db`update allrice_memberships set role='member' where user_id=${f.reviewer.actor.id}`;
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
       if (kind === 'source-archived')
         await db`update allrice_chat_sessions set archived_at=now() where id=${f.session.id}`;
       await expect(

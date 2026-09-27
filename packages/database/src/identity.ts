@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import {
   randomBytes,
   randomUUID,
@@ -189,7 +190,7 @@ export async function bootstrapOrganization(input: {
       insert into allrice_invitations (
         organization_id, workspace_id, email, role, token_hash, expires_at
       ) values (
-        ${organization.id}, null, ${email}, 'admin',
+        ${organization.id}, null, ${email}, 'member',
         ${hashOpaqueToken(token)}, ${expiresAt}
       )
       returning id
@@ -211,14 +212,7 @@ export async function createInvitation(
 ) {
   const invitation = CreateInvitationInputSchema.parse(input);
   const actorId = context.actor.type === 'user' ? context.actor.id : null;
-  const admin = context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.organizationId === context.organizationId &&
-      membership.role === 'admin' &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === invitation.workspaceId),
-  );
+  const admin = await isPlatformAdmin(context);
   if (!actorId || !admin) {
     await recordAudit({
       organizationId: context.organizationId,
@@ -228,7 +222,7 @@ export async function createInvitation(
       resourceType: 'invitation',
       resourceId: null,
       decision: 'denied',
-      reason: 'admin_membership_required',
+      reason: 'platform_admin_required',
       requestId: context.requestId,
     });
     throw new IdentityError('authorization_denied');
@@ -253,7 +247,7 @@ export async function createInvitation(
       created_by, expires_at
     ) values (
       ${context.organizationId}, ${invitation.workspaceId},
-      ${invitation.email}, ${invitation.role}, ${hashOpaqueToken(token)},
+      ${invitation.email}, ${invitation.role === 'admin' ? 'member' : invitation.role}, ${hashOpaqueToken(token)},
       ${actorId}, ${invitation.expiresAt}
     )
     returning id
@@ -268,7 +262,7 @@ export async function createInvitation(
     resourceType: 'invitation',
     resourceId: row.id,
     decision: 'allowed',
-    reason: 'admin_membership',
+    reason: 'platform_admin',
     requestId: context.requestId,
   });
   return { id: row.id, token, expiresAt: invitation.expiresAt };
@@ -320,7 +314,7 @@ export async function acceptInvitation(input: unknown) {
         organization_id, workspace_id, user_id, role, active
       ) values (
         ${invitation.organization_id}, ${invitation.workspace_id},
-        ${user.id}, ${invitation.role}, true
+        ${user.id}, ${invitation.role === 'admin' ? 'member' : invitation.role}, true
       )
       on conflict (organization_id, workspace_id, user_id)
       do update set role = excluded.role, active = true, updated_at = now()
@@ -424,7 +418,7 @@ export async function ensureBootstrapPortalPrincipal(
       insert into allrice_memberships (
         organization_id, workspace_id, user_id, role, active
       ) values (
-        ${organization.id}, null, ${user.id}, ${input.role}, true
+        ${organization.id}, null, ${user.id}, ${input.role === 'admin' ? 'member' : input.role}, true
       )
       on conflict (organization_id, workspace_id, user_id)
       do nothing

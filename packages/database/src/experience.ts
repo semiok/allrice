@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -82,7 +83,7 @@ async function identity(tx: Tx, context: RequestContext, write: boolean) {
     !memberships.some((m) => !write || ['admin', 'member'].includes(m.role))
   )
     throw new ExperienceError('identity_denied');
-  return { ...p, admin: memberships.some((m) => m.role === 'admin') };
+  return { ...p, admin: await isPlatformAdmin(context, tx) };
 }
 async function source(
   tx: Tx,

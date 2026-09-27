@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 import type postgres from 'postgres';
@@ -162,9 +163,8 @@ export async function browserIdentity(
     where m.organization_id=${ctx.organizationId} and m.user_id=${ctx.actor.id} and m.active
     and (m.workspace_id is null or m.workspace_id=${ctx.workspaceId}) for share of m,u,o,w`;
   if (
-    !rows.some((r) =>
-      admin ? r.role === 'admin' : ['member', 'admin'].includes(r.role),
-    )
+    !rows.some((row) => ['admin', 'member'].includes(row.role)) ||
+    (admin && !(await isPlatformAdmin(ctx, tx)))
   )
     throw new RuntimePolicyError('membership_denied');
 }

@@ -15,7 +15,8 @@ export const TenantMemberChangeSchema = z
   .object({
     workspaceId: UuidSchema.nullable(),
     expectedVersion: z.string().regex(/^[a-f0-9]{32}$/),
-    role: RoleSchema,
+    // Accepted only for older clients; admin is normalized to tenant user.
+    role: RoleSchema.optional(),
     active: z.boolean(),
     reason: z.string().trim().max(500).default(''),
   })

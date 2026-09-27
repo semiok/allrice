@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 /** Synthetic Bridge target + real PostgreSQL authority/approval/lease tests.
  * No VM, command process, customer data, external credential or deployment. */
 import { randomUUID } from 'node:crypto';
@@ -648,6 +649,10 @@ integration(
     it('serializes concurrent proposal creation, delegate, approval and live policy revocation without granting stale execution', async () => {
       const f = await proposalFixture(),
         c = await f.create();
+      await authorizeFixturePlatformAdministrator(
+        f.db,
+        f.requestContext.actor.id,
+      );
       const outcomes = await Promise.allSettled([
         f.create('concurrent'),
         f.runtime.provision({

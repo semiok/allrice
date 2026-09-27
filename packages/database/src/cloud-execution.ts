@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
 import {
@@ -72,10 +73,15 @@ export async function installCloudExecutionGrant(
         throw new RuntimePolicyError('membership_denied');
       await requireTenantManagementScope(context, administration, tx);
     }
-    const [admin] =
-      await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active' where m.organization_id=${context.organizationId} and (m.workspace_id is null or m.workspace_id=${context.workspaceId}) and m.user_id=${context.actor.id} and m.active and m.role='admin' for share of m,u`;
-    if (context.actor.type !== 'user' || (!administration && !admin))
-      throw new RuntimePolicyError('membership_denied');
+    if (!administration) {
+      const [member] = await tx`select m.id from allrice_memberships m
+        join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+        join allrice_workspaces w on w.organization_id=o.id and w.id=${workspaceId} and w.archived_at is null
+        where m.organization_id=${organizationId} and m.user_id=${context.actor.id} and m.active
+          and m.role in ('admin','member') and (m.workspace_id is null or m.workspace_id=w.id) for share of m,o,w`;
+      if (!member || !(await isPlatformAdmin(context, tx)))
+        throw new RuntimePolicyError('membership_denied');
+    }
     const [target] =
       await tx`select id from allrice_execution_targets where id=${UuidSchema.parse(input.targetId)} and organization_id=${organizationId} and workspace_id=${workspaceId} and kind='cloud_sandbox' and state<>'revoked' and capabilities ? 'process.execute' for share`;
     const [owner] =

@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import {
@@ -132,6 +133,7 @@ suite(
         role: 'member' | 'viewer' = 'member',
         workspaceId: string | null = tenant.workspaceId,
       ) {
+        await authorizeFixturePlatformAdministrator(fdb.db, tenant.user.id);
         const invite = await createInvitation(tenant.context, {
           workspaceId,
           role,

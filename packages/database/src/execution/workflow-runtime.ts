@@ -261,11 +261,6 @@ export async function startWorkflowRun(
             and a.workspace_id = r.workspace_id
             and a.employee_id = ${request.employeeId}
             and a.user_id = ${ownerId} and a.active
-        ) or exists (
-          select 1 from allrice_memberships m
-          where m.organization_id = r.organization_id
-            and (m.workspace_id is null or m.workspace_id = r.workspace_id)
-            and m.user_id = ${ownerId} and m.active and m.role = 'admin'
         )
       ) as employee_allowed,
       (${request.sessionId}::uuid is null or exists (
@@ -400,16 +395,8 @@ export async function getWorkflowRun(
     runId,
   });
   const user = actorId(context);
-  const admin = context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === user &&
-      membership.organizationId === context.organizationId &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === workspaceId) &&
-      membership.role === 'admin',
-  );
-  if (result.row.owner_id !== user && !admin) {
+
+  if (result.row.owner_id !== user) {
     throw new WorkflowRuntimeError('not_found');
   }
   return result.snapshot;
@@ -426,15 +413,7 @@ export async function listWorkflowRuns(
 ) {
   const workspaceId = await resolveWorkspaceId(context, input.workspaceId);
   const user = actorId(context);
-  const admin = context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === user &&
-      membership.organizationId === context.organizationId &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === workspaceId) &&
-      membership.role === 'admin',
-  );
+
   const employeeId = input.employeeId
     ? UuidSchema.parse(input.employeeId)
     : null;
@@ -445,7 +424,7 @@ export async function listWorkflowRuns(
     select * from allrice_workflow_runs
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
-      and (${admin} or owner_id = ${user})
+      and owner_id = ${user}
       and (${employeeId}::uuid is null or employee_id = ${employeeId})
       and (${sessionId}::uuid is null or session_id = ${sessionId})
     order by created_at desc limit ${limit}

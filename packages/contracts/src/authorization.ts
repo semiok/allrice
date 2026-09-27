@@ -146,13 +146,8 @@ export function authorize(
   if (action === 'resource:read' && hasRole(['admin', 'member', 'viewer'])) {
     return { allowed: true, reason: 'allowed_membership' };
   }
-  if (
-    ['resource:write', 'resource:share', 'resource:delete'].includes(action) &&
-    hasRole(['admin'])
-  ) {
-    return { allowed: true, reason: 'allowed_membership' };
-  }
-
+  // Shared visibility permits reading; a historical tenant-admin role cannot
+  // modify another owner's resource. Platform management uses dedicated APIs.
   return { allowed: false, reason: 'denied_role' };
 }
 

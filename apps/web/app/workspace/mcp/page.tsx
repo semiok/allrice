@@ -65,19 +65,10 @@ export default async function WorkspaceMcpPage({
         workspaceId={workspaceId}
         connectionId={(await searchParams)?.connectionId}
       />
-      {context.memberships.some(
-        (m) =>
-          m.active &&
-          m.userId === context.actor.id &&
-          m.organizationId === context.organizationId &&
-          (m.workspaceId === null || m.workspaceId === workspaceId) &&
-          m.role === 'admin',
-      ) && (
-        <details>
-          <summary>本地应用高级设置</summary>
-          <LocalMcpSettings workspaceId={workspaceId} />
-        </details>
-      )}
+      <details>
+        <summary>本地应用高级设置</summary>
+        <LocalMcpSettings workspaceId={workspaceId} />
+      </details>
     </main>
   );
 }

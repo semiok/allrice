@@ -100,6 +100,23 @@ describe('authorization contracts', () => {
     ).toBe('denied_workspace_mismatch');
   });
 
+  it.each(['admin', 'member'] as const)(
+    'does not let tenant %s modify or delete another owner’s shared data',
+    (role) => {
+      const actor = context({
+        memberships: [{ ...context().memberships[0]!, role }],
+      });
+      expect(authorize(resource(), 'resource:read', actor).allowed).toBe(true);
+      for (const action of [
+        'resource:write',
+        'resource:share',
+        'resource:delete',
+        'approval:decide',
+      ] as const)
+        expect(authorize(resource(), action, actor).allowed).toBe(false);
+    },
+  );
+
   it('allows the owner but not a viewer write', () => {
     expect(
       authorize(

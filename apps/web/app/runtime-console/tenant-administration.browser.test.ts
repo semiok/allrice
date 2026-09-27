@@ -266,7 +266,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     page.on('pageerror', (e) => failures.push(e.stack ?? e.message));
     await page.goto(origin);
     await page.getByLabel('管理租户').selectOption(snow.organizationId);
-    await page.getByRole('button', { name: '真人成员', exact: true }).click();
+    await page.getByRole('button', { name: '租户账号', exact: true }).click();
     await page
       .getByRole('button', { name: '编辑 Snow fixture', exact: true })
       .waitFor();
@@ -280,7 +280,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .getByRole('navigation', { name: '租户管理栏目', exact: true })
           .getByRole('button')
           .allTextContents(),
-      ).toEqual(['AI 员工团队', '真人成员', '连接与用量']);
+      ).toEqual(['AI 员工团队', '租户账号', '连接与用量']);
       expect(
         await page
           .getByRole('button', { name: '执行策略', exact: true })
@@ -341,7 +341,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button', { name: '派驻员工', exact: true })
         .click();
       await panel
-        .getByText('员工已派驻，当前普通成员可以开始使用。', { exact: true })
+        .getByText('员工已派驻，当前租户用户可以开始使用。', { exact: true })
         .waitFor();
       const card = panel.getByRole('article', {
         name: '在岗员工 Synthetic publication',
@@ -787,7 +787,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       ).toBe(400);
       await page.reload();
       await page.getByLabel('管理租户').selectOption(snow.organizationId);
-      await page.getByRole('button', { name: '真人成员', exact: true }).click();
+      await page.getByRole('button', { name: '租户账号', exact: true }).click();
       await page.getByLabel('管理工作区').selectOption(snow.workspaceId);
       await page.getByText('开发者工具', { exact: true }).click();
       await page.getByRole('button', { name: '执行策略', exact: true }).click();
@@ -1339,13 +1339,14 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   }, 60000);
-  it('saves a member role without a mandatory note, refreshes it, and does not grant platform membership', async () => {
+  it('saves account access without a role selector, persists it, and does not grant platform membership', async () => {
     const { page, context } = await pageFor();
     try {
       await page
         .getByRole('button', { name: '编辑 Snow fixture', exact: true })
         .click();
-      await page.getByLabel('成员角色').selectOption('viewer');
+      expect(await page.getByLabel('成员角色').count()).toBe(0);
+      await page.getByLabel('授权有效', { exact: true }).uncheck();
       await page
         .getByRole('button', { name: '确认保存授权', exact: true })
         .click();
@@ -1354,20 +1355,23 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .filter({ hasText: '修改已保存' })
         .waitFor();
       const [row] =
-        await fixture.db`select role,id from allrice_memberships where user_id=${snow.user.id} and organization_id=${snow.organizationId}`;
-      expect(row!.role).toBe('viewer');
+        await fixture.db`select role,id,active from allrice_memberships where user_id=${snow.user.id} and organization_id=${snow.organizationId}`;
+      expect(row!.role).toBe('member');
+      expect(row!.active).toBe(false);
       const [audit] =
         await fixture.db`select actor_id,metadata from allrice_audit_events where resource_id=${row!.id} and action='tenant.member.updated' order by occurred_at desc limit 1`;
       expect(audit!.actor_id).toBe(platform.user.id);
       expect(audit!.metadata.deviceAuthorizationChanged).toBe(false);
-      await ensureBootstrapPortalPrincipal(snow.input, fixture.db);
+      await expect(
+        ensureBootstrapPortalPrincipal(snow.input, fixture.db),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
       await page.reload();
       await page.getByLabel('管理租户').selectOption(snow.organizationId);
-      await page.getByRole('button', { name: '真人成员', exact: true }).click();
+      await page.getByRole('button', { name: '租户账号', exact: true }).click();
       await page
         .getByRole('row')
         .filter({ hasText: 'Snow fixture' })
-        .getByText('只读成员', { exact: true })
+        .getByText('授权已停用', { exact: true })
         .waitFor();
       await page.screenshot({ path: '/tmp/met151-tenant-admin-desktop.png' });
       expect(
@@ -1417,7 +1421,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page
         .getByRole('button', { name: '编辑 Snow fixture', exact: true })
         .click();
-      await page.getByLabel('成员角色').selectOption('member');
+      await page.getByLabel('授权有效', { exact: true }).check();
       await page
         .getByLabel('成员备注（可选）')
         .fill('Synthetic unavailable save');
@@ -1439,7 +1443,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       ).toBe(0);
       expect(requests.filter((r) => r.startsWith('PATCH')).length).toBe(before);
       await page.unroute('**/members/*');
-      await page.getByRole('button', { name: '刷新成员', exact: true }).click();
+      await page.getByRole('button', { name: '刷新账号', exact: true }).click();
       await page
         .getByRole('button', { name: '编辑 Snow fixture', exact: true })
         .waitFor();

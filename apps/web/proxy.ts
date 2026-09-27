@@ -69,12 +69,10 @@ export function proxy(request: NextRequest) {
     portal,
   );
   if (session) {
-    // This exact endpoint is tenant-admin management, not platform control.
-    // The handler still requires a current DB-backed tenant admin membership.
+    // Personal device endpoints validate current membership and device ownership.
+    // Shared environment management remains platform-only.
     const tenantManagement = [
-      '/api/v1/admin/mcp',
       '/api/v1/admin/local-mcp',
-      '/api/v1/admin/browser-control',
       '/api/v1/admin/local-browser',
     ].includes(request.nextUrl.pathname);
     const tenantForbidden =

@@ -1,5 +1,9 @@
+import {
+  isPlatformAdmin,
+  requirePlatformAdmin,
+} from '../platform-authority.ts';
+export { isPlatformAdmin } from '../platform-authority.ts';
 import { randomUUID } from 'node:crypto';
-import type postgres from 'postgres';
 
 import {
   EmployeeModelPolicySchema,
@@ -137,60 +141,22 @@ function userId(context: RequestContext) {
   return context.actor.id;
 }
 
-function tenantAdmin(context: RequestContext, workspaceId?: string | null) {
-  const actorId = userId(context);
-  return context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === actorId &&
-      membership.organizationId === context.organizationId &&
-      membership.role === 'admin' &&
-      (workspaceId === undefined ||
-        workspaceId === null ||
-        membership.workspaceId === null ||
-        membership.workspaceId === workspaceId),
-  );
-}
-
-function platformAdminEmails() {
-  return new Set(
-    (process.env.ALLRICE_PLATFORM_ADMIN_EMAILS ?? 'semiokshen@gmail.com')
-      .split(',')
-      .map((email) => email.trim().toLocaleLowerCase())
-      .filter(Boolean),
-  );
-}
-
-export async function isPlatformAdmin(
-  context: RequestContext,
-  sql: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
-) {
-  const actorId = userId(context);
-  const rows = await sql<{ email: string }[]>`
-    select email from allrice_users
-    where id = ${actorId} and status = 'active'
-  `;
-  const email = rows[0]?.email.toLocaleLowerCase();
-  return email ? platformAdminEmails().has(email) : false;
-}
-
 export async function getSaasCapabilities(context: RequestContext) {
-  const workspaceId = context.workspaceId;
   return buildSaasCapabilityManifest({
     member: context.actor.type === 'user',
-    tenantAdmin: tenantAdmin(context, workspaceId),
+
     platformAdmin: await isPlatformAdmin(context),
   });
 }
 
 export function buildSaasCapabilityManifest(input: {
   member: boolean;
-  tenantAdmin: boolean;
+  /** Compatibility input only; no tenant-admin authority is emitted. */
+  tenantAdmin?: boolean;
   platformAdmin: boolean;
 }) {
   const roles = [
     ...(input.member ? (['member'] as const) : []),
-    ...(input.tenantAdmin ? (['tenant_admin'] as const) : []),
     ...(input.platformAdmin ? (['platform_admin'] as const) : []),
   ];
   const actions = [
@@ -201,7 +167,7 @@ export function buildSaasCapabilityManifest(input: {
     'conversation:recover',
     'file:upload',
     'employee:read',
-    ...(input.tenantAdmin
+    ...(input.platformAdmin
       ? ([
           'employee:manage',
           'skill:assign',
@@ -220,7 +186,6 @@ export function buildSaasCapabilityManifest(input: {
     actions,
     surfaces: [
       'chatflow',
-      ...(input.tenantAdmin ? (['tenant_admin'] as const) : []),
       ...(input.platformAdmin ? (['platform_admin'] as const) : []),
     ],
     features: {
@@ -228,20 +193,6 @@ export function buildSaasCapabilityManifest(input: {
       nativeHarnessEvents: true,
     },
   });
-}
-
-async function requirePlatformAdmin(context: RequestContext) {
-  if (!(await isPlatformAdmin(context))) {
-    throw new DataAccessError('authorization_denied');
-  }
-  return userId(context);
-}
-
-function requireTenantAdmin(context: RequestContext, workspaceId: string) {
-  if (!tenantAdmin(context, workspaceId)) {
-    throw new DataAccessError('authorization_denied');
-  }
-  return userId(context);
 }
 
 function mapProvider(row: ProviderRow) {
@@ -325,7 +276,7 @@ export async function listModelPool(context: RequestContext) {
   userId(context);
   const sql = getDatabase();
   const platformAdmin = await isPlatformAdmin(context);
-  if (!platformAdmin && !tenantAdmin(context, context.workspaceId)) {
+  if (!platformAdmin) {
     throw new DataAccessError('authorization_denied');
   }
   const [providerRows, connectionRows, catalogRows] = await Promise.all([
@@ -541,7 +492,7 @@ export async function getEmployeeModelPolicy(input: {
   workspaceId: string;
   employeeId: string;
 }) {
-  requireTenantAdmin(input.context, input.workspaceId);
+  await requirePlatformAdmin(input.context);
   const sql = getDatabase();
   const rows = await sql<PolicyRow[]>`
     select employee_id, organization_id, workspace_id, connection_id,
@@ -563,7 +514,7 @@ export async function upsertEmployeeModelPolicy(input: {
   employeeId: string;
   policy: unknown;
 }) {
-  const actorId = requireTenantAdmin(input.context, input.workspaceId);
+  const actorId = await requirePlatformAdmin(input.context);
   const policy = UpsertEmployeeModelPolicyInputSchema.parse(input.policy);
   await validateSelection({
     organizationId: input.context.organizationId,
@@ -629,7 +580,7 @@ export async function upsertEmployeeModelPolicy(input: {
     ) values (
       ${input.context.organizationId}, ${input.workspaceId}, ${actorId},
       'employee_model_policy.update', 'employee', ${input.employeeId},
-      'recorded', 'tenant_admin', ${input.context.requestId},
+      'recorded', 'platform_admin', ${input.context.requestId},
       ${sql.json({
         connectionId: row.connection_id,
         modelCatalogEntryId: row.model_catalog_entry_id,

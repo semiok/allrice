@@ -38,7 +38,7 @@ const definitions: readonly PortalDefinition[] = [
       email:
         process.env.ALLRICE_PLATFORM_BOOTSTRAP_EMAIL ?? 'semiokshen@gmail.com',
       displayName: 'AllRice Platform Administrator',
-      role: 'admin',
+      role: 'member',
     },
   },
   {

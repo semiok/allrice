@@ -757,6 +757,10 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       f.employeeBindings.bind(f.context, { ...change, expectedRevision: 0 }),
     ).rejects.toThrow('MCP_BINDING_CHANGED');
     await db`update allrice_memberships set role='member' where user_id=${f.user} and organization_id=${f.org}`;
+    expect(
+      await f.employeeBindings.list(f.context, f.workspace),
+    ).not.toHaveLength(0);
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
     await expect(
       f.employeeBindings.list(f.context, f.workspace),
     ).rejects.toThrow('MCP_DENIED');

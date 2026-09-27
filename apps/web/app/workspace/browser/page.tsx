@@ -41,7 +41,9 @@ export default async function BrowserSettingsPage({
     return (
       <main>
         <Link href="/chatflow">返回工作台</Link>
-        <p role="alert">当前工作区不可用，或你不是当前租户管理员。</p>
+        <p role="alert">
+          云端浏览器由平台统一配置。你可以在工作台直接使用已派驻员工的浏览器能力。
+        </p>
       </main>
     );
   }

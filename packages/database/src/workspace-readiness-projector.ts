@@ -166,9 +166,10 @@ export function projectWorkspacePrerequisites(
     if (id === 'boost' || id === 'teamwork')
       return [result('not_released', 'planned', 'platform_admin')];
     if (!f.flags[id]) add('not_released', 'release_disabled', 'platform_admin');
-    if (!f.canExecute) add('needs_authorization', 'read_only', 'tenant_admin');
+    if (!f.canExecute)
+      add('needs_authorization', 'read_only', 'platform_admin');
     if (!f.employee)
-      add('needs_configuration', 'employee_missing', 'tenant_admin');
+      add('needs_configuration', 'employee_missing', 'platform_admin');
     if (
       d.tools.some((t) => !f.tools.includes(t)) ||
       d.capabilities.some(
@@ -177,14 +178,14 @@ export function projectWorkspacePrerequisites(
       (id === 'cloud_mcp' && !f.cloudMcpPolicy) ||
       (id === 'local_mcp' && !f.localMcpPolicy)
     )
-      add('needs_authorization', 'employee_policy', 'tenant_admin');
+      add('needs_authorization', 'employee_policy', 'platform_admin');
     const actions =
       id === 'local_files' && f.governedLocalReads
         ? ['local.fs.list', 'local.fs.read']
         : d.actions;
     if (actions || id === 'assistants') {
       if (!f.controls)
-        add('needs_configuration', 'policy_missing', 'tenant_admin');
+        add('needs_configuration', 'policy_missing', 'platform_admin');
       if (
         f.controls &&
         (!f.controls.enabled ||
@@ -207,7 +208,7 @@ export function projectWorkspacePrerequisites(
                   r.action === 'assistant.delegate' && r.effect !== 'allow',
               ))))
       )
-        add('needs_authorization', 'policy_denied', 'tenant_admin');
+        add('needs_authorization', 'policy_denied', 'platform_admin');
     }
     if (d.target === 'local') {
       if (f.bridge === 'missing')
@@ -255,13 +256,12 @@ export function projectWorkspacePrerequisites(
             ? f.localBrowser
             : null;
     if (environment && environment !== 'ready') {
-      const action = f.canAdminister
-        ? id === 'cloud_browser'
-          ? 'browser_settings'
-          : id === 'local_browser'
-            ? 'local_browser_settings'
-            : 'guide'
-        : 'guide';
+      const action =
+        id === 'local_browser'
+          ? 'local_browser_settings'
+          : f.canAdminister && id === 'cloud_browser'
+            ? 'browser_settings'
+            : 'guide';
       if (environment === 'missing')
         add(
           'needs_configuration',
@@ -279,7 +279,12 @@ export function projectWorkspacePrerequisites(
       if (environment === 'invalid')
         add('unknown', 'invalid_configuration', 'platform_admin');
       if (environment === 'ungranted')
-        add('needs_authorization', 'grant_missing', 'tenant_admin', action);
+        add(
+          'needs_authorization',
+          'grant_missing',
+          id === 'local_browser' ? 'user' : 'platform_admin',
+          action,
+        );
     }
     // Published cloud tools can establish a member's connection in the task.
     // A private account's login state is not a platform capability prerequisite.
@@ -296,8 +301,8 @@ export function projectWorkspacePrerequisites(
           ? 'needs_authorization'
           : 'needs_configuration',
         reason,
-        'tenant_admin',
-        f.canAdminister ? 'mcp_settings' : 'guide',
+        'user',
+        'mcp_settings',
       );
     }
     if (
@@ -306,7 +311,7 @@ export function projectWorkspacePrerequisites(
         f.provider,
       )
     )
-      add('needs_configuration', 'provider_unsupported', 'tenant_admin');
+      add('needs_configuration', 'provider_unsupported', 'platform_admin');
     return reasons.length
       ? reasons
       : [

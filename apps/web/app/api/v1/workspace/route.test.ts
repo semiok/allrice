@@ -23,6 +23,7 @@ describe('workspace viewer identity for layout preferences', () => {
     });
     mocks.workspace.mockResolvedValue({
       workspaceId: 'workspace',
+      canAdminister: false,
       organizationId: 'organization',
     });
   });

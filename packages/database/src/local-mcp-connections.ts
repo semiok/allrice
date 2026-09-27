@@ -83,12 +83,12 @@ function scopeFor(
     actorId: context.actor.id,
   });
 }
-async function member(tx: Database | Tx, scope: McpScope, admin: boolean) {
+async function member(tx: Database | Tx, scope: McpScope) {
   const [row] =
     await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id
     join allrice_organizations o on o.id=m.organization_id join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
     where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and m.role in ('admin','member')
-      and (${admin}=false or m.role='admin') and (m.workspace_id is null or m.workspace_id=${scope.workspaceId})
+      and (m.workspace_id is null or m.workspace_id=${scope.workspaceId})
       and u.status='active' and o.archived_at is null and w.archived_at is null for share of m,u,o,w`;
   if (!row) throw new McpError('MCP_DENIED');
 }
@@ -193,7 +193,7 @@ export function createLocalMcpStore(
   const managementMember = (tx: Database | Tx, scope: McpScope) =>
     options.administration
       ? checkTenantManagement(tx, options.administration, scope)
-      : member(tx, scope, true);
+      : member(tx, scope);
   const ownerId = (scope: McpScope) =>
     options.administration?.subjectId ?? scope.actorId;
   const managementAudit = (
@@ -371,7 +371,7 @@ export function createLocalMcpStore(
     ): Promise<LocalMcpSnapshot> {
       const scope = McpScopeSchema.parse(scopeInput);
       return db().begin(async (tx) => {
-        await member(tx, scope, false);
+        await member(tx, scope);
         const [version] =
           await tx`select v.manifest from allrice_employee_versions v join allrice_employees e on e.id=v.employee_id where v.id=${employeeVersionId} and e.id=${employeeId} and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.status='active' for share of e,v`;
         if (
@@ -447,7 +447,7 @@ export function createLocalMcpStore(
           workspaceId: snapshot.binding.task.scope.workspaceId,
           actorId: snapshot.binding.requestedBy.id,
         });
-        await member(tx, scope, false);
+        await member(tx, scope);
         await tx`select binding_id from allrice_mcp_binding_config where binding_id=${payload.arguments.connectionId} for update`;
         const row = await read(tx, scope, payload.arguments.connectionId);
         if (row.last_discovery_operation_id === operationId) return;
