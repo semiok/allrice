@@ -21,6 +21,7 @@ import {
   portalAuthEnabled,
   isUnifiedPortalHost,
   resolvePortal,
+  portalAccountKind,
 } from '../../../../../lib/portal/config';
 import {
   createPortalSession,
@@ -33,6 +34,7 @@ export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
   try {
+    const accountKind = portalAccountKind(request.headers.get('host'));
     if (
       portalAuthEnabled() &&
       !isUnifiedPortalHost(request.headers.get('host'))
@@ -65,7 +67,7 @@ export async function POST(request: Request) {
       }
       if (!account)
         return authenticationRequiredProblem('Authentication failed');
-      const result = await login(input, portal.principal.email);
+      const result = await login(input, portal.principal.email, accountKind);
       const databaseSession = result.session;
       const portalSession = createPortalSession({
         portal,
@@ -89,7 +91,7 @@ export async function POST(request: Request) {
         homePath: portal.homePath,
       });
     }
-    const result = await login(await request.json());
+    const result = await login(await request.json(), undefined, accountKind);
     (await cookies()).set(sessionCookieName, result.session.token, {
       ...sessionCookieOptions,
       expires: new Date(result.session.expiresAt),

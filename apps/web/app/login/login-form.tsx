@@ -36,7 +36,13 @@ export function LoginForm(props: {
           ),
         );
       } else {
-        setError('登录失败，请检查账号和密码。');
+        const body = await response.json().catch(() => null);
+        setError(
+          response.status === 403 &&
+            body?.error?.code === 'AUTHORIZATION_DENIED'
+            ? '此账号无法登录这个入口。管理员请从 allrice-admin.bplabs.xyz 登录；员工请从 allrice.bplabs.xyz 登录。'
+            : '登录失败，请检查账号和密码。',
+        );
         setPending(false);
       }
     } catch {
@@ -48,7 +54,9 @@ export function LoginForm(props: {
   return (
     <form onSubmit={submit} className="auth-form">
       <label>
-        员工账号
+        {props.bootstrap?.homePath === '/runtime-console'
+          ? '管理员账号'
+          : '员工账号'}
         <input
           name="username"
           type="text"

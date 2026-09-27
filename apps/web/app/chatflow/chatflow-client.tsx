@@ -1076,7 +1076,6 @@ export function ChatFlowClient({
         activeId={activeId}
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
-        manifest={manifest}
         onCollapsedChange={setSidebarCollapsed}
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;

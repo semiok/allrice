@@ -1,11 +1,16 @@
 import { cookies } from 'next/headers';
 
-import { authenticateSession, DataAccessError } from '@allrice/database';
+import {
+  authenticateSession,
+  DataAccessError,
+  isPlatformAdmin,
+} from '@allrice/database';
 
 import {
   isUnifiedPortalHost,
   portalAuthEnabled,
   resolvePortal,
+  portalAccountKind,
 } from '../portal/config';
 import {
   portalSessionCookieName,
@@ -43,16 +48,25 @@ export async function getRequestContext(request: Request) {
       organizationId: portalSession.organizationId,
       workspaceId: portalSession.workspaceId,
     });
-    return context?.actor.type === 'user' &&
-      context.actor.id === portalSession.subject
-      ? context
-      : null;
+    if (
+      context?.actor.type !== 'user' ||
+      context.actor.id !== portalSession.subject
+    )
+      return null;
+    const admin = await isPlatformAdmin(context);
+    return admin === (portal.kind === 'platform_admin') ? context : null;
   }
-  return authenticateSession(token, {
+  const context = await authenticateSession(token, {
     organizationId:
       request.headers.get('x-allrice-organization-id') ?? undefined,
     workspaceId: request.headers.get('x-allrice-workspace-id') ?? undefined,
   });
+  const kind = portalAccountKind(request.headers.get('host'));
+  if (context && kind) {
+    const admin = await isPlatformAdmin(context);
+    if (admin !== (kind === 'platform_admin')) return null;
+  }
+  return context;
 }
 
 /**

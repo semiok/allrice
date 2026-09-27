@@ -10,6 +10,7 @@ import {
   legacyPortalNavigation,
   portalAuthEnabled,
   resolvePortal,
+  normalizeHost,
 } from './lib/portal/config';
 import {
   portalSessionCookieName,
@@ -63,6 +64,11 @@ export function proxy(request: NextRequest) {
     return response;
   }
   const unified = isUnifiedPortalHost(request.headers.get('host'));
+  if (
+    normalizeHost(request.headers.get('host')) === 'allrice.bplabs.xyz' &&
+    /^\/runtime-console(\/|$)/.test(request.nextUrl.pathname)
+  )
+    return NextResponse.redirect(new URL('/chatflow', request.url));
   if (!portalAuthEnabled() && !unified) return NextResponse.next();
 
   const portal = resolvePortal(request.headers.get('host'));
