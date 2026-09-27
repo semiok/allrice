@@ -15,6 +15,7 @@ import {
 import {
   listAdminTenants,
   listAdminTenantMembers,
+  requireTenantAdministrationTarget,
   updateAdminTenantMember,
 } from './tenant-administration.ts';
 
@@ -117,6 +118,63 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
         await listAdminTenants(t.admin.context, undefined, fixture.db)
       ).tenants.some((o) => o.id === t.tenant.organizationId),
     ).toBe(true);
+  });
+  it('excludes the internal platform tenant from management while retaining its administrator authority', async () => {
+    const t = await setup();
+    await fixture.db`update allrice_organizations set slug='allrice-platform' where id=${t.admin.organizationId}`;
+    const [membership] =
+      await fixture.db`select *,md5(to_jsonb(m)::text) as version from allrice_memberships m where organization_id=${t.admin.organizationId} and user_id=${t.admin.user.id}`;
+    const tenants = await listAdminTenants(
+      t.admin.context,
+      undefined,
+      fixture.db,
+    );
+    expect(tenants.tenants.some((o) => o.id === t.admin.organizationId)).toBe(
+      false,
+    );
+    expect(tenants.tenants.some((o) => o.id === t.tenant.organizationId)).toBe(
+      true,
+    );
+    for (const workspaceId of [null, t.admin.workspaceId]) {
+      await expect(
+        requireTenantAdministrationTarget(
+          fixture.db,
+          t.admin.organizationId,
+          workspaceId,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        listAdminTenantMembers(
+          t.admin.context,
+          t.admin.organizationId,
+          workspaceId,
+          undefined,
+          fixture.db,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    }
+    await expect(
+      updateAdminTenantMember(
+        t.admin.context,
+        t.admin.organizationId,
+        membership!.id,
+        {
+          workspaceId: membership!.workspace_id,
+          expectedVersion: membership!.version,
+          active: false,
+        },
+        fixture.db,
+      ),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    expect(
+      (
+        await fixture.db`select *,md5(to_jsonb(m)::text) as version from allrice_memberships m where id=${membership!.id}`
+      )[0],
+    ).toEqual(membership);
+    expect(
+      await canAdministerEmployees(t.admin.context, t.admin.workspaceId),
+    ).toBe(true);
+    expect((await t.change({ active: false })).member.active).toBe(false);
   });
   it('makes tenant users equal while platform authority works with a member membership', async () => {
     const t = await setup();
