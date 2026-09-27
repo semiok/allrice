@@ -1,4 +1,5 @@
 .panel.panel {
+  --dsw-alias-border-primary: var(--dsw-alias-border-l2, #e0e4eb);
   width: 860px;
   height: min(700px, calc(100dvh - 48px));
   max-width: calc(100vw - 32px);

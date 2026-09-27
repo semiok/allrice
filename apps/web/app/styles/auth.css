@@ -376,7 +376,7 @@
   background: transparent;
   color: var(--auth-muted);
 }
-.auth-workspace .auth-password-toggle:hover {
+.auth-workspace .auth-form .auth-password-toggle:hover:not(:disabled) {
   background: #e9ecf1;
 }
 .auth-workspace .auth-submit {
@@ -419,4 +419,8 @@
   .auth-workspace .auth-form input {
     font-size: 16px;
   }
+}
+
+.auth-workspace .auth-form input {
+  font-weight: 400;
 }

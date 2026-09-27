@@ -177,3 +177,20 @@
     flex: 1 1 auto;
   }
 }
+
+:global(body[data-ds-dark-theme]) .card[data-status='succeeded'] .status {
+  color: #79cba1;
+}
+:global(body[data-ds-dark-theme]) .card[data-status='running'] .status,
+:global(body[data-ds-dark-theme]) .card[data-status='dispatched'] .status {
+  color: #91b5ff;
+}
+:global(body[data-ds-dark-theme]) .card[data-status='waiting_user'] .status,
+:global(body[data-ds-dark-theme]) .card[data-status='unknown'] .status,
+:global(body[data-ds-dark-theme]) .card[data-status='partial'] .status,
+:global(body[data-ds-dark-theme]) .notice {
+  color: #e2b670;
+}
+:global(body[data-ds-dark-theme]) .card[data-status='failed'] .status {
+  color: #f0918c;
+}
