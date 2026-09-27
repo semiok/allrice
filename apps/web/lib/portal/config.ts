@@ -50,7 +50,6 @@ const definitions: readonly PortalDefinition[] = [
       'allrice-snow.bplabs.xyz',
       'allrice-snow.traditionow.ai',
       // Migration aliases retained until the four-domain rollout is accepted.
-      'allrice.bplabs.xyz',
       'allrice.traditionow.ai',
       'rice.traditionow.ai',
     ],
@@ -106,7 +105,18 @@ export function normalizeHost(value: string | null | undefined) {
   return first.split(':')[0] ?? '';
 }
 
+/** The shared entry never selects a person or organization from its hostname. */
+export function isUnifiedPortalHost(host: string | null | undefined) {
+  const value = normalizeHost(host);
+  return (
+    value === 'allrice.bplabs.xyz' ||
+    (['localhost', '127.0.0.1', '::1'].includes(value) &&
+      (process.env.ALLRICE_LOCAL_PORTAL ?? 'unified') === 'unified')
+  );
+}
+
 export function resolvePortal(host: string | null | undefined) {
+  if (isUnifiedPortalHost(host)) return null;
   const normalized = normalizeHost(host);
   if (
     normalized === 'localhost' ||

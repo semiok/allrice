@@ -4,10 +4,34 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { RoleSchema } from './authorization.ts';
 
 export const EmailSchema = z.string().trim().toLowerCase().email().max(320);
-export const PasswordSchema = z.string().min(12).max(256);
+export const PasswordSchema = z.string().min(8).max(256);
+export const UsernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(64)
+  .regex(
+    /^[a-z][a-z0-9._-]*$/,
+    'Use an English nickname starting with a letter',
+  );
 
 export const LoginInputSchema = z
-  .object({ email: EmailSchema, password: PasswordSchema })
+  .object({
+    username: UsernameSchema.optional(),
+    email: EmailSchema.optional(),
+    password: PasswordSchema,
+  })
+  .strict()
+  .refine((value) => Boolean(value.username) !== Boolean(value.email), {
+    message: 'Provide either username or email',
+  });
+
+export const ChangePasswordInputSchema = z
+  .object({
+    currentPassword: PasswordSchema,
+    newPassword: PasswordSchema,
+  })
   .strict();
 
 export const AcceptInvitationInputSchema = z

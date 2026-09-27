@@ -14,57 +14,57 @@ export function LoginForm(props: {
     setPending(true);
     setError('');
     const data = new FormData(event.currentTarget);
-    const response = await fetch('/api/v1/auth/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...(props.bootstrap
-          ? { username: data.get('username') }
-          : { email: data.get('email') }),
-        password: data.get('password'),
-      }),
-    });
-    if (response.ok) {
-      const result = (await response.json()) as { homePath?: string };
-      window.location.assign(
-        loginDestination(
-          new URLSearchParams(window.location.search).get('next'),
-          result.homePath ?? props.bootstrap?.homePath ?? '/chatflow',
-          window.location.origin,
-        ),
-      );
-    } else {
-      setError('登录失败，请检查账号和密码。');
+    try {
+      const account = String(data.get('username') ?? '').trim();
+      const response = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(!props.bootstrap && account.includes('@')
+            ? { email: account }
+            : { username: account }),
+          password: data.get('password'),
+        }),
+      });
+      if (response.ok) {
+        const result = (await response.json()) as { homePath?: string };
+        window.location.assign(
+          loginDestination(
+            new URLSearchParams(window.location.search).get('next'),
+            result.homePath ?? props.bootstrap?.homePath ?? '/chatflow',
+            window.location.origin,
+          ),
+        );
+      } else {
+        setError('登录失败，请检查账号和密码。');
+        setPending(false);
+      }
+    } catch {
+      setError('暂时无法连接，请稍后重试。');
       setPending(false);
     }
   }
 
   return (
     <form onSubmit={submit} className="auth-form">
-      {props.bootstrap ? (
-        <label>
-          账号
-          <input
-            name="username"
-            type="text"
-            autoComplete="username"
-            defaultValue={props.bootstrap.username}
-            required
-          />
-        </label>
-      ) : (
-        <label>
-          邮箱
-          <input name="email" type="email" autoComplete="email" required />
-        </label>
-      )}
+      <label>
+        员工账号
+        <input
+          name="username"
+          type="text"
+          autoComplete="username"
+          defaultValue={props.bootstrap?.username ?? ''}
+          placeholder="英文昵称"
+          required
+        />
+      </label>
       <label>
         密码
         <input
           name="password"
           type="password"
           autoComplete="current-password"
-          minLength={props.bootstrap ? 1 : 12}
+          minLength={8}
           required
         />
       </label>

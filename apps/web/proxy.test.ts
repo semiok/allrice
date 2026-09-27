@@ -76,6 +76,39 @@ describe('Rice Bridge portal boundary', () => {
 });
 
 describe('portal authentication response boundary', () => {
+  it('uses database sessions on the shared entry without binding everyone to Snow', () => {
+    const host = 'allrice.bplabs.xyz';
+    expect(resolvePortal(host)).toBeNull();
+    const unsigned = proxy(
+      new NextRequest(`https://${host}/chatflow?session=existing`, {
+        headers: { host },
+      }),
+    );
+    expect(
+      new URL(unsigned.headers.get('location')!).searchParams.get('next'),
+    ).toBe('/chatflow?session=existing');
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/api/v1/auth/session`, {
+          headers: { host },
+        }),
+      ).status,
+    ).toBe(401);
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/chatflow`, {
+          headers: { host, cookie: 'allrice_session=db-token' },
+        }),
+      ).status,
+    ).toBe(200);
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/api/v1/bridge/device/heartbeat`, {
+          headers: { host },
+        }),
+      ).status,
+    ).toBe(200);
+  });
   let originalPortalAuthEnabled: string | undefined;
 
   beforeEach(() => {

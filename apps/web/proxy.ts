@@ -5,7 +5,11 @@ import {
   authenticationRequiredProblem,
   authorizationDeniedProblem,
 } from './lib/api-problem';
-import { portalAuthEnabled, resolvePortal } from './lib/portal/config';
+import {
+  isUnifiedPortalHost,
+  portalAuthEnabled,
+  resolvePortal,
+} from './lib/portal/config';
 import {
   portalSessionCookieName,
   verifyPortalSession,
@@ -48,10 +52,11 @@ export function isBridgeDeviceApiPath(pathname: string) {
 }
 
 export function proxy(request: NextRequest) {
-  if (!portalAuthEnabled()) return NextResponse.next();
+  const unified = isUnifiedPortalHost(request.headers.get('host'));
+  if (!portalAuthEnabled() && !unified) return NextResponse.next();
 
   const portal = resolvePortal(request.headers.get('host'));
-  if (!portal) {
+  if (!portal && !unified) {
     return new NextResponse('Unknown AllRice portal host', { status: 421 });
   }
 
@@ -63,6 +68,24 @@ export function proxy(request: NextRequest) {
   ) {
     return NextResponse.next();
   }
+
+  // This is only a navigation gate. Every API verifies the database session and
+  // current authority; possession of a cookie never grants platform admin access.
+  if (unified) {
+    if (request.cookies.get('allrice_session')?.value)
+      return NextResponse.next();
+    if (request.nextUrl.pathname.startsWith('/api/'))
+      return authenticationRequiredProblem();
+    const login = new URL('/login', request.url);
+    if (request.nextUrl.pathname === '/chatflow')
+      login.searchParams.set(
+        'next',
+        request.nextUrl.pathname + request.nextUrl.search,
+      );
+    return NextResponse.redirect(login);
+  }
+  if (!portal)
+    return new NextResponse('Unknown AllRice portal host', { status: 421 });
 
   const session = verifyPortalSession(
     request.cookies.get(portalSessionCookieName)?.value,
