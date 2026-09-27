@@ -76,6 +76,25 @@ describe('Rice Bridge portal boundary', () => {
 });
 
 describe('portal authentication response boundary', () => {
+  it('lets invitation tokens authenticate account activation on the shared entry', () => {
+    const host = 'allrice.bplabs.xyz';
+    for (const path of [
+      '/accept-invitation?token=invite',
+      '/api/v1/auth/invitations/accept',
+    ]) {
+      expect(
+        proxy(new NextRequest(`https://${host}${path}`, { headers: { host } }))
+          .status,
+      ).toBe(200);
+    }
+    expect(
+      proxy(
+        new NextRequest(`https://${host}/api/v1/auth/invitations`, {
+          headers: { host },
+        }),
+      ).status,
+    ).toBe(401);
+  });
   it('uses database sessions on the shared entry without binding everyone to Snow', () => {
     const host = 'allrice.bplabs.xyz';
     expect(resolvePortal(host)).toBeNull();

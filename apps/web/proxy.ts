@@ -18,6 +18,8 @@ import {
 const publicPaths = new Set([
   '/login',
   '/api/v1/auth/login',
+  '/accept-invitation',
+  '/api/v1/auth/invitations/accept',
   '/api/health/live',
   '/api/health/ready',
   '/brand/allrice-icon-v1.svg',
