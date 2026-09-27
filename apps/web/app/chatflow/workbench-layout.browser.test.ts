@@ -4109,11 +4109,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
       const card = dialog.locator('[data-capability="local_files"]');
       await card.getByRole('button', { name: '连接与管理电脑' }).click();
-      const bridge = f.page.getByRole('dialog', { name: '本地工作区' });
+      const bridge = f.page.getByRole('dialog', {
+        name: '我的电脑',
+        exact: true,
+      });
       await bridge.waitFor();
-      expect(
-        await bridge.getByRole('link', { name: /下载 M 芯片版/ }).count(),
-      ).toBe(1);
+      await bridge.getByRole('link', { name: /下载 M 芯片版/ }).waitFor();
       const calls = f.state.readinessRequests;
       await f.page.keyboard.press('Escape');
       await expect.poll(() => f.state.readinessRequests).toBeGreaterThan(calls);
@@ -4168,20 +4169,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('[data-capability="local_files"]')
           .getByRole('button', { name: '连接与管理电脑' })
           .click();
-        const dialog = f.page.getByRole('dialog', { name: '本地工作区' });
+        const dialog = f.page.getByRole('dialog', {
+          name: '我的电脑',
+          exact: true,
+        });
         const download = dialog.getByRole('link', {
           name: '下载 M 芯片版 · v0.6.0-dev.7',
           exact: true,
         });
+        await dialog.getByText('v0.6.0-dev.6', { exact: true }).waitFor();
+        await dialog.getByText('有新版本', { exact: true }).waitFor();
+        expect(await download.isVisible()).toBe(false);
+        await dialog.locator('summary').click();
         await download.waitFor();
         expect(await download.getAttribute('href')).toBe(
           '/api/v1/bridge/client/macos-arm64',
         );
-        await dialog
-          .getByText('当前版本 v0.6.0-dev.6 · 可更新至 v0.6.0-dev.7', {
-            exact: true,
-          })
-          .waitFor();
         expect(
           await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
         ).toBe(true);
@@ -4192,9 +4195,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog
           .getByRole('button', { name: '刷新状态', exact: true })
           .click();
-        await dialog
-          .getByText('当前版本 v0.6.0-dev.7 · 已是最新版本', { exact: true })
-          .waitFor();
+        await dialog.getByText('v0.6.0-dev.7', { exact: true }).waitFor();
+        await dialog.getByText('已是最新版', { exact: true }).waitFor();
+        expect(
+          await dialog.getByText('有新版本', { exact: true }).count(),
+        ).toBe(0);
         expect(f.writes).toEqual([]);
       } finally {
         await f.close();
