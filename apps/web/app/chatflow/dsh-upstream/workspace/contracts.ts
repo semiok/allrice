@@ -46,7 +46,7 @@ export interface SessionSearchResultItem {
 }
 export interface WorkspaceBrowserProps {
   t: (
-    key: WorkspaceKey | 'copy',
+    key: WorkspaceKey | 'copy' | 'close' | 'cancel',
     params?: Record<string, string | number>,
   ) => string;
 }

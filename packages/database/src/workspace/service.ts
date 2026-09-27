@@ -1,3 +1,8 @@
+import {
+  archiveSessionActivity,
+  retryArchiveTransaction,
+} from './session-archive.ts';
+export { SessionActiveError } from './session-archive.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { createHash } from 'node:crypto';
 import { completedBudgetAnswers } from './budget-answer.ts';
@@ -544,7 +549,9 @@ function decodeCursor(cursor: string | undefined) {
     const parsed = z
       .object({ updatedAt: z.string().datetime(), id: UuidSchema })
       .parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
-    return { updatedAt: new Date(parsed.updatedAt), id: parsed.id };
+    // PostgreSQL timestamps retain microseconds; JavaScript Date would truncate
+    // the cursor and skip sessions updated within the same millisecond.
+    return parsed;
   } catch {
     throw new DataAccessError('not_found');
   }
@@ -553,21 +560,32 @@ function decodeCursor(cursor: string | undefined) {
 export async function listChatSessions(
   context: RequestContext,
   workspaceIdInput: string,
-  options: { cursor?: string; limit?: number; includeArchived?: boolean } = {},
+  options: {
+    cursor?: string;
+    limit?: number;
+    includeArchived?: boolean;
+    archivedOnly?: boolean;
+  } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const cursor = decodeCursor(options.cursor);
   const limit = Math.min(Math.max(options.limit ?? 30, 1), 100);
   const sql = getDatabase();
-  const rows = await sql<SessionRow[]>`
-    select * from allrice_chat_sessions
+  // Bind cursor timestamps as text so postgres.js does not serialize them
+  // through Date before PostgreSQL compares the full microsecond value.
+  const rows = await sql<
+    (SessionRow & { employee_name: string; cursor_updated_at: string })[]
+  >`
+    select *, to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_updated_at,
+      (select v.name from allrice_employee_versions v where v.id=allrice_chat_sessions.employee_version_id) as employee_name from allrice_chat_sessions
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
-      and (${options.includeArchived ?? false} or archived_at is null)
+      and (${options.includeArchived ?? false} or ${options.archivedOnly ?? false} or archived_at is null)
+      and (not ${options.archivedOnly ?? false} or archived_at is not null)
       and (owner_id = ${requireUser(context)} or visibility <> 'private')
       and (
-        ${cursor?.updatedAt ?? null}::timestamptz is null
-        or (updated_at, id) < (${cursor?.updatedAt ?? null}, ${cursor?.id ?? null}::uuid)
+        ${cursor?.updatedAt ?? null}::text::timestamptz is null
+        or (updated_at, id) < (${cursor?.updatedAt ?? null}::text::timestamptz, ${cursor?.id ?? null}::uuid)
       )
     order by updated_at desc, id desc
     limit ${limit + 1}
@@ -576,12 +594,15 @@ export async function listChatSessions(
   const page = visible.slice(0, limit);
   const last = page.at(-1);
   return {
-    sessions: page.map(mapSession),
+    sessions: page.map((row) => ({
+      ...mapSession(row),
+      employeeName: row.employee_name,
+    })),
     nextCursor:
       rows.length > limit && last
         ? Buffer.from(
             JSON.stringify({
-              updatedAt: last.updated_at.toISOString(),
+              updatedAt: last.cursor_updated_at,
               id: last.id,
             }),
           ).toString('base64url')
@@ -601,8 +622,20 @@ export async function updateChatSession(
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
-  const row = await sql.begin(async (transaction) => {
-    const rows = await transaction<SessionRow[]>`
+  const row = await retryArchiveTransaction(() =>
+    sql.begin(async (transaction) => {
+      const [locked] = await transaction<
+        { archived_at: Date | null }[]
+      >`select archived_at from allrice_chat_sessions where id=${current.id} for update`;
+      if (update.archived === true && !locked?.archived_at) {
+        await archiveSessionActivity(
+          transaction,
+          { ...context, workspaceId },
+          current.id,
+          update.stopActivity === true,
+        );
+      }
+      const rows = await transaction<SessionRow[]>`
       update allrice_chat_sessions
       set title = coalesce(${update.title ?? null}, title),
           visibility = coalesce(${update.visibility ?? null}, visibility),
@@ -615,16 +648,17 @@ export async function updateChatSession(
       where id = ${current.id}
       returning *
     `;
-    if (update.visibility) {
-      await transaction`
+      if (update.visibility) {
+        await transaction`
         update allrice_messages set visibility = ${update.visibility}
         where organization_id = ${context.organizationId}
           and workspace_id = ${workspaceId}
           and session_id = ${current.id}
       `;
-    }
-    return rows[0];
-  });
+      }
+      return rows[0];
+    }),
+  );
   if (!row) throw new DataAccessError('not_found');
   await audit({
     context,

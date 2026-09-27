@@ -19,7 +19,12 @@ import {
   type EmployeeAccentColor,
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
-import type { QueuedMessage, Message, WorkspaceFile } from './chatflow-types';
+import type {
+  QueuedMessage,
+  Message,
+  WorkspaceFile,
+  Session,
+} from './chatflow-types';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -38,7 +43,7 @@ const now = '2026-09-20T00:00:00.000Z';
 const report =
   '# COIN / MSTR / CRCL · 合成研究报告\n\n| 标的 | 说明 |\n| --- | --- |\n| COIN | 测试数据，非投资建议 |\n\n' +
   '多步研究结果与引用说明。'.repeat(100);
-function session(sessionId: string) {
+function session(sessionId: string): Session {
   return {
     id: sessionId,
     title: sessionId === A ? '研究任务 A' : '研究任务 B',
@@ -191,6 +196,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   async function fixture(
     options: {
+      archiveCount?: number;
+      archiveActive?: boolean;
       tenantAdmin?: boolean;
       employeeCount?: number;
       employeeHistory?: boolean;
@@ -235,6 +242,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      archivedIds: new Set<string>(),
+      archiveActive: options.archiveActive ?? false,
+      archiveError: false,
+      archiveRequests: [] as Array<{
+        archived: boolean;
+        stopActivity?: boolean;
+      }>,
       startupFailure: options.startup === 'failed',
       messages: null as Message[] | null,
       queue: [] as QueuedMessage[],
@@ -318,6 +332,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       timingError: false,
       delay: null as null | Promise<void>,
     };
+    const archivedHistory = Array.from(
+      { length: options.archiveCount ?? 0 },
+      (_, n) => ({
+        ...session(id(1600 + n)),
+        title: `归档工作 ${n + 1}`,
+        archivedAt: now,
+      }),
+    );
+    const withArchive = (item: Session): Session => ({
+      ...item,
+      archivedAt: state.archivedIds.has(item.id) ? now : item.archivedAt,
+    });
+    const sessionList = () =>
+      (options.employeeHistory
+        ? employeeHistorySessions
+        : options.noSession
+          ? []
+          : state.omitSessionA
+            ? [session(B)]
+            : [session(A), session(B)]
+      ).map(withArchive);
     let releaseStartup!: () => void;
     const startupGate = new Promise<void>((resolve) => {
       releaseStartup = resolve;
@@ -327,7 +362,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const streamGate = new Promise<void>((done) => {
       finishStream = done;
     });
-    page.on('pageerror', (e) => errors.push(e.message));
+    page.on('pageerror', (e) => errors.push(e.stack ?? e.message));
     if (options.controlledStream)
       await page.addInitScript(() => {
         const originalFetch = window.fetch.bind(window);
@@ -568,9 +603,48 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.connectionReads++;
         return answer({ connections: state.connections });
       }
+      if (
+        path.startsWith('/api/v1/sessions/') &&
+        route.request().method() === 'PATCH' &&
+        !path.includes('/queued-messages/')
+      ) {
+        const body = route.request().postDataJSON();
+        state.archiveRequests.push(body);
+        if (state.archiveError)
+          return answer({ error: { message: '测试：归档暂时失败' } }, 503);
+        if (body.archived && state.archiveActive && !body.stopActivity)
+          return answer(
+            {
+              error: {
+                code: 'SESSION_ACTIVE',
+                activity: [
+                  { kind: 'job', items: [{ id: run, label: '正在分析报表' }] },
+                ],
+              },
+            },
+            409,
+          );
+        const target = path.split('/').at(-1)!;
+        if (body.archived) state.archivedIds.add(target);
+        else state.archivedIds.delete(target);
+        return answer({ session: withArchive(session(target)) });
+      }
       if (route.request().method() !== 'GET') {
         writes.push(path);
         return answer({}, 500);
+      }
+      if (path === '/api/v1/sessions' && route.request().method() === 'GET') {
+        const filter = url.searchParams.get('archived');
+        const records = [...sessionList(), ...archivedHistory].filter(
+          (item) =>
+            filter === 'true' ||
+            (filter === 'only' ? !!item.archivedAt : !item.archivedAt),
+        );
+        const offset = Number(url.searchParams.get('cursor') ?? 0);
+        return answer({
+          sessions: records.slice(offset, offset + 30),
+          nextCursor: records.length > offset + 30 ? String(offset + 30) : null,
+        });
       }
       if (path === '/api/v1/workspace' && state.startupFailure)
         return answer(
@@ -590,13 +664,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               updatedAt: now,
             },
             canAdminister: false,
-            sessions: options.employeeHistory
-              ? employeeHistorySessions
-              : options.noSession
-                ? []
-                : state.omitSessionA
-                  ? [session(B)]
-                  : [session(A), session(B)],
+            sessions: sessionList(),
             sessionModels: [],
             employeeProfiles: options.employeeHistory
               ? [
@@ -878,7 +946,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       )
         return answer({
           history: {
-            session: listedHistory ?? session(path.endsWith(A) ? A : B),
+            session: withArchive(
+              listedHistory ?? session(path.endsWith(A) ? A : B),
+            ),
             queuedMessages: path.endsWith(A) ? state.queue : [],
             messages: path.endsWith(A)
               ? (state.messages ?? [
@@ -1624,6 +1694,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '展开侧边栏', exact: true })
             .click();
         const sidebar = f.page.locator('#chat-sidebar');
+        // This fixture exceeds the server page size; load its last records
+        // through the actual pagination control before testing list scrolling.
+        const earlier = sidebar.getByRole('button', { name: '加载更早的工作' });
+        await earlier.click();
+        await expect.poll(() => earlier.count()).toBe(0);
         const tree = sidebar.getByRole('tree', {
           name: '员工与工作',
           exact: true,
@@ -1649,13 +1724,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .poll(() => sidebar.evaluate((n) => n.getBoundingClientRect().left))
           .toBe(0);
         const box = (await tree.boundingBox())!;
+        const initialScroll = await tree.evaluate((n) => n.scrollTop);
+        const touchDistance = Math.min(250, box.height * 0.4);
         const x = box.x + box.width / 2,
           y = box.y + box.height * 0.65;
         const cdp =
           width === 390 ? await f.page.context().newCDPSession(f.page) : null;
         const scroll = async (down: boolean) => {
           if (cdp) {
-            const startY = down ? y : y - 250;
+            // Stay inside the tree even when filters shorten a mobile drawer.
+            const startY = down ? y : y - touchDistance;
             await cdp.send('Input.dispatchTouchEvent', {
               type: 'touchStart',
               touchPoints: [{ x, y: startY }],
@@ -1663,7 +1741,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             for (let step = 1; step <= 10; step++) {
               await cdp.send('Input.dispatchTouchEvent', {
                 type: 'touchMove',
-                touchPoints: [{ x, y: startY + (down ? -1 : 1) * step * 25 }],
+                touchPoints: [
+                  {
+                    x,
+                    y: startY + ((down ? -1 : 1) * step * touchDistance) / 10,
+                  },
+                ],
               });
               await f.page.evaluate(() => new Promise(requestAnimationFrame));
             }
@@ -1681,11 +1764,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await scroll(true);
         await expect
           .poll(() => tree.evaluate((n) => n.scrollTop))
-          .toBeGreaterThan(100);
+          .toBeGreaterThan(initialScroll + touchDistance * 0.5);
         await scroll(false);
         await expect
           .poll(() => tree.evaluate((n) => n.scrollTop))
-          .toBeLessThan(5);
+          .toBeLessThan(initialScroll + 5);
         await sidebar
           .getByText('历史工作 30', { exact: true })
           .scrollIntoViewIfNeeded();
@@ -4679,4 +4762,130 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+  it('archives with native Undo and restores an archived read-only transcript', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      const row = f.page.locator(`[data-row-key="session:${A}"]`);
+      await row.hover();
+      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await f.page.getByRole('button', { name: '恢复并继续' }).waitFor();
+      expect(await f.page.getByRole('dialog').count()).toBe(0);
+      expect(await row.count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('heading', { name: 'COIN / MSTR / CRCL · 合成研究报告' })
+          .count(),
+      ).toBeGreaterThan(0);
+      await f.page.getByRole('button', { name: '撤销', exact: true }).click();
+      await row.waitFor();
+      expect(
+        await f.page.getByRole('button', { name: '恢复并继续' }).count(),
+      ).toBe(0);
+      await row.hover();
+      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await f.page.getByRole('button', { name: '恢复并继续' }).waitFor();
+      await f.entry.click();
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(
+        await f.panel
+          .getByRole('link', { name: '下载', exact: true })
+          .getAttribute('href'),
+      ).toContain(artifact(10).object.id);
+      await f.page.getByLabel('工作记录筛选').selectOption('only');
+      await row.waitFor();
+      if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
+        await f.page.screenshot({ path: '.local/archive-desktop.png' });
+      await f.page.reload();
+      await f.page.getByRole('button', { name: '恢复并继续' }).waitFor();
+      await f.page.getByRole('button', { name: '恢复并继续' }).click();
+      await row.waitFor();
+      expect(f.state.archiveRequests.map((r) => r.archived)).toEqual([
+        true,
+        false,
+        true,
+        false,
+      ]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.context.close();
+    }
+  }, 30_000);
+  it('uses the native stop-and-archive confirmation, cancel leaves the work running', async () => {
+    const f = await fixture({ archiveActive: true });
+    try {
+      const row = f.page.locator(`[data-row-key="session:${A}"]`);
+      await row.hover();
+      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      const dialog = f.page.getByRole('dialog');
+      await dialog.getByText('正在分析报表', { exact: false }).waitFor();
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+      expect(f.state.archivedIds.size).toBe(0);
+      await row.hover();
+      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: '停止并归档', exact: true })
+        .click();
+      await f.page.getByRole('button', { name: '恢复并继续' }).waitFor();
+      expect(f.state.archiveRequests.at(-1)).toEqual({
+        archived: true,
+        stopActivity: true,
+      });
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.context.close();
+    }
+  }, 30_000);
+  it('finds archives beyond the first page and keeps a failed archive visible', async () => {
+    const f = await fixture({ archiveCount: 35 });
+    try {
+      f.state.archiveError = true;
+      const row = f.page.locator(`[data-row-key="session:${A}"]`);
+      await row.hover();
+      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await f.page
+        .getByRole('alert')
+        .filter({ hasText: '测试：归档暂时失败' })
+        .waitFor();
+      expect(await row.count()).toBe(1);
+      await f.page.getByLabel('工作记录筛选').selectOption('only');
+      await f.page.getByRole('button', { name: '加载更早的工作' }).click();
+      await expect
+        .poll(async () =>
+          f.page.getByRole('button', { name: '加载更早的工作' }).count(),
+        )
+        .toBe(0);
+      const more = f.page.getByRole('button', {
+        name: /展开其余.*个会话/,
+      });
+      if (await more.count()) await more.first().click();
+      await f.page.getByText('归档工作 35', { exact: true }).waitFor();
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.context.close();
+    }
+  }, 30_000);
+  it('exposes native archive actions on touch screens without hover', async () => {
+    const f = await fixture({ width: 390, touch: true });
+    try {
+      await f.page
+        .getByRole('button', { name: '展开侧边栏', exact: true })
+        .click();
+      const row = f.page.locator(`[data-row-key="session:${A}"]`);
+      const menu = row.getByRole('button', { name: /会话.*的操作/ });
+      await menu.click();
+      await f.page
+        .getByRole('menuitem', { name: '归档会话', exact: true })
+        .click();
+      await expect.poll(() => f.state.archivedIds.has(A)).toBe(true);
+      await f.page.getByLabel('工作记录筛选').selectOption('only');
+      await row.waitFor();
+      if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
+        await f.page.screenshot({ path: '.local/archive-mobile.png' });
+      await row.getByRole('button', { name: '取消归档', exact: true }).click();
+      await expect.poll(() => f.state.archivedIds.has(A)).toBe(false);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.context.close();
+    }
+  }, 30_000);
 });

@@ -68,7 +68,7 @@ export async function assertWorkbenchSession(
     { id: string }[]
   >`select id from allrice_chat_sessions
     where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and owner_id=${context.actor.id} and archived_at is null for update`;
+      and owner_id=${context.actor.id} and (${!write} or archived_at is null) for update`;
   if (!session) fail('artifact_not_found');
   const users =
     await db`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
