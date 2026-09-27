@@ -985,7 +985,9 @@ export function EmployeeProduction() {
               <span>按当前租户和用户授权动态注入，无独立输入框</span>
             </article>
           </div>
-          <p>“系统提示词”属于更高优先级的平台硬策略，不写入上述虚拟文件。</p>
+          <p>
+            员工名称来自「基础」，角色和使命在这里设置。“系统提示词”用于平台通用规则，请勿在其中重复指定员工名称，以免身份冲突。
+          </p>
         </section>
         <div className={styles.grid}>
           <Field

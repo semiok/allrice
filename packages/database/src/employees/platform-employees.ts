@@ -38,6 +38,7 @@ import { platformSkillReplacements } from '../platform-content/replacements.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
 import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
+import { normalizeDraftPlatformPolicy } from '../platform-employees/identity.ts';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -285,8 +286,12 @@ export async function createPlatformEmployeeDraft(
         `;
     const source = sourceRows[0];
     if (!source) throw new Error('platform_employee_clone_source_not_found');
+    const sourceDefinition = PlatformEmployeeDefinitionSchema.parse(
+      source.definition,
+    );
     const definition = PlatformEmployeeDefinitionSchema.parse({
-      ...PlatformEmployeeDefinitionSchema.parse(source.definition),
+      ...sourceDefinition,
+      systemPrompt: normalizeDraftPlatformPolicy(sourceDefinition.systemPrompt),
       key: parsed.key,
       name: parsed.name,
       description: `${parsed.name} 的平台管理员草稿。`,
@@ -1128,6 +1133,7 @@ export async function savePlatformEmployeeDraft(
     : [];
   const definition = PlatformEmployeeDefinitionSchema.parse({
     ...assembleEmployeeCapabilities(rawDefinition, skills),
+    systemPrompt: normalizeDraftPlatformPolicy(rawDefinition.systemPrompt),
     // An explicit security edit must not be silently undone by a server save.
     // Interactive tool/Skill selection updates these fields together in the UI.
     securityPolicy: rawDefinition.securityPolicy,

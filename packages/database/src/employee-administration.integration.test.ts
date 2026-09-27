@@ -32,6 +32,8 @@ import {
   savePlatformEmployeeDraft,
   rollbackPlatformEmployee,
   archivePlatformEmployee,
+  createPlatformEmployeeDraft,
+  getPlatformEmployee,
 } from './employees/platform-employees.ts';
 
 const suite =
@@ -123,6 +125,50 @@ suite('MET-151 policy and exact employee publication administration', () => {
       );
     return { ...f, context, session, target, read, write, review, publish };
   }
+  it('repairs inherited Rice identity only in newly created or saved drafts', async () => {
+    const [source] = await fixture.db<{ id: string }[]>`
+      select id from allrice_platform_employees where employee_key = 'rice'
+    `;
+    expect(source).toBeDefined();
+    const before = await getPlatformEmployee(source!.id);
+    const policy = before!.currentDraft!.definition.systemPrompt;
+    expect(policy).toContain(
+      'You are Rice, the default AI employee in AllRice.',
+    );
+    const created = await createPlatformEmployeeDraft({
+      key: `office-${randomUUID()}`,
+      name: 'Office 文档助手',
+    });
+    const original = created!.currentDraft!;
+    expect(original.definition.systemPrompt).not.toContain('You are Rice');
+    expect(original.definition.systemPrompt).toContain('IDENTITY.md');
+    expect(await getPlatformEmployee(source!.id)).toEqual(before);
+    const saved = await savePlatformEmployeeDraft(created!.id, {
+      expectedRevisionId: original.id,
+      definition: {
+        ...original.definition,
+        systemPrompt: policy + '\nPreserve this custom rule.',
+      },
+    });
+    expect(saved!.currentDraft!.definition.systemPrompt).not.toContain(
+      'You are Rice',
+    );
+    expect(saved!.currentDraft!.definition.systemPrompt).toContain(
+      'Preserve this custom rule.',
+    );
+    expect(saved!.currentPublished).toBeNull();
+    const [retained] = await fixture.db<{ definition: unknown }[]>`
+      select definition from allrice_platform_employee_revisions where id = ${original.id}
+    `;
+    expect(retained!.definition).toEqual(original.definition);
+    const custom =
+      'Use the identity configured by the administrator. Keep custom policy intact.';
+    const customSaved = await savePlatformEmployeeDraft(created!.id, {
+      expectedRevisionId: saved!.currentDraft!.id,
+      definition: { ...saved!.currentDraft!.definition, systemPrompt: custom },
+    });
+    expect(customSaved!.currentDraft!.definition.systemPrompt).toBe(custom);
+  });
   it('publishes selected development tools without a preview, enables matching policy atomically, and preserves immutable tenant bindings', async () => {
     const oldEnvironment = process.env.ALLRICE_ENV;
     process.env.ALLRICE_ENV = 'development';
