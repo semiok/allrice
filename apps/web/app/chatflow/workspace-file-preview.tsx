@@ -81,7 +81,9 @@ export function WorkspaceFilePreview(props: {
           />
         ) : null}
       </DocumentToolbar>
-      <div className={reader.content}>
+      <div
+        className={`${reader.content} ${preview?.kind === 'office' ? reader.officeContent : ''}`}
+      >
         {error ? (
           <p className={styles.error} role="alert">
             {error}

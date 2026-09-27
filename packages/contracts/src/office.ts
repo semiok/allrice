@@ -6,7 +6,13 @@ export const NativeOfficeExportSchema = z
   .object({
     script: CloudCommandInputSchema.shape.script,
     inputs: CloudCommandInputSchema.shape.inputs,
-    sourceObjectId: z.uuid().optional(),
+    sourceObjectId: z
+      .uuid()
+      .nullish()
+      .describe('修改输入文件时填写其 objectId；新文件省略或传 null。'),
+    // Compatibility for model-authored export metadata. Execution still uses
+    // only script/inputs; the delivery adapter stores this as version metadata.
+    changeSummary: z.string().max(2000).nullish(),
   })
   .strict()
   .superRefine((value, ctx) => {

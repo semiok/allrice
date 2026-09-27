@@ -1,6 +1,7 @@
 import {
   DataAccessError,
   SessionActiveError,
+  SessionReferenceError,
   getChatSessionHistory,
   updateChatSession,
 } from '@allrice/database';
@@ -28,6 +29,11 @@ export async function GET(
       history: await getChatSessionHistory(context, workspaceId(request), id),
     });
   } catch (error) {
+    if (error instanceof SessionReferenceError)
+      return Response.json(
+        { error: { message: error.message } },
+        { status: 400 },
+      );
     return storageErrorResponse(error);
   }
 }
@@ -60,6 +66,11 @@ export async function PATCH(
         { status: 409 },
       );
     }
+    if (error instanceof SessionReferenceError)
+      return Response.json(
+        { error: { message: error.message } },
+        { status: 400 },
+      );
     return storageErrorResponse(error);
   }
 }

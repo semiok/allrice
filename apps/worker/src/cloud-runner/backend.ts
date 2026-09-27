@@ -51,6 +51,8 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
  * Bounded artifact bytes are retained in daemon logs until durable publication. */
 export const cloudSupervisor = String.raw`
 import fs from 'node:fs'; import cp from 'node:child_process';
+// Drain the pipe before exiting: Office artifacts can exceed one pipe buffer.
+const finish=code=>process.stdout.write('',()=>process.exit(code));
 const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>32_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{resolve(JSON.parse(text.slice(0,end)))}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),65000).unref()});
 fs.mkdirSync('/tmp/work/input',{recursive:true}); fs.mkdirSync('/tmp/work/output');
 for(const file of input.files){ const p='/tmp/work/input/'+file.path; fs.mkdirSync(p.slice(0,p.lastIndexOf('/')),{recursive:true}); fs.writeFileSync(p,Buffer.from(file.contentBase64,'base64'),{mode:0o400}); }
@@ -61,7 +63,8 @@ let bytes=0,overflow=false;
 for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{ bytes+=chunk.length; if(bytes>input.outputBytes){overflow=true; child.kill('SIGKILL');}else console.log(JSON.stringify({type:'output',data:chunk.toString('base64')})); });
 const timer=setTimeout(()=>{child.kill('SIGKILL');process.exit(124)},Math.max(1,input.deadline-Date.now()));
 child.on('error',()=>process.exit(125));
-child.on('close',code=>{try{
+child.on('close',(code,signal)=>{try{
+  if(code!==0)console.log(JSON.stringify({type:'output',data:Buffer.from('Script exited: code='+code+' signal='+(signal??'none')+'\n').toString('base64')}));
   let total=0;
   if(!overflow&&code===0)for(const file of input.outputs){
     const p='/tmp/work/output/'+file.path, s=fs.lstatSync(p);
@@ -72,13 +75,13 @@ child.on('close',code=>{try{
       const report=Buffer.concat([check.stdout??Buffer.alloc(0),check.stderr??Buffer.alloc(0)]);
       console.log(JSON.stringify({type:'output',data:report.subarray(0,input.outputBytes-bytes).toString('base64')}));
       bytes+=report.length;
-      if(check.status!==0||bytes>input.outputBytes)throw Error('office_check');
+      if(check.status!==0||bytes>input.outputBytes)throw Error('office_check: exitCode='+check.status+' signal='+(check.signal??'none')+' error='+(check.error?.code??'none'));
     }
     const b=fs.readFileSync(p);total+=b.length;if(total>input.artifactBytes)throw Error('limit');
     console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64')}));
   }
-  clearTimeout(timer);process.exit(overflow?122:(code??125));
-}catch{process.exit(123)}});
+  clearTimeout(timer);finish(overflow?122:(code??125));
+}catch(error){clearTimeout(timer);console.log(JSON.stringify({type:'output',data:Buffer.from('Sandbox output validation failed: '+String(error.message).slice(0,1000)+'\n').toString('base64')}));finish(123)}});
 `;
 
 function redact(text: string) {

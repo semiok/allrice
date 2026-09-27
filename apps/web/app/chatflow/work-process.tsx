@@ -66,6 +66,7 @@ export function WorkProcess({
   assistantAttention,
   children,
   artifacts,
+  onOpenArtifact,
   label = '工作过程',
 }: {
   items: NativeExperienceItem[];
@@ -81,6 +82,7 @@ export function WorkProcess({
   assistantAttention: number;
   children?: ReactNode;
   artifacts?: readonly WorkbenchArtifact[];
+  onOpenArtifact?: (id: string) => void;
   label?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -155,6 +157,7 @@ export function WorkProcess({
                 data-work-reply={part.id}
               >
                 <AssistantMarkdown
+                  onOpenArtifact={onOpenArtifact}
                   text={part.text}
                   streaming={running && index === parts.length - 1}
                   artifacts={artifacts}
