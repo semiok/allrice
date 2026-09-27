@@ -47,12 +47,13 @@ export function TaskPlanDock({
       'run.needs_attention',
     ].includes(event.type),
   );
+  const phase = runTimings.find((entry) => entry.runId === runId)?.timing.phase;
   const running =
     !terminal &&
+    phase !== 'terminal' &&
     (view
       ? ['running', 'connecting'].includes(view.status)
       : message.status === 'pending');
-  const phase = runTimings.find((entry) => entry.runId === runId)?.timing.phase;
   const waiting =
     running &&
     (phase === 'waiting' ||
