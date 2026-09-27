@@ -38,7 +38,7 @@
   outline-offset: 2px;
 }
 @media (max-width: 640px) {
-  .preview {
+  .preview.preview {
     max-height: 320px;
   }
 }
