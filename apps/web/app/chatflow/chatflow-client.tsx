@@ -104,6 +104,12 @@ export function ChatFlowClient({
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);
   const [atTranscriptBottom, setAtTranscriptBottom] = useState(true);
+  const atTranscriptBottomRef = useRef(true);
+  const publishTranscriptBottom = useCallback((value: boolean) => {
+    if (atTranscriptBottomRef.current === value) return;
+    atTranscriptBottomRef.current = value;
+    setAtTranscriptBottom(value);
+  }, []);
   const conversationScroll = useRef<HTMLDivElement | null>(null);
   const transcriptColumn = useRef<HTMLDivElement | null>(null);
   const followTranscript = useRef(true);
@@ -116,13 +122,13 @@ export function ChatFlowClient({
     if (!scrollRegion) return;
     scrollRegion.scrollTop = scrollRegion.scrollHeight;
     followTranscript.current = true;
-    setAtTranscriptBottom(true);
-  }, []);
+    publishTranscriptBottom(true);
+  }, [publishTranscriptBottom]);
 
   const pauseTranscriptFollowing = useCallback(() => {
     followTranscript.current = false;
-    setAtTranscriptBottom(false);
-  }, []);
+    publishTranscriptBottom(false);
+  }, [publishTranscriptBottom]);
 
   const {
     activeId,
@@ -273,8 +279,8 @@ export function ChatFlowClient({
 
   useEffect(() => {
     followTranscript.current = true;
-    setAtTranscriptBottom(true);
-  }, [activeId]);
+    publishTranscriptBottom(true);
+  }, [activeId, publishTranscriptBottom]);
 
   useEffect(() => {
     const scrollRegion = conversationScroll.current;
@@ -282,12 +288,12 @@ export function ChatFlowClient({
     const handleScroll = () => {
       const atBottom = isConversationAtBottom(scrollRegion);
       followTranscript.current = atBottom;
-      setAtTranscriptBottom(atBottom);
+      publishTranscriptBottom(atBottom);
     };
     scrollRegion.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
     return () => scrollRegion.removeEventListener('scroll', handleScroll);
-  }, [activeId, history?.messages.length]);
+  }, [activeId, history?.messages.length, publishTranscriptBottom]);
 
   useLayoutEffect(() => {
     if (followTranscript.current) scrollToTranscriptBottom();

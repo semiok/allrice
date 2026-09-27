@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type RefObject,
 } from 'react';
@@ -36,6 +37,14 @@ export function ConversationTurnNavigator({
     [messages, runViews, streamingOutput],
   );
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
+  const activeTurnRef = useRef<number | null>(null);
+  const publishActiveTurn = useCallback((turn: number) => {
+    // Restoring many run traces can synchronously remeasure unchanged anchors.
+    // Skip identical publications before dispatching a React layout update.
+    if (activeTurnRef.current === turn) return;
+    activeTurnRef.current = turn;
+    setActiveTurn(turn);
+  }, []);
   // Streaming preview changes do not rebuild observers or read every row again.
   const anchors = items
     .map((item) => (item.anchor.kind === 'loaded' ? item.anchor.key : ''))
@@ -52,7 +61,7 @@ export function ConversationTurnNavigator({
       frame = 0;
       if (!positions.length) return;
       if (isConversationAtBottom(scroll)) {
-        setActiveTurn(positions.at(-1)!.turn);
+        publishActiveTurn(positions.at(-1)!.turn);
         return;
       }
       const top = scroll.scrollTop + 24;
@@ -63,7 +72,7 @@ export function ConversationTurnNavigator({
         if (positions[middle]!.top <= top) left = middle;
         else right = middle - 1;
       }
-      setActiveTurn(positions[left]!.turn);
+      publishActiveTurn(positions[left]!.turn);
     };
     const measure = () => {
       scroll.style.setProperty(
@@ -104,7 +113,7 @@ export function ConversationTurnNavigator({
       scroll.style.removeProperty('--dsh-conversation-viewport-height');
       scroll.style.removeProperty('--dsh-composer-height');
     };
-  }, [anchors, scrollRef, columnRef]);
+  }, [anchors, scrollRef, columnRef, publishActiveTurn]);
 
   const navigate = useCallback(
     (item: TurnRailItem) => {
@@ -123,9 +132,9 @@ export function ConversationTurnNavigator({
           16,
         behavior: 'instant',
       });
-      setActiveTurn(item.turn);
+      publishActiveTurn(item.turn);
     },
-    [scrollRef, onNavigateAway],
+    [scrollRef, onNavigateAway, publishActiveTurn],
   );
 
   return (
