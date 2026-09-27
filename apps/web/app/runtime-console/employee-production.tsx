@@ -82,6 +82,14 @@ interface PublicationReview {
   warnings: string[];
 }
 
+function publicationMessage(result: {
+  receipt: { companyCount: number; peopleCount: number };
+}) {
+  return result.receipt.companyCount
+    ? `已更新 ${result.receipt.companyCount} 家公司、${result.receipt.peopleCount} 名员工。现有会话的下一轮使用新版，进行中的工作保持原版本。`
+    : '已发布到 AI 员工目录，当前没有需要更新的配发。可前往组织管理为员工配发。';
+}
+
 const tabs = [
   ['basic', '基础'],
   ['persona', '人设'],
@@ -91,7 +99,7 @@ const tabs = [
   ['model', '模型'],
   ['tools', '工具'],
   ['debug', '测试'],
-  ['publish', '发布租户'],
+  ['publish', '发布更新'],
 ] as const;
 
 const lifecycleActionLabels: Record<string, string> = {
@@ -228,7 +236,6 @@ export function EmployeeProduction() {
   const [directory, setDirectory] = useState<DirectoryResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlatformEmployeeDefinition | null>(null);
-  const [selectedWorkspaces, setSelectedWorkspaces] = useState<string[]>([]);
   const [previewWorkspaceId, setPreviewWorkspaceId] = useState('');
   const [tab, setTab] = useState<(typeof tabs)[number][0]>('basic');
   const [busy, setBusy] = useState(false);
@@ -288,17 +295,6 @@ export function EmployeeProduction() {
           definition
             ? prepareEmployeeEditorDefinition(clone(definition), result.skills)
             : null,
-        );
-        const requestedWorkspace = new URLSearchParams(
-          window.location.search,
-        ).get('workspaceId');
-        setSelectedWorkspaces((current) =>
-          requestedWorkspace &&
-          result.workspaces.some((w) => w.id === requestedWorkspace)
-            ? [requestedWorkspace]
-            : current.filter((id) =>
-                result.workspaces.some((w) => w.id === id),
-              ),
         );
         setPreviewWorkspaceId((current) => {
           if (result.workspaces.some((workspace) => workspace.id === current)) {
@@ -407,7 +403,6 @@ export function EmployeeProduction() {
           )
         : null,
     );
-    setSelectedWorkspaces([...employee.assignedWorkspaceIds]);
     setMessage('');
     setError('');
     setTestRuns([]);
@@ -564,10 +559,11 @@ export function EmployeeProduction() {
         errors: string[];
         revisionId: string;
         workspaceIds: string[];
+        receipt: { companyCount: number; peopleCount: number };
       }>(`/api/v1/admin/platform-employees/${selectedId}/publish`, {
         method: 'POST',
         body: JSON.stringify({
-          workspaceIds: selectedWorkspaces,
+          scope: 'assigned',
           expectedRevisionId: review.revisionId,
           expectedPublishedRevisionId: review.publishedRevisionId,
           expectedPackageChecksum: review.packageChecksum,
@@ -575,9 +571,7 @@ export function EmployeeProduction() {
         }),
       });
       if (!result.valid) throw new Error(result.errors.join('\n'));
-      setMessage(
-        `发布成功：revision ${result.revisionId.slice(0, 8)} 已发布到 ${result.workspaceIds.length} 个工作区。后续新 Run 使用更新后的分配版本；运行中的 Run 保持冻结快照。`,
-      );
+      setMessage(publicationMessage(result));
       await Promise.all([load(), loadAuditEvents(selectedId)]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '发布失败');
@@ -588,8 +582,8 @@ export function EmployeeProduction() {
     }
   }
 
-  async function publishSelected(targets = selectedWorkspaces) {
-    if (!selectedId || !draft || !targets.length || busy) return;
+  async function publishAssigned() {
+    if (!selectedId || !draft || busy) return;
     setBusy(true);
     setError('');
     setMessage('');
@@ -624,7 +618,7 @@ export function EmployeeProduction() {
         `/api/v1/admin/platform-employees/${selectedId}/review`,
         {
           method: 'POST',
-          body: JSON.stringify({ workspaceIds: targets }),
+          body: JSON.stringify({ scope: 'assigned' }),
         },
       );
       if (!check.valid) throw new Error(check.errors.join('\n'));
@@ -632,11 +626,12 @@ export function EmployeeProduction() {
         valid: boolean;
         errors?: string[];
         workspaceIds: string[];
+        receipt: { companyCount: number; peopleCount: number };
         trialTargets?: { workspaceId: string; employeeId: string }[];
       }>(`/api/v1/admin/platform-employees/${selectedId}/publish`, {
         method: 'POST',
         body: JSON.stringify({
-          workspaceIds: targets,
+          scope: 'assigned',
           expectedRevisionId: check.revisionId,
           expectedPublishedRevisionId: check.publishedRevisionId,
           expectedPackageChecksum: check.packageChecksum,
@@ -645,9 +640,7 @@ export function EmployeeProduction() {
       });
       if (!result.valid)
         throw new Error(result.errors?.join('\n') ?? '发布失败');
-      setMessage(
-        `已发布到 ${result.workspaceIds.length} 个工作区，所选工具和执行策略已启用。现在可进入租户工作台真实试用。`,
-      );
+      setMessage(publicationMessage(result));
       await Promise.all([load(), loadAuditEvents(selectedId)]);
       setTrialTargets(result.trialTargets ?? []);
     } catch (reason) {
@@ -658,7 +651,7 @@ export function EmployeeProduction() {
   }
 
   async function preflight() {
-    if (!selectedId || !selectedWorkspaces.length || busy) return;
+    if (!selectedId || busy) return;
     const generation = ++reviewSequence.current;
     setReview(null);
     setConfirmed(false);
@@ -669,14 +662,12 @@ export function EmployeeProduction() {
         `/api/v1/admin/platform-employees/${selectedId}/review`,
         {
           method: 'POST',
-          body: JSON.stringify({ workspaceIds: selectedWorkspaces }),
+          body: JSON.stringify({ scope: 'assigned' }),
         },
       );
       if (
         generation === reviewSequence.current &&
-        result.employeeId === selectedId &&
-        JSON.stringify(result.targets.map((t) => t.id).sort()) ===
-          JSON.stringify([...selectedWorkspaces].sort())
+        result.employeeId === selectedId
       )
         setReview(result);
     } catch (e) {
@@ -794,7 +785,7 @@ export function EmployeeProduction() {
     if (!selectedId || !rollbackReason.trim()) return;
     if (
       !window.confirm(
-        `将回退当前分配的全部 ${selected?.assignedWorkspaceIds.length ?? 0} 个工作区的员工版本。运行中的 Run 不变，是否继续？`,
+        '将所有现有配发恢复到上一发布版本，个人增删和运行中的工作保持不变。是否继续？',
       )
     )
       return;
@@ -810,7 +801,6 @@ export function EmployeeProduction() {
             action: 'rollback',
             reason: rollbackReason,
             expectedPublishedRevisionId: selected?.currentPublished?.id,
-            expectedWorkspaceIds: selected?.assignedWorkspaceIds,
           }),
         },
       );
@@ -1342,9 +1332,7 @@ export function EmployeeProduction() {
             disabled={busy}
             onClick={() => {
               invalidateReview();
-              if (previewWorkspaceId)
-                setSelectedWorkspaces([previewWorkspaceId]);
-              setTab('publish');
+              if (previewWorkspaceId) setTab('publish');
             }}
           >
             前往发布
@@ -1427,7 +1415,7 @@ export function EmployeeProduction() {
                       selected.currentPublished.publishedAt,
                     ).toLocaleString('zh-CN')
                   : '发布时间未知'}{' '}
-                · 已分配 {selected.assignedWorkspaceIds.length} 个租户工作区
+                · 已发布，可在组织管理中配发
               </span>
             </>
           ) : (
@@ -1443,35 +1431,21 @@ export function EmployeeProduction() {
           ) : null}
         </section>
         <p className={styles.muted}>
-          这里只显示真实租户工作区，不包含 Platform Control
-          Plane。发布生成不可变修订；后续新 Run 读取更新后的员工分配，运行中的
-          Run 保持冻结快照。发布不会修改会话已冻结的模型路由。
+          首次发布进入可配发目录，在组织管理中为员工配发。更新自动覆盖全部现有配发，个人增删保持不变；运行中的工作沿用原版本，现有会话的下一轮使用新版。
         </p>
-        <Checks
-          items={directory.workspaces.map((workspace) => ({
-            id: workspace.id,
-            label: workspace.name,
-            detail: `${workspace.organizationName} · ${workspace.slug}`,
-            disabled: busy,
-          }))}
-          selected={selectedWorkspaces}
-          onChange={(values) => {
-            invalidateReview();
-            setSelectedWorkspaces(values);
-          }}
-        />
         {directory.rapidIteration ? (
           <div className={styles.actions}>
             <button
               className={styles.button}
               data-primary="true"
-              disabled={busy || !selectedWorkspaces.length}
-              onClick={() => void publishSelected()}
+              disabled={busy}
+              onClick={() => void publishAssigned()}
             >
-              {busy ? '正在保存并发布…' : '保存并发布所选能力'}
+              {busy ? '正在保存并发布…' : '更新到租户'}
             </button>
             <p>
-              发布会自动保存草稿、检查依赖并启用所选工具。草稿测试可选，不作为发布前置条件。
+              更新会一并保存当前修改。尚未配发时只发布到 AI
+              员工目录，不会自动配发给任何人。
             </p>
             {trialLinks}
           </div>
@@ -1480,7 +1454,6 @@ export function EmployeeProduction() {
           className={styles.button}
           disabled={
             busy ||
-            selectedWorkspaces.length === 0 ||
             JSON.stringify(draft) !==
               JSON.stringify(selected.currentDraft?.definition)
           }
@@ -1492,7 +1465,7 @@ export function EmployeeProduction() {
         JSON.stringify(selected.currentDraft?.definition) ? (
           <p>
             {directory.rapidIteration
-              ? '有未保存的修改，点击“保存并发布所选能力”会一并保存。'
+              ? '有未保存的修改，点击“更新到租户”会一并保存。'
               : '有未保存的修改，请先保存草稿。'}
           </p>
         ) : null}
@@ -1536,32 +1509,36 @@ export function EmployeeProduction() {
                 </a>
               </p>
             ))}
-            <label>
-              <input
-                type="checkbox"
-                checked={confirmed}
-                disabled={busy || !review.valid}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              />
-              我已确认版本差异、发布范围及尚未满足的运行条件
-            </label>
+            {!directory.rapidIteration && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  disabled={busy || !review.valid}
+                  onChange={(event) => setConfirmed(event.target.checked)}
+                />
+                我已确认版本差异、发布范围及尚未满足的运行条件
+              </label>
+            )}
           </section>
         ) : null}
-        <button
-          className={styles.button}
-          data-primary="true"
-          disabled={busy || !review?.valid || !confirmed}
-          onClick={() => void publish()}
-        >
-          {busy ? '发布中…' : '发布到所选租户'}
-        </button>
+        {!directory.rapidIteration && (
+          <button
+            className={styles.button}
+            data-primary="true"
+            disabled={busy || !review?.valid || !confirmed}
+            onClick={() => void publish()}
+          >
+            {busy ? '发布中…' : '确认更新到租户'}
+          </button>
+        )}
         {error ? <p className={styles.error}>{error}</p> : null}
         {message ? <p className={styles.notice}>{message}</p> : null}
         <section className={styles.dangerZone}>
           <h3>回滚发布</h3>
           <p className={styles.muted}>
             将当前分配的全部租户恢复到上一个不可变发布快照；后续 Run
-            使用回退版本，运行中的 Run 保持原快照。不仅限于上方勾选的工作区。
+            使用回退版本，运行中的 Run 保持原快照，个人移除保持生效。
           </p>
           <Field
             label="回滚原因"
@@ -1572,10 +1549,7 @@ export function EmployeeProduction() {
           <button
             className={styles.button}
             disabled={
-              busy ||
-              !rollbackReason.trim() ||
-              !selected.currentPublished ||
-              selected.assignedWorkspaceIds.length === 0
+              busy || !rollbackReason.trim() || !selected.currentPublished
             }
             onClick={() => void rollbackEmployee()}
           >
@@ -1585,7 +1559,7 @@ export function EmployeeProduction() {
         <section className={styles.dangerZone}>
           <h3>停用员工</h3>
           <p className={styles.muted}>
-            停用会撤回全部租户分配，不删除不可变版本和审计记录。重新发布可恢复。
+            停用会撤回全部租户分配，不删除不可变版本和审计记录。重新发布进入目录，需在组织管理中重新配发。
           </p>
           <Field
             label="停用原因"

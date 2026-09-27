@@ -1035,10 +1035,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('heading', { name: '当前发布状态', exact: true })
         .waitFor();
       expect(
-        await page
-          .getByRole('checkbox', { name: /Draft test target/ })
-          .isChecked(),
-      ).toBe(true);
+        await page.getByRole('checkbox', { name: /Draft test target/ }).count(),
+      ).toBe(0);
       expect(
         requests
           .slice(requestStart)
@@ -1079,6 +1077,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         },
       },
     });
+    expect((await f.publish()).valid).toBe(true);
     const { page, context } = await pageFor();
     try {
       const open = async () => {
@@ -1126,23 +1125,20 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .toBe(true);
       };
       const publish = async () => {
-        await tab('发布租户');
-        await page
-          .getByRole('checkbox', { name: /MET155 dependency workspace/ })
-          .check();
+        await tab('发布更新');
         const response = page.waitForResponse(
           (r) =>
             r.url().endsWith(`/${f.employeeId}/publish`) &&
             r.request().method() === 'POST',
         );
-        await tab('保存并发布所选能力');
+        await tab('更新到租户');
         const result = await response;
         expect(result.status()).toBe(200);
         expect((await result.json()).valid).toBe(true);
         await expect
           .poll(() =>
             page
-              .getByRole('button', { name: '保存并发布所选能力', exact: true })
+              .getByRole('button', { name: '更新到租户', exact: true })
               .isEnabled(),
           )
           .toBe(true);
@@ -1276,6 +1272,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
   }, 60000);
   it('reads real Skills and canonical tools, reviews an exact scope, rejects changed policy then publishes after fresh confirmation', async () => {
     const f = await createEmployeeAdministrationFixture(fixture.db);
+    await f.preview();
+    expect((await f.publish()).valid).toBe(true);
     await savePlatformEmployeeDraft(f.employeeId, {
       definition: {
         ...f.definition,
@@ -1363,20 +1361,15 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('region', { name: 'Skill 只读内容' })
         .getByText(/Synthetic reviewed Skill/)
         .waitFor();
-      await page.getByRole('button', { name: '发布租户', exact: true }).click();
-      // Choosing an employee deliberately clears publish scope: make it explicit again.
-      const workspaceLabel = page
-        .locator('label')
-        .filter({
-          has: page
-            .locator('strong')
-            .filter({ hasText: /^Synthetic publication$/ }),
-        })
-        .filter({ has: page.locator('input[type="checkbox"]') });
-      await workspaceLabel.getByRole('checkbox').check();
+      await page.getByRole('button', { name: '发布更新', exact: true }).click();
       expect(
         await page
-          .getByRole('button', { name: '发布到所选租户', exact: true })
+          .getByRole('checkbox', { name: /^Synthetic publication/ })
+          .count(),
+      ).toBe(0);
+      expect(
+        await page
+          .getByRole('button', { name: '确认更新到租户', exact: true })
           .isDisabled(),
       ).toBe(true);
       await page
@@ -1411,13 +1404,13 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         ).status(),
       ).toBe(200);
       await page
-        .getByRole('button', { name: '发布到所选租户', exact: true })
+        .getByRole('button', { name: '确认更新到租户', exact: true })
         .click();
       await page
         .getByText(/请重新预检并确认发布范围/)
         .first()
         .waitFor();
-      expect(await f.assigned()).toBe(0);
+      expect(await f.assigned()).toBe(1);
       await page
         .getByRole('button', { name: '查看发布检查与版本差异', exact: true })
         .click();
@@ -1431,10 +1424,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         fullPage: true,
       });
       await page
-        .getByRole('button', { name: '发布到所选租户', exact: true })
+        .getByRole('button', { name: '确认更新到租户', exact: true })
         .click();
       await page
-        .getByText(/发布成功：revision/)
+        .getByText(/已更新 1 家公司、1 名员工/)
         .first()
         .waitFor();
       expect(await f.assigned()).toBe(1);

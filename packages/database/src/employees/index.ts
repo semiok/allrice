@@ -3,3 +3,4 @@ export * from './employee-config.ts';
 export * from './employee-quality.ts';
 export * from './employeehub.ts';
 export * from './platform-employees.ts';
+export { EmployeePublicationTargetError } from './publication-targets.ts';

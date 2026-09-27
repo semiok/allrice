@@ -28,6 +28,7 @@ import { assistantRuntimeEnabled } from './assistant-runtime.ts';
 import { changesetFeatureEnabled } from './changeset-service.ts';
 import { workbenchEnabled } from './artifact-review.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { employeePublicationTargets } from './employees/publication-targets.ts';
 
 export function listEmployeeToolAvailability() {
   const services: Record<EmployeeToolService, () => boolean> = {
@@ -70,18 +71,21 @@ export async function readPlatformSkillForAdministration(
 export async function reviewEmployeePublication(
   context: RequestContext,
   employeeInput: string,
-  workspaceInputs: string[],
+  workspaceInputs?: string[],
   db = getDatabase(),
 ) {
   const rapidIteration = rapidEmployeeIterationEnabled();
   const employeeId = UuidSchema.parse(employeeInput);
-  if (!workspaceInputs.length || workspaceInputs.length > 500)
+  if (
+    workspaceInputs &&
+    (!workspaceInputs.length || workspaceInputs.length > 500)
+  )
     throw new DataAccessError('not_found');
-  const workspaceIds = [
-    ...new Set(workspaceInputs.map((id) => UuidSchema.parse(id))),
-  ].sort();
   return db.begin('isolation level repeatable read read only', async (tx) => {
     await requireTenantAdministrationAuthority(context, tx);
+    const workspaceIds = workspaceInputs
+      ? [...new Set(workspaceInputs.map((id) => UuidSchema.parse(id)))].sort()
+      : (await employeePublicationTargets(tx, employeeId)).map((t) => t.id);
     const [employee] =
       await tx`select e.id,e.current_published_revision_id,r.id as revision_id,r.definition,r.runtime_profile,
       r.status,r.checksum,r.validation_report,p.definition as published_definition from allrice_platform_employees e
@@ -102,7 +106,7 @@ export async function reviewEmployeePublication(
       select w.id,w.organization_id as "organizationId",o.name as "organizationName",w.name,c.version,c.controls
       from allrice_workspaces w join allrice_organizations o on o.id=w.organization_id
       left join allrice_runtime_policy_controls c on c.workspace_id=w.id and c.organization_id=o.id
-      where w.id in ${tx(workspaceIds)} and w.archived_at is null and o.archived_at is null and o.slug<>'allrice-platform' order by w.id`;
+      where w.id=any(${tx.array(workspaceIds)}::uuid[]) and w.archived_at is null and o.archived_at is null and o.slug<>'allrice-platform' order by w.id`;
     if (targets.length !== workspaceIds.length)
       throw new DataAccessError('not_found');
     const definition = PlatformEmployeeDefinitionSchema.parse(
@@ -166,18 +170,19 @@ export async function reviewEmployeePublication(
         ),
       ),
     ];
-    const registered = requiredKinds.length
-      ? await tx<
-          {
-            workspace_id: string;
-            organization_id: string;
-            kind: string;
-            state: string;
-          }[]
-        >`
+    const registered =
+      requiredKinds.length && workspaceIds.length
+        ? await tx<
+            {
+              workspace_id: string;
+              organization_id: string;
+              kind: string;
+              state: string;
+            }[]
+          >`
       select workspace_id,organization_id,kind,state from allrice_execution_targets
       where workspace_id in ${tx(workspaceIds)} and kind in ${tx(requiredKinds)}`
-      : [];
+        : [];
     for (const target of targets)
       for (const kind of requiredKinds) {
         const matches = registered.filter(
@@ -207,6 +212,7 @@ export async function reviewEmployeePublication(
             target.controls,
             definition.capabilities.toolNames,
             target.version ?? 1,
+            workspaceInputs === undefined,
           )
         : parsed.success && parsed.data.version === target.version
           ? parsed.data
