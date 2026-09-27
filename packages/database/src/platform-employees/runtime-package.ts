@@ -291,7 +291,7 @@ export function buildEmployeeRuntimePackage(input: {
       '## 安全边界',
       markdownList(definition.identity.safetyBoundaries),
       '',
-      `- 操作确认策略：${definition.securityPolicy.approvalPolicy}`,
+      '- 操作确认由当前使用者在「设置 → 员工工作方式」中决定；执行以本次运行注入的成员设置为准。需要新账号或新文件夹时申请授权。',
       '- Skill 说明能力，但不扩大当前租户、工作区、工具或数据授权。',
     ].join('\n'),
     userMd: [

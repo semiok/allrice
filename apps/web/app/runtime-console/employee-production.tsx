@@ -14,9 +14,7 @@ import {
   employeeReasoningSettings,
   switchEmployeeModelProvider,
   employeeToolCatalog,
-  assembleEmployeeCapabilities,
-  upgradeEmployeeSkillBindings,
-  SkillCapabilitySchema,
+  prepareEmployeeEditorDefinition,
   employeeColorPalette,
   employeeColorForeground,
   resolveEmployeeAccent,
@@ -92,7 +90,6 @@ const tabs = [
   ['knowledge', 'Knowledge'],
   ['model', '模型'],
   ['tools', '工具'],
-  ['security', '安全'],
   ['debug', '调试'],
   ['publish', '发布租户'],
 ] as const;
@@ -289,7 +286,7 @@ export function EmployeeProduction() {
           employee?.currentPublished?.definition;
         setDraft(
           definition
-            ? upgradeEmployeeSkillBindings(clone(definition), result.skills)
+            ? prepareEmployeeEditorDefinition(clone(definition), result.skills)
             : null,
         );
         const requestedWorkspace = new URLSearchParams(
@@ -404,7 +401,7 @@ export function EmployeeProduction() {
       employee.currentPublished?.definition;
     setDraft(
       definition
-        ? upgradeEmployeeSkillBindings(
+        ? prepareEmployeeEditorDefinition(
             clone(definition),
             directory?.skills ?? [],
           )
@@ -439,7 +436,7 @@ export function EmployeeProduction() {
       const explicit =
         current.capabilities.explicitToolNames ??
         current.capabilities.toolNames;
-      return assembleEmployeeCapabilities(
+      return prepareEmployeeEditorDefinition(
         {
           ...current,
           capabilities: {
@@ -460,7 +457,7 @@ export function EmployeeProduction() {
       const explicit =
         current.capabilities.explicitToolNames ??
         current.capabilities.toolNames;
-      return assembleEmployeeCapabilities(
+      return prepareEmployeeEditorDefinition(
         {
           ...current,
           capabilities: {
@@ -515,7 +512,7 @@ export function EmployeeProduction() {
       } else {
         setMessage(
           result.validation.warnings.join('\n') ||
-            '草稿已保存，模型、Skill、工具与安全配置检查通过。',
+            '草稿已保存，员工配置检查通过。',
         );
       }
     } catch (reason) {
@@ -974,7 +971,7 @@ export function EmployeeProduction() {
             </article>
             <article>
               <code>SOUL.md</code>
-              <span>行为准则、安全边界和员工确认偏好</span>
+              <span>行为准则和工作边界</span>
             </article>
             <article>
               <code>AGENTS.md</code>
@@ -1264,6 +1261,10 @@ export function EmployeeProduction() {
             ? '勾选工具后保存并发布即可启用；所需的员工能力和执行策略会自动配置。'
             : '选择员工工具，保存并发布后生效。'}
         </p>
+        <p className={styles.notice}>
+          只需选择技能和工具，所需能力与本地文件访问方式会自动配置。
+          是否自动执行，由使用者在前台「设置 → 员工工作方式」中决定。
+        </p>
         <EmployeeToolTree
           definition={draft}
           skills={directory.skills}
@@ -1289,112 +1290,6 @@ export function EmployeeProduction() {
           </p>
         </details>
       </>
-    );
-  } else if (tab === 'security') {
-    panel = (
-      <div className={styles.grid}>
-        <label className={styles.field}>
-          <RuntimeFieldLabel label="员工确认偏好" runtimeSource="SOUL.md" />
-          <select
-            value={draft.securityPolicy.approvalPolicy}
-            onChange={(event) =>
-              update(['securityPolicy', 'approvalPolicy'], event.target.value)
-            }
-          >
-            <option value="confirm_side_effects">所有修改前询问</option>
-            <option value="confirm_external">对外操作前询问</option>
-            <option value="autonomous">授权范围内自动工作</option>
-          </select>
-          <small>
-            实际执行跟随成员在前台「员工工作方式」中的设置；需要新账号或新文件夹时仍申请授权。
-          </small>
-        </label>
-        <label className={styles.field}>
-          <span>Rice Bridge</span>
-          <select
-            value={draft.securityPolicy.bridgeAccess}
-            onChange={(event) =>
-              update(['securityPolicy', 'bridgeAccess'], event.target.value)
-            }
-          >
-            <option value="none">禁用</option>
-            <option value="read_only">只读</option>
-            <option value="read_write">受控读写</option>
-          </select>
-        </label>
-        <p className={`${styles.notice} ${styles.fieldWide}`}>
-          “受控读写”只允许已授权目录内的新建目录和文本文件原子写入；覆盖前必须校验
-          SHA-256。AllRice 始终执行租户隔离、Tool Broker
-          权限交集和审计。这里不会开放 Shell、删除或 Git
-          写操作，也不会把模型密钥下发给租户或 Bridge。
-        </p>
-        <fieldset className={styles.fieldWide} disabled={busy}>
-          <legend>允许的连接器身份</legend>
-          <p>
-            仅约束员工可使用的身份类型，不创建连接、保存凭证或绑定员工版本。
-          </p>
-          {(['user', 'service'] as const).map((mode) => (
-            <label className={styles.check} key={mode}>
-              <input
-                type="checkbox"
-                aria-label={`允许连接器身份 ${mode}`}
-                checked={draft.securityPolicy.connectorIdentityModes.includes(
-                  mode,
-                )}
-                onChange={(event) =>
-                  update(
-                    ['securityPolicy', 'connectorIdentityModes'],
-                    event.target.checked
-                      ? [...draft.securityPolicy.connectorIdentityModes, mode]
-                      : draft.securityPolicy.connectorIdentityModes.filter(
-                          (value) => value !== mode,
-                        ),
-                  )
-                }
-              />
-              <span>
-                {mode === 'user'
-                  ? '使用者身份（user）'
-                  : '租户服务身份（service，云端 MCP）'}
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        <fieldset className={styles.fieldWide} disabled={busy}>
-          <legend>员工禁止能力</legend>
-          <p>
-            勾选表示禁止，优先于工具清单。解除禁止只修改草稿，需重新试用和发布；
-            不会自动授予连接器、设备、租户或单次操作权限。
-          </p>
-          {SkillCapabilitySchema.options.map((capability) => (
-            <label className={styles.check} key={capability}>
-              <input
-                type="checkbox"
-                aria-label={`禁止 ${capability}`}
-                checked={draft.securityPolicy.deniedCapabilities.includes(
-                  capability,
-                )}
-                onChange={(event) =>
-                  update(
-                    ['securityPolicy', 'deniedCapabilities'],
-                    event.target.checked
-                      ? [...draft.securityPolicy.deniedCapabilities, capability]
-                      : draft.securityPolicy.deniedCapabilities.filter(
-                          (value) => value !== capability,
-                        ),
-                  )
-                }
-              />
-              <span>{capability}</span>
-            </label>
-          ))}
-          <p>
-            MCP 工具使用
-            secret:use。解除这项禁止仅允许受控连接器使用已授权凭证，
-            不允许模型读取密钥，也不改变模型订阅或 API 配置。
-          </p>
-        </fieldset>
-      </div>
     );
   } else if (tab === 'debug') {
     panel = (
