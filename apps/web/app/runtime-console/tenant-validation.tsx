@@ -377,7 +377,7 @@ export function TenantValidation(
               <DevelopmentInspection data={detail.development} />
             ) : null}
           </details>
-          <details>
+          <details open={!!props.initialRunId}>
             <summary>用户目标与交付回复</summary>
             <SafeDocument text={detail.userText ?? '无可展示目标'} />
             <SafeDocument text={detail.answerText ?? '尚无回复'} />

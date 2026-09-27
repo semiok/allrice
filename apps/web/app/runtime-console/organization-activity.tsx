@@ -7,6 +7,7 @@ import type {
   OrganizationActivityRuns,
 } from '@allrice/contracts';
 import { TenantValidation } from './tenant-validation';
+import { DshDialog } from '../chatflow/dsh-upstream/Dialog';
 import styles from './tenant-administration.module.css';
 
 const labels: Record<keyof ActivityCounts, string> = {
@@ -459,7 +460,8 @@ function PersonActivity({
                 </td>
                 <td>
                   <button
-                    aria-pressed={selected?.id === r.id}
+                    aria-haspopup="dialog"
+                    aria-expanded={selected?.id === r.id}
                     onClick={() => setSelected(r)}
                   >
                     查看工作与成果
@@ -478,8 +480,14 @@ function PersonActivity({
         </button>
       )}
       {selected && (
-        <section aria-label="所选工作">
-          <h4>{selected.title}</h4>
+        <DshDialog
+          ariaLabel="工作与成果"
+          title={selected.title}
+          eyebrow={`${name} · ${selected.employeeName}`}
+          className={`${styles.panel} ${styles.workDialog}`}
+          bodyClassName={styles.workDialogBody}
+          onClose={() => setSelected(null)}
+        >
           <TenantValidation
             key={selected.id}
             organizationId={organizationId}
@@ -489,7 +497,7 @@ function PersonActivity({
             onDirty={() => undefined}
             onBusy={() => undefined}
           />
-        </section>
+        </DshDialog>
       )}
     </section>
   );
