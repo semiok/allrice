@@ -2542,6 +2542,39 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('signs out from account settings only after the logout request succeeds', async () => {
+    const f = await fixture();
+    let requests = 0;
+    try {
+      await f.page.route('**/api/v1/auth/logout', async (route) => {
+        expect(route.request().method()).toBe('POST');
+        requests++;
+        await route.fulfill({ status: requests === 1 ? 503 : 204 });
+      });
+      await f.page.getByRole('button', { name: '设置', exact: true }).click();
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      const logout = settings.getByRole('button', {
+        name: '退出登录',
+        exact: true,
+      });
+      const originalUrl = f.page.url();
+      await logout.click();
+      await settings
+        .getByRole('alert')
+        .filter({ hasText: '退出登录失败，请重试。' })
+        .waitFor();
+      expect(f.page.url()).toBe(originalUrl);
+      await logout.click();
+      await f.page.waitForURL('**/login');
+      expect(requests).toBe(2);
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([
     { width: 390, tenantAdmin: false },
     { width: 1440, tenantAdmin: false },

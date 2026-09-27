@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import {
+  Button,
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -42,6 +43,23 @@ export function SidebarSettings({
   onBridge: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
+  async function logout() {
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      const response = await fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (!response.ok) throw new Error('logout_failed');
+      window.location.replace('/login');
+    } catch {
+      setLogoutError('退出登录失败，请重试。');
+      setLoggingOut(false);
+    }
+  }
   const rows = [
     { id: 'account', label: '账号与用量' },
     { id: 'work', label: '员工工作方式' },
@@ -142,6 +160,18 @@ export function SidebarSettings({
                   )}
                   {row.id === 'account' && (
                     <>
+                      <div className={styles.accountActions}>
+                        <p>退出后可以使用其他账号登录。</p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={loggingOut}
+                          onClick={() => void logout()}
+                        >
+                          {loggingOut ? '正在退出…' : '退出登录'}
+                        </Button>
+                      </div>
+                      {logoutError && <p role="alert">{logoutError}</p>}
                       <MonthlyQuota
                         expanded
                         providerLabel={providerLabel}
