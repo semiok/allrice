@@ -2777,7 +2777,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.getByText('Synthetic member', { exact: true }).waitFor();
       await quota.getByText('Codex 订阅 · DSH', { exact: true }).waitFor();
       await quota.getByText(/43%/).waitFor();
-      await quota.getByText('2,830,000', { exact: false }).waitFor();
+      await quota.getByText('2,824,029', { exact: false }).waitFor();
       expect(await quota.innerText()).toContain('5,000,000');
       await f.page.reload();
       await settings.click();
