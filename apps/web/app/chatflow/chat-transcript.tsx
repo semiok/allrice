@@ -238,6 +238,7 @@ export function ChatTranscript({
                         items={progress.items}
                         parts={progress.parts}
                         artifacts={linkedArtifacts}
+                        onOpenArtifact={onOpenArtifact}
                         timing={timing}
                         running={messageIsRunning}
                         streaming={streamingOutput && !!streamedText}
@@ -336,6 +337,7 @@ export function ChatTranscript({
                                 <AssistantMarkdown
                                   text={responseText}
                                   artifacts={linkedArtifacts}
+                                  onOpenArtifact={onOpenArtifact}
                                 />
                               </details>
                             </>
@@ -344,6 +346,7 @@ export function ChatTranscript({
                               text={responseText}
                               streaming={streamingOutput && messageIsRunning}
                               artifacts={linkedArtifacts}
+                              onOpenArtifact={onOpenArtifact}
                             />
                           )}
                         </div>

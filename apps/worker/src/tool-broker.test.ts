@@ -85,6 +85,7 @@ import {
 } from './tool-broker.js';
 import { HandlerError } from './errors.js';
 import * as marketData from './market-data.js';
+import * as nativeOffice from './office/native.js';
 
 function executionContext(): ExecutionContext {
   const organizationId = randomUUID();
@@ -813,6 +814,83 @@ describe('Codex hosted search Tool Broker integration', () => {
         }),
       ).rejects.toThrow();
     expect(publishWorkbenchArtifact).toHaveBeenCalledOnce();
+  });
+
+  it('preserves nested Office revision metadata and rejects conflicting summaries before execution', async () => {
+    const generated = await createOffice({
+      kind: 'docx',
+      title: 'Metadata regression fixture',
+      blocks: [{ type: 'paragraph', text: 'fixture' }],
+    });
+    const generate = vi
+      .spyOn(nativeOffice, 'generateNativeOfficeExport')
+      .mockResolvedValue({
+        ...generated,
+        sourceFile: undefined,
+        changes: undefined,
+        warnings: undefined,
+        nativeExecution: {
+          status: 'checked',
+          upstream: 'native-test',
+          output: '',
+        },
+      });
+    workbenchEnabled.mockReturnValue(true);
+    publishWorkbenchArtifact.mockResolvedValue({
+      id: randomUUID(),
+      object: {
+        id: randomUUID(),
+        mediaType: generated.mediaType,
+        sizeBytes: generated.bytes.length,
+      },
+      version: {
+        seriesId: randomUUID(),
+        version: 1,
+        parentObjectId: null,
+        changeSummary: 'BTC 示例图表',
+      },
+    });
+    const args = {
+      fileName: 'BTC.docx',
+      format: 'docx',
+      python: {
+        script: 'native script',
+        inputs: [],
+        sourceObjectId: null,
+        changeSummary: 'BTC 示例图表',
+      },
+    };
+    const input = {
+      context: executionContext(),
+      sessionId: randomUUID(),
+      storageRoot: 'unused-native-mocked-port',
+      capabilities: ['storage:write'] as 'storage:write'[],
+      call: {
+        id: randomUUID(),
+        name: 'workspace.export.create',
+        arguments: args,
+      },
+    };
+    try {
+      await executeRiceTool(input);
+      expect(publishWorkbenchArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({ changeSummary: 'BTC 示例图表' }),
+        expect.anything(),
+      );
+      await expect(
+        executeRiceTool({
+          ...input,
+          call: {
+            ...input.call,
+            arguments: { ...args, changeSummary: 'conflicting' },
+          },
+        }),
+      ).rejects.toThrow('不一致');
+      expect(generate).toHaveBeenCalledOnce();
+      expect(publishWorkbenchArtifact).toHaveBeenCalledOnce();
+    } finally {
+      generate.mockRestore();
+    }
   });
 
   it('exposes immutable deliverable lineage inputs to the harness', () => {

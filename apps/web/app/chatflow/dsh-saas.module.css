@@ -4,6 +4,8 @@
    selector deliberately wins that tie so a long transcript cannot grow the
    document and move the header, sidebar footer, or composer off screen. */
 main.shell {
+  /* Native Markdown links use this alias, independently of employee accents. */
+  --dsw-alias-link: var(--dsw-static-deepseek-500);
   --allrice-sidebar-bg: #f8f9fb;
   --allrice-employee-bg: #f0f2f5;
   --allrice-sidebar-hover: #e9ecf1;
@@ -83,6 +85,7 @@ main.shell {
 }
 
 :global(body[data-ds-dark-theme]) .shell {
+  --dsw-alias-link: var(--dsw-static-deepseek-400);
   --allrice-sidebar-bg: #191b20;
   --allrice-employee-bg: #24272d;
   --allrice-sidebar-hover: #30353d;

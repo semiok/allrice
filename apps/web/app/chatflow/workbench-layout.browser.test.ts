@@ -3460,39 +3460,67 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
-    const f = await fixture({ artifacts: true });
-    try {
-      const path = `/api/v1/files/${artifact(10).object.id}/download`;
-      f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
-      await f.page.reload();
-      const link = f.page.getByRole('link', { name: '下载报告', exact: true });
-      await expect
-        .poll(() => link.getAttribute('href'))
-        .toBe(`${origin}${path}?name=report-10.md`);
-      // Native Markdown opens HTTP links without navigating away from the chat.
-      expect(await link.getAttribute('target')).toBe('_blank');
-      expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
-      expect(
-        await f.page
-          .getByRole('link', { name: '原始来源', exact: true })
-          .getAttribute('href'),
-      ).toBe('https://example.org/source');
-      // Even a known file in the Session cannot resolve another Run's link.
-      f.state.items = [
-        {
-          ...artifact(10),
-          provenance: { ...artifact(10).provenance, runId: id(90) },
-        },
-      ];
-      await f.page.reload();
-      await expect
-        .poll(() => link.getAttribute('href'))
-        .toBe(`https://allrice.example${path}?name=wrong`);
-    } finally {
-      await f.close();
-    }
-  });
+  it.each([1440, 390])(
+    'resolves chat downloads only for this Run’s authenticated artifacts at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const path = `/api/v1/files/${artifact(10).object.id}/download`;
+        f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
+        await f.page.reload();
+        const link = f.page.getByRole('link', {
+          name: '下载报告',
+          exact: true,
+        });
+        await expect
+          .poll(() => link.getAttribute('href'))
+          .toBe(`${origin}${path}?name=report-10.md`);
+        // Native Markdown opens HTTP links without navigating away from the chat.
+        expect(await link.getAttribute('target')).toBe('_blank');
+        expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(
+          await link.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(65, 118, 230)');
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        expect(
+          await link.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(103, 158, 254)');
+        await f.page.evaluate(() =>
+          document.body.removeAttribute('data-ds-dark-theme'),
+        );
+        const pageCount = f.page.context().pages().length;
+        await link.click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(
+          await f.panel
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(path);
+        expect(f.page.context().pages()).toHaveLength(pageCount);
+        expect(new URL(f.page.url()).pathname).toBe('/');
+        expect(
+          await f.page
+            .getByRole('link', { name: '原始来源', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://example.org/source');
+        // Even a known file in the Session cannot resolve another Run's link.
+        f.state.items = [
+          {
+            ...artifact(10),
+            provenance: { ...artifact(10).provenance, runId: id(90) },
+          },
+        ];
+        await f.page.reload();
+        await expect
+          .poll(() => link.getAttribute('href'))
+          .toBe(`https://allrice.example${path}?name=wrong`);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it(
     'UX01-B keeps all entries visible, distinguishes release-off and preserves drafts without execution',

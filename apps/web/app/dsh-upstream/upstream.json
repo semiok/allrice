@@ -127,7 +127,8 @@
             "IconDataOutlineRegular",
             "IconRefreshOutlineRegular",
             "Switch",
-            "MarkdownText"
+            "MarkdownText",
+            "MarkdownDelegateProvider"
           ]
         },
         {

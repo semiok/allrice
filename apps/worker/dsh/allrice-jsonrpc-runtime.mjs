@@ -118,7 +118,7 @@ const brokerNativeTools = [
       includeStructure: {
         type: 'boolean',
         description:
-          'For Office template edits, set true to inspect sheets/cells, slides and paragraphs with the source checksum. Use the returned id and checksum in office.kind=edit; never reconstruct the template from extracted text.',
+          'For Office template edits, set true to inspect sheets/cells, slides and paragraphs with the source checksum. Use the returned id and checksum in python.inputs and edit that input with native Office libraries; never reconstruct the template from extracted text.',
       },
     },
   },
@@ -1150,7 +1150,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       this.ctx.systemPrompt.section({
         name: 'tool:allrice_exports',
         order: 115,
-        text: 'When the user explicitly asks for a report or downloadable deliverable, use workspace_export_create and include its actual downloadUrl as a Markdown link. Supply either content for text-based exports or office for structured DOCX/XLSX/PPTX creation and source-preserving edits. Read the Office Skill resources for the typed structures. For template edits, first list and read the source with includeStructure=true, then use office.kind=edit with its actual object id, checksum and targeted changes. When revising an existing AllRice deliverable, pass its object ID as parentObjectId and summarize the revision in changeSummary so the immutable version lineage is preserved. Do not create a file for an ordinary chat answer.',
+        text: 'When the user asks for Word, Excel, PPT or another downloadable deliverable, create the requested files with workspace_export_create; describing what a file would contain does not fulfill that request. Read the Office Skill format guides and use its native Python workflow: {fileName, format, python: {script, inputs: []}}. For a new file omit python.sourceObjectId or use null. For template edits, list and read the source with includeStructure=true, then edit the actual file supplied via python.inputs using native Office libraries. Use content for text exports; office is only a legacy compatibility path. When revising an existing AllRice deliverable, pass parentObjectId and top-level changeSummary to preserve immutable lineage. Include each actual downloadUrl as a Markdown link without JSON-escaping slashes; Allrice opens the file preview with download available there. Do not create files for an ordinary chat answer.',
       });
     }
     if (
