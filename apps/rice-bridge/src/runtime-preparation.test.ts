@@ -1,13 +1,61 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import {
   prepareLocalSandbox,
   probeLocalBrowser,
+  sandboxLaunchEnvironment,
 } from './runtime-preparation.js';
 import * as browserDriver from './local-browser-driver.js';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+it('finds sibling VM helpers from a desktop launch without importing the caller search path', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rice-sandbox-launch-'));
+  const installed = join(root, 'installed'),
+    untrusted = join(root, 'untrusted');
+  const execute = promisify(execFile);
+  try {
+    await mkdir(installed);
+    await mkdir(untrusted);
+    await writeFile(
+      join(installed, 'limactl'),
+      '#!/bin/sh\nprintf installed-helper',
+      { mode: 0o700 },
+    );
+    await writeFile(
+      join(untrusted, 'limactl'),
+      '#!/bin/sh\nprintf wrong-helper',
+      { mode: 0o700 },
+    );
+    const colima = join(installed, 'colima');
+    await writeFile(colima, '#!/bin/sh\nexec limactl --version', {
+      mode: 0o700,
+    });
+    const desktopPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+    // Reproduce the actual nested executable lookup, not just a PATH string.
+    await expect(
+      execute(colima, [], { env: { ...process.env, PATH: desktopPath } }),
+    ).rejects.toThrow();
+    vi.stubEnv('PATH', untrusted + ':' + desktopPath);
+    const { stdout } = await execute(colima, [], {
+      env: sandboxLaunchEnvironment(colima),
+    });
+    expect(stdout).toBe('installed-helper');
+    // Preparation must not broaden core's own executable search path.
+    expect(process.env.PATH).toBe(untrusted + ':' + desktopPath);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 it('pause during native startup still closes the owned blank-page probe before completing', async () => {
   let release!: () => void, entered!: () => void;
   const startup = new Promise<void>((resolve) => {

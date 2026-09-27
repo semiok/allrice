@@ -200,11 +200,28 @@ main.shell {
   gap: 4px;
 }
 
-.bridgeRecovery .bridgeDownloads {
+.bridgeDownloads {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.bridgeReleaseSection {
+  display: grid;
+  gap: 10px;
+}
+
+.bridgeReleaseSection > small,
+.bridgeDownloadUnavailable {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.bridgeUpgradeNote {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 20px;
 }
 
 .bridgeRecovery p,

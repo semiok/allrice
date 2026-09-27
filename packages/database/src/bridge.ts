@@ -56,6 +56,7 @@ interface DeviceRow {
   last_seen_at: Date | null;
   created_at: Date;
   revoked_at: Date | null;
+  client_version?: string | null;
 }
 
 interface GrantRow {
@@ -157,6 +158,9 @@ function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
     protocolVersion: row.protocol_version,
     capabilities: row.capabilities,
     status,
+    ...(row.client_version !== undefined
+      ? { clientVersion: row.client_version }
+      : {}),
     lastSeenAt: row.last_seen_at?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
     revokedAt: row.revoked_at?.toISOString() ?? null,
@@ -449,13 +453,17 @@ export async function listBridgeDevices(
     managed?.subjectId ?? requireWorkspaceMember(context, workspaceId);
   const organizationId = managed?.organizationId ?? context.organizationId;
   const rows = await sql<DeviceRow[]>`
-    select id, organization_id, workspace_id, owner_id, name, platform,
-      protocol_version, capabilities, last_seen_at, created_at, revoked_at
-    from allrice_bridge_devices
-    where organization_id = ${organizationId}
-      and workspace_id = ${workspaceId} and owner_id = ${ownerId}
-      and revoked_at is null
-    order by last_seen_at desc nulls last, created_at desc
+    select d.id, d.organization_id, d.workspace_id, d.owner_id, d.name, d.platform,
+      d.protocol_version, d.capabilities, d.last_seen_at, d.created_at, d.revoked_at,
+      t.metadata->'environment'->>'clientVersion' as client_version
+    from allrice_bridge_devices d
+    left join allrice_execution_targets t on t.organization_id=d.organization_id
+      and t.workspace_id=d.workspace_id and t.kind='rice_bridge'
+      and t.target_key='bridge.'||d.id::text
+    where d.organization_id = ${organizationId}
+      and d.workspace_id = ${workspaceId} and d.owner_id = ${ownerId}
+      and d.revoked_at is null
+    order by d.last_seen_at desc nulls last, d.created_at desc
   `;
   if (rows.length === 0) return [];
   const grants = await sql<GrantRow[]>`

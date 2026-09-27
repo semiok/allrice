@@ -139,6 +139,7 @@ export const BridgeDeviceSchema = z
     protocolVersion: BridgeProtocolVersionSchema,
     capabilities: z.array(BridgeCapabilitySchema).min(1).max(16),
     status: BridgeDeviceStatusSchema,
+    clientVersion: z.string().max(80).nullable().optional(),
     lastSeenAt: TimestampSchema.nullable(),
     createdAt: TimestampSchema,
     revokedAt: TimestampSchema.nullable(),

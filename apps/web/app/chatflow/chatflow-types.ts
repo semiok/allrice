@@ -151,6 +151,7 @@ export interface BridgeDevice {
   id: string;
   name: string;
   platform: 'macos-arm64' | 'macos-x64';
+  clientVersion?: string | null;
   status: 'online' | 'offline' | 'revoked';
   lastSeenAt: string | null;
   folderGrants: Array<{
