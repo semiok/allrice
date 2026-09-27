@@ -67,17 +67,13 @@ import {
 import { DeliverableVersionHistoryDialog } from './deliverable-version-history-dialog';
 import conversationUi from './dsh-upstream/ConversationRoot.module.css';
 import frameUi from './dsh-upstream/AppFrame.module.css';
-import { DshDialog } from './dsh-upstream/Dialog';
 import { EmployeeDetailsDialog } from './employee-details-dialog';
 import styles from './dsh-saas.module.css';
 import { WorkspaceFilePickerDialog } from './workspace-file-picker-dialog';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
-import {
-  BridgeReleaseDownloads,
-  BridgeVersionStatus,
-  useBridgeReleases,
-} from './bridge-releases';
+import { useBridgeReleases } from './bridge-releases';
+import { BridgeDialog } from './bridge-dialog';
 import { projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
@@ -383,25 +379,14 @@ export function ChatFlowClient({
     workspace,
   });
 
+  const bridge = useBridge({ setError, tenantHeaders, workspace });
   const {
-    bridgeBusy,
     bridgeDevices,
-    bridgeFeedback,
     bridgeStatusKnown,
-    bridgeLastRefreshedAt,
-    bridgeRefreshError,
     bridgeOpen,
-    bridgePairing,
-    bridgePairingBusy,
-    bridgeRecoveryActive,
-    copyBridgePairingCode,
-    createBridgePairing,
-    disconnectBridgeWorkspace,
     loadBridgeDevices,
-    noteBridgeDownload,
-    requestBridgeWorkspaceSelection,
     setBridgeOpen,
-  } = useBridge({ setError, tenantHeaders, workspace });
+  } = bridge;
   const bridgeReleases = useBridgeReleases(bridgeOpen, tenantHeaders);
 
   const interactions = useInteractionStatus(
@@ -908,12 +893,8 @@ export function ChatFlowClient({
     .reverse()
     .map((message) => (message.runId ? runViews[message.runId] : undefined))
     .find((view) => view?.status === 'failed' || view?.status === 'canceled');
-  const {
-    onlineBridgeDevice,
-    localWorkspaceOnline,
-    localWorkspaceLabel,
-    bridgeConnectionState,
-  } = projectBridgeView(bridgeDevices, bridgeStatusKnown);
+  const { localWorkspaceOnline, localWorkspaceLabel, bridgeConnectionState } =
+    projectBridgeView(bridgeDevices, bridgeStatusKnown);
 
   const renderComposer = (hero = false) => (
     <ChatComposer
@@ -1504,219 +1485,14 @@ export function ChatFlowClient({
       />
 
       {bridgeOpen ? (
-        <DshDialog
-          ariaLabel="本地工作区状态"
-          bodyClassName={styles.bridgeBody}
-          className={styles.bridgeDialog}
-          eyebrow="Rice Bridge"
+        <BridgeDialog
+          bridge={bridge}
+          releases={bridgeReleases}
           onClose={() => {
             setBridgeOpen(false);
             void readiness.reload();
           }}
-          title="本地工作区"
-        >
-          <div className={styles.bridgeIntro}>
-            <p>
-              安装并配对 Bridge 后，员工即可连接你的电脑。选择需要处理的文件夹；
-              独立浏览器和已有计算环境会自动准备，具体文件修改和命令执行在任务中确认。
-            </p>
-            <button
-              disabled={bridgeBusy}
-              onClick={() => {
-                void loadBridgeDevices();
-                void bridgeReleases.reload();
-              }}
-              type="button"
-            >
-              {bridgeBusy ? '正在刷新…' : '刷新状态'}
-            </button>
-          </div>
-          <small role="status" data-bridge-refresh-status>
-            {bridgeStatusKnown && bridgeLastRefreshedAt
-              ? `状态已刷新 · ${new Date(bridgeLastRefreshedAt).toLocaleTimeString()}`
-              : bridgeRefreshError || '尚未取得最新状态，请刷新确认'}
-            {' · '}在线状态根据最近 90 秒的设备心跳判断。
-          </small>
-          <BridgeReleaseDownloads
-            releases={bridgeReleases.releases}
-            error={bridgeReleases.error}
-            onDownload={noteBridgeDownload}
-          />
-          <p className={styles.bridgeUpgradeNote}>
-            升级前从菜单栏退出旧 Bridge，再解压打开 Rice Bridge.app。
-            原有配对、文件夹和开关设置会保留，无需重新配对。 当前下载为尚未
-            Apple 公证的 Dev 包。
-          </p>
-          {bridgeFeedback ? (
-            <p
-              className={styles.bridgeFeedback}
-              data-kind={bridgeFeedback.kind}
-              role="status"
-            >
-              {bridgeFeedback.message}
-            </p>
-          ) : null}
-          <div className={styles.bridgeDevices}>
-            {bridgeDevices.map((device) => (
-              <article key={device.id}>
-                <span
-                  className={
-                    bridgeStatusKnown && device.status === 'online'
-                      ? styles.bridgeOnline
-                      : styles.bridgeOffline
-                  }
-                />
-                <div>
-                  <strong>{device.name}</strong>
-                  <small>
-                    {!bridgeStatusKnown
-                      ? '状态待确认'
-                      : device.status === 'online'
-                        ? '在线'
-                        : '离线'}{' '}
-                    ·{' '}
-                    {device.platform === 'macos-arm64'
-                      ? 'Apple Silicon（M 芯片）'
-                      : 'Intel 芯片'}
-                  </small>
-                  <BridgeVersionStatus
-                    installed={device.clientVersion}
-                    release={bridgeReleases.releases?.find(
-                      (release) => release.platform === device.platform,
-                    )}
-                    online={bridgeStatusKnown && device.status === 'online'}
-                  />
-                  <small>
-                    最后心跳：
-                    {device.lastSeenAt
-                      ? new Date(device.lastSeenAt).toLocaleString()
-                      : '尚未收到'}
-                  </small>
-                  {bridgeStatusKnown && device.status === 'online' ? (
-                    device.folderGrants.length ? (
-                      <small>
-                        本地工作区：
-                        {device.folderGrants
-                          .map((grant) => grant.label)
-                          .join('、')}
-                      </small>
-                    ) : (
-                      <small>尚未选择本地工作区</small>
-                    )
-                  ) : null}
-                </div>
-                {bridgeStatusKnown &&
-                device.status === 'online' &&
-                device.folderGrants.length ? (
-                  <button
-                    disabled={bridgeBusy}
-                    onClick={() => void disconnectBridgeWorkspace(device)}
-                    type="button"
-                  >
-                    断开工作区
-                  </button>
-                ) : null}
-              </article>
-            ))}
-            {!localWorkspaceOnline ? (
-              <section className={styles.bridgeRecovery}>
-                <div>
-                  <strong>
-                    {!bridgeStatusKnown
-                      ? 'Bridge 状态待确认'
-                      : onlineBridgeDevice
-                        ? 'Bridge 在线，工作区未连接'
-                        : 'Bridge 当前离线'}
-                  </strong>
-                  {!bridgeStatusKnown ? (
-                    <p>
-                      未能取得最新设备状态，不能确认是否在线。请刷新重试，确认后再选择工作区。
-                    </p>
-                  ) : onlineBridgeDevice ? (
-                    <p>
-                      点击“选择工作区”后，当前 Mac 会立即弹出 macOS
-                      文件夹选择器。选择完成后，这里会自动显示文件夹名称。
-                    </p>
-                  ) : (
-                    <p>
-                      下载并解压后打开 Rice Bridge.app，在状态窗口中配对；
-                      配对成功后会保存在本机，以后打开即可自动连接。
-                    </p>
-                  )}
-                  <button
-                    className={styles.bridgePairingButton}
-                    disabled={bridgePairingBusy}
-                    onClick={() => void createBridgePairing()}
-                    type="button"
-                  >
-                    {bridgePairingBusy
-                      ? '正在生成…'
-                      : bridgePairing
-                        ? '重新生成配对码'
-                        : '生成配对码'}
-                  </button>
-                  {bridgePairing ? (
-                    <div className={styles.bridgePairing}>
-                      <strong>配对码</strong>
-                      <small>
-                        10 分钟内打开解压后的 Rice
-                        Bridge.app，在配对窗口中输入：
-                      </small>
-                      <div className={styles.bridgePairingCode}>
-                        <code>{bridgePairing.code.replaceAll('-', '')}</code>
-                        <button
-                          aria-label="复制配对码"
-                          onClick={() =>
-                            void copyBridgePairingCode(bridgePairing.code)
-                          }
-                          title="复制配对码"
-                          type="button"
-                        >
-                          <svg
-                            aria-hidden="true"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                          >
-                            <rect height="12" rx="2" width="12" x="8" y="8" />
-                            <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
-                          </svg>
-                        </button>
-                      </div>
-                      <small>
-                        配对成功后授权会安全保存在这台
-                        Mac；以后再次打开会自动连接， 不需要重复输入配对码。
-                      </small>
-                    </div>
-                  ) : null}
-                </div>
-                <button
-                  className={styles.bridgeRecoveryPrimary}
-                  disabled={bridgeBusy || !onlineBridgeDevice}
-                  onClick={() => {
-                    if (onlineBridgeDevice) {
-                      void requestBridgeWorkspaceSelection(onlineBridgeDevice);
-                    }
-                  }}
-                  type="button"
-                >
-                  {bridgeRecoveryActive
-                    ? '等待本地选择…'
-                    : onlineBridgeDevice
-                      ? '选择工作区'
-                      : bridgeStatusKnown
-                        ? '等待 Bridge 上线'
-                        : '等待状态确认'}
-                </button>
-                {bridgeRecoveryActive ? (
-                  <small>
-                    正在等待你在当前 Mac
-                    完成文件夹选择；选择成功后这里会自动显示文件夹名称。
-                  </small>
-                ) : null}
-              </section>
-            ) : null}
-          </div>
-        </DshDialog>
+        />
       ) : null}
     </main>
   );

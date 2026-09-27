@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { IconChevronRightOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { Workspace } from './chatflow-types';
 import { DshDialog } from './dsh-upstream/Dialog';
 import {
@@ -8,6 +8,7 @@ import {
   employeeIntroduction,
 } from './employee-navigation';
 import css from './employee-sidebar.module.css';
+import dialog from './compact-dialog.module.css';
 
 export function EmployeePickerDialog({
   workspace,
@@ -18,40 +19,13 @@ export function EmployeePickerDialog({
   onClose: () => void;
   onSelect: (id: string) => void;
 }) {
-  useEffect(() => {
-    const key = (event: KeyboardEvent) => {
-      if (
-        event.isComposing ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        event.repeat
-      )
-        return;
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
-      )
-        return;
-      if (!/^[1-9]$/.test(event.key)) return;
-      const employee = workspace.employees[Number(event.key) - 1];
-      if (employee) {
-        event.preventDefault();
-        onSelect(employee.id);
-      }
-    };
-    window.addEventListener('keydown', key);
-    return () => window.removeEventListener('keydown', key);
-  }, [workspace.employees, onSelect]);
   return (
     <DshDialog
       ariaLabel="选择 AI 员工"
       eyebrow="新的工作"
       title="这次和谁一起工作？"
-      className={css.pickerDialog}
-      bodyClassName={css.pickerBody}
+      className={dialog.dialog}
+      bodyClassName={dialog.body}
       onClose={onClose}
       initialFocusSelector="[data-default-employee='true']"
     >
@@ -82,27 +56,30 @@ export function EmployeePickerDialog({
               }
               onClick={() => onSelect(employee.id)}
             >
-              <span className={css.pickerCardTop}>
-                <span className={css.pickerInitial} aria-hidden="true">
-                  {manifest.name.slice(0, 1)}
-                </span>
-                {employee.isDefault ? (
-                  <span className={css.pickerBadge}>默认员工</span>
-                ) : null}
+              <span className={css.pickerInitial} aria-hidden="true">
+                {manifest.name.slice(0, 1)}
               </span>
-              <strong className={css.pickerName}>{manifest.name}</strong>
-              <span className={css.pickerDescription}>{description}</span>
+              <span className={css.pickerCopy}>
+                <span className={css.pickerHeading}>
+                  <strong className={css.pickerName}>{manifest.name}</strong>
+                  {employee.isDefault ? (
+                    <span className={css.pickerBadge}>默认</span>
+                  ) : null}
+                </span>
+                <span className={css.pickerDescription}>{description}</span>
+              </span>
               <span className={css.pickerAction} aria-hidden="true">
-                开始工作 <span>↗</span>
+                <span>开始</span>
+                <IconChevronRightOutlineRegular size={18} />
               </span>
             </button>
           );
         })}
       </div>
-      <p className={css.hint}>
+      <p className={dialog.footer}>
         <span>选择一位员工，开始新的工作</span>
         <span className={css.pickerShortcuts}>
-          <kbd>1–9</kbd> 快选 <kbd>Esc</kbd> 关闭
+          <kbd>Esc</kbd> 关闭
         </span>
       </p>
     </DshDialog>
