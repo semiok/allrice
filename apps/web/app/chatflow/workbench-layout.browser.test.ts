@@ -362,7 +362,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const streamGate = new Promise<void>((done) => {
       finishStream = done;
     });
-    page.on('pageerror', (e) => errors.push(e.message));
+    page.on('pageerror', (e) => errors.push(e.stack ?? e.message));
     if (options.controlledStream)
       await page.addInitScript(() => {
         const originalFetch = window.fetch.bind(window);
@@ -1694,6 +1694,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '展开侧边栏', exact: true })
             .click();
         const sidebar = f.page.locator('#chat-sidebar');
+        // This fixture exceeds the server page size; load its last records
+        // through the actual pagination control before testing list scrolling.
+        const earlier = sidebar.getByRole('button', { name: '加载更早的工作' });
+        await earlier.click();
+        await expect.poll(() => earlier.count()).toBe(0);
         const tree = sidebar.getByRole('tree', {
           name: '员工与工作',
           exact: true,
@@ -1719,13 +1724,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .poll(() => sidebar.evaluate((n) => n.getBoundingClientRect().left))
           .toBe(0);
         const box = (await tree.boundingBox())!;
+        const initialScroll = await tree.evaluate((n) => n.scrollTop);
+        const touchDistance = Math.min(250, box.height * 0.4);
         const x = box.x + box.width / 2,
           y = box.y + box.height * 0.65;
         const cdp =
           width === 390 ? await f.page.context().newCDPSession(f.page) : null;
         const scroll = async (down: boolean) => {
           if (cdp) {
-            const startY = down ? y : y - 250;
+            // Stay inside the tree even when filters shorten a mobile drawer.
+            const startY = down ? y : y - touchDistance;
             await cdp.send('Input.dispatchTouchEvent', {
               type: 'touchStart',
               touchPoints: [{ x, y: startY }],
@@ -1733,7 +1741,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             for (let step = 1; step <= 10; step++) {
               await cdp.send('Input.dispatchTouchEvent', {
                 type: 'touchMove',
-                touchPoints: [{ x, y: startY + (down ? -1 : 1) * step * 25 }],
+                touchPoints: [
+                  {
+                    x,
+                    y: startY + ((down ? -1 : 1) * step * touchDistance) / 10,
+                  },
+                ],
               });
               await f.page.evaluate(() => new Promise(requestAnimationFrame));
             }
@@ -1751,11 +1764,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await scroll(true);
         await expect
           .poll(() => tree.evaluate((n) => n.scrollTop))
-          .toBeGreaterThan(100);
+          .toBeGreaterThan(initialScroll + touchDistance * 0.5);
         await scroll(false);
         await expect
           .poll(() => tree.evaluate((n) => n.scrollTop))
-          .toBeLessThan(5);
+          .toBeLessThan(initialScroll + 5);
         await sidebar
           .getByText('历史工作 30', { exact: true })
           .scrollIntoViewIfNeeded();
