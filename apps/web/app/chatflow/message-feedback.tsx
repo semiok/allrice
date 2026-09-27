@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { z } from 'zod';
-import { MessageFeedbackItemSchema } from '@allrice/contracts';
+import { MessageFeedbackItemSchema, type WorkMethod } from '@allrice/contracts';
 import { MessageFeedbackController } from './dsh-upstream/feedback/controller';
 import { FeedbackDialogController } from './dsh-upstream/feedback/dialog';
 import { MessageFeedbackActions } from './dsh-upstream/feedback/MessageFeedbackActions';
@@ -19,6 +19,8 @@ import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
 import { feedbackTranslate } from './feedback-labels';
 import type { ClientRemote, HostObservable } from './feedback-native-types';
 import css from './message-feedback.module.css';
+import actionUi from './dsh-upstream/feedback/MessageIconActions.module.css';
+import { MessageWorkMethods } from './message-work-methods';
 
 function createFeedback(
   sessionId: string,
@@ -158,34 +160,38 @@ export function AssistantMessageActions({
   messageId,
   text,
   createdAt,
+  workMethods = [],
 }: {
   messageId: string;
   text: string;
   createdAt: string;
+  workMethods?: WorkMethod[];
 }) {
   const surface = useContext(FeedbackContext);
   return (
-    <MessageIconActions
-      className={css.actions}
-      text={text}
-      time={Date.parse(createdAt)}
-      clock="end"
-      t={feedbackTranslate}
-      extraActions={
-        surface && (
-          <MessageFeedbackActions
-            messageId={messageId}
-            useFeedback={surface.useFeedback}
-            ensure={() => surface.feedback.ensure()}
-            current={(id) => surface.feedback.getSnapshot().items.get(id)}
-            retract={(id, rating) => surface.feedback.retract(id, rating)}
-            openDialog={(id, rating) =>
-              surface.dialog.open({ kind: 'message', messageId: id, rating })
-            }
-            t={feedbackTranslate}
-          />
-        )
-      }
-    />
+    <div className={`${actionUi.actions} ${css.actions}`} data-message-actions>
+      <MessageIconActions
+        text={text}
+        time={Date.parse(createdAt)}
+        clock="end"
+        t={feedbackTranslate}
+        extraActions={
+          surface && (
+            <MessageFeedbackActions
+              messageId={messageId}
+              useFeedback={surface.useFeedback}
+              ensure={() => surface.feedback.ensure()}
+              current={(id) => surface.feedback.getSnapshot().items.get(id)}
+              retract={(id, rating) => surface.feedback.retract(id, rating)}
+              openDialog={(id, rating) =>
+                surface.dialog.open({ kind: 'message', messageId: id, rating })
+              }
+              t={feedbackTranslate}
+            />
+          )
+        }
+      />
+      <MessageWorkMethods methods={workMethods} />
+    </div>
   );
 }

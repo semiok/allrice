@@ -363,6 +363,7 @@ export function ChatTranscript({
                           messageId={message.id}
                           text={responseText}
                           createdAt={message.createdAt}
+                          workMethods={message.workMethods}
                         />
                       ) : null}
                     </div>
