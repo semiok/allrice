@@ -40,8 +40,8 @@ integration(
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
-      // Historical enforcement remains supported; explicitly select it instead
-      // of treating the new observation default as a regression.
+      // MET-162: even a stale deployment flag cannot re-enable cumulative
+      // token/cost gates. Cancellation and uncertain execution still apply.
       vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', 'enforce');
       database = await createAssistantFixtureDatabase();
       const [scope] = await database.db`select current_schema() as schema`;
@@ -243,9 +243,7 @@ integration(
           unknownCostRuns: 0,
           usageComplete: false,
         });
-        expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota, 'subscription')).not.toThrow();
       });
     }, 60000);
     it('whole-tree cancellation rejects late wakes and only acknowledges the owned native stop', async () => {
@@ -305,14 +303,14 @@ integration(
           ),
         ).toBe(true);
         await expect(s.bound.finish!()).rejects.toThrow('canceled');
-        // No successful Worker projection exists; actual new-Run admission must
-        // still find the orphaned dispatched holds under the tenant lock.
-        await expect(admitModelExecution(s.nextAdmission)).rejects.toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        // Unsettled usage remains recorded, but does not block a separate Run.
+        // The canceled tree itself still rejects finish and late dispatch above.
+        await expect(
+          admitModelExecution(s.nextAdmission),
+        ).resolves.toHaveLength(4);
       });
     }, 60000);
-    it('missing native usage remains unknown; replacement controller quarantines and never replays the model', async () => {
+    it('missing usage does not override completed work; replacement controller never replays the model', async () => {
       await scenario('unknown_usage', async (s) => {
         await s.start();
         s.releaseChild('A');
@@ -324,7 +322,7 @@ integration(
           .toBe(2);
         const outcome = await s.finish();
         expect(outcome).toMatchObject({
-          status: 'unknown',
+          status: 'completed',
           usageComplete: false,
           costBasis: 'not_applicable',
         });
@@ -353,9 +351,7 @@ integration(
         const after = await s.bound.tree();
         expect(after.budgets).toEqual(before.budgets);
         const quota = await getOrganizationModelQuota(s.f.org, database.db);
-        expect(() => assertQuotaAvailable(quota, 'subscription')).toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        expect(() => assertQuotaAvailable(quota, 'subscription')).not.toThrow();
       });
     }, 60000);
     it.each(['membership', 'policy', 'employee'] as const)(
@@ -401,49 +397,51 @@ integration(
             scope: s.f.task.scope,
             rootRunId: s.f.rootRunId,
           });
-          await expect(admitModelExecution(s.nextAdmission)).rejects.toThrow(
-            'MODEL_TOKEN_USAGE_UNKNOWN',
-          );
+          await expect(
+            admitModelExecution(s.nextAdmission),
+          ).resolves.toHaveLength(4);
         });
       },
       60000,
     );
-    it('real over-reservation native usage is retained and cancels the root instead of being zeroed or marked missing', async () => {
+    it('retains actual over-reservation usage without canceling delivered work even under the legacy enforce flag', async () => {
       await scenario('over_budget', async (s) => {
         await s.start();
         await expect
           .poll(() => s.native.requests.length, { timeout: 20000 })
           .toBe(3);
         s.releaseChild('A');
+        s.releaseChild('B');
         await expect
-          .poll(async () => (await s.bound.tree()).cancelRequested, {
-            timeout: 20000,
-          })
-          .toBe(true);
+          .poll(
+            async () =>
+              (await s.bound.tree()).results.filter(
+                (r) => r.parentAdoptedSeq !== null,
+              ).length,
+            { timeout: 20000 },
+          )
+          .toBe(2);
+        const outcome = await s.finish();
+        expect(outcome).toMatchObject({
+          status: 'completed',
+          usageComplete: true,
+        });
         const tree = await s.bound.tree();
+        expect(tree.cancelRequested).toBe(false);
+        const budget = tree.budgets.find((x) => x.metric === 'output_tokens')!;
+        expect(budget.spent).toBeGreaterThan(budget.capacity);
         expect(
-          tree.budgets.find((x) => x.metric === 'output_tokens'),
-        ).toMatchObject({ capacity: 6000, spent: 6006 });
-        expect(tree.instances.every((x) => x.cancelRequestedAt !== null)).toBe(
-          true,
-        );
+          tree.instances.every(
+            (x) => x.cancelRequestedAt === null && x.stoppedAt !== null,
+          ),
+        ).toBe(true);
         const [receipt] =
           await database.db`select settled_amount from allrice_assistant_usage where run_id=${s.children[0]!.runId} and metric='output_tokens' and settled_amount is not null`;
         expect(Number(receipt!.settled_amount)).toBe(6001);
-        await s.drain();
-        const calls = s.native.requests.length;
-        s.releaseChild('B');
-        await s.client.call('p25/flush');
-        expect(s.native.requests.length).toBe(calls);
-        expect((await s.bound.tree()).instances.every((x) => x.stoppedAt)).toBe(
-          true,
-        );
-        await expect(s.bound.finish!()).rejects.toThrow('canceled');
-        // B was interrupted without a receipt. A's actual overage is retained;
-        // missing Worker projection cannot unlock another Run.
-        await expect(admitModelExecution(s.nextAdmission)).rejects.toThrow(
-          'MODEL_TOKEN_USAGE_UNKNOWN',
-        );
+        await s.project(outcome);
+        await expect(
+          admitModelExecution(s.nextAdmission),
+        ).resolves.toHaveLength(4);
       });
     }, 60000);
     it.each(['unknown_usage', 'over_budget'] as const)(
