@@ -115,7 +115,7 @@ export function SidebarSettings({
                         />
                       </div>
                       <p className={styles.preferenceHint}>
-                        仅影响你的回复展示方式，所有员工通用。工作状态和总耗时始终实时更新。
+                        仅影响你的回复展示方式，所有员工通用。工作状态和用时始终实时更新。
                       </p>
                       <p role="status" className={styles.preferenceHint}>
                         {preferences.pending

@@ -224,11 +224,15 @@ export function ChatTranscript({
                     <div
                       className={assistantUi.root}
                       data-actions-reveal="hover"
+                      data-working={
+                        (messageIsRunning &&
+                          (!timing || timing.phase === 'active')) ||
+                        undefined
+                      }
                     >
                       <div className={styles.assistantIdentity}>
                         <i aria-hidden="true" />
                         <span>{employeeName}</span>
-                        <time>{formatTime(message.createdAt)}</time>
                       </div>
                       <WorkProcess
                         items={progress.items}
@@ -366,7 +370,6 @@ export function ChatTranscript({
                           messageId={message.id}
                           text={responseText}
                           createdAt={message.createdAt}
-                          timing={timing}
                         />
                       ) : null}
                     </div>
