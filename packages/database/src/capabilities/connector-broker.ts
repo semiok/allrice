@@ -1,3 +1,4 @@
+import { requirePlatformAdmin } from '../platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -36,19 +37,9 @@ function userId(context: RequestContext) {
   return context.actor.id;
 }
 
-function requireAdmin(context: RequestContext, workspaceId: string) {
-  const actor = userId(context);
-  const allowed = context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === actor &&
-      membership.organizationId === context.organizationId &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === workspaceId) &&
-      membership.role === 'admin',
-  );
-  if (!allowed) throw new DataAccessError('authorization_denied');
-  return actor;
+async function requireAdmin(context: RequestContext, workspaceId: string) {
+  await resolveWorkspaceId(context, workspaceId);
+  return requirePlatformAdmin(context);
 }
 
 function canonical(value: unknown): string {
@@ -72,7 +63,7 @@ export async function createConnectorDefinition(
 ): Promise<ConnectorDefinition> {
   const creation = CreateConnectorDefinitionInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<
     {
@@ -123,7 +114,7 @@ export async function createConnectorBinding(
 ): Promise<ConnectorBinding> {
   const creation = CreateConnectorBindingInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   if (creation.identityMode === 'user' && creation.userId !== actor) {
     throw new DataAccessError('authorization_denied');
   }
@@ -181,7 +172,7 @@ export async function updateConnectorBindingHealth(
 ) {
   const update = UpdateConnectorBindingHealthInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<
     {
@@ -440,15 +431,6 @@ export async function decideConnectorApproval(
   const workspaceId = await resolveWorkspaceId(context, decision.workspaceId);
   const actor = userId(context);
   const approvalId = UuidSchema.parse(approvalIdInput);
-  const isAdmin = context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === actor &&
-      membership.organizationId === context.organizationId &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === workspaceId) &&
-      membership.role === 'admin',
-  );
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const rows = await transaction<{ actor_id: string; resource_id: string }[]>`
@@ -459,7 +441,7 @@ export async function decideConnectorApproval(
       for update
     `;
     const row = rows[0];
-    if (!row || (row.actor_id !== actor && !isAdmin)) {
+    if (!row || row.actor_id !== actor) {
       throw new DataAccessError('authorization_denied');
     }
     await transaction`

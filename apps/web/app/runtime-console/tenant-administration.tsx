@@ -11,14 +11,11 @@ import { TenantPolicyEditor } from './tenant-policy-editor';
 import { TenantResourceEditor } from './tenant-resource-editor';
 import { TenantEmployeeEditor } from './tenant-employee-editor';
 
-const roles = { admin: '管理员', member: '成员', viewer: '只读成员' };
 const errors: Record<string, string> = {
   AUTHENTICATION_REQUIRED: '登录已失效，请重新登录。',
-  AUTHORIZATION_DENIED: '需要平台管理员权限；租户管理员不能管理其他租户。',
+  AUTHORIZATION_DENIED: '需要平台管理员权限。',
   NOT_FOUND: '租户、工作区或成员已不存在或不可管理。',
-  last_administrator:
-    '不能停用或降级此范围内最后一位有效管理员。请先配置其他管理员。',
-  member_conflict: '成员配置已被其他操作修改，请刷新后重新确认。',
+  member_conflict: '账号配置已被其他操作修改，请刷新后重新确认。',
   scope_mismatch: '成员授权范围已变化，请刷新后重新确认。',
   INVALID_REQUEST: '请检查修改内容，并填写至少 5 个字符的原因。',
 };
@@ -124,7 +121,7 @@ export function TenantAdministration() {
     <section className={styles.panel} aria-label="租户管理">
       <header>
         <h2>租户管理</h2>
-        <p>派驻已有 AI 员工、管理真人成员，并查看工作区配置和用量。</p>
+        <p>派驻已有 AI 员工、管理租户账号，并查看工作区配置和用量。</p>
       </header>
       <div className={styles.selectors}>
         <label>
@@ -215,7 +212,7 @@ export function TenantAdministration() {
                 }
               }}
             >
-              真人成员
+              租户账号
             </button>
             <button
               disabled={busy || !workspaceId}
@@ -336,7 +333,7 @@ export function TenantAdministration() {
           )}
         </>
       ) : !loading ? (
-        <p>选择租户和工作区，查看在岗 AI 员工与真人成员。</p>
+        <p>选择租户和工作区，查看在岗 AI 员工与租户账号。</p>
       ) : null}
     </section>
   );
@@ -358,8 +355,7 @@ function Members({
     [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true),
     [busy, setBusy] = useState(false);
-  const [edit, setEdit] = useState<AdminTenantMember | null>(null),
-    [role, setRole] = useState<AdminTenantMember['role']>('member');
+  const [edit, setEdit] = useState<AdminTenantMember | null>(null);
   const [active, setActive] = useState(true),
     [reason, setReason] = useState('');
   const controller = useRef<AbortController | null>(null),
@@ -435,7 +431,6 @@ function Members({
           body: JSON.stringify({
             workspaceId: edit.workspaceId,
             expectedVersion: edit.version,
-            role,
             active,
             reason,
           }),
@@ -445,7 +440,7 @@ function Members({
       close();
       setNotice(
         result.changed
-          ? '修改已保存并记录审计。后续请求将使用当前成员配置。'
+          ? '修改已保存并记录审计。后续请求将使用当前账号配置。'
           : '配置未变化。',
       );
       await load();
@@ -467,12 +462,12 @@ function Members({
   return (
     <div>
       <div className={styles.selectors}>
-        <h3>成员与角色</h3>
+        <h3>租户账号</h3>
         <button
           disabled={busy || loading || !!edit}
           onClick={() => void load()}
         >
-          刷新成员
+          刷新账号
         </button>
       </div>
       <p>
@@ -480,15 +475,14 @@ function Members({
       </p>
       {error ? <p role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
-      {loading ? <p role="status">正在读取成员…</p> : null}
+      {loading ? <p role="status">正在读取账号…</p> : null}
       {data ? (
         <div className={styles.table}>
           <table>
             <thead>
               <tr>
-                <th>成员</th>
+                <th>账号</th>
                 <th>授权范围</th>
-                <th>角色</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -506,9 +500,9 @@ function Members({
                       : (tenant.workspaces.find((w) => w.id === m.workspaceId)
                           ?.name ?? m.workspaceId)}
                   </td>
-                  <td>{roles[m.role]}</td>
                   <td>
                     {m.active ? '授权有效' : '授权已停用'}
+                    {m.role === 'viewer' ? ' / 历史只读授权' : ''}
                     {m.userStatus !== 'active'
                       ? ` / 账号${m.userStatus === 'disabled' ? '已停用' : '待激活'}`
                       : ''}
@@ -518,7 +512,6 @@ function Members({
                       disabled={busy || !!edit}
                       onClick={() => {
                         setEdit(m);
-                        setRole(m.role);
                         setActive(m.active);
                         setReason('');
                         setNotice('');
@@ -532,7 +525,7 @@ function Members({
               ))}
             </tbody>
           </table>
-          {!data.members.length ? <p>此范围内没有成员。</p> : null}
+          {!data.members.length ? <p>此范围内没有账号。</p> : null}
         </div>
       ) : null}
       {data?.nextCursor ? (
@@ -540,7 +533,7 @@ function Members({
           disabled={busy || loading || !!edit}
           onClick={() => void load(data.nextCursor!)}
         >
-          加载更多成员
+          加载更多账号
         </button>
       ) : null}
       {edit ? (
@@ -557,27 +550,10 @@ function Members({
           </h3>
           <p>
             {edit.workspaceId === null
-              ? '这是组织级授权，会影响该成员在整个租户内的访问。'
+              ? '这是组织级授权，会影响该账号在整个租户内的访问。'
               : `仅修改工作区：${tenant.workspaces.find((w) => w.id === edit.workspaceId)?.name ?? edit.workspaceId}`}
           </p>
           <div className={styles.selectors}>
-            <label>
-              角色
-              <select
-                aria-label="成员角色"
-                value={role}
-                disabled={busy}
-                onChange={(e) =>
-                  setRole(e.target.value as AdminTenantMember['role'])
-                }
-              >
-                {Object.entries(roles).map(([key, label]) => (
-                  <option key={key} value={key}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
             <label>
               <input
                 type="checkbox"
@@ -589,8 +565,8 @@ function Members({
             </label>
           </div>
           <p>
-            修改前：{roles[edit.role]} / {edit.active ? '有效' : '停用'} →
-            修改后：{roles[role]} / {active ? '有效' : '停用'}
+            修改前：{edit.active ? '有效' : '停用'} → 修改后：
+            {active ? '有效' : '停用'}
           </p>
           <label>
             备注（可选）
@@ -603,7 +579,8 @@ function Members({
             />
           </label>
           <p>
-            普通成员自动继承工作区已派驻员工及其云端能力。只读成员可以查看，不能执行任务。
+            租户账号自动使用所在工作区的 AI
+            员工，管理自己的电脑、应用和工作设置。员工发布与租户配置由平台管理员统一管理。
           </p>
           <div className={styles.selectors}>
             <button type="submit" disabled={busy}>

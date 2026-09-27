@@ -2789,6 +2789,153 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('native task plan streams, restores, clears and stays scoped without animating stopped work', async () => {
+    const f = await fixture({ running: true, controlledStream: true });
+    try {
+      const ready = () =>
+        f.page.waitForFunction(
+          () => document.documentElement.dataset.streamReady === 'true',
+        );
+      const emit = async (event: ChatFlowEventEnvelope) => {
+        await ready();
+        await f.page.evaluate(
+          (body) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', { detail: body }),
+            ),
+          `data: ${JSON.stringify(event)}\n\n`,
+        );
+      };
+      const push = async (
+        todos: unknown,
+        type: ChatFlowEventEnvelope['type'] = 'harness.native',
+      ) => {
+        const sequence = f.state.events.length + 1;
+        const event: ChatFlowEventEnvelope = {
+          schemaVersion: 3,
+          eventId: id(8800 + sequence),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          cursor: `${run}:${sequence}`,
+          sequence,
+          harness: 'dsh',
+          occurredAt: now,
+          type,
+          sourceEvent: {
+            id: `dsh:${sequence}`,
+            type: 'todo/write',
+            occurredAt: now,
+            payload: { todos },
+          },
+          payload: {
+            generation: 1,
+            attempt: 1,
+            presentation: 'todo',
+            label: '任务计划已更新',
+          },
+        };
+        f.state.events.push(event);
+        await emit(event);
+      };
+      const panel = f.page.getByTestId('todo-panel');
+      expect(await panel.count()).toBe(0);
+      const todos = [
+        { content: '核对资料', status: 'completed' },
+        { content: '生成演示文件', status: 'in_progress' },
+        { content: '检查交付文件', status: 'pending' },
+      ];
+      await push(todos);
+      await panel.waitFor();
+      expect(await panel.innerText()).toContain('1 已完成');
+      expect(await panel.innerText()).toContain('1 进行中');
+      expect(
+        await panel.getByRole('button').getAttribute('aria-expanded'),
+      ).toBe('false');
+      await panel.getByRole('button').click();
+      expect(await panel.getByRole('listitem').count()).toBe(3);
+      expect(await panel.locator('[data-state="ongoing"]').count()).toBe(1);
+      const draft = f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ });
+      await draft.fill('保留未发送草稿');
+      await push([
+        ...todos.slice(0, 2),
+        { content: '检查新版文件', status: 'pending' },
+      ]);
+      await panel.getByText('检查新版文件', { exact: true }).waitFor();
+      expect(await draft.inputValue()).toBe('保留未发送草稿');
+      expect(
+        await draft.evaluate((node) => document.activeElement === node),
+      ).toBe(true);
+      // Replayed snapshots do not collapse the native panel or duplicate its rows.
+      await emit(f.state.events[0]!);
+      expect(await panel.getByRole('listitem').count()).toBe(3);
+      expect(
+        await panel.getByRole('button').getAttribute('aria-expanded'),
+      ).toBe('true');
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      expect(
+        await f.page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect((await panel.boundingBox())!.width).toBeGreaterThan(200);
+      await f.page.screenshot({ path: '.local/task-plan/mobile.png' });
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      f.state.runTimings = [
+        {
+          runId: run,
+          timing: {
+            activeMs: 2000,
+            waitingMs: 1000,
+            wallMs: 3000,
+            timeoutMs: 3600000,
+            remainingMs: 3598000,
+            phase: 'waiting',
+            sources: [],
+            calls: null,
+          },
+        },
+      ];
+      await f.page.reload();
+      for (const event of f.state.events) await emit(event);
+      await panel.getByRole('button').click();
+      await expect.poll(() => panel.innerText()).toContain('等待继续');
+      expect(await panel.locator('[data-state="ongoing"]').count()).toBe(0);
+      // The authoritative clock can settle before the final SSE receipt arrives.
+      f.state.runTimings[0]!.timing.phase = 'terminal';
+      await expect
+        .poll(() => panel.innerText(), { timeout: 10_000 })
+        .toContain('未完成');
+      f.state.messageStatus = 'failed';
+      await push(undefined, 'run.failed');
+      await expect.poll(() => panel.innerText()).toContain('未完成');
+      expect(await panel.locator('[data-state="ongoing"]').count()).toBe(0);
+      await f.page.reload();
+      await panel.getByRole('button').click();
+      await panel.getByText('检查新版文件', { exact: true }).waitFor();
+      expect(await panel.innerText()).toContain('未完成');
+      await f.page.screenshot({ path: '.local/task-plan/stopped.png' });
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
+      await expect.poll(() => panel.count()).toBe(0);
+      await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
+      await panel.waitFor();
+      // Explicit clearing survives a full history read.
+      const last = f.state.events[0]!;
+      f.state.events.push({
+        ...last,
+        eventId: id(8999),
+        sequence: 999,
+        sourceEvent: { ...last.sourceEvent!, payload: { todos: [] } },
+      });
+      await f.page.reload();
+      await expect.poll(() => panel.count()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('native streaming preserves settled paragraphs and reading position across deltas and completion', async () => {
     const f = await fixture({
       running: true,
@@ -2915,31 +3062,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       const timing = f.page.getByLabel('本轮运行时间', { exact: true });
       await timing.waitFor();
-      expect(await timing.innerText()).toBe('总耗时 17 秒');
+      expect(await timing.innerText()).toBe('用时 17 秒');
+      const motion = () =>
+        f.page.evaluate(() => {
+          const reply = document.querySelector(
+            '[data-actions-reveal="hover"]',
+          )!;
+          const avatar = reply.querySelector('[class*="assistantIdentity"] i')!;
+          const header = reply.querySelector(
+            '[aria-label="工作过程"] [data-disclosure-row]',
+          )!;
+          return [avatar, header].map((element) => ({
+            name: getComputedStyle(element).animationName,
+            duration: getComputedStyle(element).animationDuration,
+            opacity: Number(getComputedStyle(element).opacity),
+          }));
+        });
+      const [avatarMotion, headerMotion] = await motion();
+      expect(avatarMotion!.name).not.toBe('none');
+      expect(avatarMotion!.name).toBe(headerMotion!.name);
+      expect(avatarMotion!.duration).toBe(headerMotion!.duration);
+      expect(
+        Math.abs(avatarMotion!.opacity - headerMotion!.opacity),
+      ).toBeLessThan(0.05);
+      await f.page.emulateMedia({ reducedMotion: 'reduce' });
+      expect((await motion()).map((item) => item.name)).toEqual([
+        'none',
+        'none',
+      ]);
+      await f.page.emulateMedia({ reducedMotion: 'no-preference' });
       for (const seconds of [18, 19, 20]) {
         await f.page.clock.runFor(1000);
-        await expect
-          .poll(() => timing.innerText())
-          .toBe(`总耗时 ${seconds} 秒`);
+        await expect.poll(() => timing.innerText()).toBe(`用时 ${seconds} 秒`);
       }
       // Server updates do not reset the display interval or make it run backwards.
       f.state.runTimings[0]!.timing.phase = 'waiting';
       f.state.runTimings[0]!.timing.wallMs = 19000;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
+      // The local clock can tick before the server phase receipt commits.
+      await expect
+        .poll(async () => (await motion()).map((item) => item.name))
+        .toEqual(['none', 'none']);
       expect(f.state.runTimings[0]!.timing.activeMs).toBe(17000);
       f.state.runTimings[0]!.timing.phase = 'terminal';
       f.state.runTimings[0]!.timing.wallMs = 22500;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
       await f.page.clock.runFor(5000);
-      expect(await timing.innerText()).toBe('总耗时 22 秒');
+      expect(await timing.innerText()).toBe('用时 22 秒');
       f.state.runTimings[0]!.timing.phase = 'queued';
       f.state.runTimings[0]!.timing.wallMs = 0;
       await f.page.reload();
       await timing.waitFor();
       await f.page.clock.runFor(3000);
-      expect(await timing.innerText()).toBe('总耗时 0 秒');
+      expect(await timing.innerText()).toBe('用时 0 秒');
     } finally {
       await f.close();
     }
@@ -2971,9 +3148,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '工作过程',
           exact: true,
         });
-        await process.getByRole('button').click();
         await timing.waitFor();
-        expect(await timing.innerText()).toContain('总耗时 22 秒');
+        expect(await process.getByRole('button').count()).toBe(0);
+        expect(await process.locator('[aria-expanded]').count()).toBe(0);
+        expect(await timing.innerText()).toContain('用时 22 秒');
         expect(await process.innerText()).not.toContain('累计等待');
         expect(await timing.count()).toBe(1);
         expect(await process.innerText()).not.toContain('模型请求');
@@ -2981,8 +3159,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.runTimings[0]!.timing.wallMs = 2412460;
         await expect
           .poll(() => timing.innerText(), { timeout: 5000 })
-          .toContain('总耗时 40 分 12 秒');
-        expect(await timing.innerText()).toContain('总耗时 40 分 12 秒');
+          .toContain('用时 40 分 12 秒');
+        expect(await timing.innerText()).toContain('用时 40 分 12 秒');
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -3000,9 +3178,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.reload();
         await timing.waitFor();
         expect(await timing.count()).toBe(1);
-        await process.getByRole('button').click();
         await timing.waitFor();
-        expect(await timing.innerText()).toContain('总耗时 40 分 12 秒');
+        expect(await process.getByRole('button').count()).toBe(0);
+        expect(await process.locator('[aria-expanded]').count()).toBe(0);
+        expect(await timing.innerText()).toContain('用时 40 分 12 秒');
         f.state.runTimings = [];
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
       } finally {

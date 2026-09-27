@@ -110,7 +110,7 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
       '当前员工未提供或已停用此能力。可在左侧选择具备该能力的员工继续处理。',
     policy_missing: '当前员工的工作区配置尚未准备完成，请稍后重试。',
     policy_denied: '此操作已被工作区停用。其他已开启的能力仍可使用。',
-    read_only: '当前角色不能发起执行，请向当前租户管理员申请权限。',
+    read_only: '当前账号为历史只读授权，请联系平台管理员调整。',
     provider_unsupported: '当前会话的模型暂不支持助手，可由当前员工继续处理。',
     bridge_missing:
       '连接电脑后即可处理本地任务。点击下方按钮下载并配对 Bridge。',

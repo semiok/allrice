@@ -903,7 +903,7 @@ function Environments(props: ScopedProps) {
                         ? '使用者/设备主人'
                         : r.responsibleRole === 'platform_admin'
                           ? '平台管理员'
-                          : '平台管理员配置，使用者无需升管理员'}
+                          : '平台管理员'}
                       ）
                     </li>
                   ))}

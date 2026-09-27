@@ -10,11 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { z } from 'zod';
-import {
-  MessageFeedbackItemSchema,
-  type TaskRuntimeTiming,
-} from '@allrice/contracts';
-import { IconClockOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import { MessageFeedbackItemSchema } from '@allrice/contracts';
 import { MessageFeedbackController } from './dsh-upstream/feedback/controller';
 import { FeedbackDialogController } from './dsh-upstream/feedback/dialog';
 import { MessageFeedbackActions } from './dsh-upstream/feedback/MessageFeedbackActions';
@@ -22,7 +18,6 @@ import { FeedbackDialog } from './dsh-upstream/feedback/FeedbackDialog';
 import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
 import { feedbackTranslate } from './feedback-labels';
 import type { ClientRemote, HostObservable } from './feedback-native-types';
-import { formatRunDuration } from './run-timing';
 import css from './message-feedback.module.css';
 
 function createFeedback(
@@ -159,12 +154,10 @@ export function AssistantMessageActions({
   messageId,
   text,
   createdAt,
-  timing,
 }: {
   messageId: string;
   text: string;
   createdAt: string;
-  timing?: TaskRuntimeTiming;
 }) {
   const surface = useContext(FeedbackContext);
   return (
@@ -187,14 +180,6 @@ export function AssistantMessageActions({
             }
             t={feedbackTranslate}
           />
-        )
-      }
-      usageAction={
-        timing && (
-          <span className={css.duration}>
-            <IconClockOutlineRegular />
-            用时 {formatRunDuration(timing.wallMs)}
-          </span>
         )
       }
     />

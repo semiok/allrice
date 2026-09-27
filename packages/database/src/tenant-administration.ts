@@ -16,9 +16,7 @@ import { isPlatformAdmin } from './providers/model-pool.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 export class TenantAdministrationError extends Error {
-  constructor(
-    readonly code: 'member_conflict' | 'last_administrator' | 'scope_mismatch',
-  ) {
+  constructor(readonly code: 'member_conflict' | 'scope_mismatch') {
     super(code);
   }
 }
@@ -55,6 +53,7 @@ export async function requireTenantAdministrationTarget(
 ) {
   const [found] = await sql`
     select id from allrice_organizations where id=${organizationId} and archived_at is null
+      and slug <> 'allrice-platform'
       and (${workspaceId}::uuid is null or exists(select 1 from allrice_workspaces w
         where w.organization_id=allrice_organizations.id and w.id=${workspaceId} and w.archived_at is null))`;
   if (!found) throw new DataAccessError('not_found');
@@ -70,6 +69,7 @@ export async function listAdminTenants(
   await requireAdministrator(context, database);
   const tenants = await database<{ id: string; name: string; slug: string }[]>`
     select id,name,slug from allrice_organizations where archived_at is null
+      and slug <> 'allrice-platform'
       and (${after}::uuid is null or id>${after}) order by id limit 101`;
   const page = tenants.slice(0, 100);
   const workspaces = page.length
@@ -143,7 +143,7 @@ export async function updateAdminTenantMember(
   const change = TenantMemberChangeSchema.parse(input);
   return database.begin(async (tx) => {
     await requireAdministrator(context, tx);
-    // Serialize role changes for the tenant so concurrent demotions cannot remove both final admins.
+    // Serialize account changes with tenant employee access synchronization.
     const [organization] =
       await tx`select id from allrice_organizations where id=${organizationId} and archived_at is null for no key update`;
     if (!organization) throw new DataAccessError('not_found');
@@ -161,21 +161,13 @@ export async function updateAdminTenantMember(
       throw new TenantAdministrationError('scope_mismatch');
     if (row.version !== change.expectedVersion)
       throw new TenantAdministrationError('member_conflict');
-    if (
-      row.active &&
-      row.role === 'admin' &&
-      (!change.active || change.role !== 'admin')
-    ) {
-      const [other] = await tx`
-        select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id and u.status='active'
-        where m.organization_id=${organizationId} and m.id<>${membershipId} and m.active and m.role='admin'
-          and (m.workspace_id is null or (${row.workspace_id}::uuid is not null and m.workspace_id=${row.workspace_id})) limit 1`;
-      if (!other) throw new TenantAdministrationError('last_administrator');
-    }
-    if (row.active === change.active && row.role === change.role)
+    // Preserve explicit legacy read-only access; tenant admin/member are one identity.
+    const requestedRole = change.role ?? row.role;
+    const role = requestedRole === 'viewer' ? 'viewer' : 'member';
+    if (row.active === change.active && row.role === role)
       return { member: member(row), changed: false };
     const [updated] = await tx`
-      update allrice_memberships m set role=${change.role},active=${change.active},updated_at=clock_timestamp()
+      update allrice_memberships m set role=${role},active=${change.active},updated_at=clock_timestamp()
       where id=${membershipId} returning m.*,md5(to_jsonb(m)::text) as version`;
     await synchronizeTenantMembershipAccess(tx, {
       organizationId,
@@ -189,7 +181,7 @@ export async function updateAdminTenantMember(
           targetUserId: row.user_id,
           before: { role: row.role, active: row.active, version: row.version },
           after: {
-            role: change.role,
+            role,
             active: change.active,
             version: updated!.version,
           },

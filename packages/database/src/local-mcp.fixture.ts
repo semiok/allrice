@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 /** Synthetic P17 PostgreSQL fixture. No real Bridge/process/credential/model. */
 import { createHash, randomUUID } from 'node:crypto';
@@ -197,6 +198,7 @@ export async function createLocalMcpFixture(
     { expectedRevision: 1, capability: 'computer', enabled: false },
     db,
   );
+  await authorizeFixturePlatformAdministrator(db, user);
   await setRuntimePolicyControls(
     context,
     {

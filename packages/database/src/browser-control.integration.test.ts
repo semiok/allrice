@@ -295,6 +295,10 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       (await listBrowserControlManagement(f.context, db)).grants[0]!.revokedAt,
     ).not.toBeNull();
     await db`update allrice_memberships set role='member' where user_id=${f.user}`;
+    expect(
+      (await listBrowserControlManagement(f.context, db)).grants,
+    ).toHaveLength(1);
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
     await expect(listBrowserControlManagement(f.context, db)).rejects.toThrow(
       'membership_denied',
     );

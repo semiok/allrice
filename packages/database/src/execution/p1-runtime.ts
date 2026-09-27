@@ -1,3 +1,4 @@
+import { requirePlatformAdmin } from '../platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -154,12 +155,12 @@ function requireWorkspaceMember(context: RequestContext, workspaceId: string) {
   return { actor, membership };
 }
 
-function requireWorkspaceAdmin(context: RequestContext, workspaceId: string) {
-  const result = requireWorkspaceMember(context, workspaceId);
-  if (result.membership.role !== 'admin') {
-    throw new DataAccessError('authorization_denied');
-  }
-  return result.actor;
+async function requireWorkspaceAdmin(
+  context: RequestContext,
+  workspaceId: string,
+) {
+  requireWorkspaceMember(context, workspaceId);
+  return requirePlatformAdmin(context);
 }
 
 export function projectedExecutionTargetState(input: {
@@ -346,7 +347,7 @@ export async function registerExecutionTarget(
     context,
     registration.workspaceId,
   );
-  const actor = requireWorkspaceAdmin(context, workspaceId);
+  const actor = await requireWorkspaceAdmin(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<TargetRow[]>`
     insert into allrice_execution_targets (
@@ -1153,7 +1154,7 @@ export async function listManagedBrowserTasks(
   options: { runId?: string; limit?: number } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const { actor, membership } = requireWorkspaceMember(context, workspaceId);
+  const { actor } = requireWorkspaceMember(context, workspaceId);
   const runId = options.runId ? UuidSchema.parse(options.runId) : null;
   const limit = z
     .number()
@@ -1198,8 +1199,7 @@ export async function listManagedBrowserTasks(
       and t.workspace_id = ${workspaceId}
       and (${runId}::uuid is null or t.run_id = ${runId})
       and (
-        ${membership.role === 'admin'}
-        or r.owner_id = ${actor}
+        r.owner_id = ${actor}
         or r.visibility <> 'private'
       )
     order by t.created_at desc, t.id desc
@@ -1214,7 +1214,7 @@ export async function getManagedBrowserTask(
   taskIdInput: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const { actor, membership } = requireWorkspaceMember(context, workspaceId);
+  const { actor } = requireWorkspaceMember(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<BrowserTaskRow[]>`
     select task.*, coalesce((
@@ -1252,8 +1252,7 @@ export async function getManagedBrowserTask(
       and task.organization_id = ${context.organizationId}
       and task.workspace_id = ${workspaceId}
       and (
-        ${membership.role === 'admin'}
-        or run.owner_id = ${actor}
+        run.owner_id = ${actor}
         or run.visibility <> 'private'
       )
     limit 1
@@ -1410,7 +1409,7 @@ export async function listExternalActions(
   options: { runId?: string; limit?: number } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const { actor, membership } = requireWorkspaceMember(context, workspaceId);
+  const { actor } = requireWorkspaceMember(context, workspaceId);
   const runId = options.runId ? UuidSchema.parse(options.runId) : null;
   const limit = z
     .number()
@@ -1424,7 +1423,7 @@ export async function listExternalActions(
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and (${runId}::uuid is null or run_id = ${runId})
-      and (${membership.role === 'admin'} or actor_id = ${actor})
+      and actor_id = ${actor}
     order by created_at desc, id desc
     limit ${limit}
   `;

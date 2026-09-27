@@ -84,6 +84,59 @@ suite(
       await admin?.end({ timeout: 5 });
       vi.unstubAllEnvs();
     });
+    it.each(['member', 'admin'] as const)(
+      'lets tenant %s manage only their own local MCP and assigned employee',
+      async (role) => {
+        const f = await fixture();
+        await db`update allrice_memberships set role=${role} where user_id=${f.user}`;
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+        const context = {
+          ...f.context,
+          memberships: f.context.memberships.map((m) => ({ ...m, role })),
+        };
+        expect(await f.store.list(context, f.workspace)).toHaveLength(1);
+        const [employee] = await f.employeeBindings.list(context, f.workspace);
+        expect(employee!.employeeVersionId).toBe(f.version);
+        const change = {
+          workspaceId: f.workspace,
+          connectionId: f.connection.id,
+          employeeId: f.employee,
+          employeeVersionId: f.version,
+          expectedRevision: 1,
+          enabled: false,
+        };
+        const revoked = await f.employeeBindings.bind(context, change);
+        expect(revoked.enabled).toBe(false);
+        await f.employeeBindings.bind(context, {
+          ...change,
+          expectedRevision: revoked.revision,
+          enabled: true,
+        });
+        // A second account in the same workspace does not inherit the device connection.
+        const peer = randomUUID();
+        await db`insert into allrice_users(id,email,display_name,password_hash) values(${peer},${`${peer}@example.test`},'Peer','not-login')`;
+        await db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.org},${f.workspace},${peer},${role})`;
+        const peerContext = {
+          ...context,
+          actor: { type: 'user' as const, id: peer },
+        };
+        expect(await f.store.list(peerContext, f.workspace)).toEqual([]);
+        await expect(
+          f.employeeBindings.bind(peerContext, {
+            ...change,
+            expectedRevision: revoked.revision + 1,
+          }),
+        ).rejects.toThrow('MCP_DENIED');
+        await db`update allrice_employee_assignments set active=false where id=${f.assignment}`;
+        await expect(
+          f.employeeBindings.bind(context, {
+            ...change,
+            expectedRevision: revoked.revision + 1,
+            enabled: true,
+          }),
+        ).rejects.toThrow('MCP_DENIED');
+      },
+    );
     it('MET-159 default automatic work admits the existing local MCP runner', async () => {
       const f = await fixture();
       await db`delete from allrice_member_work_automation where organization_id=${f.org}`;

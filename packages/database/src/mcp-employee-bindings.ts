@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import type postgres from 'postgres';
 import {
   EmployeeManifestSchema,
@@ -82,11 +83,19 @@ async function currentMember(
     join allrice_organizations o on o.id=m.organization_id
     join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
     where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId}
-      and m.active and m.role in ('admin','member') and (${admin}=false or m.role='admin')
+      and m.active and m.role in ('admin','member')
       and (m.workspace_id is null or m.workspace_id=${scope.workspaceId})
       and u.status='active' and o.archived_at is null and w.archived_at is null
     for share of m,u,o,w`;
-  if (!row) throw new McpError('MCP_DENIED');
+  if (
+    !row ||
+    (admin &&
+      !(await isPlatformAdmin(
+        { actor: { type: 'user', id: scope.actorId } },
+        tx,
+      )))
+  )
+    throw new McpError('MCP_DENIED');
 }
 function scopeFor(context: RequestContext, workspaceId: unknown) {
   if (context.actor.type !== 'user') throw new McpError('MCP_DENIED');
@@ -122,7 +131,7 @@ export function createEmployeeMcpBindingStore(
   const managementMember = (tx: Database | Tx, scope: McpScope) =>
     options.administration
       ? checkTenantManagement(tx, options.administration, scope)
-      : currentMember(tx, scope, true);
+      : currentMember(tx, scope, transport !== 'local_stdio');
   const ownerId = (scope: McpScope) =>
     options.administration?.subjectId ?? scope.actorId;
   return {
@@ -133,11 +142,11 @@ export function createEmployeeMcpBindingStore(
         const versions = await tx<
           Version[]
         >`select e.id as employee_id,v.id as version_id,v.name,v.version,v.manifest,e.status,
-          exists(select 1 from allrice_employee_assignments a where a.employee_id=e.id and a.employee_version_id=v.id and a.organization_id=e.organization_id and a.workspace_id=e.workspace_id and a.active) as assigned
+          exists(select 1 from allrice_employee_assignments a where a.employee_id=e.id and a.employee_version_id=v.id and a.organization_id=e.organization_id and a.workspace_id=e.workspace_id and a.active and (${transport}<>'local_stdio' or a.user_id=${ownerId(scope)})) as assigned
           from allrice_employees e join allrice_employee_versions v on v.employee_id=e.id and v.organization_id=e.organization_id and v.workspace_id=e.workspace_id
           where e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId}
-            and (exists(select 1 from allrice_employee_assignments a where a.employee_id=e.id and a.employee_version_id=v.id and a.active)
-              or exists(select 1 from allrice_employee_mcp_bindings b where b.employee_version_id=v.id))
+            and (exists(select 1 from allrice_employee_assignments a where a.employee_id=e.id and a.employee_version_id=v.id and a.active and (${transport}<>'local_stdio' or a.user_id=${ownerId(scope)}))
+              or exists(select 1 from allrice_employee_mcp_bindings b where b.employee_version_id=v.id and (${transport}<>'local_stdio' or exists(select 1 from allrice_local_mcp_config l where l.binding_id=b.connector_binding_id and l.owner_id=${ownerId(scope)}))))
           order by e.name,v.version desc`;
         const bindings = await tx<
           Binding[]
@@ -183,7 +192,7 @@ export function createEmployeeMcpBindingStore(
         }
         if (change.enabled) {
           const [assignment] =
-            await tx`select id from allrice_employee_assignments where employee_id=${change.employeeId} and employee_version_id=${change.employeeVersionId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and active limit 1 for share`;
+            await tx`select id from allrice_employee_assignments where employee_id=${change.employeeId} and employee_version_id=${change.employeeVersionId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and active and (${transport}<>'local_stdio' or user_id=${ownerId(scope)}) limit 1 for share`;
           if (
             employee.status !== 'active' ||
             !assignment ||

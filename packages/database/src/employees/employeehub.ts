@@ -1,3 +1,7 @@
+import {
+  isPlatformAdmin,
+  requirePlatformAdmin,
+} from '../platform-authority.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 
@@ -218,28 +222,19 @@ function userId(context: RequestContext) {
   return context.actor.id;
 }
 
-export function canAdministerEmployees(
+export async function canAdministerEmployees(
   context: RequestContext,
   workspaceId: string,
 ) {
-  const actorId = userId(context);
-  return context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === actorId &&
-      membership.organizationId === context.organizationId &&
-      membership.role === 'admin' &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === workspaceId),
-  );
+  await resolveWorkspaceId(context, workspaceId);
+  return isPlatformAdmin(context);
 }
-
-function requireEmployeeAdmin(context: RequestContext, workspaceId: string) {
-  const actorId = userId(context);
-  if (!canAdministerEmployees(context, workspaceId)) {
-    throw new DataAccessError('authorization_denied');
-  }
-  return actorId;
+async function requireEmployeeAdmin(
+  context: RequestContext,
+  workspaceId: string,
+) {
+  await resolveWorkspaceId(context, workspaceId);
+  return requirePlatformAdmin(context);
 }
 
 function runtimePolicy(manifest: EmployeeManifest) {
@@ -334,7 +329,7 @@ export async function listEmployeeHub(
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   await ensureDefaultEmployee(context, workspaceId);
-  const canAdminister = canAdministerEmployees(context, workspaceId);
+  const canAdminister = await canAdministerEmployees(context, workspaceId);
   const sql = getDatabase();
   const assignments = await sql<EmployeeAssignmentRow[]>`
     select
@@ -487,7 +482,7 @@ export async function listEmployeeHub(
 export async function createEmployee(context: RequestContext, input: unknown) {
   const creation = CreateEmployeeInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const actorId = await requireEmployeeAdmin(context, workspaceId);
   const employeeKey = `employee-${randomUUID().slice(0, 8)}`;
   const manifest = employeeManifest({
     key: employeeKey,
@@ -576,7 +571,7 @@ export async function publishEmployeeVersion(
     context,
     publication.workspaceId,
   );
-  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const actorId = await requireEmployeeAdmin(context, workspaceId);
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const employees = await transaction<
@@ -757,7 +752,7 @@ export async function manageEmployeeAssignments(
 ) {
   const update = ManageEmployeeAssignmentsInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const actorId = await requireEmployeeAdmin(context, workspaceId);
   const userIds = [...new Set(update.userIds)].sort();
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
@@ -894,7 +889,7 @@ export async function updateEmployeeStatus(
 ) {
   const update = UpdateEmployeeStatusInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const actorId = await requireEmployeeAdmin(context, workspaceId);
   const employeeId = UuidSchema.parse(employeeIdInput);
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
@@ -971,7 +966,7 @@ export async function assignEmployeeVersion(
 ) {
   const update = AssignEmployeeVersionInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const actorId = requireEmployeeAdmin(context, workspaceId);
+  const actorId = await requireEmployeeAdmin(context, workspaceId);
   const assignmentId = UuidSchema.parse(assignmentIdInput);
   const sql = getDatabase();
   const rows = await sql<EmployeeAssignmentRow[]>`

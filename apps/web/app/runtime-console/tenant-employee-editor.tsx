@@ -107,7 +107,7 @@ export function TenantEmployeeEditor({
       onDirty(false);
       setNotice(
         action === 'assign'
-          ? '员工已派驻，当前普通成员可以开始使用。'
+          ? '员工已派驻，当前租户用户可以开始使用。'
           : action === 'withdraw'
             ? '员工已撤回，历史会话与成果保留。'
             : '已设为工作区默认员工，当前成员下次新建时使用。',
@@ -127,7 +127,7 @@ export function TenantEmployeeEditor({
     <section aria-label="在岗 AI 员工">
       <h3>在岗 AI 员工</h3>
       <p>
-        派驻已发布员工，当前普通成员即可使用。更新员工能力请前往员工生产后台发布。
+        派驻已发布员工，当前租户用户即可使用。更新员工能力请前往员工生产后台发布。
       </p>
       {error ? <p role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}

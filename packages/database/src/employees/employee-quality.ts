@@ -94,9 +94,9 @@ function userId(context: RequestContext) {
   return context.actor.id;
 }
 
-function requireAdmin(context: RequestContext, workspaceId: string) {
+async function requireAdmin(context: RequestContext, workspaceId: string) {
   const actor = userId(context);
-  if (!canAdministerEmployees(context, workspaceId)) {
+  if (!(await canAdministerEmployees(context, workspaceId))) {
     throw new DataAccessError('authorization_denied');
   }
   return actor;
@@ -190,7 +190,7 @@ export async function createEmployeeEvalSuite(
 ) {
   const creation = CreateEmployeeEvalSuiteInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<
     {
@@ -236,7 +236,7 @@ export async function recordEmployeeEvalRun(
 ) {
   const evaluation = RecordEmployeeEvalRunInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, evaluation.workspaceId);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   const sql = getDatabase();
   const suites = await sql<{ thresholds: unknown }[]>`
     select s.thresholds
@@ -326,7 +326,7 @@ export async function updateEmployeeRelease(
 ) {
   const update = UpdateEmployeeReleaseInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   const sql = getDatabase();
   await ensureQualityDefaults({ context, workspaceId, actorId: actor });
   const rows = await sql<
@@ -484,7 +484,7 @@ export async function getEmployeeQualityDashboard(
   workspaceIdInput?: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const actor = requireAdmin(context, workspaceId);
+  const actor = await requireAdmin(context, workspaceId);
   await ensureQualityDefaults({ context, workspaceId, actorId: actor });
   const sql = getDatabase();
   const [employees, metrics, feedback] = await Promise.all([

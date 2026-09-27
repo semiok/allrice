@@ -18,22 +18,11 @@ export async function GET(request: Request) {
       context,
       workspaceId ?? undefined,
     );
-    const canAdminister =
-      context.actor.type === 'user' &&
-      context.memberships.some(
-        (membership) =>
-          membership.active &&
-          membership.userId === context.actor.id &&
-          membership.organizationId === context.organizationId &&
-          membership.role === 'admin' &&
-          (membership.workspaceId === null ||
-            membership.workspaceId === workspace.workspaceId),
-      );
     return Response.json(
       {
         workspace: {
           ...workspace,
-          canAdminister,
+          canAdminister: workspace.canAdminister,
           viewerId: context.actor.type === 'user' ? context.actor.id : null,
           preferences:
             context.actor.type === 'user'

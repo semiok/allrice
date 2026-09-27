@@ -17,18 +17,21 @@ describe('SaaS capability manifest', () => {
     expect(manifest.actions).not.toContain('model_connection:manage');
   });
 
-  it('separates tenant configuration from platform secret management', () => {
+  it('gives historical tenant admins the same capabilities as members; only platform manages configuration', () => {
     const tenantAdmin = buildSaasCapabilityManifest({
       member: true,
       tenantAdmin: true,
       platformAdmin: false,
     });
-    expect(tenantAdmin.actions).toContain('model_policy:manage');
+    expect(tenantAdmin).toEqual(
+      buildSaasCapabilityManifest({ member: true, platformAdmin: false }),
+    );
+    expect(tenantAdmin.actions).not.toContain('model_policy:manage');
     expect(tenantAdmin.actions).not.toContain('model_connection:manage');
 
     const platformAdmin = buildSaasCapabilityManifest({
       member: true,
-      tenantAdmin: true,
+      tenantAdmin: false,
       platformAdmin: true,
     });
     expect(platformAdmin.actions).toContain('model_connection:manage');

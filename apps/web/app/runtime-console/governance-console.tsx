@@ -338,7 +338,7 @@ export function GovernanceConsole() {
     return (
       <div className={styles.embeddedDenied}>
         <h1>平台管理员专用</h1>
-        <p>租户管理员可以配置员工，但不能查看平台 Provider 或授权状态。</p>
+        <p>员工配置与平台 Provider 由平台管理员统一管理。</p>
         <Link href="/chatflow">返回 ChatFlow</Link>
       </div>
     );

@@ -1,4 +1,5 @@
 /** Synthetic P20 evidence only; callers must provide their dedicated schema. */
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import type { RequestContext, Role } from '@allrice/contracts';
@@ -38,8 +39,9 @@ export async function createExperienceFixture(db: ReturnType<typeof postgres>) {
     return context;
   }
   const owner = await member('member', user),
-    reviewer = await member('admin'),
+    reviewer = await member('member'),
     neighbor = await member('member');
+  await authorizeFixturePlatformAdministrator(db, reviewer.actor.id);
   await ensureDefaultEmployee(owner, workspace);
   const session = await createChatSession(owner, {
     workspaceId: workspace,

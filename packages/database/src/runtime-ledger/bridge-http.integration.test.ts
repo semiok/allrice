@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from '../platform-authority.fixture.ts';
 import { updateWorkAutomation } from '../work-automation.ts';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -137,6 +138,7 @@ async function fixture(options: { wss?: boolean } = {}) {
     { expectedRevision: 0, capability: 'computer', enabled: false },
     database,
   );
+  await authorizeFixturePlatformAdministrator(database, ids.user);
   await setRuntimePolicyControls(
     context,
     {

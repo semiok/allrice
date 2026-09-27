@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { Children, useState, type ReactNode } from 'react';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
 import {
@@ -88,8 +88,6 @@ export function WorkProcess({
   const [expanded, setExpanded] = useState(false);
   const process = summarizeWorkProcess(items);
   const microStatus = running && (!streaming || !!parts);
-  const alwaysOpen = !!parts && (running || failed || canceled);
-  const open = expanded || alwaysOpen;
   const waiting = timing?.phase === 'waiting';
   const title = microStatus
     ? waiting
@@ -105,17 +103,26 @@ export function WorkProcess({
         ? '已停止'
         : '工作过程';
   const expandable = Boolean(
-    parts?.length ||
-    timing ||
-    items.length ||
-    assistantCount ||
-    traceStatus === 'failed' ||
-    traceStatus === 'loading',
+    process.steps.length ||
+    Children.toArray(children).length ||
+    traceStatus === 'failed',
   );
-  if (!expandable && !microStatus) return null;
+  const open = expandable && expanded;
+  if (
+    !expandable &&
+    !parts?.length &&
+    !timing &&
+    !microStatus &&
+    !assistantCount &&
+    traceStatus !== 'loading'
+  )
+    return null;
   const summary = [
     process.failed ? `${process.failed} 次未成功` : undefined,
     traceStatus === 'failed' ? '过程加载失败' : undefined,
+    traceStatus === 'loading' && !process.steps.length
+      ? '加载过程…'
+      : undefined,
     microStatus && !waiting ? process.active : undefined,
     assistantCount
       ? `${assistantCount} 个助手${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
@@ -132,10 +139,11 @@ export function WorkProcess({
           open={false}
           expandable={false}
           onToggle={noop}
+          rowClassName={styles.processHeader}
           collapsedContent={
             timing ? (
               <span className={styles.processTiming} aria-label="本轮运行时间">
-                总耗时 <RunElapsedTime timing={timing} running={running} />
+                用时 <RunElapsedTime timing={timing} running={running} />
               </span>
             ) : null
           }
@@ -184,31 +192,19 @@ export function WorkProcess({
     <section
       className={`${reasoning.root} ${styles.workProcess}`}
       aria-label={label}
-      data-state={microStatus && !waiting ? 'running' : 'ok'}
     >
       <DisclosureRow
-        icon={
-          <span
-            className={
-              microStatus && !waiting ? styles.processPulse : undefined
-            }
-            aria-hidden
-          >
-            <IconThinkOutline14 />
-          </span>
-        }
+        icon={<IconThinkOutline14 />}
         title={title}
         open={open}
-        expandable={expandable && !alwaysOpen}
+        expandable={expandable}
         expandOnRowClick
         keepContentWhenOpen
-        rowClassName={reasoning.row}
+        rowClassName={`${reasoning.row} ${styles.processHeader}`}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}
-        onToggle={() => {
-          if (!alwaysOpen) setExpanded((value) => !value);
-        }}
+        onToggle={() => setExpanded((value) => !value)}
         collapsedContent={
           <>
             {timing ? (
@@ -218,7 +214,7 @@ export function WorkProcess({
                   className={styles.processTiming}
                   aria-label="本轮运行时间"
                 >
-                  总耗时 <RunElapsedTime timing={timing} running={running} />
+                  用时 <RunElapsedTime timing={timing} running={running} />
                 </span>
               </>
             ) : null}

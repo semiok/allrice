@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import {
   createCipheriv,
   createDecipheriv,
@@ -80,7 +81,6 @@ const envelopeSchema = z
 function workspaceAdminScope(
   context: RequestContext,
   workspaceInput: string,
-  member = false,
 ): McpScope {
   const workspaceId = UuidSchema.parse(workspaceInput);
   if (
@@ -91,7 +91,7 @@ function workspaceAdminScope(
         m.userId === context.actor.id &&
         m.organizationId === context.organizationId &&
         (m.workspaceId === null || m.workspaceId === workspaceId) &&
-        (m.role === 'admin' || (member && m.role === 'member')),
+        ['admin', 'member'].includes(m.role),
     )
   )
     throw new McpError('MCP_DENIED');
@@ -114,10 +114,18 @@ async function workspaceCurrentAdmin(
   const [row] =
     await tx`select m.id from allrice_memberships m join allrice_users u on u.id=m.user_id
     join allrice_organizations o on o.id=m.organization_id join allrice_workspaces w on w.id=${scope.workspaceId} and w.organization_id=o.id
-    where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and (m.role='admin' or (${member} and m.role='member'))
+    where m.organization_id=${scope.organizationId} and m.user_id=${scope.actorId} and m.active and m.role in ('admin','member')
     and (m.workspace_id is null or m.workspace_id=${scope.workspaceId}) and u.status='active' and o.archived_at is null and w.archived_at is null
     for share of m,u,o,w`;
-  if (!row) throw new McpError('MCP_DENIED');
+  if (
+    !row ||
+    (!member &&
+      !(await isPlatformAdmin(
+        { actor: { type: 'user', id: scope.actorId } },
+        tx,
+      )))
+  )
+    throw new McpError('MCP_DENIED');
 }
 function aad(scope: McpScope, bindingId: string, revision: number) {
   return Buffer.from(
@@ -201,7 +209,7 @@ export function createMcpStore(
   const adminScope = (context: RequestContext, workspaceId: string) =>
     options.administration
       ? tenantManagementScope(context, workspaceId, options.administration)
-      : workspaceAdminScope(context, workspaceId, options.memberManaged);
+      : workspaceAdminScope(context, workspaceId);
   const currentAdmin = (tx: Database | Tx, scope: McpScope) =>
     options.administration
       ? checkTenantManagement(tx, options.administration, scope)
@@ -571,7 +579,7 @@ export function createMcpStore(
       context: RequestContext,
       input: { workspaceId: string; connectionId: string; redirectUrl: string },
     ) {
-      const scope = workspaceAdminScope(context, input.workspaceId, true);
+      const scope = workspaceAdminScope(context, input.workspaceId);
       const redirect = new URL(input.redirectUrl);
       if (
         redirect.pathname !== '/api/v1/connections/callback' ||
@@ -620,7 +628,7 @@ export function createMcpStore(
       workspaceId: string,
       connectionId: string,
     ) {
-      const scope = workspaceAdminScope(context, workspaceId, true);
+      const scope = workspaceAdminScope(context, workspaceId);
       await workspaceCurrentAdmin(db(), scope, true);
       const row = await read(scope, connectionId);
       if (
@@ -659,7 +667,7 @@ export function createMcpStore(
         where organization_id=${context.organizationId} and managed_by=${context.actor.id} and oauth_state_hash=${hash(input.state)}
           and oauth_stage='redirect' and oauth_expires_at>clock_timestamp()`;
       if (!match) throw new McpError('MCP_DENIED');
-      const scope = workspaceAdminScope(context, match.workspace_id, true);
+      const scope = workspaceAdminScope(context, match.workspace_id);
       await db().begin(async (tx) => {
         await workspaceCurrentAdmin(tx, scope, true);
         await lockConnection(scope, match.binding_id, tx);
@@ -743,7 +751,7 @@ export function createMcpStore(
       workspaceId: string,
       connectionId: string,
     ) {
-      const scope = workspaceAdminScope(context, workspaceId, true);
+      const scope = workspaceAdminScope(context, workspaceId);
       await workspaceCurrentAdmin(db(), scope, true);
       return publicConnection(scope, connectionId);
     },
@@ -756,7 +764,7 @@ export function createMcpStore(
         remove?: boolean;
       },
     ) {
-      const scope = workspaceAdminScope(context, input.workspaceId, true);
+      const scope = workspaceAdminScope(context, input.workspaceId);
       await db().begin(async (tx) => {
         await workspaceCurrentAdmin(tx, scope, true);
         await lockConnection(scope, input.connectionId, tx);
