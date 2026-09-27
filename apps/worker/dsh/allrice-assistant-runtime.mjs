@@ -374,22 +374,17 @@ export function createGovernedAssistantNativeRuntime(
     }
   }
   const modelAdmissions = new Map();
-  // Supported native proposal seam: return a new config BEFORE prepareCall
-  // freezes maxTokens. Never mutate the prepared llm/stream request.
-  ctx.on('agent/request', async ({ agent, signal }, next) => {
-    const config = await next();
-    if (!bindings.has(agent.id)) return config;
-    if (modelAdmissions.has(agent.id))
+  async function prepareModel(id, requested, signal) {
+    if (modelAdmissions.has(id))
       throw Error('assistant_model_unknown_no_replay');
-    const requested = config.maxTokens;
     if (!Number.isSafeInteger(requested) || requested <= 0)
       throw Error('assistant_model_output_bound_required');
     await Promise.all([...pendingWrites]);
-    await checkpoints(agent.id);
+    await checkpoints(id);
     const callId = randomUUID();
     const prepared = await bridge(
       'model-prepare',
-      { nativeSessionId: agent.id, callId, outputTokens: requested },
+      { nativeSessionId: id, callId, outputTokens: requested },
       signal,
     );
     if (!prepared.prepared) throw Error('assistant_model_unknown_no_replay');
@@ -399,11 +394,21 @@ export function createGovernedAssistantNativeRuntime(
       prepared.outputTokens > requested
     )
       throw Error('assistant_model_output_grant_invalid');
-    modelAdmissions.set(agent.id, {
+    modelAdmissions.set(id, {
       callId,
       outputTokens: prepared.outputTokens,
     });
-    return { ...config, maxTokens: prepared.outputTokens };
+    return prepared.outputTokens;
+  }
+  // Supported native proposal seam: return a new config BEFORE prepareCall
+  // freezes maxTokens. Never mutate the prepared llm/stream request.
+  ctx.on('agent/request', async ({ agent, signal }, next) => {
+    const config = await next();
+    if (!bindings.has(agent.id)) return config;
+    return {
+      ...config,
+      maxTokens: await prepareModel(agent.id, config.maxTokens, signal),
+    };
   });
   ctx.on('llm/stream', async function* (options, next) {
     const id = options.sessionId;
@@ -416,6 +421,15 @@ export function createGovernedAssistantNativeRuntime(
     }
     await Promise.all([...pendingWrites]);
     await checkpoints(id);
+    // Pinned dsh-compaction-basic deliberately calls llm.stream directly with
+    // purpose=compaction, without agent/request. Admit this native auxiliary
+    // call through the same ledger; never bypass accounting or rewrite DSH's
+    // prepared summarization envelope. A smaller API grant cannot fund it.
+    if (options.purpose === 'compaction') {
+      const granted = await prepareModel(id, options.maxTokens, options.signal);
+      if (granted !== options.maxTokens)
+        throw Error('assistant_compaction_output_budget_exhausted');
+    }
     const admission = modelAdmissions.get(id);
     if (!admission || options.maxTokens !== admission.outputTokens)
       throw Error('assistant_model_preparation_required');
