@@ -74,6 +74,7 @@ export class IdentityError extends Error {
     public readonly code:
       | 'authentication_failed'
       | 'authorization_denied'
+      | 'portal_account_mismatch'
       | 'invitation_invalid'
       | 'tenant_context_invalid',
   ) {
@@ -462,7 +463,11 @@ export async function ensureBootstrapPortalPrincipal(
   });
 }
 
-export async function login(input: unknown, expectedEmail?: string) {
+export async function login(
+  input: unknown,
+  expectedEmail?: string,
+  expectedAccountKind?: 'employee' | 'platform_admin',
+) {
   const credentials = LoginInputSchema.parse(input);
   return getDatabase().begin(async (transaction) => {
     // Password verification and session creation serialize with password reset.
@@ -487,6 +492,14 @@ export async function login(input: unknown, expectedEmail?: string) {
       and (m.workspace_id is null or exists (select 1 from allrice_workspaces w
         where w.id=m.workspace_id and w.archived_at is null)) limit 1`;
     if (!membership) throw new IdentityError('authorization_denied');
+    if (expectedAccountKind) {
+      const admin = await isPlatformAdmin(
+        { actor: { type: 'user', id: user.id } },
+        transaction,
+      );
+      if (admin !== (expectedAccountKind === 'platform_admin'))
+        throw new IdentityError('portal_account_mismatch');
+    }
     return {
       user: {
         id: user.id,

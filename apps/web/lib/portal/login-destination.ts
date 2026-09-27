@@ -10,6 +10,10 @@ export function loginDestination(
     const target = new URL(next, origin);
     if (
       target.origin === origin &&
+      !(
+        new URL(origin).hostname === 'allrice.bplabs.xyz' &&
+        /^\/runtime-console(\/|$)/.test(target.pathname)
+      ) &&
       /^\/(chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(
         target.pathname,
       )

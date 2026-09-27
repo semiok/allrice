@@ -2603,6 +2603,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         await dialog.getByText('Synthetic member', { exact: true }).waitFor();
+        expect(
+          await dialog.getByText('平台管理', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await dialog.getByRole('link', { name: '打开平台管理' }).count(),
+        ).toBe(0);
         await f.page.screenshot({
           path: `/tmp/met160-settings-account-${width}.png`,
         });

@@ -1,13 +1,11 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import Link from 'next/link';
 import {
   Button,
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import type { SaasCapabilityManifest } from '@allrice/contracts';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
@@ -22,7 +20,6 @@ import styles from './sidebar-settings.module.css';
 export function SidebarSettings({
   capabilities,
   collapsed,
-  manifest,
   workspaceId,
   monthlyQuota,
   preferences,
@@ -33,7 +30,6 @@ export function SidebarSettings({
 }: {
   capabilities: ReactNode;
   collapsed: boolean;
-  manifest: SaasCapabilityManifest;
   workspaceId: string;
   monthlyQuota: ReturnType<typeof useMonthlyQuota>;
   preferences: ReturnType<typeof usePersonalPreferences>;
@@ -67,9 +63,6 @@ export function SidebarSettings({
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
     { id: 'preferences', label: '个人偏好' },
-    ...(manifest.surfaces.includes('platform_admin')
-      ? [{ id: 'platform', label: '平台管理' }]
-      : []),
   ];
   const close = () => onSectionChange(null);
   return (
@@ -200,11 +193,6 @@ export function SidebarSettings({
                         onBridge();
                       }}
                     />
-                  )}
-                  {row.id === 'platform' && (
-                    <Link href="/runtime-console?view=governance">
-                      打开平台管理
-                    </Link>
                   )}
                 </div>
               ));

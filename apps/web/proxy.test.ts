@@ -299,7 +299,7 @@ describe('legacy navigation compatibility', () => {
             new NextRequest(`https://${host}${path}`, { headers: { host } }),
           );
           expect(response.headers.get('location')).toBe(
-            `https://allrice.bplabs.xyz${path}`,
+            `https://${host === 'allrice-dsh.bplabs.xyz' ? 'allrice-admin' : 'allrice'}.bplabs.xyz${path}`,
           );
         }
         for (const path of [
@@ -348,4 +348,40 @@ it('drops credentials in legacy navigation but preserves invitation activation t
   expect(location.searchParams.get('session')).toBe('kept');
   expect(location.searchParams.get('next')).toBe('/workspace');
   expect(location.href).not.toContain('not-forwarded');
+});
+
+it('keeps the admin login on its own host and removes the console from the employee entry', () => {
+  vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
+  try {
+    const adminHost = 'allrice-admin.bplabs.xyz';
+    const login = proxy(
+      new NextRequest(`https://${adminHost}/login`, {
+        headers: { host: adminHost },
+      }),
+    );
+    expect(login.headers.get('location')).toBeNull();
+    expect(login.status).toBe(200);
+    const console = proxy(
+      new NextRequest(`https://${adminHost}/runtime-console`, {
+        headers: { host: adminHost },
+      }),
+    );
+    expect(console.headers.get('location')).toBe(`https://${adminHost}/login`);
+    const tenant = proxy(
+      new NextRequest(
+        'https://allrice.bplabs.xyz/runtime-console?view=activity',
+        {
+          headers: {
+            host: 'allrice.bplabs.xyz',
+            cookie: 'allrice_session=old-admin-cookie',
+          },
+        },
+      ),
+    );
+    expect(tenant.headers.get('location')).toBe(
+      'https://allrice.bplabs.xyz/chatflow',
+    );
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

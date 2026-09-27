@@ -25,9 +25,14 @@ const definitions: readonly PortalDefinition[] = [
   {
     key: 'runtime-console',
     kind: 'platform_admin',
-    title: 'AllRice Runtime Console',
-    subtitle: '查看真实 Worker DSH Runtime、Session 与原生事件。',
-    hosts: ['allrice-dsh.bplabs.xyz', 'allrice-dsh.traditionow.ai'],
+    title: 'Allrice 管理后台',
+    subtitle: '使用管理员账号登录，管理公司、员工与平台配置。',
+    hosts: [
+      'allrice-admin.bplabs.xyz',
+      'allrice-admin.traditionow.ai',
+      'allrice-dsh.bplabs.xyz',
+      'allrice-dsh.traditionow.ai',
+    ],
     username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
     passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
     homePath: '/runtime-console',
@@ -135,6 +140,19 @@ export function resolvePortal(host: string | null | undefined) {
   );
 }
 
+/** Public employee and admin entries accept only their own account kind.
+ * Unconfigured localhost keeps the development harness usable with either role.
+ */
+export function portalAccountKind(host: string | null | undefined) {
+  if (normalizeHost(host) === 'allrice.bplabs.xyz') return 'employee' as const;
+  const portal = resolvePortal(host);
+  return portal?.kind === 'platform_admin'
+    ? ('platform_admin' as const)
+    : portal?.kind === 'tenant'
+      ? ('employee' as const)
+      : undefined;
+}
+
 export function portalPublicView(portal: PortalDefinition) {
   return {
     key: portal.key,
@@ -181,6 +199,7 @@ export function legacyPortalNavigation(request: {
   const host = request.headers.get('host'),
     portal = resolvePortal(host);
   if (!portal || !portal.hosts.includes(normalizeHost(host))) return null;
+  if (normalizeHost(host) === 'allrice-admin.bplabs.xyz') return null;
   const url = new URL(request.url);
   if (
     url.pathname !== '/' &&
@@ -189,7 +208,11 @@ export function legacyPortalNavigation(request: {
     )
   )
     return null;
-  const destination = new URL('https://allrice.bplabs.xyz');
+  const destination = new URL(
+    portal.kind === 'platform_admin'
+      ? 'https://allrice-admin.bplabs.xyz'
+      : 'https://allrice.bplabs.xyz',
+  );
   destination.pathname = url.pathname;
   destination.search = safeNavigationQuery(url);
   return destination;

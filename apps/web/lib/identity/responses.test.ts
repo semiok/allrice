@@ -9,6 +9,7 @@ describe('identity error responses', () => {
   it.each([
     ['authentication_failed', 401, 'AUTHENTICATION_REQUIRED'],
     ['authorization_denied', 403, 'AUTHORIZATION_DENIED'],
+    ['portal_account_mismatch', 403, 'AUTHORIZATION_DENIED'],
     ['tenant_context_invalid', 403, 'AUTHORIZATION_DENIED'],
     ['invitation_invalid', 400, 'VALIDATION_FAILED'],
   ] as const)(

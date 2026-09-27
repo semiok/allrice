@@ -74,7 +74,7 @@ integration('shared portal HTTP identity with real PostgreSQL', () => {
     });
     return { ...p, name };
   }
-  it('sets only a database session on the shared entry and routes actual platform admins separately', async () => {
+  it('separates employee and admin login, rejects mismatched accounts without issuing a session, and rejects old admin cookies on the employee entry', async () => {
     const a = await employee();
     const response = await signIn(
       request('/api/v1/auth/login', {
@@ -91,14 +91,70 @@ integration('shared portal HTTP identity with real PostgreSQL', () => {
     expect(
       await getRequestContext(request('/api/v1/auth/session')),
     ).toMatchObject({ organizationId: a.organizationId });
-    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', a.user.email);
-    const admin = await signIn(
+    const employeeSession = jar.get('allrice_session')!;
+    const adminHost = 'allrice-admin.bplabs.xyz';
+    const portal = resolvePortal(adminHost)!;
+    const adminPrincipal = await ensureBootstrapPortalPrincipal(
+      portal.principal,
+    );
+    await initializeAccountLogin({
+      userId: adminPrincipal.user.id,
+      username: portal.username,
+      password: 'admin-secret-password',
+    });
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', portal.principal.email);
+    jar.clear();
+    const count = async () =>
+      (await fixture.db`select count(*)::int as n from allrice_sessions`)[0]!.n;
+    const before = await count();
+    const wrongEntry = await signIn(
       request('/api/v1/auth/login', {
-        username: a.name,
-        password: 'admin@321',
+        username: portal.username,
+        password: 'admin-secret-password',
       }),
     );
-    expect(await admin.json()).toMatchObject({ homePath: '/runtime-console' });
+    expect(wrongEntry.status).toBe(403);
+    expect(await count()).toBe(before);
+    expect(jar.has('allrice_session')).toBe(false);
+    const admin = await signIn(
+      request(
+        '/api/v1/auth/login',
+        { username: portal.username, password: 'admin-secret-password' },
+        adminHost,
+      ),
+    );
+    expect(admin.status).toBe(200);
+    expect(await admin.json()).toMatchObject({
+      homePath: '/runtime-console',
+      user: { id: adminPrincipal.user.id },
+    });
+    expect(
+      await getRequestContext(
+        request('/api/v1/auth/session', undefined, adminHost),
+      ),
+    ).toMatchObject({ actor: { id: adminPrincipal.user.id } });
+    expect(await getRequestContext(request('/api/v1/auth/session'))).toBeNull();
+    const adminPortalCookie = jar.get('allrice_portal_session')!;
+    jar.clear();
+    const beforeEmployeeAttempt = await count();
+    const employeeOnAdmin = await signIn(
+      request(
+        '/api/v1/auth/login',
+        { username: a.name, password: 'admin@321' },
+        adminHost,
+      ),
+    );
+    expect(employeeOnAdmin.status).toBe(401);
+    expect(await count()).toBe(beforeEmployeeAttempt);
+    expect(jar.has('allrice_session')).toBe(false);
+    jar.set('allrice_session', employeeSession);
+    jar.set('allrice_portal_session', adminPortalCookie);
+    await expect(
+      getRequestContext(request('/api/v1/auth/session', undefined, adminHost)),
+    ).rejects.toMatchObject({ code: 'tenant_context_invalid' });
+    expect(
+      await getRequestContext(request('/api/v1/auth/session')),
+    ).toMatchObject({ actor: { id: a.user.id } });
   });
   it('password changes clear browser cookies; legacy environment credentials cannot undo the change', async () => {
     const host = 'allrice-snow.bplabs.xyz';
