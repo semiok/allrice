@@ -45,6 +45,14 @@ suite('MET162 durable resource waiting', () => {
       await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where run_id=${tenants[1]!.run}`;
       expect(await observers[0]!.isTurn()).toBe(false);
       expect(await observers[1]!.isTurn()).toBe(false);
+      await f.db`update allrice_jobs set status='canceled',lease_token=null,worker_id=null,claimed_at=null,heartbeat_at=null,lease_expires_at=null,completed_at=clock_timestamp() where run_id=${tenants[0]!.run}`;
+      await observers[0]!.observe({ stage: 'canceled' });
+      expect(
+        await f.db`select state from allrice_task_resource_waits where run_id=${tenants[0]!.run}`,
+      ).toEqual([{ state: 'canceled' }]);
+      await expect(
+        observers[0]!.observe({ stage: 'acquired' }),
+      ).rejects.toThrow('execution_observer_lease_lost');
       for (const o of observers.slice(2)) {
         expect(await o.isTurn()).toBe(true);
         await o.observe({

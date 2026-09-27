@@ -72,11 +72,29 @@ function attestWatchdog() {
             '--attest',
           ]
         : ['-n', '/usr/local/lib/allrice-cloud/watchdog.py', '--attest'];
-    watchdogAttestation = promisify(execFile)(executable, args, {
-      timeout: 15000,
-      maxBuffer: 4096,
-      env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
-    })
+    watchdogAttestation = (async () => {
+      // A busy VM can briefly delay its heartbeat or SSH probe. These are
+      // read-only checks before any script starts, so retry them together;
+      // never reuse a failed/expired attestation or replay tenant execution.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await promisify(execFile)(executable, args, {
+            timeout: 5000,
+            maxBuffer: 4096,
+            env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
+          });
+        } catch (error) {
+          if (attempt >= 2) throw error;
+          console.error(
+            JSON.stringify({
+              event: 'cloud_watchdog_probe_retry',
+              attempt: attempt + 1,
+            }),
+          );
+          await delay(250);
+        }
+      }
+    })()
       .then((result) => {
         attestationExpires = Date.now() + 2000;
         return result;
@@ -485,6 +503,7 @@ export class CloudRunnerBackend {
       reservation = await this.acquireSlot(
         options,
         office ? officeSandboxImage : cloudToolchainImageV1,
+        (args.limits.memoryMiB + 128) * 1024 ** 2,
       );
       await options.observe?.({
         stage: 'acquired',
@@ -540,6 +559,7 @@ export class CloudRunnerBackend {
   private async acquireSlot(
     options: Parameters<CloudRunnerBackend['execute']>[2],
     imageDigest: string,
+    minimumMemoryBytes: number,
   ) {
     if (!uuid.test(options.attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
@@ -552,7 +572,7 @@ export class CloudRunnerBackend {
       if (capacity.slots === 0)
         throw new CloudRunnerError('CLOUD_NODE_RESOURCES_INSUFFICIENT');
       const reason =
-        capacity.availableBytes < 256 * 1024 ** 2
+        capacity.availableBytes < minimumMemoryBytes
           ? 'memory_pressure'
           : options.isTurn && !(await options.isTurn())
             ? 'fair_queue'
@@ -656,9 +676,30 @@ export class CloudRunnerBackend {
           uuid.test(owner) &&
           Number.isFinite(expires) &&
           expires <= Date.now() &&
-          !existing.State.Running &&
-          !(await this.inspect(owner))?.State.Running
+          !existing.State.Running
         ) {
+          const abandoned = await this.inspect(owner);
+          if (abandoned?.State.Running) continue;
+          if (abandoned?.State.Status === 'created') {
+            // Delete a never-started attempt before reclaiming its slot. Docker
+            // serializes delete/start: a delayed old Worker must get 404, not
+            // start after our final ownership check. Never delete exited
+            // attempts here: their logs may still be needed for recovery.
+            try {
+              await this.call('DELETE', `/containers/${abandoned.Id}?v=true`);
+            } catch (error) {
+              if (
+                error instanceof CloudRunnerError &&
+                error.message === 'CLOUD_DAEMON_409'
+              )
+                continue;
+              if (
+                !(error instanceof CloudRunnerError) ||
+                error.message !== 'CLOUD_DAEMON_404'
+              )
+                throw error;
+            }
+          }
           await this.call('DELETE', `/containers/${existing.Id}?v=true`).catch(
             (error) => {
               if (

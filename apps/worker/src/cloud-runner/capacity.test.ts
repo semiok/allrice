@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   CloudCommandInputSchema,
   type CloudCommandInput,
@@ -68,7 +68,10 @@ class Daemon extends CloudRunnerBackend {
       }
     throw new CloudRunnerError('CLOUD_DAEMON_404');
   }
-  override async inspect() {
+  override async inspect(
+    attemptId: string,
+  ): ReturnType<CloudRunnerBackend['inspect']> {
+    expect(attemptId).toMatch(/^[a-f0-9-]{36}$/);
     return null;
   }
   protected override async executeAdmittedScript(
@@ -125,6 +128,61 @@ describe('shared physical sandbox capacity', () => {
     await expect(run).rejects.toThrow('CLOUD_EXECUTION_REVOKED');
     expect(backend.completed).toBe(0);
     expect(backend.slots.size).toBe(0);
+  });
+  it('retires an expired never-started attempt before allowing its slot to be reused', async () => {
+    const backend = new Daemon();
+    vi.spyOn(backend, 'capacity').mockResolvedValue({
+      slots: 1,
+      backendId: 'synthetic',
+      availableBytes: 1024 ** 3,
+    });
+    const owner = randomUUID(),
+      staleId = 'b'.repeat(64),
+      placeholderId = 'c'.repeat(64);
+    backend.slots.set('allrice-cloud-slot-0', {
+      Id: placeholderId,
+      Config: {
+        Labels: {
+          'xyz.bplabs.allrice.cloud.slot-owner': owner,
+          'xyz.bplabs.allrice.cloud.slot-deadline': '1',
+        },
+      },
+      State: { Running: false },
+    });
+    let retired = false;
+    vi.spyOn(backend, 'inspect').mockImplementation(async (id) =>
+      id === owner && !retired
+        ? {
+            Id: staleId,
+            Config: { Labels: {} },
+            HostConfig: { Runtime: 'runsc' },
+            State: {
+              Running: false,
+              Status: 'created',
+              ExitCode: 0,
+              OOMKilled: false,
+            },
+          }
+        : null,
+    );
+    const original = backend.call.bind(backend);
+    vi.spyOn(backend, 'call').mockImplementation(async (method, path) => {
+      if (path.includes(staleId)) {
+        expect(method).toBe('DELETE');
+        retired = true;
+        return Buffer.alloc(0);
+      }
+      if (path.includes(placeholderId)) expect(retired).toBe(true);
+      return original(method, path);
+    });
+    await backend.executeOffice(args, [], {
+      attemptId: randomUUID(),
+      deadlineAt: new Date(Date.now() + 5000).toISOString(),
+      maintainLease: async () => true,
+    });
+    expect(retired).toBe(true);
+    expect(backend.completed).toBe(1);
+    vi.restoreAllMocks();
   });
   it('calculates VM capacity from effective memory and CPUs, including zero-slot nodes', () => {
     const source = fileURLToPath(new URL('./watchdog.py', import.meta.url));
