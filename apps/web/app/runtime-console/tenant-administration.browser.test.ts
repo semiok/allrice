@@ -3,7 +3,10 @@ import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
+import type {
+  Browser,
+  Page,
+} from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import {
   createAssistantFixtureDatabase,
@@ -36,6 +39,14 @@ import {
   frozenPackageSkills,
   readFrozenSkillResource,
 } from '../../../../packages/database/src/skill-bundles.ts';
+
+async function openIndependentTools(page: Page) {
+  const section = page.locator('details').filter({
+    has: page.locator(':scope > summary', { hasText: '单独选择工具' }),
+  });
+  if ((await section.getAttribute('open')) === null)
+    await section.locator(':scope > summary').click();
+}
 
 const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
 vi.mock('../../lib/storage/runtime', () => ({
@@ -831,6 +842,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         );
       const original = await directory();
       await page.getByRole('button', { name: '工具', exact: true }).click();
+      await openIndependentTools(page);
       await page
         .getByRole('checkbox', {
           name: '受控开发提案、测试与独立审查',
@@ -842,6 +854,22 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .getByRole('checkbox', { name: /受控开发提案、测试与独立审查/ })
           .isChecked(),
       ).toBe(true);
+      const mcp = page.getByRole('checkbox', {
+        name: '本地 MCP 调用',
+        exact: true,
+      });
+      await mcp.check();
+      const mcpCard = page.locator('div').filter({
+        has: page.locator(':scope > label input[aria-label="本地 MCP 调用"]'),
+      });
+      await mcpCard.locator(':scope > details > summary').click();
+      await mcpCard
+        .locator('summary')
+        .filter({ hasText: '本地 MCP 工具发现' })
+        .click();
+      await mcpCard.getByText('已在上级包含', { exact: true }).waitFor();
+      await mcp.uncheck();
+      expect(await mcp.isChecked()).toBe(false);
       expect((await directory()).currentDraft).toEqual(original.currentDraft);
       // Discard the unsaved development bundle before the independent MCP scenario.
       await page.reload();
@@ -850,6 +878,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .filter({ hasText: 'MET151 MCP safety fixture' })
         .click();
       await page.getByRole('button', { name: '工具', exact: true }).click();
+      await openIndependentTools(page);
       await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
       await page.getByRole('button', { name: '安全', exact: true }).click();
       expect(
@@ -1017,14 +1046,32 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await skill(f.skillId).check();
       await skill(otherSkill.skillId).check();
       await tab('工具');
-      expect(await tool('读取已冻结 Skill').isChecked()).toBe(true);
-      expect(await tool('读取已冻结 Skill').isDisabled()).toBe(true);
-      await page
-        .getByRole('button', { name: '单独保留 联网搜索', exact: true })
-        .click();
+      const branches = page.locator('details').filter({
+        has: page.locator(':scope > summary strong', { hasText: 'p18-' }),
+      });
+      expect(await branches.count()).toBe(2);
+      expect(await branches.first().getAttribute('open')).toBeNull();
+      await branches.first().locator(':scope > summary').focus();
+      await page.keyboard.press('Enter');
+      await branches
+        .first()
+        .getByText('读取已冻结 Skill', { exact: true })
+        .waitFor();
+      expect(await branches.first().getByRole('checkbox').count()).toBe(0);
+      // A shared dependency appears under each skill, without disabled controls.
+      await branches.nth(1).locator(':scope > summary').click();
+      await branches
+        .nth(1)
+        .getByText('读取已冻结 Skill', { exact: true })
+        .waitFor();
+      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
+      expect(await tool('读取已冻结 Skill').isDisabled()).toBe(false);
+      await tool('联网搜索').check();
       await save();
       await open();
       await tab('工具');
+      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
       expect(await tool('联网搜索').isChecked()).toBe(true);
       expect(
         (await directory()).currentDraft.definition.capabilities
@@ -1066,8 +1113,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await tab('技能');
       await skill(f.skillId).uncheck();
       await tab('工具');
+      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
       expect(await tool('读取工作区文件').isChecked()).toBe(false);
-      expect(await tool('读取已冻结 Skill').isChecked()).toBe(true);
+      expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
+      expect(
+        (await directory()).currentDraft.definition.capabilities.toolNames,
+      ).toContain('workspace.skill.read');
       expect(await tool('联网搜索').isChecked()).toBe(true);
       await save();
       await open();
@@ -1143,6 +1194,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           path: process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT,
         });
       await page.getByRole('button', { name: '工具', exact: true }).click();
+      await openIndependentTools(page);
       await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
       await page.getByText('本地项目预览', { exact: true }).waitFor();
       await page.getByRole('checkbox', { name: /云端隔离脚本/ }).check();

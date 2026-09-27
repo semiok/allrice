@@ -16,7 +16,6 @@ import {
   employeeToolCatalog,
   assembleEmployeeCapabilities,
   upgradeEmployeeSkillBindings,
-  employeeToolDependencySources,
   SkillCapabilitySchema,
   employeeColorPalette,
   employeeColorForeground,
@@ -25,6 +24,7 @@ import {
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
+import { EmployeeToolTree, employeeSkillLabel } from './employee-tool-tree';
 import { GeminiCredentialSettings } from './gemini-credential-settings';
 
 type Employee = PlatformEmployeeSummary;
@@ -858,10 +858,6 @@ export function EmployeeProduction() {
   }
 
   let panel: React.ReactNode;
-  const toolSources = employeeToolDependencySources(draft, directory.skills);
-  const explicitTools = new Set(
-    draft.capabilities.explicitToolNames ?? draft.capabilities.toolNames,
-  );
   const trialLinks = trialTargets.map((target) => {
     const workspace = directory.workspaces.find(
       (item) => item.id === target.workspaceId,
@@ -1074,7 +1070,7 @@ export function EmployeeProduction() {
           <Checks
             items={directory.skills.map((skill) => ({
               id: skill.id,
-              label: skill.name,
+              label: employeeSkillLabel(skill),
               detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'}${skill.bundleChecksum ? ` · 冻结资源包 ${skill.resourceCount ?? 0} 项` : ''} · ${skill.description}`,
               disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
             }))}
@@ -1093,7 +1089,7 @@ export function EmployeeProduction() {
               key={skill.id}
               onClick={() => void inspectSkill(skill.id)}
             >
-              查看 {skill.name} 内容
+              查看 {employeeSkillLabel(skill)} 内容
             </button>
           ))}
         </div>
@@ -1268,63 +1264,17 @@ export function EmployeeProduction() {
             ? '勾选工具后保存并发布即可启用；所需的员工能力和执行策略会自动配置。'
             : '选择员工工具，保存并发布后生效。'}
         </p>
-        <div className={styles.checks}>
-          {(
+        <EmployeeToolTree
+          definition={draft}
+          skills={directory.skills}
+          tools={
             directory.tools ??
             employeeToolCatalog.map((tool) => ({ ...tool, released: false }))
-          ).map((tool) => {
-            const name = tool.canonicalName;
-            const sources = toolSources[name] ?? [];
-            const selected = draft.capabilities.toolNames.includes(name);
-            return (
-              <div className={styles.toolChoice} key={name}>
-                <label className={styles.check}>
-                  <input
-                    type="checkbox"
-                    aria-label={tool.label}
-                    checked={selected}
-                    disabled={busy || sources.length > 0}
-                    onChange={(event) => retainTool(name, event.target.checked)}
-                  />
-                  <span>
-                    <strong>{tool.label}</strong>
-                    <small>
-                      {tool.released
-                        ? '可用 · 发布后生效'
-                        : '服务已暂停，暂不可执行'}
-                    </small>
-                    {sources.length ? (
-                      <small>
-                        所需能力：{[...new Set(sources)].join('、')}
-                        {explicitTools.has(name)
-                          ? ' · 已单独保留'
-                          : ' · 自动装配'}
-                      </small>
-                    ) : null}
-                  </span>
-                </label>
-                {sources.length > 0 ? (
-                  <button
-                    type="button"
-                    className={styles.button}
-                    disabled={busy}
-                    aria-label={`${explicitTools.has(name) ? '取消单独保留' : '单独保留'} ${tool.label}`}
-                    onClick={() => retainTool(name, !explicitTools.has(name))}
-                  >
-                    {explicitTools.has(name) ? '取消单独保留' : '单独保留'}
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-        <p className={styles.muted}>
-          自动装配的工具随所选能力生效；选择“单独保留”后，移除相关技能也会保留该工具。
-        </p>
-        <p className={styles.muted}>
-          完整开发协作可在技能页选择
-          development-cooperation，按同一流程装配并发布。单独工具也可按需选择。
-        </p>
+          }
+          busy={busy}
+          onSelectTool={retainTool}
+          onManageSkills={() => setTab('skills')}
+        />
         <details className={styles.muted}>
           <summary>配置帮助</summary>
           <p>
