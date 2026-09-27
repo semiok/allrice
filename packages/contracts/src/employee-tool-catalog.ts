@@ -392,6 +392,7 @@ export function employeePublicationPolicy(
   current: unknown,
   toolNames: readonly string[],
   version: number,
+  preserveExisting = false,
 ) {
   const previous = RuntimePolicyControlsSchema.safeParse(current);
   const selected = new Set(toolNames);
@@ -402,13 +403,24 @@ export function employeePublicationPolicy(
   );
   return RuntimePolicyControlsSchema.parse({
     version,
-    enabled: true,
-    mode: 'execute',
+    enabled:
+      preserveExisting && previous.success ? previous.data.enabled : true,
+    mode: preserveExisting && previous.success ? previous.data.mode : 'execute',
     rules: [
       ...(previous.success
-        ? previous.data.rules.filter((rule) => !actions.has(rule.action))
+        ? previous.data.rules.filter(
+            (rule) => preserveExisting || !actions.has(rule.action),
+          )
         : []),
-      ...[...actions].sort().map((action) => ({ action, effect: 'allow' })),
+      ...[...actions]
+        .filter(
+          (action) =>
+            !preserveExisting ||
+            !previous.success ||
+            !previous.data.rules.some((rule) => rule.action === action),
+        )
+        .sort()
+        .map((action) => ({ action, effect: 'allow' })),
     ],
   });
 }

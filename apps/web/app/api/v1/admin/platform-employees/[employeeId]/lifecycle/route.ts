@@ -3,6 +3,7 @@ import {
   disablePlatformEmployee,
   listPlatformEmployeeAuditEvents,
   rollbackPlatformEmployee,
+  EmployeePublicationTargetError,
 } from '@allrice/database';
 import { PlatformEmployeeLifecycleInputSchema } from '@allrice/contracts';
 
@@ -60,7 +61,7 @@ export async function POST(request: Request, routeContext: RouteContext) {
       );
     }
     if (body.action === 'rollback') {
-      if (!body.expectedPublishedRevisionId || !body.expectedWorkspaceIds)
+      if (!body.expectedPublishedRevisionId)
         return apiProblem({
           status: 409,
           code: 'CONFLICT',
@@ -94,6 +95,13 @@ export async function POST(request: Request, routeContext: RouteContext) {
       new Error('Unsupported platform employee lifecycle action'),
     );
   } catch (error) {
+    if (error instanceof EmployeePublicationTargetError)
+      return apiProblem({
+        status: 409,
+        code: 'CONFLICT',
+        message: error.message,
+        retryable: true,
+      });
     if (error instanceof SyntaxError)
       return apiProblem({
         status: 400,

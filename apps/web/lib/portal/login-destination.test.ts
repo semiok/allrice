@@ -14,3 +14,14 @@ it('preserves a tenant employee trial link without accepting external redirects'
     expect(loginDestination(next, '/chatflow', origin)).toBe('/chatflow');
   }
 });
+
+it('keeps company, application and admin deep links through login', () => {
+  for (const next of [
+    '/runtime-console?view=activity&organizationId=kept',
+    '/workspace/mcp?connectionId=kept',
+    '/chatflow?session=kept',
+  ])
+    expect(
+      loginDestination(next, '/chatflow', 'https://allrice.bplabs.xyz'),
+    ).toBe(next);
+});

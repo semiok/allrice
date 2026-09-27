@@ -2,7 +2,11 @@ import { cookies } from 'next/headers';
 
 import { authenticateSession, DataAccessError } from '@allrice/database';
 
-import { portalAuthEnabled, resolvePortal } from '../portal/config';
+import {
+  isUnifiedPortalHost,
+  portalAuthEnabled,
+  resolvePortal,
+} from '../portal/config';
 import {
   portalSessionCookieName,
   verifyPortalSession,
@@ -12,7 +16,8 @@ export const sessionCookieName = 'allrice_session';
 
 export const sessionCookieOptions = {
   httpOnly: true,
-  sameSite: 'strict' as const,
+  // OAuth uses a top-level GET callback with single-use state bound to this user.
+  sameSite: 'lax' as const,
   secure:
     process.env.NODE_ENV === 'production' &&
     process.env.ALLRICE_PORTAL_SECURE_COOKIE !== '0',
@@ -23,7 +28,10 @@ export async function getRequestContext(request: Request) {
   const cookieStore = await cookies();
   const token = cookieStore.get(sessionCookieName)?.value;
   if (!token) return null;
-  if (portalAuthEnabled()) {
+  if (
+    portalAuthEnabled() &&
+    !isUnifiedPortalHost(request.headers.get('host'))
+  ) {
     const portal = resolvePortal(request.headers.get('host'));
     if (!portal) return null;
     const portalSession = verifyPortalSession(
@@ -31,10 +39,14 @@ export async function getRequestContext(request: Request) {
       portal,
     );
     if (!portalSession) return null;
-    return authenticateSession(token, {
+    const context = await authenticateSession(token, {
       organizationId: portalSession.organizationId,
       workspaceId: portalSession.workspaceId,
     });
+    return context?.actor.type === 'user' &&
+      context.actor.id === portalSession.subject
+      ? context
+      : null;
   }
   return authenticateSession(token, {
     organizationId:

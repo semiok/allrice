@@ -217,6 +217,9 @@ export async function executeEmployeeRun({
         employeeVersionId: input.employeeVersionId,
         provider: resolved.providerSnapshot,
         systemPrompt: resolved.promptSnapshot.systemPrompt,
+        ...(resolved.promptSnapshot.organizationContext
+          ? { organizationContext: resolved.promptSnapshot.organizationContext }
+          : {}),
         skills: resolved.nativeSkills
           .map(
             (skill) =>

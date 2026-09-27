@@ -8,6 +8,7 @@ import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import {
   requireTenantManagementScope,
+  requireTenantInspectionScope,
   type TenantManagementTarget,
 } from './tenant-management-scope.ts';
 import { getAdminTenantEnvironments } from './tenant-environments.ts';
@@ -18,7 +19,7 @@ import { inspectTenantDevelopment } from './tenant-development-inspection.ts';
 // Do not expose provider configuration, raw event payloads or encrypted inputs.
 // Persisted output has already passed runtime redaction; mask common credential
 // forms once more at this new display boundary, without decrypting any secret.
-const diagnosticText = (text: string) =>
+export const diagnosticText = (text: string) =>
   text
     .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{12,}/g, '[REDACTED]')
@@ -106,7 +107,7 @@ export async function inspectTenantRun(
 ): Promise<TenantRunInspection> {
   const runId = UuidSchema.parse(runInput),
     { organizationId, workspaceId, subjectId } = target;
-  await requireTenantManagementScope(issuer, target, db);
+  await requireTenantInspectionScope(issuer, target, db);
   const [row] = await db<
     {
       session_id: string;
@@ -161,7 +162,7 @@ export async function inspectTenantRun(
     db,
   );
   await db.begin(async (tx) => {
-    await requireTenantManagementScope(issuer, target, tx);
+    await requireTenantInspectionScope(issuer, target, tx);
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
       values(${organizationId},${workspaceId},${issuer.actor.id},'tenant.run.inspected','run',${runId},'recorded','explicit_tenant_user_run_inspection',${tx.json({ subjectId, readOnly: true })})`;
   });

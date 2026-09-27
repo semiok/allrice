@@ -7,7 +7,12 @@ export function loginDestination(
   if (!next) return fallback;
   try {
     const target = new URL(next, origin);
-    if (target.origin === origin && target.pathname === '/chatflow')
+    if (
+      target.origin === origin &&
+      /^\/(chatflow|runtime-console|workspace|employees|automation)(\/|$)/.test(
+        target.pathname,
+      )
+    )
       return target.pathname + target.search;
   } catch {
     /* Invalid navigation hints do not change the login destination. */

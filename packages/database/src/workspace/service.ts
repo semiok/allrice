@@ -315,7 +315,8 @@ export async function ensureDefaultEmployee(
     await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${context.organizationId}:${workspaceId}`},0))`;
     const [managed] =
       await transaction`select id from allrice_platform_employee_tenant_assignments
-      where organization_id=${context.organizationId} and workspace_id=${workspaceId} limit 1`;
+      where organization_id=${context.organizationId} and workspace_id=${workspaceId}
+      union all select id from allrice_organizations where id=${context.organizationId} and managed_employee_roster limit 1`;
     if (managed) {
       // A withdrawn deployment is a durable decision. Reads must never recreate
       // Rice or revive an old personal assignment. An empty roster is valid.
@@ -398,7 +399,7 @@ export async function ensureDefaultEmployee(
           ) then excluded.employee_version_id
           else allrice_employee_assignments.employee_version_id
         end,
-        updated_at = now()
+        updated_at = now() where allrice_employee_assignments.selection_mode<>'exclude'
     `;
     const rows = await transaction<AssignmentRow[]>`
       select

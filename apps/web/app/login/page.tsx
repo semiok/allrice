@@ -42,13 +42,11 @@ export default async function LoginPage() {
       <section className="auth-form-panel">
         <div className="auth-panel">
           <p className="eyebrow">
-            {publicPortal
-              ? 'ALLRICE · PRIVATE PORTAL'
-              : 'ALLRICE · INVITATION ONLY'}
+            {publicPortal ? 'ALLRICE · PRIVATE PORTAL' : 'ALLRICE · WORKSPACE'}
           </p>
           <h1>{publicPortal?.title ?? '登录工作台'}</h1>
           <p className="lede">
-            {publicPortal?.subtitle ?? '仅限已接受邀请并激活的账号。'}
+            {publicPortal?.subtitle ?? '使用管理员为你创建的员工账号登录。'}
           </p>
           <LoginForm
             bootstrap={

@@ -3,6 +3,8 @@ export * from './codex-token-policy.ts';
 export * from './identity.ts';
 export * from './user-preferences.ts';
 export * from './tenant-administration.ts';
+export * from './organization-administration.ts';
+export * from './organization-employee-assignments.ts';
 export * from './employee-administration.ts';
 export * from './data.ts';
 export * from './workspace.ts';
@@ -85,3 +87,4 @@ export {
   recordManagedCloudEnvironment,
   type ManagedCloudEnvironmentReport,
 } from './tenant-employee-access.ts';
+export * from './organization-activity.ts';

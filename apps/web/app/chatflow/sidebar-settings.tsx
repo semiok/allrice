@@ -11,6 +11,7 @@ import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
 import { MonthlyQuota } from './monthly-quota';
+import { AccountPasswordSettings } from './account-password-settings';
 import { ComputerSettings } from './computer-settings';
 import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
@@ -140,13 +141,16 @@ export function SidebarSettings({
                     </>
                   )}
                   {row.id === 'account' && (
-                    <MonthlyQuota
-                      expanded
-                      providerLabel={providerLabel}
-                      data={monthlyQuota.data}
-                      failed={monthlyQuota.failed}
-                      onRefresh={() => void monthlyQuota.reload()}
-                    />
+                    <>
+                      <MonthlyQuota
+                        expanded
+                        providerLabel={providerLabel}
+                        data={monthlyQuota.data}
+                        failed={monthlyQuota.failed}
+                        onRefresh={() => void monthlyQuota.reload()}
+                      />
+                      <AccountPasswordSettings />
+                    </>
                   )}
                   {row.id === 'apps' && (
                     <ConnectedApps workspaceId={workspaceId} />
