@@ -5200,6 +5200,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it('archives with native Undo and restores an archived read-only transcript', async () => {
     const f = await fixture({ artifacts: true });
     try {
+      const archiveEntry = f.page.getByRole('button', {
+        name: '查看归档',
+        exact: true,
+      });
+      const newWork = f.page.getByRole('button', {
+        name: '新的工作',
+        exact: true,
+      });
+      const archiveBox = await archiveEntry.boundingBox();
+      const newWorkBox = await newWork.boundingBox();
+      expect(archiveBox!.x).toBeGreaterThan(newWorkBox!.x);
+      expect(Math.abs(archiveBox!.y - newWorkBox!.y)).toBeLessThan(1);
+      expect(await f.page.getByLabel('工作记录筛选').count()).toBe(0);
+      expect(
+        await f.page.getByRole('button', { name: '返回当前工作' }).count(),
+      ).toBe(0);
+      if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
+        await f.page.screenshot({ path: '.local/archive-entry-desktop.png' });
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
       await row.hover();
       await row.getByRole('button', { name: '归档会话', exact: true }).click();
@@ -5226,7 +5244,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('link', { name: '下载', exact: true })
           .getAttribute('href'),
       ).toContain(artifact(10).object.id);
-      await f.page.getByLabel('工作记录筛选').selectOption('only');
+      await archiveEntry.click();
+      await row.waitFor();
+      expect(await archiveEntry.getAttribute('aria-pressed')).toBe('true');
+      await f.page.getByRole('button', { name: '返回当前工作' }).click();
+      await row.waitFor({ state: 'detached' });
+      expect(await archiveEntry.getAttribute('aria-pressed')).toBe('false');
+      await archiveEntry.click();
       await row.waitFor();
       if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
         await f.page.screenshot({ path: '.local/archive-desktop.png' });
@@ -5282,7 +5306,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .filter({ hasText: '测试：归档暂时失败' })
         .waitFor();
       expect(await row.count()).toBe(1);
-      await f.page.getByLabel('工作记录筛选').selectOption('only');
+      await f.page
+        .getByRole('button', { name: '查看归档', exact: true })
+        .click();
       await f.page.getByRole('button', { name: '加载更早的工作' }).click();
       await expect
         .poll(async () =>
@@ -5312,7 +5338,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('menuitem', { name: '归档会话', exact: true })
         .click();
       await expect.poll(() => f.state.archivedIds.has(A)).toBe(true);
-      await f.page.getByLabel('工作记录筛选').selectOption('only');
+      await f.page
+        .getByRole('button', { name: '查看归档', exact: true })
+        .click();
       await row.waitFor();
       if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
         await f.page.screenshot({ path: '.local/archive-mobile.png' });
