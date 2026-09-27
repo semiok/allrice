@@ -6,7 +6,11 @@ import {
 } from '@allrice/contracts';
 import { getDatabase, getToolBrokerFile } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { CloudRunnerBackend } from '../cloud-runner/backend.js';
+import {
+  CloudRunnerBackend,
+  CloudRunnerError,
+} from '../cloud-runner/backend.js';
+import { HandlerError } from '../errors.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import { readOfficeBytes } from './export.js';
 import { OfficePackage, officeError, officeMediaTypes } from './package.js';
@@ -99,10 +103,41 @@ export async function generateNativeOfficeExport(
         output: result.output.slice(-6000),
       },
     };
+  } catch (error) {
+    const code =
+      error instanceof CloudRunnerError &&
+      /^CLOUD_[A-Z0-9_]+$/.test(error.message)
+        ? error.message
+        : error instanceof HandlerError
+          ? error.code
+          : 'OFFICE_EXECUTION_FAILED';
+    console.error('[Office] Native export failed', {
+      runId: ctx.runId,
+      callId: input.call.id,
+      attemptId,
+      format,
+      code,
+    });
+    if (error instanceof HandlerError) throw error;
+    // The finally block must confirm cleanup before this known pre-publication
+    // failure can reach the broker's settlement boundary.
+    throw new HandlerError(
+      'OFFICE_RUNTIME_UNAVAILABLE',
+      `Office 沙箱执行失败（${code}），本次未发布文件，可以重试。`,
+      true,
+    );
   } finally {
     // Office only computes private document bytes. Publication is performed by
     // the existing idempotent export broker after successful validation.
-    await backend.stop(attemptId).catch(() => false);
-    await backend.cleanup(attemptId);
+    await backend
+      .stop(attemptId)
+      .then(() => backend.cleanup(attemptId))
+      .catch(() => {
+        throw new HandlerError(
+          'OFFICE_CLEANUP_UNCONFIRMED',
+          'Office 沙箱停止状态尚未确认，请等待执行状态核对。',
+          false,
+        );
+      });
   }
 }

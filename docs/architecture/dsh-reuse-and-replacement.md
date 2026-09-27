@@ -335,6 +335,7 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 4. 上游新版本的研究快照放在 `dsh-upgrades/`，从本页链接；机器发行文件只随实际兼容实现更新。历史日志夹具保持原字节，不用新版本重新生成来冒充兼容。
 5. 不以“减少多少代码/节省多少 token”替代行为验收；有测量再填写收益。PR-2 已更新候选依赖及发行事实；PR-3 只删除一段重复转换，不减少 ledger 条目或物理补丁数量，不改变工具集合。
 6. 本轮新增或重新评估的能力需记录默认开放状态；未开放项写明具体技术缺口或已知问题、负责工单与下一步。不能把“入口已展示”作为“能力已开放”的验收结果，不能在验收结束后无故关闭已可用能力。
+7. Office 验收必须从租户聊天入口完成三格式并发生成、交付和预览/下载，不能用单个工具或已有文件代替整项任务。DSH 的并发调用由 Allrice 沙箱按实际容量排队，继续复用上游 Office 脚本与检查器；见 [2026-09-27 并发交付回归](allrice-2.0/office-concurrent-export-incident.md)。
 
 [met154]: https://linear.app/metasnowsky/issue/MET-154
 [persistence]: https://github.com/deepseek-ai/deepseek-harness/blob/a4c74a91e06b00fe0b0937bde982170c526cc842/packages/session/session-persistence-jsonl/README.md
