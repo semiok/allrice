@@ -3103,7 +3103,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await push('run.succeeded', {});
       await expect
         .poll(() =>
-          f.page.getByRole('button', { name: '复制', exact: true }).count(),
+          f.page
+            .locator(`#message-${id(20)}`)
+            .getByRole('button', { name: '复制', exact: true })
+            .count(),
         )
         .toBe(1);
       expect(
