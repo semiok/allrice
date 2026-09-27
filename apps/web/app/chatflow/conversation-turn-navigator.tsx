@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type RefObject,
 } from 'react';
@@ -36,6 +37,12 @@ export function ConversationTurnNavigator({
     [messages, runViews, streamingOutput],
   );
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
+  const activeTurnRef = useRef<number | null>(null);
+  const publishActiveTurn = useCallback((turn: number) => {
+    if (activeTurnRef.current === turn) return;
+    activeTurnRef.current = turn;
+    setActiveTurn(turn);
+  }, []);
   // Streaming preview changes do not rebuild observers or read every row again.
   const anchors = items
     .map((item) => (item.anchor.kind === 'loaded' ? item.anchor.key : ''))
@@ -52,7 +59,7 @@ export function ConversationTurnNavigator({
       frame = 0;
       if (!positions.length) return;
       if (isConversationAtBottom(scroll)) {
-        setActiveTurn(positions.at(-1)!.turn);
+        publishActiveTurn(positions.at(-1)!.turn);
         return;
       }
       const top = scroll.scrollTop + 24;
@@ -63,7 +70,10 @@ export function ConversationTurnNavigator({
         if (positions[middle]!.top <= top) left = middle;
         else right = middle - 1;
       }
-      setActiveTurn(positions[left]!.turn);
+      publishActiveTurn(positions[left]!.turn);
+    };
+    const scheduleUpdate = () => {
+      if (!frame) frame = requestAnimationFrame(update);
     };
     const measure = () => {
       scroll.style.setProperty(
@@ -86,25 +96,25 @@ export function ConversationTurnNavigator({
             ]
           : [];
       });
-      update();
-    };
-    const onScroll = () => {
-      if (!frame) frame = requestAnimationFrame(update);
+      // Native virtual rows resize and adjust scroll during React commits.
+      // Coalesce those observations into one publication after layout settles;
+      // synchronous state changes here can feed a nested rendering loop.
+      scheduleUpdate();
     };
     const observer = new ResizeObserver(measure);
     observer.observe(scroll);
     observer.observe(column);
     if (composer) observer.observe(composer);
-    scroll.addEventListener('scroll', onScroll, { passive: true });
+    scroll.addEventListener('scroll', scheduleUpdate, { passive: true });
     measure();
     return () => {
       observer.disconnect();
-      scroll.removeEventListener('scroll', onScroll);
+      scroll.removeEventListener('scroll', scheduleUpdate);
       cancelAnimationFrame(frame);
       scroll.style.removeProperty('--dsh-conversation-viewport-height');
       scroll.style.removeProperty('--dsh-composer-height');
     };
-  }, [anchors, scrollRef, columnRef]);
+  }, [anchors, scrollRef, columnRef, publishActiveTurn]);
 
   const navigate = useCallback(
     (item: TurnRailItem) => {
@@ -123,9 +133,9 @@ export function ConversationTurnNavigator({
           16,
         behavior: 'instant',
       });
-      setActiveTurn(item.turn);
+      publishActiveTurn(item.turn);
     },
-    [scrollRef, onNavigateAway],
+    [scrollRef, onNavigateAway, publishActiveTurn],
   );
 
   return (
