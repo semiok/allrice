@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import type { Duplex } from 'node:stream';
 import {
   cloudToolchainImageV1,
+  SandboxResourcesSchema,
   CloudCommandSchema,
   CloudCommandInputSchema,
   type CloudCommandInput,
@@ -309,6 +310,17 @@ export class CloudRunnerBackend {
       backendId: string;
       availableBytes: number;
     };
+  }
+  async resources() {
+    const { stdout } = await attestWatchdog();
+    const report = JSON.parse(stdout);
+    if (!report.ready || report.capacity?.version !== 2)
+      throw new CloudRunnerError('CLOUD_CAPACITY_UNAVAILABLE');
+    return SandboxResourcesSchema.parse({
+      ...report.capacity,
+      availableBytes: report.availableBytes,
+      running: report.running,
+    });
   }
   private async attachInput(containerId: string): Promise<Duplex> {
     return new Promise((resolve, reject) => {

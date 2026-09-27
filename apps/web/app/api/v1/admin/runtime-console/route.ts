@@ -1,5 +1,6 @@
 import {
   listDshRuntimeInventory,
+  readOperationsInventory,
   listTenantRuntimeInventory,
 } from '@allrice/database';
 
@@ -19,26 +20,31 @@ export async function GET(request: Request) {
       organizationId: url.searchParams.get('organizationId') ?? undefined,
       ownerId: url.searchParams.get('ownerId') ?? undefined,
     };
-    const [tenants, runtimes, employeeTenants] = await Promise.all([
+    const [tenants, runtimes, employeeTenants, operations] = await Promise.all([
       listTenantRuntimeInventory(),
       listDshRuntimeInventory(limit, scope),
       scope.organizationId && scope.ownerId
         ? listTenantRuntimeInventory(scope)
         : Promise.resolve([]),
+      readOperationsInventory().catch(() => null),
     ]);
-    return Response.json({
-      console: {
-        name: 'AllRice Runtime Console',
-        authority: 'ChatFlow 3.0',
-        harness: 'DSH',
-        mode: 'read-only',
-        source: 'allrice_conversation_runtimes',
+    return Response.json(
+      {
+        console: {
+          name: 'AllRice Runtime Console',
+          authority: 'ChatFlow 3.0',
+          harness: 'DSH',
+          mode: 'read-only',
+          source: 'allrice_conversation_runtimes',
+        },
+        tenants,
+        runtimes,
+        employeeTenants,
+        operations,
+        scope,
       },
-      tenants,
-      runtimes,
-      employeeTenants,
-      scope,
-    });
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    );
   } catch (error) {
     return executionErrorResponse(error);
   }

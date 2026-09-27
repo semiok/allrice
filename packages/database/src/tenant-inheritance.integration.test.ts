@@ -215,6 +215,32 @@ suite(
       return getEmployeeWorkspace(context, context.workspaceId!);
     }
 
+    it('updates managed compute capacity when the physical backend is resized', async () => {
+      const f = await setup();
+      const workerId = randomUUID();
+      await report(workerId);
+      const read = async () =>
+        (
+          await fdb.db`select concurrency_limit,metadata from allrice_execution_targets
+        where workspace_id=${f.tenant.workspaceId} and capabilities ? 'process.execute'`
+        )[0]!;
+      expect((await read()).concurrency_limit).toBe(1);
+      await recordManagedCloudEnvironment(
+        {
+          workerId,
+          browser: { available: true, profile: browserProfile, reason: null },
+          compute: {
+            available: true,
+            profile: { ...profile, maximumConcurrency: 3 },
+            reason: null,
+          },
+        },
+        fdb.db,
+      );
+      expect((await read()).concurrency_limit).toBe(3);
+      expect((await read()).metadata.profile.maximumConcurrency).toBe(3);
+    });
+
     it('invitation acceptance inherits exact published assignments and default without republishing; reads are idempotent', async () => {
       const f = await setup();
       await report();

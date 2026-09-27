@@ -52,7 +52,7 @@ export async function executionPressureSnapshot(db = getDiagnosticsDatabase()) {
     where w.finished_at is null and j.lease_token=w.lease_token and j.lease_expires_at>clock_timestamp() and j.status='running'`;
   const blocked =
     await db`select pid,wait_event_type,wait_event,pg_blocking_pids(pid) as blocking_pids,
-    extract(epoch from (clock_timestamp()-query_start))*1000 as wait_ms
+    (extract(epoch from (clock_timestamp()-query_start))*1000)::float8 as wait_ms
     from pg_stat_activity where datname=current_database() and application_name like 'allrice%'
       and state='active' and wait_event_type='Lock' order by query_start limit 20`;
   return { jobs, resources, blocked: [...blocked] };

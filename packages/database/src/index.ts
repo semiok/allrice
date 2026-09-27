@@ -91,3 +91,4 @@ export {
 export * from './organization-activity.ts';
 
 export * from './execution-diagnostics.ts';
+export * from './operations-resources.ts';

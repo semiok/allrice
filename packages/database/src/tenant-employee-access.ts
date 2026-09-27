@@ -132,6 +132,12 @@ async function prepareManagedCloudTargets(tx: Tx, scope: Scope) {
         ? CloudExecutionProfileSchema.safeParse(evidence.profile)
         : BrowserProfileSchema.safeParse(evidence.profile);
     const ready = evidence.available && profile.success;
+    const concurrency =
+      kind === 'compute' &&
+      profile.success &&
+      'maximumConcurrency' in profile.data
+        ? profile.data.maximumConcurrency
+        : 2;
     const metadata = {
       ...existing?.metadata,
       managedBy: 'allrice',
@@ -143,9 +149,9 @@ async function prepareManagedCloudTargets(tx: Tx, scope: Scope) {
         : null,
     };
     await tx`insert into allrice_execution_targets(organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds,last_heartbeat_at,unavailable_reason,metadata)
-      values(${organizationId},${workspaceId},${existing?.target_key ?? `allrice.cloud.${kind}`},'cloud_sandbox',${kind === 'compute' ? '云端计算' : '云端浏览器'},${ready ? 'online' : 'degraded'},${tx.json([...new Set([...(existing?.capabilities ?? []), capability])])},2,300,${report.updated_at},${ready ? null : (evidence.reason ?? 'platform_environment_preparing')},${tx.json(metadata)})
+      values(${organizationId},${workspaceId},${existing?.target_key ?? `allrice.cloud.${kind}`},'cloud_sandbox',${kind === 'compute' ? '云端计算' : '云端浏览器'},${ready ? 'online' : 'degraded'},${tx.json([...new Set([...(existing?.capabilities ?? []), capability])])},${concurrency},300,${report.updated_at},${ready ? null : (evidence.reason ?? 'platform_environment_preparing')},${tx.json(metadata)})
       on conflict(organization_id,workspace_id,target_key) do update set state=excluded.state,
-        capabilities=excluded.capabilities,last_heartbeat_at=excluded.last_heartbeat_at,unavailable_reason=excluded.unavailable_reason,metadata=excluded.metadata,updated_at=clock_timestamp()
+        capabilities=excluded.capabilities,concurrency_limit=excluded.concurrency_limit,last_heartbeat_at=excluded.last_heartbeat_at,unavailable_reason=excluded.unavailable_reason,metadata=excluded.metadata,updated_at=clock_timestamp()
         where allrice_execution_targets.state<>'revoked'`;
   }
 }
