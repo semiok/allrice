@@ -5123,7 +5123,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const more = f.page.getByRole('button', {
         name: /展开其余.*个会话/,
       });
-      if (await more.count()) await more.first().click();
+      // The archive request completes after the filter click; wait for its
+      // pagination control instead of skipping expansion during loading.
+      await more.first().waitFor();
+      await more.first().click();
       await f.page.getByText('归档工作 35', { exact: true }).waitFor();
       expect(f.errors).toEqual([]);
     } finally {
