@@ -424,7 +424,7 @@ integration(
           true,
         );
         const [receipt] =
-          await database.db`select settled_amount from allrice_assistant_usage where run_id=${s.children[0]!.runId} and metric='output_tokens' and settled_amount is not null`;
+          await database.db`select sum(settled_amount) as settled_amount from allrice_assistant_usage where run_id=${s.children[0]!.runId} and metric='output_tokens' and settled_amount is not null`;
         expect(Number(receipt!.settled_amount)).toBe(6001);
         expect(
           tree.instances.find((x) => x.runId === s.children[1]!.runId)!
