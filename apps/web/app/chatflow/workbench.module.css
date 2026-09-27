@@ -341,6 +341,11 @@
   overflow-wrap: anywhere;
 }
 
+/* Native docked panes use layer 10; keep the shared resize handle above them. */
+.splitter {
+  z-index: 11;
+}
+
 .splitter:focus-visible {
   outline: 2px solid var(--dsw-alias-status-info, #4678e9);
   outline-offset: -2px;
@@ -404,9 +409,6 @@
   .nativeDock[data-sidebar-right-open] {
     --allrice-workbench-offset: var(--dsh-sidebar-width);
   }
-}
-.nativeDock :global([data-dockkit-host='dock']) {
-  border-left: 1px solid var(--dsw-alias-border-l2, #ddd);
 }
 @media (prefers-reduced-motion: reduce) {
   .nativeDock,
