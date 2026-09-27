@@ -136,6 +136,8 @@ Office 继续使用已接入的页面渲染与公式结果。所有已渲染页�
 
 ## ChatFlow 原生正文与过程分组（2026-09-25）
 
+2026-09-27 用户消息气泡补齐原生换行规则：现有 `MessageItem.module.css` 仍固定在 `b150a551`，直接展示文本时缺少长 JSON/URL 的断行及原文空白保留；官方 `ui-chat` 在 `46a7f68b0922371ce7144b668b90e377d8e799f4` 已由气泡设置 `white-space: pre-wrap` 和 `word-break: break-word`。Allrice 的 `userBubble` 薄适配仅补齐这两条原生规则，保留已固定的气泡尺寸、字号和源码校验；后续同步新版气泡时删除此适配。换行仅影响显示，不改变消息正文或复制内容。
+
 正文直接使用 `@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1` 已导出的 `MarkdownText`，退役 Allrice 的 react-markdown 正文渲染、重复排版 CSS 和自有闪烁光标。流式文字原样交给官方增量解析器，复用其已完成块缓存；不在每次追加时重新做 Allrice 全文 Markdown 解析。
 
 回复/工具边界使用同版官方 `ProcessState`。该类未独立导出，沿用现有源码同步机制，登记固定提交 `46a7f68b0922371ce7144b668b90e377d8e799f4`、SHA 和补丁。补丁仅涉及导入适配、原样摘取两个工具状态谓词及移除无用 catch 变量。Allrice 将已有公开回复和中文步骤映射为原生节点；每段回复保留独立位置，工具组单独折叠，结束后不把中间回复藏入工作过程，也不搬动/重复最终回复。
