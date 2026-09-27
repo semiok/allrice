@@ -195,6 +195,8 @@ if (signingConfig.mode === 'developer-id') {
   verifyPackagedBridge(signingConfig, join(verification, 'Rice Bridge.app'));
 }
 const zipSha256 = await digest(zip);
+manifest.zip = zip.split('/').at(-1);
+manifest.zipSha256 = zipSha256;
 manifest.finalArchiveVerification =
   signingConfig.mode === 'developer-id'
     ? 'apple-signature-ticket-gatekeeper-verified'
