@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   SessionModelSnapshotSchema,
   resolveImageModel,
+  withPlatformImageTools,
   type ExecutionContext,
   type ImageToolInput,
   type RequestContext,
@@ -31,11 +32,12 @@ export async function imageRunConfiguration(
   const snapshot = SessionModelSnapshotSchema.safeParse(run?.snapshot);
   if (
     !snapshot.success ||
-    snapshot.data.provider !== 'openai-codex' ||
-    !snapshot.data.platformSettings?.configuration.imagesEnabled ||
-    !run?.tools?.includes('workspace.export.create') ||
-    !run.capabilities?.includes('model:invoke') ||
-    !run.capabilities?.includes('storage:write')
+    !snapshot.data.platformSettings ||
+    !withPlatformImageTools(
+      run?.tools ?? [],
+      run?.capabilities ?? [],
+      snapshot.data,
+    ).includes('image.generate')
   )
     throw new DataAccessError('authorization_denied');
   return snapshot.data.platformSettings.configuration;

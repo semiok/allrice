@@ -69,6 +69,7 @@ integration(
     it.each([
       'complete',
       'image_with_assistants',
+      'image_generation_with_assistants',
       'transport_failure',
       'mismatched_result',
       'missing_usage',
@@ -87,6 +88,7 @@ integration(
           'complete',
           'quota_exhausted',
           'image_with_assistants',
+          'image_generation_with_assistants',
           'startup_undispatched',
           'failed_known_usage',
         ].includes(mode);
@@ -98,6 +100,9 @@ integration(
         const fixture = await createP27CodexWorkerFixture({
           allowCiDatabase: true,
           syntheticImagesWithAssistants: mode === 'image_with_assistants',
+          imageGeneration: mode === 'image_generation_with_assistants',
+          imageGenerationAssistants:
+            mode === 'image_generation_with_assistants',
         });
         let cleanup: (() => Promise<void>) | undefined;
         try {
@@ -145,7 +150,10 @@ integration(
             'Synthetic arithmetic.',
             images,
           );
-          if (images) vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+          if (images || mode === 'image_generation_with_assistants')
+            vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+          if (mode === 'image_generation_with_assistants')
+            vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
           const isolation = await prepareExecutionIsolation({
             root: temporary,
             organizationId: fixture.organizationId,
@@ -223,6 +231,21 @@ integration(
             ) {
               if (mode === 'startup_undispatched')
                 return originalExecute.call(this, input);
+              if (mode === 'image_generation_with_assistants') {
+                expect(input.tools?.map((t) => t.name)).toEqual(
+                  expect.arrayContaining([
+                    'image.generate',
+                    'image.edit',
+                    'assistant.delegate',
+                  ]),
+                );
+                const bridge = await input.assistants!.bind(
+                  `dsh-${task.sessionId}`,
+                  input.generation,
+                  input.onToolCall,
+                );
+                await expect(bridge.cancellation()).resolves.toBeDefined();
+              }
               if (mode === 'image_with_assistants') {
                 expect(input.images).toEqual([
                   { mediaType: 'image/png', data: png, name: 'chart.png' },
@@ -286,7 +309,10 @@ integration(
                 },
                 usageComplete: mode === 'missing_usage' ? undefined : true,
                 cacheUsageKnown: mode === 'missing_usage' ? undefined : true,
-                ...(mode === 'image_with_assistants'
+                ...([
+                  'image_with_assistants',
+                  'image_generation_with_assistants',
+                ].includes(mode)
                   ? {
                       assistantStatus: 'completed' as const,
                       billingMode: 'subscription' as const,

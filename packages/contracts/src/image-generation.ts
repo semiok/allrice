@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import type { SessionModelSnapshot } from './models.ts';
 import {
   PLATFORM_IMAGE_MODELS,
   type PlatformModelConfiguration,
@@ -28,6 +29,33 @@ export const ImageToolInputSchema = z
   })
   .strict();
 export type ImageToolInput = z.infer<typeof ImageToolInputSchema>;
+
+/** Derive platform image tools from frozen authority, without rewriting an
+ * immutable employee version. Advertisement, assistant admission and execution
+ * must use the same projection. Never consult current platform defaults. */
+export function withPlatformImageTools(
+  toolNames: readonly string[],
+  capabilities: readonly string[],
+  model:
+    | Pick<
+        SessionModelSnapshot,
+        'harness' | 'provider' | 'authMode' | 'platformSettings'
+      >
+    | undefined,
+): string[] {
+  const declared = toolNames.filter((name) => !name.startsWith('image.'));
+  if (
+    model?.harness === 'dsh' &&
+    model.provider === 'openai-codex' &&
+    model.authMode === 'chatgpt_subscription' &&
+    model.platformSettings?.configuration.imagesEnabled &&
+    declared.includes('workspace.export.create') &&
+    capabilities.includes('model:invoke') &&
+    capabilities.includes('storage:write')
+  )
+    return [...declared, 'image.generate', 'image.edit'];
+  return declared;
+}
 
 export function resolveImageModel(
   configuration: Pick<PlatformModelConfiguration, 'imageModel'>,

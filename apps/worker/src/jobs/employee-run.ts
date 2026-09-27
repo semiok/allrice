@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
+  withPlatformImageTools,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
   RouteDecisionSchema,
@@ -378,23 +379,16 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.capabilitySnapshot
         : null;
-    const employeeToolNames =
+    const allowedToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
-        ? executionSnapshot.employee.definition.capabilityBindings.toolNames.filter(
-            (name) => !name.startsWith('image.'),
+        ? withPlatformImageTools(
+            executionSnapshot.employee.definition.capabilityBindings.toolNames,
+            resolved.grantedCapabilities,
+            executionSnapshot.schemaVersion === 2
+              ? executionSnapshot.modelSnapshot
+              : undefined,
           )
         : undefined;
-    const imageConfiguration =
-      executionSnapshot.schemaVersion === 2
-        ? executionSnapshot.modelSnapshot?.platformSettings?.configuration
-        : null;
-    const allowedToolNames =
-      employeeToolNames &&
-      imageConfiguration?.imagesEnabled &&
-      employeeToolNames.includes('workspace.export.create') &&
-      resolved.grantedCapabilities.includes('model:invoke')
-        ? [...employeeToolNames, 'image.generate', 'image.edit']
-        : employeeToolNames;
     const authorizedTools = riceToolDefinitionsForCapabilities(
       resolved.grantedCapabilities,
       allowedToolNames,
