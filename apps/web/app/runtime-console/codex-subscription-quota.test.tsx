@@ -49,7 +49,7 @@ describe('Codex subscription quota card', () => {
   it('labels real durations regardless of slot and separates shared quota from internal limits', () => {
     const html = render(snapshot());
     expect(html).toContain('同一订阅账号共享的额度');
-    expect(html).toContain('与平台内部月度限制分别计算');
+    expect(html).toContain('显示剩余比例，不换算为 Token 数');
     expect(html).toContain('7 天窗口（周额度）');
     expect(html).toContain('5 小时窗口');
     expect(html).toContain('剩余 40%');
@@ -57,6 +57,33 @@ describe('Codex subscription quota card', () => {
     expect(html).toContain('后台核对时间');
     expect(html).toContain('北京时间');
     expect(html).not.toContain('sha256');
+  });
+
+  it('distinguishes a disabled query from unverified subscription authorization', () => {
+    const html = render({
+      ...snapshot(),
+      status: 'unknown',
+      accountFingerprint: null,
+      detailCode: 'codex_quota_not_configured',
+      buckets: [],
+    });
+    expect(html).toContain('额度查询尚未启用');
+    expect(html).not.toContain('绑定尚未核验');
+    expect(html).not.toContain('剩余 40%');
+  });
+
+  it('does not display a missing secondary slot as an unknown extra window', () => {
+    const quota = snapshot();
+    quota.buckets[0]!.windows[1] = {
+      slot: 'secondary',
+      status: 'unknown',
+      usedPercent: null,
+      windowDurationMins: null,
+      resetsAt: null,
+    };
+    const html = render(quota);
+    expect(html).toContain('剩余 40%');
+    expect(html).not.toContain('时长未知的窗口');
   });
 
   it('never presents absent/error/stale snapshots as zero usage or unlimited quota', () => {

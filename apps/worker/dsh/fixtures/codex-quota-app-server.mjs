@@ -11,6 +11,7 @@ function record(value) {
 }
 record({
   startup: true,
+  pid: process.pid,
   argv: process.argv.slice(2),
   cwd: process.cwd(),
   env: process.env,
@@ -19,6 +20,21 @@ record({
 });
 const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const reader = createInterface({ input: process.stdin });
+if (fixture.scenario === 'graceful_shutdown') {
+  reader.on('close', () => {
+    record({ eof: true });
+    setTimeout(() => process.exit(0), 600);
+  });
+  process.on('SIGTERM', () => {
+    record({ unexpectedTermination: true });
+    process.exit(0);
+  });
+}
+if (fixture.scenario === 'stubborn_shutdown') {
+  const keepAlive = () => setTimeout(keepAlive, 100);
+  keepAlive();
+  process.on('SIGTERM', () => record({ terminationIgnored: true }));
+}
 reader.on('line', (line) => {
   const message = JSON.parse(line);
   record({ request: message });

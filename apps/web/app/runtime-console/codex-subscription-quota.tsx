@@ -55,22 +55,23 @@ export function CodexSubscriptionQuota({
   const usable = quota?.status !== 'error' && !stale && knownAccount;
   const note = !quota
     ? '尚未读取订阅额度，当前剩余未知。'
-    : quota.status === 'error'
-      ? '暂时无法读取订阅额度，当前剩余未知。'
-      : !knownAccount
-        ? '订阅账号绑定尚未核验，当前剩余未知。'
-        : stale
-          ? '额度快照已过期，当前剩余未知；等待后台重新核对。'
-          : quota.buckets.length === 0
-            ? '服务未返回额度窗口，当前剩余未知。'
-            : null;
+    : quota.detailCode === 'codex_quota_not_configured'
+      ? '额度查询尚未启用，当前剩余未知。'
+      : quota.status === 'error'
+        ? '暂时无法读取订阅额度，当前剩余未知。'
+        : !knownAccount
+          ? '尚未取得当前订阅账号的额度，当前剩余未知。'
+          : stale
+            ? '额度快照已过期，当前剩余未知；等待后台重新核对。'
+            : quota.buckets.length === 0
+              ? '服务未返回额度窗口，当前剩余未知。'
+              : null;
 
   return (
     <section className={styles.card} aria-label="Codex 订阅额度">
       <h3>Codex 订阅额度</h3>
       <p className={styles.explanation}>
-        同一订阅账号共享的额度，不是本租户的 Token
-        余额；与平台内部月度限制分别计算。
+        同一订阅账号共享的额度，显示剩余比例，不换算为 Token 数。
       </p>
       {note ? <p role="status">{note}</p> : null}
       {usable
@@ -83,44 +84,59 @@ export function CodexSubscriptionQuota({
                 </p>
               ) : null}
               <ul className={styles.windows}>
-                {bucket.windows.map((window) => {
-                  const resetPassed =
-                    window.resetsAt !== null &&
-                    window.resetsAt * 1000 <= currentTime;
-                  const available =
-                    window.status === 'available' &&
-                    window.usedPercent !== null &&
-                    !resetPassed;
-                  const exhausted = available && window.usedPercent === 100;
-                  return (
-                    <li key={window.slot}>
-                      <span>{windowLabel(window.windowDurationMins)}</span>
-                      <strong
-                        className={exhausted ? styles.exhausted : undefined}
-                      >
-                        {available
-                          ? exhausted
-                            ? '已耗尽'
-                            : `剩余 ${percent(100 - window.usedPercent!)}%`
-                          : '剩余额度未知'}
-                      </strong>
-                      {available ? (
-                        <span>已用 {percent(window.usedPercent!)}%</span>
-                      ) : null}
-                      {resetPassed ? (
-                        <small>
-                          已到上次重置时间，等待重新核对；不视为已恢复。
-                        </small>
-                      ) : window.resetsAt !== null ? (
-                        <small>
-                          重置：{timeLabel(window.resetsAt * 1000)}（北京时间）
-                        </small>
-                      ) : (
-                        <small>重置时间未知</small>
-                      )}
-                    </li>
-                  );
-                })}
+                {bucket.windows
+                  .filter(
+                    (window, _, windows) =>
+                      // A missing secondary slot is not another quota window.
+                      window.windowDurationMins !== null ||
+                      window.usedPercent !== null ||
+                      window.resetsAt !== null ||
+                      windows.every(
+                        (entry) =>
+                          entry.windowDurationMins === null &&
+                          entry.usedPercent === null &&
+                          entry.resetsAt === null,
+                      ),
+                  )
+                  .map((window) => {
+                    const resetPassed =
+                      window.resetsAt !== null &&
+                      window.resetsAt * 1000 <= currentTime;
+                    const available =
+                      window.status === 'available' &&
+                      window.usedPercent !== null &&
+                      !resetPassed;
+                    const exhausted = available && window.usedPercent === 100;
+                    return (
+                      <li key={window.slot}>
+                        <span>{windowLabel(window.windowDurationMins)}</span>
+                        <strong
+                          className={exhausted ? styles.exhausted : undefined}
+                        >
+                          {available
+                            ? exhausted
+                              ? '已耗尽'
+                              : `剩余 ${percent(100 - window.usedPercent!)}%`
+                            : '剩余额度未知'}
+                        </strong>
+                        {available ? (
+                          <span>已用 {percent(window.usedPercent!)}%</span>
+                        ) : null}
+                        {resetPassed ? (
+                          <small>
+                            已到上次重置时间，等待重新核对；不视为已恢复。
+                          </small>
+                        ) : window.resetsAt !== null ? (
+                          <small>
+                            重置：{timeLabel(window.resetsAt * 1000)}
+                            （北京时间）
+                          </small>
+                        ) : (
+                          <small>重置时间未知</small>
+                        )}
+                      </li>
+                    );
+                  })}
               </ul>
             </div>
           ))
