@@ -314,6 +314,7 @@ main.shell {
 }
 
 .shell {
+  --allrice-chat-header-height: 56px;
 }
 
 .shell[data-dragging] {
