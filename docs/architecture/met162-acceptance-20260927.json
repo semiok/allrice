@@ -1,0 +1,147 @@
+{
+  "date": "2026-09-27",
+  "issue": "MET-162",
+  "sourceSha": "3afa14351ddd4c13f5278bf4fa46317fb9be63ec",
+  "devSha": "cf2cd48c32a8d88d665320d4bc0ca2edad08fe92",
+  "ci": "https://github.com/semiok/allrice/actions/runs/36312407373",
+  "scope": "20 independent synthetic tenants through actual Worker entry point in isolated PostgreSQL schema; real gpt-5.6-luna low reasoning, pinned DSH Office and shared Dev Docker/gVisor VM; not 20 public HTTP chat submissions.",
+  "percentiles": "nearest rank; queue timing includes recovered failed attempts",
+  "mixed": {
+    "startedAt": "2026-09-27T09:50:47.672Z",
+    "finishedAt": "2026-09-27T09:54:24.955Z",
+    "capacity": null,
+    "workerCapacity": {
+      "mode": "auto",
+      "concurrency": 24,
+      "cpus": 8,
+      "memoryBytes": 17179869184,
+      "availableBytes": 6462750720
+    },
+    "states": {
+      "succeeded": 20
+    },
+    "maxOverlappingRuns": 20,
+    "files": 30,
+    "byteChecks": 30,
+    "httpDownloads": 0,
+    "browserPreviews": [],
+    "wait": {
+      "count": 33,
+      "p50s": 44.117,
+      "p95s": 92.277,
+      "maxs": 97.504
+    },
+    "startup": {
+      "count": 33,
+      "p50s": 1.516,
+      "p95s": 2.313,
+      "maxs": 2.825
+    },
+    "analysis": {
+      "count": 10,
+      "p50s": 19.978,
+      "p95s": 21.43,
+      "maxs": 21.43
+    },
+    "office": {
+      "count": 10,
+      "p50s": 139.36,
+      "p95s": 211.677,
+      "maxs": 211.677
+    },
+    "attempts": {
+      "completed": 30,
+      "failed": 3
+    },
+    "attemptErrors": {
+      "failed": 3
+    },
+    "verification": "Real model/DSH/gVisor; one measured slot fixed in isolated worker while public Dev still used watchdog v1. File bytes and SHA verified. Browser checks covered by final Office round."
+  },
+  "office": {
+    "startedAt": "2026-09-27T10:24:53.876Z",
+    "finishedAt": "2026-09-27T10:33:37.567Z",
+    "capacity": {
+      "version": 2,
+      "memoryBytes": 2061242368,
+      "cpus": 2,
+      "reservedBytes": 536870912,
+      "servicesBytes": 805306368,
+      "slots": 1,
+      "backendId": "f25baf84-50c0-4353-bd65-894b86c9f14f",
+      "availableBytes": 1582522368
+    },
+    "workerCapacity": {
+      "mode": "auto",
+      "concurrency": 23,
+      "cpus": 8,
+      "memoryBytes": 17179869184,
+      "availableBytes": 6411792384
+    },
+    "states": {
+      "succeeded": 20
+    },
+    "maxOverlappingRuns": 20,
+    "files": 60,
+    "byteChecks": 60,
+    "httpDownloads": 60,
+    "browserPreviews": [
+      {
+        "format": "pptx",
+        "pages": 2
+      },
+      {
+        "format": "xlsx",
+        "pages": 1
+      },
+      {
+        "format": "docx",
+        "pages": 1
+      }
+    ],
+    "wait": {
+      "count": 64,
+      "p50s": 224.904,
+      "p95s": 340.538,
+      "maxs": 346.809
+    },
+    "startup": {
+      "count": 64,
+      "p50s": 1.2,
+      "p95s": 3.781,
+      "maxs": 5.385
+    },
+    "analysis": {
+      "count": 0,
+      "p50s": null,
+      "p95s": null,
+      "maxs": null
+    },
+    "office": {
+      "count": 20,
+      "p50s": 434.157,
+      "p95s": 510.372,
+      "maxs": 512.054
+    },
+    "attempts": {
+      "completed": 60,
+      "failed": 4
+    },
+    "attemptErrors": {
+      "failed": 4
+    },
+    "verification": "Real model/DSH/gVisor; live watchdog v2 capacity, no override. 60 HTTP downloads verified. Browser fixture replayed with current Dev migrations 0112–0115; same saved file bytes, no new model execution."
+  },
+  "recovery": {
+    "waitingCancel": true,
+    "runningCancel": true,
+    "nextTenantProceeds": true,
+    "physicalBackendChecks": 5,
+    "nativeLifecycleChecks": 12
+  },
+  "warmPoolDecision": {
+    "poolSize": 0,
+    "reason": "One available physical execution slot. No spare budget to prepare a replacement while a tenant uses the slot. Creating it after completion does not overlap work; only the first task after an idle period could benefit. Median startup 1.2s versus task P50 434.157s.",
+    "future": "Benchmark cold versus warm on a host with spare physical budget; account for lower available execution capacity and cleanup/restart costs before enabling."
+  }
+}
