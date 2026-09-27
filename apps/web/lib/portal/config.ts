@@ -26,12 +26,7 @@ const definitions: readonly PortalDefinition[] = [
     kind: 'platform_admin',
     title: 'AllRice Runtime Console',
     subtitle: '查看真实 Worker DSH Runtime、Session 与原生事件。',
-    hosts: [
-      'allrice-dsh.bplabs.xyz',
-      'allrice-dsh.traditionow.ai',
-      'allrice-admin.bplabs.xyz',
-      'allrice-admin.traditionow.ai',
-    ],
+    hosts: ['allrice-dsh.bplabs.xyz', 'allrice-dsh.traditionow.ai'],
     username: process.env.ALLRICE_PLATFORM_ADMIN_USER ?? 'admin',
     passwordEnvironmentVariable: 'ALLRICE_PLATFORM_ADMIN_PASSWORD',
     homePath: '/runtime-console',
