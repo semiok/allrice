@@ -1574,7 +1574,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const r = document
           .querySelector('#artifact-workbench [aria-label="文件操作"]')!
           .getBoundingClientRect();
-        return Math.abs(r.left) < 2 && r.right <= innerWidth + 1;
+        // Native Dock adds a 1px divider and a 1px pane border.
+        return Math.abs(r.left) <= 2 && r.right <= innerWidth + 1;
       });
       await f.page.screenshot({
         path: '.local/reader/mobile.png',
