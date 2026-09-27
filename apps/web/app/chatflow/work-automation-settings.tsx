@@ -96,7 +96,7 @@ export function WorkAutomationSettings({
   return (
     <section aria-label="员工工作方式设置">
       <p>
-        在你的员工、应用和电脑已授权范围内自动执行。需要新账号、新文件夹或扩大范围时，再向你申请。
+        由你决定员工是否自动工作，这些设置只影响你在当前工作区的使用。需要新账号、新文件夹或扩大范围时，员工会再向你申请。
       </p>
       {error ? (
         <p role="alert">
