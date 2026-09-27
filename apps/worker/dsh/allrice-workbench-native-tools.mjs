@@ -32,7 +32,7 @@ export const workbenchNativeTools = [
       },
       source: {
         type: 'object',
-        required: action === 'edit',
+        ...(action === 'edit' ? { required: true } : {}),
         additionalProperties: false,
         properties: {
           objectId: {
