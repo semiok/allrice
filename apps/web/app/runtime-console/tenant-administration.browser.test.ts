@@ -91,6 +91,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     ports.storage.mockReturnValue(assistantFixtureStorage(fixture.db));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     platform = await principal('Platform fixture', 'admin');
+    await fixture.db`update allrice_organizations set slug='allrice-platform' where id=${platform.organizationId}`;
     snow = await principal('Snow fixture', 'member');
     other = await principal('Other fixture', 'member');
     vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', platform.user.email);
@@ -272,6 +273,41 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       .waitFor();
     return { page, context };
   }
+  it('hides the platform tenant and ignores its old management link without affecting business tenants', async () => {
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=tenants&organizationId=${platform.organizationId}&workspaceId=${platform.workspaceId}&tenantView=members`,
+      );
+      await page
+        .getByLabel('管理租户')
+        .locator(`option[value="${snow.organizationId}"]`)
+        .waitFor({ state: 'attached' });
+      expect(
+        await page
+          .getByLabel('管理租户')
+          .locator(`option[value="${platform.organizationId}"]`)
+          .count(),
+      ).toBe(0);
+      expect(await page.getByLabel('管理租户').inputValue()).toBe('');
+      expect(await page.getByRole('button', { name: /^编辑 / }).count()).toBe(
+        0,
+      );
+      for (const suffix of ['', '/employees', '/policy']) {
+        const response = await context.request.get(
+          `${origin}/api/v1/admin/tenants/${platform.organizationId}${suffix}?workspaceId=${platform.workspaceId}`,
+        );
+        expect(response.status()).toBe(404);
+      }
+      await page.getByLabel('管理租户').selectOption(snow.organizationId);
+      await page.getByRole('button', { name: '租户账号', exact: true }).click();
+      await page
+        .getByRole('button', { name: '编辑 Snow fixture', exact: true })
+        .waitFor();
+    } finally {
+      await context.close();
+    }
+  });
   it('shows three tenant sections and a read-only connection overview without exposing engineering forms', async () => {
     const { page, context } = await pageFor(platform, 390);
     try {

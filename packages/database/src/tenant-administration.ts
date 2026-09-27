@@ -53,6 +53,7 @@ export async function requireTenantAdministrationTarget(
 ) {
   const [found] = await sql`
     select id from allrice_organizations where id=${organizationId} and archived_at is null
+      and slug <> 'allrice-platform'
       and (${workspaceId}::uuid is null or exists(select 1 from allrice_workspaces w
         where w.organization_id=allrice_organizations.id and w.id=${workspaceId} and w.archived_at is null))`;
   if (!found) throw new DataAccessError('not_found');
@@ -68,6 +69,7 @@ export async function listAdminTenants(
   await requireAdministrator(context, database);
   const tenants = await database<{ id: string; name: string; slug: string }[]>`
     select id,name,slug from allrice_organizations where archived_at is null
+      and slug <> 'allrice-platform'
       and (${after}::uuid is null or id>${after}) order by id limit 101`;
   const page = tenants.slice(0, 100);
   const workspaces = page.length
