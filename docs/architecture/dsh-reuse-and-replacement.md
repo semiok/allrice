@@ -52,6 +52,12 @@ MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化
 
 ## 本轮复核
 
+### 文件交付链接与 Office 参数兼容（2026-09-27）
+
+Run `851fafd3` 一次成功、无工具失败，仅返回示例文字和图表代码；随后 `f0adbe4a` 的 Excel/PPT 导出分别遇到嵌套 `python.changeSummary` 未声明及 `python.sourceObjectId=null` 类型错误，共四次校验失败后成功。补充模型可见的原生参数声明和 Broker 契约：接受这两个无歧义的元数据写法，保留修改说明，冲突说明明确报错；未知输入文件与校验和检查照旧。清理运行提示中仍推荐旧 `office.kind=edit` 的内容，默认使用现有 DSH Python Office 工作流程。未重写文档执行或渲染。
+
+前端直接使用 `@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.1` 已导出的 `MarkdownDelegateProvider` 接入现有成果 Dock，保持原生 Markdown 链接、键盘与修饰键行为。补齐该版 `design-platform.css` 的 `--dsw-alias-link` 蓝色映射，避免旧主题使链接继承正文黑色。普通点击当前 Run 已核实的文件链接打开侧栏预览，下载仍由既有 DocumentToolbar 提供；其他网页保留外链行为。历史回复里重复转义的斜杠仅在匹配已鉴权成果 ID 时修复。验证使用真实 DSH 协议参数回放及浏览器点击、主题颜色和精确版本下载检查。
+
 ### MET-155 PR3：保留已有对账实现，统一配置与工作方式
 
 2026-09-27，业务对账沿用现成的冻结脚本、云端执行与 XLSX 导出，使用 PR1 同一依赖装配和发布链路。仅升级 SOP 到 1.0.1，使其遵循成员自动工作设置，消除不必要的预先等待审批；没有重写脚本、Office 或报表引擎。三批实际删除/保留范围和验收要求见 [PR3 记录](allrice-3.0/reconciliation-and-acceptance.md)。

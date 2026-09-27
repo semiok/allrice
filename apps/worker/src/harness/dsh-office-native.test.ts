@@ -62,6 +62,32 @@ it('lists uploaded files through the native loop and returns object ids to the m
   });
 }, 45_000);
 
+it('accepts the real Office metadata shapes that previously caused four retries', async () => {
+  const python = {
+    inputs: [],
+    script:
+      "from openpyxl import Workbook\nWorkbook().save('/tmp/work/output/result.xlsx')",
+    sourceObjectId: null,
+    changeSummary: 'BTC 示例图表',
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.export.create',
+    wireName: 'workspace_export_create',
+    args: { fileName: 'BTC图表.xlsx', format: 'xlsx', python },
+    invalidArgs: {
+      fileName: 'BTC图表.xlsx',
+      format: 'xlsx',
+      python: { ...python, sourceObjectId: 'invented' },
+    },
+    onToolCall: async (call) => {
+      expect(NativeOfficeExportSchema.parse(call.arguments.python)).toEqual(
+        python,
+      );
+      return { modelContent: '{}', summary: '原生参数通过' };
+    },
+  });
+}, 45_000);
+
 it('forwards the Office structure request through the actual native declaration', async () => {
   await nativeBrokerRoundtrip({
     canonicalName: 'workspace.document.read',

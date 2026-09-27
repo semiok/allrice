@@ -109,13 +109,18 @@ export const workbenchNativeTools = [
             },
           },
           sourceObjectId: {
-            type: 'string',
+            oneOf: [{ type: 'string' }, { type: 'null' }],
             description:
-              'Object ID of the input file being revised, also listed in python.inputs.',
+              'For edits, the input object ID also listed in python.inputs. For new files omit this field or use null.',
+          },
+          changeSummary: {
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+            description:
+              'Optional version summary; the top-level changeSummary is preferred. Do not supply conflicting summaries.',
           },
         },
         description:
-          'Default Office workflow: {script: "Python code", inputs?: [{path, objectId, checksum}], sourceObjectId?: "edited input UUID"}. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
+          'Default Office workflow. New-file example: {fileName: "report.xlsx", format: "xlsx", python: {script: "Python code", inputs: []}}. For edits add inputs: [{path, objectId, checksum}] and sourceObjectId INSIDE python; for new files omit sourceObjectId or use null. Put changeSummary at the top level. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
       },
       office: {
         type: 'object',

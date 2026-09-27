@@ -10,6 +10,7 @@ import {
 import {
   ChangesetProposalSchema,
   DeliveryFormatSchema,
+  NativeOfficeExportSchema,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { officeFormat } from '@allrice/office-runtime';
@@ -57,6 +58,23 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   const content =
     hasOffice || hasPython ? '' : stringValue(args.content, 'content');
+  const python = hasPython
+    ? NativeOfficeExportSchema.parse(args.python)
+    : undefined;
+  if (
+    typeof args.changeSummary === 'string' &&
+    python?.changeSummary != null &&
+    args.changeSummary !== python.changeSummary
+  )
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      '外层 changeSummary 与 python.changeSummary 不一致，请只保留一个修改说明。',
+      false,
+    );
+  const changeSummary =
+    typeof args.changeSummary === 'string'
+      ? args.changeSummary
+      : python?.changeSummary;
   if (content.length > 200_000) {
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
@@ -65,7 +83,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   }
   const generated = hasPython
-    ? await generateNativeOfficeExport(input, format, args.python)
+    ? await generateNativeOfficeExport(input, format, python)
     : hasOffice
       ? await generateOfficeExport(input, format, args.office)
       : {
@@ -145,9 +163,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
-      ...(typeof args.changeSummary === 'string'
-        ? { changeSummary: args.changeSummary }
-        : {}),
+      ...(typeof changeSummary === 'string' ? { changeSummary } : {}),
     };
     const artifact =
       kind === 'changeset'
@@ -219,9 +235,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
-      ...(typeof args.changeSummary === 'string'
-        ? { changeSummary: args.changeSummary }
-        : {}),
+      ...(typeof changeSummary === 'string' ? { changeSummary } : {}),
       object,
     });
     return {
@@ -234,8 +248,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         seriesId: registered.seriesId,
         version: registered.version,
         parentObjectId: registered.parentObjectId,
-        changeSummary:
-          typeof args.changeSummary === 'string' ? args.changeSummary : null,
+        changeSummary: typeof changeSummary === 'string' ? changeSummary : null,
         downloadUrl: `/api/v1/files/${object.id}/download?name=${encodeURIComponent(fileName)}`,
         versionsUrl: `/api/v1/files/${object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),
