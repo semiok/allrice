@@ -24,8 +24,8 @@ export function employeeSkillLabel(skill: EmployeeSkillChoice) {
     'wechat-research': '公众号调研',
     'workflow-automation': '自动化任务',
     'workspace-briefing': '工作区资料整理',
-    'document-reading': '文档阅读',
-    'report-delivery': '报告交付',
+    'document-analysis': '文档阅读',
+    'structured-deliverable': '报告交付',
   };
   return labels[skill.id] ?? labels[skill.name ?? ''] ?? skill.name ?? skill.id;
 }
