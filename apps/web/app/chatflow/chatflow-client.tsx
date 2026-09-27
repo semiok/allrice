@@ -17,6 +17,7 @@ import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-sta
 import { ChatComposer } from './chat-composer';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
+import { TaskPlanDock } from './task-plan-dock';
 import { AssistantModeControl } from './assistant-mode-control';
 import {
   assistantEligibility,
@@ -1238,6 +1239,13 @@ export function ChatFlowClient({
                 className={`${conversationUi.composerSeat} ${conversationUi.composerStack} ${styles.composerDock}`}
                 data-composer-seat
               >
+                <TaskPlanDock
+                  sessionId={activeId}
+                  history={history}
+                  runViews={runViews}
+                  runTraces={runTraces}
+                  runTimings={interactions.data?.runTimings}
+                />
                 <QueuedMessagesDock
                   key={`${workspace.organizationId}/${activeId}`}
                   items={history?.queuedMessages ?? []}

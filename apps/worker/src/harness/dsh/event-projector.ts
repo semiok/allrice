@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { TaskPlanItemsSchema } from '@allrice/contracts';
 
 export function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -137,7 +138,9 @@ export function safeDshSourcePayload(event: Record<string, unknown>) {
     };
   }
   if (type === 'todo/write') {
+    const parsed = TaskPlanItemsSchema.safeParse(data.todos);
     return {
+      ...(parsed.success ? { todos: parsed.data } : {}),
       count: Array.isArray(data.todos) ? data.todos.length : 0,
       completed: Array.isArray(data.todos)
         ? data.todos.filter((todo) => record(todo)?.status === 'completed')
