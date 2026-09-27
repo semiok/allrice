@@ -1390,12 +1390,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByText(/版本与基线标识|历史执行位置|SaaS 文件库|查看原文/)
           .count(),
       ).toBe(0);
-      await f.page.waitForFunction(() => {
-        const r = document
-          .querySelector('#artifact-workbench [aria-label="文件操作"]')!
-          .getBoundingClientRect();
-        return Math.abs(r.left) < 2 && r.right <= innerWidth + 1;
-      });
+      // Dock retains hidden previews; measure the selected version's toolbar.
+      await expect
+        .poll(async () => {
+          const r = await f.panel
+            .locator(
+              `[data-document-id="${latest.id}"] [aria-label="文件操作"]`,
+            )
+            .boundingBox();
+          return !!r && r.x >= 0 && r.x <= 2 && r.x + r.width <= 391;
+        })
+        .toBe(true);
       await f.page.screenshot({
         path: '.local/reader/mobile.png',
         animations: 'disabled',
