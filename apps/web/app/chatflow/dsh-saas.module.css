@@ -599,6 +599,13 @@ header.conversationHeader::after {
   min-height: 0;
 }
 
+/* Match DSH ui-chat MessageItem.module.css @ 46a7f68: the bubble owns
+   whitespace and long-token wrapping. Remove when the pinned bubble catches up. */
+.userBubble {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Scope the employee identity to the conversation, leaving platform branding intact. */
 .employeeConversation {
   --dsw-alias-state-business-primary: color-mix(

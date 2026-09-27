@@ -216,7 +216,9 @@ export function ChatTranscript({
                             tenantHeaders={tenantHeaders}
                           />
                         ) : null}
-                        <div className={messageUi.bubble}>
+                        <div
+                          className={`${messageUi.bubble} ${styles.userBubble}`}
+                        >
                           {message.content.text}
                         </div>
                       </div>
