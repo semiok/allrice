@@ -1,3 +1,9 @@
+import {
+  captureSessionReferences,
+  assertReferenceVisibility,
+} from './session-references.ts';
+import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
+export { SessionReferenceError } from './session-references.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { createHash } from 'node:crypto';
 import { completedBudgetAnswers } from './budget-answer.ts';
@@ -113,6 +119,7 @@ interface SessionRow {
 }
 
 interface MessageRow {
+  session_references?: unknown;
   id: string;
   session_id: string;
   owner_id: string;
@@ -553,7 +560,12 @@ function decodeCursor(cursor: string | undefined) {
 export async function listChatSessions(
   context: RequestContext,
   workspaceIdInput: string,
-  options: { cursor?: string; limit?: number; includeArchived?: boolean } = {},
+  options: {
+    cursor?: string;
+    limit?: number;
+    includeArchived?: boolean;
+    query?: string;
+  } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const cursor = decodeCursor(options.cursor);
@@ -564,6 +576,7 @@ export async function listChatSessions(
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and (${options.includeArchived ?? false} or archived_at is null)
+      and (${options.query ?? ''} = '' or position(lower(${options.query ?? ''}) in lower(title)) > 0)
       and (owner_id = ${requireUser(context)} or visibility <> 'private')
       and (
         ${cursor?.updatedAt ?? null}::timestamptz is null
@@ -602,6 +615,13 @@ export async function updateChatSession(
   }
   const sql = getDatabase();
   const row = await sql.begin(async (transaction) => {
+    await transaction`select id from allrice_chat_sessions where id=${current.id} for update`;
+    if (update.visibility)
+      await assertReferenceVisibility(
+        transaction,
+        current.id,
+        update.visibility,
+      );
     const rows = await transaction<SessionRow[]>`
       update allrice_chat_sessions
       set title = coalesce(${update.title ?? null}, title),
@@ -843,6 +863,7 @@ export async function getChatSessionHistory(
           runId: m.queued_run_id!,
           text: mapped.content.text,
           attachments: mapped.attachments,
+          sessionReferences: mapped.content.sessionReferences,
           createdAt: mapped.createdAt,
         };
       }),
@@ -1168,16 +1189,31 @@ export async function sendChatMessage(
           throw new DataAccessError('authorization_denied');
         }
       }
+      const references = await captureSessionReferences(
+        transaction,
+        context,
+        workspaceId,
+        session,
+        message.sessionReferenceIds ?? [],
+      );
       const users = await transaction<MessageRow[]>`
         insert into allrice_messages (
           organization_id, workspace_id, session_id, owner_id, role,
-          content, visibility, client_message_id, status, completed_at
+          content, visibility, client_message_id, status, completed_at, session_references
         ) values (
           ${context.organizationId}, ${workspaceId}, ${session.id},
           ${requireUser(context)}, 'user',
           ${transaction.json({
             text: message.text,
             citations: [],
+            ...(references.length
+              ? {
+                  sessionReferences: references.map(({ sessionId, label }) => ({
+                    sessionId,
+                    label,
+                  })),
+                }
+              : {}),
             ...(message.changesetAction
               ? {
                   interaction: {
@@ -1203,7 +1239,7 @@ export async function sendChatMessage(
                 }
               : {}),
           })},
-          ${session.visibility}, ${message.clientMessageId}, 'completed', now()
+          ${session.visibility}, ${message.clientMessageId}, 'completed', now(), ${transaction.json(references)}
         )
         returning *
       `;
@@ -1400,6 +1436,9 @@ export async function sendChatMessage(
         memories,
         userRequest,
         imageAttachments,
+        sessionReferences: SessionReferenceSnapshotsSchema.parse(
+          result.userMessage.session_references ?? [],
+        ),
       },
     });
     const { enqueueRun, getRun } = await import('../execution/queue.ts');

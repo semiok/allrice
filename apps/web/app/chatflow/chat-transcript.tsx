@@ -6,6 +6,7 @@ import {
   type WorkbenchArtifact,
   type InteractionStatus,
 } from '@allrice/contracts';
+import { SessionReferenceChips } from './session-reference-picker';
 import type { AssistantTreeView } from '@allrice/database';
 
 import { projectWorkProgress } from '../../lib/chatflow/work-progress';
@@ -205,6 +206,9 @@ export function ChatTranscript({
                   ) : message.role === 'user' ? (
                     <div className={messageUi.userRow}>
                       <div className={messageUi.userStack}>
+                        <SessionReferenceChips
+                          references={message.content.sessionReferences ?? []}
+                        />
                         {message.attachments?.length ? (
                           <MessageImageGallery
                             attachments={message.attachments}

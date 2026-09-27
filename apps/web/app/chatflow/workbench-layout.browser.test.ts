@@ -4537,6 +4537,70 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  for (const width of [1440, 390])
+    it(`selects, removes and sends authorized session references at ${width}px`, async () => {
+      const f = await fixture({ width });
+      try {
+        const sources = [
+          session(A),
+          { ...session(B), title: '历史财报' },
+          { ...session(id(801)), title: '市场研究' },
+          { ...session(id(802)), title: '上次汇报' },
+          { ...session(id(803)), title: '竞争对手' },
+        ];
+        await f.page.route('**/api/v1/sessions?**', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ sessions: sources, nextCursor: null }),
+          }),
+        );
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page.getByRole('menuitem', { name: '引用会话' }).click();
+        const picker = f.page.getByRole('dialog', { name: '引用会话' });
+        await picker.getByRole('button', { name: /历史财报/ }).click();
+        await picker.getByRole('button', { name: /市场研究/ }).click();
+        await picker.getByRole('button', { name: /上次汇报/ }).click();
+        expect(
+          await picker.getByRole('button', { name: /竞争对手/ }).isDisabled(),
+        ).toBe(true);
+        expect(
+          await picker.getByRole('button', { name: /研究任务 A/ }).count(),
+        ).toBe(0);
+        if (process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT) {
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT}-${width}.png`,
+          });
+        }
+        await picker.getByRole('button', { name: '完成', exact: true }).click();
+        await f.page
+          .getByRole('button', { name: '移除引用：市场研究' })
+          .click();
+        await f.page
+          .getByRole('button', { name: '移除引用：上次汇报' })
+          .click();
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('请根据引用整理汇报');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.messageInputs[0]).toMatchObject({
+          text: '请根据引用整理汇报',
+          sessionReferenceIds: [B],
+          deliveryMode: 'follow_up',
+        });
+        await expect
+          .poll(() =>
+            f.page.getByRole('button', { name: '移除引用：历史财报' }).count(),
+          )
+          .toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
   it('keeps long replies entirely in the transcript and hides the workbench for conversations without artifacts', async () => {
     const f = await fixture();
     try {

@@ -514,9 +514,9 @@
           "source": "packages/client/ui-chat/src/client/conversation-nodes/process-groups.ts",
           "target": "apps/web/app/chatflow/dsh-upstream/process/process-groups.ts",
           "upstreamSha256": "2d7188a9c35c846d0ec25c1de94b69cd5d77aa9c46ed44d94707a3794c18cd45",
-          "sha256": "f5a5ab6543a407bd56c7ee4ed607aafb178f8a970f78b89df8312c4fcaab5d71",
+          "sha256": "450ba2386e31a831b8fcab92c25168ff789d3be09e4b7f6a0e61e0a28c6c5363",
           "patch": "scripts/dsh-ui-patches/process-process-groups.ts.patch",
-          "patchSha256": "3cb905439fd6af71beb2dcc4f1a9ae3329f81b6a64f28c758730f2dcbeda5e32"
+          "patchSha256": "24ace726bd42f108186e9f847267d19ee864c538d07d646c7fd491dcbefb60e4"
         },
         {
           "source": "packages/client/ui-chat/src/client/conversation-nodes/process-activity.ts",
