@@ -19,6 +19,8 @@ export async function GET(request: Request) {
     return Response.json(
       await listChatSessions(context, workspaceId, {
         cursor: query.get('cursor') ?? undefined,
+        employeeAssignmentId: query.get('employeeAssignmentId') ?? undefined,
+        includeEmployeeGroups: !query.has('employeeAssignmentId'),
         includeArchived: query.get('archived') === 'true',
         archivedOnly: query.get('archived') === 'only',
       }),

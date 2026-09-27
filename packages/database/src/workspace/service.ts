@@ -565,10 +565,15 @@ export async function listChatSessions(
     limit?: number;
     includeArchived?: boolean;
     archivedOnly?: boolean;
+    employeeAssignmentId?: string;
+    includeEmployeeGroups?: boolean;
   } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const cursor = decodeCursor(options.cursor);
+  const employeeAssignmentId = options.employeeAssignmentId
+    ? UuidSchema.parse(options.employeeAssignmentId)
+    : null;
   const limit = Math.min(Math.max(options.limit ?? 30, 1), 100);
   const sql = getDatabase();
   // Bind cursor timestamps as text so postgres.js does not serialize them
@@ -580,6 +585,7 @@ export async function listChatSessions(
       (select v.name from allrice_employee_versions v where v.id=allrice_chat_sessions.employee_version_id) as employee_name from allrice_chat_sessions
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
+      and (${employeeAssignmentId}::uuid is null or employee_assignment_id = ${employeeAssignmentId}::uuid)
       and (${options.includeArchived ?? false} or ${options.archivedOnly ?? false} or archived_at is null)
       and (not ${options.archivedOnly ?? false} or archived_at is not null)
       and (owner_id = ${requireUser(context)} or visibility <> 'private')
@@ -593,7 +599,27 @@ export async function listChatSessions(
   const visible = rows.filter((row) => canReadSession(context, row));
   const page = visible.slice(0, limit);
   const last = page.at(-1);
+  // Count readable records independently of the page so that historical
+  // employees remain discoverable even when their work is older than page one.
+  const employeeGroups = options.includeEmployeeGroups
+    ? await sql<
+        { employeeAssignmentId: string; employeeName: string; count: number }[]
+      >`
+        select s.employee_assignment_id as "employeeAssignmentId",
+          (array_agg(v.name order by s.updated_at desc, s.id desc))[1] as "employeeName",
+          count(*)::integer as count
+        from allrice_chat_sessions s
+        join allrice_employee_versions v on v.id = s.employee_version_id
+        where s.organization_id = ${context.organizationId}
+          and s.workspace_id = ${workspaceId}
+          and (${options.includeArchived ?? false} or ${options.archivedOnly ?? false} or s.archived_at is null)
+          and (not ${options.archivedOnly ?? false} or s.archived_at is not null)
+          and (s.owner_id = ${requireUser(context)} or s.visibility <> 'private')
+        group by s.employee_assignment_id
+      `
+    : undefined;
   return {
+    ...(employeeGroups ? { employeeGroups } : {}),
     sessions: page.map((row) => ({
       ...mapSession(row),
       employeeName: row.employee_name,

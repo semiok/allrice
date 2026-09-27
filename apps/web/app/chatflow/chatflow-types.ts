@@ -179,3 +179,9 @@ export interface WorkspaceResponse {
 export interface CapabilityResponse {
   capabilities: SaasCapabilityManifest;
 }
+
+export type EmployeeSessionGroup = {
+  employeeAssignmentId: string;
+  employeeName: string;
+  count: number;
+};

@@ -10,6 +10,8 @@ import {
   updateChatSession,
   sendChatMessage,
   SessionActiveError,
+  ensureDefaultEmployee,
+  createChatSession,
 } from './workspace/service.ts';
 import {
   assertWorkbenchSession,
@@ -127,6 +129,87 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     expect(
       (await listChatSessions(f.owner, f.workspace)).sessions.map((s) => s.id),
     ).toEqual([f.session.id]);
+  });
+  it('counts readable work beyond page one and paginates each employee without skipping microseconds', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const foreign = await createExperienceFixture(fixture.db);
+    await ensureDefaultEmployee(f.neighbor, f.workspace);
+    const privateOther = await createChatSession(f.neighbor, {
+      workspaceId: f.workspace,
+      title: 'Private other user',
+    });
+    const secondId = privateOther.employeeAssignmentId;
+    for (let i = 0; i < 65; i++)
+      await fixture.db`insert into allrice_chat_sessions(organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,title,updated_at)
+        values(${f.org},${f.workspace},${f.user},${f.session.employeeAssignmentId},${f.session.employeeVersionId},${`Rice ${i}`},
+          '2026-09-26T00:00:00Z'::timestamptz + ${i} * interval '1 microsecond')`;
+    for (let i = 0; i < 3; i++)
+      await fixture.db`insert into allrice_chat_sessions(organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,title,visibility,updated_at)
+        values(${f.org},${f.workspace},${f.neighbor.actor.id},${secondId},${privateOther.employeeVersionId},${`Shared ${i}`},'workspace','2026-09-25T00:00:00Z')`;
+    await fixture.db`insert into allrice_chat_sessions(organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,title,archived_at)
+      values(${f.org},${f.workspace},${f.user},${f.session.employeeAssignmentId},${f.session.employeeVersionId},'Archived',now())`;
+    const first = await listChatSessions(f.owner, f.workspace, {
+      includeEmployeeGroups: true,
+    });
+    expect(first.sessions).toHaveLength(30);
+    expect(first.employeeGroups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          employeeAssignmentId: f.session.employeeAssignmentId,
+          count: 66,
+        }),
+        expect.objectContaining({ employeeAssignmentId: secondId, count: 3 }),
+      ]),
+    );
+    const next = await listChatSessions(f.owner, f.workspace, {
+      employeeAssignmentId: f.session.employeeAssignmentId,
+      cursor: first.nextCursor!,
+    });
+    const last = await listChatSessions(f.owner, f.workspace, {
+      employeeAssignmentId: f.session.employeeAssignmentId,
+      cursor: next.nextCursor!,
+    });
+    expect(next.sessions).toHaveLength(30);
+    expect(last.sessions).toHaveLength(6);
+    expect(last.nextCursor).toBeNull();
+    expect(
+      new Set(
+        [...first.sessions, ...next.sessions, ...last.sessions].map(
+          (s) => s.id,
+        ),
+      ).size,
+    ).toBe(66);
+    const second = await listChatSessions(f.owner, f.workspace, {
+      employeeAssignmentId: secondId,
+      cursor: first.nextCursor!,
+    });
+    expect(second.sessions).toHaveLength(3);
+    expect(
+      second.sessions.every((s) => s.employeeAssignmentId === secondId),
+    ).toBe(true);
+    expect(second.sessions.some((s) => s.id === privateOther.id)).toBe(false);
+    expect(
+      (
+        await listChatSessions(f.owner, f.workspace, {
+          employeeAssignmentId: foreign.session.employeeAssignmentId,
+        })
+      ).sessions,
+    ).toEqual([]);
+    const archived = await listChatSessions(f.owner, f.workspace, {
+      archivedOnly: true,
+      includeEmployeeGroups: true,
+    });
+    expect(archived.employeeGroups).toEqual([
+      expect.objectContaining({
+        employeeAssignmentId: f.session.employeeAssignmentId,
+        count: 1,
+      }),
+    ]);
+    await expect(
+      listChatSessions(f.owner, f.workspace, {
+        employeeAssignmentId: 'not-a-uuid',
+      }),
+    ).rejects.toBeDefined();
   });
   it('requires confirmation, durably cuts off assistants and pauses schedules; restoration cannot revive tasks', async () => {
     const f = await createAssistantLocalCommandFixture(fixture.db);
