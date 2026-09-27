@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  SessionActiveError,
   SessionReferenceError,
   getChatSessionHistory,
   updateChatSession,
@@ -53,6 +54,18 @@ export async function PATCH(
     );
     return Response.json({ session });
   } catch (error) {
+    if (error instanceof SessionActiveError) {
+      return Response.json(
+        {
+          error: {
+            code: 'SESSION_ACTIVE',
+            message: error.message,
+            activity: error.activity,
+          },
+        },
+        { status: 409 },
+      );
+    }
     if (error instanceof SessionReferenceError)
       return Response.json(
         { error: { message: error.message } },

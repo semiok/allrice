@@ -1,0 +1,14 @@
+--- a/packages/client/ui-workspace/src/client/rows/Rows.module.css
++++ b/packages/client/ui-workspace/src/client/rows/Rows.module.css
+@@ -437,3 +437,11 @@
+     transition: none;
+   }
+ }
++
++/* Allrice: expose native actions to touch and keyboard users as well. */
++.sessionRow:focus-within .rowActions { display: inline-flex; }
++.sessionRow:focus-within .time { display: none; }
++@media (hover: none) {
++  .sessionRow .rowActions { display: inline-flex; }
++  .sessionRow .time { display: none; }
++}

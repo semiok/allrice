@@ -124,9 +124,7 @@ export function useSession({ setError }: UseSessionOptions) {
       historyRequest.current?.abort();
       setHistory(null);
     }
-    const authorized = new Set(
-      nextWorkspace.sessions.filter((s) => !s.archivedAt).map((s) => s.id),
-    );
+    const authorized = new Set(nextWorkspace.sessions.map((s) => s.id));
     for (const id of historyCache.current.keys())
       if (!authorized.has(id)) historyCache.current.delete(id);
     for (const [id, pending] of prefetches.current) {
@@ -159,11 +157,7 @@ export function useSession({ setError }: UseSessionOptions) {
       );
       if (response.ok) {
         const result = await readJson<{ history: History }>(response);
-        if (
-          scope.current() &&
-          result.history.session.id === requested &&
-          !result.history.session.archivedAt
-        ) {
+        if (scope.current() && result.history.session.id === requested) {
           rememberHistory(historyCache.current, result.history, true);
           nextWorkspace.sessions = [
             result.history.session,
@@ -182,9 +176,7 @@ export function useSession({ setError }: UseSessionOptions) {
       if (
         !current &&
         linked &&
-        workspaceResult.workspace.sessions.some(
-          (s) => s.id === linked && !s.archivedAt,
-        )
+        workspaceResult.workspace.sessions.some((s) => s.id === linked)
       ) {
         setActiveId(linked);
         return;
@@ -192,7 +184,7 @@ export function useSession({ setError }: UseSessionOptions) {
       if (
         current &&
         workspaceResult.workspace.sessions.some(
-          (session) => session.id === current && !session.archivedAt,
+          (session) => session.id === current,
         )
       ) {
         return;
@@ -215,7 +207,7 @@ export function useSession({ setError }: UseSessionOptions) {
         !tenantWorkspaceId ||
         historyScope.current !== employeeScope ||
         selection.capture().sessionId === sessionId ||
-        !workspace?.sessions.some((s) => s.id === sessionId && !s.archivedAt) ||
+        !workspace?.sessions.some((s) => s.id === sessionId) ||
         historyCache.current.has(sessionId) ||
         prefetches.current.has(sessionId) ||
         prefetches.current.size >= 2
@@ -430,6 +422,44 @@ export function useSession({ setError }: UseSessionOptions) {
     [selection],
   );
 
+  const updateSession = useCallback(
+    (session: Session) => {
+      // Invalidate stale in-flight snapshots before publishing the archive receipt.
+      if (selection.capture().sessionId === session.id) {
+        historyRequestGeneration.current++;
+        historyRequest.current?.abort();
+      }
+      prefetches.current.get(session.id)?.controller.abort();
+      prefetches.current.delete(session.id);
+      historyCache.current.delete(session.id);
+      setWorkspace((current) =>
+        current
+          ? {
+              ...current,
+              sessions: current.sessions.some((s) => s.id === session.id)
+                ? current.sessions.map((s) =>
+                    s.id === session.id
+                      ? {
+                          ...s,
+                          ...session,
+                          running: false,
+                          pendingInteraction: undefined,
+                        }
+                      : s,
+                  )
+                : [session, ...current.sessions],
+            }
+          : current,
+      );
+      setHistory((current) =>
+        current?.session.id === session.id
+          ? { ...current, session: { ...current.session, ...session } }
+          : current,
+      );
+    },
+    [selection],
+  );
+
   const requestedEmployee =
     typeof window === 'undefined'
       ? null
@@ -446,6 +476,7 @@ export function useSession({ setError }: UseSessionOptions) {
         workspace?.employees[0]);
   return {
     newSessionEmployee,
+    updateSession,
     setPendingEmployeeAssignmentId,
     activeId,
     captureSelection: selection.capture,

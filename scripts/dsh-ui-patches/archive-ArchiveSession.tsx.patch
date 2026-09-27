@@ -1,0 +1,28 @@
+--- a/packages/client/ui-workspace/src/client/session-actions/ArchiveSession.tsx
++++ b/packages/client/ui-workspace/src/client/session-actions/ArchiveSession.tsx
+@@ -7,21 +7,16 @@
+  * live in the injected callbacks, not here.
+  */
+ import { useState } from 'react'
+-import type { SessionActivity } from '@deepseek-ai/dsh-api-workspace-controller/client'
+-// Type-only: the family keys each provider merges; a key this program did not compile takes the generic line.
+-import type {} from '@deepseek-ai/dsh-agent/types'
+-import type {} from '@deepseek-ai/dsh-jobs/view'
+-import type {} from '@deepseek-ai/dsh-schedule/client'
+-import type {} from '@deepseek-ai/dsh-subagent/client'
++import type { SessionActivity } from './contracts';
+ import {
+   Button, IconArchiveOutlineRegular, IconUnarchiveOutlineRegular, MenuItemButton, Modal, Tooltip,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type {
+   ArchiveSessionInjected, SessionArchiveConfirmInjected, SessionArchiveConfirmProps, SessionArchiveConfirmRequest,
+   SessionMenuItemProps, SessionRowActionProps,
+-} from '../contract/slots.ts'
+-import css from '../rows/Rows.module.css'
+-import browserCss from '../rows/WorkspaceBrowser.module.css'
++} from './contracts'
++import css from '../workspace/Rows.module.css'
++import browserCss from './WorkspaceBrowser.module.css'
+ 
+ /**
+  * Menu row (order 400): archive, or restore an archived row.

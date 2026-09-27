@@ -4,6 +4,7 @@ import {
   IconChevronDownOutlineRegular,
   IconChevronRightOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import type { useSessionArchive } from './use-session-archive';
 import type { Session, Workspace } from './chatflow-types';
 import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
 import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
@@ -25,7 +26,9 @@ export function EmployeeSidebar({
   onSelectSession,
   onPrepareSession,
   onDetails,
+  archive,
 }: {
+  archive?: ReturnType<typeof useSessionArchive>;
   workspace: Workspace;
   sessions: Session[];
   activeId: string | null;
@@ -54,8 +57,9 @@ export function EmployeeSidebar({
     }
   }, [key, expansion]);
   const groups = useMemo(
-    () => employeeGroups(workspace, sessions, activeId, expansion),
-    [workspace, sessions, activeId, expansion],
+    () =>
+      employeeGroups(workspace, sessions, activeId, expansion, archive?.filter),
+    [workspace, sessions, activeId, expansion, archive?.filter],
   );
   if (!groups.length) return <p className={css.empty}>当前没有可用员工</p>;
   const prepareSession = (target: EventTarget) => {
@@ -90,7 +94,12 @@ export function EmployeeSidebar({
         const color = employee?.currentVersion.manifest.appearance?.accentColor;
         const accent = employeeAccent(group.label, color);
         const history = sessions.filter(
-          (session) => session.employeeAssignmentId === group.key,
+          (session) =>
+            session.employeeAssignmentId === group.key &&
+            (archive?.filter === 'show' ||
+              (archive?.filter === 'only'
+                ? !!session.archivedAt
+                : !session.archivedAt)),
         );
         const native = collapsedSessionRows(group.sessions);
         // Navigation must reveal the selected row even when it is older than five.
@@ -229,6 +238,16 @@ export function EmployeeSidebar({
                     currentId={activeId ?? undefined}
                     now={Date.now()}
                     onOpen={onSelectSession}
+                    renderSlot={
+                      sessions.some(
+                        (s) =>
+                          s.id === node.id &&
+                          s.ownerId &&
+                          s.ownerId !== workspace.viewerId,
+                      )
+                        ? undefined
+                        : archive?.renderActions
+                    }
                     t={employeeTranslate}
                   />
                 ))}

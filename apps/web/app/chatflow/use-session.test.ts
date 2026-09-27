@@ -138,6 +138,36 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
     vi.unstubAllGlobals();
   });
 
+  it('an archive receipt for another session does not abort the selected history request', async () => {
+    const state = await ready();
+    state.setActiveId('B');
+    const loading = render().loadHistory('B');
+    const request = requests.at(-1)!;
+    render().updateSession({
+      ...session('A'),
+      archivedAt: '2026-09-27T00:00:00Z',
+    });
+    expect(request.init?.signal?.aborted).toBe(false);
+    request.result.resolve(Response.json({ history: history('B') }));
+    await loading;
+    expect(render().history?.session.id).toBe('B');
+  });
+
+  it('an archive receipt invalidates a stale snapshot and keeps the active transcript readable', async () => {
+    await ready();
+    render().setHistory(history('A'));
+    const loading = render().loadHistory('A');
+    const request = requests.at(-1)!;
+    render().updateSession({
+      ...session('A'),
+      archivedAt: '2026-09-27T00:00:00Z',
+    });
+    expect(request.init?.signal?.aborted).toBe(true);
+    request.result.resolve(Response.json({ history: history('A') }));
+    await loading;
+    expect(render().history?.session.archivedAt).toBe('2026-09-27T00:00:00Z');
+  });
+
   it('clears an uncached selection immediately and restores a visited one without waiting for HTTP', async () => {
     const state = await ready();
     state.setHistory(history('A'));
