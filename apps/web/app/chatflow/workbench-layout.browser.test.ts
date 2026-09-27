@@ -20,6 +20,7 @@ import {
 } from '@allrice/contracts';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
+  BridgeDevice,
   QueuedMessage,
   Message,
   WorkspaceFile,
@@ -168,7 +169,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? js
           : path === '/app.css'
             ? css
-            : '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
+            : '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
       );
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
@@ -242,6 +243,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      bridgeDevices: [] as BridgeDevice[],
+      bridgeError: false,
+      bridgeSelections: [] as string[],
       archivedIds: new Set<string>(),
       archiveActive: options.archiveActive ?? false,
       archiveError: false,
@@ -632,6 +636,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         else state.archivedIds.delete(target);
         return answer({ session: withArchive(session(target)) });
       }
+      if (path.endsWith('/workspace-selection')) {
+        state.bridgeSelections.push(path);
+        return answer({ ok: true });
+      }
+      if (
+        path.startsWith('/api/v1/bridge/grants/') &&
+        route.request().method() === 'DELETE'
+      ) {
+        const grantId = path.split('/').at(-1);
+        for (const device of state.bridgeDevices)
+          device.folderGrants = device.folderGrants.filter(
+            (grant) => grant.id !== grantId,
+          );
+        return answer({ ok: true });
+      }
+      if (path === '/api/v1/bridge/pairings')
+        return answer({
+          pairing: {
+            id: id(908),
+            code: 'ABCD-1234',
+            expiresAt: new Date(Date.now() + 600000).toISOString(),
+          },
+        });
       if (route.request().method() !== 'GET') {
         writes.push(path);
         return answer({}, 500);
@@ -806,7 +833,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           humanCredentialsConfigured: false,
         });
       }
-      if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
+      if (path === '/api/v1/bridge/devices')
+        return state.bridgeError
+          ? answer({ error: { message: '连接状态刷新失败' } }, 503)
+          : answer({ devices: state.bridgeDevices });
       if (path === '/api/v1/bridge/client/releases')
         return answer({
           releases: [
@@ -1674,6 +1704,196 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each([1440, 390, 320])(
+    'compact dialogs preserve selection, connection and folder actions at width %s',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        employeeCount: 2,
+        employeeHistory: true,
+      });
+      try {
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        const picker = f.page.getByRole('dialog', {
+          name: '选择 AI 员工',
+          exact: true,
+        });
+        await picker.waitFor();
+        const assertFits = async (selector: typeof picker) => {
+          const box = await selector.boundingBox();
+          expect(box!.x).toBeGreaterThanOrEqual(0);
+          expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+          expect(
+            await selector.evaluate((node) =>
+              [...node.querySelectorAll('*')].every(
+                (child) =>
+                  child.scrollWidth <= child.clientWidth + 1 ||
+                  getComputedStyle(child).display === 'inline',
+              ),
+            ),
+          ).toBe(true);
+        };
+        await assertFits(picker);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-picker-${width}.png`,
+          });
+        await f.page.keyboard.press('Escape');
+        expect(await picker.count()).toBe(0);
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '收起侧边栏', exact: true })
+            .click();
+        f.state.bridgeDevices = [
+          {
+            id: id(901),
+            name: 'M5-Max.local · Rice Bridge',
+            platform: 'macos-arm64',
+            status: 'online',
+            clientVersion: '0.6.0-dev.7',
+            lastSeenAt: now,
+            folderGrants: [],
+          },
+        ];
+        await f.page
+          .getByRole('button', { name: 'Bridge 离线', exact: true })
+          .click();
+        const computer = f.page.getByRole('dialog', {
+          name: '我的电脑',
+          exact: true,
+        });
+        await computer.getByText('尚未选择文件夹', { exact: true }).waitFor();
+        expect(
+          await computer.getByText('已连接', { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(
+          await computer
+            .getByRole('button', { name: '生成配对码', exact: true })
+            .isVisible(),
+        ).toBe(false);
+        await assertFits(computer);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-empty-${width}.png`,
+          });
+        await computer
+          .getByRole('button', { name: '选择文件夹', exact: true })
+          .click();
+        await expect
+          .poll(() => f.state.bridgeSelections)
+          .toEqual([`/api/v1/bridge/devices/${id(901)}/workspace-selection`]);
+        f.state.bridgeDevices[0]!.folderGrants = [
+          { id: id(902), label: 'AI-what' },
+        ];
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('AI-what', { exact: true }).waitFor();
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-connected-${width}.png`,
+          });
+        if (width === 1440 && process.env.ALLRICE_DIALOG_SCREENSHOT) {
+          await f.page.evaluate(() =>
+            document.body.setAttribute('data-ds-dark-theme', ''),
+          );
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-connected-dark.png`,
+          });
+          await f.page.evaluate(() =>
+            document.body.removeAttribute('data-ds-dark-theme'),
+          );
+        }
+        f.state.bridgeError = true;
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('待确认', { exact: true }).waitFor();
+        expect(
+          await computer.getByText('AI-what', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await computer
+            .getByRole('button', { name: '选择文件夹', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await computer
+            .getByRole('button', { name: '断开', exact: true })
+            .count(),
+        ).toBe(0);
+        f.state.bridgeError = false;
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('AI-what', { exact: true }).waitFor();
+        await computer
+          .getByRole('button', { name: '断开', exact: true })
+          .click();
+        await computer.getByText('尚未选择文件夹', { exact: true }).waitFor();
+        expect(f.state.bridgeDevices[0]!.folderGrants).toEqual([]);
+        await computer.locator('summary').click();
+        await computer
+          .getByRole('link', {
+            name: '下载 M 芯片版 · v0.6.0-dev.7',
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await computer
+            .getByRole('link', { name: /下载 Intel/ })
+            .getAttribute('href'),
+        ).toBe('/api/v1/bridge/client/macos-x64');
+        await computer
+          .getByRole('button', { name: '生成配对码', exact: true })
+          .click();
+        await computer.getByText('ABCD1234', { exact: true }).waitFor();
+        await assertFits(computer);
+        if (width === 1440) {
+          await f.context.grantPermissions([
+            'clipboard-read',
+            'clipboard-write',
+          ]);
+          await computer
+            .getByRole('button', { name: '复制配对码', exact: true })
+            .click();
+          expect(
+            await f.page.evaluate(() => navigator.clipboard.readText()),
+          ).toBe('ABCD1234');
+        }
+        f.state.bridgeDevices[0]!.status = 'offline';
+        await computer
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await computer.getByText('离线', { exact: true }).waitFor();
+        expect(
+          await computer.getByText('已是最新版', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await computer
+            .getByRole('button', { name: '选择文件夹', exact: true })
+            .count(),
+        ).toBe(0);
+        if (process.env.ALLRICE_DIALOG_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-offline-${width}.png`,
+          });
+        await f.page.keyboard.press('Escape');
+        expect(await computer.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('uses the published employee color across sidebar, picker, conversation and profile', async () => {
     const f = await fixture({
       employeeCount: 2,
@@ -1716,9 +1936,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const rice = picker.getByRole('button', { name: /Rice/ });
       expect(await rice.getAttribute('data-accent')).toBe('violet');
-      expect(await rice.evaluate((node) => getComputedStyle(node).color)).toBe(
-        'rgb(9, 13, 22)',
-      );
+      expect(
+        await rice
+          .getByText('R', { exact: true })
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+      ).toBe('rgb(139, 92, 246)');
       await rice.click();
       await f.page
         .getByRole('button', { name: '收起侧边栏', exact: true })
@@ -1990,6 +2212,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-picker.png`,
         });
       await f.page.keyboard.press('1');
+      await f.page.keyboard.press('2');
+      expect(await picker.isVisible()).toBe(true);
+      expect(await picker.getByText('快选', { exact: false }).count()).toBe(0);
+      await picker.getByRole('button', { name: /Office 文档助手/ }).click();
       expect(await picker.count()).toBe(0);
       expect(
         await f.page

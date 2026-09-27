@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BridgeClientRelease } from '../../lib/bridge/client-releases';
 import { readJson } from './chatflow-utils';
-import styles from './dsh-saas.module.css';
+import styles from './bridge-dialog.module.css';
 
 export function useBridgeReleases(
   active: boolean,
@@ -74,10 +74,12 @@ export function BridgeVersionStatus({
   installed,
   release,
   online,
+  compact = false,
 }: {
   installed?: string | null;
   release?: BridgeClientRelease;
   online: boolean;
+  compact?: boolean;
 }) {
   const comparison =
     installed && release?.available && release.version
@@ -86,11 +88,11 @@ export function BridgeVersionStatus({
   return (
     <small data-bridge-version>
       {installed
-        ? `${online ? '当前版本' : '上次上报版本'} v${installed}`
+        ? `${online ? (compact ? '' : '当前版本 ') : '上次上报版本 '}v${installed}`
         : '当前版本尚未上报'}
-      {comparison === -1
+      {!compact && comparison === -1
         ? ` · 可更新至 v${release!.version}`
-        : comparison === 0
+        : !compact && comparison === 0
           ? ' · 已是最新版本'
           : ''}
     </small>
@@ -108,7 +110,6 @@ export function BridgeReleaseDownloads({
 }) {
   return (
     <section className={styles.bridgeReleaseSection} aria-label="Bridge 下载">
-      <strong>最新 Bridge 下载</strong>
       <div className={styles.bridgeDownloads}>
         {(['macos-arm64', 'macos-x64'] as const).map((platform) => {
           const release = releases?.find((item) => item.platform === platform);
