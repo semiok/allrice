@@ -919,21 +919,33 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByRole('button', { name: '安全', exact: true }).count(),
       ).toBe(0);
-      await page.getByRole('button', { name: '工具', exact: true }).click();
       await page
         .getByText('是否自动执行，由使用者在前台', { exact: false })
         .waitFor();
       const save = async () => {
-        const response = page.waitForResponse(
-          (r) =>
-            r.url() ===
-              `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
-            r.request().method() === 'PUT',
-        );
         await page
-          .getByRole('button', { name: '保存草稿', exact: true })
-          .click();
-        const result = await response;
+          .getByRole('heading', {
+            name: 'MET151 MCP safety fixture',
+            exact: true,
+          })
+          .waitFor();
+        const button = page.getByRole('button', {
+          name: '保存草稿',
+          exact: true,
+        });
+        // The tool tree is much taller than the former Security panel. Finish
+        // scrolling to the header before starting the HTTP response deadline.
+        await button.scrollIntoViewIfNeeded();
+        const [result] = await Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url() ===
+                `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+              r.request().method() === 'PUT',
+            { timeout: 30000 },
+          ),
+          button.click(),
+        ]);
         expect(result.status()).toBe(200);
         await expect
           .poll(() =>
