@@ -649,7 +649,10 @@ integration(
     it('serializes concurrent proposal creation, delegate, approval and live policy revocation without granting stale execution', async () => {
       const f = await proposalFixture(),
         c = await f.create();
-      await authorizeFixturePlatformAdministrator(f.db, f.requestContext.actor.id);
+      await authorizeFixturePlatformAdministrator(
+        f.db,
+        f.requestContext.actor.id,
+      );
       const outcomes = await Promise.allSettled([
         f.create('concurrent'),
         f.runtime.provision({

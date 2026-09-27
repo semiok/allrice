@@ -1,3 +1,4 @@
+import { withFixturePlatformAdministrator } from './fixture-platform-authority.ts';
 /** Two-task subscription fixture. Preparation never executes a model or reads credentials. */
 import { randomUUID } from 'node:crypto';
 import type { RequestContext } from '../../../packages/contracts/src/index.ts';
@@ -252,20 +253,22 @@ export async function createP27CodexAssistantsFixture() {
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
         values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: ['assistant.delegate', 'assistant.report'].map((action) => ({ action, effect: 'allow' })) })})`;
     });
-    await models.upsertEmployeeModelPolicy({
-      context,
-      workspaceId,
-      employeeId,
-      policy: {
-        connectionId,
-        modelCatalogEntryId: catalogId,
-        reasoningEffort: 'low',
-        fallbackPolicy: 'disabled',
-        fallbackTargets: [],
-        fallbackOn: [],
-        runLimits,
-      },
-    });
+    await withFixturePlatformAdministrator(ownerId, () =>
+      models.upsertEmployeeModelPolicy({
+        context,
+        workspaceId,
+        employeeId,
+        policy: {
+          connectionId,
+          modelCatalogEntryId: catalogId,
+          reasoningEffort: 'low',
+          fallbackPolicy: 'disabled',
+          fallbackTargets: [],
+          fallbackOn: [],
+          runLimits,
+        },
+      }),
+    );
     let preparing = false;
     let firstAttempted = false;
     let ordinaryAttempted = false;
@@ -448,20 +451,22 @@ export async function createP27CodexAssistantsFixture() {
           );
           ordinaryAttempted = true;
           // A new session freezes an explicitly smaller ordinary policy; never mutate the first snapshot.
-          await models.upsertEmployeeModelPolicy({
-            context,
-            workspaceId,
-            employeeId,
-            policy: {
-              connectionId,
-              modelCatalogEntryId: catalogId,
-              reasoningEffort: 'low',
-              fallbackPolicy: 'disabled',
-              fallbackTargets: [],
-              fallbackOn: [],
-              runLimits: P27_CODEX_ORDINARY_LIMITS,
-            },
-          });
+          await withFixturePlatformAdministrator(ownerId, () =>
+            models.upsertEmployeeModelPolicy({
+              context,
+              workspaceId,
+              employeeId,
+              policy: {
+                connectionId,
+                modelCatalogEntryId: catalogId,
+                reasoningEffort: 'low',
+                fallbackPolicy: 'disabled',
+                fallbackTargets: [],
+                fallbackOn: [],
+                runLimits: P27_CODEX_ORDINARY_LIMITS,
+              },
+            }),
+          );
           return prepare(false);
         } finally {
           ordinaryChecking = false;
