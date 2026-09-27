@@ -245,7 +245,9 @@ describe('portal authentication response boundary', () => {
       new NextRequest(`${origin}/automation`, { headers }),
     );
     expect(navigation.status).toBe(307);
-    expect(navigation.headers.get('location')).toBe(`${origin}/login`);
+    expect(navigation.headers.get('location')).toBe(
+      'https://allrice.bplabs.xyz/automation',
+    );
 
     const capabilities = proxy(
       new NextRequest(`${origin}/api/v1/saas/capabilities`, { headers }),
@@ -272,6 +274,64 @@ describe('portal authentication response boundary', () => {
       }),
     );
     expect(navigation.status).toBe(307);
-    expect(navigation.headers.get('location')).toBe(`${origin}/login`);
+    expect(navigation.headers.get('location')).toBe(
+      'https://allrice.bplabs.xyz/chatflow',
+    );
+  });
+});
+
+describe('legacy navigation compatibility', () => {
+  it('moves HTML links with their exact path/query, while keeping devices, OAuth, SSE and signed downloads on their original origin', () => {
+    vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
+    try {
+      for (const host of [
+        'allrice-snow.bplabs.xyz',
+        'allrice-drink.bplabs.xyz',
+        'allrice-dsh.bplabs.xyz',
+      ]) {
+        for (const path of [
+          '/chatflow?session=kept&employee=rice',
+          '/runtime-console?view=activity',
+          '/workspace/mcp?connectionId=kept',
+          '/accept-invitation?token=kept',
+        ]) {
+          const response = proxy(
+            new NextRequest(`https://${host}${path}`, { headers: { host } }),
+          );
+          expect(response.headers.get('location')).toBe(
+            `https://allrice.bplabs.xyz${path}`,
+          );
+        }
+        for (const path of [
+          '/api/v1/bridge/device/heartbeat',
+          '/api/v1/connections/callback?state=kept&code=kept',
+          '/api/v1/runs/run/events',
+          '/api/v1/files/11111111-1111-4111-8111-111111111111?token=kept',
+        ]) {
+          expect(
+            proxy(
+              new NextRequest(`https://${host}${path}`, { headers: { host } }),
+            ).headers.get('location'),
+          ).toBeNull();
+        }
+      }
+      expect(
+        proxy(
+          new NextRequest('https://allrice-snow.bplabs.xyz/chatflow', {
+            method: 'POST',
+            headers: { host: 'allrice-snow.bplabs.xyz' },
+          }),
+        ).headers.get('location'),
+      ).not.toContain('https://allrice.bplabs.xyz');
+      expect(
+        proxy(
+          new NextRequest('https://dsh.pblabs.xyz/chatflow', {
+            headers: { host: 'dsh.pblabs.xyz' },
+          }),
+        ).status,
+      ).toBe(421);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

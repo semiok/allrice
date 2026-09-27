@@ -16,7 +16,8 @@ export const sessionCookieName = 'allrice_session';
 
 export const sessionCookieOptions = {
   httpOnly: true,
-  sameSite: 'strict' as const,
+  // OAuth uses a top-level GET callback with single-use state bound to this user.
+  sameSite: 'lax' as const,
   secure:
     process.env.NODE_ENV === 'production' &&
     process.env.ALLRICE_PORTAL_SECURE_COOKIE !== '0',

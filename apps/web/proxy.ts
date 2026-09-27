@@ -7,6 +7,7 @@ import {
 } from './lib/api-problem';
 import {
   isUnifiedPortalHost,
+  legacyPortalNavigation,
   portalAuthEnabled,
   resolvePortal,
 } from './lib/portal/config';
@@ -54,6 +55,13 @@ export function isBridgeDeviceApiPath(pathname: string) {
 }
 
 export function proxy(request: NextRequest) {
+  const destination = legacyPortalNavigation(request);
+  if (destination) {
+    const response = NextResponse.redirect(destination);
+    response.headers.set('Cache-Control', 'private, no-store');
+    response.headers.set('Referrer-Policy', 'no-referrer');
+    return response;
+  }
   const unified = isUnifiedPortalHost(request.headers.get('host'));
   if (!portalAuthEnabled() && !unified) return NextResponse.next();
 
@@ -83,7 +91,7 @@ export function proxy(request: NextRequest) {
     if (request.nextUrl.pathname.startsWith('/api/'))
       return authenticationRequiredProblem();
     const login = new URL('/login', request.url);
-    if (request.nextUrl.pathname === '/chatflow')
+    if (request.nextUrl.pathname !== '/login')
       login.searchParams.set(
         'next',
         request.nextUrl.pathname + request.nextUrl.search,
