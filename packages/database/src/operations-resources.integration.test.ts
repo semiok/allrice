@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import type { WorkerOperations } from '@allrice/contracts';
+import {
+  ExecutionPressureSchema,
+  type WorkerOperations,
+} from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import {
   readOperationsInventory,
@@ -38,7 +41,9 @@ suite('operations resource inventory', () => {
           running: 2,
         },
         sandboxStatus: 'ready',
-        pressure: await executionPressureSnapshot(f.db),
+        pressure: ExecutionPressureSchema.parse(
+          await executionPressureSnapshot(f.db),
+        ),
       };
       await recordWorkerOperations(report, f.db);
       expect((await readOperationsInventory(f.db)).workers).toMatchObject([
