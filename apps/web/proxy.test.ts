@@ -76,6 +76,22 @@ describe('Rice Bridge portal boundary', () => {
 });
 
 describe('portal authentication response boundary', () => {
+  it('passes signed file reads to token validation but keeps signing behind login', () => {
+    const host = 'allrice.bplabs.xyz';
+    const file = '/api/v1/files/11111111-1111-4111-8111-111111111111';
+    expect(
+      proxy(
+        new NextRequest(`https://${host}${file}?token=opaque`, {
+          headers: { host },
+        }),
+      ).status,
+    ).toBe(200);
+    expect(
+      proxy(
+        new NextRequest(`https://${host}${file}/sign`, { headers: { host } }),
+      ).status,
+    ).toBe(401);
+  });
   it('lets invitation tokens authenticate account activation on the shared entry', () => {
     const host = 'allrice.bplabs.xyz';
     for (const path of [

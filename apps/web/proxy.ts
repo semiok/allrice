@@ -66,6 +66,10 @@ export function proxy(request: NextRequest) {
     // This exact read-only endpoint authenticates its own scoped sync token.
     request.nextUrl.pathname === '/api/v1/internal/runtime-capabilities' ||
     publicPaths.has(request.nextUrl.pathname) ||
+    // Downloads validate their own scoped, expiring storage token. The sign
+    // endpoint remains protected by the current database session.
+    (['GET', 'HEAD'].includes(request.method) &&
+      /^\/api\/v1\/files\/[0-9a-f-]{36}$/.test(request.nextUrl.pathname)) ||
     isBridgeDeviceApiPath(request.nextUrl.pathname)
   ) {
     return NextResponse.next();
