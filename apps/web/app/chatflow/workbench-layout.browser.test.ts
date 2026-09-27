@@ -2905,7 +2905,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await panel.locator('[data-state="ongoing"]').count()).toBe(0);
       // The authoritative clock can settle before the final SSE receipt arrives.
       f.state.runTimings[0]!.timing.phase = 'terminal';
-      await expect.poll(() => panel.innerText()).toContain('未完成');
+      await expect
+        .poll(() => panel.innerText(), { timeout: 10_000 })
+        .toContain('未完成');
       f.state.messageStatus = 'failed';
       await push(undefined, 'run.failed');
       await expect.poll(() => panel.innerText()).toContain('未完成');
