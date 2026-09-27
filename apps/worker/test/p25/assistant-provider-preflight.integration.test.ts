@@ -842,20 +842,16 @@ integration(
             ? expect.stringMatching(/^sha256:/)
             : null,
         });
-        if (subscription) expect(row!.cost_cents).toBeNull();
-        else {
-          // Existing pre-dispatch failure semantics: this newly recorded route
-          // is one failed attempt with known zero usage, never another unknown.
-          expect(row!.cost_cents).not.toBeNull();
-          expect(Number(row!.cost_cents)).toBe(0);
-        }
+        // The synthetic successful API reply has measured tokens but no
+        // tariff. Cost stays unknown; a subscription remains not-applicable.
+        expect(row!.cost_cents).toBeNull();
         expect(
           await getOrganizationModelQuota(f.org, database.db),
         ).toMatchObject({
           usedRuns: 2,
           usedTokens: 33,
           usedCostCents: null,
-          unknownCostRuns: 1,
+          unknownCostRuns: subscription ? 1 : 2,
           subscriptionRuns: subscription ? 1 : 0,
           usageComplete,
         });

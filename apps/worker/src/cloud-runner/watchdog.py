@@ -158,8 +158,6 @@ def attest():
         checksum = hashlib.file_digest(binary, "sha256").hexdigest()
     with open("/etc/docker/daemon.json", encoding="utf8") as config:
         runtime = json.load(config)["runtimes"]["runsc"]
-    with open(STATE, encoding="utf8") as state:
-        heartbeat = json.load(state)
     active = subprocess.run(
         ["/usr/bin/systemctl", "is-active", "--quiet", "allrice-cloud-watchdog.service"],
         check=False,
@@ -168,6 +166,11 @@ def attest():
     for name in SIDECARS:
         with open("/usr/local/bin/gvisor-bin/" + name, "rb") as binary:
             sidecars[name] = hashlib.file_digest(binary, "sha256").hexdigest()
+    # Binary hashing can take seconds on a busy two-core VM. Read the current
+    # heartbeat afterwards, instead of aging a previously healthy sample while
+    # doing unrelated I/O. The same four-second freshness bound still applies.
+    with open(STATE, encoding="utf8") as state:
+        heartbeat = json.load(state)
     ready = (
         os.getuid() == 0
         and checksum == EXPECTED

@@ -92,7 +92,21 @@ export function executionResourceObserver(
           and organization_id=${c.organizationId} and workspace_id=${c.workspaceId!}
           and worker_id=${c.worker.id} and lease_token=${input.leaseToken} and status='running'
           and lease_expires_at>clock_timestamp() for update`;
-        if (!job) throw Error('execution_observer_lease_lost');
+        if (!job) {
+          // Cancellation/recovery may already have cleared the job lease.
+          // A former holder may close only its existing attempt, never enqueue
+          // or acquire work under expired authority. Live queue readers also
+          // require the current job lease, so this cannot unblock a successor.
+          const [owned] = ['failed', 'canceled', 'unknown', 'cleaned'].includes(
+            event.stage,
+          )
+            ? await tx`select id from allrice_task_resource_waits where id=${input.attemptId}
+                and job_id=${c.jobId} and run_id=${c.runId} and organization_id=${c.organizationId}
+                and workspace_id=${c.workspaceId!} and worker_id=${c.worker.id}
+                and lease_token=${input.leaseToken} for update`
+            : [];
+          if (!owned) throw Error('execution_observer_lease_lost');
+        }
         const state =
           event.stage === 'queued' || event.stage === 'waiting'
             ? 'waiting'
