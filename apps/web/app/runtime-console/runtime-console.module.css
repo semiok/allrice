@@ -86,7 +86,7 @@
 }
 
 .summary {
-  min-height: 92px;
+  min-height: 64px;
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 190px)) 1fr;
   gap: 1px;
@@ -125,222 +125,104 @@
   background: #3a2022;
 }
 
-.tenantOverview {
-  padding: 28px 24px 24px;
+.runtimeScope {
+  padding: 16px 24px;
   border-bottom: 1px solid #303236;
   background: #141517;
 }
-.tenantOverviewHeader,
-.tenantOverviewHeader > div,
-.tenantCard header,
-.tenantCard header span,
-.tenantBridgeDevice,
-.tenantBridgeWorkspace {
-  display: flex;
+.runtimeScope h1 {
+  margin: 0 0 12px;
+  font-size: 18px;
 }
-.tenantOverviewHeader {
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
-}
-.tenantOverviewHeader > div,
-.tenantCard header span,
-.tenantBridgeDevice {
-  align-items: flex-start;
-  flex-direction: column;
-}
-.tenantOverviewHeader p,
-.tenantOverviewHeader h1,
-.tenantOverviewHeader span {
-  margin: 0;
-}
-.tenantOverviewHeader p {
-  color: #789aff;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.tenantOverviewHeader h1 {
-  margin-top: 5px;
-  font-size: 24px;
-  letter-spacing: -0.03em;
-}
-.tenantOverviewHeader span {
-  max-width: 720px;
-  margin-top: 8px;
-  color: #858991;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.tenantOverviewHeader > strong {
-  flex: none;
-  color: #858991;
-  font-size: 12px;
-}
-.tenantGrid {
-  margin-top: 20px;
+.scopeRow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  align-items: stretch;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
   gap: 12px;
+  margin-top: 8px;
 }
-.tenantCard {
-  height: 100%;
-  min-width: 0;
-  padding: 16px;
-  box-sizing: border-box;
+.scopeRow > span {
+  color: #8f939b;
+  font-size: 12px;
+}
+.scopeChoices {
   display: flex;
-  flex-direction: column;
-  border: 1px solid #303237;
-  border-radius: 14px;
-  background: #1a1b1e;
-  color: inherit;
-  text-align: left;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 2px;
+}
+.scopeChoices button {
+  flex: none;
+  min-height: 34px;
+  padding: 7px 14px;
+  border: 1px solid #363940;
+  border-radius: 8px;
+  background: #1b1d21;
+  color: #c2c7d0;
+  font: inherit;
+  font-size: 13px;
   cursor: pointer;
 }
-.tenantCard:hover,
-.tenantCard[data-selected='true'] {
-  border-color: #5e78c7;
-  background: #1c202a;
+.scopeChoices button:hover,
+.scopeChoices button[aria-pressed='true'] {
+  border-color: #6c88d8;
+  background: #222b40;
+  color: #f2f3f4;
 }
-.tenantCard[data-selected='true'] {
-  box-shadow: inset 0 0 0 1px #5e78c7;
+.scopeChoices button:focus-visible {
+  outline: 2px solid #9fb5ff;
+  outline-offset: 1px;
 }
-.tenantCard header {
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.tenantCard header span {
-  min-width: 0;
-  gap: 4px;
-}
-.tenantCard header strong,
-.tenantCard header small {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tenantCard header strong {
-  font-size: 14px;
-}
-.tenantCard header small {
-  color: #858991;
+.scopeChoices small {
+  margin-left: 8px;
+  color: #9aa4b6;
   font-size: 11px;
 }
-.tenantCard header em {
-  flex: none;
-  padding: 5px 8px;
-  border-radius: 999px;
-  background: #332629;
-  color: #ec9198;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 750;
-}
-.tenantCard header em[data-state='ready'],
-.tenantCard header em[data-state='workspace-missing'] {
-  background: #20382a;
-  color: #78dda0;
-}
-.tenantCard header em[data-state='not-configured'] {
-  background: #292b30;
+.scopeChoices p {
+  margin: 8px 0;
   color: #8f939b;
-}
-.tenantCard dl {
-  margin: 18px 0 0;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
-.tenantCard dl div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tenantCard dt {
-  color: #777b83;
-  font-size: 10px;
-}
-.tenantCard dd {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 750;
-}
-.tenantBridge {
-  min-height: 69px;
-  flex: 1;
-  margin-top: 16px;
-  padding-top: 14px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  border-top: 1px solid #303237;
-}
-.tenantBridgeDevice {
-  min-width: 0;
-  gap: 4px;
-}
-.tenantBridgeDevice strong,
-.tenantBridgeDevice small {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tenantBridgeDevice strong {
   font-size: 12px;
 }
-.tenantBridgeDevice small,
-.tenantBridgeEmpty {
-  color: #858991;
-  font-size: 10px;
-  line-height: 1.5;
+.scopeError {
+  margin: 8px 0;
+  color: #ff9e9e;
+  font-size: 12px;
 }
-.tenantBridgeWorkspace {
-  min-width: 0;
-  margin-top: 11px;
+.employeeStatus {
+  display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #303236;
+  color: #989faa;
+  font-size: 12px;
 }
-.tenantBridgeWorkspace span {
-  flex: none;
-  color: #777b83;
-  font-size: 10px;
+.employeeStatus > strong {
+  color: #f2f3f4;
 }
-.tenantBridgeWorkspace strong {
-  min-width: 0;
-  padding: 5px 8px;
-  overflow: hidden;
-  border-radius: 7px;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.employeeBridge {
+  overflow-wrap: anywhere;
 }
-.tenantBridgeWorkspace strong[data-state='selected'] {
-  background: #20382a;
+.employeeBridge small {
+  margin-left: 8px;
+  color: #858991;
+}
+.employeeBridge[data-state='ready'],
+.employeeBridge[data-state='workspace-missing'] {
   color: #78dda0;
 }
-.tenantBridgeWorkspace strong[data-state='missing'] {
-  background: #332629;
+.employeeBridge[data-state='offline'] {
   color: #ec9198;
-}
-.tenantBridgeEmpty {
-  margin: 0;
-}
-.tenantEmpty {
-  margin: 0;
-  color: #777b83;
-  font-size: 13px;
 }
 
 .content {
   min-height: 560px;
   display: grid;
-  grid-template-columns: minmax(310px, 370px) 1fr;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
 }
 
 .capabilityPage {
@@ -708,6 +590,7 @@
   font-weight: 750;
 }
 .sidebar {
+  min-width: 0;
   border-right: 1px solid #303236;
   background: #161719;
 }
@@ -727,6 +610,8 @@
 }
 .runtimeList {
   padding: 10px;
+  max-height: 640px;
+  overflow-y: auto;
 }
 .runtimeList button {
   width: 100%;
@@ -795,7 +680,8 @@
 }
 
 .detail {
-  padding: 34px clamp(24px, 5vw, 74px);
+  min-width: 0;
+  padding: 26px clamp(20px, 3vw, 40px);
   background: #121315;
 }
 .detailHeader {
@@ -811,7 +697,7 @@
 }
 .detailHeader h1 {
   margin: 0;
-  font-size: clamp(25px, 3vw, 38px);
+  font-size: clamp(22px, 2.5vw, 32px);
   letter-spacing: -0.03em;
 }
 .detailHeader div > span {
@@ -1073,7 +959,13 @@
   font-size: 10px;
   color: #8b9099;
 }
+.turnHeader::-webkit-details-marker {
+  display: none;
+}
 .turnHeader {
+  list-style: none;
+  cursor: pointer;
+  flex-wrap: wrap;
   min-height: 48px;
   padding: 0 14px;
   display: flex;
@@ -1258,7 +1150,7 @@
     display: none;
   }
   .content {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .sidebar {
     border-right: 0;
@@ -1283,16 +1175,11 @@
   .detail {
     padding: 24px 16px;
   }
-  .tenantOverview {
-    padding: 22px 16px;
+  .runtimeScope {
+    padding: 14px 16px;
   }
-  .tenantOverviewHeader {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .tenantGrid {
-    grid-template-columns: 1fr;
+  .runtimeList {
+    max-height: 260px;
   }
   .capabilityHeader,
   .coreOverview,
