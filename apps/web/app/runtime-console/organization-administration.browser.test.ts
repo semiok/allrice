@@ -1,3 +1,5 @@
+import { GET as runtimeInventoryHttp } from '../api/v1/admin/runtime-console/route';
+import { GET as runtimeEventsHttp } from '../api/v1/admin/runtime-console/[sessionId]/events/route';
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
@@ -113,18 +115,24 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                     ? 'people'
                     : undefined;
           const response =
-            parts[4] === 'activity'
-              ? await organizationActivityHttp(request)
-              : parts[4] === 'tenants' && parts[6] === 'validation'
-                ? await tenantValidationHttp(request, parts[5]!)
-                : parts[6] === 'ai-employees'
-                  ? await organizationAssignmentsHttp(request, parts[5]!)
-                  : await organizationAdministrationHttp(
-                      request,
-                      parts[5],
-                      parts[7],
-                      action,
-                    );
+            parts[4] === 'runtime-console'
+              ? parts[6] === 'events'
+                ? await runtimeEventsHttp(request, {
+                    params: Promise.resolve({ sessionId: parts[5]! }),
+                  })
+                : await runtimeInventoryHttp(request)
+              : parts[4] === 'activity'
+                ? await organizationActivityHttp(request)
+                : parts[4] === 'tenants' && parts[6] === 'validation'
+                  ? await tenantValidationHttp(request, parts[5]!)
+                  : parts[6] === 'ai-employees'
+                    ? await organizationAssignmentsHttp(request, parts[5]!)
+                    : await organizationAdministrationHttp(
+                        request,
+                        parts[5],
+                        parts[7],
+                        action,
+                      );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -172,6 +180,177 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
   });
+
+  it.each([1440, 390])(
+    'scopes runtime navigation by company and person, including people without sessions (%i)',
+    async (width) => {
+      const a = await tenantValidationFixture(fixture.db),
+        b = await tenantValidationFixture(fixture.db);
+      const company = `Runtime 公司 ${width}`,
+        otherCompany = `Runtime 另一公司 ${width}`;
+      const org = a.target.organizationId,
+        workspace = a.target.workspaceId,
+        owner = a.target.subjectId;
+      const peer = randomUUID(),
+        empty = randomUUID(),
+        peerSession = randomUUID(),
+        secondWorkspace = randomUUID();
+      await fixture.db`update allrice_organizations set name=${company} where id=${org}`;
+      await fixture.db`update allrice_organizations set name=${otherCompany} where id=${b.target.organizationId}`;
+      await fixture.db`update allrice_users set display_name='甲员工' where id=${owner}`;
+      await fixture.db`update allrice_chat_sessions set title='甲员工任务' where id=${a.task.chatSessionId}`;
+      await fixture.db`update allrice_chat_sessions set title='另一公司任务' where id=${b.task.chatSessionId}`;
+      await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values(${peer},${peer + '@example.test'},'乙员工','not-login'),(${empty},${empty + '@example.test'},'暂无会话员工','not-login')`;
+      await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role,active) values(${org},${workspace},${peer},'member',true),(${org},${workspace},${empty},'member',true)`;
+      await fixture.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${secondWorkspace},${org},'second','第二工作区')`;
+      await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role,active) values(${org},${secondWorkspace},${peer},'member',true)`;
+      await fixture.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_version_id) values(${peerSession},${org},${workspace},${peer},'乙员工任务',${a.versionId})`;
+      for (const [organizationId, workspaceId, ownerId, sessionId] of [
+        [org, workspace, owner, a.task.chatSessionId],
+        [org, workspace, peer, peerSession],
+        [
+          b.target.organizationId,
+          b.target.workspaceId,
+          b.target.subjectId,
+          b.task.chatSessionId,
+        ],
+      ])
+        await fixture.db`insert into allrice_conversation_runtimes(organization_id,workspace_id,owner_id,session_id,config_checksum,state) values(${organizationId!},${workspaceId!},${ownerId!},${sessionId!},${'sha256:' + 'a'.repeat(64)},'idle')`;
+      for (const [userId, name] of [
+        [owner, '甲的电脑'],
+        [peer, '乙的电脑'],
+      ])
+        await fixture.db`insert into allrice_bridge_devices(organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at) values(${org},${userId === owner ? workspace : secondWorkspace},${userId!},${name!},'macos-arm64',1,array['local.fs.read'],${randomUUID().replaceAll('-', '').padEnd(64, '0')},now())`;
+      const latestRun = randomUUID(),
+        question = randomUUID(),
+        answer = randomUUID();
+      await fixture.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${latestRun},${org},${workspace},${owner},'succeeded','{}','{}')`;
+      await fixture.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content) values(${question},${org},${workspace},${a.task.chatSessionId},${owner},'user','{"text":"最新问题","citations":[]}'),(${answer},${org},${workspace},${a.task.chatSessionId},${owner},'assistant','{"text":"最新回复","citations":[]}')`;
+      await fixture.db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot) select ${latestRun},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,${question},${answer},provider_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${a.task.runId}`;
+      const context = await browser.newContext({
+        viewport: { width, height: 1000 },
+      });
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage(),
+        errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      try {
+        const scoped = await context.request.get(
+          `${origin}/api/v1/admin/runtime-console?organizationId=${org}&ownerId=${peer}&limit=1`,
+        );
+        expect(scoped.status()).toBe(200);
+        const projection = await scoped.json();
+        expect(
+          projection.runtimes.map(
+            (r: { session: { id: string } }) => r.session.id,
+          ),
+        ).toEqual([peerSession]);
+        expect(
+          projection.employeeTenants.find((t: { bridge: unknown }) => t.bridge)
+            .bridge.name,
+        ).toBe('乙的电脑');
+        const wrongCompany = await context.request.get(
+          `${origin}/api/v1/admin/runtime-console?organizationId=${b.target.organizationId}&ownerId=${peer}`,
+        );
+        const wrong = await wrongCompany.json();
+        expect(wrong.runtimes).toEqual([]);
+        expect(
+          wrong.employeeTenants.every(
+            (t: { bridge: unknown; sessions: { total: number } }) =>
+              !t.bridge && t.sessions.total === 0,
+          ),
+        ).toBe(true);
+        await page.goto(`${origin}/runtime-console?view=runtimes`);
+        const companies = page.locator('[aria-label="选择公司"]'),
+          people = page.locator('[aria-label="选择员工"]'),
+          list = page.locator('[aria-label="员工 Session Runtime"]'),
+          status = page.getByLabel('员工运行概况');
+        await companies
+          .getByRole('button', { name: company, exact: true })
+          .click();
+        expect(
+          await companies
+            .getByRole('button', { name: company, exact: true })
+            .count(),
+        ).toBe(1);
+        await people.getByRole('button', { name: /甲员工/ }).click();
+        await page
+          .getByRole('heading', { name: '甲员工任务', exact: true })
+          .waitFor();
+        expect(await list.innerText()).not.toContain('乙员工任务');
+        expect(await list.innerText()).not.toContain('另一公司任务');
+        await status.getByText(/甲的电脑/).waitFor();
+        const turns = page.locator('details[data-run-id]');
+        await expect.poll(() => turns.count()).toBe(2);
+        expect(await turns.first().getAttribute('data-run-id')).toBe(latestRun);
+        expect(await turns.first().locator('summary').innerText()).toContain(
+          '第 2 轮',
+        );
+        expect(await turns.first().getAttribute('open')).not.toBeNull();
+        expect(await turns.nth(1).getAttribute('open')).toBeNull();
+        await turns.nth(1).locator('summary').first().click();
+        await turns.first().locator('summary').first().click();
+        await page.clock.install();
+        const refreshed = page.waitForResponse((r) =>
+          r.url().endsWith(`/${a.task.chatSessionId}/events`),
+        );
+        await page.clock.runFor(1600);
+        await refreshed;
+        expect(await turns.first().getAttribute('open')).toBeNull();
+        expect(await turns.nth(1).getAttribute('open')).not.toBeNull();
+
+        expect(await status.innerText()).not.toContain('乙的电脑');
+        const scope = page.getByRole('region', { name: '公司与员工选择' });
+        const box = await scope.boundingBox();
+        expect(box!.height).toBeLessThan(width === 1440 ? 240 : 350);
+        await page.screenshot({
+          path: `.local/met161/runtime-hierarchy-${width}.png`,
+        });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        await people.getByRole('button', { name: /乙员工/ }).click();
+        await page
+          .getByRole('heading', { name: '乙员工任务', exact: true })
+          .waitFor();
+        await status.getByText(/乙的电脑/).waitFor();
+        expect(await status.innerText()).not.toContain('甲的电脑');
+        await page.clock.runFor(15001);
+        expect(
+          await people
+            .getByRole('button', { name: /乙员工/ })
+            .getAttribute('aria-pressed'),
+        ).toBe('true');
+        expect(await list.innerText()).not.toContain('甲员工任务');
+        await people.getByRole('button', { name: /暂无会话员工/ }).click();
+        await list
+          .getByText('这位员工还没有绑定 DSH Runtime 的 Session。')
+          .waitFor();
+        expect(
+          await page
+            .getByRole('heading', { name: '乙员工任务', exact: true })
+            .count(),
+        ).toBe(0);
+        await status.getByText('未配置 Bridge · 可使用云端 Runtime').waitFor();
+        await companies
+          .getByRole('button', { name: otherCompany, exact: true })
+          .click();
+        await page
+          .getByRole('heading', { name: '另一公司任务', exact: true })
+          .waitFor();
+        expect(await people.innerText()).not.toContain('暂无会话员工');
+        expect(await list.innerText()).not.toContain('甲员工任务');
+        expect(errors).toEqual([]);
+        expect(failures).toEqual([]);
+      } finally {
+        await context.close();
+      }
+    },
+  );
 
   it.each([1440, 390])(
     'opens work and files in a visible dialog, retains detail on refresh, and rejects foreign downloads (%i)',

@@ -15,9 +15,16 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const requestedLimit = Number(url.searchParams.get('limit') ?? 100);
     const limit = Number.isFinite(requestedLimit) ? requestedLimit : 100;
-    const [tenants, runtimes] = await Promise.all([
+    const scope = {
+      organizationId: url.searchParams.get('organizationId') ?? undefined,
+      ownerId: url.searchParams.get('ownerId') ?? undefined,
+    };
+    const [tenants, runtimes, employeeTenants] = await Promise.all([
       listTenantRuntimeInventory(),
-      listDshRuntimeInventory(limit),
+      listDshRuntimeInventory(limit, scope),
+      scope.organizationId && scope.ownerId
+        ? listTenantRuntimeInventory(scope)
+        : Promise.resolve([]),
     ]);
     return Response.json({
       console: {
@@ -29,6 +36,8 @@ export async function GET(request: Request) {
       },
       tenants,
       runtimes,
+      employeeTenants,
+      scope,
     });
   } catch (error) {
     return executionErrorResponse(error);

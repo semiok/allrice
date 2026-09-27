@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { OrganizationPerson } from '@allrice/contracts';
 import { AllriceMark } from '../../components/allrice-mark';
 
 import { GovernanceConsole } from './governance-console';
@@ -102,6 +103,8 @@ interface RuntimeConsoleResponse {
     source: string;
   };
   tenants: TenantRuntimeItem[];
+  employeeTenants: TenantRuntimeItem[];
+  scope: { organizationId?: string; ownerId?: string };
   runtimes: RuntimeInventoryItem[];
 }
 
@@ -166,7 +169,15 @@ export function RuntimeConsole() {
     | 'feedback'
   >('tenants');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
-  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<
+    string | null
+  >(null);
+  const [selectedOwnerId, setSelectedOwnerId] = useState<string | null>(null);
+  const [people, setPeople] = useState<{
+    organizationId: string;
+    people: OrganizationPerson[];
+  } | null>(null);
+  const [peopleError, setPeopleError] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [timeline, setTimeline] = useState<
@@ -209,59 +220,158 @@ export function RuntimeConsole() {
     [],
   );
 
-  const load = useCallback(async () => {
-    const response = await fetch('/api/v1/admin/runtime-console', {
-      cache: 'no-store',
-    });
-    if (response.status === 401) {
-      window.location.assign('/login?next=/runtime-console');
-      return;
-    }
-    const body = (await response.json().catch(() => null)) as
-      RuntimeConsoleResponse | { error?: { message?: string } } | null;
-    if (!response.ok) {
-      throw new Error(
-        (body as { error?: { message?: string } } | null)?.error?.message ??
-          `Runtime Console 加载失败（${response.status}）`,
+  const load = useCallback(
+    async (signal: AbortSignal) => {
+      const query = new URLSearchParams({
+        limit: selectedOwnerId ? '500' : '1',
+      });
+      if (selectedOrganizationId)
+        query.set('organizationId', selectedOrganizationId);
+      if (selectedOwnerId) query.set('ownerId', selectedOwnerId);
+      const response = await fetch(`/api/v1/admin/runtime-console?${query}`, {
+        cache: 'no-store',
+        signal,
+      });
+      if (response.status === 401) {
+        window.location.assign('/login?next=/runtime-console');
+        return;
+      }
+      const body = (await response.json().catch(() => null)) as
+        RuntimeConsoleResponse | { error?: { message?: string } } | null;
+      if (!response.ok) {
+        throw new Error(
+          (body as { error?: { message?: string } } | null)?.error?.message ??
+            `Runtime Console 加载失败（${response.status}）`,
+        );
+      }
+      if (signal.aborted) return;
+      const next = body as RuntimeConsoleResponse;
+      setData(next);
+      setSelectedOrganizationId((current) =>
+        current && next.tenants.some((item) => item.organization.id === current)
+          ? current
+          : (next.tenants[0]?.organization.id ?? null),
       );
-    }
-    const next = body as RuntimeConsoleResponse;
-    setData(next);
-    setSelectedTenantId((current) =>
-      current && next.tenants.some((item) => item.workspace.id === current)
-        ? current
-        : (next.tenants[0]?.workspace.id ?? null),
-    );
-    setUpdatedAt(new Date());
-    setError('');
-  }, []);
+      setUpdatedAt(new Date());
+      setError('');
+    },
+    [selectedOrganizationId, selectedOwnerId],
+  );
 
   useEffect(() => {
     if (view !== 'runtimes') return;
-    void load().catch((reason: unknown) =>
-      setError(reason instanceof Error ? reason.message : '加载失败'),
-    );
-    const timer = window.setInterval(
-      () => void load().catch(() => undefined),
-      5_000,
-    );
-    return () => window.clearInterval(timer);
+    const controller = new AbortController();
+    let pending = false;
+    const refresh = async () => {
+      if (pending || document.hidden) return;
+      pending = true;
+      try {
+        await load(controller.signal);
+      } catch (reason) {
+        if (!controller.signal.aborted)
+          setError(reason instanceof Error ? reason.message : '加载失败');
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
   }, [load, view]);
 
   useEffect(() => {
-    if (!data || !selectedTenantId) {
-      setSelectedId(null);
-      return;
-    }
-    const tenantRuntimes = data.runtimes.filter(
-      (item) => item.workspace.id === selectedTenantId,
-    );
+    if (!selectedOrganizationId || view !== 'runtimes') return;
+    const controller = new AbortController();
+    let pending = false;
+    setPeopleError('');
+    const refresh = async () => {
+      if (pending || document.hidden) return;
+      pending = true;
+      try {
+        const items: OrganizationPerson[] = [];
+        let after: string | null = null;
+        do {
+          const response = await fetch(
+            `/api/v1/admin/organizations/${selectedOrganizationId}/people${after ? `?after=${after}` : ''}`,
+            { cache: 'no-store', signal: controller.signal },
+          );
+          if (!response.ok) throw Error('员工列表加载失败，请稍后重试。');
+          const page = (await response.json()) as {
+            organizationId: string;
+            people: OrganizationPerson[];
+            nextCursor: string | null;
+          };
+          if (page.organizationId !== selectedOrganizationId)
+            throw Error('员工列表不属于所选公司。');
+          items.push(...page.people);
+          after = page.nextCursor;
+        } while (after && !controller.signal.aborted);
+        if (controller.signal.aborted) return;
+        items.sort((a, b) =>
+          a.displayName.localeCompare(b.displayName, 'zh-CN'),
+        );
+        setPeople({ organizationId: selectedOrganizationId, people: items });
+        setSelectedOwnerId((current) =>
+          current && items.some((p) => p.userId === current)
+            ? current
+            : (items[0]?.userId ?? null),
+        );
+        setPeopleError('');
+      } catch (reason) {
+        if (!controller.signal.aborted)
+          setPeopleError(
+            reason instanceof Error ? reason.message : '员工列表加载失败',
+          );
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [selectedOrganizationId, view]);
+
+  const companies = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          (data?.tenants ?? []).map((t) => [t.organization.id, t.organization]),
+        ).values(),
+      ),
+    [data],
+  );
+  const companyPeople =
+    people?.organizationId === selectedOrganizationId ? people.people : [];
+  const selectedPerson =
+    companyPeople.find((p) => p.userId === selectedOwnerId) ?? null;
+  const scopedData =
+    data?.scope?.organizationId === selectedOrganizationId &&
+    data?.scope?.ownerId === selectedOwnerId;
+  const employeeTenants = scopedData ? (data?.employeeTenants ?? []) : [];
+  const tenantRuntimes = useMemo(
+    () =>
+      selectedOwnerId
+        ? (data?.runtimes.filter(
+            (item) =>
+              item.organization.id === selectedOrganizationId &&
+              item.owner.id === selectedOwnerId,
+          ) ?? [])
+        : [],
+    [data, selectedOrganizationId, selectedOwnerId],
+  );
+  useEffect(() => {
     setSelectedId((current) =>
       current && tenantRuntimes.some((item) => item.session.id === current)
         ? current
         : (tenantRuntimes[0]?.session.id ?? null),
     );
-  }, [data, selectedTenantId]);
+  }, [tenantRuntimes]);
 
   useEffect(() => {
     if (!selectedId || view !== 'runtimes') {
@@ -269,6 +379,8 @@ export function RuntimeConsole() {
       return;
     }
     let active = true;
+    setTimeline(null);
+    setTimelineError('');
     const loadTimeline = async () => {
       const response = await fetch(
         `/api/v1/admin/runtime-console/${selectedId}/events`,
@@ -286,11 +398,12 @@ export function RuntimeConsole() {
       setTimeline((body as RuntimeTimelineResponse).timeline);
       setTimelineError('');
     };
-    void loadTimeline().catch((reason: unknown) =>
-      setTimelineError(
-        reason instanceof Error ? reason.message : '事件加载失败',
-      ),
-    );
+    void loadTimeline().catch((reason: unknown) => {
+      if (active)
+        setTimelineError(
+          reason instanceof Error ? reason.message : '事件加载失败',
+        );
+    });
     const timer = window.setInterval(
       () => void loadTimeline().catch(() => undefined),
       1_500,
@@ -301,25 +414,12 @@ export function RuntimeConsole() {
     };
   }, [selectedId, view]);
 
-  const selected = useMemo(
-    () => data?.runtimes.find((item) => item.session.id === selectedId) ?? null,
-    [data, selectedId],
+  const selected =
+    tenantRuntimes.find((item) => item.session.id === selectedId) ?? null;
+  const running = data?.tenants.reduce(
+    (total, t) => total + t.sessions.active,
+    0,
   );
-  const selectedTenant = useMemo(
-    () =>
-      data?.tenants.find((item) => item.workspace.id === selectedTenantId) ??
-      null,
-    [data, selectedTenantId],
-  );
-  const tenantRuntimes = useMemo(
-    () =>
-      data?.runtimes.filter((item) => item.workspace.id === selectedTenantId) ??
-      [],
-    [data, selectedTenantId],
-  );
-  const running = data?.runtimes.filter(
-    (item) => item.process?.status === 'live',
-  ).length;
   const onlineBridges = data?.tenants.filter(
     (item) => item.bridge?.status === 'online',
   ).length;
@@ -328,19 +428,21 @@ export function RuntimeConsole() {
     0,
   );
   const projectedTurns = useMemo(() => {
-    return (timeline?.turns ?? []).map((turn) => {
-      const answerEvent = [...turn.events]
-        .reverse()
-        .find((event) => event.kind === 'answer' && event.detail);
-      return {
-        ...turn,
-        items: aggregateRuntimeTimelineEvents(
-          turn.events.filter((event) => event.kind !== 'answer'),
-        ),
-        answerText: answerEvent?.detail ?? turn.assistantMessage.text,
-      };
-    });
-  }, [timeline]);
+    return (timeline?.sessionId === selectedId ? timeline.turns : []).map(
+      (turn) => {
+        const answerEvent = [...turn.events]
+          .reverse()
+          .find((event) => event.kind === 'answer' && event.detail);
+        return {
+          ...turn,
+          items: aggregateRuntimeTimelineEvents(
+            turn.events.filter((event) => event.kind !== 'answer'),
+          ),
+          answerText: answerEvent?.detail ?? turn.assistantMessage.text,
+        };
+      },
+    );
+  }, [timeline, selectedId]);
 
   return (
     <main className={styles.page}>
@@ -438,8 +540,8 @@ export function RuntimeConsole() {
         <>
           <section className={styles.summary}>
             <div>
-              <span>租户</span>
-              <strong>{data?.tenants.length ?? 0}</strong>
+              <span>公司</span>
+              <strong>{companies.length}</strong>
             </div>
             <div>
               <span>Session</span>
@@ -461,94 +563,119 @@ export function RuntimeConsole() {
           </section>
 
           {error ? <p className={styles.error}>{error}</p> : null}
-          <section className={styles.tenantOverview}>
-            <header className={styles.tenantOverviewHeader}>
-              <div>
-                <p>Tenant Runtime</p>
-                <h1>租户运行状态</h1>
-                <span>
-                  先选择租户，再查看该租户的 Session、Worker、模型与事件明细。
-                  每张卡片同时展示该租户的 Bridge、心跳和本地工作区状态。
-                </span>
+          <section className={styles.runtimeScope} aria-label="公司与员工选择">
+            <h1>员工运行状态</h1>
+            <div className={styles.scopeRow}>
+              <span>公司</span>
+              <div className={styles.scopeChoices} aria-label="选择公司">
+                {companies.map((company) => (
+                  <button
+                    key={company.id}
+                    aria-pressed={company.id === selectedOrganizationId}
+                    onClick={() => {
+                      if (company.id === selectedOrganizationId) return;
+                      setSelectedOrganizationId(company.id);
+                      setSelectedOwnerId(null);
+                      setSelectedId(null);
+                      setTimeline(null);
+                    }}
+                  >
+                    {company.name}
+                  </button>
+                ))}
+                {data && !companies.length && <p>当前没有公司。</p>}
               </div>
-              <strong>{data?.tenants.length ?? 0} 个租户</strong>
-            </header>
-            <div className={styles.tenantGrid}>
-              {data?.tenants.map((tenant) => (
-                <button
-                  className={styles.tenantCard}
-                  data-selected={
-                    tenant.workspace.id === selectedTenantId
-                      ? 'true'
-                      : undefined
-                  }
-                  key={tenant.workspace.id}
-                  onClick={() => setSelectedTenantId(tenant.workspace.id)}
-                >
-                  <header>
-                    <span>
-                      <strong>{tenant.organization.name}</strong>
-                      <small>{tenant.workspace.name}</small>
-                    </span>
-                    <em data-state={tenantBridgeState(tenant)}>
-                      {tenantBridgeStatusLabel(tenant)}
-                    </em>
-                  </header>
-                  <dl>
-                    <div>
-                      <dt>Session</dt>
-                      <dd>{tenant.sessions.total}</dd>
-                    </div>
-                    <div>
-                      <dt>Runtime</dt>
-                      <dd>{tenant.sessions.runtimeBound}</dd>
-                    </div>
-                    <div>
-                      <dt>活跃</dt>
-                      <dd>{tenant.sessions.active}</dd>
-                    </div>
-                    <div>
-                      <dt>异常</dt>
-                      <dd>{tenant.sessions.error}</dd>
-                    </div>
-                  </dl>
-                  <div className={styles.tenantBridge}>
-                    {tenant.bridge ? (
-                      <>
-                        <div className={styles.tenantBridgeDevice}>
-                          <strong>{tenant.bridge.name}</strong>
-                          <small>
-                            {tenant.bridge.platform} · 最后心跳{' '}
-                            {time(tenant.bridge.lastSeenAt)}
-                          </small>
-                        </div>
-                        {tenant.bridge.status === 'online' ? (
-                          <div className={styles.tenantBridgeWorkspace}>
-                            <span>本地工作区</span>
-                            <strong
-                              data-state={
-                                tenant.bridge.workspaceLabel
-                                  ? 'selected'
-                                  : 'missing'
-                              }
-                            >
-                              {tenant.bridge.workspaceLabel ?? '未选择工作区'}
-                            </strong>
-                          </div>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p className={styles.tenantBridgeEmpty}>
-                        租户尚未配对本地 Bridge；云端 Runtime 不受影响。
-                      </p>
-                    )}
-                  </div>
-                </button>
-              ))}
-              {data && data.tenants.length === 0 ? (
-                <p className={styles.tenantEmpty}>当前没有有效租户。</p>
-              ) : null}
             </div>
+            <div className={styles.scopeRow}>
+              <span>员工</span>
+              <div className={styles.scopeChoices} aria-label="选择员工">
+                {companyPeople.map((person) => (
+                  <button
+                    key={person.userId}
+                    aria-pressed={person.userId === selectedOwnerId}
+                    onClick={() => {
+                      if (person.userId === selectedOwnerId) return;
+                      setSelectedOwnerId(person.userId);
+                      setSelectedId(null);
+                      setTimeline(null);
+                    }}
+                  >
+                    {person.displayName}
+                    <small>
+                      {person.jobTitle || person.username || '未填写岗位'}
+                      {person.status === 'disabled' ? ' · 已停用' : ''}
+                    </small>
+                  </button>
+                ))}
+                {selectedOrganizationId && !companyPeople.length && (
+                  <p>
+                    {people?.organizationId === selectedOrganizationId
+                      ? '这家公司还没有员工。'
+                      : '正在读取员工…'}
+                  </p>
+                )}
+              </div>
+            </div>
+            {peopleError && (
+              <p role="alert" className={styles.scopeError}>
+                {peopleError}
+              </p>
+            )}
+            {selectedPerson && (
+              <div className={styles.employeeStatus} aria-label="员工运行概况">
+                <strong>{selectedPerson.displayName}</strong>
+                {!scopedData ? (
+                  <span>正在读取运行状态…</span>
+                ) : (
+                  <>
+                    <span>
+                      Session{' '}
+                      {employeeTenants.reduce(
+                        (n, t) => n + t.sessions.total,
+                        0,
+                      )}
+                    </span>
+                    <span>
+                      Runtime{' '}
+                      {employeeTenants.reduce(
+                        (n, t) => n + t.sessions.runtimeBound,
+                        0,
+                      )}
+                    </span>
+                    <span>
+                      活跃{' '}
+                      {employeeTenants.reduce(
+                        (n, t) => n + t.sessions.active,
+                        0,
+                      )}
+                    </span>
+                    <span>
+                      历史异常{' '}
+                      {employeeTenants.reduce(
+                        (n, t) => n + t.sessions.error,
+                        0,
+                      )}
+                    </span>
+                    {employeeTenants
+                      .filter((t) => t.bridge)
+                      .map((t) => (
+                        <span
+                          className={styles.employeeBridge}
+                          key={t.workspace.id}
+                          data-state={tenantBridgeState(t)}
+                        >
+                          {tenantBridgeStatusLabel(t)} · {t.bridge!.name} ·{' '}
+                          {t.bridge!.workspaceLabel ?? '未选择工作区'}
+                          <small>最后心跳 {time(t.bridge!.lastSeenAt)}</small>
+                        </span>
+                      ))}
+                    {!employeeTenants.some((t) => t.bridge) && (
+                      <span>未配置 Bridge · 可使用云端 Runtime</span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </section>
 
           <div className={styles.content}>
@@ -557,13 +684,18 @@ export function RuntimeConsole() {
                 <strong>Session Runtime</strong>
                 <small>{tenantRuntimes.length}</small>
               </header>
-              <div className={styles.runtimeList}>
+              <div
+                key={`${selectedOrganizationId}:${selectedOwnerId}`}
+                className={styles.runtimeList}
+                aria-label="员工 Session Runtime"
+              >
                 {tenantRuntimes.map((item) => (
                   <button
                     className={
                       item.session.id === selectedId ? styles.selected : ''
                     }
                     key={item.session.id}
+                    data-session-id={item.session.id}
                     onClick={() => setSelectedId(item.session.id)}
                   >
                     <i
@@ -583,9 +715,9 @@ export function RuntimeConsole() {
                     <em>{runtimeStateLabel(item)}</em>
                   </button>
                 ))}
-                {data && selectedTenant && tenantRuntimes.length === 0 ? (
+                {scopedData && selectedPerson && tenantRuntimes.length === 0 ? (
                   <p className={styles.empty}>
-                    这个租户还没有绑定 DSH Runtime 的 Session。
+                    这位员工还没有绑定 DSH Runtime 的 Session。
                   </p>
                 ) : null}
               </div>
@@ -598,7 +730,10 @@ export function RuntimeConsole() {
                     <div>
                       <p>{selected.session.employeeName ?? 'AI 员工'}</p>
                       <h1>{selected.session.title}</h1>
-                      <span>{selected.owner.email}</span>
+                      <span>
+                        {selectedPerson?.displayName} ·{' '}
+                        {selected.workspace.name}
+                      </span>
                     </div>
                     <span
                       className={styles.state}
@@ -730,8 +865,8 @@ export function RuntimeConsole() {
                       <div>
                         <strong>Session 完整对话与事件</strong>
                         <span>
-                          全部 {projectedTurns.length} 轮 · 按 Harness 原始顺序
-                          · 1.5 秒刷新
+                          全部 {projectedTurns.length} 轮 · 最新轮次在前 · 1.5
+                          秒刷新
                         </span>
                       </div>
                       <em data-state={timeline?.run?.status ?? 'idle'}>
@@ -742,11 +877,12 @@ export function RuntimeConsole() {
                       <p className={styles.timelineError}>{timelineError}</p>
                     ) : projectedTurns.length ? (
                       <div className={styles.turnList}>
-                        {projectedTurns.map((turn, index) => (
+                        {[...projectedTurns].reverse().map((turn, index) => (
                           <RuntimeTurn
-                            key={turn.run.id}
+                            key={`${selectedId}:${turn.run.id}`}
                             turn={turn}
-                            number={index + 1}
+                            number={projectedTurns.length - index}
+                            latest={index === 0}
                           />
                         ))}
                       </div>
@@ -765,7 +901,7 @@ export function RuntimeConsole() {
                 </>
               ) : (
                 <div className={styles.blank}>
-                  选择一个 Runtime 查看真实运行状态。
+                  先选择员工，再选择一个 Session 查看运行详情。
                 </div>
               )}
             </section>
@@ -778,15 +914,30 @@ export function RuntimeConsole() {
 
 function RuntimeTurn(props: {
   number: number;
+  latest: boolean;
   turn: RuntimeTimelineTurn & {
     items: RuntimeTimelineItem[];
     answerText: string | null;
   };
 }) {
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const open = expanded ?? props.latest;
   return (
-    <section className={styles.turn}>
-      <header className={styles.turnHeader}>
+    <details
+      className={styles.turn}
+      open={open}
+      data-run-id={props.turn.run.id}
+    >
+      <summary
+        className={styles.turnHeader}
+        aria-expanded={open}
+        onClick={(event) => {
+          event.preventDefault();
+          setExpanded(!open);
+        }}
+      >
         <div>
+          <span aria-hidden="true">{open ? '▾' : '▸'}</span>
           <strong>第 {props.number} 轮</strong>
           <span>Run {props.turn.run.id.slice(0, 8)}</span>
         </div>
@@ -794,7 +945,7 @@ function RuntimeTurn(props: {
           <em data-state={props.turn.run.status}>{props.turn.run.status}</em>
           <time>{time(props.turn.run.createdAt)}</time>
         </div>
-      </header>
+      </summary>
 
       <RunUsageSummary
         usage={props.turn.usage}
@@ -821,7 +972,7 @@ function RuntimeTurn(props: {
         <p>{props.turn.answerText ?? '（本轮还没有回复文本）'}</p>
         <time>{time(props.turn.assistantMessage.occurredAt)}</time>
       </div>
-    </section>
+    </details>
   );
 }
 
