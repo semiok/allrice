@@ -36,7 +36,6 @@ import {
   type ReviewContinuationInput,
 } from '@allrice/contracts';
 import {
-  artifactKindLabel,
   parseArtifactDetail,
   parseArtifactPreview,
   workbenchJson,
@@ -44,6 +43,8 @@ import {
   type ArtifactCursor,
 } from '../../lib/chatflow/workbench-model';
 import styles from './workbench.module.css';
+import { DeliveryCard } from './delivery-card';
+import deliveries from './dsh-upstream/deliverables/Deliverables.module.css';
 import sidebarUi from './dsh-upstream/dock/SidebarRight.module.css';
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { readJson } from './chatflow-utils';
@@ -494,20 +495,12 @@ export function ArtifactSummaryCards({
       series.set(a.version.seriesId, a);
   const newest = [...series.values()];
   return (
-    <div className={styles.summaries}>
-      {newest.map((a) => (
-        <button
-          type="button"
-          className={styles.summary}
-          key={a.id}
-          onClick={() => onOpen(a.id)}
-        >
-          <span>▤ {a.version.fileName}</span>
-          <small>
-            {artifactKindLabel(a)} · v{a.version.version} · 查看
-          </small>
-        </button>
-      ))}
+    <div className={deliveries.root}>
+      <div className={deliveries.presented} data-single={newest.length === 1}>
+        {newest.map((artifact) => (
+          <DeliveryCard key={artifact.id} artifact={artifact} onOpen={onOpen} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -821,7 +814,9 @@ function ArtifactReview({
               onSelect={(version) => onSelect(version.id)}
             />
           </DocumentToolbar>
-          <div className={reader.content}>
+          <div
+            className={`${reader.content} ${preview?.kind === 'office' && view !== 'diff' ? reader.officeContent : ''}`}
+          >
             {artifact.stale ? (
               <p className={styles.muted}>
                 正在查看 v{artifact.version.version}。

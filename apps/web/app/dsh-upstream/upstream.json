@@ -564,6 +564,31 @@
           "version": "0.1.7-rc.1"
         }
       ]
+    },
+    {
+      "id": "native-delivery-cards",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-source-with-recorded-adapter-patches",
+      "files": [
+        {
+          "source": "packages/client/ui-deliverables/src/client/PresentedFileCard.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/deliverables/PresentedFileCard.tsx",
+          "upstreamSha256": "07addc96e0d9664c1d8d7ffbac53c4c0a53deb761ebc4fc95559381585e45fe9",
+          "sha256": "9b9d4428a0f657a0c9706214b58f899a7e6e30cc1cc075ce29ad55acd834e585",
+          "patch": "scripts/dsh-ui-patches/deliverables-PresentedFileCard.tsx.patch",
+          "patchSha256": "5edc7018a1a9fd6ea9d82a23e792fd1c3f3aed618ce730463117bf6b8b1752f5"
+        },
+        {
+          "source": "packages/client/ui-deliverables/src/client/Deliverables.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/deliverables/Deliverables.module.css",
+          "upstreamSha256": "1748d001a87d44da9ee97d3ae64bd9c975fbd6af0e8751100008ae55c51b4e88",
+          "sha256": "1b7e953c7cada712a01c7815dbdb26220328c42769f82e8e85b28222b62f6228",
+          "patch": "scripts/dsh-ui-patches/deliverables-Deliverables.module.css.patch",
+          "patchSha256": "a4ee7d82705db1e29512cc5ed4e539bb2d8f9db297302ed06cb8e1f6bc332ac8"
+        }
+      ]
     }
   ]
 }
