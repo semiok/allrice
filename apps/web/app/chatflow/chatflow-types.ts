@@ -13,6 +13,7 @@ import type { EmployeeProfileDetailsData } from './employee-profile-details';
 export type Visibility = 'private' | 'workspace' | 'organization';
 
 export interface Session {
+  ownerId?: string;
   id: string;
   title: string;
   employeeAssignmentId: string;

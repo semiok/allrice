@@ -1,0 +1,11 @@
+--- a/packages/client/ui-workspace/src/client/session-actions/RowActionToast.tsx
++++ b/packages/client/ui-workspace/src/client/session-actions/RowActionToast.tsx
+@@ -4,7 +4,7 @@
+  */
+ import { IconWarningOutlineRegular, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
+ import { assertNever } from '@deepseek-ai/dsh-util-values'
+-import type { RowToastProps, RowToastState } from '../contract/slots.ts'
++import type { RowToastProps, RowToastState } from './contracts'
+ 
+ /**
+  * Hold for the notices that take longer to read than a one-line warning: the
