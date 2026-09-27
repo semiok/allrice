@@ -25,3 +25,11 @@ BNB Run `c625ab3b-6645-424d-917e-d16c92cd2f96` 在 13:35 发起，DSH 同一步�
 2026-09-27 14:58，Run `2477b736-9d6e-42dd-969c-25366fd0cb73` 首次模型请求返回 `TRANSPORT / fetch failed`，尚未调用任何工具或沙箱。DSH 原生有限重试已安排第一次重试，但 Allrice 模型 admission 仍把已确认记录的未知 Token 用量一律作为不可继续的状态，触发 `assistant_model_unknown_no_replay`；Worker 再次领取任务后显示 `assistant_recovery_required_no_replay`。本次故障与两个沙箱位置无关。
 
 接入修复：数据库结算回执根据服务端冻结的订阅凭据与当前 Token 策略返回 `tokenUsageObservational`。只有已确认结算、未观察到任何文本/推理/工具调用输出、且 DSH 明确报告可重试模型错误时，原生适配器才释放 admission，供 DSH 原有有限重试创建新的 call ID。原请求的未知用量继续保留，不能填零、重新派发旧 call ID 或改写历史失败 Run。API 计费用量、部分输出、认证失败及结算失败不获得此豁免。重试次数、退避与取消仍复用 DSH，未新增第二套模型重试循环。
+
+## SOL 完整验收暴露的发布死锁与收尾误报
+
+订阅重试修复后的实测 Run `74c00a08-7977-40be-b4d8-2bfc44e09a73` 在 15:18:20 首次发布 Excel 时失败。PostgreSQL 当时记录了确定的 `40P01`：`assertPublishingRun` 持有会话锁并等待 Job；另一事务已通过任务时钟更新持有 Job 锁，再在 `assertAssistantAuthority` 中等待会话锁。随后 DSH 重试成功，Word、Excel、PPT 都生成，但首次发布调用的四条用量记录仍为空，最终变成 `ASSISTANT_EXECUTION_UNRESOLVED`，正常最终回复被通用失败文本覆盖。这次失败不是生成脚本、Office 依赖或沙箱容量问题。
+
+修复文件发布锁顺序为存储配额 → Runtime root → 会话/Job，与助手状态检查的根锁串行协调。PostgreSQL 明确回滚（`40P01` / `40001`）且未产生文件或已确认移除未提交文件时，数据库返回绑定 Run/调用 ID 的回滚凭据。Broker 将它结算为一次失败尝试，由 DSH 用新的调用重试；重试成功不再留下这次调用的未知状态。丢失提交确认、文件清理不明以及其他调用的回滚凭据仍不能当成确定失败结算。
+
+回归用实际 PostgreSQL 事务安排并发阻塞，验证发布在取得会话锁之前等待运行根锁；另在文件写入后由数据库触发事务回滚，检查元数据回滚、文件清理及清理失败边界。没有通过直接改写 Run 成功状态或忽略所有未确认调用来修复显示。
