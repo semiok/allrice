@@ -3631,10 +3631,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: `/tmp/allrice-met160-native-${format}.png`,
         });
         if (rendered.pages.length > 1) {
-          await preview.getByRole('button', { name: '下一页' }).click();
           await preview
             .getByRole('img', { name: 'Office 文档第 2 页' })
-            .waitFor();
+            .scrollIntoViewIfNeeded();
         }
       } finally {
         await f.close();
@@ -3674,21 +3673,169 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.entry.click();
       const preview = f.panel.getByRole('region', { name: 'Office 文档预览' });
       await preview.waitFor();
-      expect(await preview.innerText()).toContain('发现 1 个错误');
+      expect(await preview.innerText()).toContain('发现 1 个公式错误');
       expect(await preview.innerText()).toContain('展示前 2 页');
-      await preview.getByText('查看计算结果', { exact: true }).click();
+      await preview.locator('summary').click();
       expect(await preview.innerText()).toContain('#DIV/0!');
       expect(await preview.innerText()).toContain('60');
-      await preview.getByRole('button', { name: '下一页' }).click();
       await preview.getByRole('img', { name: 'Office 文档第 2 页' }).waitFor();
       expect(
-        await preview.getByRole('button', { name: '下一页' }).isDisabled(),
-      ).toBe(true);
-      expect(await preview.innerText()).toContain('请检查分页');
+        await preview.getByRole('button', { name: /上一页|下一页/ }).count(),
+      ).toBe(0);
+      expect(
+        await preview.locator('[data-document-zoom-scrollport]').count(),
+      ).toBe(1);
+      expect(await preview.innerText()).not.toContain('请检查分页');
     } finally {
       await f.close();
     }
   });
+
+  it.each([1440, 390])(
+    'native delivery cards preview and download at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const card = f.page
+          .locator('[data-presented-file]')
+          .filter({ hasText: 'report-10.md' })
+          .first();
+        await card.waitFor();
+        expect(await card.locator('svg').count()).toBeGreaterThan(0);
+        const menu = card.getByRole('button', {
+          name: 'report-10.md 打开方式',
+        });
+        await menu.click();
+        await f.page
+          .getByRole('menuitem', { name: '侧栏预览', exact: true })
+          .waitFor();
+        await f.page.keyboard.press('Escape');
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('menuitem', { name: '侧栏预览', exact: true })
+              .count(),
+          )
+          .toBe(0);
+        await menu.click();
+        await f.page
+          .getByRole('menuitem', { name: '侧栏预览', exact: true })
+          .click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        await f.page.route('**/api/v1/files/*/download?*', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'text/markdown',
+            headers: {
+              'content-disposition': 'attachment; filename="report-10.md"',
+            },
+            body: report,
+          }),
+        );
+        await menu.click();
+        const downloadEvent = f.page.waitForEvent('download');
+        await f.page
+          .getByRole('menuitem', { name: '下载文件', exact: true })
+          .click();
+        const download = await downloadEvent;
+        expect(download.suggestedFilename()).toBe('report-10.md');
+        expect(new URL(download.url()).pathname).toBe(
+          `/api/v1/files/${artifact(10).object.id}/download`,
+        );
+        expect(await f.panel.count()).toBe(0);
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((body) => body.scrollWidth <= innerWidth),
+        ).toBe(true);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'Office paper canvas scrolls continuously in both themes at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const png = await f.page.evaluate(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 900;
+          canvas.height = 1200;
+          const c = canvas.getContext('2d')!;
+          c.fillStyle = '#fff';
+          c.fillRect(0, 0, 900, 1200);
+          c.fillStyle = '#163b65';
+          c.font = '40px sans-serif';
+          c.fillText('Office document preview', 60, 100);
+          return canvas.toDataURL('image/png').split(',')[1]!;
+        });
+        f.state.officePreview = {
+          kind: 'office',
+          checksum: `sha256:${'a'.repeat(64)}`,
+          format: 'xlsx',
+          pageCount: 2,
+          pages: [
+            { number: 1, base64: png },
+            { number: 2, base64: png },
+          ],
+          formulaCount: 0,
+          formulaErrorCount: 0,
+          formulas: [],
+        };
+        await f.page.reload();
+        await f.entry.click();
+        const preview = f.panel.getByRole('region', {
+          name: 'Office 文档预览',
+        });
+        const second = preview.getByRole('img', { name: 'Office 文档第 2 页' });
+        await second.waitFor();
+        expect(await preview.locator('summary').count()).toBe(0);
+        const scroll = preview.locator('[data-document-zoom-scrollport]');
+        const paper = preview.locator('[data-document-zoom-surface]').first();
+        await expect
+          .poll(() =>
+            scroll.evaluate((el) => el.scrollHeight > el.clientHeight),
+          )
+          .toBe(true);
+        expect(
+          await scroll.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        ).toBe(true);
+        expect(
+          await paper.evaluate((el) => getComputedStyle(el).backgroundColor),
+        ).toBe('rgb(255, 255, 255)');
+        const canvasColor = () =>
+          scroll.evaluate(
+            (el) =>
+              getComputedStyle(el.parentElement!.parentElement!)
+                .backgroundColor,
+          );
+        const light = await canvasColor();
+        expect(light).not.toBe('rgb(255, 255, 255)');
+        expect(light).not.toBe('rgba(0, 0, 0, 0)');
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        expect(await canvasColor()).not.toBe(light);
+        await second.scrollIntoViewIfNeeded();
+        expect(await scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((body) => body.scrollWidth <= innerWidth),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `/tmp/allrice-office-continuous-${width}.png`,
+        });
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it.each([1440, 390])(
     'resolves chat downloads only for this Run’s authenticated artifacts at width %i',

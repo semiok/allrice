@@ -45,3 +45,6 @@ apps/web/app/chatflow/dsh-upstream/todo/
 apps/web/app/chatflow/dsh-upstream/archive/ArchiveSession.tsx
 apps/web/app/chatflow/dsh-upstream/archive/RowActionToast.tsx
 apps/web/app/chatflow/dsh-upstream/archive/WorkspaceBrowser.module.css
+
+# Pinned native delivery cards with recorded browser adapter patches.
+apps/web/app/chatflow/dsh-upstream/deliverables/
