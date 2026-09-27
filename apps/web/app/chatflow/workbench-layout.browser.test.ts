@@ -293,6 +293,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       artifactReads: 0,
+      detailReads: {} as Record<string, number>,
+      detailStatus: 200,
       messageFeedback: [] as MessageFeedbackItem[],
       feedbackError: false,
       feedbackWrites: 0,
@@ -861,6 +863,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               text: state.text,
             },
             state.contentError ? 503 : 200,
+          );
+        state.detailReads[a.id] = (state.detailReads[a.id] ?? 0) + 1;
+        if (state.detailStatus !== 200)
+          return answer(
+            { error: { code: 'ARTIFACT_UNAVAILABLE' } },
+            state.detailStatus,
           );
         return answer({ artifact: a, feedback: [] });
       }
@@ -4813,6 +4821,64 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
+  it('does not poll immutable or hidden document tabs and retries genuine load errors', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      f.state.items.push(artifact(11));
+      await f.reloadList();
+      await f.selectArtifact(11);
+      await f.panel
+        .locator(`[data-document-id="${id(11)}"]`)
+        .getByRole('heading', { name: /COIN/ })
+        .waitFor();
+      const before = { ...f.state.detailReads };
+      // Longer than the previous five-second timer; both visible and hidden reads stay quiet.
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      expect(f.state.detailReads).toEqual(before);
+      f.state.detailStatus = 503;
+      await f.fileAction('刷新文件');
+      await f.panel
+        .getByRole('button', { name: '重试加载文件', exact: true })
+        .waitFor();
+      f.state.detailStatus = 200;
+      await f.panel
+        .getByRole('button', { name: '重试加载文件', exact: true })
+        .click();
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(await f.panel.getByRole('alert').count()).toBe(0);
+      f.state.detailStatus = 403;
+      await f.fileAction('刷新文件');
+      await f.panel.getByRole('alert').waitFor();
+      expect(await f.panel.getByRole('heading', { name: /COIN/ }).count()).toBe(
+        0,
+      );
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
+  it('clears recovered review refresh errors without removing the loaded preview', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      f.state.items[0]!.kind = 'plan';
+      await f.page.reload();
+      await f.entry.click();
+      const heading = f.panel.getByRole('heading', { name: /COIN/ });
+      await heading.waitFor();
+      f.state.detailStatus = 503;
+      await f.panel.getByRole('alert').waitFor({ timeout: 10000 });
+      expect(await heading.isVisible()).toBe(true);
+      f.state.detailStatus = 200;
+      await expect
+        .poll(() => f.panel.getByRole('alert').count(), { timeout: 10000 })
+        .toBe(0);
+      expect(await heading.isVisible()).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
   it('protects explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
     try {
@@ -4832,7 +4898,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(true);
       f.state.listError = true;
       await f.entry.click();
+      // A catalog refresh failure is not a failure of the loaded document.
+      await f.fileAction('查看所有成果');
       await f.panel.getByRole('alert').waitFor();
+      await f.panel
+        .getByRole('button', { name: '侧栏预览 report-10.md', exact: true })
+        .click();
+      expect(await f.panel.getByRole('alert').count()).toBe(0);
       expect(
         await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
       ).toBe(true);

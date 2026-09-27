@@ -292,6 +292,11 @@ export function ArtifactWorkbench(props: Props) {
               <ArtifactTabBody
                 {...props}
                 key={tab.id}
+                active={
+                  props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id
+                }
                 selectedId={tab.kind === 'artifact' ? tab.contentId : null}
                 onCatalog={() =>
                   dock.open(
@@ -340,17 +345,16 @@ export function ArtifactWorkbench(props: Props) {
 }
 
 function ArtifactTabBody(
-  props: Props & { onFiles: () => void; onCatalog: () => void },
+  props: Props & {
+    active: boolean;
+    onFiles: () => void;
+    onCatalog: () => void;
+  },
 ) {
   const artifactId = props.selectedId;
   if (artifactId && props.sessionId)
     return (
       <div className={reader.reader}>
-        {props.listError ? (
-          <p className={styles.error} role="alert">
-            {props.listError}
-          </p>
-        ) : null}
         {props.noticeId && props.noticeId !== artifactId ? (
           <p className={styles.notice} role="status">
             新成果已就绪。
@@ -365,6 +369,7 @@ function ArtifactTabBody(
         <ArtifactReview
           key={`${props.workspaceId}/${props.sessionId}/${artifactId}`}
           artifactId={artifactId}
+          active={props.active}
           sessionId={props.sessionId}
           workspaceId={props.workspaceId}
           tenantHeaders={props.tenantHeaders}
@@ -551,6 +556,7 @@ function TextPage({ text, label }: { text: string; label: string }) {
 }
 
 function ArtifactReview({
+  active,
   artifactId,
   sessionId,
   workspaceId,
@@ -560,6 +566,7 @@ function ArtifactReview({
   onCatalog,
   onReload,
 }: {
+  active: boolean;
   artifactId: string;
   sessionId: string;
   workspaceId: string;
@@ -609,6 +616,7 @@ function ArtifactReview({
     }
   }
   const [error, setError] = useState(''),
+    [readError, setReadError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false),
     [previewError, setPreviewError] = useState(''),
@@ -632,7 +640,7 @@ function ArtifactReview({
       pending.current?.abort();
       const control = new AbortController();
       pending.current = control;
-      if (reset) setError('');
+      if (reset) setReadError('');
       try {
         const result = parseArtifactDetail(
           await workbenchJson(endpoint + query, tenantHeaders, {
@@ -646,25 +654,39 @@ function ArtifactReview({
           throw Error('成果所属会话不匹配');
         if (token !== generation.current) return;
         setArtifact(result.artifact);
+        setReadError('');
         setReady(true);
       } catch (cause) {
         if (token === generation.current && !control.signal.aborted) {
-          setError(cause instanceof Error ? cause.message : '成果不可用');
+          const revoked =
+            cause instanceof Error &&
+            'status' in cause &&
+            [401, 403, 404].includes(Number(cause.status));
+          setReadError(
+            reset || revoked
+              ? cause instanceof Error
+                ? cause.message
+                : '文件加载失败，请重试。'
+              : '文件状态刷新失败，正在显示上次加载的预览。',
+          );
           setReady(false);
-          setArtifact(null);
-          setPreview(null);
+          if (reset || revoked) {
+            setArtifact(null);
+            setPreview(null);
+          }
         }
       }
     },
     [endpoint, query, tenantHeaders, artifactId, sessionId],
   );
   useEffect(() => {
+    if (!active) return;
     void refresh(true);
     return () => {
       generation.current++;
       pending.current?.abort();
     };
-  }, [refresh]);
+  }, [refresh, active]);
   useEffect(() => {
     if (!artifact || preview) return;
     const controller = new AbortController();
@@ -691,11 +713,15 @@ function ArtifactReview({
     return () => controller.abort();
   }, [artifact?.id, !!preview, endpoint, query, tenantHeaders, previewRetry]);
   useEffect(() => {
+    // Immutable document versions need no timer. Only visible mutable reviews
+    // refresh their state; native Dock keeps hidden bodies mounted for reading.
+    if (!active || !['plan', 'changeset'].includes(artifact?.kind ?? ''))
+      return;
     const timer = setInterval(() => {
-      if (!busy) void refresh(false);
+      if (!busy && document.visibilityState === 'visible') void refresh(false);
     }, 5000);
     return () => clearInterval(timer);
-  }, [refresh, busy]);
+  }, [refresh, busy, active, artifact?.kind]);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 760px)');
     const sync = () => setMode(mq.matches ? 'unified' : 'split');
@@ -756,8 +782,16 @@ function ArtifactReview({
           {error}
         </p>
       ) : null}
+      {readError ? (
+        <div className={styles.error} role="alert">
+          {readError}
+          <button type="button" onClick={() => void refresh(true)}>
+            重试加载文件
+          </button>
+        </div>
+      ) : null}
       {!artifact ? (
-        <p role="status">{error ? '成果暂不可用。' : '正在读取版本…'}</p>
+        <p role="status">{readError ? '文件暂未加载。' : '正在读取版本…'}</p>
       ) : (
         <>
           <DocumentToolbar
