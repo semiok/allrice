@@ -6,6 +6,7 @@ import {
   publishWorkbenchArtifact,
   publishWorkbenchChangesetProposal,
   workbenchEnabled,
+  ArtifactPublicationRollbackError,
 } from '@allrice/database';
 import {
   ChangesetProposalSchema,
@@ -183,25 +184,47 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         : {}),
       ...(typeof changeSummary === 'string' ? { changeSummary } : {}),
     };
-    const artifact =
-      kind === 'changeset'
-        ? await publishWorkbenchChangesetProposal(
-            {
-              ...publication,
-              proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
-            },
-            storage,
-          )
-        : await publishWorkbenchArtifact(
-            {
-              ...publication,
-              kind,
-              format,
-              bytes,
-              mediaType: generated.mediaType,
-            },
-            storage,
+    const artifact = await (async () => {
+      try {
+        return kind === 'changeset'
+          ? await publishWorkbenchChangesetProposal(
+              {
+                ...publication,
+                proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
+              },
+              storage,
+            )
+          : await publishWorkbenchArtifact(
+              {
+                ...publication,
+                kind,
+                format,
+                bytes,
+                mediaType: generated.mediaType,
+              },
+              storage,
+            );
+      } catch (error) {
+        if (
+          error instanceof ArtifactPublicationRollbackError &&
+          error.runId === input.context.runId &&
+          error.callId === input.call.id
+        ) {
+          const failure = new HandlerError(
+            'TOOL_PUBLICATION_ROLLED_BACK',
+            '文件登记发生临时冲突，本次已回滚且未发布文件；请重试相同文件。',
+            true,
           );
+          confirmToolFailure(failure, {
+            runId: input.context.runId,
+            callId: input.call.id,
+            toolName: input.call.name,
+          });
+          throw failure;
+        }
+        throw error;
+      }
+    })();
     return {
       modelContent: JSON.stringify({
         ...officeResult,

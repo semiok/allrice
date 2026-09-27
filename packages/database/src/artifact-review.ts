@@ -48,6 +48,18 @@ export class ArtifactReviewError extends Error {
     super(code);
   }
 }
+/** Issued only after PostgreSQL aborted publication and any private blob was
+ * confirmed removed. A lost commit acknowledgement must never create this. */
+export class ArtifactPublicationRollbackError extends Error {
+  constructor(
+    readonly runId: string,
+    readonly callId: string,
+    readonly sqlState: '40P01' | '40001',
+    cause: unknown,
+  ) {
+    super('artifact_publication_rolled_back', { cause });
+  }
+}
 function fail(code: string): never {
   throw new ArtifactReviewError(code);
 }
@@ -614,6 +626,10 @@ export async function publishWorkbenchArtifact(
         context.organizationId,
         context.workspaceId,
       );
+      // Same order as assistant admission/clock maintenance: root before job
+      // and session. Holding session first can deadlock with an assistant check
+      // which refreshes the job deadline before SHARE-locking the session.
+      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${context.runId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for update`;
       await development?.admit(tx);
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
       const source = input.sourceFile
@@ -765,6 +781,7 @@ export async function publishWorkbenchArtifact(
       return artifact;
     });
   } catch (error) {
+    let cleanupConfirmed = !created;
     if (created) {
       // A lost commit acknowledgement is ambiguous. Query the same primary before
       // cleanup; if unavailable, retain the bounded orphan, never delete evidence.
@@ -773,11 +790,26 @@ export async function publishWorkbenchArtifact(
       >`select id from allrice_storage_objects where id=${created.id}`.catch(
         () => null,
       );
-      if (known && known.length === 0)
-        await storage
-          .delete({ ...created, immutable: false })
-          .catch(() => undefined);
+      if (known && known.length === 0) {
+        try {
+          await storage.delete({ ...created, immutable: false });
+          cleanupConfirmed = true;
+        } catch {
+          /* Preserve an unconfirmed private blob for reconciliation. */
+        }
+      }
     }
+    const sqlState =
+      error instanceof Error
+        ? Object.getOwnPropertyDescriptor(error, 'code')?.value
+        : undefined;
+    if (cleanupConfirmed && (sqlState === '40P01' || sqlState === '40001'))
+      throw new ArtifactPublicationRollbackError(
+        context.runId,
+        input.callId,
+        sqlState,
+        error,
+      );
     throw error;
   }
 }

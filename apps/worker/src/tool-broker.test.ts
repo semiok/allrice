@@ -51,7 +51,9 @@ const {
   startManagedBrowserTask: vi.fn(),
 }));
 
-vi.mock('@allrice/database', () => ({
+vi.mock('@allrice/database', async (original) => ({
+  ArtifactPublicationRollbackError: (await original<typeof Database>())
+    .ArtifactPublicationRollbackError,
   completeManagedBrowserTask,
   createToolBrokerExportObject,
   createTraceableMemory,
@@ -83,6 +85,8 @@ import {
   riceToolDefinitionsForTurn,
   riceToolRisk,
 } from './tool-broker.js';
+import { ArtifactPublicationRollbackError } from '@allrice/database';
+import type * as Database from '@allrice/database';
 import { HandlerError, isConfirmedToolFailure } from './errors.js';
 import * as marketData from './market-data.js';
 import * as nativeOffice from './office/native.js';
@@ -728,7 +732,11 @@ describe('Codex hosted search Tool Broker integration', () => {
       expect(await readFile(join(root, source.key))).toEqual(created.bytes);
       publishWorkbenchArtifact.mockClear();
       await expect(
-        executeRiceTool({ ...base, capabilities: ['storage:write'], call }),
+        executeRiceTool({
+          ...base,
+          capabilities: ['storage:write'],
+          call,
+        }),
       ).rejects.toThrow('读取文件能力');
       getToolBrokerFile.mockRejectedValueOnce(
         new Error('authorization_denied'),
@@ -971,6 +979,53 @@ describe('Codex hosted search Tool Broker integration', () => {
       } finally {
         generate.mockRestore();
       }
+    },
+  );
+
+  it.each([false, true])(
+    'settles a publication rollback only for its exact call (foreign=%s)',
+    async (foreign) => {
+      const context = executionContext(),
+        callId = randomUUID();
+      const input = {
+        context,
+        sessionId: randomUUID(),
+        storageRoot: 'unused-mocked-port',
+        capabilities: ['storage:write' as const],
+        call: {
+          id: callId,
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: 'Fixture.txt',
+            format: 'text',
+            content: 'Fixture',
+          },
+        },
+      };
+      workbenchEnabled.mockReturnValue(true);
+      const error = new ArtifactPublicationRollbackError(
+        context.runId,
+        foreign ? randomUUID() : callId,
+        '40P01',
+        Error('synthetic database abort'),
+      );
+      publishWorkbenchArtifact.mockRejectedValue(error);
+      const thrown = await executeRiceTool(input).catch(
+        (value: unknown) => value,
+      );
+      if (foreign) expect(thrown).toBe(error);
+      else
+        expect(thrown).toMatchObject({
+          code: 'TOOL_PUBLICATION_ROLLED_BACK',
+          retryable: true,
+        });
+      expect(
+        isConfirmedToolFailure(thrown, {
+          runId: context.runId,
+          callId,
+          toolName: input.call.name,
+        }),
+      ).toBe(!foreign);
     },
   );
 
