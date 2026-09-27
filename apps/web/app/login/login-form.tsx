@@ -6,6 +6,7 @@ import { loginDestination } from '../../lib/portal/login-destination';
 export function LoginForm(props: {
   bootstrap?: { username: string; homePath: string };
 }) {
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
 
@@ -56,28 +57,67 @@ export function LoginForm(props: {
       <label>
         {props.bootstrap?.homePath === '/runtime-console'
           ? '管理员账号'
-          : '员工账号'}
+          : '账号'}
         <input
           name="username"
           type="text"
           autoComplete="username"
           defaultValue={props.bootstrap?.username ?? ''}
-          placeholder="英文昵称"
+          placeholder="输入你的账号"
           required
         />
       </label>
       <label>
         密码
-        <input
-          name="password"
-          type="password"
-          autoComplete="current-password"
-          minLength={8}
-          required
-        />
+        <span className="auth-password">
+          <input
+            name="password"
+            type={showPassword ? 'text' : 'password'}
+            placeholder="输入密码"
+            autoComplete="current-password"
+            minLength={8}
+            required
+          />
+          <button
+            type="button"
+            className="auth-password-toggle"
+            aria-label={showPassword ? '隐藏密码' : '显示密码'}
+            aria-pressed={showPassword}
+            onClick={() => setShowPassword((value) => !value)}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+              <circle cx="12" cy="12" r="3" />
+              {showPassword && <path d="m3 3 18 18" />}
+            </svg>
+          </button>
+        </span>
       </label>
       {error ? <p role="alert">{error}</p> : null}
-      <button disabled={pending}>{pending ? '登录中…' : '登录'}</button>
+      <button type="submit" disabled={pending} className="auth-submit">
+        {pending ? '登录中…' : '登录'}
+        {!pending && (
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            aria-hidden="true"
+          >
+            <path d="M4 12h16m-6-6 6 6-6 6" />
+          </svg>
+        )}
+      </button>
     </form>
   );
 }

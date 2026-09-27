@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import styles from './sidebar-settings.module.css';
 
 export function AccountPasswordSettings() {
   const [pending, setPending] = useState(false);
@@ -39,10 +40,10 @@ export function AccountPasswordSettings() {
     }
   }
   return (
-    <details>
+    <details className={styles.settingsFold}>
       <summary>修改登录密码</summary>
       <p>修改后，请在各设备上使用新密码重新登录。</p>
-      <form className="auth-form" onSubmit={submit}>
+      <form className={styles.passwordForm} onSubmit={submit}>
         <label>
           当前密码
           <input

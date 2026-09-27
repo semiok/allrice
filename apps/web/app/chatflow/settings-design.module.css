@@ -1,0 +1,95 @@
+.panel.panel {
+  width: 860px;
+  height: min(700px, calc(100dvh - 48px));
+  max-width: calc(100vw - 32px);
+  border-radius: 22px;
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 24px 80px #0002;
+}
+.panel > nav {
+  width: 192px;
+  padding: 24px 12px;
+  gap: 24px;
+  background: var(--allrice-sidebar-bg);
+  border-right: 1px solid var(--dsw-alias-border-primary);
+}
+.panel > nav > div:first-child {
+  font-size: 17px;
+  font-weight: 600;
+  padding: 0 12px;
+}
+.panel nav button {
+  border-radius: 10px;
+  font-size: 13px;
+  height: 40px;
+  padding: 9px 11px;
+}
+.panel nav button:hover {
+  background: var(--allrice-sidebar-hover);
+}
+.panel nav button[aria-current] {
+  background: var(--allrice-session-selected);
+  font-weight: 500;
+}
+.panel > div > div:first-child {
+  height: 52px;
+  padding: 16px 16px 8px;
+}
+.panel > div > div:last-child {
+  padding: 0 30px 30px;
+  scrollbar-gutter: stable;
+}
+.panel button:focus-visible,
+.panel summary:focus-visible,
+.panel select:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 3px;
+}
+.mobileNav {
+  display: none;
+}
+@media (max-width: 600px) {
+  .panel.panel {
+    width: calc(100vw - 24px);
+    max-width: none;
+    height: calc(100dvh - 24px);
+    border-radius: 18px;
+  }
+  .panel > nav {
+    width: 100%;
+    padding: 18px 18px 14px;
+    gap: 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--dsw-alias-border-primary);
+  }
+  .panel > nav > div:first-child {
+    padding: 0;
+  }
+  .panel > nav > div:last-child {
+    display: none;
+  }
+  .mobileNav {
+    display: block;
+    width: 100%;
+    height: 40px;
+    padding: 0 10px;
+    border: 1px solid var(--dsw-alias-border-primary);
+    border-radius: 9px;
+    background: var(--dsw-alias-bg-layer-2);
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+  }
+  .panel > div > div:first-child {
+    height: 0;
+    padding: 0;
+  }
+  .panel > div > div:first-child > button {
+    position: absolute;
+    right: 16px;
+    top: 14px;
+  }
+  .panel > div > div:last-child {
+    padding: 22px 18px;
+  }
+}

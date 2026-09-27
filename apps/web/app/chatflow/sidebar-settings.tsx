@@ -115,9 +115,7 @@ export function SidebarSettings({
                       <div className={styles.preferenceRow}>
                         <div>
                           <h3>流式输出</h3>
-                          <p>
-                            关闭时，任务结束后统一展示回复。打开后，实时显示文字和阶段性回复。
-                          </p>
+                          <p>实时展示文字和阶段性回复；关闭后统一展示。</p>
                         </div>
                         <Switch
                           label="流式输出"
@@ -154,7 +152,20 @@ export function SidebarSettings({
                   {row.id === 'account' && (
                     <>
                       <div className={styles.accountActions}>
-                        <p>退出后可以使用其他账号登录。</p>
+                        <span
+                          className={styles.accountAvatar}
+                          aria-hidden="true"
+                        >
+                          {(monthlyQuota.data?.displayName ?? 'U')
+                            .slice(0, 1)
+                            .toUpperCase()}
+                        </span>
+                        <div className={styles.accountIdentity}>
+                          <strong>
+                            {monthlyQuota.data?.displayName ?? '当前账号'}
+                          </strong>
+                          <p>管理你的账号与使用情况</p>
+                        </div>
                         <Button
                           type="button"
                           variant="outline"

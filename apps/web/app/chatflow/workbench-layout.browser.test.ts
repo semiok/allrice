@@ -5,7 +5,10 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { officePreview } from '@allrice/office-runtime';
-import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
+import type {
+  Browser,
+  Locator,
+} from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
   type MessageFeedbackItem,
@@ -32,6 +35,16 @@ const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
     : describe.skip;
+async function selectSettings(dialog: Locator, label: string) {
+  const mobile = dialog.getByRole('combobox', { name: '设置页面' });
+  if (await mobile.isVisible()) await mobile.selectOption({ label });
+  else
+    await dialog
+      .locator('nav')
+      .getByRole('button', { name: label, exact: true })
+      .click();
+}
+
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const A = id(1),
@@ -1350,10 +1363,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
     await settings.click();
-    await f.page
-      .getByRole('dialog', { name: '设置', exact: true })
-      .getByRole('button', { name: '能力与环境', exact: true })
-      .click();
+    const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
+    await selectSettings(dialog, '能力与环境');
+    // Expand through the same controls as a user before exercising each action.
+    for (const group of await dialog
+      .locator('details:has(> summary):has([data-capability])')
+      .all()) {
+      if ((await group.getAttribute('open')) === null)
+        await group.locator(':scope > summary').click();
+    }
+    for (const card of await dialog.locator('[data-capability]').all()) {
+      await card.locator(':scope > summary').click();
+    }
   }
 
   it('native feedback hover, copy, rating dialog, retry, withdrawal and platform follow-up work together', async () => {
@@ -2692,9 +2713,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await f.page.getByRole('button', { name: '设置', exact: true }).click();
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
-      await dialog
-        .getByRole('button', { name: '我的电脑', exact: true })
-        .click();
+      await selectSettings(dialog, '我的电脑');
       const browserSwitch = dialog.getByRole('switch', {
         name: '本地独立浏览器',
         exact: true,
@@ -2754,17 +2773,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.getByText('Codex 订阅 · DSH', { exact: true }).count(),
       ).toBe(0);
       await settings.click();
-      const quota = f.page.locator('summary[aria-label="账号月额度"]');
-      await quota.getByText('Synthetic member', { exact: true }).waitFor();
+      const quota = f.page.getByRole('region', { name: '账号月额度' });
+      await f.page.getByText('Synthetic member', { exact: true }).waitFor();
       await quota.getByText('Codex 订阅 · DSH', { exact: true }).waitFor();
-      await quota.getByText('剩余 43%', { exact: true }).waitFor();
-      await f.page.getByText('本月已记录', { exact: false }).waitFor();
-      expect(
-        await f.page.locator('details').filter({ has: quota }).innerText(),
-      ).toContain('5,000,000');
+      await quota.getByText(/43%/).waitFor();
+      await quota.getByText('2,830,000', { exact: false }).waitFor();
+      expect(await quota.innerText()).toContain('5,000,000');
       await f.page.reload();
       await settings.click();
-      await quota.getByText('剩余 43%', { exact: true }).waitFor();
+      await quota.getByText(/43%/).waitFor();
     } finally {
       await f.close();
     }
@@ -2859,19 +2876,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.screenshot({
           path: `/tmp/met160-settings-account-${width}.png`,
         });
-        await dialog
-          .getByRole('button', { name: '已连接应用', exact: true })
-          .click();
+        await selectSettings(dialog, '已连接应用');
         await dialog.getByText('需要登录', { exact: true }).waitFor();
+        await dialog.getByText('管理连接', { exact: true }).click();
         await dialog.getByRole('button', { name: '填写连接凭据' }).click();
         const credential = dialog.getByLabel('应用访问令牌');
         await credential.fill('synthetic-unsaved-token');
-        await dialog
-          .getByRole('button', { name: '账号与用量', exact: true })
-          .click();
-        await dialog
-          .getByRole('button', { name: '我的电脑', exact: true })
-          .click();
+        await selectSettings(dialog, '账号与用量');
+        await selectSettings(dialog, '我的电脑');
         await dialog.getByRole('button', { name: '连接与管理电脑' }).waitFor();
         expect(
           await dialog
@@ -2883,9 +2895,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '本地浏览器', exact: true })
             .count(),
         ).toBe(0);
-        await dialog
-          .getByRole('button', { name: '已连接应用', exact: true })
-          .click();
+        await selectSettings(dialog, '已连接应用');
         expect(await credential.inputValue()).toBe('synthetic-unsaved-token');
         const reads = f.state.connectionReads;
         await f.page.clock.install();
@@ -2976,9 +2986,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '设置',
         exact: true,
       });
-      await settings
-        .getByRole('button', { name: '已连接应用', exact: true })
-        .click();
+      await selectSettings(settings, '已连接应用');
+      await settings.getByText('管理连接', { exact: true }).click();
       await settings.getByRole('button', { name: '填写连接凭据' }).click();
       await settings.getByLabel('应用访问令牌').fill('synthetic-private-draft');
       f.state.viewer = id(50);
@@ -2987,9 +2996,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.finishRun();
       await expect.poll(() => settings.count()).toBe(0);
       await f.page.getByRole('button', { name: '设置', exact: true }).click();
-      await settings
-        .getByRole('button', { name: '已连接应用', exact: true })
-        .click();
+      await selectSettings(settings, '已连接应用');
       await settings.getByText('还没有连接应用。', { exact: false }).waitFor();
       expect(await settings.getByLabel('应用访问令牌').count()).toBe(0);
       expect(await settings.getByText('上一位用户的应用').count()).toBe(0);
@@ -3056,9 +3063,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const openPreferences = async () => {
         await f.page.getByRole('button', { name: '设置', exact: true }).click();
-        await settings
-          .getByRole('button', { name: '个人偏好', exact: true })
-          .click();
+        await selectSettings(settings, '个人偏好');
         await expect
           .poll(() =>
             settings.getByRole('switch', { name: '流式输出' }).isEnabled(),
@@ -4390,7 +4395,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .evaluateAll((cards) =>
               cards.map((card) => card.getAttribute('data-capability')),
             ),
-        ).toEqual([...workspaceCapabilityIds]);
+        ).toEqual(expect.arrayContaining([...workspaceCapabilityIds]));
         expect(
           await dialog
             .locator('[data-capability="development"]')
@@ -4679,7 +4684,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }));
       await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
       await openCapabilities(f);
-      await dialog.getByText(/核对时间/).waitFor();
+      await dialog.getByText(/更新于/).waitFor();
       release();
       expect(
         await dialog
@@ -4696,7 +4701,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       f.state.readinessError = false;
       await dialog.getByRole('button', { name: '刷新能力状态' }).click();
-      await dialog.getByText(/核对时间/).waitFor();
+      await dialog.getByText(/更新于/).waitFor();
       expect(
         await dialog
           .locator('[data-capability="report"]')

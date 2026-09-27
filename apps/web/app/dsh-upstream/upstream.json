@@ -348,9 +348,9 @@
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
           "upstreamSha256": "6a0fe6d492ab2aeed06123d7bc1ae6fe78b6c76a26e9d1611a9c8c79dfcc7603",
-          "sha256": "5f8bdd5ca1f3aea068656ecc68a10ee3a50a503e1b2a4ac84b2b56dc0fc1657c",
+          "sha256": "73ce9ca4265f9148f6c1f82b83c5372b0d44a4581515d36563cec839006a1583",
           "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.tsx.patch",
-          "patchSha256": "f9187a37c74fc4c3f80d69a71844c3e234156d5b98dc0d7a0bdd157a90ccf020"
+          "patchSha256": "5b1e8c94a6b8711f0a096347b16645a7b59a987722f95ac54abf26c8f6c20de5"
         },
         {
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.module.css",
