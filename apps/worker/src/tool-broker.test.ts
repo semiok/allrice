@@ -895,13 +895,19 @@ describe('Codex hosted search Tool Broker integration', () => {
 
   it.each([
     'document-rejected',
+    'runtime-unavailable',
+    'cleanup-unconfirmed',
     'transport-unknown',
     'publication-unknown',
   ] as const)(
     'confirms only an Office failure before publication: %s',
     async (mode) => {
       const error = new HandlerError(
-        'OFFICE_DOCUMENT_INVALID',
+        mode === 'runtime-unavailable'
+          ? 'OFFICE_RUNTIME_UNAVAILABLE'
+          : mode === 'cleanup-unconfirmed'
+            ? 'OFFICE_CLEANUP_UNCONFIRMED'
+            : 'OFFICE_DOCUMENT_INVALID',
         'Synthetic rejection',
         false,
       );
@@ -954,7 +960,7 @@ describe('Codex hosted search Tool Broker integration', () => {
           toolName: input.call.name,
         };
         expect(isConfirmedToolFailure(thrown, identity)).toBe(
-          mode === 'document-rejected',
+          mode === 'document-rejected' || mode === 'runtime-unavailable',
         );
         expect(
           isConfirmedToolFailure(thrown, { ...identity, callId: randomUUID() }),

@@ -90,7 +90,9 @@ export const createWorkspaceExport: RiceToolHandler = async ({
           // Transport/cleanup errors remain unknown; never infer from retryability.
           if (
             error instanceof HandlerError &&
-            error.code === 'OFFICE_DOCUMENT_INVALID'
+            ['OFFICE_DOCUMENT_INVALID', 'OFFICE_RUNTIME_UNAVAILABLE'].includes(
+              error.code,
+            )
           )
             confirmToolFailure(error, {
               runId: input.context.runId,
