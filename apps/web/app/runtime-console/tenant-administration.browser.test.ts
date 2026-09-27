@@ -843,7 +843,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   });
-  it('assembles selected MCP capabilities in the draft and preserves subsequent explicit security edits without publishing', async () => {
+  it('uses tool-derived employee defaults without a security tab or changing the published version', async () => {
     const f = await createEmployeeAdministrationFixture(fixture.db);
     await fixture.db`update allrice_workspaces set name='MCP safety fixture workspace' where id=${f.workspaceId}`;
     await savePlatformEmployeeDraft(f.employeeId, {
@@ -916,13 +916,13 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page.getByRole('button', { name: '工具', exact: true }).click();
       await openIndependentTools(page);
       await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
-      await page.getByRole('button', { name: '安全', exact: true }).click();
       expect(
-        await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
-      ).toBe(false);
-      expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
-        true,
-      );
+        await page.getByRole('button', { name: '安全', exact: true }).count(),
+      ).toBe(0);
+      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page
+        .getByText('是否自动执行，由使用者在前台', { exact: false })
+        .waitFor();
       const save = async () => {
         const response = page.waitForResponse(
           (r) =>
@@ -962,19 +962,20 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button')
         .filter({ hasText: 'MET151 MCP safety fixture' })
         .click();
-      await page.getByRole('button', { name: '安全', exact: true }).click();
       expect(
-        await page.getByLabel('禁止 secret:use', { exact: true }).isChecked(),
-      ).toBe(false);
-      expect(await page.getByLabel('允许连接器身份 service').isChecked()).toBe(
-        true,
-      );
-      await page.getByLabel('禁止 secret:use', { exact: true }).check();
-      expect((await save()).validation.valid).toBe(false);
+        await page.getByRole('button', { name: '安全', exact: true }).count(),
+      ).toBe(0);
+      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page
+        .getByText('是否自动执行，由使用者在前台', { exact: false })
+        .waitFor();
+      expect(
+        await page.getByLabel('员工确认偏好', { exact: true }).count(),
+      ).toBe(0);
       expect(
         (await directory()).currentDraft.definition.securityPolicy
           .deniedCapabilities,
-      ).toEqual(['secret:use']);
+      ).toEqual([]);
     } finally {
       await context.close();
     }
@@ -1271,12 +1272,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         },
       );
       expect(unreviewed.status()).toBe(409);
-      await page.getByRole('button', { name: '安全', exact: true }).click();
       expect(
-        await page
-          .locator('option[value="autonomous"]')
-          .evaluate((option) => (option as HTMLOptionElement).disabled),
-      ).toBe(false);
+        await page.getByRole('button', { name: '安全', exact: true }).count(),
+      ).toBe(0);
+      expect(await page.locator('option[value="autonomous"]').count()).toBe(0);
       await page.getByRole('button', { name: '技能', exact: true }).click();
       await page
         .getByRole('button', {
