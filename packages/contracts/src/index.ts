@@ -94,3 +94,4 @@ export * from './task-plan.ts';
 export * from './session-reference.ts';
 export * from './organization-activity.ts';
 export * from './platform-model-settings.ts';
+export * from './operations-resources.ts';

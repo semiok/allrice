@@ -117,6 +117,20 @@ export function readWorkerCapabilities(
       }
     };
     visit(entries);
+    // The stock JSON-RPC runtime imports the bounded reference adapter and
+    // installs its admission hook directly, outside the Cordis profile. Resolve
+    // its dependency from that runtime, not from a potentially external profile.
+    const referencePackage = '@deepseek-ai/dsh-session-reference';
+    const referenceVersion = installedVersion(
+      referencePackage,
+      resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+    );
+    snapshot.components.push({
+      id: 'allrice-session-reference',
+      packageName: referencePackage,
+      version: referenceVersion,
+      state: referenceVersion ? 'configured' : 'missing',
+    });
   } catch {
     snapshot.profileStatus = 'unavailable';
     snapshot.components = [];

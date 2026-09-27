@@ -128,6 +128,7 @@ export function integratedCapabilityStatus(
   }
   const packages: Record<string, string[]> = {
     'native-images': ['@deepseek-ai/dsh-attachment-local'],
+    'session-reference': ['@deepseek-ai/dsh-session-reference'],
     'durable-wait': [
       '@deepseek-ai/dsh-user-questions',
       '@deepseek-ai/dsh-tool-ask-user',
@@ -150,7 +151,9 @@ export function integratedCapabilityStatus(
     ),
   );
   return configured.length === facts.workers.length
-    ? '运行组件已配置'
+    ? id === 'session-reference'
+      ? '已接入'
+      : '运行组件已配置'
     : configured.length
       ? 'Worker 配置不一致'
       : '运行组件未配置';

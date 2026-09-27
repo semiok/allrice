@@ -190,6 +190,29 @@ describe('subscription quota normalization', () => {
 });
 
 describe('isolated subscription-only app-server transport', () => {
+  it.each(['graceful_shutdown', 'stubborn_shutdown'])(
+    'retains quota and removes the owned child and home after %s',
+    async (scenario) => {
+      const fake = await fakeServer(scenario);
+      const result = await readCodexSubscriptionQuota({
+        ...syntheticGrant(),
+        command: fake.command,
+      });
+      expect(result.status).toBe('available');
+      const records = await fake.records();
+      const startup = records.find((record) => record.startup);
+      expect(() => process.kill(startup.pid, 0)).toThrow();
+      await expect(stat(startup.cwd)).rejects.toMatchObject({ code: 'ENOENT' });
+      if (scenario === 'graceful_shutdown') {
+        expect(records.some((record) => record.eof)).toBe(true);
+        expect(records.some((record) => record.unexpectedTermination)).toBe(
+          false,
+        );
+      } else {
+        expect(records.some((record) => record.terminationIgnored)).toBe(true);
+      }
+    },
+  );
   it('sends only approved account RPCs with explicitly bound synthetic tokens and no inherited credentials', async () => {
     const fake = await fakeServer();
     const grant = syntheticGrant();

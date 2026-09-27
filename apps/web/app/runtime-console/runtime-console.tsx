@@ -1,9 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { OrganizationPerson } from '@allrice/contracts';
+import type {
+  OperationsInventory,
+  OrganizationPerson,
+} from '@allrice/contracts';
 import { AllriceMark } from '../../components/allrice-mark';
 
+import { OperationsSummary, OperationsResources } from './operations-resources';
 import { GovernanceConsole } from './governance-console';
 import { OrganizationAdministration } from './organization-administration';
 import { OrganizationActivity } from './organization-activity';
@@ -95,6 +99,7 @@ interface TenantRuntimeItem {
 }
 
 interface RuntimeConsoleResponse {
+  operations?: OperationsInventory | null;
   console: {
     name: string;
     authority: string;
@@ -555,6 +560,7 @@ export function RuntimeConsole() {
               <span>在线 Bridge</span>
               <strong>{onlineBridges ?? 0}</strong>
             </div>
+            <OperationsSummary inventory={data?.operations} />
             <p>
               {updatedAt
                 ? `最近刷新 ${time(updatedAt.toISOString())}`
@@ -563,6 +569,7 @@ export function RuntimeConsole() {
           </section>
 
           {error ? <p className={styles.error}>{error}</p> : null}
+          <OperationsResources inventory={data?.operations} />
           <section className={styles.runtimeScope} aria-label="公司与员工选择">
             <h1>员工运行状态</h1>
             <div className={styles.scopeRow}>

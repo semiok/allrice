@@ -1,6 +1,18 @@
 import { mkdir, stat, rename, appendFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { executionPressureSnapshot } from '@allrice/database';
+import { hostname } from 'node:os';
+import {
+  ExecutionPressureSchema,
+  runtimeFeatureEnabled,
+  type WorkerOperations,
+} from '@allrice/contracts';
+import {
+  executionPressureSnapshot,
+  recordWorkerOperations,
+  removeWorkerOperations,
+} from '@allrice/database';
+import { CloudRunnerBackend } from './cloud-runner/backend.js';
+import type { detectWorkerCapacity } from './worker-capacity.js';
 
 /** Eight 5 MB segments per Worker, sampled every 30 seconds. Per-run events
  * remain in the existing DB audit history; these files capture server-wide
@@ -8,14 +20,15 @@ import { executionPressureSnapshot } from '@allrice/database';
 export function startExecutionPressureLog(
   root: string,
   workerId: string,
-  capacity: unknown,
+  capacity: ReturnType<typeof detectWorkerCapacity>,
 ) {
   let pending = false;
+  let stopped = false;
   const directory = join(root, 'diagnostics', workerId);
   const path = join(directory, 'pressure.jsonl');
   let lastRetention = 0;
   const sample = async () => {
-    if (pending) return;
+    if (pending || stopped) return;
     pending = true;
     try {
       const started = Date.now();
@@ -25,13 +38,41 @@ export function startExecutionPressureLog(
       } catch {
         snapshot = { error: 'database_unavailable' };
       }
+      let sandbox: WorkerOperations['sandbox'] = null;
+      const enabled = runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED');
+      if (enabled) {
+        try {
+          sandbox = await new CloudRunnerBackend().resources();
+        } catch {
+          /* Show unavailable, never zero usage. */
+        }
+      }
+      const parsedPressure = ExecutionPressureSchema.safeParse(snapshot);
+      const operations: WorkerOperations = {
+        workerId,
+        hostname: hostname(),
+        platform: process.platform,
+        capacity,
+        availableMemoryBytes: Math.min(
+          process.availableMemory?.() ?? capacity.availableBytes,
+          capacity.memoryBytes,
+        ),
+        rssBytes: process.memoryUsage().rss,
+        sandbox,
+        sandboxStatus: !enabled
+          ? 'disabled'
+          : sandbox
+            ? 'ready'
+            : 'unavailable',
+        pressure: parsedPressure.success ? parsedPressure.data : null,
+      };
+      // Diagnostics failure must never interrupt tenant execution or file logs.
+      if (!stopped)
+        await recordWorkerOperations(operations).catch(() => undefined);
       const record = {
         event: 'execution_pressure',
         at: new Date().toISOString(),
-        workerId,
-        capacity,
-        availableMemoryBytes: process.availableMemory?.(),
-        rssBytes: process.memoryUsage().rss,
+        ...operations,
         queryMs: Date.now() - started,
         snapshot,
       };
@@ -79,5 +120,9 @@ export function startExecutionPressureLog(
   void sample();
   const timer = setInterval(() => void sample(), 30_000);
   timer.unref();
-  return () => clearInterval(timer);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    void removeWorkerOperations(workerId).catch(() => undefined);
+  };
 }

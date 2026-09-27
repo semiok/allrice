@@ -88,7 +88,7 @@
 .summary {
   min-height: 64px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 190px)) 1fr;
+  grid-template-columns: repeat(6, minmax(110px, 1fr)) minmax(160px, 1fr);
   gap: 1px;
   border-bottom: 1px solid #303236;
   background: #303236;
@@ -1293,4 +1293,90 @@
 }
 .upgradeCards button {
   font-size: 12px;
+}
+
+.operations {
+  padding: 14px 24px;
+  border-bottom: 1px solid #303236;
+  background: #18191c;
+}
+.operations > summary {
+  cursor: pointer;
+  color: #f2f3f4;
+}
+.operations > summary > span {
+  margin-left: 20px;
+  color: #bbc3d1;
+  font-size: 13px;
+}
+.operations > summary > small {
+  margin-left: 16px;
+  color: #8f939b;
+}
+.operationsNote,
+.operationsGrid section > p {
+  color: #979ba3;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.operationsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+  gap: 16px;
+}
+.operationsGrid > section {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #303236;
+  border-radius: 10px;
+}
+.operationsGrid h2 {
+  margin: 0 0 14px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.operationsGrid dl {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+  font-size: 12px;
+}
+.operationsGrid dt {
+  color: #979ba3;
+}
+.operationsGrid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.operationsOnline,
+.operationsOffline {
+  font-size: 11px;
+  font-weight: 400;
+  margin-left: 8px;
+}
+.operationsOnline {
+  color: #79d4a7;
+}
+.operationsOffline {
+  color: #e9b76c;
+}
+@media (max-width: 1150px) {
+  .summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .summary p {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 600px) {
+  .operations {
+    padding: 12px 16px;
+  }
+  .operations > summary > span {
+    display: block;
+    margin: 8px 0 0;
+  }
+  .operations > summary > small {
+    display: none;
+  }
 }

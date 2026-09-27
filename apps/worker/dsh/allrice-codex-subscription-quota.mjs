@@ -368,26 +368,28 @@ function createTransport(child, signal, timeoutMs) {
       stopping = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
-      child.stdin.destroy();
       if (closed) return;
-      child.kill('SIGTERM');
-      let killTimer;
-      await Promise.race([
-        closePromise,
-        new Promise((resolve) => {
-          killTimer = setTimeout(resolve, 500);
-        }),
-      ]);
-      clearTimeout(killTimer);
-      if (!closed) {
-        child.kill('SIGKILL');
+      const waitForClose = async (milliseconds) => {
+        let killTimer;
         await Promise.race([
           closePromise,
           new Promise((resolve) => {
-            killTimer = setTimeout(resolve, 500);
+            killTimer = setTimeout(resolve, milliseconds);
           }),
         ]);
         clearTimeout(killTimer);
+      };
+      // EOF lets app-server drain its account RPC and stop normally. Killing it
+      // immediately can race native shutdown, especially on a busy Worker.
+      child.stdin.end();
+      await waitForClose(1_000);
+      if (!closed) {
+        child.kill('SIGTERM');
+        await waitForClose(1_000);
+      }
+      if (!closed) {
+        child.kill('SIGKILL');
+        await waitForClose(2_000);
       }
       if (!closed) throw new QuotaError('codex_quota_cleanup_failed');
     },
