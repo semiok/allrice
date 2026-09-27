@@ -1,5 +1,12 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  IconChevronRightOutlineRegular,
+  IconCodeOutlineRegular,
+  IconCopyOutlineRegular,
+  IconFlatListOutlineRegular,
+  IconSlidersTwoOutlineRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 
@@ -33,6 +40,35 @@ export function cloudOperationDisplayStatus(
   return labels[op.snapshot.status] ?? op.snapshot.status;
 }
 type Decision = 'approved' | 'rejected' | 'cancel';
+function OperationDetail({
+  icon,
+  title,
+  meta,
+  open = false,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  meta?: ReactNode;
+  open?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className={styles.detailSection} open={open}>
+      <summary>
+        <span className={styles.detailIcon} aria-hidden="true">
+          {icon}
+        </span>
+        <span className={styles.detailLabel}>{title}</span>
+        {meta && <span className={styles.detailMeta}>{meta}</span>}
+        <span className={styles.detailChevron} aria-hidden="true">
+          <IconChevronRightOutlineRegular size={14} />
+        </span>
+      </summary>
+      <div className={styles.detailBody}>{children}</div>
+    </details>
+  );
+}
 function mcpAuthorizationLabel(op: CloudOperationView) {
   switch (op.mcpAuthorization?.reason) {
     case 'connection_revoked':
@@ -113,83 +149,139 @@ export function CloudOperationCard({
           : `第三方应用 · ${proposal.tool}`}
       </p>
       <details className={styles.executionDetails} open={!!pending}>
-        <summary>运行详情</summary>
-        {proposal.kind === 'cloud' ? (
-          <>
-            <p>
-              在云端隔离环境运行 Node
-              脚本，不联网。只读取下列已授权文件，不操作你的电脑。
+        <summary>
+          <span>运行详情</span>
+          <span className={styles.detailsToggle}>
+            <span className={styles.expandLabel}>展开</span>
+            <span className={styles.collapseLabel}>收起</span>
+          </span>
+        </summary>
+        <div className={styles.executionBody}>
+          {proposal.kind === 'cloud' ? (
+            <p className={styles.detailScope}>
+              只读本次授权的上传文件，不访问你的电脑。
             </p>
-            <details open={!!pending}>
-              <summary>查看本次脚本</summary>
-              <pre aria-label="云端待执行脚本">{proposal.script}</pre>
-            </details>
-            <details open={!!pending}>
-              <summary>输入文件与精确版本（{proposal.inputs.length}）</summary>
-              {proposal.inputs.length ? (
-                <ul>
-                  {proposal.inputs.map((file) => (
-                    <li key={file.objectId}>
-                      <code>{file.path}</code>
-                      <small>文件 ID：{file.objectId}</small>
-                      <small>{file.checksum}</small>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>无输入文件。</p>
-              )}
-            </details>
-            <p>
-              计划输出：
+          ) : (
+            <>
+              <p className={styles.notice}>
+                批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
+                沙箱之外运行，可能读取或修改其账号内的数据。
+              </p>
+              <p>
+                目标服务：<code>{proposal.endpoint}</code>
+              </p>
+              <p>
+                工具：<code>{proposal.tool}</code> · 权限类别：
+                <code>{proposal.risk}</code>
+              </p>
+            </>
+          )}
+          <div className={styles.detailSections}>
+            {proposal.kind === 'cloud' ? (
+              <>
+                <OperationDetail
+                  title="执行脚本"
+                  meta="Node.js"
+                  icon={<IconCodeOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  <pre aria-label="云端待执行脚本">{proposal.script}</pre>
+                </OperationDetail>
+                <OperationDetail
+                  title="输入文件"
+                  meta={`${proposal.inputs.length} 个`}
+                  icon={<IconCopyOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  {proposal.inputs.length ? (
+                    <ul className={styles.inputFiles}>
+                      {proposal.inputs.map((file) => (
+                        <li key={file.objectId}>
+                          <code>{file.path}</code>
+                          <small>文件 ID：{file.objectId}</small>
+                          <small>{file.checksum}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>无输入文件。</p>
+                  )}
+                </OperationDetail>
+                <OperationDetail
+                  title="运行限制"
+                  meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
+                  icon={<IconSlidersTwoOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  <dl className={styles.limits}>
+                    <div>
+                      <dt>时限</dt>
+                      <dd>{proposal.limits.timeoutMs / 1000} 秒</dd>
+                    </div>
+                    <div>
+                      <dt>内存</dt>
+                      <dd>{proposal.limits.memoryMiB} MiB</dd>
+                    </div>
+                    <div>
+                      <dt>CPU</dt>
+                      <dd>{proposal.limits.cpuMillis} 毫核</dd>
+                    </div>
+                    <div>
+                      <dt>进程数上限</dt>
+                      <dd>{proposal.limits.pids}</dd>
+                    </div>
+                    <div>
+                      <dt>输出上限</dt>
+                      <dd>{proposal.limits.outputBytes} 字节</dd>
+                    </div>
+                    <div>
+                      <dt>成果上限</dt>
+                      <dd>{proposal.limits.artifactBytes} 字节</dd>
+                    </div>
+                  </dl>
+                </OperationDetail>
+              </>
+            ) : (
+              <OperationDetail
+                title="发送参数"
+                meta="已脱敏"
+                icon={<IconCodeOutlineRegular size={16} />}
+                open={!!pending}
+              >
+                <pre aria-label="MCP 发送参数">
+                  {JSON.stringify(proposal.arguments, null, 2)}
+                </pre>
+              </OperationDetail>
+            )}
+            {op.result && (
+              <OperationDetail
+                title="执行返回内容"
+                meta={op.result.code}
+                icon={<IconFlatListOutlineRegular size={16} />}
+              >
+                <pre>{op.result.output || '没有可展示的输出。'}</pre>
+                <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
+              </OperationDetail>
+            )}
+          </div>
+          {proposal.kind === 'cloud' ? (
+            <p className={styles.plannedOutputs}>
+              <span>计划输出：</span>
               {proposal.outputs.length
-                ? proposal.outputs
-                    .map((o) => `${o.fileName} (${o.format})`)
-                    .join('、')
+                ? proposal.outputs.map((output) => (
+                    <code key={output.path}>
+                      {output.fileName} ({output.format})
+                    </code>
+                  ))
                 : '无'}
             </p>
-            <small>
-              时限 {proposal.limits.timeoutMs / 1000} 秒 · 内存{' '}
-              {proposal.limits.memoryMiB} MiB · CPU {proposal.limits.cpuMillis}{' '}
-              毫核 · 最多 {proposal.limits.pids} 个进程 · 输出{' '}
-              {proposal.limits.outputBytes} 字节 · 成果{' '}
-              {proposal.limits.artifactBytes} 字节
-            </small>
-          </>
-        ) : (
-          <>
-            <p className={styles.notice}>
-              批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
-              沙箱之外运行，可能读取或修改其账号内的数据。
-            </p>
-            <p>
-              目标服务：<code>{proposal.endpoint}</code>
-            </p>
-            <p>
-              工具：<code>{proposal.tool}</code> · 权限类别：
-              <code>{proposal.risk}</code>
-            </p>
-            <details open={!!pending}>
-              <summary>查看本次发送参数（敏感内容已脱敏）</summary>
-              <pre aria-label="MCP 发送参数">
-                {JSON.stringify(proposal.arguments, null, 2)}
-              </pre>
-            </details>
-            <small>
+          ) : (
+            <small className={styles.authorizationScope}>
               仅授权这一次调用、当前工具 schema
               和连接版本；管理员保存的服务密钥不会展示在页面上。
             </small>
-          </>
-        )}
-        {op.result && (
-          <details>
-            <summary>
-              执行返回内容（不可信数据）
-              {op.result.code ? ` · ${op.result.code}` : ''}
-            </summary>
-            <pre>{op.result.output || '没有可展示的输出。'}</pre>
-          </details>
-        )}
+          )}
+        </div>
       </details>
       {pending && (
         <div className={styles.actions}>

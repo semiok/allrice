@@ -145,10 +145,10 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('不联网');
     expect(html).toContain('input.json');
     expect(html).toContain('计划输出：');
-    expect(html).toMatch(/<details[^>]*open=""[^>]*><summary>运行详情/);
+    expect(html).toMatch(/<details[^>]*open=""[^>]*><summary><span>运行详情/);
     op.snapshot.status = 'succeeded';
     expect(render(op)).not.toMatch(
-      /<details[^>]*open=""[^>]*><summary>运行详情/,
+      /<details[^>]*open=""[^>]*><summary><span>运行详情/,
     );
     expect(html).toContain('256');
     expect(html).toContain('disabled=""');
