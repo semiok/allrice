@@ -254,6 +254,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }>,
       startupFailure: options.startup === 'failed',
       messages: null as Message[] | null,
+      workMethods: [] as NonNullable<Message['workMethods']>,
       queue: [] as QueuedMessage[],
       queuedStarted: [] as Message[],
       queueError: false,
@@ -1001,6 +1002,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     role: 'assistant',
                     runId: run,
                     status: state.messageStatus,
+                    workMethods: state.workMethods,
                     content: {
                       text:
                         state.messageStatus === 'pending' ? '' : state.reply,
@@ -2841,6 +2843,110 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([
+    [1440, false],
+    [1440, true],
+    [390, false],
+    [390, true],
+  ] as const)(
+    'shows persisted work methods after %ipx streaming=%s completion and reload',
+    async (width, streamingOutput) => {
+      const f = await fixture({
+        width,
+        touch: width === 390,
+        running: true,
+        streamingOutput,
+      });
+      try {
+        const methods = f.page.getByRole('group', {
+          name: '工作方式',
+          exact: true,
+        });
+        expect(await methods.count()).toBe(0);
+        f.state.workMethods = [
+          'cloud_search',
+          'bridge_files',
+          'cloud_compute',
+          'bridge_browser',
+          'cloud_search',
+        ];
+        f.finishRun();
+        await methods.waitFor();
+        const reply = f.page.locator(`#message-${id(20)}`);
+        await reply.hover();
+        expect(
+          await methods.getByText('云端-检索', { exact: true }).count(),
+        ).toBe(1);
+        expect(
+          await methods.getByText('Bridge-文件', { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(
+          await methods.getByText('云端-计算', { exact: true }).count(),
+        ).toBe(0);
+        const more = methods.getByRole('button', {
+          name: '查看全部 4 种工作方式',
+        });
+        expect(await more.innerText()).toBe('+2');
+        if (width === 1440) {
+          await more.hover();
+          await f.page
+            .getByRole('tooltip')
+            .getByText(/Bridge-浏览器/)
+            .waitFor();
+        }
+        await more.click();
+        expect(
+          await methods.getByText('云端-计算', { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(
+          await methods.getByText('Bridge-浏览器', { exact: true }).isVisible(),
+        ).toBe(true);
+        await reply.locator('[data-message-actions]').screenshot({
+          path: `/tmp/allrice-work-methods-${width}-${streamingOutput}.png`,
+        });
+        await f.page
+          .context()
+          .grantPermissions(['clipboard-read', 'clipboard-write']);
+        await reply.getByRole('button', { name: '复制', exact: true }).click();
+        expect(
+          await f.page.evaluate(() => navigator.clipboard.readText()),
+        ).toBe(f.state.reply);
+        expect(
+          await reply.evaluate((e) => e.scrollWidth <= e.clientWidth + 1),
+        ).toBe(true);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth + 1,
+          ),
+        ).toBe(true);
+        await methods
+          .getByRole('button', { name: '收起工作方式' })
+          .press('Escape');
+        expect(await more.getAttribute('aria-expanded')).toBe('false');
+        await more.focus();
+        await more.press('Enter');
+        expect(
+          await methods.getByText('Bridge-浏览器', { exact: true }).isVisible(),
+        ).toBe(true);
+        await f.page.reload();
+        await methods.waitFor();
+        expect(
+          await methods.getByText('云端-检索', { exact: true }).count(),
+        ).toBe(1);
+        expect(await more.getAttribute('aria-expanded')).toBe('false');
+        f.state.workMethods = [];
+        await f.page.reload();
+        await reply.locator('[data-message-actions]').waitFor();
+        expect(await methods.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+        expect(f.unexpected).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
 
   it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
     const f = await fixture({ running: true, streamingOutput: true });

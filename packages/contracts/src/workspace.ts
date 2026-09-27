@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorkMethodSchema } from './work-methods.ts';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { officeMediaTypes } from './office-quality.ts';
@@ -106,6 +107,7 @@ export const ChatMessageContentSchema = z
 
 export const ChatMessageSchema = z
   .object({
+    workMethods: z.array(WorkMethodSchema).max(10).optional(),
     id: UuidSchema,
     sessionId: UuidSchema,
     ownerId: UuidSchema,

@@ -4,6 +4,7 @@ import {
 } from './session-archive.ts';
 export { SessionActiveError } from './session-archive.ts';
 import { readWorkAutomation } from '../work-automation.ts';
+import { readSessionWorkMethods } from './work-methods.ts';
 import { createHash } from 'node:crypto';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import {
@@ -780,6 +781,12 @@ export async function getChatSessionHistory(
 ) {
   const row = await sessionRow(context, workspaceId, sessionId);
   const sql = getDatabase();
+  const workMethods = await readSessionWorkMethods(
+    context.organizationId,
+    workspaceId,
+    row.id,
+    sql,
+  );
   const messages = await sql<MessageRow[]>`
     select m.*, er.run_id,
       queued.created_at as queued_created_at,
@@ -924,7 +931,12 @@ export async function getChatSessionHistory(
                 ? 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED'
                 : 'MODEL_OUTPUT_BUDGET_EXCEEDED',
           };
-        return mapped;
+        return {
+          ...mapped,
+          ...(message.role === 'assistant' && message.run_id
+            ? { workMethods: workMethods.get(message.run_id) ?? [] }
+            : {}),
+        };
       }),
   };
 }

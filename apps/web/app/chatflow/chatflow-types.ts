@@ -6,6 +6,7 @@ import type {
   ChangesetActionInput,
   UserPreferences,
   EmployeeAccentColor,
+  WorkMethod,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -75,6 +76,7 @@ export interface Workspace {
 }
 
 export interface Message {
+  workMethods?: WorkMethod[];
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
