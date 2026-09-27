@@ -1265,6 +1265,7 @@ export function createAssistantRuntime(
         if (admission)
           await tx`update allrice_assistant_model_admissions set finished_at=coalesce(finished_at,clock_timestamp()) where call_id=${input.callId}`;
         await refreshTaskClock(tx, root.root_run_id);
+        return { tokenUsageObservational: root.observeTokens };
       });
     },
     async recordResult(input: {

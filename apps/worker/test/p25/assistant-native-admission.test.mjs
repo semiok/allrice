@@ -43,7 +43,7 @@ function fixture(settle = async () => ({ settled: true })) {
     listeners.get('agent/request')({ agent, signal }, async () => ({
       maxTokens: 4000,
     }));
-  const execute = async (usage, fail = false, finish) => {
+  const execute = async (usage, fail = false, finish, output = []) => {
     const stream = listeners.get('llm/stream')(
       {
         sessionId: agent.id,
@@ -54,6 +54,7 @@ function fixture(settle = async () => ({ settled: true })) {
         signal,
       },
       async function* () {
+        yield* output;
         if (usage !== undefined) yield { type: 'usage', usage };
         if (finish) yield { type: 'finish', reason: finish };
         if (fail) throw fail === true ? Error('synthetic_provider_503') : fail;
@@ -72,6 +73,79 @@ function fixture(settle = async () => ({ settled: true })) {
 }
 
 describe('governed native model admission recovery', () => {
+  it.each(['TRANSPORT', 'TIMEOUT', 'SERVER', 'RATE_LIMIT', 'EMPTY_RESPONSE'])(
+    'allows native subscription recovery after %s without inventing usage or replaying the old call',
+    async (code) => {
+      const f = fixture(async () => ({
+        settled: true,
+        tokenUsageObservational: true,
+      }));
+      await f.prepare();
+      await f.execute(undefined, false, { kind: 'error', failure: { code } });
+      await expect(f.prepare()).resolves.toEqual({ maxTokens: 3754 });
+      await f.execute({ inputTokens: 21, outputTokens: 7 });
+      const settlements = f.bridge.mock.calls.filter(
+        ([m]) => m === 'model-settle',
+      );
+      expect(settlements).toHaveLength(2);
+      expect(settlements[0][1]).not.toHaveProperty('inputTokens');
+      expect(settlements[0][1]).not.toHaveProperty('outputTokens');
+      expect(settlements[1][1].callId).not.toBe(settlements[0][1].callId);
+      expect(settlements[1][1]).toMatchObject({
+        inputTokens: 21,
+        outputTokens: 7,
+      });
+      expect(f.diagnostics().failures).toMatchObject([
+        {
+          code,
+          inputUsageKnown: false,
+          outputUsageKnown: false,
+          settlementConfirmed: true,
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    ['API accounting', { settled: true }, 'TRANSPORT', []],
+    [
+      'unconfirmed settlement',
+      { settled: false, tokenUsageObservational: true },
+      'TRANSPORT',
+      [],
+    ],
+    [
+      'partial output',
+      { settled: true, tokenUsageObservational: true },
+      'TRANSPORT',
+      [{ type: 'text-delta', text: 'partial' }],
+    ],
+    [
+      'tool output',
+      { settled: true, tokenUsageObservational: true },
+      'TRANSPORT',
+      [{ type: 'tool-call-delta' }],
+    ],
+    [
+      'authentication',
+      { settled: true, tokenUsageObservational: true },
+      'AUTH',
+      [],
+    ],
+  ])('retains the guard for %s', async (_, acknowledgement, code, output) => {
+    const f = fixture(async () => acknowledgement);
+    await f.prepare();
+    await f.execute(
+      undefined,
+      false,
+      { kind: 'error', failure: { code } },
+      output,
+    );
+    await expect(f.prepare()).rejects.toThrow(
+      'assistant_model_unknown_no_replay',
+    );
+  });
+
   it.each([
     undefined,
     { inputTokens: 20 },

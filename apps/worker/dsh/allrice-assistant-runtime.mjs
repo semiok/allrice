@@ -34,6 +34,15 @@ const stopKinds = new Set([
   'tool-calls',
   'unknown',
 ]);
+// Match the pinned native provider's bounded recovery policy. This only releases
+// accounting admission; DSH still owns whether, when and how often to retry.
+const retryableModelFailures = new Set([
+  'TRANSPORT',
+  'TIMEOUT',
+  'SERVER',
+  'RATE_LIMIT',
+  'EMPTY_RESPONSE',
+]);
 function ownData(value, key) {
   if (!value || typeof value !== 'object' || types.isProxy(value)) return;
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -453,6 +462,7 @@ export function createGovernedAssistantNativeRuntime(
     let usage;
     let observedOutput = false;
     let stopKind = 'unknown';
+    let modelFailureCode;
     let settlementThrew = false;
     let settlementError;
     try {
@@ -461,6 +471,7 @@ export function createGovernedAssistantNativeRuntime(
         if (chunk.type === 'finish') {
           const kind = ownData(chunk.reason, 'kind');
           stopKind = stopKinds.has(kind) ? kind : 'unknown';
+          modelFailureCode = failureCode(ownData(chunk.reason, 'failure'));
           if (['error', 'aborted', 'max-tokens'].includes(stopKind))
             failure(
               id,
@@ -535,16 +546,22 @@ export function createGovernedAssistantNativeRuntime(
           entry.settlementConfirmed = acknowledgement?.settled === true;
         }
       }
-      // Native provider recovery may request another model call after a 5xx or
-      // interrupted stream. A settlement ACK only confirms that UNKNOWN was
-      // durably recorded; it does not prove the first request did not execute.
-      // Keep the admission as a no-replay tombstone until BOTH token dimensions
-      // are known. The existing agent/request guard then rejects recovery before
-      // another prepare/dispatch. Unbound ordinary chat keeps its retry policy.
+      // Unknown usage remains unknown. For a server-verified subscription whose
+      // tokens are observational, a failed request with no observed output may
+      // release admission for DSH's bounded retry under a NEW call ID. Never
+      // infer this authority from a provider name or the model's request.
+      // Priced API calls, partial output and unconfirmed settlement retain the
+      // existing tombstone; uncertain tool operations are unaffected.
+      const subscriptionRecovery =
+        acknowledgement?.tokenUsageObservational === true &&
+        !observedOutput &&
+        stopKind === 'error' &&
+        retryableModelFailures.has(modelFailureCode);
       if (
         acknowledgement?.settled === true &&
-        settled.inputTokens !== undefined &&
-        settled.outputTokens !== undefined
+        ((settled.inputTokens !== undefined &&
+          settled.outputTokens !== undefined) ||
+          subscriptionRecovery)
       )
         modelAdmissions.delete(id);
     }
