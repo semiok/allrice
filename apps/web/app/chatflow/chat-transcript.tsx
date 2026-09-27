@@ -15,7 +15,7 @@ import { MessageImageGallery } from './attachment-components';
 import type { Message, RunTrace, RunView } from './chatflow-types';
 import { BrowserWorkspacePanel } from './browser-workspace-panel';
 import { hasBrowserWorkspaceEvents } from '../../lib/chatflow/managed-browser-task-presenter';
-import { assistantDelta, formatTime } from './chatflow-utils';
+import { assistantDelta } from './chatflow-utils';
 import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
 import chatUi from './dsh-upstream/ChatView.module.css';
 import messageUi from './dsh-upstream/MessageItem.module.css';
@@ -32,6 +32,8 @@ import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
 import { WorkProcess } from './work-process';
 import { AssistantMessageActions } from './message-feedback';
+import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
+import { feedbackTranslate } from './feedback-labels';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 
 interface ChatTranscriptProps {
@@ -215,10 +217,12 @@ export function ChatTranscript({
                           {message.content.text}
                         </div>
                       </div>
-                      <div className={styles.messageMeta}>
-                        <span>你</span>
-                        <time>{formatTime(message.createdAt)}</time>
-                      </div>
+                      <MessageIconActions
+                        text={message.content.text}
+                        time={Date.parse(message.createdAt)}
+                        clock="start"
+                        t={feedbackTranslate}
+                      />
                     </div>
                   ) : (
                     <div
