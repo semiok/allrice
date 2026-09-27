@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { HarnessKindSchema } from './harness.ts';
+import { PlatformModelSettingsSchema } from './platform-model-settings.ts';
 
 export const ModelReasoningEffortSchema = z.enum([
   'none',
@@ -44,6 +45,11 @@ export function modelProviderRuntimeSupported(input: {
   key: string;
   authMode: ModelProviderAuthMode;
 }) {
+  if (
+    ['gemini', 'google'].includes(input.key) ||
+    input.authMode === 'gemini_oauth'
+  )
+    return false;
   if (input.key === 'codex' || input.key === 'openai-codex')
     return input.authMode === 'chatgpt_subscription';
   return input.authMode === 'api_key';
@@ -238,6 +244,7 @@ export type EmployeeModelPolicy = z.infer<typeof EmployeeModelPolicySchema>;
 
 export const SessionModelSnapshotSchema = z
   .object({
+    platformSettings: PlatformModelSettingsSchema.optional(),
     schemaVersion: z.literal(1),
     sessionId: UuidSchema,
     employeeId: UuidSchema,

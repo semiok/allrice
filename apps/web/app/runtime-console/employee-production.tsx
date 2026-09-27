@@ -9,10 +9,6 @@ import type {
   PlatformEmployeeTestRun,
 } from '@allrice/contracts';
 import {
-  EMPLOYEE_PROVIDER_OPTIONS,
-  employeeModelPolicyProblem,
-  employeeReasoningSettings,
-  switchEmployeeModelProvider,
   employeeToolCatalog,
   prepareEmployeeEditorDefinition,
   employeeColorPalette,
@@ -23,7 +19,6 @@ import {
 
 import styles from './employee-production.module.css';
 import { EmployeeToolTree, employeeSkillLabel } from './employee-tool-tree';
-import { GeminiCredentialSettings } from './gemini-credential-settings';
 
 type Employee = PlatformEmployeeSummary;
 
@@ -1112,137 +1107,15 @@ export function EmployeeProduction() {
       </p>
     );
   } else if (tab === 'model') {
-    const reasoning = employeeReasoningSettings(
-      draft.modelPolicy.provider,
-      draft.modelPolicy.model,
-    );
-    const modelProblem = employeeModelPolicyProblem(draft.modelPolicy);
     panel = (
-      <div className={styles.grid}>
-        <label className={styles.field}>
-          <span>Provider</span>
-          <select
-            value={draft.modelPolicy.provider}
-            aria-label="Provider"
-            onChange={(event) => {
-              const provider = event.target.value;
-              if (provider !== 'gemini' && provider !== 'openai-codex') return;
-              invalidateReview();
-              setDraft((current) =>
-                current
-                  ? {
-                      ...current,
-                      modelPolicy: switchEmployeeModelProvider(
-                        current.modelPolicy,
-                        provider,
-                      ),
-                    }
-                  : current,
-              );
-            }}
-          >
-            {!EMPLOYEE_PROVIDER_OPTIONS.some(
-              (item) => item.value === draft.modelPolicy.provider,
-            ) ? (
-              <option value={draft.modelPolicy.provider} disabled>
-                历史配置（已停止新配置）
-              </option>
-            ) : null}
-            {EMPLOYEE_PROVIDER_OPTIONS.map((item) => (
-              <option value={item.value} key={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Field
-          label="模型"
-          value={draft.modelPolicy.model}
-          onChange={(model) => {
-            invalidateReview();
-            setDraft((current) => {
-              if (!current) return current;
-              const settings = employeeReasoningSettings(
-                current.modelPolicy.provider,
-                model,
-              );
-              return {
-                ...current,
-                modelPolicy: {
-                  ...current.modelPolicy,
-                  model,
-                  reasoningEffort:
-                    settings.efforts.length &&
-                    !settings.efforts.includes(
-                      current.modelPolicy.reasoningEffort,
-                    )
-                      ? settings.defaultEffort
-                      : current.modelPolicy.reasoningEffort,
-                },
-              };
-            });
-          }}
-        />
-        <label className={styles.field}>
-          <span>{reasoning.label}</span>
-          <select
-            value={draft.modelPolicy.reasoningEffort}
-            aria-label={reasoning.label}
-            disabled={!reasoning.efforts.length}
-            onChange={(event) =>
-              update(['modelPolicy', 'reasoningEffort'], event.target.value)
-            }
-          >
-            {!reasoning.efforts.includes(draft.modelPolicy.reasoningEffort) ? (
-              <option value={draft.modelPolicy.reasoningEffort} disabled>
-                {draft.modelPolicy.reasoningEffort}（原配置，请重新选择）
-              </option>
-            ) : null}
-            {reasoning.efforts.map((value) => (
-              <option value={value} key={value}>
-                {
-                  {
-                    none: '关闭',
-                    low: '低',
-                    medium: '中',
-                    high: '高',
-                    xhigh: '超高',
-                  }[value]
-                }{' '}
-                · {value}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Field
-          label="超时（毫秒）"
-          type="number"
-          value={draft.modelPolicy.timeoutMs}
-          onChange={(value) =>
-            update(['modelPolicy', 'timeoutMs'], Number(value))
-          }
-        />
-        {modelProblem ? (
-          <p className={`${styles.notice} ${styles.fieldWide}`} role="alert">
-            {modelProblem}
-          </p>
-        ) : null}
-        <p className={`${styles.notice} ${styles.fieldWide}`}>
-          仅显示当前 AllRice 版本已接通的模型档位；不同 Provider
-          的同名档位并不代表相同的计算量。修改只保存为草稿，不改变已发布员工或正在运行的会话。
+      <div className={styles.notice}>
+        <h3>由平台统一配置</h3>
+        <p>
+          对话与理解、图片生成与编辑共用平台的 Codex
+          订阅授权。所有员工自动使用平台设置，无需单独选择模型。
         </p>
-        {draft.modelPolicy.provider === 'gemini' ? (
-          <GeminiCredentialSettings
-            credentialReference={draft.modelPolicy.credentialReference}
-          />
-        ) : null}
-        {draft.modelPolicy.provider === 'gemini' ? (
-          <p className={`${styles.notice} ${styles.fieldWide}`}>
-            Gemini 使用 Google API 密钥，独立于 Codex 订阅和 Gemini
-            网页订阅计费。API Key
-            使用上方独立按钮保存，员工模型配置仍需点击“保存草稿”。
-          </p>
-        ) : null}
+        <a href="/runtime-console?view=governance">前往模型与用量</a>
+        <p>平台配置更新后，从下一次任务开始生效。</p>
       </div>
     );
   } else if (tab === 'tools') {

@@ -264,3 +264,18 @@
     grid-template-columns: 1fr;
   }
 }
+
+.quotaForm select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+.quotaForm select option {
+  color: var(--ink);
+  background: #191a1d;
+}

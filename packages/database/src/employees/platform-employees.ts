@@ -1,3 +1,4 @@
+import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type postgres from 'postgres';
@@ -299,6 +300,7 @@ export async function createPlatformEmployeeDraft(
     const definition = prepareEmployeeEditorDefinition(
       PlatformEmployeeDefinitionSchema.parse({
         ...sourceDefinition,
+        modelPolicy: await platformEmployeeModelPolicy(),
         systemPrompt: normalizeDraftPlatformPolicy(
           sourceDefinition.systemPrompt,
         ),
@@ -1137,14 +1139,25 @@ export async function savePlatformEmployeeDraft(
   actorLabel = 'platform-admin',
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
+  const modelPolicy = await platformEmployeeModelPolicy();
+  const raw =
+    input && typeof input === 'object'
+      ? (input as Record<string, unknown>)
+      : null;
+  const submitted = raw?.definition;
+  const normalized =
+    raw && submitted && typeof submitted === 'object'
+      ? { ...raw, definition: { ...submitted, modelPolicy } }
+      : input;
   const { definition: rawDefinition, expectedRevisionId } =
-    UpdatePlatformEmployeeInputSchema.parse(input);
+    UpdatePlatformEmployeeInputSchema.parse(normalized);
   const sql = getDatabase();
   const skills = rawDefinition.capabilities.nativeSkillIds.length
     ? await listPlatformNativeSkills(sql)
     : [];
   const definition = PlatformEmployeeDefinitionSchema.parse({
     ...assembleEmployeeCapabilities(rawDefinition, skills),
+    modelPolicy,
     systemPrompt: normalizeDraftPlatformPolicy(rawDefinition.systemPrompt),
     // Preserve policy fields from legacy/API clients. The simplified admin
     // editor prepares tool-derived defaults before sending its draft.
@@ -1239,6 +1252,7 @@ export async function compilePlatformEmployee(
     );
     const definition = PlatformEmployeeDefinitionSchema.parse({
       ...upgraded,
+      modelPolicy: await platformEmployeeModelPolicy(),
       securityPolicy: rawDefinition.securityPolicy,
     });
     const errors: string[] = [];

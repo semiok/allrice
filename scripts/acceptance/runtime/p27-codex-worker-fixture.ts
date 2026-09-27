@@ -275,6 +275,9 @@ export async function createP27CodexWorkerFixture(
       await tx`update allrice_model_catalog_entries set enabled=true,input_modalities=${tx.json(options.syntheticImagesWithAssistants ? ['text', 'image'] : ['text'])} where id=${catalogId}`;
       await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
         values(${connectionId},${catalog.provider_id},'platform','P27 isolated Codex','deployment:codex-default',null,'ready')`;
+      if (!options.throughMigration)
+        await tx`update allrice_platform_model_settings
+        set configuration=jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}) where singleton`;
       await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
         values(${connectionId},'canary',${[organizationId]},false)`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)

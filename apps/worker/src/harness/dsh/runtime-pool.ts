@@ -2,10 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
-import {
-  employeeReasoningSettings,
-  type DshExecutionSnapshot,
-} from '@allrice/contracts';
+import { type DshExecutionSnapshot } from '@allrice/contracts';
 
 import { HandlerError } from '../../errors.js';
 import type {
@@ -169,10 +166,7 @@ export class DshRuntimePool {
         false,
       );
     }
-    if (
-      input.snapshot.route === 'gemini' &&
-      process.env.ALLRICE_GEMINI_API_ENABLED !== '1'
-    ) {
+    if (input.snapshot.route === 'gemini') {
       throw new HandlerError(
         'GEMINI_API_DISABLED',
         'Gemini API execution is disabled; historical sessions remain readable',
@@ -186,19 +180,7 @@ export class DshRuntimePool {
         false,
       );
     }
-    if (
-      input.snapshot.route === 'gemini' &&
-      !employeeReasoningSettings(
-        'gemini',
-        input.snapshot.model,
-      ).efforts.includes(input.snapshot.reasoningEffort)
-    ) {
-      throw new HandlerError(
-        'GEMINI_REASONING_UNSUPPORTED',
-        'Gemini model or thinking level is not supported by this runtime',
-        false,
-      );
-    }
+
     const organizationId =
       input.input.executionEnvironment.ALLRICE_ORGANIZATION_ID;
     const workspaceId = input.input.executionEnvironment.ALLRICE_WORKSPACE_ID;
@@ -299,20 +281,11 @@ export class DshRuntimePool {
       DSH_CREDENTIALS_PATH: resolve(dshPlatformHome, '.credentials.yaml'),
       DSH_CWD: tenantRoot,
       DSH_SESSION_ROOT: resolve(tenantRoot, 'sessions'),
-      DSH_MODEL:
-        input.snapshot.route === 'gemini' && input.snapshot.model === '3.8flash'
-          ? 'gemini-3.8-flash'
-          : input.snapshot.model,
+      DSH_MODEL: input.snapshot.model,
       DSH_CODEX_MODEL:
         input.snapshot.route === 'openai-codex'
           ? input.snapshot.model
           : 'gpt-5.6-luna',
-      DSH_GEMINI_MODEL:
-        input.snapshot.route === 'gemini'
-          ? input.snapshot.model === '3.8flash'
-            ? 'gemini-3.8-flash'
-            : input.snapshot.model
-          : 'gemini-3.8-flash',
       DSH_OPENAI_COMPATIBLE_MODEL:
         input.snapshot.route === 'openai-compatible'
           ? input.snapshot.model
@@ -325,20 +298,6 @@ export class DshRuntimePool {
             ? 'off'
             : input.snapshot.reasoningEffort
           : 'high',
-      DSH_GEMINI_REASONING_EFFORT:
-        input.snapshot.route === 'gemini'
-          ? input.snapshot.reasoningEffort
-          : 'medium',
-      DSH_GEMINI_REASONING_LEVELS: JSON.stringify(
-        Object.fromEntries(
-          employeeReasoningSettings(
-            'gemini',
-            input.snapshot.route === 'gemini'
-              ? input.snapshot.model
-              : 'gemini-3.8-flash',
-          ).efforts.map((effort) => [effort, effort.toUpperCase()]),
-        ),
-      ),
       DSH_SYSTEM_PROMPT: [
         input.systemInstructions,
         'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',
@@ -351,10 +310,6 @@ export class DshRuntimePool {
     if (input.snapshot.route === 'openai-codex') {
       // The DSH credential service resolves and refreshes the platform OAuth
       // grant. No token is copied into the child environment.
-    } else if (input.snapshot.route === 'gemini') {
-      // Never inherit an ambient key or another provider's credentials. Only
-      // the selected, authorized reference enters this Gemini child process.
-      environment.GEMINI_API_KEY = credential!.apiKey;
     } else if (input.snapshot.route === 'deepseek-official') {
       environment.DEEPSEEK_API_KEY = credential!.apiKey;
       if (input.snapshot.baseUrl) {
