@@ -1,3 +1,4 @@
+import { readEmployeeOrganizationContext } from './organization-context.ts';
 import {
   isPlatformAdmin,
   requirePlatformAdmin,
@@ -1213,13 +1214,10 @@ export async function prepareEmployeeRunBinding(input: {
     storedUserProfile,
     userProfilePolicy,
   );
-  const [person] = await sql`
-    select o.name as company_name,o.business_context,coalesce(p.display_name,u.display_name) as display_name,
-      coalesce(p.job_title,'') as job_title,coalesce(p.responsibilities,'') as responsibilities
-    from allrice_organizations o join allrice_users u on u.id=${actorId}
-    left join allrice_organization_people p on p.organization_id=o.id and p.user_id=u.id
-    where o.id=${input.context.organizationId} and o.archived_at is null`;
-  if (!person) throw new EmployeeHubError('not_found');
+  const organizationContext = await readEmployeeOrganizationContext(
+    input.context.organizationId,
+    actorId,
+  );
   const modelSnapshot = await freezeSessionModelSnapshot({
     organizationId: input.context.organizationId,
     workspaceId: input.workspaceId,
@@ -1419,15 +1417,7 @@ export async function prepareEmployeeRunBinding(input: {
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
       ...input.promptSnapshot,
       systemPrompt: manifest.data.systemPrompt,
-      organizationContext: {
-        organizationId: input.context.organizationId,
-        userId: actorId,
-        companyName: person.company_name,
-        businessContext: person.business_context,
-        displayName: person.display_name,
-        jobTitle: person.job_title,
-        responsibilities: person.responsibilities,
-      },
+      organizationContext,
     }),
   };
 }
