@@ -206,7 +206,10 @@ export function ChatTranscript({
                       </details>
                     </div>
                   ) : message.role === 'user' ? (
-                    <div className={messageUi.userRow}>
+                    <div
+                      className={messageUi.userRow}
+                      data-actions-reveal="hover"
+                    >
                       <div className={messageUi.userStack}>
                         <SessionReferenceChips
                           references={message.content.sessionReferences ?? []}
