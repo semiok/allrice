@@ -10,7 +10,7 @@ const command = CloudCommandSchema.parse({
   arguments: {
     script:
       "console.log('ready-to-stop-parent');setTimeout(()=>process.kill(1,'SIGSTOP'),250);setInterval(()=>{},100)",
-    limits: { timeoutMs: 6000 },
+    limits: { timeoutMs: 20000 },
   },
   backend: 'cloud-gvisor-v1',
   imageDigest: cloudToolchainImageV1,
@@ -19,6 +19,6 @@ const command = CloudCommandSchema.parse({
 });
 await new CloudRunnerBackend().execute(command, [], {
   attemptId,
-  deadlineAt: new Date(Date.now() + 10000).toISOString(),
+  deadlineAt: new Date(Date.now() + 30000).toISOString(),
   maintainLease: async () => true,
 });

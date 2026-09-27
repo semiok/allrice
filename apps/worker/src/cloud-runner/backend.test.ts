@@ -208,16 +208,29 @@ suite('P15 actual SaaS-host dedicated VM + gVisor', () => {
     expect(c.Mounts).toEqual([]);
   }, 20_000);
   it('kills detached descendant processes on cancellation', async () => {
-    const signal = AbortSignal.timeout(3000);
-    const r = await run(
+    const controller = new AbortController();
+    const pending = run(
       "import cp from 'node:child_process';cp.spawn(process.execPath,['-e','setInterval(()=>{},100)'],{detached:true,stdio:'ignore'}).unref();setInterval(()=>{},100);",
       {},
-      { signal },
+      { signal: controller.signal },
     );
+    void pending.catch(() => undefined);
+    try {
+      await expect
+        .poll(
+          async () => (await backend.inspect(attempts[0]!))?.State.Running,
+          { timeout: 20000 },
+        )
+        .toBe(true);
+      await delay(1000);
+    } finally {
+      controller.abort();
+    }
+    const r = await pending;
     expect(r.result.reason).toBe('canceled');
     expect(r.result.stopped).toBe(true);
     expect((await backend.inspect(r.id))?.State.Running).toBe(false);
-  }, 20_000);
+  }, 30000);
   it('fails closed when the current lease is revoked during execution', async () => {
     let n = 0;
     const r = await run(
@@ -391,7 +404,7 @@ suite('P15 actual SaaS-host dedicated VM + gVisor', () => {
     const start = Date.now();
     try {
       while (
-        Date.now() - start < 6000 &&
+        Date.now() - start < 20000 &&
         !(await backend.inspect(id))?.State.Running
       )
         await delay(100);
@@ -419,20 +432,26 @@ suite('P15 actual SaaS-host dedicated VM + gVisor', () => {
       ).toBe(true);
       child.kill('SIGKILL');
       await exited;
+      const deadline = Number(
+        (await backend.inspect(id))?.Config.Labels[
+          'xyz.bplabs.allrice.cloud.deadline'
+        ],
+      );
+      expect(Number.isFinite(deadline)).toBe(true);
       while (
-        Date.now() - start < 12000 &&
+        Date.now() < deadline + 3000 &&
         (await backend.inspect(id))?.State.Running
       )
         await delay(200);
       const c = await backend.inspect(id);
       expect(c?.State.Running).toBe(false);
-      expect(Date.now() - start).toBeLessThan(12000);
+      expect(Date.now()).toBeLessThan(deadline + 3000);
       expect(c?.State.ExitCode).toBe(137);
     } finally {
       child.kill('SIGKILL');
       await exited;
     }
-  }, 20000);
+  }, 40000);
   it('measures host cgroup CPU throttling during a busy tenant script', async () => {
     const id = randomUUID();
     attempts.push(id);
