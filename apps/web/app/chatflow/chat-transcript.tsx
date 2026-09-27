@@ -146,12 +146,6 @@ export function ChatTranscript({
                 streamingOutput,
               );
               const responseText = progress.finalText;
-              const summarize =
-                !!onOpenArtifact &&
-                linkedArtifacts.length > 0 &&
-                message.status === 'completed' &&
-                !messageIsRunning &&
-                responseText.length > 600;
 
               return (
                 <div
@@ -332,27 +326,11 @@ export function ChatTranscript({
                             (messageIsRunning && !!streamedText) || undefined
                           }
                         >
-                          {summarize ? (
-                            <>
-                              <p>
-                                本轮已交付 {linkedArtifacts.length}{' '}
-                                项成果，可在交付成果中查看与审查。
-                              </p>
-                              <details>
-                                <summary>展开完整回复</summary>
-                                <AssistantMarkdown
-                                  text={responseText}
-                                  artifacts={linkedArtifacts}
-                                />
-                              </details>
-                            </>
-                          ) : (
-                            <AssistantMarkdown
-                              text={responseText}
-                              streaming={streamingOutput && messageIsRunning}
-                              artifacts={linkedArtifacts}
-                            />
-                          )}
+                          <AssistantMarkdown
+                            text={responseText}
+                            streaming={streamingOutput && messageIsRunning}
+                            artifacts={linkedArtifacts}
+                          />
                         </div>
                       ) : null}
                       {message.content.budgetWarning &&
