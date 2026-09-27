@@ -167,7 +167,7 @@ export function createAssistantWorkerBridge(
             .regex(/^sha256:[a-f0-9]{64}$/)
             .parse(p.requestDigest)
         : undefined;
-      await runtime.settleUsage({
+      const receipt = await runtime.settleUsage({
         ...base,
         runId: instance.runId,
         callId,
@@ -191,7 +191,12 @@ export function createAssistantWorkerBridge(
             usageComplete: inputTokens !== null && outputTokens !== null,
           },
         });
-      return { settled: true };
+      return {
+        settled: true,
+        ...(receipt?.tokenUsageObservational === true
+          ? { tokenUsageObservational: true }
+          : {}),
+      };
     }
     if (method === 'adopt-result') {
       await runtime.adoptResult({

@@ -108,6 +108,135 @@ suite(
       const nativeSessionId = randomUUID();
       return { task, context, worker, port, nativeSessionId };
     }
+    it.each([
+      [true, 'observe', true],
+      [false, 'observe', false],
+      [true, 'enforce', false],
+    ] as const)(
+      'returns authoritative token policy (proof=%s, policy=%s) while preserving unknown usage',
+      async (proof, policy, observational) => {
+        vi.stubEnv('ALLRICE_CODEX_TOKEN_POLICY', policy);
+        const s = await setup(proof);
+        vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+        const task = {
+          scope: {
+            organizationId: f.organizationId,
+            workspaceId: f.workspaceId,
+            projectId: null,
+          },
+          rootRunId: s.task.runId,
+          runId: s.task.runId,
+          parentRunId: null,
+          chatSessionId: s.task.sessionId,
+          frozenConfiguration: {
+            employeeVersionId: null,
+            digest: `sha256:${'a'.repeat(64)}`,
+          },
+        };
+        const worker = { ...s.worker, generation: 1 };
+        const base = { scope: task.scope, rootRunId: task.rootRunId, worker };
+        const ledger = createRuntimeOperationLedger({
+          database: f.db,
+          admission: async () => {},
+        });
+        await ledger.createRoot({
+          task,
+          deadlineAt: s.task.execution.job.timeoutAt,
+          budgets: (
+            [
+              { metric: 'model_calls', capacity: 16 },
+              { metric: 'tool_calls', capacity: 64 },
+              { metric: 'input_tokens', capacity: 100000 },
+              { metric: 'output_tokens', capacity: 100000 },
+            ] as const
+          ).map((b) => ({
+            ...b,
+            unit: b.metric.endsWith('tokens') ? 'tokens' : 'calls',
+            currency: null,
+            source: {
+              kind: 'worker' as const,
+              sourceId: 'subscription-retry-test',
+            },
+          })),
+        });
+        const runtime = createAssistantRuntime({
+          database: f.db,
+          authorize: async () => {},
+        });
+        await runtime.configureRoot({
+          task,
+          configuration: {
+            ...defaultAssistantRunConfiguration(),
+            allowAssistants: true,
+          },
+          nativeSessionId: s.nativeSessionId,
+          worker,
+          allowedTools: [],
+        });
+        const dispatch = async (callId: string) => {
+          await runtime.prepareModelUsage({
+            ...base,
+            runId: task.runId,
+            callId,
+            requestedOutputTokens: 100,
+          });
+          return runtime.dispatchModelUsage({
+            ...base,
+            runId: task.runId,
+            callId,
+            inputTokens: 100,
+            outputTokens: 100,
+            requestDigest: `sha256:${'b'.repeat(64)}`,
+          });
+        };
+        const failed = randomUUID();
+        await dispatch(failed);
+        await expect(
+          runtime.settleUsage({
+            ...base,
+            callId: failed,
+            amounts: { model_calls: 1, tool_calls: 0 },
+          }),
+        ).resolves.toEqual({ tokenUsageObservational: observational });
+        if (observational) {
+          const retry = randomUUID();
+          await expect(dispatch(retry)).resolves.toMatchObject({
+            reserved: true,
+          });
+          await runtime.settleUsage({
+            ...base,
+            callId: retry,
+            amounts: {
+              model_calls: 1,
+              tool_calls: 0,
+              input_tokens: 20,
+              output_tokens: 10,
+            },
+          });
+          // The old request can never be dispatched a second time.
+          await expect(
+            runtime.dispatchModelUsage({
+              ...base,
+              runId: task.runId,
+              callId: failed,
+              inputTokens: 100,
+              outputTokens: 100,
+              requestDigest: `sha256:${'b'.repeat(64)}`,
+            }),
+          ).resolves.toMatchObject({ reserved: false });
+          await expect(runtime.finalizeRoot(base)).resolves.toMatchObject({
+            status: 'completed',
+            usageComplete: false,
+          });
+        }
+        const unknown =
+          await f.db`select metric,settled_amount from allrice_assistant_usage where call_id=${failed} and metric in ('input_tokens','output_tokens') order by metric`;
+        expect([...unknown]).toEqual([
+          { metric: 'input_tokens', settled_amount: null },
+          { metric: 'output_tokens', settled_amount: null },
+        ]);
+      },
+    );
     it('crosses 16/64/80 for real parent/child admissions, then pauses, survives rebind and resumes without erasing counts', async () => {
       const s = await setup(),
         handle = s.port();
