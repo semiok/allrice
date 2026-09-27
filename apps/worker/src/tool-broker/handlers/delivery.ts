@@ -19,7 +19,7 @@ import { generateOfficeExport } from '../../office/export.js';
 import { generateNativeOfficeExport } from '../../office/native.js';
 import { checkOfficeExport } from '../../office/quality.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
-import { HandlerError } from '../../errors.js';
+import { confirmToolFailure, HandlerError } from '../../errors.js';
 import { stringValue } from '../input-values.js';
 import type { RiceToolHandler } from '../types.js';
 
@@ -83,7 +83,23 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   }
   const generated = hasPython
-    ? await generateNativeOfficeExport(input, format, python)
+    ? await generateNativeOfficeExport(input, format, python).catch(
+        (error: unknown) => {
+          // The native sandbox has stopped and rejected the document. No managed
+          // file publication has started. DSH may correct the script in a new call.
+          // Transport/cleanup errors remain unknown; never infer from retryability.
+          if (
+            error instanceof HandlerError &&
+            error.code === 'OFFICE_DOCUMENT_INVALID'
+          )
+            confirmToolFailure(error, {
+              runId: input.context.runId,
+              callId: input.call.id,
+              toolName: input.call.name,
+            });
+          throw error;
+        },
+      )
     : hasOffice
       ? await generateOfficeExport(input, format, args.office)
       : {

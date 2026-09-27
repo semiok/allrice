@@ -83,7 +83,7 @@ import {
   riceToolDefinitionsForTurn,
   riceToolRisk,
 } from './tool-broker.js';
-import { HandlerError } from './errors.js';
+import { HandlerError, isConfirmedToolFailure } from './errors.js';
 import * as marketData from './market-data.js';
 import * as nativeOffice from './office/native.js';
 
@@ -892,6 +892,81 @@ describe('Codex hosted search Tool Broker integration', () => {
       generate.mockRestore();
     }
   });
+
+  it.each([
+    'document-rejected',
+    'transport-unknown',
+    'publication-unknown',
+  ] as const)(
+    'confirms only an Office failure before publication: %s',
+    async (mode) => {
+      const error = new HandlerError(
+        'OFFICE_DOCUMENT_INVALID',
+        'Synthetic rejection',
+        false,
+      );
+      const transportError = new Error('Synthetic cleanup unknown');
+      const generated = await createOffice({
+        kind: 'docx',
+        title: 'Fixture',
+        blocks: [],
+      });
+      const generate = vi.spyOn(nativeOffice, 'generateNativeOfficeExport');
+      if (mode === 'publication-unknown')
+        generate.mockResolvedValue({
+          ...generated,
+          sourceFile: undefined,
+          changes: undefined,
+          warnings: undefined,
+          nativeExecution: {
+            status: 'checked',
+            upstream: 'native-test',
+            output: '',
+          },
+        });
+      else
+        generate.mockRejectedValue(
+          mode === 'transport-unknown' ? transportError : error,
+        );
+      workbenchEnabled.mockReturnValue(true);
+      publishWorkbenchArtifact.mockRejectedValue(error);
+      const input = {
+        context: executionContext(),
+        sessionId: randomUUID(),
+        storageRoot: 'unused-mocked-port',
+        capabilities: ['storage:write'] as 'storage:write'[],
+        call: {
+          id: randomUUID(),
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: 'Fixture.docx',
+            format: 'docx',
+            python: { script: 'fixture', inputs: [] },
+          },
+        },
+      };
+      const thrown = mode === 'transport-unknown' ? transportError : error;
+      try {
+        await expect(executeRiceTool(input)).rejects.toBe(thrown);
+        const identity = {
+          runId: input.context.runId,
+          callId: input.call.id,
+          toolName: input.call.name,
+        };
+        expect(isConfirmedToolFailure(thrown, identity)).toBe(
+          mode === 'document-rejected',
+        );
+        expect(
+          isConfirmedToolFailure(thrown, { ...identity, callId: randomUUID() }),
+        ).toBe(false);
+        expect(publishWorkbenchArtifact).toHaveBeenCalledTimes(
+          mode === 'publication-unknown' ? 1 : 0,
+        );
+      } finally {
+        generate.mockRestore();
+      }
+    },
+  );
 
   it('exposes immutable deliverable lineage inputs to the harness', () => {
     const tool = riceToolDefinitions.find(

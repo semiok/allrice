@@ -77,7 +77,7 @@ export async function generateNativeOfficeExport(
     });
     if (result.reason !== 'completed' || !result.artifacts[0])
       officeError(
-        `原生 Office 执行未完成 (${result.reason})：${result.output.slice(-6000)}`,
+        `原生 Office 执行未完成 (${result.reason}; exitCode=${result.exitCode ?? 'unknown'})：${result.output.slice(-6000) || '沙箱未返回诊断输出，不能据此判断为公式或图表错误。'}`,
       );
     const bytes = Buffer.from(result.artifacts[0].contentBase64, 'base64');
     await OfficePackage.open(bytes, format);
