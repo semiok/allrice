@@ -378,10 +378,23 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.capabilitySnapshot
         : null;
-    const allowedToolNames =
+    const employeeToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
-        ? executionSnapshot.employee.definition.capabilityBindings.toolNames
+        ? executionSnapshot.employee.definition.capabilityBindings.toolNames.filter(
+            (name) => !name.startsWith('image.'),
+          )
         : undefined;
+    const imageConfiguration =
+      executionSnapshot.schemaVersion === 2
+        ? executionSnapshot.modelSnapshot?.platformSettings?.configuration
+        : null;
+    const allowedToolNames =
+      employeeToolNames &&
+      imageConfiguration?.imagesEnabled &&
+      employeeToolNames.includes('workspace.export.create') &&
+      resolved.grantedCapabilities.includes('model:invoke')
+        ? [...employeeToolNames, 'image.generate', 'image.edit']
+        : employeeToolNames;
     const authorizedTools = riceToolDefinitionsForCapabilities(
       resolved.grantedCapabilities,
       allowedToolNames,

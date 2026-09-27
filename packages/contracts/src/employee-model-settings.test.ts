@@ -21,76 +21,33 @@ const policy = {
 };
 
 describe('employee provider-specific configuration', () => {
-  it('only offers the two requested providers for new configuration', () => {
+  it('offers only Codex and keeps Gemini readable but invalid for new selection', () => {
     expect(EMPLOYEE_PROVIDER_OPTIONS.map((item) => item.value)).toEqual([
       'openai-codex',
-      'gemini',
     ]);
-  });
-  it('distinguishes Codex from Gemini Flash and legacy Pro', () => {
-    expect(
-      employeeReasoningSettings('openai-codex', 'gpt-5.5-mini').efforts,
-    ).toEqual([]);
     expect(
       employeeReasoningSettings('openai-codex', 'gpt-5.6-luna').efforts,
     ).toEqual(['low', 'medium', 'high', 'xhigh']);
     expect(
       employeeReasoningSettings('gemini', 'gemini-3.8-flash').efforts,
-    ).toEqual(['low', 'medium', 'high']);
-    expect(employeeReasoningSettings('gemini', '3.8flash').efforts).toEqual([
-      'low',
-      'medium',
-      'high',
-    ]);
-    expect(
-      employeeReasoningSettings('gemini', 'gemini-3-pro-preview').efforts,
-    ).toEqual(['low', 'high']);
-    expect(
-      employeeReasoningSettings('gemini', 'gemini-3.1-pro-preview').efforts,
-    ).toEqual(['low', 'high']);
-    expect(
-      employeeReasoningSettings('gemini', 'unverified-model').efforts,
     ).toEqual([]);
-  });
-  it('resets incompatible effort, credential, URL and fallback only on an explicit provider switch', () => {
-    const next = switchEmployeeModelProvider(policy, 'gemini');
-    expect(next).toMatchObject({
+    const old = {
+      ...policy,
+      provider: 'gemini' as const,
       model: 'gemini-3.8-flash',
-      reasoningEffort: 'medium',
-      credentialReference: 'deployment:gemini-default',
+    };
+    expect(
+      PlatformEmployeeDefinitionSchema.shape.modelPolicy.safeParse(old).success,
+    ).toBe(true);
+    expect(employeeModelPolicyProblem(old)).toContain('已从新配置入口移除');
+    expect(switchEmployeeModelProvider(old, 'openai-codex')).toMatchObject({
+      provider: 'openai-codex',
+      model: 'gpt-5.6-luna',
+      credentialReference: 'deployment:codex-default',
       baseUrl: null,
       fallbackModels: [],
     });
-    expect(policy.reasoningEffort).toBe('xhigh');
-    expect(switchEmployeeModelProvider(policy, 'openai-codex')).toBe(policy);
-    expect(switchEmployeeModelProvider(next, 'openai-codex')).toMatchObject({
-      model: 'gpt-5.6-luna',
-      credentialReference: 'deployment:codex-default',
-      reasoningEffort: 'medium',
-    });
-    expect(
-      switchEmployeeModelProvider(
-        { ...policy, reasoningEffort: 'high' },
-        'gemini',
-      ).reasoningEffort,
-    ).toBe('high');
   });
-  it.each(['none', 'xhigh'] as const)(
-    'rejects Gemini %s while preserving the readable historical schema',
-    (effort) => {
-      const invalid = {
-        ...policy,
-        provider: 'gemini' as const,
-        model: '3.8flash',
-        reasoningEffort: effort,
-      };
-      expect(
-        PlatformEmployeeDefinitionSchema.shape.modelPolicy.safeParse(invalid)
-          .success,
-      ).toBe(true);
-      expect(employeeModelPolicyProblem(invalid)).toContain('当前模型不支持');
-    },
-  );
   it('rejects removed providers without removing their historical enum values', () => {
     for (const provider of [
       'deepseek-official',
@@ -149,6 +106,6 @@ describe('employee provider-specific configuration', () => {
       'medium' as typeof policy.reasoningEffort;
     expect(
       UpdatePlatformEmployeeInputSchema.safeParse({ definition }).success,
-    ).toBe(true);
+    ).toBe(false);
   });
 });

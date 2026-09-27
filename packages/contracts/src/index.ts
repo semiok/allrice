@@ -1,3 +1,4 @@
+export * from './image-generation.ts';
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
 export * from './work-methods.ts';
@@ -93,3 +94,4 @@ export * from './task-plan.ts';
 export * from './session-reference.ts';
 export * from './organization-activity.ts';
 export * from './operations-resources.ts';
+export * from './platform-model-settings.ts';

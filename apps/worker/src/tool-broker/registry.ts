@@ -1,3 +1,4 @@
+import { generateImage } from './handlers/image.js';
 import { HandlerError } from '../errors.js';
 import type { riceToolDefinitions } from './definitions.js';
 import { createAutomation } from './handlers/automation.js';
@@ -62,6 +63,8 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'image.generate': registration('delivery', generateImage),
+  'image.edit': registration('delivery', generateImage),
   ...(Object.fromEntries(
     (['delegate', 'message', 'report', 'stop', 'development'] as const).map(
       (action) => [

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { generateCodexImage } from './allrice-codex-images.mjs';
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
@@ -866,17 +867,9 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       installSessionReferenceAdmission(this.ctx);
       this.referenceAdmissionInstalled = true;
     }
-    const isGemini =
-      params?.provider === 'gemini' || params?.provider === 'google';
-    const model =
-      isGemini && params?.model === '3.8flash'
-        ? 'gemini-3.8-flash'
-        : params?.model;
-    const forwardedParams = {
-      ...params,
-      provider: isGemini ? 'google' : params?.provider,
-      ...(model ? { model } : {}),
-    };
+    if (['gemini', 'google'].includes(params?.provider))
+      throw new Error('MODEL_PROVIDER_RETIRED');
+    const forwardedParams = { ...params };
     const requestedTools = Array.isArray(params?.nativeTools)
       ? params.nativeTools.filter((name) => typeof name === 'string')
       : [];
@@ -1296,14 +1289,11 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         return super.createSession(sessionId);
       throw error;
     }
-    const isGemini = this.provider === 'gemini' || this.provider === 'google';
-    const model =
-      isGemini && this.model === '3.8flash' ? 'gemini-3.8-flash' : this.model;
     const handle = await this.ctx.agents.resume({
       resumeSessionId: sessionId,
       agentOptions: {
-        provider: isGemini ? 'google' : this.provider,
-        model,
+        provider: this.provider,
+        model: this.model,
         ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
       },
     });
@@ -1666,6 +1656,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       case 'provider/cancel-codex':
         this.ctx.authorization.cancel(codexCredentialKey);
         return { canceled: true };
+      case 'provider/image-generation':
+        return generateCodexImage(this.modelsForCodex(), params);
       case 'provider/web-search':
         return this.searchCodex(params);
       default:

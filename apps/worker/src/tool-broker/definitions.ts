@@ -1,4 +1,5 @@
 import {
+  ImageToolInputSchema,
   OfficeExportSchema,
   NativeOfficeExportSchema,
   runtimeFeatureEnabled,
@@ -350,6 +351,14 @@ export const riceToolDefinitions = [
       additionalProperties: false,
     },
   },
+  ...(['generate', 'edit'] as const).map((action) => ({
+    name: `image.${action}` as const,
+    description:
+      action === 'generate'
+        ? '按用户要求生成一张图片并交付可下载 PNG。仅用于用户明确要求绘图；不用于普通看图理解。不要自动重复未知结果。'
+        : '修改明确选中的图片，另存新版本并保留原图。source 必须含文件 objectId 和服务端 checksum；先列文件确定版本，指代不清先问用户。不要自动重复未知结果。',
+    inputSchema: z.toJSONSchema(ImageToolInputSchema),
+  })),
   {
     name: 'workspace.export.create',
     description:
@@ -588,6 +597,10 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (!definition.name.startsWith('image.') ||
+        (allowed?.has(definition.name) &&
+          capabilities.includes('model:invoke') &&
+          runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED'))) &&
       (!definition.name.startsWith('assistant.') ||
         (allowed?.has(definition.name) &&
           runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED'))) &&

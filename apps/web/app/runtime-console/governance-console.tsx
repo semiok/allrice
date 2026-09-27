@@ -14,6 +14,7 @@ import {
 } from './unknown-usage-review';
 
 import styles from './governance-console.module.css';
+import { PlatformModelSettingsPanel } from './platform-model-settings';
 
 interface Connection {
   id: string;
@@ -355,6 +356,7 @@ export function GovernanceConsole() {
         <i>Platform admin</i>
       </header>
 
+      <PlatformModelSettingsPanel />
       <section className={styles.providers}>
         <div className={styles.sectionHeading}>
           <div>

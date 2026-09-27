@@ -324,9 +324,9 @@ main.shell {
 
 header.conversationHeader {
   box-sizing: border-box;
-  flex: 0 0 var(--allrice-chat-header-height);
-  height: var(--allrice-chat-header-height);
-  min-height: var(--allrice-chat-header-height);
+  flex: 0 0 var(--allrice-chat-header-height, 56px);
+  height: var(--allrice-chat-header-height, 56px);
+  min-height: var(--allrice-chat-header-height, 56px);
   padding-top: 0;
   padding-bottom: 0;
   border-bottom: 1px solid var(--dsw-alias-border-l2);

@@ -99,32 +99,15 @@ afterEach(async () => {
 });
 
 describe('Gemini opt-in and credential isolation', () => {
-  it.each(['none', 'xhigh'] as const)(
-    'rejects Gemini %s before resolving credentials',
-    async (effort) => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
-      const input = request();
-      input.snapshot.reasoningEffort = effort;
-      await expect(pool.acquire(input)).rejects.toMatchObject({
-        code: 'GEMINI_REASONING_UNSUPPORTED',
+  it.each(['', '0', '1'])(
+    'denies retired Gemini even with legacy enable flag %s',
+    async (flag) => {
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', flag);
+      await expect(pool.acquire(request())).rejects.toMatchObject({
+        code: 'GEMINI_API_DISABLED',
       });
       expect(resolveCredential).not.toHaveBeenCalled();
       expect(captured).toHaveLength(0);
-    },
-  );
-  it.each(['low', 'medium', 'high'] as const)(
-    'passes Gemini %s without DeepSeek remapping',
-    async (effort) => {
-      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
-      const input = request();
-      input.snapshot.reasoningEffort = effort;
-      await pool.acquire(input);
-      expect(captured[0]?.environment.DSH_GEMINI_REASONING_EFFORT).toBe(effort);
-      expect(
-        JSON.parse(
-          captured[0]?.environment.DSH_GEMINI_REASONING_LEVELS ?? '{}',
-        ),
-      ).toEqual({ low: 'LOW', medium: 'MEDIUM', high: 'HIGH' });
     },
   );
   it.each(['low', 'medium', 'high', 'xhigh'] as const)(
@@ -144,36 +127,6 @@ describe('Gemini opt-in and credential isolation', () => {
     expect(resolveCredential).not.toHaveBeenCalled();
     expect(captured).toHaveLength(0);
   });
-  it('resolves only the selected scoped key and preserves the old model identity outside transport', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
-    const input = request();
-    await pool.acquire(input);
-    expect(resolveCredential).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reference: 'test:gemini',
-        route: 'gemini',
-        organizationId:
-          input.input.executionEnvironment.ALLRICE_ORGANIZATION_ID,
-      }),
-    );
-    expect(captured[0]?.environment.GEMINI_API_KEY).toBe(
-      'selected-synthetic-key',
-    );
-    expect(captured[0]?.environment.DSH_GEMINI_MODEL).toBe('gemini-3.8-flash');
-    expect(captured[0]?.environment.OPENAI_COMPATIBLE_API_KEY).toBeUndefined();
-    expect(pool.inventory()[0]?.model).toBe('3.8flash');
-    expect(JSON.stringify(pool.inventory())).not.toContain('synthetic-key');
-  });
-  it('never falls back to an ambient key when the authorized reference is unavailable', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
-    resolveCredential.mockRejectedValueOnce(
-      new Error('synthetic credential missing'),
-    );
-    await expect(pool.acquire(request())).rejects.toThrow(
-      'synthetic credential missing',
-    );
-    expect(captured).toHaveLength(0);
-  });
   it('keeps Codex child free of Gemini keys with a Gemini environment variable present', async () => {
     await writeFile(join(root, '.credentials.yaml'), '{}', { mode: 0o600 });
     await pool.acquire(request('openai-codex'));
@@ -187,16 +140,6 @@ describe('Gemini opt-in and credential isolation', () => {
       'selected-synthetic-key',
     );
     expect(captured[0]?.environment.GEMINI_API_KEY).toBeUndefined();
-  });
-  it('accepts legacy subscription-labeled history but still resolves an API credential', async () => {
-    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '1');
-    const input = request();
-    input.snapshot.authMode = 'platform_subscription';
-    await pool.acquire(input);
-    expect(resolveCredential).toHaveBeenCalledOnce();
-    expect(captured[0]?.environment.GEMINI_API_KEY).toBe(
-      'selected-synthetic-key',
-    );
   });
   it('does not reinterpret a Zhipu/OAuth target as a runnable compatible API', () => {
     expect(() =>
