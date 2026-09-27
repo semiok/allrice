@@ -325,3 +325,5 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 ### Office 原生工具接入补齐（MET-157 PR3）
 
 `allrice-office-native-v1`：将 `workspace.file.list` 接入现有 DSH 原生工具循环；补齐 `workspace.document.read.includeStructure` 与 `workspace.export.create.office`，`content` 与 `office` 二选一。使用现有 DSH 注册接口与 Allrice Broker，不增加 Agent 循环或权限开关。真实固定版本 DSH 子进程回归覆盖文件列表返回、结构读取、三种格式生成和原文件定点编辑，防止仅后端支持而模型接口缺失。
+
+引用上下文在入队时随原生 inbox 消息持久化；pre-step 接纳后移除适配器暂存字段，紧接用户消息插入原生 session-reference 消息。进程在接纳前重启也能从 inbox 恢复固定内容，无需重读来源或依赖内存映射。

@@ -115,6 +115,49 @@ describe('native session references', () => {
         .split('\n')
         .filter(Boolean)
         .map((line) => JSON.parse(line));
+      const queued = events.find(
+        (event) =>
+          event.type === 'agent/inbox/spliced' &&
+          event.data.inserted?.some(
+            (message: { id: string }) => message.id === messageId,
+          ),
+      );
+      const inboxMessage = queued.data.inserted.find(
+        (message: { id: string }) => message.id === messageId,
+      );
+      expect(inboxMessage.source.allriceSessionReference.source.kind).toBe(
+        'session-reference',
+      );
+      // A fresh middleware instance can admit the serialized inbox record even
+      // when the original host and its in-memory state no longer exist.
+      const { installSessionReferenceAdmission } = await import(
+        resolve(import.meta.dirname, '../../dsh/allrice-session-references.mjs')
+      );
+      let admit!: (
+        _event: object,
+        next: () => Promise<{ kind: string; messages: object[] }>,
+      ) => Promise<{
+        messages: Array<{
+          id: string;
+          source: { kind: string; allriceSessionReference?: unknown };
+        }>;
+      }>;
+      installSessionReferenceAdmission({
+        on: (_event: string, callback: typeof admit) => {
+          admit = callback;
+        },
+      });
+      const recoveredInbox = await admit({}, async () => ({
+        kind: 'accept',
+        messages: JSON.parse(JSON.stringify([inboxMessage])),
+      }));
+      expect(
+        recoveredInbox.messages.map((message) => message.source.kind),
+      ).toEqual(['user', 'session-reference']);
+      expect(recoveredInbox.messages[0]?.id).toBe(messageId);
+      expect(
+        recoveredInbox.messages[0]?.source.allriceSessionReference,
+      ).toBeUndefined();
       const direct = events.findIndex(
         (e) => e.type === 'user/message' && e.data.id === messageId,
       );
