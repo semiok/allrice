@@ -43,7 +43,13 @@ function fixture(settle = async () => ({ settled: true })) {
     listeners.get('agent/request')({ agent, signal }, async () => ({
       maxTokens: 4000,
     }));
-  const execute = async (usage, fail = false, finish, output = []) => {
+  const execute = async (
+    usage,
+    fail = false,
+    finish,
+    output = [],
+    request = {},
+  ) => {
     const stream = listeners.get('llm/stream')(
       {
         sessionId: agent.id,
@@ -52,6 +58,7 @@ function fixture(settle = async () => ({ settled: true })) {
         maxTokens: 3754,
         messages: [],
         signal,
+        ...request,
       },
       async function* () {
         yield* output;
@@ -73,6 +80,52 @@ function fixture(settle = async () => ({ settled: true })) {
 }
 
 describe('governed native model admission recovery', () => {
+  it('admits native compaction without agent/request and settles it before the next ordinary model call', async () => {
+    const f = fixture();
+    await f.execute(
+      { inputTokens: 80, outputTokens: 20 },
+      false,
+      { kind: 'stop' },
+      [],
+      { purpose: 'compaction' },
+    );
+    expect(f.bridge.mock.calls.map(([method]) => method)).toEqual([
+      'model-prepare',
+      'model-dispatch',
+      'model-settle',
+    ]);
+    await f.prepare();
+    await f.execute({ inputTokens: 21, outputTokens: 7 });
+    const calls = f.bridge.mock.calls.filter(([m]) => m === 'model-prepare');
+    expect(calls[0][1].callId).not.toBe(calls[1][1].callId);
+  });
+  it('does not allow ordinary direct streams or concurrent compaction to bypass an admission', async () => {
+    const f = fixture();
+    await expect(f.execute(undefined)).rejects.toThrow(
+      'assistant_model_preparation_required',
+    );
+    expect(f.bridge).not.toHaveBeenCalled();
+    await f.prepare();
+    await expect(
+      f.execute(undefined, false, undefined, [], { purpose: 'compaction' }),
+    ).rejects.toThrow('assistant_model_unknown_no_replay');
+    expect(f.bridge.mock.calls.map(([method]) => method)).toEqual([
+      'model-prepare',
+    ]);
+  });
+  it('does not dispatch a compaction whose granted budget is below its fixed envelope', async () => {
+    const f = fixture();
+    await expect(
+      f.execute(undefined, false, undefined, [], {
+        purpose: 'compaction',
+        maxTokens: 8192,
+      }),
+    ).rejects.toThrow('assistant_compaction_output_budget_exhausted');
+    expect(f.bridge.mock.calls.map(([method]) => method)).toEqual([
+      'model-prepare',
+    ]);
+  });
+
   it.each(['TRANSPORT', 'TIMEOUT', 'SERVER', 'RATE_LIMIT', 'EMPTY_RESPONSE'])(
     'allows native subscription recovery after %s without inventing usage or replaying the old call',
     async (code) => {
