@@ -12,7 +12,10 @@ export const PLATFORM_WORK_MODELS = [
   'gpt-5.4-mini',
   'gpt-5.3-codex-spark',
 ] as const;
-export const PLATFORM_IMAGE_MODELS = ['gpt-image-2.5-flare'] as const;
+export const PLATFORM_IMAGE_MODELS = [
+  'gpt-image-2.5-flare',
+  'gpt-image-2.5-sunburst',
+] as const;
 
 export const PlatformModelConfigurationSchema = z
   .object({
@@ -20,7 +23,7 @@ export const PlatformModelConfigurationSchema = z
     workModel: z.enum(PLATFORM_WORK_MODELS),
     reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
     timeoutMs: z.number().int().min(30_000).max(3_600_000),
-    imageModel: z.enum(PLATFORM_IMAGE_MODELS),
+    imageModel: z.enum(['auto', ...PLATFORM_IMAGE_MODELS]),
     imagesEnabled: z.boolean(),
   })
   .strict();

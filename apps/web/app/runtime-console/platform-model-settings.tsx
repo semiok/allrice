@@ -114,12 +114,21 @@ export function PlatformModelSettingsPanel() {
                   configuration: {
                     ...configuration,
                     imagesEnabled: Boolean(event.target.value),
+                    imageModel: event.target.value
+                      ? (event.target.value as typeof configuration.imageModel)
+                      : configuration.imageModel,
                   },
                 })
               }
             >
               <option value="">暂不开启</option>
-              <option value="gpt-image-2.5-flare">GPT Image 2.5 Flare</option>
+              <option value="auto">自动选择（推荐）</option>
+              <option value="gpt-image-2.5-flare">
+                固定使用 Flare · 速度优先
+              </option>
+              <option value="gpt-image-2.5-sunburst">
+                固定使用 Sunburst · 质量优先
+              </option>
             </select>
           </label>
           <button type="button" disabled={busy} onClick={() => void save()}>
@@ -139,6 +148,10 @@ export function PlatformModelSettingsPanel() {
         <p>正在读取配置…</p>
       )}
       {notice ? <p role="status">{notice}</p> : null}
+      <p>
+        自动选择：日常出图、快速草稿使用 Flare；精细编辑、较高画质要求使用
+        Sunburst。也可以在聊天中指定模型，共用现有订阅，无需另行授权。
+      </p>
       <ImageOperationsPanel />
     </section>
   );

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   SessionModelSnapshotSchema,
+  resolveImageModel,
   type ExecutionContext,
   type ImageToolInput,
   type RequestContext,
@@ -48,7 +49,11 @@ export async function claimImageOperation(input: {
   leaseToken: string;
 }) {
   const { context } = input;
-  const configuration = await imageRunConfiguration(context, input.sessionId);
+  const frozen = await imageRunConfiguration(context, input.sessionId);
+  const configuration = {
+    ...frozen,
+    imageModel: resolveImageModel(frozen, input.arguments),
+  };
   const digest = runtimeLedgerInputDigest({
     prompt: input.arguments.prompt,
     source: input.arguments.source ?? null,

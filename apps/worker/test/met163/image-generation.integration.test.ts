@@ -11,6 +11,7 @@ import {
   listToolBrokerFiles,
   listImageOperations,
   claimImageOperation,
+  admitModelExecution,
 } from '@allrice/database';
 import { withFixturePlatformAdministrator } from '../../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
 vi.mock('../../src/codex-image-broker.js', () => ({
@@ -37,6 +38,25 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
     });
     const storageRoot = await mkdtemp(join(tmpdir(), 'met163-images-'));
     try {
+      // A valid connection is usable in production without a second approval.
+      vi.stubEnv('ALLRICE_ENV', 'production');
+      await f.db`update allrice_provider_release_controls set release_stage='experimental',production_approved=false,allowlisted_organization_ids='{}'`;
+      await f.db`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imageModel}','"auto"'::jsonb)`;
+      const admission = {
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        userId: f.ownerId,
+        employeeId: f.employeeId,
+        connectionId: f.connectionId,
+        requestedTokens: 1,
+        requestedRuntimeMs: 1000,
+      };
+      await expect(admitModelExecution(admission)).resolves.toBeDefined();
+      await f.db`update allrice_provider_release_controls set release_stage='disabled' where connection_id=${f.connectionId}`;
+      await expect(admitModelExecution(admission)).rejects.toMatchObject({
+        code: 'PROVIDER_NOT_RELEASED',
+      });
+      await f.db`update allrice_provider_release_controls set release_stage='experimental' where connection_id=${f.connectionId}`;
       const task = await f.prepareOrdinaryTask(
         'Generate an image, then edit its color (synthetic provider).',
       );
@@ -54,13 +74,18 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
         name: 'image.generate',
         arguments: { prompt: 'a blue circle', fileName: 'circle.png' },
       };
-      vi.mocked(requestCodexImage).mockResolvedValue({
-        imageBase64: png,
-        requestId: 'synthetic',
-        workModel: 'gpt-5.6-luna',
-        imageModel: 'gpt-image-2.5-flare',
-        usage: { inputTokens: 10, outputTokens: 2, cachedInputTokens: null },
-      });
+      vi.mocked(requestCodexImage).mockImplementation(
+        async ({ configuration }) => ({
+          imageBase64: png,
+          requestId: 'synthetic',
+          workModel: 'gpt-5.6-luna',
+          imageModel: configuration.imageModel as
+            'gpt-image-2.5-flare' | 'gpt-image-2.5-sunburst',
+          usage: { inputTokens: 10, outputTokens: 2, cachedInputTokens: null },
+        }),
+      );
+      // A later settings change must not rewrite the active run's auto policy.
+      await f.db`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imageModel}','"gpt-image-2.5-flare"'::jsonb)`;
       const result = await executeRiceTool({ ...common, call: generate });
       const generated = JSON.parse(result.modelContent);
       expect(generated).toMatchObject({
@@ -148,11 +173,15 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
       ).rejects.toThrow();
       expect(requestCodexImage).toHaveBeenCalledTimes(3);
       const receipts =
-        await f.db`select status,usage from allrice_image_operations order by created_at`;
+        await f.db`select status,usage,image_model from allrice_image_operations order by created_at`;
       expect(receipts.map((r) => r.status)).toEqual([
         'succeeded',
         'succeeded',
         'unknown',
+      ]);
+      expect(receipts.slice(0, 2).map((r) => r.image_model)).toEqual([
+        'gpt-image-2.5-flare',
+        'gpt-image-2.5-sunburst',
       ]);
       expect(receipts[0]?.usage).toMatchObject({
         inputTokens: 10,
