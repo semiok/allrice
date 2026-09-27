@@ -207,7 +207,7 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
       grants: [],
     };
     await fixture.db`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policyId},${t.tenant.organizationId},${t.tenant.user.id},1,${fixture.db.json(payload)},clock_timestamp()+interval '1 hour')`;
-    await fixture.db`insert into allrice_invitations(id,organization_id,workspace_id,email,role,token_hash,expires_at) values(${invitationId},${t.tenant.organizationId},${t.tenant.workspaceId},'pending@example.test','admin',${randomUUID()},clock_timestamp()+interval '1 hour')`;
+    await fixture.db`insert into allrice_invitations(id,organization_id,workspace_id,email,role,token_hash,expires_at) values(${invitationId},${t.tenant.organizationId},${t.tenant.workspaceId},'pending@example.test','admin',${'b'.repeat(64)},clock_timestamp()+interval '1 hour')`;
     const before =
       await fixture.db`select id,user_id,organization_id,workspace_id,active from allrice_memberships order by id`;
     const migration = await readFile(
