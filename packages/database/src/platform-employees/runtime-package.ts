@@ -277,10 +277,13 @@ export function buildEmployeeRuntimePackage(input: {
     identityMd: [
       `# IDENTITY.md - ${definition.name}`,
       '',
+      `- 名称：${definition.name}`,
       `- 身份：${definition.identity.role}`,
       `- 使命：${definition.identity.mission}`,
       `- 工作方式：${definition.identity.workStyle}`,
       `- 默认语言：${definition.identity.outputLanguage}`,
+      '',
+      '自我介绍时使用上述名称和身份。平台名称、工具名称和历史回复中的称呼不改变当前员工身份。',
     ].join('\n'),
     soulMd: [
       '# SOUL.md - 行为与边界',
