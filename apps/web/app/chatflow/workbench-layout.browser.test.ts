@@ -2789,6 +2789,148 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('native task plan streams, restores, clears and stays scoped without animating stopped work', async () => {
+    const f = await fixture({ running: true, controlledStream: true });
+    try {
+      const ready = () =>
+        f.page.waitForFunction(
+          () => document.documentElement.dataset.streamReady === 'true',
+        );
+      const emit = async (event: ChatFlowEventEnvelope) => {
+        await ready();
+        await f.page.evaluate(
+          (body) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', { detail: body }),
+            ),
+          `data: ${JSON.stringify(event)}\n\n`,
+        );
+      };
+      const push = async (
+        todos: unknown,
+        type: ChatFlowEventEnvelope['type'] = 'harness.native',
+      ) => {
+        const sequence = f.state.events.length + 1;
+        const event: ChatFlowEventEnvelope = {
+          schemaVersion: 3,
+          eventId: id(8800 + sequence),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          cursor: `${run}:${sequence}`,
+          sequence,
+          harness: 'dsh',
+          occurredAt: now,
+          type,
+          sourceEvent: {
+            id: `dsh:${sequence}`,
+            type: 'todo/write',
+            occurredAt: now,
+            payload: { todos },
+          },
+          payload: {
+            generation: 1,
+            attempt: 1,
+            presentation: 'todo',
+            label: '任务计划已更新',
+          },
+        };
+        f.state.events.push(event);
+        await emit(event);
+      };
+      const panel = f.page.getByTestId('todo-panel');
+      expect(await panel.count()).toBe(0);
+      const todos = [
+        { content: '核对资料', status: 'completed' },
+        { content: '生成演示文件', status: 'in_progress' },
+        { content: '检查交付文件', status: 'pending' },
+      ];
+      await push(todos);
+      await panel.waitFor();
+      expect(await panel.innerText()).toContain('1 已完成');
+      expect(await panel.innerText()).toContain('1 进行中');
+      expect(
+        await panel.getByRole('button').getAttribute('aria-expanded'),
+      ).toBe('false');
+      await panel.getByRole('button').click();
+      expect(await panel.getByRole('listitem').count()).toBe(3);
+      expect(await panel.locator('[data-state="ongoing"]').count()).toBe(1);
+      const draft = f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ });
+      await draft.fill('保留未发送草稿');
+      await push([
+        ...todos.slice(0, 2),
+        { content: '检查新版文件', status: 'pending' },
+      ]);
+      await panel.getByText('检查新版文件', { exact: true }).waitFor();
+      expect(await draft.inputValue()).toBe('保留未发送草稿');
+      expect(
+        await draft.evaluate((node) => document.activeElement === node),
+      ).toBe(true);
+      // Replayed snapshots do not collapse the native panel or duplicate its rows.
+      await emit(f.state.events[0]!);
+      expect(await panel.getByRole('listitem').count()).toBe(3);
+      expect(
+        await panel.getByRole('button').getAttribute('aria-expanded'),
+      ).toBe('true');
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      expect(
+        await f.page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect((await panel.boundingBox())!.width).toBeGreaterThan(200);
+      await f.page.screenshot({ path: '.local/task-plan/mobile.png' });
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      f.state.runTimings = [
+        {
+          runId: run,
+          timing: {
+            activeMs: 2000,
+            waitingMs: 1000,
+            wallMs: 3000,
+            timeoutMs: 3600000,
+            remainingMs: 3598000,
+            phase: 'waiting',
+            sources: [],
+            calls: null,
+          },
+        },
+      ];
+      await f.page.reload();
+      for (const event of f.state.events) await emit(event);
+      await panel.getByRole('button').click();
+      await expect.poll(() => panel.innerText()).toContain('等待继续');
+      expect(await panel.locator('[data-state="ongoing"]').count()).toBe(0);
+      f.state.messageStatus = 'failed';
+      await push(undefined, 'run.failed');
+      await expect.poll(() => panel.innerText()).toContain('未完成');
+      expect(await panel.locator('[data-state="ongoing"]').count()).toBe(0);
+      await f.page.reload();
+      await panel.getByRole('button').click();
+      await panel.getByText('检查新版文件', { exact: true }).waitFor();
+      expect(await panel.innerText()).toContain('未完成');
+      await f.page.screenshot({ path: '.local/task-plan/stopped.png' });
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
+      await expect.poll(() => panel.count()).toBe(0);
+      await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
+      await panel.waitFor();
+      // Explicit clearing survives a full history read.
+      const last = f.state.events[0]!;
+      f.state.events.push({
+        ...last,
+        eventId: id(8999),
+        sequence: 999,
+        sourceEvent: { ...last.sourceEvent!, payload: { todos: [] } },
+      });
+      await f.page.reload();
+      await expect.poll(() => panel.count()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('native streaming preserves settled paragraphs and reading position across deltas and completion', async () => {
     const f = await fixture({
       running: true,
