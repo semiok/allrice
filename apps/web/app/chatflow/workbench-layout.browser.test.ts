@@ -959,7 +959,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('menuitem', { name: '查看所有成果', exact: true })
           .click();
         await panel
-          .getByRole('button', { name: new RegExp(`report-${n}\\.md`) })
+          .getByRole('button', { name: `侧栏预览 report-${n}.md`, exact: true })
           .click();
       },
       async reloadList() {
@@ -4754,7 +4754,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.locator('[data-dockkit-pane]').count())
         .toBe(2);
-      await f.panel.getByRole('button', { name: /report-11\.md.*v1/ }).click();
+      await f.panel
+        .getByRole('button', { name: '侧栏预览 report-11.md', exact: true })
+        .click();
       await expect
         .poll(() => f.panel.locator('[data-document-id]:visible').count())
         .toBe(2);
