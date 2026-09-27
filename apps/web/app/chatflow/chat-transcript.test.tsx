@@ -49,6 +49,27 @@ function render(
 describe('historical transcript capability gating', () => {
   afterEach(() => vi.clearAllMocks());
 
+  it('keeps the native footer clock: time today, date and time for older replies', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 27, 18));
+    try {
+      for (const [date, label] of [
+        [new Date(2026, 8, 27, 16, 37), '16:37'],
+        [new Date(2026, 8, 8, 16, 37), '9月8日 16:37'],
+        [new Date(2025, 8, 8, 16, 37), '2025年9月8日 16:37'],
+      ] as const) {
+        const html = render(false, [
+          { ...messages[0]!, createdAt: date.toISOString() },
+        ]);
+        expect(html).toContain(`>${label}</span>`);
+        expect(html).not.toContain('<time>');
+        expect(html.match(/16:37/g)).toHaveLength(1);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows the configured employee and only one thinking status before any output', () => {
     const html = render(
       false,
@@ -113,7 +134,7 @@ describe('historical transcript capability gating', () => {
     expect(html).not.toContain('正在生成回复');
     expect(html).not.toContain('Rice 正在处理');
   });
-  it('shows only server elapsed time in a collapsed ordinary Run without model accounting', () => {
+  it('shows elapsed time once without allowing an empty work process to expand', () => {
     const html = render(
       false,
       [messages[0]!],
@@ -133,15 +154,14 @@ describe('historical transcript capability gating', () => {
         },
       ],
     );
-    for (const text of [
-      '工作过程',
-      '总耗时 40 分 12 秒',
-      'aria-expanded="false"',
-    ])
+    for (const text of ['工作过程', '用时 40 分 12 秒'])
       expect(html).toContain(text);
     expect(html).not.toContain('模型请求尝试');
     expect(html).not.toContain('策略来源');
     expect(html).toContain('本轮运行时间');
+    expect(html).not.toContain('aria-expanded');
+    expect(html.match(/用时 /g)).toHaveLength(1);
+    expect(html).not.toContain('<time>');
     expect(html).not.toContain('助手任务');
   });
 
@@ -210,7 +230,7 @@ describe('historical transcript capability gating', () => {
     expect(executing).not.toContain('market.quote');
   });
   it('does not borrow another Run clock or invent timing for historical Runs', () => {
-    expect(render(false, [messages[0]!])).not.toContain('总耗时');
+    expect(render(false, [messages[0]!])).not.toContain('用时');
     expect(
       render(
         false,
@@ -231,7 +251,7 @@ describe('historical transcript capability gating', () => {
           },
         ],
       ),
-    ).not.toContain('总耗时');
+    ).not.toContain('用时');
   });
 
   it.each(['failed', 'completed'] as const)(

@@ -8,8 +8,8 @@ const copy: Record<string, string> = {
   close: '关闭',
   submit: '提交',
   submitting: '提交中…',
-  'clock.md': '{m} 月 {d} 日',
-  'clock.ymd': '{y} 年 {m} 月 {d} 日',
+  'clock.md': '{m}月{d}日',
+  'clock.ymd': '{y}年{m}月{d}日',
   'dialog.hint':
     '填写详情帮助我们改进。反馈会关联本条回复、对应问题与运行信息，供平台查看。',
 };

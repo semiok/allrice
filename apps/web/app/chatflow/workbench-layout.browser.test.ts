@@ -2915,31 +2915,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       const timing = f.page.getByLabel('本轮运行时间', { exact: true });
       await timing.waitFor();
-      expect(await timing.innerText()).toBe('总耗时 17 秒');
+      expect(await timing.innerText()).toBe('用时 17 秒');
+      const motion = () =>
+        f.page.evaluate(() => {
+          const reply = document.querySelector(
+            '[data-actions-reveal="hover"]',
+          )!;
+          const avatar = reply.querySelector('[class*="assistantIdentity"] i')!;
+          const header = reply.querySelector(
+            '[aria-label="工作过程"] [data-disclosure-row]',
+          )!;
+          return [avatar, header].map((element) => ({
+            name: getComputedStyle(element).animationName,
+            duration: getComputedStyle(element).animationDuration,
+            opacity: Number(getComputedStyle(element).opacity),
+          }));
+        });
+      const [avatarMotion, headerMotion] = await motion();
+      expect(avatarMotion!.name).not.toBe('none');
+      expect(avatarMotion!.name).toBe(headerMotion!.name);
+      expect(avatarMotion!.duration).toBe(headerMotion!.duration);
+      expect(
+        Math.abs(avatarMotion!.opacity - headerMotion!.opacity),
+      ).toBeLessThan(0.05);
+      await f.page.emulateMedia({ reducedMotion: 'reduce' });
+      expect((await motion()).map((item) => item.name)).toEqual([
+        'none',
+        'none',
+      ]);
+      await f.page.emulateMedia({ reducedMotion: 'no-preference' });
       for (const seconds of [18, 19, 20]) {
         await f.page.clock.runFor(1000);
-        await expect
-          .poll(() => timing.innerText())
-          .toBe(`总耗时 ${seconds} 秒`);
+        await expect.poll(() => timing.innerText()).toBe(`用时 ${seconds} 秒`);
       }
       // Server updates do not reset the display interval or make it run backwards.
       f.state.runTimings[0]!.timing.phase = 'waiting';
       f.state.runTimings[0]!.timing.wallMs = 19000;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
+      expect((await motion()).map((item) => item.name)).toEqual([
+        'none',
+        'none',
+      ]);
       expect(f.state.runTimings[0]!.timing.activeMs).toBe(17000);
       f.state.runTimings[0]!.timing.phase = 'terminal';
       f.state.runTimings[0]!.timing.wallMs = 22500;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('总耗时 22 秒');
+      await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
       await f.page.clock.runFor(5000);
-      expect(await timing.innerText()).toBe('总耗时 22 秒');
+      expect(await timing.innerText()).toBe('用时 22 秒');
       f.state.runTimings[0]!.timing.phase = 'queued';
       f.state.runTimings[0]!.timing.wallMs = 0;
       await f.page.reload();
       await timing.waitFor();
       await f.page.clock.runFor(3000);
-      expect(await timing.innerText()).toBe('总耗时 0 秒');
+      expect(await timing.innerText()).toBe('用时 0 秒');
     } finally {
       await f.close();
     }
@@ -2971,9 +3001,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '工作过程',
           exact: true,
         });
-        await process.getByRole('button').click();
         await timing.waitFor();
-        expect(await timing.innerText()).toContain('总耗时 22 秒');
+        expect(await process.getByRole('button').count()).toBe(0);
+        expect(await process.locator('[aria-expanded]').count()).toBe(0);
+        expect(await timing.innerText()).toContain('用时 22 秒');
         expect(await process.innerText()).not.toContain('累计等待');
         expect(await timing.count()).toBe(1);
         expect(await process.innerText()).not.toContain('模型请求');
@@ -2981,8 +3012,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.runTimings[0]!.timing.wallMs = 2412460;
         await expect
           .poll(() => timing.innerText(), { timeout: 5000 })
-          .toContain('总耗时 40 分 12 秒');
-        expect(await timing.innerText()).toContain('总耗时 40 分 12 秒');
+          .toContain('用时 40 分 12 秒');
+        expect(await timing.innerText()).toContain('用时 40 分 12 秒');
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -3000,9 +3031,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.reload();
         await timing.waitFor();
         expect(await timing.count()).toBe(1);
-        await process.getByRole('button').click();
         await timing.waitFor();
-        expect(await timing.innerText()).toContain('总耗时 40 分 12 秒');
+        expect(await process.getByRole('button').count()).toBe(0);
+        expect(await process.locator('[aria-expanded]').count()).toBe(0);
+        expect(await timing.innerText()).toContain('用时 40 分 12 秒');
         f.state.runTimings = [];
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
       } finally {
