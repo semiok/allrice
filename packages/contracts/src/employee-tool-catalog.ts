@@ -363,6 +363,29 @@ export function assembleEmployeeCapabilities(
   };
 }
 
+/** Admin editor defaults: selected tools determine employee capabilities.
+ * This prepares an editable draft; it does not grant tenant resources, change
+ * member confirmation settings, or rewrite an immutable published version.
+ * Keep assembleEmployeeCapabilities separate for legacy policy-aware callers.
+ */
+export function prepareEmployeeEditorDefinition(
+  definition: PlatformEmployeeDefinition,
+  skills: readonly EmployeeSkillChoice[],
+): PlatformEmployeeDefinition {
+  return assembleEmployeeCapabilities(
+    {
+      ...definition,
+      securityPolicy: {
+        ...definition.securityPolicy,
+        bridgeAccess: 'none',
+        connectorIdentityModes: ['user', 'service'],
+        deniedCapabilities: [],
+      },
+    },
+    skills,
+  );
+}
+
 /** Workspace execution settings resulting from an explicit employee publication.
  * Unselected actions retain their rules; exact-operation approvals stay intact. */
 export function employeePublicationPolicy(
