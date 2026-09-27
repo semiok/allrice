@@ -2953,10 +2953,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.runTimings[0]!.timing.wallMs = 19000;
       await f.page.clock.runFor(2000);
       await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
-      expect((await motion()).map((item) => item.name)).toEqual([
-        'none',
-        'none',
-      ]);
+      // The local clock can tick before the server phase receipt commits.
+      await expect
+        .poll(async () => (await motion()).map((item) => item.name))
+        .toEqual(['none', 'none']);
       expect(f.state.runTimings[0]!.timing.activeMs).toBe(17000);
       f.state.runTimings[0]!.timing.phase = 'terminal';
       f.state.runTimings[0]!.timing.wallMs = 22500;
