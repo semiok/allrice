@@ -79,7 +79,7 @@ function attestWatchdog() {
       for (let attempt = 0; ; attempt++) {
         try {
           return await promisify(execFile)(executable, args, {
-            timeout: 5000,
+            timeout: 15000,
             maxBuffer: 4096,
             env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
           });
@@ -751,7 +751,7 @@ export class CloudRunnerBackend {
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
     const deadline = Math.min(
       Date.parse(options.deadlineAt),
-      startedAt + command.arguments.limits.timeoutMs,
+      Date.now() + command.arguments.limits.timeoutMs,
     );
     if (
       !Number.isFinite(deadline) ||
