@@ -293,6 +293,9 @@ export function ChatFlowClient({
     if (!scrollRegion) return;
     const handleScroll = () => {
       const atBottom = isConversationAtBottom(scrollRegion);
+      // Native virtual rows can emit repeated scroll events during layout.
+      // Publish only a change in following state, avoiding nested rerenders.
+      if (followTranscript.current === atBottom) return;
       followTranscript.current = atBottom;
       setAtTranscriptBottom(atBottom);
     };
