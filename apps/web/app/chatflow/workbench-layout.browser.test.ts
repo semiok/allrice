@@ -1571,6 +1571,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .count(),
       ).toBe(0);
       // Dock retains hidden previews; measure the selected version's toolbar.
+      // Native Dock adds a 1px divider and a 1px pane border.
       await expect
         .poll(async () => {
           const r = await f.panel
@@ -4156,6 +4157,135 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([
+    [1440, false],
+    [1440, true],
+    [390, false],
+    [390, true],
+  ] as const)(
+    'MET-163 image delivery at %ipx streaming=%s survives reload, previews and downloads',
+    async (width, streamingOutput) => {
+      const f = await fixture({
+        width,
+        touch: width === 390,
+        running: true,
+        streamingOutput,
+      });
+      try {
+        const png = await f.page.evaluate(() => {
+          const c = document.createElement('canvas');
+          c.width = 800;
+          c.height = 800;
+          const ctx = c.getContext('2d')!;
+          ctx.fillStyle = 'white';
+          ctx.fillRect(0, 0, 800, 800);
+          ctx.fillStyle = '#ff8a00';
+          ctx.beginPath();
+          ctx.arc(400, 400, 250, 0, Math.PI * 2);
+          ctx.fill();
+          return c.toDataURL('image/png').split(',')[1]!;
+        });
+        const img = artifact(10);
+        img.version.fileName = '圆形海报.png';
+        img.version.format = 'png';
+        img.object.mediaType = 'image/png';
+        img.version.version = 2;
+        f.state.officePreview = {
+          kind: 'image',
+          mediaType: 'image/png',
+          base64: png,
+        };
+        await f.page.route('**/api/v1/files/*/download?*', (route) =>
+          route.fulfill({
+            contentType: 'image/png',
+            headers: {
+              'content-disposition':
+                "attachment; filename*=UTF-8''" +
+                encodeURIComponent(img.version.fileName),
+            },
+            body: Buffer.from(png, 'base64'),
+          }),
+        );
+        f.state.reply = '已把蓝色圆形修改为橙色，并保留原图版本。';
+        f.state.workMethods = ['cloud_images'];
+        f.finishRun();
+        f.state.items = [img];
+        const picture = f.page
+          .getByRole('button', { name: '查看图片 圆形海报.png', exact: true })
+          .first();
+        await picture.waitFor();
+        await expect
+          .poll(() =>
+            picture
+              .locator('img')
+              .evaluate(
+                (i: HTMLImageElement) => i.complete && i.naturalWidth > 0,
+              ),
+          )
+          .toBe(true);
+        expect(
+          await f.page
+            .locator('#message-' + id(20))
+            .getByRole('button', { name: '查看图片 圆形海报.png', exact: true })
+            .count(),
+        ).toBe(1);
+        await f.page.locator('#message-' + id(20)).hover();
+        expect(
+          await f.page
+            .getByRole('group', { name: '工作方式', exact: true })
+            .innerText(),
+        ).toContain('云端-图片');
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((el) => el.scrollWidth <= innerWidth),
+        ).toBe(true);
+        await picture.click();
+        const preview = f.panel.getByRole('img', {
+          name: '圆形海报.png 静态预览',
+        });
+        await preview.waitFor();
+        const zoomFrame = f.panel.locator('[data-document-zoom-frame]');
+        await zoomFrame.scrollIntoViewIfNeeded();
+        const bounds = (await zoomFrame.boundingBox())!;
+        await f.page.mouse.move(
+          bounds.x + bounds.width / 2,
+          bounds.y + bounds.height - 20,
+        );
+        await f.panel
+          .getByRole('button', { name: '放大', exact: true })
+          .click();
+        expect(
+          await f.panel.locator('[data-document-zoom-scrollport]').count(),
+        ).toBe(1);
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        await f.page.reload();
+        await picture.waitFor();
+        await picture.scrollIntoViewIfNeeded();
+        await f.page.screenshot({
+          path: `/tmp/met163-images-${width}-${streamingOutput}.png`,
+        });
+        const card = f.page
+          .locator('[data-presented-file]')
+          .filter({ hasText: '圆形海报.png' })
+          .first();
+        await card
+          .getByRole('button', { name: '圆形海报.png 打开方式' })
+          .click();
+        const downloaded = f.page.waitForEvent('download');
+        await f.page
+          .getByRole('menuitem', { name: '下载文件', exact: true })
+          .click();
+        expect((await downloaded).suggestedFilename()).toBe('圆形海报.png');
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
 
   it.each([1440, 390])(
     'native delivery cards preview and download at width %i',
