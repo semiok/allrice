@@ -173,95 +173,163 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     if (fixture) await fixture.close();
   });
 
-  it('navigates company -> person -> work -> file, retains expanded detail on refresh, and rejects foreign downloads', async () => {
-    const a = await tenantValidationFixture(fixture.db),
-      b = await tenantValidationFixture(fixture.db);
-    await fixture.db`update allrice_organizations set name='星米工作动态' where id=${a.target.organizationId}`;
-    await fixture.db`update allrice_users set display_name='小雪动态' where id=${a.target.subjectId}`;
-    const context = await browser.newContext({
-      viewport: { width: 1440, height: 1100 },
-    });
-    await context.addCookies([
-      { name: 'fixture_session', value: adminToken, url: origin },
-    ]);
-    const page = await context.newPage();
-    const errors: string[] = [];
-    page.on('pageerror', (e) => errors.push(e.message));
-    try {
-      await page.goto(`${origin}/runtime-console?view=activity`);
-      await page
-        .getByRole('button', { name: '查看 星米工作动态', exact: true })
-        .click();
-      await page
-        .getByRole('button', { name: '查看 小雪动态 的工作', exact: true })
-        .click();
-      await page
-        .getByRole('button', { name: '查看工作与成果', exact: true })
-        .click();
-      await page.getByRole('region', { name: '真实任务检查结果' }).waitFor();
-      await page.getByText('技术详情', { exact: true }).click();
-      await page
-        .getByRole('button', {
-          name: 'evidence.txt · v1 · document',
-          exact: true,
-        })
-        .click();
-      const preview = page.getByRole('region', { name: '只读交付物预览' });
-      await preview.waitFor();
-      await page.evaluate(() => {
-        document
-          .querySelector('[aria-label="真实任务检查结果"]')
-          ?.setAttribute('data-retained', 'yes');
+  it.each([1440, 390])(
+    'opens work and files in a visible dialog, retains detail on refresh, and rejects foreign downloads (%i)',
+    async (width) => {
+      const a = await tenantValidationFixture(fixture.db),
+        b = await tenantValidationFixture(fixture.db);
+      const companyName = `星米工作动态 ${width}`,
+        personName = `小雪动态 ${width}`;
+      await fixture.db`update allrice_organizations set name=${companyName} where id=${a.target.organizationId}`;
+      await fixture.db`update allrice_users set display_name=${personName} where id=${a.target.subjectId}`;
+      const context = await browser.newContext({
+        viewport: { width, height: 900 },
       });
-      for (const name of ['刷新工作动态', '刷新工作列表', '刷新工作详情']) {
-        const button = page.getByRole('button', { name, exact: true });
-        await button.click();
-        await expect.poll(() => button.isEnabled()).toBe(true);
-        expect(await page.locator('[data-retained="yes"]').count()).toBe(1);
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      try {
+        await page.clock.install();
+        await page.goto(`${origin}/runtime-console?view=activity`);
+        await page
+          .getByRole('button', { name: `查看 ${companyName}`, exact: true })
+          .click();
+        await page
+          .getByRole('button', {
+            name: `查看 ${personName} 的工作`,
+            exact: true,
+          })
+          .click();
+        await page
+          .getByRole('button', { name: '查看工作与成果', exact: true })
+          .click();
+        const dialog = page.getByRole('dialog', {
+          name: '工作与成果',
+          exact: true,
+        });
+        await dialog
+          .getByRole('region', { name: '真实任务检查结果' })
+          .waitFor();
+        const box = await dialog.boundingBox();
+        expect(box!.y).toBeGreaterThanOrEqual(0);
+        expect(box!.y + box!.height).toBeLessThanOrEqual(900);
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+        expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+          'hidden',
+        );
         expect(
-          await page
+          await dialog
             .locator('details')
-            .filter({ has: page.getByText('技术详情', { exact: true }) })
+            .filter({ hasText: '用户目标与交付回复' })
             .getAttribute('open'),
         ).not.toBeNull();
-        expect(await preview.innerText()).toContain(
+        await page.getByText('技术详情', { exact: true }).click();
+        await page
+          .getByRole('button', {
+            name: 'evidence.txt · v1 · document',
+            exact: true,
+          })
+          .click();
+        const preview = page.getByRole('region', { name: '只读交付物预览' });
+        await preview.waitFor();
+        await page.evaluate(() => {
+          document
+            .querySelector('[aria-label="真实任务检查结果"]')
+            ?.setAttribute('data-retained', 'yes');
+        });
+        const refreshed = Promise.all([
+          page.waitForResponse((r) => {
+            const u = new URL(r.url());
+            return (
+              u.pathname === '/api/v1/admin/activity' &&
+              u.searchParams.has('userId')
+            );
+          }),
+          page.waitForResponse((r) => {
+            const u = new URL(r.url());
+            return (
+              u.pathname === '/api/v1/admin/activity' &&
+              u.searchParams.has('organizationId') &&
+              !u.searchParams.has('userId')
+            );
+          }),
+        ]);
+        await page.clock.runFor(15001);
+        expect((await refreshed).every((r) => r.ok())).toBe(true);
+        for (const name of ['刷新工作详情']) {
+          const button = page.getByRole('button', { name, exact: true });
+          await button.click();
+          await expect.poll(() => button.isEnabled()).toBe(true);
+          expect(await page.locator('[data-retained="yes"]').count()).toBe(1);
+          expect(
+            await page
+              .locator('details')
+              .filter({ has: page.getByText('技术详情', { exact: true }) })
+              .getAttribute('open'),
+          ).not.toBeNull();
+          expect(await preview.innerText()).toContain(
+            'Isolated fixture, not a real model answer.',
+          );
+        }
+        const link = await page
+          .getByRole('link', { name: '下载', exact: true })
+          .getAttribute('href');
+        const download = await context.request.get(`${origin}${link}`);
+        expect(download.status()).toBe(200);
+        expect(download.headers()['content-disposition']).toContain(
+          'attachment',
+        );
+        expect(await download.text()).toContain(
           'Isolated fixture, not a real model answer.',
         );
+        expect(
+          (
+            await context.request.get(
+              `${origin}${link!.replace(a.artifact.artifactId, b.artifact.artifactId)}`,
+            )
+          ).status(),
+        ).toBe(404);
+        const member = await createSession(b.target.subjectId);
+        expect(
+          (
+            await context.request.get(`${origin}${link}`, {
+              headers: { cookie: `fixture_session=${member.token}` },
+            })
+          ).status(),
+        ).toBe(403);
+        await page.screenshot({
+          path: `.local/met161/pr5-activity-${width}.png`,
+          fullPage: true,
+        });
+        await page.keyboard.press('Escape');
+        expect(await dialog.count()).toBe(0);
+        expect(
+          await page
+            .getByRole('button', { name: '查看工作与成果', exact: true })
+            .evaluate((e) => e === document.activeElement),
+        ).toBe(true);
+        expect(
+          await page.evaluate(() => document.body.style.overflow),
+        ).not.toBe('hidden');
+        await page
+          .getByRole('button', { name: '查看工作与成果', exact: true })
+          .click();
+        await dialog
+          .getByRole('region', { name: '真实任务检查结果' })
+          .waitFor();
+        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        expect(await dialog.count()).toBe(0);
+        expect(errors).toEqual([]);
+        expect(failures).toEqual([]);
+      } finally {
+        await context.close();
       }
-      const link = await page
-        .getByRole('link', { name: '下载', exact: true })
-        .getAttribute('href');
-      const download = await context.request.get(`${origin}${link}`);
-      expect(download.status()).toBe(200);
-      expect(download.headers()['content-disposition']).toContain('attachment');
-      expect(await download.text()).toContain(
-        'Isolated fixture, not a real model answer.',
-      );
-      expect(
-        (
-          await context.request.get(
-            `${origin}${link!.replace(a.artifact.artifactId, b.artifact.artifactId)}`,
-          )
-        ).status(),
-      ).toBe(404);
-      const member = await createSession(b.target.subjectId);
-      expect(
-        (
-          await context.request.get(`${origin}${link}`, {
-            headers: { cookie: `fixture_session=${member.token}` },
-          })
-        ).status(),
-      ).toBe(403);
-      await page.screenshot({
-        path: '.local/met161/pr5-activity.png',
-        fullPage: true,
-      });
-      expect(errors).toEqual([]);
-      expect(failures).toEqual([]);
-    } finally {
-      await context.close();
-    }
-  });
+    },
+  );
 
   it('creates a company and employees, imports a spreadsheet, edits profiles, resets passwords and disables access', async () => {
     const context = await browser.newContext({
