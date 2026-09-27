@@ -42,3 +42,6 @@ apps/web/app/chatflow/dsh-upstream/process/
 apps/web/app/chatflow/dsh-upstream/archive/ArchiveSession.tsx
 apps/web/app/chatflow/dsh-upstream/archive/RowActionToast.tsx
 apps/web/app/chatflow/dsh-upstream/archive/WorkspaceBrowser.module.css
+
+# Native DSH task plan panel; source and lifecycle patch verified in the UI ledger.
+apps/web/app/chatflow/dsh-upstream/todo/
