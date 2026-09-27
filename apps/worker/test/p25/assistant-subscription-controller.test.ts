@@ -113,14 +113,14 @@ describe('subscription admission is explicit, not an API output-cap assertion', 
       }),
     );
   });
-  it('does not need an API price/cash budget but retains a finite shared output grant', () => {
+  it('does not need an API price/cash budget but retains the per-response output setting', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     const input = fixture();
     const controller = productionAssistantController(input);
     expect(controller?.subscriptionSnapshot).toEqual(
       input.subscriptionSnapshot,
     );
-    expect(controller?.maxOutputTokens).toBe(170);
+    expect(controller?.maxOutputTokens).toBe(512);
     expect(input.database).not.toHaveBeenCalled();
   });
   it('does not combine an API tariff with subscription billing', () => {

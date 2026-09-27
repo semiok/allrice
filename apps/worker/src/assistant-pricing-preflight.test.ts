@@ -233,28 +233,18 @@ describe('Worker assistant pricing preflight — synthetic configuration only', 
   it.each([
     'ALLRICE_ASSISTANT_PRICING_JSON',
     'ALLRICE_ASSISTANT_PRICING_CURRENCY',
-  ])('requires explicit %s', (key) => {
+  ])('keeps pricing unknown without %s', (key) => {
     const input = fixture();
     vi.stubEnv(key, undefined);
-    expect(() => preflightAssistantPricing(input)).toThrow(
-      expect.objectContaining({
-        code: 'ASSISTANT_PRICE_UNAVAILABLE',
-        retryable: false,
-      }),
-    );
+    expect(preflightAssistantPricing(input)).toBeUndefined();
   });
-  it('does not leak malformed configured payloads, accept multimodal work, or select another session', () => {
+  it('keeps malformed or multimodal pricing unknown while rejecting another session', () => {
     const input = fixture();
     vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', 'SECRET_not_JSON');
-    try {
-      preflightAssistantPricing(input);
-      throw Error('expected failure');
-    } catch (error) {
-      expect(String(error)).not.toContain('SECRET');
-    }
-    expect(() =>
+    expect(preflightAssistantPricing(input)).toBeUndefined();
+    expect(
       preflightAssistantPricing({ ...input, hasNonTextInput: true }),
-    ).toThrow(expect.objectContaining({ code: 'ASSISTANT_PRICE_TEXT_ONLY' }));
+    ).toBeUndefined();
     expect(() =>
       preflightAssistantPricing({ ...input, sessionId: randomUUID() }),
     ).toThrow(
@@ -308,24 +298,20 @@ describe('Worker assistant pricing preflight — synthetic configuration only', 
       }),
     ).toThrow();
   });
-  it('rejects a tariff expiring before the actual job deadline before any adapter call', () => {
+  it('freezes a currently valid tariff without making task duration a price gate', () => {
     const input = fixture();
     input.catalog.entries[0]!.expiresAt = new Date(
       Date.now() + 10000,
     ).toISOString();
     vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', JSON.stringify(input.catalog));
-    expect(() => preflightAssistantPricing(input)).toThrow(
-      expect.objectContaining({ code: 'ASSISTANT_PRICE_UNAVAILABLE' }),
-    );
+    expect(preflightAssistantPricing(input)).toBeDefined();
   });
-  it('rejects even a matching explicit non-USD tariff before the currency-less ledger', () => {
+  it('does not project a non-USD tariff into the currency-less ledger', () => {
     const input = fixture();
     input.catalog.entries[0]!.currency = 'CNY';
     vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', JSON.stringify(input.catalog));
     vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'CNY');
-    expect(() => preflightAssistantPricing(input)).toThrow(
-      expect.objectContaining({ code: 'ASSISTANT_PRICE_CURRENCY_UNSUPPORTED' }),
-    );
+    expect(preflightAssistantPricing(input)).toBeUndefined();
   });
   it('accepts only an explicitly frozen fallback and its own exact tariff', () => {
     const input = fixture();
@@ -361,9 +347,7 @@ describe('Worker assistant pricing preflight — synthetic configuration only', 
     input.modelSnapshot.fallbackPolicy = 'explicit';
     input.decision.modelConnectionId = connectionId;
     input.decision.modelCatalogEntryId = modelCatalogEntryId;
-    expect(() => preflightAssistantPricing(input)).toThrow(
-      expect.objectContaining({ code: 'ASSISTANT_PRICE_UNAVAILABLE' }),
-    );
+    expect(preflightAssistantPricing(input)).toBeUndefined();
     input.catalog.entries[0]!.target.connectionId = connectionId;
     input.catalog.entries[0]!.target.catalogId = modelCatalogEntryId;
     vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', JSON.stringify(input.catalog));
@@ -396,11 +380,9 @@ describe('Worker assistant pricing preflight — synthetic configuration only', 
       { cacheUsageKnown: true },
       { model: 'other-model' },
     ])
-      expect(() =>
+      expect(
         assistantResultCostCents(snapshot, { ...result, ...change }),
-      ).toThrow(
-        expect.objectContaining({ code: 'ASSISTANT_PRICE_RESULT_UNVERIFIED' }),
-      );
+      ).toBeNull();
     expect(
       assistantResultCostCents(snapshot, { ...result, usageComplete: false }),
     ).toBeNull();

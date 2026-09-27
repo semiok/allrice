@@ -70,7 +70,6 @@ import {
   checkCompletedModelBudget,
   modelAdmissionTokenEstimate,
 } from '../model-result-budget.js';
-import { assertSubscriptionQuotaNotExhausted } from '../subscription-quota-admission.js';
 import {
   preflightAssistantPricing,
   assistantResultCostCents,
@@ -635,7 +634,6 @@ export async function executeEmployeeRun({
       workflow: routeDecision.selectedKind === 'workflow',
     };
     const taskProgress =
-      subscriptionSnapshot &&
       executionSnapshot.schemaVersion === 2 &&
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
@@ -644,8 +642,6 @@ export async function executeEmployeeRun({
           })
         : undefined;
     if (taskProgress) loopGuard.observeCallsOnly();
-    if (subscriptionSnapshot)
-      assertSubscriptionQuotaNotExhausted(codexStatus.quota);
     assertAssistantProviderOutputBound(
       providerSnapshot,
       objectInput(assistantConfiguration).allowAssistants === true,
@@ -1412,7 +1408,7 @@ export async function executeEmployeeRun({
               model: result.model,
               ...result.usage,
             });
-    const budgetWarning = checkCompletedModelBudget({
+    checkCompletedModelBudget({
       ...modelBudgetScope,
       limits: runLimits,
       result,
@@ -1477,7 +1473,6 @@ export async function executeEmployeeRun({
               result.cacheUsageKnown === true && priorWaitUsage.cacheUsageKnown,
           }
         : {}),
-      ...(budgetWarning ? { budgetWarning } : {}),
       citations: [...knowledge.citations, ...workflowCitations].filter(
         (citation, index, values) =>
           values.findIndex(

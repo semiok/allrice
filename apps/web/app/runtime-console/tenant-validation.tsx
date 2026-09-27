@@ -18,6 +18,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { RunUsageSummary } from './run-usage';
+import { ExecutionDiagnostics } from './execution-diagnostics';
 import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
 import styles from './tenant-administration.module.css';
@@ -279,7 +280,7 @@ export function TenantValidation(
                 {q.effective.monthlyTokenLimit.toLocaleString()} Token；风险预留{' '}
                 {q.reservedTokens.toLocaleString()}；
                 {data.quotas?.subscription.tokenPolicy === 'observe'
-                  ? 'Codex 订阅仅统计，不受此 Token 上限或预留阻断；其他执行保护仍生效'
+                  ? '所有模型的 Token 仅统计，不受此历史上限或预留阻断；任务时限与无进展保护仍生效'
                   : q.usedTokens + q.reservedTokens >=
                       q.effective.monthlyTokenLimit
                     ? '已达内部额度，请检查限制'
@@ -346,6 +347,9 @@ export function TenantValidation(
             {detail.run.sessionId}
           </p>
           <RunUsageSummary usage={detail.usage} runStatus={detail.run.status} />
+          {detail.executionDiagnostics ? (
+            <ExecutionDiagnostics data={detail.executionDiagnostics} />
+          ) : null}
           {detail.development ? (
             <DevelopmentInspection data={detail.development} />
           ) : null}

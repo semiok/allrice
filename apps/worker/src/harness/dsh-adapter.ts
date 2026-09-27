@@ -7,8 +7,9 @@ import {
   RuntimeNativeInputProofSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
-import { AssistantRuntimeError, observeCodexTokens } from '@allrice/database';
+import { AssistantRuntimeError } from '@allrice/database';
 
+import { AgentLoopGuard } from '../agent-loop-guard.js';
 import { HandlerError } from '../errors.js';
 import { NativeQuestionParked } from './dsh/native-question-wait.js';
 import {
@@ -51,7 +52,6 @@ import {
   dshToolBridgeInstructions,
   dshToolEnvelopePrefix,
   isDshSearchTool,
-  maximumDshToolCallsPerTurn,
   normalizeAllRiceManagedFileLinks,
   parseDshToolCall,
 } from './dsh/tool-bridge.js';
@@ -273,6 +273,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
     let usageComplete = true;
     let cacheUsageKnown = true;
+    const fallbackGuard = input.progress ? undefined : new AgentLoopGuard();
     const emit = async (event: HarnessEventPayload) => {
       const sourceEventType =
         event.type === 'assistant.delta'
@@ -284,24 +285,24 @@ export class DshHarnessAdapter implements HarnessAdapter {
               : 'source' in event && event.source === 'tool_broker'
                 ? 'allrice/tool-broker'
                 : 'dsh/tool';
-      await input.onEvent(
-        HarnessEventSchema.parse({
-          schemaVersion: 1,
-          harness: this.kind,
-          generation,
-          attempt: input.attempt,
-          order: ++order,
-          threadId,
-          turnId,
-          sessionId: input.kernel.sessionId,
-          messageId: input.kernel.assistantMessageId,
-          sourceEventId: `dsh:${input.attempt}:${order}`,
-          sourceEventType,
-          sourceOccurredAt: new Date().toISOString(),
-          sourcePayload: {},
-          ...event,
-        }),
-      );
+      const parsed = HarnessEventSchema.parse({
+        schemaVersion: 1,
+        harness: this.kind,
+        generation,
+        attempt: input.attempt,
+        order: ++order,
+        threadId,
+        turnId,
+        sessionId: input.kernel.sessionId,
+        messageId: input.kernel.assistantMessageId,
+        sourceEventId: `dsh:${input.attempt}:${order}`,
+        sourceEventType,
+        sourceOccurredAt: new Date().toISOString(),
+        sourcePayload: {},
+        ...event,
+      });
+      fallbackGuard?.observe(parsed);
+      await input.onEvent(parsed);
     };
     for (const entry of skillEligibility) {
       if (entry.missingTools.length === 0 && entry.inactiveTools.length === 0) {
@@ -376,11 +377,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         >
       | undefined;
     try {
-      for (
-        let callIndex = 0;
-        input.progress || callIndex <= maximumDshToolCallsPerTurn;
-        callIndex++
-      ) {
+      for (let callIndex = 0; ; callIndex++) {
         if (executionSignal.aborted)
           throw new HandlerError(
             'EXECUTION_ABORTED',
@@ -451,13 +448,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             if (!assistantOutcome)
               throw Error('assistant_completion_proof_required');
             Object.assign(usage, assistantOutcome.usage);
-            if (
-              (!assistantOutcome.usageComplete &&
-                !observeCodexTokens(
-                  !!input.assistants?.subscriptionSnapshot,
-                )) ||
-              !['completed', 'partial'].includes(assistantOutcome.status)
-            )
+            if (!['completed', 'partial'].includes(assistantOutcome.status))
               throw new AssistantExecutionUnresolvedError(
                 usage,
                 assistantOutcome.usageComplete,
@@ -481,13 +472,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
             ...(result.usageSource ?? result.completionSource ?? {}),
           });
           break;
-        }
-        if (!input.progress && callIndex === maximumDshToolCallsPerTurn) {
-          throw new HandlerError(
-            'DSH_TOOL_LIMIT_EXCEEDED',
-            'DSH exceeded the AllRice tool-call limit',
-            false,
-          );
         }
         if (!input.tools.some((tool) => tool.name === toolCall.name)) {
           throw new HandlerError(

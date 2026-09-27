@@ -33,7 +33,7 @@ describe('account monthly balance', () => {
     );
     expect(html).toContain('账号使用情况');
     expect(html).toContain('2,000,000');
-    expect(html).toContain('不阻断 Codex 后续聊天');
+    expect(html).toContain('不阻断后续聊天');
     expect(html).not.toContain('剩余');
     expect(html).not.toContain('5,000,000');
   });

@@ -560,22 +560,21 @@ export function createGovernedAssistantNativeRuntime(
           entry.settlementConfirmed = acknowledgement?.settled === true;
         }
       }
-      // Unknown usage remains unknown. For a server-verified subscription whose
-      // tokens are observational, a failed request with no observed output may
-      // release admission for DSH's bounded retry under a NEW call ID. Never
-      // infer this authority from a provider name or the model's request.
-      // Priced API calls, partial output and unconfirmed settlement retain the
-      // existing tombstone; uncertain tool operations are unaffected.
-      const subscriptionRecovery =
+      // Usage uncertainty does not imply execution uncertainty. A normal native
+      // finish (or a retryable empty failure) may continue under a NEW call ID
+      // after the execution receipt is durably acknowledged. Keep unknown usage
+      // unknown; missing ACKs and ambiguous partial failures remain unreplayable.
+      const observedUsageOnly =
         acknowledgement?.tokenUsageObservational === true &&
-        !observedOutput &&
-        stopKind === 'error' &&
-        retryableModelFailures.has(modelFailureCode);
+        (['stop', 'tool-calls'].includes(stopKind) ||
+          (!observedOutput &&
+            stopKind === 'error' &&
+            retryableModelFailures.has(modelFailureCode)));
       if (
         acknowledgement?.settled === true &&
         ((settled.inputTokens !== undefined &&
           settled.outputTokens !== undefined) ||
-          subscriptionRecovery)
+          observedUsageOnly)
       )
         modelAdmissions.delete(id);
     }

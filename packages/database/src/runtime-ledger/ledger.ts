@@ -45,11 +45,9 @@ import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
 import { refreshTaskClock, readTaskClock } from '../task-clock.ts';
 import {
-  observesRootTokens,
+  isObservedExecutionMetric,
   isTokenMetric,
-  isCallMetric,
-  observesRootCalls,
-} from '../subscription-token-accounting.ts';
+} from '../execution-usage-policy.ts';
 
 type Tx = RuntimeLedgerTransaction;
 type Json = Parameters<Tx['json']>[0];
@@ -833,24 +831,15 @@ export function createRuntimeOperationLedger(options: {
           new Set(reservations.map((r) => r.metric)).size !== budgets.length
         )
           throw new RuntimeLedgerError('invalid_usage');
-        const observeTokens = await observesRootTokens(
-          tx,
-          root.task,
-          runtimeLedgerInputDigest,
-        );
-        const observeCalls = await observesRootCalls(
-          tx,
-          root.task,
-          runtimeLedgerInputDigest,
-        );
+        // Keep historical Token/call/cost budgets as telemetry identity only.
+        // Time and output-byte resource bounds still apply.
         for (const budget of budgets) {
           const reservation = reservations.find(
             (r) => r.metric === budget.metric,
           );
           if (!reservation) throw new RuntimeLedgerError('invalid_usage');
           if (
-            !(observeTokens && isTokenMetric(budget.metric)) &&
-            !(observeCalls && isCallMetric(budget.metric)) &&
+            !isObservedExecutionMetric(budget.metric) &&
             BigInt(budget.reserved) +
               BigInt(budget.spent) +
               BigInt(reservation.amount) >
@@ -1531,8 +1520,8 @@ export function createRuntimeOperationLedger(options: {
         }
         if (!isTerminalRuntimeOperationStatus(row.snapshot.status))
           throw new RuntimeLedgerError('invalid_state');
-        // Unknown/estimated usage never releases a reservation. Actual overspend is
-        // recorded truthfully and prevents new admission rather than hiding cost.
+        // Keep unknown/estimated usage distinct from measured receipts. Exceeding
+        // a historical capacity is telemetry, not a reason to stop the task.
         const reserved = BigInt(budget.reserved) - BigInt(reservation.amount);
         const spent = BigInt(budget.spent) + BigInt(observation.amount);
         if (reserved + spent > BigInt(Number.MAX_SAFE_INTEGER))
@@ -1540,15 +1529,8 @@ export function createRuntimeOperationLedger(options: {
         await tx`update allrice_runtime_reservations set settled_amount=${observation.amount},observation_id=${observation.observationId},observation=${json(tx, observation)} where operation_id=${row.id} and metric=${observation.metric}`;
         await tx`update allrice_runtime_budgets set reserved=${String(reserved)},spent=${String(spent)} where root_run_id=${root.root_run_id} and metric=${observation.metric}`;
         if (
-          reserved + spent > BigInt(budget.capacity) &&
-          !(
-            isTokenMetric(budget.metric) &&
-            (await observesRootTokens(tx, root.task, runtimeLedgerInputDigest))
-          ) &&
-          !(
-            isCallMetric(budget.metric) &&
-            (await observesRootCalls(tx, root.task, runtimeLedgerInputDigest))
-          )
+          !isObservedExecutionMetric(observation.metric) &&
+          reserved + spent > BigInt(budget.capacity)
         )
           await cancelLocked(tx, root, randomUUID(), 'budget_exhausted');
         return { duplicate: false };

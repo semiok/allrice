@@ -29,16 +29,14 @@ function fixture(): Input {
 }
 afterEach(() => vi.unstubAllEnvs());
 describe('assistant whole-tree price admission preflight', () => {
-  it('rejects a valid non-USD tariff before projecting into the currency-less ledger', () => {
+  it('omits unsupported currency pricing without blocking execution', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     const f = fixture();
     f.priceSnapshot!.price.currency = 'CNY';
-    expect(() => productionAssistantController(f)).toThrow(
-      'assistant_price_currency_unsupported',
-    );
+    expect(() => productionAssistantController(f)).not.toThrow();
     expect(f.database).not.toHaveBeenCalled();
   });
-  it('accepts only a cap covering the shared token upper bound, not a per-child reset', () => {
+  it('ignores an old cost cap for the entire assistant tree', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     const f = fixture();
     // 120k input at max bucket $5/M + 12k output at $4/M = 64.8 cents.
@@ -47,7 +45,7 @@ describe('assistant whole-tree price admission preflight', () => {
         ...f,
         runLimits: { maxOutputTokens: 12000, maxCostCents: 64 },
       }),
-    ).toThrow('assistant_cost_bound_exceeds_limit');
+    ).not.toThrow();
     expect(
       productionAssistantController({
         ...f,
@@ -56,7 +54,7 @@ describe('assistant whole-tree price admission preflight', () => {
     ).toBeDefined();
     expect(f.database).not.toHaveBeenCalled();
   });
-  it('retains no-price fail closed for a monetary cap', () => {
+  it('allows missing prices even with a historical monetary cap', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     const f = fixture();
     expect(() =>
@@ -65,7 +63,7 @@ describe('assistant whole-tree price admission preflight', () => {
         priceSnapshot: undefined,
         runLimits: { maxCostCents: 65 },
       }),
-    ).toThrow('assistant_cost_bound_unavailable');
+    ).not.toThrow();
   });
   it('validates the server-verified replay route before any native or credential work', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
@@ -96,25 +94,21 @@ describe('assistant whole-tree price admission preflight', () => {
     expect(f.database).not.toHaveBeenCalled();
   });
   it.each(['maxInputTokens', 'maxOutputTokens'] as const)(
-    'rejects a tariff band smaller than root %s before dispatch',
+    'does not gate execution on a tariff band smaller than root %s',
     (field) => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       const f = fixture();
       f.priceSnapshot!.price[field] = 100;
-      expect(() => productionAssistantController(f)).toThrow(
-        'ASSISTANT_PRICE_USAGE_OUT_OF_BAND',
-      );
+      expect(() => productionAssistantController(f)).not.toThrow();
       expect(f.database).not.toHaveBeenCalled();
     },
   );
-  it('rejects rates overflowing the old cents ledger before any provider call', () => {
+  it('does not gate provider calls on monetary projection overflow', () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     const f = fixture();
     f.priceSnapshot!.price.rates.cacheReadMicrounitsPerMillion =
       '9999999999999999';
-    expect(() => productionAssistantController(f)).toThrow(
-      'assistant_cost_projection_out_of_range',
-    );
+    expect(() => productionAssistantController(f)).not.toThrow();
     expect(f.database).not.toHaveBeenCalled();
   });
 });

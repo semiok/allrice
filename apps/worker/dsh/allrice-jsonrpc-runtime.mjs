@@ -1181,10 +1181,12 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             },
             render: (_args, value) => [{ type: 'text', text: value.content }],
           },
-          // These facades wait for an exact user approval, then delegate to a
-          // separately bounded process/browser/MCP executor. Do not spend the
-          // short execution timeout while the human is deciding.
+          // Approval and resource queues have their own waiting lifecycle.
+          // The executor starts its short script deadline after admission;
+          // Office must not fail at 65s simply because other tenants are busy.
           timeoutMs: [
+            'workspace.export.create',
+            'workspace.reconciliation.export',
             'local.process.execute',
             'cloud.process.execute',
             'cloud.mcp.call',

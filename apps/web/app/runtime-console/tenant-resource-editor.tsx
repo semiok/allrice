@@ -344,7 +344,7 @@ function Quotas({
       <h3>用量</h3>
       <p>
         {data?.subscription.tokenPolicy === 'observe'
-          ? 'Codex 订阅的 Token 和请求次数仅作统计。API 用量按已设置的额度执行。'
+          ? '所有模型的 Token、模型和工具调用次数、费用仅作统计。历史 Token 上限不再中断执行，任务时限与无进展保护保留。'
           : '查看本月已使用的资源；需要时可展开调整额度。'}
       </p>
       <button
@@ -395,7 +395,7 @@ function Quotas({
                     <th>
                       来源 /{' '}
                       {data.subscription.tokenPolicy === 'observe'
-                        ? 'API'
+                        ? '历史（不执行）'
                         : '生效'}{' '}
                       Token 上限
                     </th>
@@ -501,8 +501,8 @@ function Quotas({
                     </label>
                   ) : (
                     <p>
-                      此处只修改组织月 Token
-                      与调用次数；组织美分限额保持原值，订阅不据此推算费用。
+                      此处修改新任务的月请求次数限制；历史 Token
+                      与费用字段保留，不再用于执行拦截。
                     </p>
                   )}
                   {scope !== 'organization' ? (
@@ -564,6 +564,10 @@ function Quotas({
                           }[key]
                         }
                         type="number"
+                        readOnly={
+                          key === 'monthlyTokenLimit' &&
+                          data.subscription.tokenPolicy === 'observe'
+                        }
                         required
                         min={key === 'maxRuntimeMs' ? 1000 : 1}
                         step="1"
