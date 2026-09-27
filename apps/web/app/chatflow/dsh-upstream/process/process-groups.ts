@@ -36,7 +36,7 @@ function sameSummary(left: ProcessActivitySummary, right: ProcessActivitySummary
 
 function sameMembers(left: readonly NodeReference[], right: readonly NodeReference[]): boolean {
   return left.length === right.length && left.every((value, index) =>
-    value.key === right[index]?.key && value.groupPart === right[index].groupPart)
+    value.key === right[index]?.key && value.groupPart === right[index]?.groupPart)
 }
 
 function structureChanged(previous: ChatNode | undefined, current: ChatNode): boolean {

@@ -1,3 +1,4 @@
+import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { z } from 'zod';
 
 import { UuidSchema } from './common.ts';
@@ -162,6 +163,7 @@ export const EmployeeKernelRequestSchema = z
       .optional(),
     runtimeDistributionGeneration: z.string().min(1).max(240).optional(),
     imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
+    sessionReferences: SessionReferenceSnapshotsSchema.optional(),
   })
   .strict();
 export type EmployeeKernelRequest = z.infer<typeof EmployeeKernelRequestSchema>;

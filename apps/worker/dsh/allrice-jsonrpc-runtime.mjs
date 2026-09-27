@@ -2,6 +2,11 @@
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import {
+  prepareSessionReferenceContext,
+  installSessionReferenceAdmission,
+} from './allrice-session-references.mjs';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
@@ -831,19 +836,31 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   async prompt(params) {
     const images = Array.isArray(params?.images) ? params.images : [];
-    if (!images.length) return super.prompt(params);
-    // The rc.3 SDK inline-image wire drops names. Use the native attachment
-    // admission API to retain display names as well as ordered durable refs.
-    const imageBlocks = await this.ctx.attachments.admitPromptContent(
-      images.map((image) => ({ ...image, type: 'image' })),
+    const imageBlocks = images.length
+      ? await this.ctx.attachments.admitPromptContent(
+          images.map((image) => ({ ...image, type: 'image' })),
+        )
+      : [];
+    const contentBlocks = [...(params.contentBlocks ?? []), ...imageBlocks];
+    if (!params.sessionReferences?.length)
+      return super.prompt({ ...params, contentBlocks });
+    if (!this.initialized) throw new Error('SDK server is not initialized');
+    const record = await this.getOrCreateSession(params.sessionId);
+    this.assertLiveAgent(record, params.sessionId);
+    const agent = record.handle.agent;
+    const context = await prepareSessionReferenceContext(
+      agent,
+      params.sessionReferences,
     );
-    return super.prompt({
-      ...params,
-      contentBlocks: [
-        ...(Array.isArray(params.contentBlocks) ? params.contentBlocks : []),
-        ...imageBlocks,
-      ],
+    this.assertLiveAgent(record, params.sessionId);
+    const message = createUserMessage({
+      content: contentBlocks,
+      source: { kind: 'user' },
     });
+    this.referenceAdmission ??= installSessionReferenceAdmission(this.ctx);
+    this.referenceAdmission(agent, message, context);
+    agent.followup(message);
+    return { messageId: message.id };
   }
 
   async initialize(params) {
