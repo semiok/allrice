@@ -15,10 +15,10 @@ const suite =
 suite(
   'retired Gemini runs remain readable but cannot start new execution',
   () => {
-  let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
-  beforeAll(async () => {
-    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-    database = await createAssistantFixtureDatabase();
+    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    beforeAll(async () => {
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      database = await createAssistantFixtureDatabase();
     }, 120000);
     afterAll(async () => {
       await database?.close();
