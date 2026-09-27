@@ -90,7 +90,7 @@ const tabs = [
   ['knowledge', 'Knowledge'],
   ['model', '模型'],
   ['tools', '工具'],
-  ['debug', '调试'],
+  ['debug', '测试'],
   ['publish', '发布租户'],
 ] as const;
 
@@ -760,11 +760,11 @@ export function EmployeeProduction() {
         (candidate) => candidate.id === previewWorkspaceId,
       );
       setMessage(
-        `已使用${workspace ? `「${workspace.name}」` : '所选租户'}的真实模型、Skill、Tool Broker 和在线 Bridge 试用当前配置；不会改变已发布版本。`,
+        `已保存草稿，测试任务已提交到${workspace ? `「${workspace.name}」` : '所选租户'}的环境。结果会显示在下方，租户正在使用的版本保持不变。`,
       );
       await loadTestRuns(selectedId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '当前配置试用失败');
+      setError(reason instanceof Error ? reason.message : '草稿测试启动失败');
     } finally {
       setBusy(false);
     }
@@ -1280,7 +1280,7 @@ export function EmployeeProduction() {
           <summary>配置帮助</summary>
           <p>
             {directory.rapidIteration
-              ? '添加后保存并发布即可使用；配置预览只检查只读行为，完整试用请进入已派驻员工的工作台。'
+              ? '添加后保存并发布即可使用；草稿测试仅支持问答和读取资料，完整任务请进入租户工作台验证。'
               : '添加后保存草稿，按发布检查完成当前版本验证，再发布到目标租户。'}
           </p>
           <p>
@@ -1295,10 +1295,10 @@ export function EmployeeProduction() {
     panel = (
       <>
         <p className={styles.notice}>
-          配置预览会保存当前草稿，并验证模型和只读工具。需要写入或执行命令的技能在此预览中不会加载。完整能力请发布后在租户工作台真实试用。
+          在这里测试当前草稿的回复效果，结果显示在下方。仅支持问答和读取资料，生成文件、修改数据等完整任务请发布后在租户工作台验证。
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
-          <span>预览环境</span>
+          <span>测试使用的租户</span>
           <select
             value={previewWorkspaceId}
             onChange={(event) => setPreviewWorkspaceId(event.target.value)}
@@ -1311,9 +1311,7 @@ export function EmployeeProduction() {
             ))}
           </select>
           {previewWorkspace ? (
-            <small>
-              Bridge 与本地工作区状态请在“Runtime 状态”中按租户查看。
-            </small>
+            <small>使用所选租户已连接的模型和工具进行测试。</small>
           ) : null}
         </label>
         <label className={`${styles.field} ${styles.fieldWide}`}>
@@ -1323,32 +1321,38 @@ export function EmployeeProduction() {
             onChange={(event) => setTestPrompt(event.target.value)}
           />
         </label>
-        <div className={styles.actions}>
+        <div className={styles.testAction}>
           <button
             className={styles.button}
             data-primary="true"
             disabled={busy || !testPrompt.trim() || !previewWorkspaceId}
             onClick={() => void runDraftPreview()}
           >
-            {busy ? '启动中…' : '运行只读配置预览'}
+            {busy ? '正在启动测试…' : '测试草稿'}
           </button>
+          <span>自动保存草稿，不影响租户正在使用的版本。</span>
         </div>
-        {directory.rapidIteration ? (
-          <div className={styles.actions}>
-            <button
-              className={styles.button}
-              data-primary="true"
-              disabled={busy || !previewWorkspaceId}
-              onClick={() => void publishSelected([previewWorkspaceId])}
-            >
-              发布到所选租户并真实试用
-            </button>
-            {trialLinks}
+        <section className={styles.publishEntry} aria-label="让租户使用">
+          <div>
+            <strong>让租户使用</strong>
+            <p>到发布页选择租户并发布，然后进入工作台使用完整能力。</p>
           </div>
-        ) : null}
+          <button
+            className={styles.button}
+            disabled={busy}
+            onClick={() => {
+              invalidateReview();
+              if (previewWorkspaceId)
+                setSelectedWorkspaces([previewWorkspaceId]);
+              setTab('publish');
+            }}
+          >
+            前往发布
+          </button>
+        </section>
         <div className={styles.testRuns}>
           {testRuns.length === 0 ? (
-            <p className={styles.muted}>还没有配置试用记录。</p>
+            <p className={styles.muted}>还没有草稿测试记录。</p>
           ) : (
             testRuns.map((run) => (
               <article className={styles.testRun} key={run.id}>
@@ -1359,7 +1363,7 @@ export function EmployeeProduction() {
                 <p className={styles.testPrompt}>{run.input.prompt}</p>
                 {run.input.workspaceId ? (
                   <small className={styles.muted}>
-                    预览环境：
+                    测试租户：
                     {directory.workspaces.find(
                       (workspace) => workspace.id === run.input.workspaceId,
                     )?.name ?? run.input.workspaceId}
@@ -1467,7 +1471,7 @@ export function EmployeeProduction() {
               {busy ? '正在保存并发布…' : '保存并发布所选能力'}
             </button>
             <p>
-              发布会自动保存草稿、检查依赖并启用所选工具。配置预览可选，不再作为发布前置条件。
+              发布会自动保存草稿、检查依赖并启用所选工具。草稿测试可选，不作为发布前置条件。
             </p>
             {trialLinks}
           </div>

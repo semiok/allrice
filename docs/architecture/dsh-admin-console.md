@@ -195,3 +195,8 @@ Operation confirmation belongs to the using member's workspace-scoped
 preferences instead of repeating the legacy employee approval policy.
 Tool selection does not create account connections or grant device folders;
 the existing resource authorization and execution checks still apply.
+
+The `测试` tab saves and tests the current draft with read-only capabilities.
+Its secondary `前往发布` action only opens the publication page and carries
+over the selected tenant; it preserves unsaved edits and does not save or
+publish. Publication and links to the tenant workbench stay on `发布租户`.
