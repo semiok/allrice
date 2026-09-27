@@ -5,13 +5,14 @@ import {
   Modal,
   IconAgentPresetOutlineMedium, IconArchiveOutlineMedium, IconCloseOutlineRegular, IconDataOutlineMedium,
   IconPersonalizationOutlineMedium, IconSettingsOutlineMedium, IconUserOutlineMedium,
-  IconBranchOutlineMedium, IconFollowsystemOutlineMedium, IconLinkOutlineMedium, IconSlidersTwoOutlineMedium,
+  IconBranchOutlineMedium, IconFollowsystemOutlineMedium, IconLinkOutlineMedium, IconSlidersTwoOutlineMedium, IconSparkleMedium,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import css from './SettingsRoot.module.css'
 
 /** Nav glyph by section id; unknown ids fall back to the settings gear. */
 function navIcon(id: string) {
   // Allrice section ids reuse the published icon set alongside the native ids.
+  if (id === 'capabilities') return <IconSparkleMedium className={css.navIcon} size={16} />
   if (id === 'work') return <IconBranchOutlineMedium className={css.navIcon} size={16} />
   if (id === 'apps') return <IconLinkOutlineMedium className={css.navIcon} size={16} />
   if (id === 'computer') return <IconFollowsystemOutlineMedium className={css.navIcon} size={16} />

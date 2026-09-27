@@ -1,6 +1,7 @@
 import type {
   Employee,
   EmployeeProfile,
+  EmployeeSessionGroup,
   Session,
   Workspace,
 } from './chatflow-types';
@@ -113,11 +114,13 @@ export function employeeGroups(
   activeId: string | null,
   expansion: Record<string, boolean>,
   archivedFilter: ArchivedFilter = 'default',
+  summaries: EmployeeSessionGroup[] = [],
 ) {
   const assignments = new Map(
     workspace.employees.map((employee) => [employee.id, employee]),
   );
-  const ids = [...assignments.keys()];
+  const counts = new Map(summaries.map((g) => [g.employeeAssignmentId, g]));
+  const ids = [...new Set([...assignments.keys(), ...counts.keys()])];
   for (const session of sessions)
     if (!ids.includes(session.employeeAssignmentId))
       ids.push(session.employeeAssignmentId);
@@ -130,7 +133,7 @@ export function employeeGroups(
       workspaceId: id,
       title:
         employee?.currentVersion.manifest.name ??
-        `${history[0]?.employeeName ?? '历史员工'}（已撤回）`,
+        `${history[0]?.employeeName ?? counts.get(id)?.employeeName ?? '历史员工'}（已撤回）`,
       // No filesystem semantics or host operations are attached to these groups.
       path: '',
       createdAt: '',
@@ -185,5 +188,12 @@ export function employeeGroups(
         (id) => expansion[id] ?? id === (activeGroup ?? defaultId),
       ),
     },
-  ).map((group) => ({ ...group, createdAt: undefined }));
+  ).map((group) => ({
+    ...group,
+    sessionCount: Math.max(
+      group.sessionCount,
+      counts.get(group.key)?.count ?? 0,
+    ),
+    createdAt: undefined,
+  }));
 }

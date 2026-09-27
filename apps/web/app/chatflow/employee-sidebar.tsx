@@ -58,8 +58,22 @@ export function EmployeeSidebar({
   }, [key, expansion]);
   const groups = useMemo(
     () =>
-      employeeGroups(workspace, sessions, activeId, expansion, archive?.filter),
-    [workspace, sessions, activeId, expansion, archive?.filter],
+      employeeGroups(
+        workspace,
+        sessions,
+        activeId,
+        expansion,
+        archive?.filter,
+        archive?.employeeGroups,
+      ),
+    [
+      workspace,
+      sessions,
+      activeId,
+      expansion,
+      archive?.filter,
+      archive?.employeeGroups,
+    ],
   );
   if (!groups.length) return <p className={css.empty}>当前没有可用员工</p>;
   const prepareSession = (target: EventTarget) => {
@@ -108,6 +122,9 @@ export function EmployeeSidebar({
           : group.sessions.filter(
               (row) => native.rows.includes(row) || row.id === activeId,
             );
+        const pagination = archive?.employeePages?.[group.key];
+        const hasMore = archive?.hasMore(group.key);
+        const remaining = Math.max(0, group.sessionCount - rows.length);
         if (collapsed)
           return (
             <div
@@ -254,16 +271,29 @@ export function EmployeeSidebar({
                 {group.sessionCount === 0 && (
                   <span className={css.empty}>从顶部「新的工作」开始</span>
                 )}
-                {group.sessions.length > rows.length && (
+                {(group.sessions.length > rows.length || hasMore) && (
                   <button
                     className={css.more}
                     type="button"
-                    onClick={() =>
-                      setAll((current) => ({ ...current, [group.key]: true }))
-                    }
+                    disabled={archive?.loading || pagination?.loading}
+                    onClick={() => {
+                      setAll((current) => ({ ...current, [group.key]: true }));
+                      if (hasMore) archive?.loadMore(group.key);
+                    }}
                   >
-                    展开其余 {group.sessions.length - rows.length} 个会话
+                    {pagination?.loading
+                      ? '正在加载会话…'
+                      : pagination?.error
+                        ? '加载失败，点击重试'
+                        : remaining > 0
+                          ? `展开其余 ${remaining} 个会话`
+                          : '展开更多会话'}
                   </button>
+                )}
+                {pagination?.error && (
+                  <span role="alert" className={css.empty}>
+                    {pagination.error}
+                  </span>
                 )}
                 {all[group.key] && native.hiddenCount > 0 && (
                   <button

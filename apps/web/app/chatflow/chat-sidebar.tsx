@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import {
   IconArchiveOutlineRegular,
   IconChevronRightOutlineRegular,
@@ -24,6 +24,7 @@ import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatSidebarProps {
+  capabilities: ReactNode;
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
   collapsed: boolean;
@@ -45,6 +46,7 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({
+  capabilities,
   archive,
   activeId,
   collapsed,
@@ -213,6 +215,13 @@ export function ChatSidebar({
         {archive?.error && !collapsed && (
           <p className={archiveCss.error} role="alert">
             {archive.error}
+            <button
+              type="button"
+              onClick={archive.reload}
+              disabled={archive.loading}
+            >
+              重新加载会话
+            </button>
           </p>
         )}
         <div className={sidebarUi.regionArea}>
@@ -232,19 +241,9 @@ export function ChatSidebar({
           />
         </div>
 
-        {archive?.nextCursor && !collapsed && (
-          <button
-            className={archiveCss.more}
-            type="button"
-            onClick={archive.loadMore}
-            disabled={archive.loading}
-          >
-            {archive.loading ? '正在加载…' : '加载更早的工作'}
-          </button>
-        )}
-
         <div className={sidebarUi.footArea}>
           <SidebarSettings
+            capabilities={capabilities}
             key={
               employeePreferenceKey(workspace) ??
               `${workspace.organizationId}:${workspace.workspaceId}`

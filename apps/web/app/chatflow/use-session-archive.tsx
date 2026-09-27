@@ -1,6 +1,10 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Session, Workspace } from './chatflow-types';
+import type {
+  EmployeeSessionGroup,
+  Session,
+  Workspace,
+} from './chatflow-types';
 import type { ArchivedFilter } from './dsh-upstream/workspace/tree';
 import type { PropsRenderSlots } from './dsh-upstream/workspace/contracts';
 import {
@@ -16,7 +20,15 @@ import type {
 import { employeeTranslate } from './employee-navigation';
 import { readJson } from './chatflow-utils';
 
-type Page = { sessions: Session[]; nextCursor: string | null };
+type Page = {
+  sessions: Session[];
+  nextCursor: string | null;
+  employeeGroups?: EmployeeSessionGroup[];
+  employees?: Record<
+    string,
+    { nextCursor: string | null; loading: boolean; error: string }
+  >;
+};
 export function useSessionArchive({
   workspace,
   headers,
@@ -42,6 +54,7 @@ export function useSessionArchive({
   );
   const [toast, setToast] = useState<RowToastState | null>(null);
   const generation = useRef(0);
+  const employeeRequests = useRef(new Map<string, symbol>());
   const pending = useRef(new Map<string, symbol>());
   const toastSeq = useRef(0);
   const workspaceId = workspace?.workspaceId;
@@ -52,6 +65,20 @@ export function useSessionArchive({
     async (cursor?: string) => {
       if (!workspaceId) return;
       const ticket = ++generation.current;
+      employeeRequests.current.clear();
+      setPage((old) =>
+        old
+          ? {
+              ...old,
+              employees: Object.fromEntries(
+                Object.entries(old.employees ?? {}).map(([id, item]) => [
+                  id,
+                  { ...item, loading: false },
+                ]),
+              ),
+            }
+          : old,
+      );
       setLoading(true);
       setError('');
       try {
@@ -77,6 +104,7 @@ export function useSessionArchive({
             scope,
             filter,
             nextCursor: result.nextCursor,
+            employeeGroups: result.employeeGroups,
             sessions: [
               ...new Map(
                 [...before, ...result.sessions].map((s) => [s.id, s]),
@@ -136,6 +164,89 @@ export function useSessionArchive({
         : !selectedSession.archivedAt))
       ? [selectedSession, ...listed]
       : listed;
+  const currentPage =
+    page?.scope === scope && page.filter === filter ? page : null;
+  const cursorFor = (employeeId: string) => {
+    const employeePage = currentPage?.employees?.[employeeId];
+    if (employeePage) return employeePage.nextCursor;
+    const total = currentPage?.employeeGroups
+      ? (currentPage.employeeGroups.find(
+          (g) => g.employeeAssignmentId === employeeId,
+        )?.count ?? 0)
+      : undefined;
+    const loaded =
+      currentPage?.sessions.filter((s) => s.employeeAssignmentId === employeeId)
+        .length ?? 0;
+    return total !== undefined && total <= loaded
+      ? null
+      : currentPage?.nextCursor;
+  };
+  async function loadMore(employeeId: string) {
+    const cursor = cursorFor(employeeId);
+    if (
+      !workspaceId ||
+      loading ||
+      !cursor ||
+      employeeRequests.current.has(employeeId)
+    )
+      return;
+    const ticket = generation.current;
+    const request = Symbol();
+    employeeRequests.current.set(employeeId, request);
+    const current = () =>
+      ticket === generation.current &&
+      currentScope.current === scope &&
+      employeeRequests.current.get(employeeId) === request;
+    const update = (
+      next: { nextCursor: string | null; loading: boolean; error: string },
+      added: Session[] = [],
+    ) => {
+      if (!current()) return;
+      setPage((old) =>
+        old?.scope === scope && old.filter === filter
+          ? {
+              ...old,
+              sessions: [
+                ...new Map(
+                  [...old.sessions, ...added].map((s) => [s.id, s]),
+                ).values(),
+              ],
+              employees: { ...old.employees, [employeeId]: next },
+            }
+          : old,
+      );
+    };
+    update({ nextCursor: cursor, loading: true, error: '' });
+    try {
+      const query = new URLSearchParams({
+        workspaceId,
+        employeeAssignmentId: employeeId,
+        cursor,
+        archived: filter === 'only' ? 'only' : String(filter === 'show'),
+      });
+      const result = await fetch(`/api/v1/sessions?${query}`, {
+        headers,
+        cache: 'no-store',
+      }).then(readJson<Page>);
+      if (
+        !Array.isArray(result.sessions) ||
+        result.sessions.some((s) => s.employeeAssignmentId !== employeeId)
+      )
+        throw new Error('工作记录响应无效，请重试');
+      update(
+        { nextCursor: result.nextCursor, loading: false, error: '' },
+        result.sessions,
+      );
+    } catch (cause) {
+      update({
+        nextCursor: cursor,
+        loading: false,
+        error: cause instanceof Error ? cause.message : '工作记录加载失败',
+      });
+    } finally {
+      if (current()) employeeRequests.current.delete(employeeId);
+    }
+  }
   async function mutate(
     sessionId: string,
     archived: boolean,
@@ -247,11 +358,11 @@ export function useSessionArchive({
     setFilter,
     loading,
     error,
-    nextCursor:
-      page?.scope === scope && page.filter === filter ? page.nextCursor : null,
-    loadMore: () => {
-      if (!loading && page?.nextCursor) void load(page.nextCursor);
-    },
+    reload: () => void load(),
+    employeeGroups: currentPage?.employeeGroups,
+    employeePages: currentPage?.employees,
+    hasMore: (employeeId: string) => !!cursorFor(employeeId),
+    loadMore: (employeeId: string) => void loadMore(employeeId),
     restore: (id: string) => act(id, false),
     renderActions,
     overlays: (
