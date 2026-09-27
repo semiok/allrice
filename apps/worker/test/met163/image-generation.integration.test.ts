@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { executeRiceTool } from './tool-broker.js';
-import { HandlerError } from './errors.js';
-import { requestCodexImage } from './codex-image-broker.js';
+import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
+import { executeRiceTool } from '../../src/tool-broker.js';
+import { HandlerError } from '../../src/errors.js';
+import { requestCodexImage } from '../../src/codex-image-broker.js';
 import { listToolBrokerFiles } from '@allrice/database';
-vi.mock('./codex-image-broker.js', () => ({ requestCodexImage: vi.fn() }));
+vi.mock('../../src/codex-image-broker.js', () => ({ requestCodexImage: vi.fn() }));
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
 const suite =
