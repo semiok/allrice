@@ -807,6 +807,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
       }
       if (path === '/api/v1/bridge/devices') return answer({ devices: [] });
+      if (path === '/api/v1/bridge/client/releases')
+        return answer({
+          releases: [
+            {
+              platform: 'macos-arm64',
+              available: true,
+              version: '0.6.0-dev.7',
+            },
+            { platform: 'macos-x64', available: true, version: '0.6.0-dev.7' },
+          ],
+        });
       if (path === '/api/v1/workspace/monthly-quota') {
         // A completed turn may still have a read in flight for the old scope.
         // Model the server denying it after a workspace switch, rather than
@@ -3896,6 +3907,74 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([390, 1280])(
+    'shows downloadable and installed Bridge versions at width %i and refreshes after an upgrade',
+    async (width) => {
+      const f = await fixture({ width });
+      let installed = '0.6.0-dev.6';
+      try {
+        await f.page.route('**/api/v1/bridge/devices?*', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              devices: [
+                {
+                  id: id(500),
+                  name: 'Synthetic Mac',
+                  platform: 'macos-arm64',
+                  status: 'online',
+                  clientVersion: installed,
+                  lastSeenAt: new Date().toISOString(),
+                  folderGrants: [],
+                },
+              ],
+            }),
+          }),
+        );
+        await openCapabilities(f);
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await settings
+          .locator('[data-capability="local_files"]')
+          .getByRole('button', { name: '连接与管理电脑' })
+          .click();
+        const dialog = f.page.getByRole('dialog', { name: '本地工作区' });
+        const download = dialog.getByRole('link', {
+          name: '下载 M 芯片版 · v0.6.0-dev.7',
+          exact: true,
+        });
+        await download.waitFor();
+        expect(await download.getAttribute('href')).toBe(
+          '/api/v1/bridge/client/macos-arm64',
+        );
+        await dialog
+          .getByText('当前版本 v0.6.0-dev.6 · 可更新至 v0.6.0-dev.7', {
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `/tmp/bridge-release-versions-${width}.png`,
+        });
+        installed = '0.6.0-dev.7';
+        await dialog
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await dialog
+          .getByText('当前版本 v0.6.0-dev.7 · 已是最新版本', { exact: true })
+          .waitFor();
+        expect(f.writes).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('checks once on opening and preserves cards while manually refreshing, without polling or focus refresh', async () => {
     const f = await fixture();

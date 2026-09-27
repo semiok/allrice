@@ -69,6 +69,11 @@ import styles from './dsh-saas.module.css';
 import { WorkspaceFilePickerDialog } from './workspace-file-picker-dialog';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
+import {
+  BridgeReleaseDownloads,
+  BridgeVersionStatus,
+  useBridgeReleases,
+} from './bridge-releases';
 import { projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
@@ -385,6 +390,7 @@ export function ChatFlowClient({
     requestBridgeWorkspaceSelection,
     setBridgeOpen,
   } = useBridge({ setError, tenantHeaders, workspace });
+  const bridgeReleases = useBridgeReleases(bridgeOpen, tenantHeaders);
 
   const interactions = useInteractionStatus(
     workbenchEnabled,
@@ -1458,7 +1464,10 @@ export function ChatFlowClient({
             </p>
             <button
               disabled={bridgeBusy}
-              onClick={() => void loadBridgeDevices()}
+              onClick={() => {
+                void loadBridgeDevices();
+                void bridgeReleases.reload();
+              }}
               type="button"
             >
               {bridgeBusy ? '正在刷新…' : '刷新状态'}
@@ -1470,30 +1479,15 @@ export function ChatFlowClient({
               : bridgeRefreshError || '尚未取得最新状态，请刷新确认'}
             {' · '}在线状态根据最近 90 秒的设备心跳判断。
           </small>
-          <div className={styles.bridgeDownloads}>
-            <a
-              className={styles.bridgeClientDownload}
-              download="RiceBridge-M.zip"
-              href="/api/v1/bridge/client/macos-arm64"
-              onClick={() => noteBridgeDownload('M 芯片菜单栏版')}
-            >
-              下载 M 芯片版
-            </a>
-            <a
-              className={styles.bridgeClientDownload}
-              download="RiceBridge-Intel.zip"
-              href="/api/v1/bridge/client/macos-x64"
-              onClick={() => noteBridgeDownload('Intel 芯片菜单栏版')}
-            >
-              下载 Intel 芯片版
-            </a>
-          </div>
-          <p>
-            升级前正常退出旧 Bridge，再解压打开 Rice
-            Bridge.app；原有配对和工作区会保留。
-            在菜单栏查看状态、选择文件夹或暂停连接，无需保持终端窗口。
-            环境准备失败时，选择“重新检查并准备环境”重试；通用计算也可直接交给员工在云端完成。
-            当前下载为尚未 Apple 公证的 Dev 包。
+          <BridgeReleaseDownloads
+            releases={bridgeReleases.releases}
+            error={bridgeReleases.error}
+            onDownload={noteBridgeDownload}
+          />
+          <p className={styles.bridgeUpgradeNote}>
+            升级前从菜单栏退出旧 Bridge，再解压打开 Rice Bridge.app。
+            原有配对、文件夹和开关设置会保留，无需重新配对。 当前下载为尚未
+            Apple 公证的 Dev 包。
           </p>
           {bridgeFeedback ? (
             <p
@@ -1527,6 +1521,13 @@ export function ChatFlowClient({
                       ? 'Apple Silicon（M 芯片）'
                       : 'Intel 芯片'}
                   </small>
+                  <BridgeVersionStatus
+                    installed={device.clientVersion}
+                    release={bridgeReleases.releases?.find(
+                      (release) => release.platform === device.platform,
+                    )}
+                    online={bridgeStatusKnown && device.status === 'online'}
+                  />
                   <small>
                     最后心跳：
                     {device.lastSeenAt
