@@ -17,6 +17,7 @@ const formatMetadata: Record<
   DeliveryFormat,
   { extension: string; mediaType: string }
 > = {
+  png: { extension: '.png', mediaType: 'image/png' },
   markdown: { extension: '.md', mediaType: 'text/markdown' },
   text: { extension: '.txt', mediaType: 'text/plain' },
   html: { extension: '.html', mediaType: 'text/html' },
@@ -217,6 +218,8 @@ export async function generateDeliverable(input: {
   format: DeliveryFormat;
   content: string;
 }): Promise<GeneratedDeliverable> {
+  if (input.format === 'png')
+    throw new Error('图片必须通过图片生成工具交付，不能将文本伪装成图片。');
   const metadata = formatMetadata[input.format];
   let bytes: Buffer;
   if (input.format === 'docx') bytes = await generateDocx(input.content);

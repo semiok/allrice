@@ -558,6 +558,8 @@ export async function publishWorkbenchArtifact(
     parentObjectId?: string;
     sourceFile?: ArtifactSourceFile;
     changeSummary?: string;
+    /** Server-only provider receipt and exact worker lease, never model arguments. */
+    trustedImageOperation?: { id: string; leaseToken: string };
     /** Server-only deterministic renderer input; never accepted by generic export HTTP/tool arguments. */
     trustedCloudDerivation?: {
       sourceArtifactId: string;
@@ -695,6 +697,25 @@ export async function publishWorkbenchArtifact(
           ? 'workspace.reconciliation.export'
           : 'workspace.export.create';
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      if (input.trustedImageOperation) {
+        if (
+          input.format !== 'png' ||
+          input.mediaType !== 'image/png' ||
+          input.kind !== 'document'
+        )
+          fail('invalid_publication');
+        const [image] = await tx`select i.id from allrice_image_operations i
+          join allrice_jobs j on j.id=${context.jobId} and j.run_id=i.run_id
+          where i.id=${input.trustedImageOperation.id} and i.run_id=${context.runId}
+            and i.organization_id=${context.organizationId} and i.workspace_id=${context.workspaceId!}
+            and i.session_id=${input.sessionId} and i.owner_id=${owner} and i.status='running'
+            and i.source_object_id is not distinct from ${input.sourceFile?.objectId ?? null}::uuid
+            and i.source_checksum is not distinct from ${input.sourceFile?.checksum ?? null}::text
+            and j.worker_id=${context.worker.id} and j.lease_token::text=${input.trustedImageOperation.leaseToken}
+            for share of i,j`;
+        if (!image) fail('run_unavailable');
+      }
+
       if (derivedSource)
         await assertCloudDerivationLease(
           tx,
@@ -750,7 +771,10 @@ export async function publishWorkbenchArtifact(
         tx,
       );
       const provenance = {
-        kind: derivedSource ? 'tool_result' : 'model_proposal',
+        kind:
+          derivedSource || input.trustedImageOperation
+            ? 'tool_result'
+            : 'model_proposal',
         runId: publishingRunId,
         operationId: derivedSource?.provenance.operationId ?? null,
         stepId: null,

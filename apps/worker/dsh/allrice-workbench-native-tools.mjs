@@ -1,11 +1,54 @@
 // Model-visible native declarations; publication and execution authority stay
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
 import {
+  ImageToolInputSchema,
   OfficeExportSchema,
   NativeOfficeExportSchema,
 } from '@allrice/contracts';
 
 export const workbenchNativeTools = [
+  ...['generate', 'edit'].map((action) => ({
+    canonicalName: `image.${action}`,
+    wireName: `image_${action}`,
+    timeoutMs: 320_000,
+    isConcurrencySafe: false,
+    presentation: 'tool',
+    description:
+      action === 'generate'
+        ? 'Generate one image only when the user requests drawing or image creation. Return the real downloadable PNG. Do not use for image understanding. Never retry unknown results.'
+        : 'Edit a specific authorized image and preserve its original version. Resolve source.objectId and checksum via workspace_file_list. Ask if the source is ambiguous. Never retry unknown results.',
+    validateArguments: (args) => ImageToolInputSchema.parse(args),
+    parameters: {
+      prompt: {
+        type: 'string',
+        required: true,
+        description:
+          'Detailed image creation or edit instructions, max 4000 characters.',
+      },
+      fileName: {
+        type: 'string',
+        required: true,
+        description: 'Human-readable PNG filename.',
+      },
+      source: {
+        type: 'object',
+        required: action === 'edit',
+        additionalProperties: false,
+        properties: {
+          objectId: {
+            type: 'string',
+            required: true,
+            description: 'Authorized exact source storage object UUID.',
+          },
+          checksum: {
+            type: 'string',
+            required: true,
+            description: 'Exact sha256 checksum returned by AllRice.',
+          },
+        },
+      },
+    },
+  })),
   {
     canonicalName: 'workspace.export.create',
     wireName: 'workspace_export_create',

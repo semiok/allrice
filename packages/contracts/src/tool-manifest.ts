@@ -200,6 +200,20 @@ export const allRiceToolManifest = [
     dshWireName: 'market_history',
   },
   {
+    canonicalName: 'image.generate',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'image_generate',
+  },
+  {
+    canonicalName: 'image.edit',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'image_edit',
+  },
+  {
     canonicalName: 'workspace.export.create',
     capability: 'storage:write',
     risk: 'managed_write',

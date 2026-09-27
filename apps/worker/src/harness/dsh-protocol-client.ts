@@ -310,6 +310,15 @@ export class DshProtocolClient {
     return this.request('provider/cancel-codex', undefined, 10_000);
   }
 
+  async generateCodexImage(input: {
+    workModel: string;
+    imageModel: string;
+    prompt: string;
+    source?: { mediaType: string; data: string };
+  }) {
+    return this.request('provider/image-generation', input, 310_000);
+  }
+
   async searchCodexWeb(query: string, maxResults = 5) {
     const result = await this.request(
       'provider/web-search',

@@ -9,7 +9,7 @@ import type {
   AssistantFixtureCleanupProof,
   createAssistantFixtureDatabase,
 } from '../../../packages/database/src/assistant-runtime.fixture.ts';
-import { P27_CODEX_ORDINARY_LIMITS as runLimits } from './p27-codex-worker-preflight.ts';
+import { P27_CODEX_ORDINARY_LIMITS as ordinaryRunLimits } from './p27-codex-worker-preflight.ts';
 
 const localFixtureDatabaseUrl = 'postgres://a123@127.0.0.1:5432/allrice_b2';
 const ciFixtureDatabaseUrl =
@@ -45,8 +45,13 @@ export async function createP27CodexWorkerFixture(
     allowCiDatabase?: boolean;
     /** Synthetic Worker regression only; never used by live Codex smoke. */
     syntheticImagesWithAssistants?: boolean;
+    /** Isolated MET-163 image execution acceptance. */
+    imageGeneration?: boolean;
   } = {},
 ) {
+  const runLimits = options.imageGeneration
+    ? { ...ordinaryRunLimits, timeoutMs: 600_000 }
+    : ordinaryRunLimits;
   requireFixture(
     options.throughMigration === undefined ||
       options.throughMigration === '0096_assistant_pricing.sql',
@@ -234,9 +239,15 @@ export async function createP27CodexWorkerFixture(
       key: 'p27-codex-worker',
       name: 'P27 isolated ordinary Codex Worker',
       description: 'Synthetic acceptance only',
-      toolNames: options.syntheticImagesWithAssistants
-        ? ['assistant.delegate', 'assistant.report']
-        : [],
+      toolNames: options.imageGeneration
+        ? [
+            'workspace.file.list',
+            'workspace.document.read',
+            'workspace.export.create',
+          ]
+        : options.syntheticImagesWithAssistants
+          ? ['assistant.delegate', 'assistant.report']
+          : [],
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-codex',
@@ -251,13 +262,15 @@ export async function createP27CodexWorkerFixture(
         dataScopes: ['workspace'],
         connectorIdentityModes: ['user'],
         approvalPolicy: 'confirm_side_effects',
-        deniedCapabilities: [
-          'secret:use',
-          'storage:read',
-          'storage:write',
-          'automation:write',
-          'network:outbound',
-        ],
+        deniedCapabilities: options.imageGeneration
+          ? ['secret:use', 'automation:write', 'network:outbound']
+          : [
+              'secret:use',
+              'storage:read',
+              'storage:write',
+              'automation:write',
+              'network:outbound',
+            ],
       },
     });
     const checksum = config.employeeManifestChecksum(manifest);
@@ -278,6 +291,8 @@ export async function createP27CodexWorkerFixture(
       if (!options.throughMigration)
         await tx`update allrice_platform_model_settings
         set configuration=jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}) where singleton`;
+      if (options.imageGeneration)
+        await tx`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imagesEnabled}','true'::jsonb) where singleton`;
       await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
         values(${connectionId},'canary',${[organizationId]},false)`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)

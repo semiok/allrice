@@ -1,3 +1,4 @@
+export * from './image-generation.ts';
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
 export * from './work-methods.ts';
