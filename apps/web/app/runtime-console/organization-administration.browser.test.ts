@@ -447,11 +447,13 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await editor.getByRole('button', { name: '完成', exact: true }).click();
       await page.getByText('公司 AI 员工、应用与用量', { exact: true }).click();
       const defaults = page.getByRole('region', {
-        name: '公司默认 AI 员工',
+        name: '全员自动配发 AI 员工',
         exact: true,
       });
       await defaults
-        .getByLabel(`默认配发 ${source.definition.name}`, { exact: true })
+        .getByLabel(`全员自动配发 ${source.definition.name}（含新员工）`, {
+          exact: true,
+        })
         .click();
       await expect
         .poll(() =>

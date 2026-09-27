@@ -112,7 +112,9 @@ export function OrganizationAiAssignments({
       });
       setNotice(
         (action === 'default'
-          ? `公司默认配发已${defaultEnabled ? '开启' : '关闭'}，个人增删保持不变。`
+          ? defaultEnabled
+            ? `已开启「${employee.name}」全员自动配发，现有员工和以后新增的员工都会自动获得；单独为某人添加或移除的设置不变。`
+            : `已关闭「${employee.name}」全员自动配发，跟随公司设置获得的配发已撤回；单独为某人添加的仍保留。`
           : `已更新 ${result.changedCount} 名员工的 AI 配发设置（本次选择 ${result.targetCount} 人）。`) +
           (result.cancellationRequestedCount
             ? `已请求停止 ${result.cancellationRequestedCount} 项相关工作，历史记录保留。`
@@ -128,10 +130,10 @@ export function OrganizationAiAssignments({
   return (
     <section
       className={styles.editor}
-      aria-label={defaults ? '公司默认 AI 员工' : '员工 AI 配发'}
+      aria-label={defaults ? '全员自动配发 AI 员工' : '员工 AI 配发'}
     >
       <div className={styles.selectors}>
-        <h3>{title ?? (defaults ? '公司默认 AI 员工' : '配置 AI 员工')}</h3>
+        <h3>{title ?? (defaults ? '全员自动配发 AI 员工' : '配置 AI 员工')}</h3>
         <button disabled={busy || loading} onClick={() => void load()}>
           刷新 AI 员工
         </button>
@@ -143,9 +145,15 @@ export function OrganizationAiAssignments({
       </div>
       <p>
         {defaults
-          ? '默认配发适用于现有和后续新增员工，个人明确添加或移除的设置会保留。'
+          ? '勾选后，公司现有员工和以后新增的员工都会自动获得这个 AI 员工；单独为某人添加或移除的设置仍会保留。'
           : `本次选择 ${data?.targetCount ?? '…'} 人。添加、移除或恢复跟随公司默认；不会改变其他员工。`}
       </p>
+      {defaults && (
+        <p>
+          取消勾选后，跟随公司设置获得的配发会撤回，单独给个人添加的仍保留。需要只给部分人使用时，在员工列表中选择人员后配置
+          AI 员工。
+        </p>
+      )}
       {organization.workspaces.length > 1 && (
         <label>
           历史工作区
@@ -184,7 +192,9 @@ export function OrganizationAiAssignments({
                 <td>
                   {e.targetAssignedCount} / {data.targetCount} 人当前可用
                   <small>
-                    {e.inheritedByDefault ? '公司默认配发' : '按个人配发'}
+                    {e.inheritedByDefault
+                      ? '已开启全员自动配发（含新员工）'
+                      : '未开启自动配发，按个人配置使用'}
                     {e.targetExcludedCount
                       ? ` · ${e.targetExcludedCount} 人已明确移除`
                       : ''}
@@ -195,7 +205,7 @@ export function OrganizationAiAssignments({
                     <label>
                       <input
                         type="checkbox"
-                        aria-label={`默认配发 ${e.name}`}
+                        aria-label={`全员自动配发 ${e.name}（含新员工）`}
                         checked={e.inheritedByDefault}
                         disabled={
                           busy ||
@@ -206,7 +216,7 @@ export function OrganizationAiAssignments({
                           void change(e, 'default', event.target.checked)
                         }
                       />
-                      默认配发
+                      全员自动配发（含新员工）
                     </label>
                   ) : (
                     <div className={styles.selectors}>
