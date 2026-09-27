@@ -2,6 +2,9 @@
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
 import {
   ImageToolInputSchema,
+  IMAGE_MODEL_SELECTION_GUIDANCE,
+  IMAGE_PROMPT_GUIDANCE,
+  PLATFORM_IMAGE_MODELS,
   OfficeExportSchema,
   NativeOfficeExportSchema,
 } from '@allrice/contracts';
@@ -23,7 +26,13 @@ export const workbenchNativeTools = [
         type: 'string',
         required: true,
         description:
-          'Detailed image creation or edit instructions, max 4000 characters.',
+          'Detailed image creation or edit instructions, max 4000 characters. ' +
+          IMAGE_PROMPT_GUIDANCE,
+      },
+      imageModel: {
+        type: 'string',
+        enum: [...PLATFORM_IMAGE_MODELS],
+        description: IMAGE_MODEL_SELECTION_GUIDANCE,
       },
       fileName: {
         type: 'string',

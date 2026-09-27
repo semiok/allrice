@@ -115,14 +115,21 @@ suite('MET-163 platform model settings (synthetic HTTP)', () => {
           .getByRole('combobox', { name: '对话与理解模型' })
           .innerText(),
       ).not.toMatch(/Gemini/i);
-      await images.selectOption('gpt-image-2.5-flare');
+      await images.selectOption('auto');
       await page.getByRole('button', { name: '保存配置', exact: true }).click();
       await page.getByRole('status').filter({ hasText: '已保存' }).waitFor();
       expect(saves).toBe(1);
       expect(settings.configuration.imagesEnabled).toBe(true);
       await page.reload();
       await images.waitFor();
-      expect(await images.inputValue()).toBe('gpt-image-2.5-flare');
+      expect(await images.inputValue()).toBe('auto');
+      await images.selectOption('gpt-image-2.5-sunburst');
+      await page.getByRole('button', { name: '保存配置', exact: true }).click();
+      await page.getByRole('status').filter({ hasText: '已保存' }).waitFor();
+      expect(settings.configuration.imageModel).toBe('gpt-image-2.5-sunburst');
+      await page.reload();
+      await images.waitFor();
+      expect(await images.inputValue()).toBe('gpt-image-2.5-sunburst');
       await page.locator('summary').click();
       await page
         .getByRole('cell', { name: '结果待核对', exact: true })

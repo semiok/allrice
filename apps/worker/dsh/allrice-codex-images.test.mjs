@@ -39,26 +39,33 @@ function stream(events) {
   );
 }
 describe('Codex image transport', () => {
-  it('uses managed OAuth, image action and complete SSE receipt across chunk boundaries', async () => {
-    const request = vi.fn(async () => stream([output, completed]));
-    const receipt = await generateCodexImage(
-      models,
-      { ...params, source: { mediaType: 'image/png', data: 'cG5n' } },
-      request,
-    );
-    expect(receipt).toMatchObject({
-      imageBase64: 'cG5n',
-      requestId: 'synthetic',
-      usage: { inputTokens: 3, outputTokens: 2, cachedInputTokens: 1 },
-    });
-    const [url, options] = request.mock.calls[0];
-    expect(url).toBe('https://chatgpt.com/backend-api/codex/responses');
-    expect(JSON.parse(options.body)).toMatchObject({
-      store: false,
-      tools: [{ model: params.imageModel, action: 'edit' }],
-    });
-    expect(options.headers['chatgpt-account-id']).toBe('synthetic');
-  });
+  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
+    'uses managed OAuth and %s with complete SSE receipts',
+    async (imageModel) => {
+      const request = vi.fn(async () => stream([output, completed]));
+      const receipt = await generateCodexImage(
+        models,
+        {
+          ...params,
+          imageModel,
+          source: { mediaType: 'image/png', data: 'cG5n' },
+        },
+        request,
+      );
+      expect(receipt).toMatchObject({
+        imageBase64: 'cG5n',
+        requestId: 'synthetic',
+        usage: { inputTokens: 3, outputTokens: 2, cachedInputTokens: 1 },
+      });
+      const [url, options] = request.mock.calls[0];
+      expect(url).toBe('https://chatgpt.com/backend-api/codex/responses');
+      expect(JSON.parse(options.body)).toMatchObject({
+        store: false,
+        tools: [{ model: imageModel, action: 'edit' }],
+      });
+      expect(options.headers['chatgpt-account-id']).toBe('synthetic');
+    },
+  );
   it.each([401, 403, 429, 400, 500])(
     'does not retry HTTP %i or expose its body',
     async (status) => {

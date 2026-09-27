@@ -697,12 +697,10 @@ export async function admitModelExecution(input: {
         allowlistedOrganizationIds: release.allowlisted_organization_ids,
         productionApproved: release.production_approved,
       });
-      const allowed =
-        release.release_stage !== 'disabled' &&
-        (process.env.ALLRICE_ENV !== 'production' ||
-          (release.release_stage === 'production' &&
-            release.production_approved) ||
-          release.allowlisted_organization_ids.includes(values.organizationId));
+      // A connected model needs no additional production approval. Keep an
+      // explicit legacy disabled state effective; authorization, tenant scope,
+      // connection status and the emergency stop are enforced independently.
+      const allowed = release.release_stage !== 'disabled';
       if (!allowed) {
         throw new ModelGovernanceError('PROVIDER_NOT_RELEASED', 'provider');
       }

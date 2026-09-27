@@ -16,7 +16,9 @@ const workModels = new Set([
 export async function generateCodexImage(models, params, request = fetch) {
   if (
     !workModels.has(params?.workModel) ||
-    params?.imageModel !== 'gpt-image-2.5-flare' ||
+    !['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'].includes(
+      params?.imageModel,
+    ) ||
     typeof params.prompt !== 'string' ||
     !params.prompt.trim() ||
     params.prompt.length > 4000 ||

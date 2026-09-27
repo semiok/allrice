@@ -28,9 +28,13 @@ use decoded dimensions as truth, not the request parameters.
 Official references: [image tool](https://developers.openai.com/api/docs/guides/image-generation),
 [model catalog](https://developers.openai.com/api/docs/models/all),
 [authentication](https://learn.chatgpt.com/docs/auth).
-Sunburst is documented but was not exercised; only the verified Flare candidate
-is initially selectable. Availability must be checked again after an authorization
-or upstream compatibility change.
+A later live Worker acceptance verified automatic selection in one conversation:
+Flare generated a blue circle and Sunburst edited it to orange, each completing
+with a versioned PNG. The native tool arguments explicitly selected both models;
+this was not only the server compatibility default. Both images were visually
+inspected. Platform settings now offer automatic selection (recommended) and
+fixed Flare/Sunburst modes. Availability must be checked again after an
+authorization or upstream compatibility change.
 
 ## Migration and recovery
 

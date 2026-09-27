@@ -9,6 +9,10 @@ import type {
 } from '@allrice/contracts';
 import { CodexSubscriptionQuota } from './codex-subscription-quota';
 import {
+  CodexAuthorizationPanel,
+  type CodexAuthorization,
+} from './codex-authorization';
+import {
   UnknownUsageReviewCard,
   type UnknownUsageReview,
 } from './unknown-usage-review';
@@ -31,12 +35,7 @@ interface Provider {
   runtimeSupported?: boolean;
 }
 
-interface Authorization {
-  id: string;
-  state: string;
-  verificationUri: string | null;
-  userCode: string | null;
-}
+type Authorization = CodexAuthorization;
 
 interface ProviderGovernance {
   connectionId: string;
@@ -237,9 +236,28 @@ export function GovernanceConsole() {
         }),
       );
       setAuthorization(result.authorization);
-      setNotice('授权流程已交给 Worker。数据库不会保存订阅令牌。');
+      setNotice('正在准备授权码，请在下方完成授权。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '授权启动失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelAuthorization() {
+    if (!authorization) return;
+    setBusy(true);
+    try {
+      const result = await readJson<{ authorization: Authorization }>(
+        await fetch(
+          `/api/v1/admin/providers/codex/authorize?flowId=${encodeURIComponent(authorization.id)}`,
+          { method: 'DELETE' },
+        ),
+      );
+      setAuthorization(result.authorization);
+      setNotice('已取消本次授权流程。');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '暂时无法取消授权');
     } finally {
       setBusy(false);
     }
@@ -410,13 +428,6 @@ export function GovernanceConsole() {
                       <dd>{governance?.consecutiveFailures ?? 0}</dd>
                     </div>
                     <div>
-                      <dt>发布阶段</dt>
-                      <dd>
-                        {operation?.releaseStage ?? 'experimental'}
-                        {operation?.productionApproved ? ' · 已审批' : ''}
-                      </dd>
-                    </div>
-                    <div>
                       <dt>30 天运行 / 失败</dt>
                       <dd>
                         {operation?.runs ?? 0} / {operation?.failures ?? 0}
@@ -434,31 +445,13 @@ export function GovernanceConsole() {
                   {provider?.key === 'codex' ? (
                     <div className={styles.codexAuth}>
                       <CodexSubscriptionQuota quota={codexQuota} />
-                      {authorization?.state === 'awaiting_user' &&
-                      authorization.userCode &&
-                      authorization.verificationUri ? (
-                        <button
-                          onClick={() => {
-                            void navigator.clipboard.writeText(
-                              authorization.userCode!,
-                            );
-                            window.open(
-                              authorization.verificationUri!,
-                              '_blank',
-                              'noopener,noreferrer',
-                            );
-                          }}
-                        >
-                          复制代码并打开授权页 · {authorization.userCode}
-                        </button>
-                      ) : (
-                        <button
-                          disabled={busy}
-                          onClick={() => void startCodexAuthorization()}
-                        >
-                          在 DSH 中授权 Codex 订阅
-                        </button>
-                      )}
+                      <CodexAuthorizationPanel
+                        status={codexStatus}
+                        authorization={authorization}
+                        busy={busy}
+                        onStart={() => void startCodexAuthorization()}
+                        onCancel={() => void cancelAuthorization()}
+                      />
                     </div>
                   ) : null}
                   {governance ? (
@@ -488,19 +481,6 @@ export function GovernanceConsole() {
                           }
                         >
                           重置熔断
-                        </button>
-                      ) : null}
-                      {!governance.productionApproved ? (
-                        <button
-                          disabled={busy}
-                          onClick={() =>
-                            void updateProvider(connection.id, {
-                              releaseStage: 'production',
-                              productionApproved: true,
-                            })
-                          }
-                        >
-                          批准进入生产
                         </button>
                       ) : null}
                     </footer>
