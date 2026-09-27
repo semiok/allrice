@@ -144,5 +144,6 @@ export function assembleEmployeeKernel(input: {
             ?.runtimeManifest.distributionGeneration
         : undefined,
     imageAttachments: input.resolved.promptSnapshot.imageAttachments,
+    sessionReferences: input.resolved.promptSnapshot.sessionReferences,
   });
 }

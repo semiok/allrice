@@ -17,3 +17,8 @@
  
  const INDEPENDENT = new Set(['user', 'steering', 'turn-trigger', 'model-retry', 'turn-error', 'turn-max-tokens', 'turn-tail'])
  type ProcessInput = ConversationGroupInput<ChatConversationViewNode>
+@@ -38,3 +38,3 @@
+   return left.length === right.length && left.every((value, index) =>
+-    value.key === right[index]?.key && value.groupPart === right[index].groupPart)
++    value.key === right[index]?.key && value.groupPart === right[index]?.groupPart)
+ }

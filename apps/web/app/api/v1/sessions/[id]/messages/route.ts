@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  SessionReferenceError,
   sendChatMessage,
   ArtifactReviewError,
   QueueError,
@@ -52,6 +53,16 @@ export async function POST(
       headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
+    if (error instanceof SessionReferenceError)
+      return Response.json(
+        {
+          error: {
+            code: `session_reference_${error.code}`,
+            message: error.message,
+          },
+        },
+        { status: 400, headers: { 'Cache-Control': 'private, no-store' } },
+      );
     if (error instanceof AssistantRuntimeError)
       return Response.json(
         {

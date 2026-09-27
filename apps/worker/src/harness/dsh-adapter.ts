@@ -1,3 +1,4 @@
+import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { randomUUID, createHash } from 'node:crypto';
 
 import {
@@ -391,6 +392,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           runtime,
           prompt,
           images: callIndex === 0 ? (input.images ?? []) : [],
+          sessionReferences:
+            callIndex === 0 ? input.kernel.sessionReferences : undefined,
           signal: executionSignal,
           subscription: snapshot.route === 'openai-codex',
           questionWait: !assistant ? input.questionWait : undefined,
@@ -804,6 +807,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   private async runOnce(input: {
+    sessionReferences?: SessionReferenceSnapshot[];
     runtime: DshRuntime;
     prompt: string;
     images: HarnessExecutionInput['images'];
@@ -1273,6 +1277,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
               input.runtime.sessionId,
               input.prompt,
               input.images,
+              input.sessionReferences,
             )
       ).catch(async (error: unknown) => {
         await eventChain;

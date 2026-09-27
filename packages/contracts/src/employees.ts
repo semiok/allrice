@@ -1,3 +1,4 @@
+import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { z } from 'zod';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 
@@ -573,6 +574,7 @@ export const EmployeePromptSnapshotSchema = z
       .max(20),
     userRequest: z.string().min(1).max(100_000),
     imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
+    sessionReferences: SessionReferenceSnapshotsSchema.optional(),
   })
   .strict();
 
