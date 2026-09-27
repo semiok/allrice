@@ -10,12 +10,16 @@ import {
   useState,
 } from 'react';
 
-import type { UserQuestionAnswerSubmission } from '@allrice/contracts';
+import type {
+  SessionReference,
+  UserQuestionAnswerSubmission,
+} from '@allrice/contracts';
 import Link from 'next/link';
 
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
 
+import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
@@ -91,6 +95,10 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [sessionReferences, setSessionReferences] = useState<
+    SessionReference[]
+  >([]);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
@@ -152,6 +160,10 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  useEffect(() => {
+    setSessionReferences([]);
+    setReferencePickerOpen(false);
+  }, [settingsScope, activeId]);
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
     setSettings(null);
@@ -445,6 +457,7 @@ export function ChatFlowClient({
     const action = sessionActions.begin('composer');
     if (!action) return;
     const draftAttachments = [...pendingAttachments];
+    const draftReferences = [...sessionReferences];
     let clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
     const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
@@ -484,6 +497,13 @@ export function ChatFlowClient({
       });
       const inputBody = {
         text,
+        ...(draftReferences.length
+          ? {
+              sessionReferenceIds: draftReferences.map(
+                (item) => item.sessionId,
+              ),
+            }
+          : {}),
         attachmentIds: messageAttachments.map((item) => item.id),
         deliveryMode: mode,
         ...(assistantPreference ? { assistantPreference } : {}),
@@ -506,7 +526,7 @@ export function ChatFlowClient({
                   {
                     id: optimisticUserId,
                     role: 'user',
-                    content: { text },
+                    content: { text, sessionReferences: draftReferences },
                     status: 'completed',
                     runId: null,
                     createdAt,
@@ -546,6 +566,7 @@ export function ChatFlowClient({
       retry.confirmed();
       if (!action.current()) return;
       clearPendingAttachments();
+      setSessionReferences([]);
       setHistory((current) => {
         if (!current || current.session.id !== sessionId) return current;
         const messages = current.messages.filter(
@@ -579,6 +600,7 @@ export function ChatFlowClient({
               runId: result.fallbackRunId ?? result.run.id,
               text,
               attachments: messageAttachments,
+              sessionReferences: draftReferences,
               createdAt: result.userMessage.createdAt,
             },
           ],
@@ -603,6 +625,7 @@ export function ChatFlowClient({
           : current,
       );
       setDraft(text);
+      setSessionReferences(draftReferences);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
     } finally {
       if (action.finish()) setBusy(false);
@@ -614,7 +637,10 @@ export function ChatFlowClient({
     kind: 'edit' | 'remove' | 'steer',
   ) {
     if (!workspace || !activeId) return;
-    if (kind === 'edit' && (draft.trim() || pendingAttachments.length))
+    if (
+      kind === 'edit' &&
+      (draft.trim() || pendingAttachments.length || sessionReferences.length)
+    )
       throw new Error('请先发送或清空当前草稿，再编辑排队消息。');
     const action = sessionActions.begin('composer');
     if (!action) return;
@@ -657,6 +683,7 @@ export function ChatFlowClient({
       );
       if (kind === 'edit') {
         setDraft(item.text);
+        setSessionReferences(item.sessionReferences ?? []);
         setPendingAttachments(
           (item.attachments ?? []).map((a) => ({
             ...a,
@@ -772,7 +799,11 @@ export function ChatFlowClient({
 
   function confirmSessionNavigation() {
     return (
-      !(draft.trim() || pendingAttachments.length) ||
+      !(
+        draft.trim() ||
+        pendingAttachments.length ||
+        sessionReferences.length
+      ) ||
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
     );
   }
@@ -789,6 +820,8 @@ export function ChatFlowClient({
     setHistory(null);
     setPendingEmployeeAssignmentId(assignmentId);
     setDraft('');
+    setSessionReferences([]);
+    setReferencePickerOpen(false);
     clearPendingAttachments();
     setEmployeePickerOpen(false);
     requestAnimationFrame(() => composerInput.current?.focus());
@@ -874,6 +907,13 @@ export function ChatFlowClient({
 
   const renderComposer = (hero = false) => (
     <ChatComposer
+      sessionReferences={sessionReferences}
+      onOpenSessionReferences={() => setReferencePickerOpen(true)}
+      onRemoveSessionReference={(id) =>
+        setSessionReferences((current) =>
+          current.filter((item) => item.sessionId !== id),
+        )
+      }
       employeeName={activeEmployeeName}
       attachmentMenuOpen={attachmentMenuOpen}
       busy={busy}
@@ -1011,6 +1051,8 @@ export function ChatFlowClient({
           if (layout.compact) setSidebarCollapsed(true);
           if (sessionId !== activeId) {
             clearPendingAttachments();
+            setSessionReferences([]);
+            setReferencePickerOpen(false);
             setDraft('');
           }
           selectSession(sessionId);
@@ -1273,7 +1315,11 @@ export function ChatFlowClient({
                   key={`${workspace.organizationId}/${activeId}`}
                   items={sessionArchived ? [] : (history?.queuedMessages ?? [])}
                   busy={busy}
-                  canEdit={!draft.trim() && pendingAttachments.length === 0}
+                  canEdit={
+                    !draft.trim() &&
+                    pendingAttachments.length === 0 &&
+                    sessionReferences.length === 0
+                  }
                   canSteer={Boolean(
                     interactions.data?.runtime?.turnId &&
                     interactions.data.runtime.state === 'running' &&
@@ -1422,6 +1468,19 @@ export function ChatFlowClient({
         }
       />
 
+      {referencePickerOpen && (
+        <SessionReferencePicker
+          workspaceId={workspace.workspaceId}
+          activeId={activeId}
+          headers={tenantHeaders}
+          selected={sessionReferences}
+          onChange={setSessionReferences}
+          onClose={() => {
+            setReferencePickerOpen(false);
+            composerInput.current?.focus();
+          }}
+        />
+      )}
       <WorkspaceFilePickerDialog
         files={workspaceFiles}
         onAddFile={addWorkspaceFile}
