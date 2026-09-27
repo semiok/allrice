@@ -4,7 +4,6 @@ import type {
   WorkspaceReadiness,
 } from '@allrice/contracts';
 import { workspaceCapabilityIds } from '@allrice/contracts';
-import { DshDialog } from './dsh-upstream/Dialog';
 import {
   capabilityLabels,
   capabilityReasons,
@@ -12,12 +11,11 @@ import {
 } from './capability-catalog';
 import styles from './capability-panel.module.css';
 
-export function CapabilityPanel({
+export function CapabilityContent({
   data,
   loading,
   error,
   busy,
-  onClose,
   onRefresh,
   onBridge,
   onConnections,
@@ -27,21 +25,13 @@ export function CapabilityPanel({
   loading: boolean;
   error: string;
   busy: boolean;
-  onClose: () => void;
   onRefresh: () => void;
   onBridge: () => void;
   onConnections: () => void;
   onCompose: (id: WorkspaceCapabilityId) => void;
 }) {
   return (
-    <DshDialog
-      ariaLabel="能力与环境"
-      title="能力与环境"
-      eyebrow="Rice 工作台"
-      onClose={onClose}
-      className={styles.dialog}
-      bodyClassName={styles.body}
-    >
+    <div className={styles.body}>
       <p>
         当前员工可用的能力和环境。直接告诉员工你的任务；需要登录账号或选择本地文件时，会在任务中引导你完成。
       </p>
@@ -194,6 +184,6 @@ export function CapabilityPanel({
       <p>
         “准备任务”会把指引加入输入框，编辑后发送即可。打开时检查一次；完成连接后可手动刷新。具体写入和执行操作仍在任务中确认。
       </p>
-    </DshDialog>
+    </div>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import {
   IconSettingsOutlineMedium,
@@ -19,6 +19,7 @@ import type { usePersonalPreferences } from './use-personal-preferences';
 import styles from './sidebar-settings.module.css';
 
 export function SidebarSettings({
+  capabilities,
   collapsed,
   manifest,
   workspaceId,
@@ -29,6 +30,7 @@ export function SidebarSettings({
   onSectionChange,
   onBridge,
 }: {
+  capabilities: ReactNode;
   collapsed: boolean;
   manifest: SaasCapabilityManifest;
   workspaceId: string;
@@ -43,6 +45,7 @@ export function SidebarSettings({
   const rows = [
     { id: 'account', label: '账号与用量' },
     { id: 'work', label: '员工工作方式' },
+    { id: 'capabilities', label: '能力与环境' },
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
     { id: 'preferences', label: '个人偏好' },
@@ -95,6 +98,7 @@ export function SidebarSettings({
                   className={styles.section}
                 >
                   <h2>{row.label}</h2>
+                  {row.id === 'capabilities' && capabilities}
                   {row.id === 'preferences' && (
                     <>
                       <div className={styles.preferenceRow}>

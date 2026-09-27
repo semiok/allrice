@@ -48,7 +48,7 @@ import { useArtifactWorkbench } from './use-artifact-workbench';
 import { useWorkbenchLayout } from './use-workbench-layout';
 import { useWorkbenchResize, WorkbenchSplitter } from './workbench-splitter';
 import { useWorkspaceReadiness } from './use-workspace-readiness';
-import { CapabilityPanel } from './capability-panel';
+import { CapabilityContent } from './capability-panel';
 import { capabilityLabels } from './capability-catalog';
 import workbenchUi from './workbench.module.css';
 import { AttachmentPreviewDialog } from './attachment-preview-dialog';
@@ -96,7 +96,6 @@ export function ChatFlowClient({
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
-  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
   const [settings, setSettings] = useState<{
     scope: string;
     section: string;
@@ -174,7 +173,8 @@ export function ChatFlowClient({
     viewerId: workspace?.viewerId,
     sessionId: activeId,
     headers: tenantHeaders,
-    visible: capabilitiesOpen,
+    visible:
+      settings?.scope === settingsScope && settings.section === 'capabilities',
   });
   const [sessionActions] = useState(() =>
     createSessionActions(captureSelection),
@@ -281,6 +281,9 @@ export function ChatFlowClient({
     if (!scrollRegion) return;
     const handleScroll = () => {
       const atBottom = isConversationAtBottom(scrollRegion);
+      // Native virtual rows can emit repeated scroll events during layout.
+      // Publish only a change in following state, avoiding nested rerenders.
+      if (followTranscript.current === atBottom) return;
       followTranscript.current = atBottom;
       setAtTranscriptBottom(atBottom);
     };
@@ -978,6 +981,40 @@ export function ChatFlowClient({
       {archive.overlays}
       <ChatSidebar
         archive={archive}
+        capabilities={
+          <CapabilityContent
+            key={`capabilities/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
+            data={readiness.data}
+            loading={readiness.loading}
+            error={readiness.error}
+            busy={busy}
+            onRefresh={() => void readiness.reload()}
+            onConnections={() => {
+              setSettings({ scope: settingsScope, section: 'apps' });
+            }}
+            onBridge={() => {
+              setSettings(null);
+              void loadBridgeDevices(true);
+            }}
+            onCompose={(id) => {
+              if (
+                busy ||
+                readiness.data?.capabilities.find((c) => c.id === id)?.state !==
+                  'ready'
+              )
+                return;
+              const prompt = capabilityLabels[id].prompt;
+              if (!prompt) return;
+              // Never overwrite an existing draft or send on the user's behalf.
+              setDraft((current) =>
+                current.trim() ? `${current}\n\n${prompt}` : prompt,
+              );
+              setSettings(null);
+              if (layout.compact) setSidebarCollapsed(true);
+              requestAnimationFrame(() => composerInput.current?.focus());
+            }}
+          />
+        }
         settingsSection={
           settings?.scope === settingsScope ? settings.section : null
         }
@@ -1072,14 +1109,6 @@ export function ChatFlowClient({
                 <div
                   className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                 >
-                  <button
-                    type="button"
-                    className={workbenchUi.entry}
-                    aria-haspopup="dialog"
-                    onClick={() => setCapabilitiesOpen(true)}
-                  >
-                    能力与环境
-                  </button>
                   {experienceEnabled && workspace ? (
                     <Link
                       className={workbenchUi.entry}
@@ -1382,41 +1411,6 @@ export function ChatFlowClient({
         attachment={attachmentPreview}
         onClose={() => setAttachmentPreview(null)}
       />
-      {capabilitiesOpen ? (
-        <CapabilityPanel
-          key={`capabilities/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
-          data={readiness.data}
-          loading={readiness.loading}
-          error={readiness.error}
-          busy={busy}
-          onClose={() => setCapabilitiesOpen(false)}
-          onRefresh={() => void readiness.reload()}
-          onConnections={() => {
-            setCapabilitiesOpen(false);
-            setSettings({ scope: settingsScope, section: 'apps' });
-          }}
-          onBridge={() => {
-            setCapabilitiesOpen(false);
-            void loadBridgeDevices(true);
-          }}
-          onCompose={(id) => {
-            if (
-              busy ||
-              readiness.data?.capabilities.find((c) => c.id === id)?.state !==
-                'ready'
-            )
-              return;
-            const prompt = capabilityLabels[id].prompt;
-            if (!prompt) return;
-            // Never overwrite an existing draft or send on the user's behalf.
-            setDraft((current) =>
-              current.trim() ? `${current}\n\n${prompt}` : prompt,
-            );
-            setCapabilitiesOpen(false);
-            requestAnimationFrame(() => composerInput.current?.focus());
-          }}
-        />
-      ) : null}
 
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}

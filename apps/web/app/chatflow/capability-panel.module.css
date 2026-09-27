@@ -1,8 +1,5 @@
-.dialog {
-  width: min(960px, calc(100vw - 32px));
-}
 .body {
-  padding: 20px;
+  padding: 0;
   color: var(--dsw-alias-label-primary);
 }
 .body > p {
@@ -48,7 +45,7 @@
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 12px;
 }
 .card {
@@ -103,9 +100,6 @@
   cursor: pointer;
 }
 @media (max-width: 760px) {
-  .body {
-    padding: 16px;
-  }
   .grid {
     grid-template-columns: minmax(0, 1fr);
   }
