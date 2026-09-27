@@ -1,0 +1,159 @@
+.tree {
+  display: grid;
+  gap: 12px;
+  color: #f4f5f6;
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.heading button {
+  padding: 7px 12px;
+  color: #c5d9f5;
+  font: inherit;
+  font-size: 13px;
+  background: #25282c;
+  border: 1px solid #454a50;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.hint {
+  margin: 0;
+  color: #aab1bb;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.skill,
+.independent {
+  min-width: 0;
+  border: 1px solid #34383d;
+  border-radius: 12px;
+  background: #1b1d20;
+}
+
+.tree summary {
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.tree summary::marker {
+  color: #aab1bb;
+}
+
+.tree summary:hover {
+  background: #ffffff08;
+}
+
+.tree summary:focus-visible,
+.tree button:focus-visible,
+.tree input:focus-visible {
+  outline: 2px solid #a8c7fa;
+  outline-offset: 2px;
+}
+
+.tree small {
+  margin-left: 10px;
+  color: #aab1bb;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.dependencies {
+  display: grid;
+  gap: 2px;
+  margin: 0 12px 12px 20px;
+  padding: 0 0 0 12px;
+  border-left: 1px solid #454a50;
+  list-style: none;
+  font-size: 13px;
+}
+
+.leaf {
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+}
+
+.checkmark {
+  margin-right: 10px;
+  color: #7dbd9b;
+}
+
+.independent {
+  margin-top: 12px;
+}
+
+.independent > .hint,
+.skill > .hint {
+  margin: 0 16px 16px;
+}
+
+.tools {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.tool {
+  min-width: 0;
+  align-self: start;
+  border: 1px solid #34383d;
+  border-radius: 10px;
+}
+
+.choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.choice input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: #81aaf1;
+}
+
+.choice strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.choice small {
+  display: block;
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+.bundle {
+  margin: 0 8px 8px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tree summary small {
+    display: block;
+    margin: 5px 0 0 18px;
+  }
+  .dependencies {
+    margin-left: 12px;
+    padding-left: 6px;
+  }
+}
