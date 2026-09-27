@@ -855,15 +855,17 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     this.assertLiveAgent(record, params.sessionId);
     const message = createUserMessage({
       content: contentBlocks,
-      source: { kind: 'user' },
+      source: { kind: 'user', allriceSessionReference: context },
     });
-    this.referenceAdmission ??= installSessionReferenceAdmission(this.ctx);
-    this.referenceAdmission(agent, message, context);
     agent.followup(message);
     return { messageId: message.id };
   }
 
   async initialize(params) {
+    if (!this.referenceAdmissionInstalled) {
+      installSessionReferenceAdmission(this.ctx);
+      this.referenceAdmissionInstalled = true;
+    }
     const isGemini =
       params?.provider === 'gemini' || params?.provider === 'google';
     const model =

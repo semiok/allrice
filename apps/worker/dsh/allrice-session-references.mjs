@@ -1,5 +1,5 @@
 import { Context } from '@deepseek-ai/cordis';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm';
 import SessionReferenceResolver from '@deepseek-ai/dsh-session-reference';
 import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
 
@@ -76,34 +76,36 @@ export async function prepareSessionReferenceContext(agent, input) {
   }
 }
 
-/** Insert the native context immediately after its exact direct message. */
+/** The prepared native context travels inside the durable inbox message. This
+ * adapter-only source field is removed when the direct message is adopted.
+ * Recovery therefore needs neither an in-memory map nor another source read.
+ */
 export function installSessionReferenceAdmission(ctx) {
-  const pending = new WeakMap();
   ctx.on(
     'agent/pre-step',
-    async ({ agent }, next) => {
+    async (_event, next) => {
       const decision = await next();
       if (decision.kind === 'reject') return decision;
-      const messages = pending.get(agent);
-      if (!messages) return decision;
       return {
         ...decision,
         messages: decision.messages.flatMap((message) => {
-          const context = messages.get(message.id);
-          if (!context) return [message];
-          messages.delete(message.id);
-          return [message, context];
+          const context = message.source.allriceSessionReference;
+          if (message.source.kind !== 'user' || context === undefined)
+            return [message];
+          if (
+            context?.role !== 'user' ||
+            context?.source?.kind !== 'session-reference' ||
+            !Array.isArray(context.content) ||
+            typeof context.id !== 'string'
+          )
+            throw new Error('SESSION_REFERENCE_INVALID_DURABLE_CONTEXT');
+          return [
+            freezeMessage({ ...message, source: { kind: 'user' } }),
+            freezeMessage(context),
+          ];
         }),
       };
     },
     { prepend: true },
   );
-  return (agent, message, context) => {
-    let messages = pending.get(agent);
-    if (!messages) {
-      messages = new Map();
-      pending.set(agent, messages);
-    }
-    messages.set(message.id, context);
-  };
 }
