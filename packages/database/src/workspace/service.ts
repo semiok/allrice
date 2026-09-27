@@ -2288,6 +2288,7 @@ export async function getEmployeeWorkspace(
     organizationId: context.organizationId,
     workspaceId: workspaceId,
     employee: assignment,
+    canAdminister: employeeHub.canAdminister,
     employees: employeeHub.assignments,
     employeeProfiles: employeeHub.assignments.map((item) => {
       const manifest = item.currentVersion.manifest;

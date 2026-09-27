@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 /** Synthetic fixture only; never imported by the production Worker. */
 import assert from 'node:assert/strict';
@@ -94,6 +95,7 @@ export async function createMcpExecutionFixture(
   });
   const service = await startMcpAcceptanceService();
   try {
+    await authorizeFixturePlatformAdministrator(db, user);
     const store = createMcpStore({
         database: db,
         credentialKey: 'af'.repeat(32),

@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -117,9 +118,8 @@ async function identity(
     for share of membership, actor, organization, workspace
   `;
   if (
-    !rows.some((row) =>
-      admin ? row.role === 'admin' : ['admin', 'member'].includes(row.role),
-    )
+    !rows.some((row) => ['admin', 'member'].includes(row.role)) ||
+    (admin && !(await isPlatformAdmin(ctx, transaction)))
   )
     throw new RuntimePolicyError('membership_denied');
   return ctx;

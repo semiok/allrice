@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -215,6 +216,7 @@ async function fixture(
         values(${org},${workspace},${sessionId},${user},3,${digest('runtime')},'running',${run},${randomUUID()})`;
     }
   });
+  await authorizeFixturePlatformAdministrator(database, user);
   await setRuntimePolicyControls(
     context,
     {

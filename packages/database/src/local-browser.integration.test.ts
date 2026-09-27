@@ -106,6 +106,7 @@ suite('P22 real PostgreSQL device browser authority', () => {
   });
   it('paired member gets one prepared browser, can execute, pause and revoke without an administrator', async () => {
     const f = await createLocalBrowserFixture(db, storageRoot, { open: false });
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
     // Start from a freshly paired device without the legacy explicit fixture grant.
     await db`delete from allrice_local_browser_grants where grant_id=${f.localGrant.grantId}`;
     await db`delete from allrice_browser_control_grants where id=${f.localGrant.grantId}`;

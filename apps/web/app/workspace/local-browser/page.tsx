@@ -41,13 +41,13 @@ export default async function WorkspaceLocalBrowserPage({
         m.userId === context.actor.id &&
         m.organizationId === context.organizationId &&
         (m.workspaceId === null || m.workspaceId === workspaceId) &&
-        m.role === 'admin',
+        ['admin', 'member'].includes(m.role),
     )
   )
     return (
       <main>
         <Link href="/chatflow">返回工作台</Link>
-        <p>只有当前租户管理员可以管理自己的本地浏览器授权。</p>
+        <p>当前账号没有此工作区的本地浏览器使用权限。</p>
       </main>
     );
   return (

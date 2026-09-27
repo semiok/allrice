@@ -22,7 +22,7 @@ export const CreateInvitationInputSchema = z
   .object({
     email: EmailSchema,
     workspaceId: UuidSchema.nullable(),
-    role: RoleSchema,
+    role: RoleSchema.default('member'),
     expiresAt: TimestampSchema,
   })
   .strict();

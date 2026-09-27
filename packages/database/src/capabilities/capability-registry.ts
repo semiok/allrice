@@ -1,3 +1,4 @@
+import { requirePlatformAdmin } from '../platform-authority.ts';
 import { createHash } from 'node:crypto';
 
 import {
@@ -97,19 +98,12 @@ function actorId(context: RequestContext) {
   return context.actor.id;
 }
 
-function requireCapabilityAdmin(context: RequestContext, workspaceId: string) {
-  const userId = actorId(context);
-  const allowed = context.memberships.some(
-    (membership) =>
-      membership.active &&
-      membership.userId === userId &&
-      membership.organizationId === context.organizationId &&
-      membership.role === 'admin' &&
-      (membership.workspaceId === null ||
-        membership.workspaceId === workspaceId),
-  );
-  if (!allowed) throw new DataAccessError('authorization_denied');
-  return userId;
+async function requireCapabilityAdmin(
+  context: RequestContext,
+  workspaceId: string,
+) {
+  await resolveWorkspaceId(context, workspaceId);
+  return requirePlatformAdmin(context);
 }
 
 function canonicalize(value: unknown): unknown {
@@ -418,7 +412,7 @@ export async function listCapabilityCatalog(
   workspaceIdInput: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  requireCapabilityAdmin(context, workspaceId);
+  await requireCapabilityAdmin(context, workspaceId);
   const sql = getDatabase();
   const [workflowRows, knowledgeRows] = await Promise.all([
     sql<WorkflowRevisionRow[]>`
@@ -474,7 +468,7 @@ export async function updateCapabilityStatus(
 ) {
   const update = UpdateCapabilityStatusInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  requireCapabilityAdmin(context, workspaceId);
+  await requireCapabilityAdmin(context, workspaceId);
   const capabilityId = UuidSchema.parse(capabilityIdInput);
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
@@ -517,7 +511,7 @@ export async function updateCapabilityRevisionStatus(
 ) {
   const update = UpdateCapabilityRevisionStatusInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  requireCapabilityAdmin(context, workspaceId);
+  await requireCapabilityAdmin(context, workspaceId);
   const revisionId = UuidSchema.parse(revisionIdInput);
   if (update.kind === 'agent_skill') {
     throw new CapabilityRegistryError('invalid_binding');
@@ -562,7 +556,7 @@ export async function listEmployeeCapabilities(
   employeeIdInput: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const userId = requireCapabilityAdmin(context, workspaceId);
+  const userId = await requireCapabilityAdmin(context, workspaceId);
   const employeeId = UuidSchema.parse(employeeIdInput);
   const sql = getDatabase();
   const employees = await sql<{ id: string }[]>`
@@ -598,7 +592,7 @@ export async function resolveEmployeeCapabilitiesForRun(input: {
 export async function createWorkflow(context: RequestContext, input: unknown) {
   const creation = CreateWorkflowInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const userId = requireCapabilityAdmin(context, workspaceId);
+  const userId = await requireCapabilityAdmin(context, workspaceId);
   const checksum = capabilityChecksum({
     name: creation.name,
     description: creation.description,
@@ -669,7 +663,7 @@ export async function publishWorkflowRevision(
     context,
     publication.workspaceId,
   );
-  const userId = requireCapabilityAdmin(context, workspaceId);
+  const userId = await requireCapabilityAdmin(context, workspaceId);
   const workflowId = UuidSchema.parse(workflowIdInput);
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
@@ -736,7 +730,7 @@ export async function createKnowledgeSource(
 ) {
   const creation = CreateKnowledgeSourceInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const userId = requireCapabilityAdmin(context, workspaceId);
+  const userId = await requireCapabilityAdmin(context, workspaceId);
   const sql = getDatabase();
   try {
     return await sql.begin(async (transaction) => {
@@ -842,7 +836,7 @@ export async function publishKnowledgeRevision(
     context,
     publication.workspaceId,
   );
-  const userId = requireCapabilityAdmin(context, workspaceId);
+  const userId = await requireCapabilityAdmin(context, workspaceId);
   const sourceId = UuidSchema.parse(sourceIdInput);
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
@@ -946,7 +940,7 @@ export async function manageEmployeeCapabilities(
 ) {
   const update = ManageEmployeeCapabilitiesInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
-  const userId = requireCapabilityAdmin(context, workspaceId);
+  const userId = await requireCapabilityAdmin(context, workspaceId);
   const employeeId = UuidSchema.parse(update.employeeId);
   const skillVersionIds: string[] = [];
   const workflowRevisionIds = [...new Set(update.workflowRevisionIds)].sort();

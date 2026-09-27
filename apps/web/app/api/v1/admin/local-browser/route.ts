@@ -70,7 +70,7 @@ async function handle(request: Request): Promise<Response> {
       {
         error: {
           code: 'LOCAL_BROWSER_UNAVAILABLE',
-          message: '操作未确认，请检查当前租户、管理员身份和设备授权。',
+          message: '操作未确认，请检查当前账号、工作区和设备授权。',
         },
       },
       { status, headers },

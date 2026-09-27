@@ -86,7 +86,7 @@ async function fixture(
     firstWorkspaceId,
     secondWorkspaceId,
     membershipId,
-    store: createMcpStore({ database }),
+    store: createMcpStore({ database, memberManaged: true }),
   };
 }
 
@@ -168,15 +168,20 @@ suite('workspace MCP page scope — actual isolated PostgreSQL', () => {
   });
 
   it.each(['member', 'viewer'] as const)(
-    'allows %s workspace access without granting MCP administration',
+    'allows %s workspace access while personal MCP requires execution access',
     async (role) => {
       const f = await fixture(role, 'workspace');
       await expect(resolveWorkspaceId(f.context)).resolves.toBe(
         f.secondWorkspaceId,
       );
-      await expect(
-        f.store.list(f.context, f.secondWorkspaceId),
-      ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+      if (role === 'viewer')
+        await expect(
+          f.store.list(f.context, f.secondWorkspaceId),
+        ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+      else
+        await expect(
+          f.store.list(f.context, f.secondWorkspaceId),
+        ).resolves.toEqual([]);
     },
   );
 

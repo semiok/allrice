@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import postgres from 'postgres';
@@ -48,6 +49,7 @@ async function fixture() {
     ],
   };
   const scope = { organizationId, workspaceId, actorId: userId };
+  await authorizeFixturePlatformAdministrator(db, userId);
   const store = createMcpStore({ database: db, credentialKey: key });
   const connection = await store.create(context, {
     workspaceId,

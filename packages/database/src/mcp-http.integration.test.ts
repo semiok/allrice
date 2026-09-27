@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import postgres from 'postgres';
@@ -83,6 +84,7 @@ suite('P16 real PostgreSQL → Worker → self-owned MCP HTTP', () => {
       fetchOverride: service.fetchOverride,
     });
     const signal = AbortSignal.timeout(30_000);
+    await authorizeFixturePlatformAdministrator(database, actorId);
     const connection = await store.create(context, {
       workspaceId,
       name: 'Self-owned MCP acceptance',

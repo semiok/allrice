@@ -92,7 +92,7 @@ describe('portal authentication response boundary', () => {
     }
   });
 
-  it('passes only exact tenant MCP/browser endpoints to their tenant-admin handlers, not platform APIs', () => {
+  it('passes only personal device settings to owner-checked handlers; blocks shared management', () => {
     vi.stubEnv(
       'ALLRICE_PORTAL_SESSION_SECRET',
       'synthetic-portal-secret-with-more-than-32-characters',
@@ -108,10 +108,9 @@ describe('portal authentication response boundary', () => {
     expect(
       proxy(new NextRequest(`https://${host}/api/v1/admin/mcp`, { headers }))
         .status,
-    ).toBe(200);
+    ).toBe(403);
     for (const path of [
       '/api/v1/admin/local-mcp',
-      '/api/v1/admin/browser-control',
       '/api/v1/admin/local-browser',
     ]) {
       expect(
@@ -123,6 +122,8 @@ describe('portal authentication response boundary', () => {
       ).toBe(401);
     }
     for (const path of [
+      '/api/v1/admin/mcp',
+      '/api/v1/admin/browser-control',
       '/api/v1/admin/mcp-extra',
       '/api/v1/admin/local-browser/extra',
       '/api/v1/admin/local-browser-extra',

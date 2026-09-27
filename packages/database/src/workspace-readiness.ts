@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from './platform-authority.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 import {
@@ -310,7 +311,7 @@ async function readWorkspaceReadiness(
       ['ready', 'preparing', 'unavailable', 'paused'].find((status) =>
         preparations.some((p) => p[kind] === status),
       );
-    const canAdminister = memberships.some((m) => m.role === 'admin');
+    const canAdminister = await isPlatformAdmin(ctx, tx);
     const facts: ReadinessFacts = {
       canAdminister,
       canExecute: memberships.some((m) => ['admin', 'member'].includes(m.role)),

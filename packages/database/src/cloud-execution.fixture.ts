@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
@@ -233,6 +234,7 @@ export async function createCloudExecutionFixture(
     { expectedRevision: 1, capability: 'computer', enabled: false },
     db,
   );
+  await authorizeFixturePlatformAdministrator(db, user);
   await setRuntimePolicyControls(
     context,
     {

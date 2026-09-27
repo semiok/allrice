@@ -1,3 +1,4 @@
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
@@ -122,6 +123,7 @@ async function fixture(effect: 'allow' | 'ask' | 'deny' = 'ask') {
     { expectedRevision: 0, capability: 'computer', enabled: false },
     database,
   );
+  await authorizeFixturePlatformAdministrator(database, user);
   await setRuntimePolicyControls(context, controls, null, database);
   // Synthetic adapter state is independent of caller mutations, emulating re-resolved server payload.
   let currentBinding = structuredClone(binding);

@@ -1,3 +1,7 @@
+import { canAdministerEmployees } from './employees/employeehub.ts';
+import { createInvitation } from './identity.ts';
+import { readFile } from 'node:fs/promises';
+import { decideConnectorApproval } from './capabilities/connector-broker.ts';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
@@ -114,6 +118,124 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
       ).tenants.some((o) => o.id === t.tenant.organizationId),
     ).toBe(true);
   });
+  it('makes tenant users equal while platform authority works with a member membership', async () => {
+    const t = await setup();
+    expect(t.admin.context.memberships.every((m) => m.role === 'member')).toBe(
+      true,
+    );
+    expect(
+      await canAdministerEmployees(t.admin.context, t.admin.workspaceId),
+    ).toBe(true);
+    for (const role of ['member', 'admin'] as const) {
+      await fixture.db`update allrice_memberships set role=${role} where id=${t.row.id}`;
+      const context = (await authenticateSession(t.tenant.session.token, {
+        organizationId: t.tenant.organizationId,
+        workspaceId: t.tenant.workspaceId,
+      }))!;
+      expect(await canAdministerEmployees(context, t.tenant.workspaceId)).toBe(
+        false,
+      );
+      await expect(
+        createInvitation(context, {
+          email: 'new-tenant-user@example.test',
+          workspaceId: t.tenant.workspaceId,
+          expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }
+    const row = (await t.list()).members[0]!;
+    const result = await t.change({
+      role: undefined,
+      expectedVersion: row.version,
+    });
+    expect(result.member.role).toBe('member');
+    const readonly = await t.change({
+      role: 'viewer',
+      expectedVersion: result.member.version,
+    });
+    expect(
+      (
+        await t.change({
+          role: undefined,
+          active: false,
+          expectedVersion: readonly.member.version,
+        })
+      ).member.role,
+    ).toBe('viewer');
+  });
+  it('denies peer approvals to both current and historical tenant users', async () => {
+    const t = await setup(),
+      peer = await principal();
+    await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${t.tenant.organizationId},${t.tenant.workspaceId},${peer.user.id},'admin')`;
+    const context = (await authenticateSession(peer.session.token, {
+      organizationId: t.tenant.organizationId,
+      workspaceId: t.tenant.workspaceId,
+    }))!;
+    const run = randomUUID(),
+      approval = randomUUID();
+    await fixture.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${run},${t.tenant.organizationId},${t.tenant.workspaceId},${t.tenant.user.id},'running','{}','{}')`;
+    await fixture.db`insert into allrice_approval_requests(id,organization_id,workspace_id,run_id,actor_id,resource_type,resource_id,action,input_digest) values(${approval},${t.tenant.organizationId},${t.tenant.workspaceId},${run},${t.tenant.user.id},'connector_call',${randomUUID()},'connector.call',${'sha256:' + 'a'.repeat(64)})`;
+    const input = {
+      workspaceId: t.tenant.workspaceId,
+      decision: 'approved',
+      reason: 'Synthetic approval',
+    };
+    for (const role of ['admin', 'member']) {
+      await fixture.db`update allrice_memberships set role=${role} where user_id=${peer.user.id}`;
+      await expect(
+        decideConnectorApproval(context, approval, input),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }
+    expect(
+      (
+        await fixture.db`select status from allrice_approval_requests where id=${approval}`
+      )[0]!.status,
+    ).toBe('pending');
+    expect(
+      await decideConnectorApproval(t.tenant.context, approval, input),
+    ).toMatchObject({ status: 'approved' });
+  });
+  it('migrates old administrators without changing read-only access, scope, ownership or stored policy snapshots', async () => {
+    const t = await setup(),
+      peer = await principal();
+    await fixture.db`update allrice_memberships set role='admin',active=false where id=${t.row.id}`;
+    await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${t.tenant.organizationId},${t.tenant.workspaceId},${peer.user.id},'viewer')`;
+    const policyId = randomUUID(),
+      invitationId = randomUUID();
+    const payload = {
+      memberships: [{ role: 'admin', userId: t.tenant.user.id }],
+      grants: [],
+    };
+    await fixture.db`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policyId},${t.tenant.organizationId},${t.tenant.user.id},1,${fixture.db.json(payload)},clock_timestamp()+interval '1 hour')`;
+    await fixture.db`insert into allrice_invitations(id,organization_id,workspace_id,email,role,token_hash,expires_at) values(${invitationId},${t.tenant.organizationId},${t.tenant.workspaceId},'pending@example.test','admin',${randomUUID()},clock_timestamp()+interval '1 hour')`;
+    const before =
+      await fixture.db`select id,user_id,organization_id,workspace_id,active from allrice_memberships order by id`;
+    const migration = await readFile(
+      new URL('../migrations/0111_unified_tenant_users.sql', import.meta.url),
+      'utf8',
+    );
+    await fixture.db.unsafe(migration);
+    await fixture.db.unsafe(migration);
+    expect(
+      (
+        await fixture.db`select payload from allrice_policy_snapshots where id=${policyId}`
+      )[0]!.payload,
+    ).toEqual(payload);
+    expect(
+      (
+        await fixture.db`select role from allrice_invitations where id=${invitationId}`
+      )[0]!.role,
+    ).toBe('member');
+    expect(
+      await fixture.db`select id,user_id,organization_id,workspace_id,active from allrice_memberships order by id`,
+    ).toEqual(before);
+    expect(
+      (await t.list()).members.find((m) => m.id === t.row.id),
+    ).toMatchObject({ role: 'member', active: false });
+    expect(
+      (await t.list()).members.find((m) => m.userId === peer.user.id),
+    ).toMatchObject({ role: 'viewer', active: true });
+  });
   it('does not trust tenant admin role, copied context claims, disabled users or expired/revoked sessions', async () => {
     const t = await setup();
     await fixture.db`update allrice_memberships set role='admin' where id=${t.row.id}`;
@@ -228,7 +350,7 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
     const t = await setup();
     const results = await Promise.allSettled([
       t.change({ role: 'viewer' }),
-      t.change({ role: 'admin' }),
+      t.change({ active: false }),
     ]);
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(results.find((r) => r.status === 'rejected')).toMatchObject({
@@ -258,7 +380,7 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
       await fixture.db`select id from allrice_audit_events where resource_id=${t.row.id} and action='tenant.member.updated'`,
     ).toHaveLength(2);
   });
-  it('prevents concurrent removal of all organization admins and protects the final workspace admin', async () => {
+  it('normalizes all historical tenant admins and permits retiring the last workspace admin', async () => {
     const t = await setup(),
       second = await principal();
     await fixture.db`update allrice_memberships set role='admin' where id=${t.row.id}`;
@@ -281,10 +403,10 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
         ),
       ),
     );
-    expect(changes.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    expect(changes.find((r) => r.status === 'rejected')).toMatchObject({
-      reason: { code: 'last_administrator' },
-    });
+    expect(changes.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    expect((await t.list()).members.every((m) => m.role === 'member')).toBe(
+      true,
+    );
     const t2 = await setup();
     await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${t2.tenant.organizationId},${t2.tenant.workspaceId},${second.user.id},'admin')`;
     const workspaceAdmin = (await t2.list()).members.find(
@@ -304,7 +426,7 @@ integration('MET-151 tenant administration (isolated PostgreSQL)', () => {
         },
         fixture.db,
       ),
-    ).rejects.toMatchObject({ code: 'last_administrator' });
+    ).resolves.toMatchObject({ member: { role: 'member' }, changed: true });
   });
   it('makes initial concurrent portal provisioning idempotent without elevating an existing principal', async () => {
     const slug = `t-${randomUUID()}`;
