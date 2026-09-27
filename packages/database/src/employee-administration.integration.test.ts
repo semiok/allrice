@@ -32,6 +32,8 @@ import {
   savePlatformEmployeeDraft,
   rollbackPlatformEmployee,
   archivePlatformEmployee,
+  createPlatformEmployeeDraft,
+  getPlatformEmployee,
 } from './employees/platform-employees.ts';
 
 const suite =
@@ -123,6 +125,27 @@ suite('MET-151 policy and exact employee publication administration', () => {
       );
     return { ...f, context, session, target, read, write, review, publish };
   }
+  it('creates an unrestricted editor draft without changing the source employee policy', async () => {
+    const source = await createEmployeeAdministrationFixture(fixture.db);
+    const created = await createPlatformEmployeeDraft({
+      key: `editor-${randomUUID()}`,
+      name: 'Synthetic editor defaults',
+      sourceEmployeeId: source.employeeId,
+    });
+    expect(created?.currentDraft?.definition.securityPolicy).toMatchObject({
+      connectorIdentityModes: ['user', 'service'],
+      deniedCapabilities: [],
+      bridgeAccess: 'none',
+    });
+    expect(created?.currentDraft?.definition.capabilities.toolNames).toEqual(
+      source.definition.capabilities.toolNames,
+    );
+    expect(created?.currentPublished).toBeNull();
+    expect(
+      (await getPlatformEmployee(source.employeeId))?.currentDraft?.definition
+        .securityPolicy,
+    ).toEqual(source.definition.securityPolicy);
+  });
   it('publishes selected development tools without a preview, enables matching policy atomically, and preserves immutable tenant bindings', async () => {
     const oldEnvironment = process.env.ALLRICE_ENV;
     process.env.ALLRICE_ENV = 'development';

@@ -46,11 +46,45 @@ type Container = {
 };
 const attemptLabel = 'xyz.bplabs.allrice.cloud.attempt';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const slotOwnerLabel = 'xyz.bplabs.allrice.cloud.slot-owner';
+const slotDeadlineLabel = 'xyz.bplabs.allrice.cloud.slot-deadline';
+let watchdogAttestation: Promise<{ stdout: string }> | undefined;
+
+function attestWatchdog() {
+  // Concurrent Office calls share this read-only, expensive VM attestation.
+  // Do not cache it after completion: every new batch checks current health.
+  watchdogAttestation ??= promisify(execFile)(
+    '/usr/local/bin/colima',
+    [
+      'ssh',
+      '--profile',
+      'allrice-cloud-b4',
+      '--',
+      'sudo',
+      '/usr/local/lib/allrice-cloud/watchdog.py',
+      '--attest',
+    ],
+    {
+      timeout: 15000,
+      maxBuffer: 4096,
+      env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
+    },
+  )
+    .catch(() => {
+      throw new CloudRunnerError('CLOUD_WATCHDOG_UNAVAILABLE');
+    })
+    .finally(() => {
+      watchdogAttestation = undefined;
+    });
+  return watchdogAttestation;
+}
 /** The sandbox never receives host env/credentials. Output is untrusted data,
  * not a command or proof of success; Docker's stopped/exit state is authoritative.
  * Bounded artifact bytes are retained in daemon logs until durable publication. */
 export const cloudSupervisor = String.raw`
 import fs from 'node:fs'; import cp from 'node:child_process';
+// Drain the pipe before exiting: Office artifacts can exceed one pipe buffer.
+const finish=code=>process.stdout.write('',()=>process.exit(code));
 const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>32_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{resolve(JSON.parse(text.slice(0,end)))}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),65000).unref()});
 fs.mkdirSync('/tmp/work/input',{recursive:true}); fs.mkdirSync('/tmp/work/output');
 for(const file of input.files){ const p='/tmp/work/input/'+file.path; fs.mkdirSync(p.slice(0,p.lastIndexOf('/')),{recursive:true}); fs.writeFileSync(p,Buffer.from(file.contentBase64,'base64'),{mode:0o400}); }
@@ -61,7 +95,8 @@ let bytes=0,overflow=false;
 for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{ bytes+=chunk.length; if(bytes>input.outputBytes){overflow=true; child.kill('SIGKILL');}else console.log(JSON.stringify({type:'output',data:chunk.toString('base64')})); });
 const timer=setTimeout(()=>{child.kill('SIGKILL');process.exit(124)},Math.max(1,input.deadline-Date.now()));
 child.on('error',()=>process.exit(125));
-child.on('close',code=>{try{
+child.on('close',(code,signal)=>{try{
+  if(code!==0)console.log(JSON.stringify({type:'output',data:Buffer.from('Script exited: code='+code+' signal='+(signal??'none')+'\n').toString('base64')}));
   let total=0;
   if(!overflow&&code===0)for(const file of input.outputs){
     const p='/tmp/work/output/'+file.path, s=fs.lstatSync(p);
@@ -72,13 +107,13 @@ child.on('close',code=>{try{
       const report=Buffer.concat([check.stdout??Buffer.alloc(0),check.stderr??Buffer.alloc(0)]);
       console.log(JSON.stringify({type:'output',data:report.subarray(0,input.outputBytes-bytes).toString('base64')}));
       bytes+=report.length;
-      if(check.status!==0||bytes>input.outputBytes)throw Error('office_check');
+      if(check.status!==0||bytes>input.outputBytes)throw Error('office_check: exitCode='+check.status+' signal='+(check.signal??'none')+' error='+(check.error?.code??'none'));
     }
     const b=fs.readFileSync(p);total+=b.length;if(total>input.artifactBytes)throw Error('limit');
     console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64')}));
   }
-  clearTimeout(timer);process.exit(overflow?122:(code??125));
-}catch{process.exit(123)}});
+  clearTimeout(timer);finish(overflow?122:(code??125));
+}catch(error){clearTimeout(timer);console.log(JSON.stringify({type:'output',data:Buffer.from('Sandbox output validation failed: '+String(error.message).slice(0,1000)+'\n').toString('base64')}));finish(123)}});
 `;
 
 function redact(text: string) {
@@ -199,23 +234,7 @@ export class CloudRunnerBackend {
     // This is fixed trusted infrastructure attestation, never tenant-selected CLI.
     // The independent VM watchdog bounds execution even if Worker dies or the
     // tenant SIGSTOPs its in-container parent. No host credentials are copied in.
-    const { stdout } = await promisify(execFile)(
-      '/usr/local/bin/colima',
-      [
-        'ssh',
-        '--profile',
-        'allrice-cloud-b4',
-        '--',
-        'sudo',
-        '/usr/local/lib/allrice-cloud/watchdog.py',
-        '--attest',
-      ],
-      {
-        timeout: 5000,
-        maxBuffer: 4096,
-        env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: homedir() },
-      },
-    );
+    const { stdout } = await attestWatchdog();
     const attestation = JSON.parse(stdout);
     if (
       attestation.ready !== true ||
@@ -407,6 +426,113 @@ export class CloudRunnerBackend {
   }
 
   private async executeScript(
+    args: CloudCommandInput,
+    files: { path: string; contentBase64: string }[],
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    office: boolean,
+  ): Promise<CloudRunResult> {
+    const release = await this.acquireSlot(
+      options,
+      office ? officeSandboxImage : cloudToolchainImageV1,
+    );
+    try {
+      return await this.executeAdmittedScript(args, files, options, office);
+    } finally {
+      // An uncertain/live execution keeps its reservation until the watchdog
+      // stops it. Never admit a replacement merely because transport failed.
+      if (!(await this.inspect(options.attemptId))?.State.Running)
+        await release();
+    }
+  }
+
+  /** Docker names are atomic across Worker processes and databases sharing this
+   * dedicated VM. These stopped containers reserve the watchdog's two slots;
+   * they never execute code. Expired reservations need physical stop evidence. */
+  private async acquireSlot(
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    imageDigest: string,
+  ) {
+    if (!uuid.test(options.attemptId))
+      throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
+    const deadline = Date.parse(options.deadlineAt);
+    while (Number.isFinite(deadline) && Date.now() < deadline) {
+      if (options.signal?.aborted || !(await options.maintainLease()))
+        throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+      for (let slot = 0; slot < 2; slot++) {
+        const name = `allrice-cloud-slot-${slot}`;
+        try {
+          const c = await this.json<{ Id: string }>(
+            'POST',
+            `/containers/create?name=${name}`,
+            {
+              Image: imageDigest,
+              Entrypoint: ['/usr/local/bin/node'],
+              Cmd: ['--version'],
+              NetworkDisabled: true,
+              Labels: {
+                [slotOwnerLabel]: options.attemptId,
+                [slotDeadlineLabel]: String(deadline),
+              },
+              HostConfig: {
+                NetworkMode: 'none',
+                ReadonlyRootfs: true,
+                AutoRemove: false,
+              },
+            },
+          );
+          if (!/^[a-f0-9]{64}$/.test(c.Id))
+            throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
+          return async () => {
+            await this.call('DELETE', `/containers/${c.Id}?v=true`);
+          };
+        } catch (error) {
+          if (
+            !(error instanceof CloudRunnerError) ||
+            error.message !== 'CLOUD_DAEMON_409'
+          )
+            throw error;
+        }
+        let existing: Container;
+        try {
+          existing = await this.json<Container>(
+            'GET',
+            `/containers/${name}/json`,
+          );
+        } catch (error) {
+          if (
+            error instanceof CloudRunnerError &&
+            error.message === 'CLOUD_DAEMON_404'
+          )
+            continue;
+          throw error;
+        }
+        const owner = existing.Config.Labels[slotOwnerLabel];
+        const expires = Number(existing.Config.Labels[slotDeadlineLabel]);
+        if (
+          owner &&
+          uuid.test(owner) &&
+          Number.isFinite(expires) &&
+          expires <= Date.now() &&
+          !existing.State.Running &&
+          !(await this.inspect(owner))?.State.Running
+        ) {
+          await this.call('DELETE', `/containers/${existing.Id}?v=true`).catch(
+            (error) => {
+              if (
+                !(error instanceof CloudRunnerError) ||
+                error.message !== 'CLOUD_DAEMON_404'
+              )
+                throw error;
+            },
+          );
+        }
+      }
+      await delay(150);
+    }
+    throw new CloudRunnerError('CLOUD_CAPACITY_WAIT_TIMEOUT');
+  }
+
+  private async executeAdmittedScript(
     args: CloudCommandInput,
     files: { path: string; contentBase64: string }[],
     options: Parameters<CloudRunnerBackend['execute']>[2],

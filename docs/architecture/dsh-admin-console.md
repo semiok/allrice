@@ -180,3 +180,23 @@ Provider authorization, model release, circuit breaking, quota and usage
 governance are also first-class Runtime Console modules. AllRice does not
 operate a separate `allrice-admin.*` website or retain the historical
 `/chatflow/admin` compatibility route.
+
+## Employee configuration and member preferences
+
+The employee editor configures skills and tools without a separate Security
+tab. Editable drafts allow both user and service connector identities, have
+no employee-level capability deny list, and derive Bridge access from selected
+tools. These defaults apply to newly cloned drafts and when an administrator
+saves the editor; immutable published versions remain unchanged until normal
+publication. Legacy/API policy fields remain supported.
+
+Operation confirmation belongs to the using member's workspace-scoped
+`设置 → 员工工作方式` settings. Compiled `SOUL.md` points to those run-time
+preferences instead of repeating the legacy employee approval policy.
+Tool selection does not create account connections or grant device folders;
+the existing resource authorization and execution checks still apply.
+
+The `测试` tab saves and tests the current draft with read-only capabilities.
+Its secondary `前往发布` action only opens the publication page and carries
+over the selected tenant; it preserves unsaved edits and does not save or
+publish. Publication and links to the tenant workbench stay on `发布租户`.

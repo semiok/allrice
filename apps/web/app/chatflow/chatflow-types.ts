@@ -6,6 +6,7 @@ import type {
   ChangesetActionInput,
   UserPreferences,
   EmployeeAccentColor,
+  SessionReference,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -78,6 +79,7 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
+    sessionReferences?: SessionReference[];
     budgetWarning?:
       'MODEL_OUTPUT_BUDGET_EXCEEDED' | 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED';
     text: string;
@@ -97,6 +99,7 @@ export interface Message {
 }
 
 export interface QueuedMessage {
+  sessionReferences?: SessionReference[];
   id: string;
   runId: string;
   text: string;

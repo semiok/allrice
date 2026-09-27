@@ -1,3 +1,4 @@
+import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 
@@ -173,11 +174,13 @@ export class DshProtocolClient {
     sessionId: string,
     text: string,
     images: readonly HarnessImageInput[] = [],
+    sessionReferences: readonly SessionReferenceSnapshot[] = [],
   ) {
     const result = await this.request('session/prompt', {
       sessionId,
       contentBlocks: [{ type: 'text', text }],
       images,
+      ...(sessionReferences.length ? { sessionReferences } : {}),
     });
     if (typeof result.messageId !== 'string' || !result.messageId) {
       throw new HandlerError(

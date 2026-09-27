@@ -38,10 +38,13 @@ apps/web/app/chatflow/dsh-upstream/feedback/
 # Pinned official conversation grouping; verified with recorded compatibility patches.
 apps/web/app/chatflow/dsh-upstream/process/
 
+# Native DSH task plan panel; source and lifecycle patch verified in the UI ledger.
+apps/web/app/chatflow/dsh-upstream/todo/
+
 # Pinned native archive components; exact source/patch bytes verified by dsh-ui.
 apps/web/app/chatflow/dsh-upstream/archive/ArchiveSession.tsx
 apps/web/app/chatflow/dsh-upstream/archive/RowActionToast.tsx
 apps/web/app/chatflow/dsh-upstream/archive/WorkspaceBrowser.module.css
 
-# Native DSH task plan panel; source and lifecycle patch verified in the UI ledger.
-apps/web/app/chatflow/dsh-upstream/todo/
+# Pinned native delivery cards with recorded browser adapter patches.
+apps/web/app/chatflow/dsh-upstream/deliverables/

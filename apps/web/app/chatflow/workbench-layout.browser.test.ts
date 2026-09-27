@@ -310,6 +310,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       items: options.artifacts ? [artifact(10)] : [],
       listError: false,
       artifactReads: 0,
+      detailReads: {} as Record<string, number>,
+      detailStatus: 200,
       messageFeedback: [] as MessageFeedbackItem[],
       feedbackError: false,
       feedbackWrites: 0,
@@ -974,6 +976,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
             state.contentError ? 503 : 200,
           );
+        state.detailReads[a.id] = (state.detailReads[a.id] ?? 0) + 1;
+        if (state.detailStatus !== 200)
+          return answer(
+            { error: { code: 'ARTIFACT_UNAVAILABLE' } },
+            state.detailStatus,
+          );
         return answer({ artifact: a, feedback: [] });
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
@@ -1073,7 +1081,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('menuitem', { name: '查看所有成果', exact: true })
           .click();
         await panel
-          .getByRole('button', { name: new RegExp(`report-${n}\\.md`) })
+          .getByRole('button', { name: `侧栏预览 report-${n}.md`, exact: true })
           .click();
       },
       async reloadList() {
@@ -3708,10 +3716,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           path: `/tmp/allrice-met160-native-${format}.png`,
         });
         if (rendered.pages.length > 1) {
-          await preview.getByRole('button', { name: '下一页' }).click();
           await preview
             .getByRole('img', { name: 'Office 文档第 2 页' })
-            .waitFor();
+            .scrollIntoViewIfNeeded();
         }
       } finally {
         await f.close();
@@ -3751,55 +3758,231 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.entry.click();
       const preview = f.panel.getByRole('region', { name: 'Office 文档预览' });
       await preview.waitFor();
-      expect(await preview.innerText()).toContain('发现 1 个错误');
+      expect(await preview.innerText()).toContain('发现 1 个公式错误');
       expect(await preview.innerText()).toContain('展示前 2 页');
-      await preview.getByText('查看计算结果', { exact: true }).click();
+      await preview.locator('summary').click();
       expect(await preview.innerText()).toContain('#DIV/0!');
       expect(await preview.innerText()).toContain('60');
-      await preview.getByRole('button', { name: '下一页' }).click();
       await preview.getByRole('img', { name: 'Office 文档第 2 页' }).waitFor();
       expect(
-        await preview.getByRole('button', { name: '下一页' }).isDisabled(),
-      ).toBe(true);
-      expect(await preview.innerText()).toContain('请检查分页');
+        await preview.getByRole('button', { name: /上一页|下一页/ }).count(),
+      ).toBe(0);
+      expect(
+        await preview.locator('[data-document-zoom-scrollport]').count(),
+      ).toBe(1);
+      expect(await preview.innerText()).not.toContain('请检查分页');
     } finally {
       await f.close();
     }
   });
 
-  it('resolves chat downloads only for this Run’s authenticated artifacts', async () => {
-    const f = await fixture({ artifacts: true });
-    try {
-      const path = `/api/v1/files/${artifact(10).object.id}/download`;
-      f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
-      await f.page.reload();
-      const link = f.page.getByRole('link', { name: '下载报告', exact: true });
-      await expect
-        .poll(() => link.getAttribute('href'))
-        .toBe(`${origin}${path}?name=report-10.md`);
-      // Native Markdown opens HTTP links without navigating away from the chat.
-      expect(await link.getAttribute('target')).toBe('_blank');
-      expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
-      expect(
+  it.each([1440, 390])(
+    'native delivery cards preview and download at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const card = f.page
+          .locator('[data-presented-file]')
+          .filter({ hasText: 'report-10.md' })
+          .first();
+        await card.waitFor();
+        expect(await card.locator('svg').count()).toBeGreaterThan(0);
+        const menu = card.getByRole('button', {
+          name: 'report-10.md 打开方式',
+        });
+        await menu.click();
         await f.page
-          .getByRole('link', { name: '原始来源', exact: true })
-          .getAttribute('href'),
-      ).toBe('https://example.org/source');
-      // Even a known file in the Session cannot resolve another Run's link.
-      f.state.items = [
-        {
-          ...artifact(10),
-          provenance: { ...artifact(10).provenance, runId: id(90) },
-        },
-      ];
-      await f.page.reload();
-      await expect
-        .poll(() => link.getAttribute('href'))
-        .toBe(`https://allrice.example${path}?name=wrong`);
-    } finally {
-      await f.close();
-    }
-  });
+          .getByRole('menuitem', { name: '侧栏预览', exact: true })
+          .waitFor();
+        await f.page.keyboard.press('Escape');
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('menuitem', { name: '侧栏预览', exact: true })
+              .count(),
+          )
+          .toBe(0);
+        await menu.click();
+        await f.page
+          .getByRole('menuitem', { name: '侧栏预览', exact: true })
+          .click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        await f.page.route('**/api/v1/files/*/download?*', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'text/markdown',
+            headers: {
+              'content-disposition': 'attachment; filename="report-10.md"',
+            },
+            body: report,
+          }),
+        );
+        await menu.click();
+        const downloadEvent = f.page.waitForEvent('download');
+        await f.page
+          .getByRole('menuitem', { name: '下载文件', exact: true })
+          .click();
+        const download = await downloadEvent;
+        expect(download.suggestedFilename()).toBe('report-10.md');
+        expect(new URL(download.url()).pathname).toBe(
+          `/api/v1/files/${artifact(10).object.id}/download`,
+        );
+        expect(await f.panel.count()).toBe(0);
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((body) => body.scrollWidth <= innerWidth),
+        ).toBe(true);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'Office paper canvas scrolls continuously in both themes at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const png = await f.page.evaluate(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 900;
+          canvas.height = 1200;
+          const c = canvas.getContext('2d')!;
+          c.fillStyle = '#fff';
+          c.fillRect(0, 0, 900, 1200);
+          c.fillStyle = '#163b65';
+          c.font = '40px sans-serif';
+          c.fillText('Office document preview', 60, 100);
+          return canvas.toDataURL('image/png').split(',')[1]!;
+        });
+        f.state.officePreview = {
+          kind: 'office',
+          checksum: `sha256:${'a'.repeat(64)}`,
+          format: 'xlsx',
+          pageCount: 2,
+          pages: [
+            { number: 1, base64: png },
+            { number: 2, base64: png },
+          ],
+          formulaCount: 0,
+          formulaErrorCount: 0,
+          formulas: [],
+        };
+        await f.page.reload();
+        await f.entry.click();
+        const preview = f.panel.getByRole('region', {
+          name: 'Office 文档预览',
+        });
+        const second = preview.getByRole('img', { name: 'Office 文档第 2 页' });
+        await second.waitFor();
+        expect(await preview.locator('summary').count()).toBe(0);
+        const scroll = preview.locator('[data-document-zoom-scrollport]');
+        const paper = preview.locator('[data-document-zoom-surface]').first();
+        await expect
+          .poll(() =>
+            scroll.evaluate((el) => el.scrollHeight > el.clientHeight),
+          )
+          .toBe(true);
+        expect(
+          await scroll.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        ).toBe(true);
+        expect(
+          await paper.evaluate((el) => getComputedStyle(el).backgroundColor),
+        ).toBe('rgb(255, 255, 255)');
+        const canvasColor = () =>
+          scroll.evaluate(
+            (el) =>
+              getComputedStyle(el.parentElement!.parentElement!)
+                .backgroundColor,
+          );
+        const light = await canvasColor();
+        expect(light).not.toBe('rgb(255, 255, 255)');
+        expect(light).not.toBe('rgba(0, 0, 0, 0)');
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        expect(await canvasColor()).not.toBe(light);
+        await second.scrollIntoViewIfNeeded();
+        expect(await scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+        expect(
+          await f.page
+            .locator('body')
+            .evaluate((body) => body.scrollWidth <= innerWidth),
+        ).toBe(true);
+        await f.page.screenshot({
+          path: `/tmp/allrice-office-continuous-${width}.png`,
+        });
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'resolves chat downloads only for this Run’s authenticated artifacts at width %i',
+    async (width) => {
+      const f = await fixture({ artifacts: true, width });
+      try {
+        const path = `/api/v1/files/${artifact(10).object.id}/download`;
+        f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
+        await f.page.reload();
+        const link = f.page.getByRole('link', {
+          name: '下载报告',
+          exact: true,
+        });
+        await expect
+          .poll(() => link.getAttribute('href'))
+          .toBe(`${origin}${path}?name=report-10.md`);
+        // Native Markdown opens HTTP links without navigating away from the chat.
+        expect(await link.getAttribute('target')).toBe('_blank');
+        expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(
+          await link.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(65, 118, 230)');
+        await f.page.evaluate(() =>
+          document.body.setAttribute('data-ds-dark-theme', ''),
+        );
+        expect(
+          await link.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(103, 158, 254)');
+        await f.page.evaluate(() =>
+          document.body.removeAttribute('data-ds-dark-theme'),
+        );
+        const pageCount = f.page.context().pages().length;
+        await link.click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        expect(
+          await f.panel
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(path);
+        expect(f.page.context().pages()).toHaveLength(pageCount);
+        expect(new URL(f.page.url()).pathname).toBe('/');
+        expect(
+          await f.page
+            .getByRole('link', { name: '原始来源', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://example.org/source');
+        // Even a known file in the Session cannot resolve another Run's link.
+        f.state.items = [
+          {
+            ...artifact(10),
+            provenance: { ...artifact(10).provenance, runId: id(90) },
+          },
+        ];
+        await f.page.reload();
+        await expect
+          .poll(() => link.getAttribute('href'))
+          .toBe(`https://allrice.example${path}?name=wrong`);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it(
     'UX01-B keeps all entries visible, distinguishes release-off and preserves drafts without execution',
@@ -4807,7 +4990,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.panel.locator('[data-dockkit-pane]').count())
         .toBe(2);
-      await f.panel.getByRole('button', { name: /report-11\.md.*v1/ }).click();
+      await f.panel
+        .getByRole('button', { name: '侧栏预览 report-11.md', exact: true })
+        .click();
       await expect
         .poll(() => f.panel.locator('[data-document-id]:visible').count())
         .toBe(2);
@@ -4864,6 +5049,64 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
+  it('does not poll immutable or hidden document tabs and retries genuine load errors', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      f.state.items.push(artifact(11));
+      await f.reloadList();
+      await f.selectArtifact(11);
+      await f.panel
+        .locator(`[data-document-id="${id(11)}"]`)
+        .getByRole('heading', { name: /COIN/ })
+        .waitFor();
+      const before = { ...f.state.detailReads };
+      // Longer than the previous five-second timer; both visible and hidden reads stay quiet.
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      expect(f.state.detailReads).toEqual(before);
+      f.state.detailStatus = 503;
+      await f.fileAction('刷新文件');
+      await f.panel
+        .getByRole('button', { name: '重试加载文件', exact: true })
+        .waitFor();
+      f.state.detailStatus = 200;
+      await f.panel
+        .getByRole('button', { name: '重试加载文件', exact: true })
+        .click();
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(await f.panel.getByRole('alert').count()).toBe(0);
+      f.state.detailStatus = 403;
+      await f.fileAction('刷新文件');
+      await f.panel.getByRole('alert').waitFor();
+      expect(await f.panel.getByRole('heading', { name: /COIN/ }).count()).toBe(
+        0,
+      );
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
+  it('clears recovered review refresh errors without removing the loaded preview', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      f.state.items[0]!.kind = 'plan';
+      await f.page.reload();
+      await f.entry.click();
+      const heading = f.panel.getByRole('heading', { name: /COIN/ });
+      await heading.waitFor();
+      f.state.detailStatus = 503;
+      await f.panel.getByRole('alert').waitFor({ timeout: 10000 });
+      expect(await heading.isVisible()).toBe(true);
+      f.state.detailStatus = 200;
+      await expect
+        .poll(() => f.panel.getByRole('alert').count(), { timeout: 10000 })
+        .toBe(0);
+      expect(await heading.isVisible()).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
   it('protects explicit version selection on new artifacts, including list failure/retry', async () => {
     const f = await fixture({ artifacts: true });
     try {
@@ -4883,7 +5126,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(true);
       f.state.listError = true;
       await f.entry.click();
+      // A catalog refresh failure is not a failure of the loaded document.
+      await f.fileAction('查看所有成果');
       await f.panel.getByRole('alert').waitFor();
+      await f.panel
+        .getByRole('button', { name: '侧栏预览 report-10.md', exact: true })
+        .click();
+      expect(await f.panel.getByRole('alert').count()).toBe(0);
       expect(
         await f.panel.getByRole('heading', { name: /COIN/ }).isVisible(),
       ).toBe(true);
@@ -4911,6 +5160,70 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  for (const width of [1440, 390])
+    it(`selects, removes and sends authorized session references at ${width}px`, async () => {
+      const f = await fixture({ width });
+      try {
+        const sources = [
+          session(A),
+          { ...session(B), title: '历史财报' },
+          { ...session(id(801)), title: '市场研究' },
+          { ...session(id(802)), title: '上次汇报' },
+          { ...session(id(803)), title: '竞争对手' },
+        ];
+        await f.page.route('**/api/v1/sessions?**', (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ sessions: sources, nextCursor: null }),
+          }),
+        );
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page.getByRole('menuitem', { name: '引用会话' }).click();
+        const picker = f.page.getByRole('dialog', { name: '引用会话' });
+        await picker.getByRole('button', { name: /历史财报/ }).click();
+        await picker.getByRole('button', { name: /市场研究/ }).click();
+        await picker.getByRole('button', { name: /上次汇报/ }).click();
+        expect(
+          await picker.getByRole('button', { name: /竞争对手/ }).isDisabled(),
+        ).toBe(true);
+        expect(
+          await picker.getByRole('button', { name: /研究任务 A/ }).count(),
+        ).toBe(0);
+        if (process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT) {
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT}-${width}.png`,
+          });
+        }
+        await picker.getByRole('button', { name: '完成', exact: true }).click();
+        await f.page
+          .getByRole('button', { name: '移除引用：市场研究' })
+          .click();
+        await f.page
+          .getByRole('button', { name: '移除引用：上次汇报' })
+          .click();
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('请根据引用整理汇报');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.messageInputs[0]).toMatchObject({
+          text: '请根据引用整理汇报',
+          sessionReferenceIds: [B],
+          deliveryMode: 'follow_up',
+        });
+        await expect
+          .poll(() =>
+            f.page.getByRole('button', { name: '移除引用：历史财报' }).count(),
+          )
+          .toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
 
   it('keeps long replies entirely in the transcript and hides the workbench for conversations without artifacts', async () => {
     const f = await fixture();

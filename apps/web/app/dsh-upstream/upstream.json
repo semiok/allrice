@@ -129,7 +129,8 @@
             "IconDataOutlineRegular",
             "IconRefreshOutlineRegular",
             "Switch",
-            "MarkdownText"
+            "MarkdownText",
+            "MarkdownDelegateProvider"
           ]
         },
         {
@@ -516,9 +517,9 @@
           "source": "packages/client/ui-chat/src/client/conversation-nodes/process-groups.ts",
           "target": "apps/web/app/chatflow/dsh-upstream/process/process-groups.ts",
           "upstreamSha256": "2d7188a9c35c846d0ec25c1de94b69cd5d77aa9c46ed44d94707a3794c18cd45",
-          "sha256": "f5a5ab6543a407bd56c7ee4ed607aafb178f8a970f78b89df8312c4fcaab5d71",
+          "sha256": "450ba2386e31a831b8fcab92c25168ff789d3be09e4b7f6a0e61e0a28c6c5363",
           "patch": "scripts/dsh-ui-patches/process-process-groups.ts.patch",
-          "patchSha256": "3cb905439fd6af71beb2dcc4f1a9ae3329f81b6a64f28c758730f2dcbeda5e32"
+          "patchSha256": "24ace726bd42f108186e9f847267d19ee864c538d07d646c7fd491dcbefb60e4"
         },
         {
           "source": "packages/client/ui-chat/src/client/conversation-nodes/process-activity.ts",
@@ -567,6 +568,41 @@
       ]
     },
     {
+      "id": "native-task-plan",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-source-with-recorded-adapter-patches",
+      "files": [
+        {
+          "source": "packages/client/ui-conversation/src/client/skeleton/TodoPanel.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/todo/TodoPanel.tsx",
+          "upstreamSha256": "8be70f4479c1984ca7e58ea089d0121b42855bb8dc5f16b05b2e643c4bbe3d55",
+          "sha256": "b10a6f484184ca3987829a662823bd5a9f495f82575aa795b2d3547ad49d3177",
+          "patch": "scripts/dsh-ui-patches/TodoPanel.tsx.patch",
+          "patchSha256": "47b042eafaf058c64d089b4664e5638f7a093fa78c77a5d69e787ea10a5fa8a4"
+        },
+        {
+          "source": "packages/client/ui-conversation/src/client/skeleton/TodoPanel.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/todo/TodoPanel.module.css",
+          "upstreamSha256": "02e2a96e377435f14e34a1edce9d7688022ba7b53bb5b566f5408a3968c0b9ba",
+          "sha256": "02e2a96e377435f14e34a1edce9d7688022ba7b53bb5b566f5408a3968c0b9ba"
+        }
+      ],
+      "packages": [
+        {
+          "name": "@deepseek-ai/dsh-client-ui-primitives",
+          "version": "0.1.7-rc.1",
+          "exports": [
+            "StateDot",
+            "IconChecklistOutlineRegular",
+            "IconChevronDownOutlineRegular",
+            "IconChevronUpOutlineRegular"
+          ]
+        }
+      ]
+    },
+    {
       "id": "session-archive",
       "version": "0.1.7-rc.1",
       "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
@@ -599,37 +635,27 @@
       "packages": []
     },
     {
-      "id": "native-task-plan",
+      "id": "native-delivery-cards",
       "version": "0.1.7-rc.1",
       "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
       "license": "MIT",
       "integration": "native-source-with-recorded-adapter-patches",
       "files": [
         {
-          "source": "packages/client/ui-conversation/src/client/skeleton/TodoPanel.tsx",
-          "target": "apps/web/app/chatflow/dsh-upstream/todo/TodoPanel.tsx",
-          "upstreamSha256": "8be70f4479c1984ca7e58ea089d0121b42855bb8dc5f16b05b2e643c4bbe3d55",
-          "sha256": "b10a6f484184ca3987829a662823bd5a9f495f82575aa795b2d3547ad49d3177",
-          "patch": "scripts/dsh-ui-patches/TodoPanel.tsx.patch",
-          "patchSha256": "47b042eafaf058c64d089b4664e5638f7a093fa78c77a5d69e787ea10a5fa8a4"
+          "source": "packages/client/ui-deliverables/src/client/PresentedFileCard.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/deliverables/PresentedFileCard.tsx",
+          "upstreamSha256": "07addc96e0d9664c1d8d7ffbac53c4c0a53deb761ebc4fc95559381585e45fe9",
+          "sha256": "9b9d4428a0f657a0c9706214b58f899a7e6e30cc1cc075ce29ad55acd834e585",
+          "patch": "scripts/dsh-ui-patches/deliverables-PresentedFileCard.tsx.patch",
+          "patchSha256": "5edc7018a1a9fd6ea9d82a23e792fd1c3f3aed618ce730463117bf6b8b1752f5"
         },
         {
-          "source": "packages/client/ui-conversation/src/client/skeleton/TodoPanel.module.css",
-          "target": "apps/web/app/chatflow/dsh-upstream/todo/TodoPanel.module.css",
-          "upstreamSha256": "02e2a96e377435f14e34a1edce9d7688022ba7b53bb5b566f5408a3968c0b9ba",
-          "sha256": "02e2a96e377435f14e34a1edce9d7688022ba7b53bb5b566f5408a3968c0b9ba"
-        }
-      ],
-      "packages": [
-        {
-          "name": "@deepseek-ai/dsh-client-ui-primitives",
-          "version": "0.1.7-rc.1",
-          "exports": [
-            "StateDot",
-            "IconChecklistOutlineRegular",
-            "IconChevronDownOutlineRegular",
-            "IconChevronUpOutlineRegular"
-          ]
+          "source": "packages/client/ui-deliverables/src/client/Deliverables.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/deliverables/Deliverables.module.css",
+          "upstreamSha256": "1748d001a87d44da9ee97d3ae64bd9c975fbd6af0e8751100008ae55c51b4e88",
+          "sha256": "1b7e953c7cada712a01c7815dbdb26220328c42769f82e8e85b28222b62f6228",
+          "patch": "scripts/dsh-ui-patches/deliverables-Deliverables.module.css.patch",
+          "patchSha256": "a4ee7d82705db1e29512cc5ed4e539bb2d8f9db297302ed06cb8e1f6bc332ac8"
         }
       ]
     }

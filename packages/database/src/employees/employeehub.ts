@@ -1,3 +1,4 @@
+import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
 import {
   isPlatformAdmin,
   requirePlatformAdmin,
@@ -191,6 +192,9 @@ export interface EmployeeRunBinding {
     'tenantContext' | 'createdAt'
   >;
   promptSnapshot: {
+    sessionReferences?: ReturnType<
+      typeof EmployeePromptSnapshotSchema.parse
+    >['sessionReferences'];
     systemPrompt: string;
     conversation: { role: string; text: string }[];
     memories: { id: string; content: string }[];
@@ -1436,6 +1440,10 @@ export async function resolveEmployeeExecution(input: {
   if (!row) throw new EmployeeHubError('not_found');
   const promptSnapshot = EmployeePromptSnapshotSchema.parse(
     row.prompt_snapshot,
+  );
+  await assertSessionReferencesReadable(
+    input,
+    promptSnapshot.sessionReferences ?? [],
   );
   const nativeSkills = DshNativeSkillSnapshotSchema.array()
     .parse(row.native_skills)

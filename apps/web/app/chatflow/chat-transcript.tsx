@@ -6,6 +6,7 @@ import {
   type WorkbenchArtifact,
   type InteractionStatus,
 } from '@allrice/contracts';
+import { SessionReferenceChips } from './session-reference-picker';
 import type { AssistantTreeView } from '@allrice/database';
 
 import { projectWorkProgress } from '../../lib/chatflow/work-progress';
@@ -210,6 +211,9 @@ export function ChatTranscript({
                       data-actions-reveal="hover"
                     >
                       <div className={messageUi.userStack}>
+                        <SessionReferenceChips
+                          references={message.content.sessionReferences ?? []}
+                        />
                         {message.attachments?.length ? (
                           <MessageImageGallery
                             attachments={message.attachments}
@@ -245,6 +249,7 @@ export function ChatTranscript({
                         items={progress.items}
                         parts={progress.parts}
                         artifacts={linkedArtifacts}
+                        onOpenArtifact={onOpenArtifact}
                         timing={timing}
                         running={messageIsRunning}
                         streaming={streamingOutput && !!streamedText}
@@ -343,6 +348,7 @@ export function ChatTranscript({
                                 <AssistantMarkdown
                                   text={responseText}
                                   artifacts={linkedArtifacts}
+                                  onOpenArtifact={onOpenArtifact}
                                 />
                               </details>
                             </>
@@ -351,6 +357,7 @@ export function ChatTranscript({
                               text={responseText}
                               streaming={streamingOutput && messageIsRunning}
                               artifacts={linkedArtifacts}
+                              onOpenArtifact={onOpenArtifact}
                             />
                           )}
                         </div>

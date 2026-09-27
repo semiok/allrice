@@ -72,10 +72,12 @@ export async function updateQueuedMessage(
         cancel_requested_at: Date | null;
         error_code: string | null;
         has_attachments: boolean;
+        has_references: boolean;
       }[]
     >`
       select f.run_id,f.state,f.mode,f.assistant_message_id,f.client_user_message_id,
         m.content->>'text' as text,i.kind,j.status,j.cancel_requested_at,r.error_code,
+        jsonb_array_length(m.session_references)>0 as has_references,
         exists(select 1 from allrice_message_attachments a where a.message_id=m.id) as has_attachments
       from allrice_conversation_followups f
       join allrice_messages m on m.id=f.user_message_id
@@ -106,6 +108,8 @@ export async function updateQueuedMessage(
     )
       throw new ArtifactReviewError('queued_message_started');
     if (action.action === 'steer') {
+      if (row.has_references)
+        throw new ArtifactReviewError('queued_references_require_turn');
       if (row.has_attachments)
         throw new ArtifactReviewError('queued_attachments_require_turn');
       if (

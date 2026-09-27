@@ -381,7 +381,7 @@ export const riceToolDefinitions = [
         python: {
           ...z.toJSONSchema(NativeOfficeExportSchema),
           description:
-            'Office 默认路径：执行 DSH 原生 Python 文档流程。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
+            'Office 默认路径：执行 DSH 原生 Python 文档流程。最小入参 {"fileName":"报告.xlsx","format":"xlsx","python":{"script":"...","inputs":[]}}。新文件省略 sourceObjectId（也接受 null）；修改说明优先放外层 changeSummary。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
         },
         office: {
           ...z.toJSONSchema(OfficeExportSchema),

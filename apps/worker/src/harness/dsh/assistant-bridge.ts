@@ -11,7 +11,7 @@ import {
 import type { AssistantRuntime, AssistantWorkerLease } from '@allrice/database';
 import { runtimePolicyDigest } from '@allrice/database';
 import type { HarnessToolCall, HarnessToolResult } from '../adapter.js';
-import { HandlerError } from '../../errors.js';
+import { HandlerError, isConfirmedToolFailure } from '../../errors.js';
 import { riceToolRisk } from '../../tool-broker/definitions.js';
 import { developmentAssignmentMessage } from '../../development/assignment-instructions.js';
 
@@ -282,12 +282,17 @@ export function createAssistantWorkerBridge(
       } catch (error) {
         // A returned read failure is a completed attempt, not an unknown tool
         // execution. Keep the failure visible to native DSH so it can recover.
-        // Proposals/writes still need their execution receipts; their exceptions
-        // do not prove whether the external operation happened.
+        // Writes require a receipt from the handler for this exact invocation;
+        // an arbitrary exception cannot prove whether publication happened.
         if (
           !isProposal &&
           (riceToolRisk(name) === 'read_only' ||
-            options.readOnlyTools.has(name))
+            options.readOnlyTools.has(name) ||
+            isConfirmedToolFailure(error, {
+              runId: instance.runId,
+              callId,
+              toolName: name,
+            }))
         )
           await runtime.settleUsage({
             ...base,

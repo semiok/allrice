@@ -2,6 +2,11 @@
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import {
+  prepareSessionReferenceContext,
+  installSessionReferenceAdmission,
+} from './allrice-session-references.mjs';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
@@ -118,7 +123,7 @@ const brokerNativeTools = [
       includeStructure: {
         type: 'boolean',
         description:
-          'For Office template edits, set true to inspect sheets/cells, slides and paragraphs with the source checksum. Use the returned id and checksum in office.kind=edit; never reconstruct the template from extracted text.',
+          'For Office template edits, set true to inspect sheets/cells, slides and paragraphs with the source checksum. Use the returned id and checksum in python.inputs and edit that input with native Office libraries; never reconstruct the template from extracted text.',
       },
     },
   },
@@ -831,22 +836,36 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   async prompt(params) {
     const images = Array.isArray(params?.images) ? params.images : [];
-    if (!images.length) return super.prompt(params);
-    // The rc.3 SDK inline-image wire drops names. Use the native attachment
-    // admission API to retain display names as well as ordered durable refs.
-    const imageBlocks = await this.ctx.attachments.admitPromptContent(
-      images.map((image) => ({ ...image, type: 'image' })),
+    const imageBlocks = images.length
+      ? await this.ctx.attachments.admitPromptContent(
+          images.map((image) => ({ ...image, type: 'image' })),
+        )
+      : [];
+    const contentBlocks = [...(params.contentBlocks ?? []), ...imageBlocks];
+    if (!params.sessionReferences?.length)
+      return super.prompt({ ...params, contentBlocks });
+    if (!this.initialized) throw new Error('SDK server is not initialized');
+    const record = await this.getOrCreateSession(params.sessionId);
+    this.assertLiveAgent(record, params.sessionId);
+    const agent = record.handle.agent;
+    const context = await prepareSessionReferenceContext(
+      agent,
+      params.sessionReferences,
     );
-    return super.prompt({
-      ...params,
-      contentBlocks: [
-        ...(Array.isArray(params.contentBlocks) ? params.contentBlocks : []),
-        ...imageBlocks,
-      ],
+    this.assertLiveAgent(record, params.sessionId);
+    const message = createUserMessage({
+      content: contentBlocks,
+      source: { kind: 'user', allriceSessionReference: context },
     });
+    agent.followup(message);
+    return { messageId: message.id };
   }
 
   async initialize(params) {
+    if (!this.referenceAdmissionInstalled) {
+      installSessionReferenceAdmission(this.ctx);
+      this.referenceAdmissionInstalled = true;
+    }
     const isGemini =
       params?.provider === 'gemini' || params?.provider === 'google';
     const model =
@@ -1150,7 +1169,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       this.ctx.systemPrompt.section({
         name: 'tool:allrice_exports',
         order: 115,
-        text: 'When the user explicitly asks for a report or downloadable deliverable, use workspace_export_create and include its actual downloadUrl as a Markdown link. Supply either content for text-based exports or office for structured DOCX/XLSX/PPTX creation and source-preserving edits. Read the Office Skill resources for the typed structures. For template edits, first list and read the source with includeStructure=true, then use office.kind=edit with its actual object id, checksum and targeted changes. When revising an existing AllRice deliverable, pass its object ID as parentObjectId and summarize the revision in changeSummary so the immutable version lineage is preserved. Do not create a file for an ordinary chat answer.',
+        text: 'When the user asks for Word, Excel, PPT or another downloadable deliverable, create the requested files with workspace_export_create; describing what a file would contain does not fulfill that request. Read the Office Skill format guides and use its native Python workflow: {fileName, format, python: {script, inputs: []}}. For a new file omit python.sourceObjectId or use null. For template edits, list and read the source with includeStructure=true, then edit the actual file supplied via python.inputs using native Office libraries. Use content for text exports; office is only a legacy compatibility path. When revising an existing AllRice deliverable, pass parentObjectId and top-level changeSummary to preserve immutable lineage. Include each actual downloadUrl as a Markdown link without JSON-escaping slashes; Allrice opens the file preview with download available there. Do not create files for an ordinary chat answer.',
       });
     }
     if (
