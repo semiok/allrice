@@ -223,6 +223,43 @@ suite(
         await database`select last_seen_at,updated_at from allrice_bridge_devices where id=${f.device}`,
       ).toEqual(before);
     });
+    it('lists the version actually reported by each owned device without borrowing another tenant report', async () => {
+      const own = await fixture(),
+        other = await fixture();
+      expect(
+        (await listBridgeDevices(own.context, own.workspace))[0]?.clientVersion,
+      ).toBeNull();
+      await heartbeatBridgeDevice(own.token, {
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        environment: {
+          version: 1,
+          clientVersion: '0.6.0-dev.6',
+          browser: 'ready',
+          sandbox: 'ready',
+          preview: 'ready',
+          paused: false,
+        },
+      });
+      await heartbeatBridgeDevice(other.token, {
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        environment: {
+          version: 1,
+          clientVersion: '0.6.0-dev.7',
+          browser: 'ready',
+          sandbox: 'ready',
+          preview: 'ready',
+          paused: false,
+        },
+      });
+      expect(await listBridgeDevices(own.context, own.workspace)).toMatchObject(
+        [{ id: own.device, clientVersion: '0.6.0-dev.6' }],
+      );
+      expect(
+        await listBridgeDevices(other.context, other.workspace),
+      ).toMatchObject([{ id: other.device, clientVersion: '0.6.0-dev.7' }]);
+    });
     it('retains stored folder authorization without reporting an expired heartbeat online', async () => {
       const f = await fixture();
       await database`insert into allrice_bridge_folder_grants(organization_id,workspace_id,owner_id,device_id,label,root_fingerprint)
