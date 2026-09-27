@@ -122,7 +122,7 @@ export async function finishImageOperation(input: {
 
 export async function listImageOperations(context: RequestContext) {
   await requirePlatformAdmin(context);
-  return getDatabase()`select i.id,i.operation,i.status,i.work_model as "workModel",i.image_model as "imageModel",i.usage,
+  return getDatabase()`select i.id,i.operation,case when i.status='running' and not exists (select 1 from allrice_jobs j where j.run_id=i.run_id and j.status='running' and j.cancel_requested_at is null and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()) then 'unknown' else i.status end as status,i.work_model as "workModel",i.image_model as "imageModel",i.usage,
     i.error_code as "errorCode",i.created_at as "createdAt",i.completed_at as "completedAt",o.name as "organizationName",i.run_id as "runId"
     from allrice_image_operations i join allrice_organizations o on o.id=i.organization_id order by i.created_at desc limit 50`;
 }

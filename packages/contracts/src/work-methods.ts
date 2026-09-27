@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const WorkMethodSchema = z.enum([
+  'cloud_images',
   'cloud_compute',
   'cloud_browser',
   'cloud_search',
@@ -14,6 +15,7 @@ export const WorkMethodSchema = z.enum([
 ]);
 export type WorkMethod = z.infer<typeof WorkMethodSchema>;
 export const workMethodLabels: Record<WorkMethod, string> = {
+  cloud_images: '云端-图片',
   cloud_compute: '云端-计算',
   cloud_browser: '云端-浏览器',
   cloud_search: '云端-检索',
@@ -29,6 +31,8 @@ export const workMethodLabels: Record<WorkMethod, string> = {
 /** Only synchronous tools whose successful return confirms work. Async tools
  * can return waiting/unavailable without execution; use their operation ledger. */
 export const completedToolWorkMethods: Readonly<Record<string, WorkMethod>> = {
+  'image.generate': 'cloud_images',
+  'image.edit': 'cloud_images',
   'web.search': 'cloud_search',
   'web.fetch': 'cloud_search',
   'wechat.article.search': 'cloud_search',

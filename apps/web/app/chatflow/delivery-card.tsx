@@ -9,6 +9,7 @@ import type { WorkbenchArtifact } from '@allrice/contracts';
 import { artifactKindLabel } from '../../lib/chatflow/workbench-model';
 import { PresentedFileCard } from './dsh-upstream/deliverables/PresentedFileCard';
 import styles from './workbench.module.css';
+import imageStyles from './image-delivery.module.css';
 
 /** Native DSH presentation; file access remains the existing authenticated API. */
 export function DeliveryCard({
@@ -20,7 +21,11 @@ export function DeliveryCard({
 }) {
   const [open, setOpen] = useState(false);
   const name = artifact.version.fileName;
-  return (
+  const [failed, setFailed] = useState(false);
+  const isImage = ['image/png', 'image/jpeg', 'image/webp'].includes(
+    artifact.object.mediaType,
+  );
+  const card = (
     <PresentedFileCard
       file={{
         path: name,
@@ -74,5 +79,29 @@ export function DeliveryCard({
         </div>
       }
     />
+  );
+  if (!isImage) return card;
+  return (
+    <div className={imageStyles.root}>
+      <button
+        type="button"
+        className={imageStyles.preview}
+        aria-label={`查看图片 ${name}`}
+        onClick={() => onOpen(artifact.id)}
+      >
+        {failed ? (
+          <span>图片预览暂不可用，点击打开</span>
+        ) : (
+          <img
+            src={`/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(name)}`}
+            alt={name}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+          />
+        )}
+      </button>
+      {card}
+    </div>
   );
 }

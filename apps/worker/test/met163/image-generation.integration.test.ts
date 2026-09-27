@@ -7,8 +7,15 @@ import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runt
 import { executeRiceTool } from '../../src/tool-broker.js';
 import { HandlerError } from '../../src/errors.js';
 import { requestCodexImage } from '../../src/codex-image-broker.js';
-import { listToolBrokerFiles } from '@allrice/database';
-vi.mock('../../src/codex-image-broker.js', () => ({ requestCodexImage: vi.fn() }));
+import {
+  listToolBrokerFiles,
+  listImageOperations,
+  claimImageOperation,
+} from '@allrice/database';
+import { withFixturePlatformAdministrator } from '../../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
+vi.mock('../../src/codex-image-broker.js', () => ({
+  requestCodexImage: vi.fn(),
+}));
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
 const suite =
@@ -150,6 +157,23 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
       expect(receipts[0]?.usage).toMatchObject({
         inputTokens: 10,
         outputTokens: 2,
+      });
+      await expect(listImageOperations(f.context)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      await claimImageOperation({
+        context: common.context,
+        sessionId: task.sessionId,
+        callId: 'orphan',
+        arguments: { prompt: 'interrupted image', fileName: 'orphan.png' },
+        leaseToken: task.workflowLease.leaseToken,
+      });
+      await f.db`update allrice_jobs set cancel_requested_at=now() where id=${common.context.jobId}`;
+      await withFixturePlatformAdministrator(f.ownerId, async () => {
+        const rows = await listImageOperations(f.context);
+        expect(rows).toHaveLength(4);
+        expect(rows[0]).toMatchObject({ status: 'unknown', usage: null });
+        expect(rows[0]).not.toHaveProperty('prompt');
       });
     } finally {
       await f.close();

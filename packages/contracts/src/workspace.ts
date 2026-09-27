@@ -109,7 +109,7 @@ export const ChatMessageContentSchema = z
 
 export const ChatMessageSchema = z
   .object({
-    workMethods: z.array(WorkMethodSchema).max(10).optional(),
+    workMethods: z.array(WorkMethodSchema).max(11).optional(),
     id: UuidSchema,
     sessionId: UuidSchema,
     ownerId: UuidSchema,

@@ -980,13 +980,10 @@ function ArtifactReview({
                 toolResult={toolResult}
               />
             ) : preview?.kind === 'image' ? (
-              <div className={styles.preview}>
-                {/* Static raster only; no remote URL, SVG or HTML insertion. */}
-                <NativeImagePreview
-                  src={`data:${preview.mediaType};base64,${preview.base64}`}
-                  alt={`${artifact.version.fileName} 静态预览`}
-                />
-              </div>
+              <NativeImagePreview
+                src={`data:${preview.mediaType};base64,${preview.base64}`}
+                alt={`${artifact.version.fileName} 静态预览`}
+              />
             ) : preview?.kind === 'pdf' ? (
               <NativePdfPreview base64={preview.base64} />
             ) : preview?.kind === 'office' ? (

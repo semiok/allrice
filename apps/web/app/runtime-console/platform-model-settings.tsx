@@ -6,6 +6,7 @@ import {
   type PlatformModelSettings,
 } from '@allrice/contracts';
 import styles from './governance-console.module.css';
+import { ImageOperationsPanel } from './image-operations-panel';
 
 export function PlatformModelSettingsPanel() {
   const [settings, setSettings] = useState<PlatformModelSettings | null>(null);
@@ -138,6 +139,7 @@ export function PlatformModelSettingsPanel() {
         <p>正在读取配置…</p>
       )}
       {notice ? <p role="status">{notice}</p> : null}
+      <ImageOperationsPanel />
     </section>
   );
 }
