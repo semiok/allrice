@@ -1,6 +1,8 @@
 import { UuidSchema } from '@allrice/contracts';
 import {
   listLocalBrowserGrants,
+  LocalBrowserLoginPreferencesSchema,
+  updateLocalBrowserLoginPreferences,
   installLocalBrowserGrant,
   revokeLocalBrowserGrant,
   LocalBrowserManagementInstallSchema,
@@ -44,6 +46,17 @@ async function handle(request: Request): Promise<Response> {
       return Response.json(
         await installLocalBrowserGrant({ ...ctx, workspaceId }, body),
         { status: 201, headers },
+      );
+    }
+    if (raw.action === 'login_preferences') {
+      const body = LocalBrowserLoginPreferencesSchema.parse(raw);
+      return Response.json(
+        await updateLocalBrowserLoginPreferences(
+          { ...ctx, workspaceId: body.workspaceId },
+          body.grantId,
+          body.rememberLogin,
+        ),
+        { headers },
       );
     }
     const body = LocalBrowserManagementRevokeSchema.parse(raw);

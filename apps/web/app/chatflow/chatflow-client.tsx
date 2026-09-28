@@ -174,7 +174,14 @@ export function ChatFlowClient({
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
     setSettings(null);
-  }, [settingsScope]);
+    if (!workspace?.workspaceId) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('settings') === 'computer') {
+      setSettings({ scope: settingsScope, section: 'computer' });
+      url.searchParams.delete('settings');
+      window.history.replaceState(window.history.state, '', url);
+    }
+  }, [settingsScope, workspace?.workspaceId]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,

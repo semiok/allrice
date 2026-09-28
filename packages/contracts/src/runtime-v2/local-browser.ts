@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
+import { platformFileMaximumBytes } from '../storage.ts';
 import { RuntimeScopeSchema } from './identity.ts';
 import { RuntimeOperationSnapshotSchema } from './operations.ts';
 import {
@@ -19,7 +20,7 @@ import {
 export const localBrowserVersion = 1;
 export const localBrowserControllerLeaseMs = 5000;
 export const localBrowserStateMaximumBytes = 256 * 1024;
-export const localBrowserCaptureMaximumBytes = 2 * 1024 * 1024;
+export const localBrowserCaptureMaximumBytes = platformFileMaximumBytes;
 const revision = z.number().int().positive();
 const control = z.enum(['agent', 'human', 'paused', 'closed']);
 

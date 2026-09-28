@@ -2,9 +2,11 @@ import { basename, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { lstat, readdir } from 'node:fs/promises';
 import type { BrowserContext } from 'playwright-core';
+import { localBrowserUrlAllowed } from './local-browser-network.js';
 import {
   LocalBrowserProfileBindingSchema,
-  localBrowserStateMaximumBytes,
+  platformFileMaximumBytes,
+  BrowserProfileSchema,
   runtimeContractEqual,
   type BrowserProfile,
   type LocalBrowserProfileBinding,
@@ -23,6 +25,7 @@ type StoredProfile = {
   serverUrl: string;
   binding: LocalBrowserProfileBinding;
   origins: string[];
+  network?: 'public_https';
   revoked: boolean;
   state: LocalBrowserStorageState | null;
 };
@@ -31,9 +34,18 @@ type ProfileIndex = {
   serverUrl: string;
   deviceId: string;
   revoked: boolean;
-  entries: Array<{ binding: LocalBrowserProfileBinding; origins: string[] }>;
+  entries: Array<{
+    binding: LocalBrowserProfileBinding;
+    origins: string[];
+    network?: 'public_https';
+  }>;
 };
-const limit = { maxBytes: localBrowserStateMaximumBytes };
+const limit = { maxBytes: platformFileMaximumBytes };
+const publicProfile = BrowserProfileSchema.parse({
+  version: 1,
+  network: 'public_https',
+  origins: [],
+});
 const unsafe = () => Error('LOCAL_BROWSER_PROFILE_UNSAFE');
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -53,15 +65,21 @@ function array(value: unknown, max: number): unknown[] {
   return value;
 }
 
-/** Validate only cookies/localStorage. Session storage, IndexedDB, extensions and
- * Chrome user-data directories are not imported by this first implementation. */
+/** Validate native Playwright storageState. Login data stays in the owned profile;
+ * the network policy still controls every request made after restoration. */
 export function validateLocalBrowserStorageState(
   value: unknown,
   origins: string[],
+  network?: 'public_https',
 ): LocalBrowserStorageState {
   const state = record(value);
   keys(state, ['cookies', 'origins']);
   const hosts = origins.map((origin) => new URL(origin).hostname);
+  const allowsOrigin = (origin: string) =>
+    network === 'public_https'
+      ? localBrowserUrlAllowed(origin, publicProfile) &&
+        new URL(origin).origin === origin
+      : origins.includes(origin);
   for (const item of array(state.cookies, 1000)) {
     const cookie = record(item);
     keys(cookie, [
@@ -80,7 +98,9 @@ export function validateLocalBrowserStorageState(
     const domain = string(cookie.domain, 253).replace(/^\./, '').toLowerCase();
     if (
       !domain ||
-      !hosts.some((host) => host === domain || host.endsWith(`.${domain}`))
+      !(network === 'public_https'
+        ? localBrowserUrlAllowed(`https://${domain}`, publicProfile)
+        : hosts.some((host) => host === domain || host.endsWith(`.${domain}`)))
     )
       throw unsafe();
     if (!string(cookie.path, 2048).startsWith('/')) throw unsafe();
@@ -95,25 +115,25 @@ export function validateLocalBrowserStorageState(
       throw unsafe();
     if (
       cookie.partitionKey !== undefined &&
-      !origins.includes(string(cookie.partitionKey, 2048))
+      !allowsOrigin(string(cookie.partitionKey, 2048))
     )
       throw unsafe();
   }
   const seen = new Set<string>();
-  for (const item of array(state.origins, 8)) {
+  for (const item of array(state.origins, network ? 1000 : 8)) {
     const origin = record(item);
-    keys(origin, ['origin', 'localStorage']);
+    keys(origin, ['origin', 'localStorage', 'indexedDB']);
     const name = string(origin.origin, 2048);
-    if (!origins.includes(name) || seen.has(name)) throw unsafe();
+    if (!allowsOrigin(name) || seen.has(name)) throw unsafe();
     seen.add(name);
     for (const pair of array(origin.localStorage, 2000)) {
       const entry = record(pair);
       keys(entry, ['name', 'value']);
       string(entry.name, 2048);
-      string(entry.value, localBrowserStateMaximumBytes);
+      string(entry.value, platformFileMaximumBytes);
     }
   }
-  if (Buffer.byteLength(JSON.stringify(state)) > localBrowserStateMaximumBytes)
+  if (Buffer.byteLength(JSON.stringify(state)) > platformFileMaximumBytes)
     throw unsafe();
   return structuredClone(state) as LocalBrowserStorageState;
 }
@@ -178,7 +198,9 @@ export class LocalBrowserProfiles {
       const seen = new Set<string>();
       const entries = array(value.entries, 128).map((entry) => {
         const item = record(entry);
-        keys(item, ['binding', 'origins']);
+        keys(item, ['binding', 'origins', 'network']);
+        if (item.network !== undefined && item.network !== 'public_https')
+          throw unsafe();
         const binding = LocalBrowserProfileBindingSchema.parse(item.binding);
         if (binding.deviceId !== deviceId || seen.has(binding.logicalProfileId))
           throw unsafe();
@@ -186,7 +208,11 @@ export class LocalBrowserProfiles {
         const origins = array(item.origins, 8).map((origin) =>
           string(origin, 2048),
         );
-        return { binding, origins };
+        return {
+          binding,
+          origins,
+          ...(item.network ? { network: 'public_https' as const } : {}),
+        };
       });
       const names = await readdir(directory);
       if (
@@ -212,9 +238,11 @@ export class LocalBrowserProfiles {
   private async indexBeforeState(
     binding: LocalBrowserProfileBinding,
     origins: string[],
+    network?: 'public_https',
   ) {
     if (this.deviceBusy.has(binding.deviceId)) throw unsafe();
     this.deviceBusy.add(binding.deviceId);
+    const entry = { binding, origins, ...(network ? { network } : {}) };
     try {
       const index = await this.index(binding.deviceId);
       if (index.revoked) throw Error('LOCAL_BROWSER_POLICY_DENIED');
@@ -222,11 +250,11 @@ export class LocalBrowserProfiles {
         (entry) => entry.binding.logicalProfileId === binding.logicalProfileId,
       );
       if (prior) {
-        if (!runtimeContractEqual(prior, { binding, origins })) throw unsafe();
+        if (!runtimeContractEqual(prior, entry)) throw unsafe();
         return;
       }
       if (index.entries.length >= 128) throw unsafe();
-      index.entries.push({ binding, origins });
+      index.entries.push(entry);
       await writeCredentialRecordFile(
         this.deviceDirectory(binding.deviceId),
         'index.json',
@@ -259,12 +287,14 @@ export class LocalBrowserProfiles {
         'serverUrl',
         'binding',
         'origins',
+        'network',
         'revoked',
         'state',
       ]);
       if (
         value.version !== 1 ||
         value.serverUrl !== this.serverUrl ||
+        (value.network !== undefined && value.network !== 'public_https') ||
         typeof value.revoked !== 'boolean'
       )
         throw unsafe();
@@ -278,12 +308,23 @@ export class LocalBrowserProfiles {
       const entry = index.entries.find(
         (entry) => entry.binding.logicalProfileId === binding.logicalProfileId,
       );
-      if (!entry || !runtimeContractEqual(entry, { binding: saved, origins }))
+      if (
+        !entry ||
+        !runtimeContractEqual(entry, {
+          binding: saved,
+          origins,
+          ...(value.network ? { network: value.network } : {}),
+        })
+      )
         throw unsafe();
       if (value.revoked) {
         if (value.state !== null) throw unsafe();
       } else if (value.state !== null)
-        validateLocalBrowserStorageState(value.state, origins);
+        validateLocalBrowserStorageState(
+          value.state,
+          origins,
+          value.network as 'public_https' | undefined,
+        );
       return { ...value, binding: saved, origins } as StoredProfile;
     } catch {
       throw unsafe();
@@ -298,14 +339,22 @@ export class LocalBrowserProfiles {
       throw Error('LOCAL_BROWSER_POLICY_DENIED');
     const stored = await this.read(binding);
     if (stored?.revoked) throw Error('LOCAL_BROWSER_POLICY_DENIED');
-    if (stored && !runtimeContractEqual(stored.origins, profile.origins))
+    if (
+      stored &&
+      (stored.network !== profile.network ||
+        !runtimeContractEqual(stored.origins, profile.origins))
+    )
       throw unsafe();
     if (!binding.persistLogin) {
       if (stored?.state !== null && stored !== null) throw unsafe();
       return undefined;
     }
     return stored?.state
-      ? validateLocalBrowserStorageState(stored.state, profile.origins)
+      ? validateLocalBrowserStorageState(
+          stored.state,
+          profile.origins,
+          profile.network,
+        )
       : undefined;
   }
   async save(
@@ -320,17 +369,26 @@ export class LocalBrowserProfiles {
     try {
       const prior = await this.read(binding);
       if (prior?.revoked) throw Error('LOCAL_BROWSER_POLICY_DENIED');
-      if (prior && !runtimeContractEqual(prior.origins, profile.origins))
+      if (
+        prior &&
+        (prior.network !== profile.network ||
+          !runtimeContractEqual(prior.origins, profile.origins))
+      )
         throw unsafe();
       const value: StoredProfile = {
         version: 1,
         serverUrl: this.serverUrl,
         binding,
         origins: profile.origins,
+        ...(profile.network ? { network: profile.network } : {}),
         revoked: false,
-        state: validateLocalBrowserStorageState(state, profile.origins),
+        state: validateLocalBrowserStorageState(
+          state,
+          profile.origins,
+          profile.network,
+        ),
       };
-      await this.indexBeforeState(binding, profile.origins);
+      await this.indexBeforeState(binding, profile.origins, profile.network);
       await writeCredentialRecordFile(
         this.deviceDirectory(binding.deviceId),
         this.filename(binding),
@@ -353,10 +411,11 @@ export class LocalBrowserProfiles {
         serverUrl: this.serverUrl,
         binding: prior?.binding ?? { ...binding, persistLogin: false },
         origins: prior?.origins ?? [],
+        ...(prior?.network ? { network: prior.network } : {}),
         revoked: true,
         state: null,
       };
-      await this.indexBeforeState(value.binding, value.origins);
+      await this.indexBeforeState(value.binding, value.origins, value.network);
       await writeCredentialRecordFile(
         this.deviceDirectory(binding.deviceId),
         this.filename(binding),
@@ -403,6 +462,7 @@ export class LocalBrowserProfiles {
               serverUrl: this.serverUrl,
               binding: entry.binding,
               origins: entry.origins,
+              ...(entry.network ? { network: entry.network } : {}),
               revoked: true,
               state: null,
             }),

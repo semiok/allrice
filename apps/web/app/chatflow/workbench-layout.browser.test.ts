@@ -2679,7 +2679,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       pending = false,
       reads = 0;
     const writes: string[] = [];
+    const login = {
+      grantId: id(951),
+      deviceId: device.id,
+      enabled: true,
+      persistLogin: true,
+      profile: { network: 'public_https' },
+    };
+    const loginWrites: boolean[] = [];
     try {
+      await f.page.route('**/api/v1/admin/local-browser**', (route) => {
+        if (route.request().method() === 'PATCH') {
+          login.persistLogin = route.request().postDataJSON().rememberLogin;
+          loginWrites.push(login.persistLogin);
+          login.grantId = id(951 + loginWrites.length);
+        }
+        return route.fulfill({ json: { grants: [login] } });
+      });
       await f.page.route('**/api/v1/bridge/devices**', async (route) => {
         const request = route.request(),
           url = new URL(request.url());
@@ -2705,7 +2721,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             supported: true,
             environment: {
               version: 1,
-              clientVersion: '0.6.0-dev.4',
+              clientVersion: '0.6.0-dev.8',
+              browserDefaultsVersion: 1,
               paused: false,
               browser: settings.localBrowser ? 'ready' : 'paused',
               sandbox: settings.localCommand ? 'ready' : 'paused',
@@ -2725,7 +2742,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await browserSwitch.waitFor();
-      expect(await dialog.getByRole('switch').count()).toBe(3);
+      const remember = dialog.getByRole('switch', {
+        name: '保留浏览器登录',
+        exact: true,
+      });
+      await remember.waitFor();
+      expect(await remember.getAttribute('aria-checked')).toBe('true');
+      await remember.click();
+      await expect
+        .poll(() => remember.getAttribute('aria-checked'))
+        .toBe('false');
+      await dialog.getByRole('button', { name: '清除浏览器登录' }).click();
+      await expect.poll(() => loginWrites.length).toBe(2);
+      expect(loginWrites).toEqual([false, false]);
+      expect(await dialog.getByRole('switch').count()).toBe(4);
       for (const label of ['本地沙箱命令', '本地独立浏览器', '受控开发协作'])
         expect(
           await dialog
