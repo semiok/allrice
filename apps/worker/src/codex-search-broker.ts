@@ -5,14 +5,9 @@ import { DSH_DISTRIBUTION_CURRENT_VERSION } from './harness/dsh-distribution.js'
 import { dshEgressEnvironment } from './harness/dsh-egress-environment.js';
 import { DshProtocolClient } from './harness/dsh-protocol-client.js';
 
-function platformHome() {
-  return resolve(
-    process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
-  );
-}
+import { activeCodexSubscriptionHome } from './codex-subscription-home.js';
 
-function searchEnvironment(root: string) {
-  const home = platformHome();
+function searchEnvironment(root: string, home: string) {
   return {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
@@ -49,7 +44,7 @@ export async function createCodexProviderClient(
     process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions',
     purpose,
   );
-  const home = platformHome();
+  const home = await activeCodexSubscriptionHome();
   await Promise.all([
     mkdir(executionRoot, { recursive: true, mode: 0o700 }),
     mkdir(home, { recursive: true, mode: 0o700 }),
@@ -58,7 +53,7 @@ export async function createCodexProviderClient(
     command: process.execPath,
     args: [resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs')],
     cwd: executionRoot,
-    environment: searchEnvironment(executionRoot),
+    environment: searchEnvironment(executionRoot, home),
     requestTimeoutMs: 310_000,
   });
   try {

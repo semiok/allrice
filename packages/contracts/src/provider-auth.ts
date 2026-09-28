@@ -17,6 +17,7 @@ export const ProviderAuthorizationFlowSchema = z
     id: UuidSchema,
     provider: z.literal('codex'),
     connectionId: UuidSchema,
+    subscriptionSlot: z.union([z.literal(1), z.literal(2)]).optional(),
     state: ProviderAuthorizationFlowStateSchema,
     verificationUri: z.string().url().max(2_000).nullable(),
     userCode: z.string().trim().min(4).max(64).nullable(),
@@ -33,12 +34,16 @@ export type ProviderAuthorizationFlow = z.infer<
 >;
 
 export const StartProviderAuthorizationInputSchema = z
-  .object({ connectionId: UuidSchema.optional() })
+  .object({
+    connectionId: UuidSchema.optional(),
+    subscriptionSlot: z.union([z.literal(1), z.literal(2)]).default(1),
+  })
   .strict();
 
 export const ProviderGrantSchema = z
   .object({
     connectionId: UuidSchema,
+    subscriptionSlot: z.union([z.literal(1), z.literal(2)]).optional(),
     provider: z.literal('codex'),
     authMode: z.literal('chatgpt_subscription'),
     status: z.enum(['connected', 'disconnected', 'error']),

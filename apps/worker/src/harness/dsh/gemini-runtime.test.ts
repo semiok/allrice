@@ -1,5 +1,6 @@
+import type * as SubscriptionHome from '../../codex-subscription-home.js';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +17,7 @@ import {
   replayProviderSnapshot,
 } from '../../routing/provider-snapshot.js';
 
+const subscription = vi.hoisted(() => ({ slot: 1 as 1 | 2 | null }));
 const captured = vi.hoisted(() => [] as DshProtocolLaunch[]);
 vi.mock('../dsh-protocol-client.js', () => ({
   DshProtocolClient: class {
@@ -86,6 +88,7 @@ beforeEach(async () => {
   vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '');
   vi.stubEnv('GEMINI_API_KEY', 'ambient-must-not-leak');
   captured.length = 0;
+  subscription.slot = 1;
   resolveCredential.mockClear();
   pool = new DshRuntimePool({
     credentialResolver: { resolve: resolveCredential },
@@ -200,4 +203,37 @@ describe('Gemini opt-in and credential isolation', () => {
       }),
     ).toThrow('original frozen');
   });
+});
+
+vi.mock('../../codex-subscription-home.js', async (original) => {
+  const actual = await original<typeof SubscriptionHome>();
+  return {
+    ...actual,
+    activeCodexSubscriptionHome: async () => {
+      if (subscription.slot === null) throw new Error('subscriptions_disabled');
+      return actual.codexSubscriptionHome(subscription.slot);
+    },
+  };
+});
+
+it('switches the reused session to slot 2 with equal credential metadata and refuses all-off', async () => {
+  const second = join(root, 'codex-subscriptions', '2');
+  await mkdir(second, { recursive: true });
+  for (const home of [root, second]) {
+    await writeFile(join(home, '.credentials.yaml'), '{}');
+    await utimes(join(home, '.credentials.yaml'), 1000, 1000);
+  }
+  const input = request('openai-codex');
+  const first = await pool.acquire(input);
+  expect(first.fresh).toBe(true);
+  expect((await pool.acquire(input)).fresh).toBe(false);
+  subscription.slot = 2;
+  expect((await pool.acquire(input)).fresh).toBe(true);
+  expect(captured.map((c) => c.environment.DSH_CREDENTIALS_PATH)).toEqual([
+    join(root, '.credentials.yaml'),
+    join(second, '.credentials.yaml'),
+  ]);
+  subscription.slot = null;
+  await expect(pool.acquire(input)).rejects.toThrow('subscriptions_disabled');
+  expect(captured).toHaveLength(2);
 });

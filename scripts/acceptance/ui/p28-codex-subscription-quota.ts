@@ -163,7 +163,7 @@ async function loadCase(name: string, quota: unknown) {
   await fixture!
     .db`insert into allrice_provider_status(provider,auth_mode,status,detail_code,checked_at,subscription_quota)
     values('codex','chatgpt_subscription','connected','synthetic_ui_only',now(),${parsed ? fixture!.db.json(parsed) : null})
-    on conflict(provider) do update set status=excluded.status,detail_code=excluded.detail_code,
+    on conflict(provider,subscription_slot) do update set status=excluded.status,detail_code=excluded.detail_code,
       subscription_quota=excluded.subscription_quota,checked_at=excluded.checked_at`;
   const api = page!.waitForResponse(
     (response) =>

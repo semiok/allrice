@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import type {
@@ -21,14 +21,10 @@ import {
   type DshNotification,
 } from './harness/dsh-protocol-client.js';
 
-function platformHome() {
-  return resolve(
-    process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
-  );
-}
+import { codexSubscriptionHome } from './codex-subscription-home.js';
 
-function runtimeEnvironment(root: string) {
-  const home = platformHome();
+function runtimeEnvironment(root: string, slot: 1 | 2) {
+  const home = codexSubscriptionHome(slot);
   return {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
@@ -61,8 +57,8 @@ function runtimeEnvironment(root: string) {
   };
 }
 
-async function createAuthorizationClient(root: string) {
-  const home = platformHome();
+async function createAuthorizationClient(root: string, slot: 1 | 2) {
+  const home = codexSubscriptionHome(slot);
   await Promise.all([
     mkdir(root, { recursive: true, mode: 0o700 }),
     mkdir(home, { recursive: true, mode: 0o700 }),
@@ -71,7 +67,7 @@ async function createAuthorizationClient(root: string) {
     command: process.execPath,
     args: [resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs')],
     cwd: root,
-    environment: runtimeEnvironment(root),
+    environment: runtimeEnvironment(root, slot),
     requestTimeoutMs: 300_000,
   });
   await client.initialize({
@@ -115,12 +111,28 @@ export function codexQuotaObservation(raw: unknown, configured: boolean) {
 
 export async function probeDshCodexProvider(
   executionRoot: string,
+  slot: 1 | 2 = 1,
 ): Promise<CodexProviderStatus> {
   const checkedAt = new Date().toISOString();
+  if (
+    !(await stat(
+      resolve(codexSubscriptionHome(slot), '.credentials.yaml'),
+    ).catch(() => null))
+  )
+    return {
+      provider: 'codex',
+      authMode: 'chatgpt_subscription',
+      status: 'disconnected',
+      cliVersion: null,
+      detailCode: 'dsh_openai_codex_authorization_required',
+      checkedAt,
+      quota: null,
+    };
   let client: DshProtocolClient | null = null;
   try {
     client = await createAuthorizationClient(
-      resolve(executionRoot, 'provider-probe'),
+      resolve(executionRoot, 'provider-probe', String(slot)),
+      slot,
     );
     const status = await client.providerStatus();
     // Optional official account-RPC adapter. Failure to read allowance is not
@@ -161,10 +173,15 @@ async function runDeviceAuthorization(input: {
   executionRoot: string;
   signal: AbortSignal;
 }) {
-  const root = resolve(input.executionRoot, 'provider-authorization');
+  const slot = input.flow.subscriptionSlot ?? 1;
+  const root = resolve(
+    input.executionRoot,
+    'provider-authorization',
+    String(slot),
+  );
   let client: DshProtocolClient;
   try {
-    client = await createAuthorizationClient(root);
+    client = await createAuthorizationClient(root, slot);
   } catch {
     await completeCodexAuthorization({
       flowId: input.flow.id,
@@ -218,7 +235,8 @@ async function runDeviceAuthorization(input: {
         : 'dsh_openai_codex_authorization_canceled',
     });
     await recordCodexProviderStatus(
-      await probeDshCodexProvider(input.executionRoot),
+      await probeDshCodexProvider(input.executionRoot, slot),
+      slot,
     );
   } catch {
     await completeCodexAuthorization({
