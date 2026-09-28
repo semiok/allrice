@@ -281,6 +281,11 @@ export function ChatTranscript({
                           />
                         ) : null}
                       </WorkProcess>
+                      {applicationFailure && (
+                        <p className={styles.failedMessage} role="status">
+                          本轮已结束。{applicationFailure.detail}
+                        </p>
+                      )}
                       {message.runId && hasManagedBrowserEvents(traceEvents) ? (
                         <ManagedBrowserTaskPanel
                           runActive={messageIsRunning}
@@ -351,13 +356,11 @@ export function ChatTranscript({
                           答案已保留。本次任务超过平台内部预期 Token
                           预算；真实用量已记录，这不代表 Codex 周额度耗尽。
                         </small>
-                      ) : message.status === 'failed' ? (
+                      ) : message.status === 'failed' && !applicationFailure ? (
                         <small className={styles.failedMessage}>
                           {message.errorCode ===
                           'ASSISTANT_EXECUTION_UNRESOLVED'
-                            ? applicationFailure
-                              ? `本轮已结束。${applicationFailure.detail}`
-                              : '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
+                            ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
                             : '这次没有完成。'}
                         </small>
                       ) : null}

@@ -437,6 +437,10 @@ it('keeps the saved answer and explains a failed GitHub call without looking act
   );
   expect(html).toContain('Saved final explanation');
   expect(html).toContain('GitHub 权限不足');
+  expect(html.indexOf('本轮已结束')).toBeLessThan(
+    html.indexOf('Saved final explanation'),
+  );
+  expect(html.match(/本轮已结束/g)).toHaveLength(1);
   expect(html).toContain('本轮已结束');
   expect(html).toContain('Contents');
   expect(html).not.toContain('部分调用的执行状态未能确认');
