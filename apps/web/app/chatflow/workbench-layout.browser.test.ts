@@ -3587,8 +3587,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           text: '入口文件已确认。',
         }),
       ];
+      f.state.runTimings = [
+        {
+          runId: run,
+          timing: {
+            activeMs: 53000,
+            waitingMs: 0,
+            wallMs: 53000,
+            timeoutMs: 3600000,
+            remainingMs: 3547000,
+            sources: [],
+            calls: null,
+            phase: 'active',
+          },
+        },
+      ];
       f.state.streamEvents = f.state.events;
       f.releaseStream();
+      await f.page.reload();
       const process = f.page.getByRole('region', {
         name: '工作过程',
         exact: true,
@@ -3610,7 +3626,40 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         text.indexOf('入口文件已确认。'),
       );
       expect(await steps.getByRole('button').count()).toBe(1);
-      await f.page.screenshot({ path: '.local/feedback/interleaved-live.png' });
+      expect(await process.getByText('回复中…', { exact: true }).count()).toBe(
+        1,
+      );
+      const timer = process.getByLabel('本轮运行时间');
+      await timer.waitFor();
+      const gap = await timer.evaluate((el) => {
+        const title = el.previousElementSibling?.previousElementSibling;
+        return title
+          ? el.getBoundingClientRect().left -
+              title.getBoundingClientRect().right
+          : -1;
+      });
+      expect(gap).toBeGreaterThanOrEqual(12);
+      // Same partial reply followed by native compaction: one status, never a
+      // second turn header inside the streamed body or a stale "replying".
+      f.state.events.push(
+        event(6, 'harness.native', {
+          presentation: 'compaction',
+          status: 'started',
+          label: '正在整理上下文',
+        }),
+      );
+      await f.page.reload();
+      await process.getByText('正在整理上下文…', { exact: true }).waitFor();
+      expect(
+        await f.page.getByText('正在整理上下文…', { exact: true }).count(),
+      ).toBe(1);
+      expect(await process.getByText('回复中…', { exact: true }).count()).toBe(
+        0,
+      );
+      await f.page.screenshot({
+        path: '/tmp/allrice-native-status-compaction.png',
+      });
+      f.state.events.pop();
       f.state.events.push(
         event(6, 'assistant.text.completed', {
           replyId: 'last',
@@ -3618,12 +3667,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }),
       );
       f.state.messageStatus = 'completed';
+      f.state.runTimings[0]!.timing.phase = 'terminal';
       await f.page.reload();
-      const toggle = steps.getByRole('button');
-      await toggle.waitFor();
       await f.page.getByText('入口文件已确认。', { exact: true }).waitFor();
+      expect(
+        await process
+          .getByText('我先检查项目目录。', { exact: true })
+          .isVisible(),
+      ).toBe(false);
+      await process.getByRole('button', { name: /^工作过程/ }).click();
       await process.getByText('我先检查项目目录。', { exact: true }).waitFor();
-      await toggle.click();
+      await steps.getByRole('button').click();
       expect(
         await process
           .getByText('我先检查项目目录。', { exact: true })
@@ -3643,7 +3697,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     } finally {
       await f.close();
     }
-  });
+  }, 30000);
 
   it('native task plan streams, restores, clears and stays scoped without animating stopped work', async () => {
     const f = await fixture({ running: true, controlledStream: true });
@@ -3890,7 +3944,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(1);
       expect(
         await f.page.getByText('我先读取资料。', { exact: true }).isVisible(),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         await scroll.evaluate((element) => element.scrollTop),
       ).toBeLessThan(20);
@@ -3939,11 +3993,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
       const [avatarMotion, headerMotion] = await motion();
       expect(avatarMotion!.name).not.toBe('none');
-      expect(avatarMotion!.name).toBe(headerMotion!.name);
-      expect(avatarMotion!.duration).toBe(headerMotion!.duration);
+      expect(headerMotion!.name).toBe('none');
+      expect(headerMotion!.opacity).toBe(1);
       expect(
-        Math.abs(avatarMotion!.opacity - headerMotion!.opacity),
-      ).toBeLessThan(0.05);
+        await f.page
+          .locator('[aria-label="工作过程"] [data-text-shimmer="true"]')
+          .count(),
+      ).toBe(1);
       await f.page.emulateMedia({ reducedMotion: 'reduce' });
       expect((await motion()).map((item) => item.name)).toEqual([
         'none',

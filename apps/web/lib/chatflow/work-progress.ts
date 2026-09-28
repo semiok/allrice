@@ -19,6 +19,38 @@ export type WorkProgressPart =
       closed?: boolean;
     };
 
+/** Only a current native text delta means that the model is still replying.
+ * A completed intermediate reply must not keep the whole turn in "replying".
+ * Projection/usage telemetry does not change the active phase.
+ */
+export function isReplyStreaming(events: ChatFlowEventEnvelope[]) {
+  for (const event of currentAssistantEvents(events).reverse()) {
+    if (event.type === 'assistant.text.delta')
+      return (
+        event.payload.textMode !== 'replace' &&
+        typeof event.payload.text === 'string' &&
+        !!event.payload.text.trim()
+      );
+    if (
+      event.type === 'assistant.text.completed' ||
+      event.type.startsWith('tool.') ||
+      event.type.startsWith('context.compaction.') ||
+      [
+        'request/context',
+        'request/header',
+        'assistant/message',
+        'llm/retry',
+      ].includes(event.sourceEvent?.type ?? '') ||
+      (event.type === 'harness.native' &&
+        ['think', 'tool', 'search', 'compaction'].includes(
+          String(event.payload.presentation),
+        ))
+    )
+      return false;
+  }
+  return false;
+}
+
 /** Adapt durable Allrice events to the official DSH process grouping. */
 export function projectWorkProgress(
   events: ChatFlowEventEnvelope[],

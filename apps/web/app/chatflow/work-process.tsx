@@ -4,6 +4,7 @@ import { Children, useState, type ReactNode } from 'react';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
 import {
+  DisclosureRow,
   IconThinkOutlineRegular,
   IconSearchOutlineRegular,
   IconGlobeOutlineRegular,
@@ -25,7 +26,6 @@ import {
   summarizeWorkProcess,
   type WorkProcessCategory,
 } from '../../lib/chatflow/work-process';
-import { DisclosureRow } from './dsh-upstream/DisclosureRow';
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
 import { RunElapsedTime } from './run-timing';
@@ -140,60 +140,87 @@ export function WorkProcess({
     .filter(Boolean)
     .join(' · ');
   if (parts) {
+    // DSH keeps a live/failed turn open, then folds its process before the final
+    // answer. Native ProcessState already supplies the step/reply boundaries.
+    const final =
+      !running && parts.at(-1)?.kind === 'reply' ? parts.at(-1) : undefined;
+    const history = final ? parts.slice(0, -1) : parts;
+    const hasHistory =
+      history.length > 0 ||
+      Children.toArray(children).length > 0 ||
+      traceStatus === 'failed';
+    const canFold = !running && !failed && !canceled && hasHistory;
+    const showHistory = !canFold || expanded;
+    const renderPart = (part: WorkProgressPart, index: number) =>
+      part.kind === 'reply' ? (
+        <div
+          key={part.id}
+          className={styles.processReply}
+          data-work-reply={part.id}
+          hidden={!showHistory && part.id !== final?.id}
+        >
+          <AssistantMarkdown
+            onOpenArtifact={onOpenArtifact}
+            text={part.text}
+            streaming={streaming && running && index === parts.length - 1}
+            artifacts={artifacts}
+          />
+        </div>
+      ) : (
+        <div key={part.id} hidden={!showHistory}>
+          <WorkProcessGroup
+            items={part.items}
+            running={running && !part.closed}
+          />
+        </div>
+      );
     return (
       <section className={styles.workProcess} aria-label={label}>
         <DisclosureRow
           icon={<IconThinkOutline14 />}
           title={title}
-          open={false}
-          expandable={false}
-          onToggle={noop}
+          running={running && !waiting}
+          open={canFold && expanded}
+          expandable={canFold}
+          expandOnRowClick
+          keepContentWhenOpen
+          onToggle={() => setExpanded((value) => !value)}
           rowClassName={styles.processHeader}
           collapsedContent={
-            timing ? (
-              <span className={styles.processTiming} aria-label="本轮运行时间">
-                用时 <RunElapsedTime timing={timing} running={running} />
-              </span>
-            ) : null
+            <>
+              {timing ? (
+                <>
+                  <span className={reasoning.separator} aria-hidden />
+                  <span
+                    className={styles.processTiming}
+                    aria-label="本轮运行时间"
+                  >
+                    用时 <RunElapsedTime timing={timing} running={running} />
+                  </span>
+                </>
+              ) : null}
+              {summary ? (
+                <>
+                  <span className={reasoning.separator} aria-hidden />
+                  <span className={reasoning.summary} title={summary}>
+                    {summary}
+                  </span>
+                </>
+              ) : null}
+            </>
           }
         />
         <div className={styles.processFlow}>
-          {parts.map((part, index) =>
-            part.kind === 'reply' ? (
-              <div
-                key={part.id}
-                className={styles.processReply}
-                data-work-reply={part.id}
-              >
-                <AssistantMarkdown
-                  onOpenArtifact={onOpenArtifact}
-                  text={part.text}
-                  streaming={running && index === parts.length - 1}
-                  artifacts={artifacts}
-                />
-              </div>
-            ) : (
-              <WorkProcess
-                key={part.id}
-                label="工作步骤"
-                items={part.items}
-                running={running && !part.closed}
-                streaming={false}
-                failed={false}
-                canceled={false}
-                onRetry={onRetry}
-                assistantCount={0}
-                assistantAttention={0}
-              />
-            ),
-          )}
+          {parts.map(renderPart)}
+          {traceStatus === 'failed' ? (
+            <button type="button" onClick={onRetry}>
+              过程加载失败，点击重试
+            </button>
+          ) : null}
+          {Children.toArray(children).length ? (
+            <div hidden={!showHistory}>{children}</div>
+          ) : null}
         </div>
-        {traceStatus === 'failed' ? (
-          <button type="button" onClick={onRetry}>
-            过程加载失败，点击重试
-          </button>
-        ) : null}
-        {children}
       </section>
     );
   }
@@ -205,6 +232,7 @@ export function WorkProcess({
       <DisclosureRow
         icon={<IconThinkOutline14 />}
         title={title}
+        running={microStatus && !waiting}
         open={open}
         expandable={expandable}
         expandOnRowClick
@@ -253,6 +281,39 @@ export function WorkProcess({
           ) : null}
         </div>
         {children}
+      </DisclosureRow>
+    </section>
+  );
+}
+
+/** Native disclosure for concrete step history; only the owning turn announces
+ * the current phase. Do not recursively render another turn-status header.
+ */
+function WorkProcessGroup({
+  items,
+  running,
+}: {
+  items: NativeExperienceItem[];
+  running: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const { steps } = summarizeWorkProcess(items);
+  if (!steps.length) return null;
+  const categories = [...new Set(steps.map((step) => step.label))].join('、');
+  return (
+    <section aria-label="工作步骤">
+      <DisclosureRow
+        icon={stepIcons[steps[0]!.category]}
+        title={`${categories} · ${steps.length} 项`}
+        open={open}
+        expandable
+        expandOnRowClick
+        onToggle={() => setOpen((value) => !value)}
+        rowClassName={styles.processHeader}
+      >
+        <div className={styles.processDetails}>
+          <WorkProcessSteps items={items} running={running} />
+        </div>
       </DisclosureRow>
     </section>
   );
