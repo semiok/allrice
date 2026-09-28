@@ -11,6 +11,12 @@ import {
 import { connectorInputDigest, type McpStore } from '@allrice/database';
 
 import { createPinnedMcpFetch } from './egress.js';
+import { serializeMcpModelResult } from './result.js';
+import {
+  mcpRequestDiagnostics,
+  mcpUnknownError,
+  withMcpConnectionRetry,
+} from './diagnostics.js';
 
 /** A local schema rejection proves no tools/call was sent. */
 export class McpInputValidationError extends McpError {
@@ -83,10 +89,13 @@ export function createMcpTransport(
     input: McpConnectionInput,
     action: (client: Client) => Promise<T>,
   ) {
+    const diagnostics = mcpRequestDiagnostics(
+      dependencies.fetchOverride ?? createPinnedMcpFetch(input),
+    );
     const transport = new StreamableHTTPClientTransport(
       new URL(input.endpoint),
       {
-        fetch: dependencies.fetchOverride ?? createPinnedMcpFetch(input),
+        fetch: diagnostics.fetch,
         requestInit: {
           headers: input.bearerToken
             ? { authorization: `Bearer ${input.bearerToken}` }
@@ -127,6 +136,8 @@ export function createMcpTransport(
       if (transport.protocolVersion !== '2025-11-25')
         throw new McpError('MCP_UNAVAILABLE');
       return await action(client);
+    } catch (error) {
+      throw diagnostics.error(error);
     } finally {
       input.signal.removeEventListener('abort', stop);
       await client.close().catch(() => undefined);
@@ -173,8 +184,10 @@ export function createMcpTransport(
   return {
     async discover(input: McpConnectionInput) {
       try {
-        return await withClient(input, (client) =>
-          list(client, input.signal, input.bearerToken),
+        return await withMcpConnectionRetry(input.signal, () =>
+          withClient(input, (client) =>
+            list(client, input.signal, input.bearerToken),
+          ),
         );
       } catch (error) {
         if (error instanceof McpError) throw error;
@@ -192,46 +205,47 @@ export function createMcpTransport(
       if (Buffer.byteLength(JSON.stringify(input.arguments)) > 131_072)
         throw new McpError('MCP_LIMIT');
       assertMcpInput(input.tool.inputSchema, input.arguments);
-      let dispatched = false;
-      try {
-        return await withClient(input, async (client) => {
-          const live = (
-            await list(client, input.signal, input.bearerToken)
-          ).find((tool) => tool.name === input.tool.name);
-          if (!live || connectorInputDigest(live) !== input.tool.digest)
-            throw new McpError('MCP_DENIED');
-          await input.assertAuthorized();
-          input.signal.throwIfAborted();
-          // Once sent, loss of reply is not evidence that the remote tool did
-          // nothing. Never retry here; the operation ledger must record unknown.
-          dispatched = true;
-          const result = await client.callTool(
-            { name: input.tool.name, arguments: input.arguments },
-            undefined,
-            { timeout: 30_000, signal: input.signal },
-          );
-          const raw = JSON.stringify(result);
-          if (Buffer.byteLength(raw) > 1_048_576)
-            throw new McpError('MCP_LIMIT');
-          const safe = redactMcpValue(result, input.bearerToken) as Record<
-            string,
-            unknown
-          >;
-          const redacted = JSON.stringify(safe);
-          return {
-            isError: result.isError === true,
-            modelContent: redacted.slice(0, 20_000),
-            summary: result.isError ? 'MCP 工具返回错误' : 'MCP 工具执行完成',
-            rawOutput: safe,
-          };
-        });
-      } catch (error) {
-        if (dispatched) throw new McpError('MCP_UNKNOWN');
-        if (input.signal.aborted) throw new McpError('MCP_CANCELED');
-        if (error instanceof McpError) throw error;
-        // SDK errors can contain URLs, headers and server-controlled messages.
-        throw new McpError('MCP_UNAVAILABLE');
-      }
+      return withMcpConnectionRetry(input.signal, async () => {
+        let dispatched = false;
+        try {
+          return await withClient(input, async (client) => {
+            const live = (
+              await list(client, input.signal, input.bearerToken)
+            ).find((tool) => tool.name === input.tool.name);
+            if (!live || connectorInputDigest(live) !== input.tool.digest)
+              throw new McpError('MCP_DENIED');
+            await input.assertAuthorized();
+            input.signal.throwIfAborted();
+            // Once sent, loss of reply is not evidence that the remote tool did
+            // nothing. Never retry here; the operation ledger must record unknown.
+            dispatched = true;
+            const result = await client.callTool(
+              { name: input.tool.name, arguments: input.arguments },
+              undefined,
+              { timeout: 30_000, signal: input.signal },
+            );
+            const raw = JSON.stringify(result);
+            if (Buffer.byteLength(raw) > 1_048_576)
+              throw new McpError('MCP_LIMIT');
+            const safe = redactMcpValue(result, input.bearerToken) as Record<
+              string,
+              unknown
+            >;
+            return {
+              isError: result.isError === true,
+              modelContent: serializeMcpModelResult(safe),
+              summary: result.isError ? 'MCP 工具返回错误' : 'MCP 工具执行完成',
+              rawOutput: safe,
+            };
+          });
+        } catch (error) {
+          if (dispatched) throw mcpUnknownError(error);
+          if (input.signal.aborted) throw new McpError('MCP_CANCELED');
+          if (error instanceof McpError) throw error;
+          // SDK errors can contain URLs, headers and server-controlled messages.
+          throw new McpError('MCP_UNAVAILABLE');
+        }
+      });
     },
   };
 }

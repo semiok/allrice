@@ -23,6 +23,7 @@ import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
 import { riceToolDefinitionsForCapabilities } from '../../../apps/worker/src/tool-broker/definitions.js';
 import * as McpExecutor from '../../../apps/worker/src/mcp/executor.js';
 import { createNativeMcpTransport } from '../../../apps/worker/src/mcp/native-transport.js';
+import { McpTransportError } from '../../../apps/worker/src/mcp/diagnostics.js';
 import { executeNextMcpDiscovery } from '../../../apps/worker/src/mcp/lifecycle.js';
 import {
   managedMcpRunContext,
@@ -870,6 +871,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
           await f.decide(c);
           const result = await pending;
           expect(JSON.parse(result.modelContent).status).toBe('succeeded');
+          expect(JSON.parse(result.modelContent).permissionGuidance).toContain(
+            '不证明当前连接令牌',
+          );
           return result;
         },
       });
@@ -1128,12 +1132,47 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     expect(result.code).toBe('MCP_DENIED');
     expect(f.service.state.reads).toBe(0);
   });
+  it('persists safe connection diagnostics without classifying a pre-dispatch failure as unknown', async () => {
+    const f = await fixture(),
+      c = await f.create();
+    await f.decide(c);
+    vi.spyOn(f.transport, 'invoke').mockRejectedValueOnce(
+      new McpTransportError('MCP_UNAVAILABLE', {
+        phase: 'tools_list',
+        reason: 'http_error',
+        httpStatus: 503,
+        requestDispatched: false,
+        connectionAttempts: 2,
+      }),
+    );
+    const result = await f.execute(c);
+    expect(result.status).toBe('failed');
+    expect(JSON.parse(result.output).diagnostic).toMatchObject({
+      phase: 'tools_list',
+      httpStatus: 503,
+      connectionAttempts: 2,
+    });
+    const [attempt] =
+      await db`select result from allrice_mcp_execution_attempts where operation_id=${c.snapshot.binding.attempt.operationId}`;
+    expect(attempt!.result.evidence.output).toBe(result.output);
+    expect(f.service.state.calls).toBe(0);
+    expect((await f.execute(c)).output).toBe(result.output);
+  });
   it('loss of the reply after the write is unknown and re-entry never repeats it', async () => {
     const f = await fixture(),
       c = await f.create();
     await f.decide(c);
     f.service.state.dropReply = true;
-    expect((await f.execute(c)).status).toBe('unknown');
+    const result = await f.execute(c);
+    expect(result.status).toBe('unknown');
+    expect(JSON.parse(result.output).diagnostic).toMatchObject({
+      phase: 'tools_call',
+      requestDispatched: true,
+      connectionAttempts: 1,
+    });
+    const [attempt] =
+      await db`select result from allrice_mcp_execution_attempts where operation_id=${c.snapshot.binding.attempt.operationId}`;
+    expect(attempt!.result.evidence.output).toBe(result.output);
     expect(f.service.state.calls).toBe(1);
     expect((await f.execute(c)).status).toBe('unknown');
     expect(f.service.state.calls).toBe(1);

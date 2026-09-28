@@ -17,6 +17,12 @@ import {
   type McpConnectionInput,
 } from './transport.js';
 import { managedMcpOAuthProvider } from './oauth.js';
+import { serializeMcpModelResult } from './result.js';
+import {
+  mcpRequestDiagnostics,
+  mcpUnknownError,
+  withMcpConnectionRetry,
+} from './diagnostics.js';
 
 /** Allrice owns identity, network admission and the operation ledger. DSH owns
  * discovery, names, schemas, tool execution and result materialization. Each
@@ -53,6 +59,7 @@ export function createNativeMcpTransport(
           ...(provider ? { oauthNetwork: true } : {}),
         })(url, init);
       });
+    const diagnostics = mcpRequestDiagnostics(request);
     const boundedFetch: typeof fetch = async (url, init) => {
       input.signal.throwIfAborted();
       await input.assertAuthorized();
@@ -70,7 +77,7 @@ export function createNativeMcpTransport(
         )
           throw new McpError('MCP_DENIED');
       }
-      const response = await request(url, {
+      const response = await diagnostics.fetch(url, {
         ...init,
         signal: AbortSignal.any([
           input.signal,
@@ -78,7 +85,9 @@ export function createNativeMcpTransport(
         ]),
       });
       if (response.status === 401) {
-        networkError = new McpError('MCP_CREDENTIAL_UNAVAILABLE');
+        networkError = diagnostics.error(
+          new McpError('MCP_CREDENTIAL_UNAVAILABLE'),
+        );
         if (!provider) throw networkError;
       }
       // Only a fully received call response can distinguish a reported remote
@@ -134,7 +143,7 @@ export function createNativeMcpTransport(
         () => callReplyReceived,
       );
     } catch (error) {
-      throw networkError ?? error;
+      throw networkError ?? diagnostics.error(error);
     } finally {
       input.signal.removeEventListener('abort', stop);
       await ctx.fiber.dispose();
@@ -160,7 +169,11 @@ export function createNativeMcpTransport(
   return {
     async discover(input: McpConnectionInput) {
       try {
-        return await withClient(input, async (_ctx, tools) => tools);
+        return await withMcpConnectionRetry(
+          input.signal,
+          () => withClient(input, async (_ctx, tools) => tools),
+          !input.oauth?.data.authorizationCode,
+        );
       } catch (error) {
         if (error instanceof McpError) throw error;
         throw new McpError(
@@ -177,45 +190,51 @@ export function createNativeMcpTransport(
       if (Buffer.byteLength(JSON.stringify(input.arguments)) > 131_072)
         throw new McpError('MCP_LIMIT');
       assertMcpInput(input.tool.inputSchema, input.arguments);
-      let dispatched = false;
-      try {
-        return await withClient(input, async (ctx, tools, received) => {
-          const live = tools.find((t) => t.name === input.tool.name);
-          if (!live || connectorInputDigest(live) !== input.tool.digest)
-            throw new McpError('MCP_DENIED');
-          await input.assertAuthorized();
-          input.signal.throwIfAborted();
-          dispatched = true;
-          const result = await ctx.tools.execute({
-            signal: input.signal,
-            callId: ToolCallId('managed-mcp'),
-            name: live.name,
-            arguments: input.arguments,
-          });
-          if (!received()) throw new McpError('MCP_UNKNOWN');
-          const safe = redactMcpValue(
-            result,
-            typeof input.oauth?.data.tokens?.access_token === 'string'
-              ? input.oauth.data.tokens.access_token
-              : input.bearerToken,
-          ) as Record<string, unknown>;
-          const raw = JSON.stringify(safe);
-          if (Buffer.byteLength(raw) > 1_048_576)
-            throw new McpError('MCP_LIMIT');
-          return {
-            isError: result.isError,
-            modelContent: raw.slice(0, 20_000),
-            summary: result.isError ? '应用返回错误' : '应用执行完成',
-            rawOutput: safe,
-          };
-        });
-      } catch (error) {
-        if (dispatched) throw new McpError('MCP_UNKNOWN');
-        if (error instanceof McpError) throw error;
-        throw new McpError(
-          input.signal.aborted ? 'MCP_CANCELED' : 'MCP_UNAVAILABLE',
-        );
-      }
+      return withMcpConnectionRetry(
+        input.signal,
+        async () => {
+          let dispatched = false;
+          try {
+            return await withClient(input, async (ctx, tools, received) => {
+              const live = tools.find((t) => t.name === input.tool.name);
+              if (!live || connectorInputDigest(live) !== input.tool.digest)
+                throw new McpError('MCP_DENIED');
+              await input.assertAuthorized();
+              input.signal.throwIfAborted();
+              dispatched = true;
+              const result = await ctx.tools.execute({
+                signal: input.signal,
+                callId: ToolCallId('managed-mcp'),
+                name: live.name,
+                arguments: input.arguments,
+              });
+              if (!received()) throw new McpError('MCP_UNKNOWN');
+              const safe = redactMcpValue(
+                result,
+                typeof input.oauth?.data.tokens?.access_token === 'string'
+                  ? input.oauth.data.tokens.access_token
+                  : input.bearerToken,
+              ) as Record<string, unknown>;
+              const raw = JSON.stringify(safe);
+              if (Buffer.byteLength(raw) > 1_048_576)
+                throw new McpError('MCP_LIMIT');
+              return {
+                isError: result.isError,
+                modelContent: serializeMcpModelResult(safe),
+                summary: result.isError ? '应用返回错误' : '应用执行完成',
+                rawOutput: safe,
+              };
+            });
+          } catch (error) {
+            if (dispatched) throw mcpUnknownError(error);
+            if (error instanceof McpError) throw error;
+            throw new McpError(
+              input.signal.aborted ? 'MCP_CANCELED' : 'MCP_UNAVAILABLE',
+            );
+          }
+        },
+        !input.oauth?.data.authorizationCode,
+      );
     },
   };
 }

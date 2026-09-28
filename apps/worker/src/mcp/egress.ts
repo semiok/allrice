@@ -5,6 +5,7 @@ import { isIP } from 'node:net';
 import { McpEndpointSchema, McpError } from '@allrice/contracts';
 import { createPinnedLookup } from '../pinned-lookup.js';
 import { isPublicWebAddress } from '../web-fetch.js';
+import { mcpNetworkError } from './diagnostics.js';
 import { resolveManagedBrowserHostnamePublic } from '../managed-browser.js';
 
 const presetHosts = new Set([
@@ -146,8 +147,8 @@ export function createPinnedMcpFetch(input: {
                 controller.enqueue(new Uint8Array(chunk));
               });
               response.on('end', () => controller.close());
-              response.on('error', () =>
-                controller.error(new McpError('MCP_UNAVAILABLE')),
+              response.on('error', (error) =>
+                controller.error(mcpNetworkError(error)),
               );
             },
             cancel() {
@@ -159,9 +160,11 @@ export function createPinnedMcpFetch(input: {
         },
       );
       request.setTimeout(30_000, () =>
-        request.destroy(new McpError('MCP_UNAVAILABLE')),
+        request.destroy(mcpNetworkError({ code: 'ETIMEDOUT' })),
       );
-      request.on('error', () => reject(new McpError('MCP_UNAVAILABLE')));
+      request.on('error', (error) =>
+        reject(error instanceof McpError ? error : mcpNetworkError(error)),
+      );
       request.end(body ?? undefined);
     });
   };

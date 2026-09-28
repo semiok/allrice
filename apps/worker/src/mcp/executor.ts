@@ -18,6 +18,7 @@ import {
 import { invokeFrozenMcpTool } from './lifecycle.js';
 import type { createMcpTransport } from './transport.js';
 import { McpInputValidationError } from './transport.js';
+import { McpTransportError, mcpDiagnosticOutput } from './diagnostics.js';
 
 type Created = Awaited<ReturnType<typeof createMcpRuntimeOperation>>;
 type Database = ReturnType<typeof getDatabase>;
@@ -231,25 +232,37 @@ export async function runMcpRuntimeOperation(
       };
     } catch (error) {
       const code = error instanceof McpError ? error.code : 'MCP_UNKNOWN';
-      if (code === 'MCP_UNKNOWN') return await uncertain();
-      // Transport promises these errors occur before tools/call was dispatched.
+      const output =
+        error instanceof McpTransportError
+          ? mcpDiagnosticOutput(error)
+          : error instanceof McpInputValidationError
+            ? error.message
+            : '';
+      // Only pre-dispatch failures prove no effects. Persist safe diagnostics
+      // for unknown replies too, without ever granting permission to replay.
       const evidence = {
         id: mcpStableId(`${operationId}:evidence`),
         recordedAt: new Date().toISOString(),
-        digest: runtimePolicyDigest({ code, dispatched: false }),
+        digest: runtimePolicyDigest({
+          code,
+          output,
+          dispatched: code === 'MCP_UNKNOWN',
+        }),
       };
       const current = await ledger.readOperation(scope, operationId);
       result = {
         signal:
-          current.status === 'cancel_requested'
-            ? { type: 'operation.stopped', effects: 'none', evidence }
-            : {
-                type: 'operation.outcome',
-                result: { status: 'failed', effects: 'none', evidence },
-              },
+          code === 'MCP_UNKNOWN'
+            ? { type: 'operation.uncertain', reason: 'receipt_missing' }
+            : current.status === 'cancel_requested'
+              ? { type: 'operation.stopped', effects: 'none', evidence }
+              : {
+                  type: 'operation.outcome',
+                  result: { status: 'failed', effects: 'none', evidence },
+                },
         evidence: {
           ...evidenceBase,
-          output: error instanceof McpInputValidationError ? error.message : '',
+          output,
           outputDigest: evidence.digest,
           isError: true,
           code,

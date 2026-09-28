@@ -26,7 +26,7 @@ export const mcpNativeTools = [
     canonicalName: 'cloud.mcp.call',
     wireName: 'cloud_mcp_call',
     description:
-      'Connect applications and call their tools. action=connect with name/endpoint discovers an application; action=list lists connected apps; action=status with connectionId refreshes status. Public services need no credentials. Login happens only in the dedicated form; NEVER request secrets in chat. Call with connectionId/tool/arguments from the returned catalog; connections work in this task without republishing. Exact action approval still applies; never replay unknown effects.',
+      'Connect applications and call their tools. action=connect with name/endpoint discovers an application; action=list lists connected apps; action=status with connectionId refreshes status. Public services need no credentials. Login happens only in the dedicated form; NEVER request secrets in chat. Call with connectionId/tool/arguments from the returned catalog; connections work in this task without republishing. Exact action approval still applies; never replay unknown effects. Connected status, get_me and collaborator admin/write roles do not verify the current token permission. For GitHub merges distinguish account role, token repository access and Contents write permission, and branch rules. A read-only check cannot certify merge permission; never perform a write just to test it. When a result is marked truncated, reduce fields/perPage and paginate; do not treat the preview as complete or repeat the identical query.',
     parameters: {
       action: {
         type: 'string',
