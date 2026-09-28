@@ -911,9 +911,9 @@ export async function registerWorkflowArtifact(input: {
     )
       throw new WorkflowRuntimeError('conflict');
     const [quota] = await transaction<
-      { limit_bytes: number | string; used_bytes: number | string }[]
+      { limit_bytes: number | string | null; used_bytes: number | string }[]
     >`
-      select coalesce(q.limit_bytes,1073741824) as limit_bytes,
+      select q.limit_bytes as limit_bytes,
         coalesce((select sum(size_bytes) from allrice_storage_objects where organization_id=${run.organization_id}
           and workspace_id=${run.workspace_id} and state<>'deleted'),0) as used_bytes
       from allrice_workspaces w left join allrice_storage_quotas q on q.organization_id=w.organization_id and q.workspace_id=w.id
@@ -922,8 +922,9 @@ export async function registerWorkflowArtifact(input: {
       !Number.isSafeInteger(input.object.sizeBytes) ||
       input.object.sizeBytes < 0 ||
       !quota ||
-      Number(quota.used_bytes) + (stored ? 0 : input.object.sizeBytes) >
-        Number(quota.limit_bytes)
+      (quota.limit_bytes !== null &&
+        Number(quota.used_bytes) + (stored ? 0 : input.object.sizeBytes) >
+          Number(quota.limit_bytes))
     )
       throw new DataAccessError('quota_exceeded');
     await transaction`

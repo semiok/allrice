@@ -177,11 +177,14 @@ export function ChatFlowClient({
     if (!workspace?.workspaceId) return;
     const url = new URL(window.location.href);
     const section = url.searchParams.get('settings');
-    if (!section || !['apps', 'computer', 'capabilities'].includes(section))
+    if (
+      !section ||
+      !['apps', 'computer', 'capabilities', 'work', 'experience'].includes(
+        section,
+      )
+    )
       return;
     setSettings({ scope: settingsScope, section });
-    // Consume the one-time OAuth/legacy entry without adding a Back entry or
-    // removing the selected conversation. No credential is carried in this URL.
     url.searchParams.delete('settings');
     try {
       window.history.replaceState(
@@ -190,7 +193,7 @@ export function ChatFlowClient({
         `${url.pathname}${url.search}${url.hash}`,
       );
     } catch {
-      // Restricted browsers can deny History writes; the modal still works.
+      // Restricted browsers may deny History writes; the modal still opens.
     }
   }, [settingsScope, workspace?.workspaceId]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
@@ -1031,6 +1034,7 @@ export function ChatFlowClient({
       )}
       {archive.overlays}
       <ChatSidebar
+        experienceEnabled={experienceEnabled}
         archive={archive}
         capabilities={
           <CapabilityContent

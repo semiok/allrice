@@ -1,6 +1,7 @@
 /** Implemented employee capabilities default on in development. Explicit 0 is
  * reserved for an operational shutdown; UI and executors share this decision. */
 export const employeeRuntimeFeatureFlags = [
+  'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
   'ALLRICE_WORKBENCH_ENABLED',
   'ALLRICE_ASSISTANTS_ENABLED',
   'ALLRICE_CHANGESET_ENABLED',

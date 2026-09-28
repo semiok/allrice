@@ -8,6 +8,7 @@ import {
   LocalBrowserStartSchema,
   UuidSchema,
   localBrowserCaptureMaximumBytes,
+  platformFileMaximumBytes,
   type LocalBrowserCapture,
   type LocalBrowserClaim,
   type LocalBrowserHttpRequest,
@@ -250,7 +251,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
     if (
       !Number.isSafeInteger(maximumBytes) ||
       maximumBytes < 1 ||
-      maximumBytes > 2_000_000
+      maximumBytes > platformFileMaximumBytes
     )
       throw new LocalBrowserTransportError(0);
     return this.exchange(

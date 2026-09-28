@@ -6,12 +6,14 @@ import {
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { LocalMcpSettings } from '../runtime-console/local-mcp-settings';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
 import { MonthlyQuota } from './monthly-quota';
+import { StorageUsage } from './storage-usage';
 import { AccountPasswordSettings } from './account-password-settings';
+import { ExperiencePanel } from '../workspace/experience/experience-panel';
+import { LocalMcpSettings } from '../runtime-console/local-mcp-settings';
 import { ComputerSettings } from './computer-settings';
 import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
@@ -19,6 +21,8 @@ import type { usePersonalPreferences } from './use-personal-preferences';
 import styles from './sidebar-settings.module.css';
 
 export function SidebarSettings({
+  experienceEnabled = false,
+  sessionId,
   capabilities,
   collapsed,
   workspaceId,
@@ -29,6 +33,8 @@ export function SidebarSettings({
   onSectionChange,
   onBridge,
 }: {
+  experienceEnabled?: boolean;
+  sessionId?: string;
   capabilities: ReactNode;
   collapsed: boolean;
   workspaceId: string;
@@ -64,6 +70,7 @@ export function SidebarSettings({
     { id: 'capabilities', label: '能力与环境' },
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
+    ...(experienceEnabled ? [{ id: 'experience', label: '记忆与经验' }] : []),
     { id: 'preferences', label: '个人偏好' },
   ];
   const close = () => onSectionChange(null);
@@ -186,13 +193,13 @@ export function SidebarSettings({
                         onRefresh={() => void monthlyQuota.reload()}
                       />
                       <AccountPasswordSettings />
+                      <StorageUsage workspaceId={workspaceId} />
                     </>
                   )}
                   {row.id === 'apps' && (
                     <>
                       <ConnectedApps workspaceId={workspaceId} />
                       <details
-                        className={styles.settingsFold}
                         onToggle={(event) => {
                           if (event.currentTarget.open)
                             setLocalAppsVisited(true);
@@ -207,6 +214,13 @@ export function SidebarSettings({
                         )}
                       </details>
                     </>
+                  )}
+                  {row.id === 'experience' && (
+                    <ExperiencePanel
+                      workspaceId={workspaceId}
+                      sessionId={sessionId}
+                      embedded
+                    />
                   )}
                   {row.id === 'work' && (
                     <WorkAutomationSettings

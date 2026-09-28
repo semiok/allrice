@@ -120,14 +120,15 @@ export async function captureLocalBrowserFile(
         if (!op) throw new RuntimePolicyError('local_browser_not_started');
       }
       const [quota] = await tx<
-        { limit_bytes: string; used_bytes: string }[]
-      >`select coalesce(q.limit_bytes,1073741824)::text as limit_bytes,
+        { limit_bytes: string | null; used_bytes: string }[]
+      >`select q.limit_bytes::text as limit_bytes,
         coalesce((select sum(size_bytes) from allrice_storage_objects where organization_id=${w.organization_id} and workspace_id=${w.workspace_id} and state<>'deleted'),0)::text as used_bytes
         from allrice_workspaces s left join allrice_storage_quotas q on q.organization_id=s.organization_id and q.workspace_id=s.id
         where s.id=${w.workspace_id} and s.organization_id=${w.organization_id}`;
       if (
         !quota ||
-        Number(quota.used_bytes) + bytes.length > Number(quota.limit_bytes)
+        (quota.limit_bytes !== null &&
+          Number(quota.used_bytes) + bytes.length > Number(quota.limit_bytes))
       )
         throw new RuntimePolicyError('local_browser_output_limit');
       await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());

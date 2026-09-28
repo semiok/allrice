@@ -981,6 +981,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
       }
       if (path === '/api/v1/files') {
+        if (url.searchParams.get('summary') === '1')
+          return answer({
+            workspaceId: workspace,
+            usedBytes: 2147483648,
+            limitBytes: null,
+          });
         state.fileReads++;
         if (state.fileDelay) await state.fileDelay;
         return answer({ files: state.files });
@@ -2866,6 +2872,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await quota.getByText(/43%/).waitFor();
       await quota.getByText('2,824,029', { exact: false }).waitFor();
       expect(await quota.innerText()).toContain('5,000,000');
+      await f.page
+        .getByText('工作区已用 2.00 GiB；未设置额外存储配额。', { exact: true })
+        .waitFor();
       await f.page.reload();
       await settings.click();
       await quota.getByText(/43%/).waitFor();
