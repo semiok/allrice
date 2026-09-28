@@ -298,8 +298,10 @@ export async function createP27CodexWorkerFixture(
       await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
         values(${connectionId},${catalog.provider_id},'platform','P27 isolated Codex','deployment:codex-default',null,'ready')`;
       if (!options.throughMigration)
+        // This historical fixture deliberately runs the pinned P27 model; the
+        // current production default is validated by platform settings tests.
         await tx`update allrice_platform_model_settings
-        set configuration=jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}) where singleton`;
+        set configuration=jsonb_set(jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}),'{workModel}','"gpt-5.6-luna"'::jsonb) where singleton`;
       if (options.imageGeneration)
         await tx`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imagesEnabled}','true'::jsonb) where singleton`;
       await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)

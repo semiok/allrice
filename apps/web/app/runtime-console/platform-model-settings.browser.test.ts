@@ -60,7 +60,7 @@ suite('MET-163 platform model settings (synthetic HTTP)', () => {
         updatedAt: new Date().toISOString(),
         configuration: {
           connectionId: '52000000-0000-4000-8000-000000000001',
-          workModel: 'gpt-5.6-luna',
+          workModel: 'gpt-6-luna',
           reasoningEffort: 'xhigh',
           timeoutMs: 300000,
           imageModel: 'gpt-image-2.5-flare',
@@ -110,16 +110,23 @@ suite('MET-163 platform model settings (synthetic HTTP)', () => {
       const images = page.getByRole('combobox', { name: '图片模型' });
       await images.waitFor();
       expect(await images.inputValue()).toBe('');
+      const workModel = page.getByRole('combobox', { name: '对话与理解模型' });
+      expect(await workModel.locator('option').allTextContents()).toEqual([
+        'GPT-6 Sol',
+        'GPT-6 Luna',
+        'GPT-5.3 Codex Spark',
+      ]);
+      expect(await workModel.inputValue()).toBe('gpt-6-luna');
       expect(
-        await page
-          .getByRole('combobox', { name: '对话与理解模型' })
-          .innerText(),
-      ).not.toMatch(/Gemini/i);
+        await page.getByRole('combobox', { name: '推理强度' }).inputValue(),
+      ).toBe('xhigh');
+      await workModel.selectOption('gpt-6-sol');
       await images.selectOption('auto');
       await page.getByRole('button', { name: '保存配置', exact: true }).click();
       await page.getByRole('status').filter({ hasText: '已保存' }).waitFor();
       expect(saves).toBe(1);
       expect(settings.configuration.imagesEnabled).toBe(true);
+      expect(settings.configuration.workModel).toBe('gpt-6-sol');
       await page.reload();
       await images.waitFor();
       expect(await images.inputValue()).toBe('auto');

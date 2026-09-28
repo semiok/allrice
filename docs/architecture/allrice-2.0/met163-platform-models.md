@@ -5,6 +5,28 @@ and an image model in **平台设置 → 模型与用量**. Employee editors inh
 settings. A newly bound Run captures the platform revision and image configuration;
 changing settings never rewrites an existing Run or historical provider receipt.
 
+## GPT-6 selection update (2026-09-28)
+
+The current work-model menu contains GPT-6 Sol, GPT-6 Luna and the retained
+GPT-5.3 Codex Spark. The default is **GPT-6 Luna / xhigh（极高）**. Migration 0119
+replaces the six retired GPT-5.4–5.6 choices in the platform singleton and adds
+GPT-6 catalog entries. It preserves the existing subscription connection, image
+settings, timeout, explicit Spark selection and historical Run snapshots. Read
+schemas and image execution still accept frozen historical models; new platform
+configuration rejects retired selections.
+
+The pinned DSH/pi-ai catalog predates GPT-6. Use DSH's native `models` declaration
+to supply their 272,000-token context, text/image input and low/medium/high/xhigh
+wire mapping. Without the explicit reasoning declaration, an unknown model ID
+would default to non-reasoning. These values were checked against the official
+Codex app model catalog on 2026-09-28. Both GPT-6 Luna and GPT-6 Sol completed real
+DSH requests using the existing Dev subscription with xhigh selected. No provider
+implementation or dependency fork is introduced.
+
+Deploy the new Web/Worker and apply migration 0119 together after draining active
+work. Historical configuration remains readable, but the old application does not
+recognize GPT-6 platform settings; do not restart it against the migrated default.
+
 ## Subscription compatibility evidence (2026-09-27)
 
 Two real requests used the Dev Worker's managed DSH OAuth grant and configured
