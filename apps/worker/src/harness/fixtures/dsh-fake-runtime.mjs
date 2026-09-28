@@ -225,6 +225,17 @@ lines.on('line', (line) => {
     model: 'fake',
     contextWindow: 128000,
   });
+  if (prompt.includes('model-wait-progress')) {
+    const callId = '00000000-0000-4000-8000-000000000099';
+    notify('allrice.modelWait', {
+      sessionId: 'other-session',
+      callId,
+      status: 'started',
+    });
+    notify('allrice.modelWait', { sessionId, callId, status: 'invalid' });
+    notify('allrice.modelWait', { sessionId, callId, status: 'started' });
+    notify('allrice.modelWait', { sessionId, callId, status: 'completed' });
+  }
   if (prompt.includes('interleaved-progress')) {
     const delta = (step, text) =>
       event(sessionId, 'assistant/chunk', {
@@ -357,14 +368,24 @@ lines.on('line', (line) => {
           {
             type: 'tool-result',
             toolCallId: 'native-result-outcome-1',
-            ...(outcome === 'failed'
+            ...(['failed', 'dns', 'assistant'].includes(outcome)
               ? { isError: true }
               : outcome === 'succeeded'
                 ? { isError: false }
                 : outcome === 'truthy-string'
                   ? { isError: 'false' }
                   : {}),
-            content: [{ type: 'text', text: 'private-tool-result' }],
+            content: [
+              {
+                type: 'text',
+                text:
+                  outcome === 'dns'
+                    ? 'Error: 域名解析到了非公开网络地址 secret-token'
+                    : outcome === 'assistant'
+                      ? 'Error: 当前任务没有这个助手 secret-token'
+                      : 'private-tool-result',
+              },
+            ],
           },
         ],
       },

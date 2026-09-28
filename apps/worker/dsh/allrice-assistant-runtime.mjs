@@ -1,3 +1,4 @@
+import { boundedModelStream } from './allrice-model-stream.mjs';
 /* global AbortController, Buffer */
 import { createHash, randomUUID } from 'node:crypto';
 import { types } from 'node:util';
@@ -132,6 +133,7 @@ export function createGovernedAssistantNativeRuntime(
   bridge,
   options = {},
 ) {
+  const optionsForRuntime = options;
   const bindings = new Map();
   const deliveries = new Map();
   const nativeCompletions = new Map();
@@ -480,7 +482,11 @@ export function createGovernedAssistantNativeRuntime(
     let settlementThrew = false;
     let settlementError;
     try {
-      for await (const chunk of next()) {
+      for await (const chunk of boundedModelStream(next(), {
+        signal: options.signal,
+        onWait: (status) =>
+          optionsForRuntime.onModelWait?.({ sessionId: id, callId, status }),
+      })) {
         if (chunk.type === 'usage') usage = chunk.usage;
         if (chunk.type === 'finish') {
           const kind = ownData(chunk.reason, 'kind');
@@ -508,6 +514,8 @@ export function createGovernedAssistantNativeRuntime(
         yield chunk;
       }
     } catch (error) {
+      // A hard wait bound is not a provider completion receipt. Preserve an
+      // unknown admission; the failed runtime is dropped rather than replayed.
       failure(id, callId, 'stream', failureCode(error), stopKind);
       throw error;
     } finally {
@@ -649,7 +657,12 @@ export function createGovernedAssistantNativeRuntime(
       },
     },
     message: {
-      childRunId: { type: 'string', required: true },
+      childRunId: {
+        type: 'string',
+        required: true,
+        description:
+          'Existing child Run UUID returned by assistant_delegate or assistant_inspect. Never use placeholders such as none. If there is no delegated child, continue the task yourself.',
+      },
       text: { type: 'string', required: true },
     },
     report: {
@@ -749,6 +762,8 @@ export function createGovernedAssistantNativeRuntime(
               // or alter ordinary parallel-assistant delegation.
               if (args.development !== undefined) exec.concludeTurn();
             }
+            if (action === 'message' && result.error)
+              throw Error(result.message ?? result.error);
             if (action === 'message' && result.dispatch) await followup(result);
             if (action === 'report' && !result.error) {
               exec.concludeTurn();

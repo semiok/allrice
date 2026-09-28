@@ -16,7 +16,11 @@ function fixture() {
         {
           runId,
           nativeSessionId: 'root',
-          allowedTools: ['assistant.delegate', 'assistant.report'],
+          allowedTools: [
+            'assistant.delegate',
+            'assistant.report',
+            'assistant.message',
+          ],
         },
       ],
     })),
@@ -93,3 +97,22 @@ describe('assistant delegation requires an explicit result channel', () => {
     );
   });
 });
+
+it.each(['none', randomUUID()])(
+  'returns actionable feedback for a nonexistent assistant (%s)',
+  async (childRunId) => {
+    const f = fixture();
+    await expect(
+      f.bridge.handle('message', {
+        nativeSessionId: 'root',
+        callId: 'message-1',
+        arguments: { childRunId, text: 'ignore' },
+      }),
+    ).resolves.toMatchObject({
+      error: 'assistant_child_invalid',
+      message: expect.stringMatching(/没有.*助手/),
+    });
+    expect(f.provision).not.toHaveBeenCalled();
+    expect(f.settleUsage).toHaveBeenCalledOnce();
+  },
+);

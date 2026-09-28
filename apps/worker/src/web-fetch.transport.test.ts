@@ -75,6 +75,39 @@ describe('web.fetch pinned DNS transport', () => {
     },
   );
 
+  it('resolves TUN fake IPs independently and pins only the confirmed public address', async () => {
+    mocks.lookup.mockResolvedValue([{ address: '198.18.0.182', family: 4 }]);
+    mocks.https.mockImplementation((url, options, callback) => {
+      if (typeof options === 'function') {
+        const body = JSON.stringify({
+          Status: 0,
+          Answer: url.path.endsWith('type=A')
+            ? [{ type: 1, data: '104.26.0.67' }]
+            : [],
+        });
+        return respond(200, {}, body)(url, {}, options);
+      }
+      return respond(200, { 'content-type': 'text/plain' }, 'public document')(
+        url,
+        options,
+        callback,
+      );
+    });
+    const result = await fetchPublicWebPage(
+      'https://docs.openclaw.ai/concepts/features',
+    );
+    expect(result.content).toContain('public document');
+    const requests = mocks.https.mock.calls.filter(
+      ([, , callback]) => typeof callback === 'function',
+    );
+    expect(requests).toHaveLength(1);
+    const [url, options] = requests[0]!;
+    const resolved = vi.fn();
+    options.lookup(url.hostname, {}, resolved);
+    expect(resolved).toHaveBeenCalledWith(null, '104.26.0.67', 4);
+    expect(url.hostname).toBe('docs.openclaw.ai');
+  });
+
   it('checks DNS again for a redirect and refuses private/mixed answers before a second socket', async () => {
     mocks.lookup
       .mockResolvedValueOnce([{ address: '1.1.1.1', family: 4 }])
