@@ -6369,6 +6369,65 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('keeps loaded employee rows visible through background refresh, failure and archive changes', async () => {
+    const f = await fixture({
+      employeeCount: 2,
+      employeeHistory: true,
+      employeeHistoryCount: 35,
+      officeHistoryCount: 7,
+    });
+    let release!: () => void;
+    try {
+      const sidebar = f.page.locator('#chat-sidebar');
+      const office = sidebar.getByRole('region', {
+        name: 'Office 文档助手',
+        exact: true,
+      });
+      await office.getByRole('treeitem').first().click();
+      const rows = office.locator('[data-row-key^="session:"]');
+      await expect.poll(() => rows.count()).toBe(5);
+      await office.getByRole('button', { name: '展开其余 2 个会话' }).click();
+      await expect.poll(() => rows.count()).toBe(7);
+      for (let i = 0; i < 3; i++) {
+        f.state.sessionPageDelay = new Promise<void>((done) => {
+          release = done;
+        });
+        const requests = f.state.sessionPageRequests.length;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => f.state.sessionPageRequests.length)
+          .toBeGreaterThan(requests);
+        // The global first page contains only Rice. Office must stay mounted
+        // while its slower background request is still pending.
+        expect(await rows.count()).toBe(7);
+        expect(
+          await office.getByText('正在加载会话…', { exact: true }).count(),
+        ).toBe(0);
+        release();
+        f.state.sessionPageDelay = null;
+        await f.page.waitForTimeout(100);
+        expect(await rows.count()).toBe(7);
+      }
+      f.state.sessionPageError = true;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await sidebar.getByRole('alert').waitFor();
+      expect(await rows.count()).toBe(7);
+      f.state.sessionPageError = false;
+      // Simulate an archive made in another tab. A stable list must still
+      // replace stale data and clear it when the employee has no active work.
+      f.state.archivedIds.add(B);
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => rows.count()).toBe(6);
+      for (let n = 1; n < 7; n++) f.state.archivedIds.add(id(7000 + n));
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => rows.count()).toBe(0);
+      expect(f.errors).toEqual([]);
+    } finally {
+      release?.();
+      await f.close();
+    }
+  });
+
   it('finds archives beyond the first page and keeps a failed archive visible', async () => {
     const f = await fixture({ archiveCount: 35 });
     try {

@@ -47,6 +47,8 @@ export function useSessionArchive({
   const [page, setPage] = useState<
     (Page & { scope: string; filter: ArchivedFilter }) | null
   >(null);
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [request, setRequest] = useState<SessionArchiveConfirmRequest | null>(
@@ -64,6 +66,9 @@ export function useSessionArchive({
   const load = useCallback(
     async (cursor?: string) => {
       if (!workspaceId) return;
+      const cached = pageRef.current;
+      const previous =
+        cached?.scope === scope && cached.filter === filter ? cached : null;
       const ticket = ++generation.current;
       employeeRequests.current.clear();
       setPage((old) =>
@@ -95,6 +100,53 @@ export function useSessionArchive({
           return;
         if (!Array.isArray(result.sessions))
           throw new Error('工作记录响应无效，请重试');
+        // The global first page may contain only the busiest employee. Refresh
+        // previously loaded employee pages in the background and publish them
+        // together, so focus/run updates never erase a visible employee list.
+        // Re-read rows instead of keeping an unbounded stale cache: archives,
+        // removals and pagination cursors must still reflect the server.
+        const refreshed = cursor
+          ? []
+          : await Promise.all(
+              Object.keys(previous?.employees ?? {}).map(async (employeeId) => {
+                const before = previous!.sessions.filter(
+                  (s) => s.employeeAssignmentId === employeeId,
+                );
+                const total = result.employeeGroups?.find(
+                  (g) => g.employeeAssignmentId === employeeId,
+                )?.count;
+                if (result.employeeGroups && !total) return null;
+                const sessions: Session[] = [];
+                let nextCursor: string | null = null;
+                do {
+                  const employeeQuery = new URLSearchParams(query);
+                  employeeQuery.set('employeeAssignmentId', employeeId);
+                  if (nextCursor) employeeQuery.set('cursor', nextCursor);
+                  const next = await fetch(
+                    `/api/v1/sessions?${employeeQuery}`,
+                    { headers, cache: 'no-store' },
+                  ).then(readJson<Page>);
+                  if (ticket !== generation.current) return null;
+                  if (
+                    !Array.isArray(next.sessions) ||
+                    next.sessions.some(
+                      (s) => s.employeeAssignmentId !== employeeId,
+                    ) ||
+                    (next.nextCursor && next.nextCursor === nextCursor)
+                  )
+                    throw new Error('工作记录响应无效，请重试');
+                  sessions.push(...next.sessions);
+                  nextCursor = next.nextCursor;
+                } while (nextCursor && sessions.length < before.length);
+                return {
+                  employeeId,
+                  sessions,
+                  pagination: { nextCursor, loading: false, error: '' },
+                };
+              }),
+            );
+        if (ticket !== generation.current || currentScope.current !== scope)
+          return;
         setPage((old) => {
           const before =
             cursor && old?.scope === scope && old.filter === filter
@@ -105,9 +157,25 @@ export function useSessionArchive({
             filter,
             nextCursor: result.nextCursor,
             employeeGroups: result.employeeGroups,
+            employees: cursor
+              ? previous?.employees
+              : Object.fromEntries(
+                  refreshed.flatMap((item) =>
+                    item ? [[item.employeeId, item.pagination]] : [],
+                  ),
+                ),
             sessions: [
               ...new Map(
-                [...before, ...result.sessions].map((s) => [s.id, s]),
+                [
+                  ...before,
+                  ...result.sessions.filter(
+                    (s) =>
+                      !refreshed.some(
+                        (item) => item?.employeeId === s.employeeAssignmentId,
+                      ),
+                  ),
+                  ...refreshed.flatMap((item) => item?.sessions ?? []),
+                ].map((s) => [s.id, s]),
               ).values(),
             ],
           };
