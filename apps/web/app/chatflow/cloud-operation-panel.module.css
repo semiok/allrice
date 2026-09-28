@@ -119,42 +119,26 @@
   content: '';
 }
 .executionFooter {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
 }
-.executionDetails {
-  min-width: 0;
-  grid-column: 1 / -1;
-  grid-row: 1;
-}
-.executionDetails > summary {
+.executionToolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 8px;
   min-height: 48px;
-  padding: 7px 132px 7px 0;
+  padding: 7px 0;
+}
+.executionTitle {
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
 }
-.detailsToggle {
-  padding: 5px 0;
-  border-radius: 7px;
-  color: var(--dsw-alias-label-secondary, #68717e);
-  font-size: 12px;
-  font-weight: 400;
-}
-.executionDetails > summary:hover .detailsToggle {
-  background: color-mix(in srgb, var(--cloud-accent) 9%, transparent);
-  color: var(--dsw-alias-label-primary, #272c34);
-}
-.collapseLabel,
-.executionDetails[open] > summary .expandLabel {
-  display: none;
-}
-.executionDetails[open] > summary .collapseLabel {
-  display: inline;
+.executionControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 .executionBody {
   padding-bottom: 3px;
@@ -304,13 +288,7 @@
 .actions small {
   flex-basis: 100%;
 }
-.stopControl {
-  grid-column: 2;
-  grid-row: 1;
-  align-self: start;
-  margin-top: 8px;
-  z-index: 1;
-}
+.card .detailsToggle,
 .card .stopButton {
   display: inline-flex;
   align-items: center;
@@ -333,6 +311,19 @@
     border-color 160ms ease,
     background 160ms ease;
 }
+.card .detailsToggle {
+  flex: none;
+  border-radius: 9px;
+  font-weight: 400;
+}
+.detailsToggle svg {
+  flex: none;
+}
+.card .detailsToggle:hover {
+  background: var(--allrice-sidebar-hover, #e9ecf1);
+  border-color: var(--dsw-alias-border-primary, #c5cfdd);
+  color: var(--dsw-alias-label-primary, #272c34);
+}
 .stopIcon {
   width: 9px;
   height: 9px;
@@ -343,9 +334,10 @@
 .stopLabel {
   display: inline;
 }
-@container (max-width: 220px) {
-  .executionDetails > summary {
-    padding-right: 52px;
+@container (max-width: 300px) {
+  .executionToolbar,
+  .executionControls {
+    gap: 6px;
   }
   .card .stopButton {
     width: 32px;
@@ -390,17 +382,16 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .detailChevron,
+  .card .detailsToggle,
   .card .stopButton {
     transition: none;
   }
 }
 @media (pointer: coarse) {
+  .card .detailsToggle,
   .card .stopButton {
     min-height: 44px;
     min-width: 44px;
-  }
-  .stopControl {
-    margin-top: 2px;
   }
 }
 

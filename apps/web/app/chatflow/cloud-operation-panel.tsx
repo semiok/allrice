@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   IconChevronRightOutlineRegular,
   IconCodeOutlineRegular,
@@ -109,6 +109,11 @@ export function CloudOperationCard({
     op.snapshot.status,
   );
   const stopping = cancelPending || op.snapshot.status === 'cancel_requested';
+  const detailsId = useId();
+  const [detailsOpen, setDetailsOpen] = useState(!!pending);
+  useEffect(() => {
+    setDetailsOpen(!!pending);
+  }, [pending, op.snapshot.binding.attempt.operationId]);
   return (
     <article
       className={styles.card}
@@ -161,165 +166,186 @@ export function CloudOperationCard({
           : `第三方应用 · ${proposal.tool}`}
       </p>
       <div className={styles.executionFooter}>
-        <details className={styles.executionDetails} open={!!pending}>
-          <summary>
-            <span>运行详情</span>
-            <span className={styles.detailsToggle}>
-              <span className={styles.expandLabel}>展开</span>
-              <span className={styles.collapseLabel}>收起</span>
-            </span>
-          </summary>
-          <div className={styles.executionBody}>
-            {proposal.kind === 'cloud' ? (
-              <p className={styles.detailScope}>
-                只读本次授权的上传文件，不访问你的电脑。
-              </p>
-            ) : (
-              <>
-                <p className={styles.notice}>
-                  批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
-                  沙箱之外运行，可能读取或修改其账号内的数据。
-                </p>
-                <p>
-                  目标服务：<code>{proposal.endpoint}</code>
-                </p>
-                <p>
-                  工具：<code>{proposal.tool}</code> · 权限类别：
-                  <code>{proposal.risk}</code>
-                </p>
-              </>
+        <div className={styles.executionToolbar}>
+          <span className={styles.executionTitle}>运行详情</span>
+          <div className={styles.executionControls}>
+            <button
+              type="button"
+              className={styles.detailsToggle}
+              aria-expanded={detailsOpen}
+              aria-controls={detailsId}
+              onClick={() => setDetailsOpen((open) => !open)}
+            >
+              <span>{detailsOpen ? '收起详情' : '查看详情'}</span>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+              >
+                <path
+                  d={detailsOpen ? 'M3 8h10' : 'M3 8h10M8 3v10'}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+            {!terminal && (
+              <Tooltip
+                label="请求停止本轮全部操作，已完成的结果会保留。"
+                side="top"
+                align="end"
+              >
+                <button
+                  type="button"
+                  className={styles.stopButton}
+                  aria-label={
+                    stopping ? '正在停止本轮全部操作' : '请求停止本轮全部操作'
+                  }
+                  disabled={busy || stopping}
+                  onClick={() => onAct(op, 'cancel')}
+                >
+                  <span className={styles.stopIcon} aria-hidden="true" />
+                  <span className={styles.stopLabel}>
+                    {stopping ? '正在停止…' : '停止本轮'}
+                  </span>
+                </button>
+              </Tooltip>
             )}
-            <div className={styles.detailSections}>
-              {proposal.kind === 'cloud' ? (
-                <>
-                  <OperationDetail
-                    title="执行脚本"
-                    meta="Node.js"
-                    icon={<IconCodeOutlineRegular size={16} />}
-                    open={!!pending}
-                  >
-                    <pre aria-label="云端待执行脚本">{proposal.script}</pre>
-                  </OperationDetail>
-                  <OperationDetail
-                    title="输入文件"
-                    meta={`${proposal.inputs.length} 个`}
-                    icon={<IconCopyOutlineRegular size={16} />}
-                    open={!!pending}
-                  >
-                    {proposal.inputs.length ? (
-                      <ul className={styles.inputFiles}>
-                        {proposal.inputs.map((file) => (
-                          <li key={file.objectId}>
-                            <code>{file.path}</code>
-                            <small>文件 ID：{file.objectId}</small>
-                            <small>{file.checksum}</small>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p>无输入文件。</p>
-                    )}
-                  </OperationDetail>
-                  <OperationDetail
-                    title="运行限制"
-                    meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
-                    icon={<IconSlidersTwoOutlineRegular size={16} />}
-                    open={!!pending}
-                  >
-                    <dl className={styles.limits}>
-                      <div>
-                        <dt>时限</dt>
-                        <dd>{proposal.limits.timeoutMs / 1000} 秒</dd>
-                      </div>
-                      <div>
-                        <dt>内存</dt>
-                        <dd>{proposal.limits.memoryMiB} MiB</dd>
-                      </div>
-                      <div>
-                        <dt>CPU</dt>
-                        <dd>{proposal.limits.cpuMillis} 毫核</dd>
-                      </div>
-                      <div>
-                        <dt>进程数上限</dt>
-                        <dd>{proposal.limits.pids}</dd>
-                      </div>
-                      <div>
-                        <dt>输出上限</dt>
-                        <dd>{proposal.limits.outputBytes} 字节</dd>
-                      </div>
-                      <div>
-                        <dt>成果上限</dt>
-                        <dd>{proposal.limits.artifactBytes} 字节</dd>
-                      </div>
-                    </dl>
-                  </OperationDetail>
-                </>
-              ) : (
+          </div>
+        </div>
+        <div
+          id={detailsId}
+          className={styles.executionBody}
+          hidden={!detailsOpen}
+        >
+          {proposal.kind === 'cloud' ? (
+            <p className={styles.detailScope}>
+              只读本次授权的上传文件，不访问你的电脑。
+            </p>
+          ) : (
+            <>
+              <p className={styles.notice}>
+                批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
+                沙箱之外运行，可能读取或修改其账号内的数据。
+              </p>
+              <p>
+                目标服务：<code>{proposal.endpoint}</code>
+              </p>
+              <p>
+                工具：<code>{proposal.tool}</code> · 权限类别：
+                <code>{proposal.risk}</code>
+              </p>
+            </>
+          )}
+          <div className={styles.detailSections}>
+            {proposal.kind === 'cloud' ? (
+              <>
                 <OperationDetail
-                  title="发送参数"
-                  meta="已脱敏"
+                  title="执行脚本"
+                  meta="Node.js"
                   icon={<IconCodeOutlineRegular size={16} />}
                   open={!!pending}
                 >
-                  <pre aria-label="MCP 发送参数">
-                    {JSON.stringify(proposal.arguments, null, 2)}
-                  </pre>
+                  <pre aria-label="云端待执行脚本">{proposal.script}</pre>
                 </OperationDetail>
-              )}
-              {op.result && (
                 <OperationDetail
-                  title="执行返回内容"
-                  meta={op.result.code}
-                  icon={<IconFlatListOutlineRegular size={16} />}
+                  title="输入文件"
+                  meta={`${proposal.inputs.length} 个`}
+                  icon={<IconCopyOutlineRegular size={16} />}
+                  open={!!pending}
                 >
-                  <pre>{op.result.output || '没有可展示的输出。'}</pre>
-                  <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
+                  {proposal.inputs.length ? (
+                    <ul className={styles.inputFiles}>
+                      {proposal.inputs.map((file) => (
+                        <li key={file.objectId}>
+                          <code>{file.path}</code>
+                          <small>文件 ID：{file.objectId}</small>
+                          <small>{file.checksum}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>无输入文件。</p>
+                  )}
                 </OperationDetail>
-              )}
-            </div>
-            {proposal.kind === 'cloud' ? (
-              <p className={styles.plannedOutputs}>
-                <span>计划输出：</span>
-                {proposal.outputs.length
-                  ? proposal.outputs.map((output) => (
-                      <code key={output.path}>
-                        {output.fileName} ({output.format})
-                      </code>
-                    ))
-                  : '无'}
-              </p>
+                <OperationDetail
+                  title="运行限制"
+                  meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
+                  icon={<IconSlidersTwoOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  <dl className={styles.limits}>
+                    <div>
+                      <dt>时限</dt>
+                      <dd>{proposal.limits.timeoutMs / 1000} 秒</dd>
+                    </div>
+                    <div>
+                      <dt>内存</dt>
+                      <dd>{proposal.limits.memoryMiB} MiB</dd>
+                    </div>
+                    <div>
+                      <dt>CPU</dt>
+                      <dd>{proposal.limits.cpuMillis} 毫核</dd>
+                    </div>
+                    <div>
+                      <dt>进程数上限</dt>
+                      <dd>{proposal.limits.pids}</dd>
+                    </div>
+                    <div>
+                      <dt>输出上限</dt>
+                      <dd>{proposal.limits.outputBytes} 字节</dd>
+                    </div>
+                    <div>
+                      <dt>成果上限</dt>
+                      <dd>{proposal.limits.artifactBytes} 字节</dd>
+                    </div>
+                  </dl>
+                </OperationDetail>
+              </>
             ) : (
-              <small className={styles.authorizationScope}>
-                仅授权这一次调用、当前工具 schema
-                和连接版本；管理员保存的服务密钥不会展示在页面上。
-              </small>
+              <OperationDetail
+                title="发送参数"
+                meta="已脱敏"
+                icon={<IconCodeOutlineRegular size={16} />}
+                open={!!pending}
+              >
+                <pre aria-label="MCP 发送参数">
+                  {JSON.stringify(proposal.arguments, null, 2)}
+                </pre>
+              </OperationDetail>
+            )}
+            {op.result && (
+              <OperationDetail
+                title="执行返回内容"
+                meta={op.result.code}
+                icon={<IconFlatListOutlineRegular size={16} />}
+              >
+                <pre>{op.result.output || '没有可展示的输出。'}</pre>
+                <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
+              </OperationDetail>
             )}
           </div>
-        </details>
-        {!terminal && (
-          <div className={styles.stopControl}>
-            <Tooltip
-              label="请求停止本轮全部操作，已完成的结果会保留。"
-              side="top"
-              align="end"
-            >
-              <button
-                type="button"
-                className={styles.stopButton}
-                aria-label={
-                  stopping ? '正在停止本轮全部操作' : '请求停止本轮全部操作'
-                }
-                disabled={busy || stopping}
-                onClick={() => onAct(op, 'cancel')}
-              >
-                <span className={styles.stopIcon} aria-hidden="true" />
-                <span className={styles.stopLabel}>
-                  {stopping ? '正在停止…' : '停止本轮'}
-                </span>
-              </button>
-            </Tooltip>
-          </div>
-        )}
+          {proposal.kind === 'cloud' ? (
+            <p className={styles.plannedOutputs}>
+              <span>计划输出：</span>
+              {proposal.outputs.length
+                ? proposal.outputs.map((output) => (
+                    <code key={output.path}>
+                      {output.fileName} ({output.format})
+                    </code>
+                  ))
+                : '无'}
+            </p>
+          ) : (
+            <small className={styles.authorizationScope}>
+              仅授权这一次调用、当前工具 schema
+              和连接版本；管理员保存的服务密钥不会展示在页面上。
+            </small>
+          )}
+        </div>
       </div>
       {pending && (
         <div className={styles.actions}>

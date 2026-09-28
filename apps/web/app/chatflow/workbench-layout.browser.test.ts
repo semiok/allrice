@@ -1286,6 +1286,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const buttonBox = (await stop.boundingBox())!;
         expect(buttonBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
         expect(labelBox.height).toBeLessThan(40);
+        const detail = card.getByRole('button', {
+          name: '查看详情',
+          exact: true,
+        });
+        const detailBox = (await detail.boundingBox())!;
+        expect(detailBox.width).toBeLessThan(115);
+        expect(detailBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
+        expect(detailBox.x + detailBox.width).toBeLessThan(buttonBox.x);
+        const content = f.page.locator(
+          `[id="${await detail.getAttribute('aria-controls')}"]`,
+        );
+        // The heading and the old full-row hit area are ordinary, inert text/space.
+        await label.click();
+        expect(await detail.getAttribute('aria-expanded')).toBe('false');
+        const gapX = (labelBox.x + labelBox.width + detailBox.x) / 2;
+        await f.page.mouse.move(gapX, detailBox.y + detailBox.height / 2);
+        expect(
+          await f.page.evaluate(
+            ({ x, y }) =>
+              document.elementFromPoint(x, y)?.closest('button, summary') !==
+              null,
+            { x: gapX, y: detailBox.y + detailBox.height / 2 },
+          ),
+        ).toBe(false);
+        await f.page.mouse.click(gapX, detailBox.y + detailBox.height / 2);
+        expect(await content.isVisible()).toBe(false);
+        await detail.hover();
+        expect(
+          await detail.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return node.contains(
+              document.elementFromPoint(
+                box.x + box.width / 2,
+                box.y + box.height / 2,
+              ),
+            );
+          }),
+        ).toBe(true);
+        await detail.focus();
+        await f.page.keyboard.press('Enter');
+        const collapse = card.getByRole('button', {
+          name: '收起详情',
+          exact: true,
+        });
+        expect(await collapse.getAttribute('aria-expanded')).toBe('true');
+        expect(await content.isVisible()).toBe(true);
+        await content
+          .locator('summary')
+          .filter({ hasText: '发送参数' })
+          .click();
+        expect(await content.getByLabel('MCP 发送参数').isVisible()).toBe(true);
+        await collapse.focus();
+        await f.page.keyboard.press('Space');
+        expect(await detail.getAttribute('aria-expanded')).toBe('false');
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
         await stop.click();
         await expect.poll(() => requests.length).toBe(1);
         await expect.poll(() => stop.isEnabled()).toBe(true);
