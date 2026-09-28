@@ -821,6 +821,7 @@ header.conversationHeader::after {
 }
 
 div.composerRow {
+  flex-wrap: nowrap;
   gap: 6px;
 }
 
@@ -969,6 +970,18 @@ div.composerAttachmentMenu {
   }
 
   .composerVisibilityScope {
+    display: none;
+  }
+}
+
+@container (max-width: 310px) {
+  .composerSelect {
+    gap: 5px;
+    padding-inline: 8px;
+  }
+
+  .composerSelectChevron,
+  .composerSelect[data-compact='mode'] .composerSelectIcon {
     display: none;
   }
 }
