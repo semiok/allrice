@@ -4804,11 +4804,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await local.getByRole('button', { name: '让员工连接在线应用' }).count(),
       ).toBe(0);
       await local.getByRole('button', { name: '查看已连接应用' }).click();
-      const github = dialog
-        .getByRole('article')
-        .filter({
-          has: f.page.getByRole('heading', { name: 'GitHub', exact: true }),
-        });
+      const github = dialog.getByRole('article').filter({
+        has: f.page.getByRole('heading', { name: 'GitHub', exact: true }),
+      });
       await github.getByText('管理连接', { exact: true }).click();
       await github
         .getByRole('button', { name: '断开连接', exact: true })
