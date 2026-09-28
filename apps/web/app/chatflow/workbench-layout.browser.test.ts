@@ -4184,12 +4184,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ctx.beginPath();
           ctx.arc(400, 400, 250, 0, Math.PI * 2);
           ctx.fill();
+          // Deterministic texture makes this a realistic multi-MB PNG rather
+          // than a tiny solid-color image that misses the old preview limit.
+          const pixels = ctx.getImageData(0, 0, 800, 800);
+          let seed = 163;
+          for (let i = 0; i < pixels.data.length; i++) {
+            if (i % 4 === 3) continue;
+            seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+            pixels.data[i] = (pixels.data[i]! & 0xf0) | (seed >>> 28);
+          }
+          ctx.putImageData(pixels, 0, 0);
           return c.toDataURL('image/png').split(',')[1]!;
         });
+        expect(Buffer.from(png, 'base64').length).toBeGreaterThan(512_000);
         const img = artifact(10);
         img.version.fileName = '圆形海报.png';
         img.version.format = 'png';
         img.object.mediaType = 'image/png';
+        img.object.sizeBytes = Buffer.from(png, 'base64').length;
         img.version.version = 2;
         f.state.officePreview = {
           kind: 'image',

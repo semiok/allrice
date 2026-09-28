@@ -1,5 +1,6 @@
 import {
   runtimeStaticPreviewPolicy,
+  runtimeRasterPreviewMaxBytes,
   type WorkbenchArtifact,
 } from '@allrice/contracts';
 import { parseChangesetBytes, readArtifactBytes } from '@allrice/database';
@@ -47,7 +48,7 @@ export async function readStaticArtifactPreview(
   if (policy.mode === 'authenticated_raster') {
     // Generated images can be much larger than text. Match image delivery's
     // byte limit while retaining immutable-byte and raster dimension checks.
-    if (artifact.object.sizeBytes > 8_000_000)
+    if (artifact.object.sizeBytes > runtimeRasterPreviewMaxBytes)
       return {
         kind: 'download_only',
         reason: '图片超过 8 MB 预览上限，请下载查看。',
@@ -55,7 +56,7 @@ export async function readStaticArtifactPreview(
     const bytes = await readArtifactBytes(
       getStorageAdapter(),
       artifact.object,
-      8_000_000,
+      runtimeRasterPreviewMaxBytes,
     );
     return boundedRaster(bytes, artifact.object.mediaType)
       ? {

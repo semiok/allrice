@@ -4,6 +4,7 @@ import {
   WorkbenchArtifactSchema,
   WorkbenchCursorSchema,
   OfficePreviewSchema,
+  runtimeRasterPreviewMaxBytes,
   type OfficePreview,
   type ChangesetDocument,
   type ReviewFeedback,
@@ -110,8 +111,12 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
     v.kind === 'image' &&
     ['image/png', 'image/jpeg', 'image/webp'].includes(String(v.mediaType)) &&
     typeof v.base64 === 'string' &&
-    v.base64.length <= 684_000 &&
-    /^[A-Za-z0-9+/]*={0,2}$/.test(v.base64)
+    v.base64.length <= Math.ceil(runtimeRasterPreviewMaxBytes / 3) * 4 &&
+    v.base64.length % 4 === 0 &&
+    /^[A-Za-z0-9+/]*={0,2}$/.test(v.base64) &&
+    (v.base64.length / 4) * 3 -
+      (v.base64.endsWith('==') ? 2 : v.base64.endsWith('=') ? 1 : 0) <=
+      runtimeRasterPreviewMaxBytes
   )
     return {
       kind: 'image',

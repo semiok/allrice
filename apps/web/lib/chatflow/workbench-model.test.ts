@@ -140,7 +140,7 @@ describe('workbench UI boundary', () => {
         mediaType: 'image/png',
         base64: 'https://invalid/path?',
       },
-      { kind: 'image', mediaType: 'image/png', base64: 'A'.repeat(684001) },
+      { kind: 'image', mediaType: 'image/png', base64: 'AAA' },
       { kind: 'text', text: 'x'.repeat(512001), mediaType: 'text/plain' },
     ])
       expect(() => parseArtifactPreview(input)).toThrow();
@@ -148,6 +148,28 @@ describe('workbench UI boundary', () => {
       parseArtifactPreview({ kind: 'download_only', reason: 'download' }).kind,
     ).toBe('download_only');
   });
+  it.each(['image/png', 'image/jpeg', 'image/webp'])(
+    'admits %s images above the text cap up to 8 MB, including base64 padding',
+    (mediaType) => {
+      for (const size of [3_358_298, 8_000_000]) {
+        const input = {
+          kind: 'image',
+          mediaType,
+          base64: Buffer.alloc(size).toString('base64'),
+        };
+        expect(parseArtifactPreview(input)).toEqual(input);
+      }
+      // 8,000,001 bytes has the same encoded length as 8,000,000 bytes.
+      for (const size of [8_000_001, 8_000_002])
+        expect(() =>
+          parseArtifactPreview({
+            kind: 'image',
+            mediaType,
+            base64: Buffer.alloc(size).toString('base64'),
+          }),
+        ).toThrow();
+    },
+  );
   it('bounds rich diff bytes, line count and individual line length', () => {
     expect(boundedRichDiff(null, 'hello\r\n')).toBe(true);
     expect(boundedRichDiff('x'.repeat(4001), null)).toBe(false);
