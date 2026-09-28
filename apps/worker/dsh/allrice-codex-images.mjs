@@ -98,6 +98,7 @@ export async function generateCodexImage(models, params, request = fetch) {
     );
   }
   let imageBase64;
+  let imageFailed = false;
   let completed = false;
   let usage = null;
   let total = 0;
@@ -123,6 +124,13 @@ export async function generateCodexImage(models, params, request = fetch) {
       event.type === 'response.output_item.done' &&
       event.item?.type === 'image_generation_call'
     ) {
+      // A failed attempt has no result. The same provider response may still
+      // continue and deliver an image, so wait for its complete receipt.
+      if (event.item.status === 'failed') {
+        if (event.item.result) throw Error('IMAGE_RESULT_INVALID');
+        imageFailed = true;
+        return;
+      }
       if (
         imageBase64 ||
         typeof event.item.result !== 'string' ||
@@ -173,9 +181,10 @@ export async function generateCodexImage(models, params, request = fetch) {
         : 'IMAGE_RESULT_UNKNOWN',
     );
   }
-  if (!completed || !imageBase64) throw Error('IMAGE_RESULT_UNKNOWN');
+  if (!completed || (!imageBase64 && !imageFailed))
+    throw Error('IMAGE_RESULT_UNKNOWN');
   return {
-    imageBase64,
+    ...(imageBase64 ? { imageBase64 } : { status: 'failed' }),
     workModel: params.workModel,
     imageModel: params.imageModel,
     requestId: response.headers.get('x-request-id')?.slice(0, 200) ?? null,

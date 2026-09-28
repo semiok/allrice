@@ -85,3 +85,11 @@ export const CodexImageReceiptSchema = z
   })
   .strict();
 export type CodexImageReceipt = z.infer<typeof CodexImageReceiptSchema>;
+
+/** A completed provider response whose image attempts all explicitly failed. */
+export const CodexImageFailureReceiptSchema = CodexImageReceiptSchema.omit({
+  imageBase64: true,
+}).extend({ status: z.literal('failed') });
+export type CodexImageFailureReceipt = z.infer<
+  typeof CodexImageFailureReceiptSchema
+>;

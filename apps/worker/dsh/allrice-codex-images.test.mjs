@@ -39,6 +39,42 @@ function stream(events) {
   );
 }
 describe('Codex image transport', () => {
+  const failedImage = {
+    type: 'response.output_item.done',
+    item: {
+      id: 'synthetic-image',
+      type: 'image_generation_call',
+      status: 'failed',
+    },
+  };
+  it('records an explicitly failed image only after the response completes', async () => {
+    const request = vi.fn(async () =>
+      stream([failedImage, failedImage, completed]),
+    );
+    await expect(generateCodexImage(models, params, request)).resolves.toEqual({
+      status: 'failed',
+      workModel: params.workModel,
+      imageModel: params.imageModel,
+      requestId: 'synthetic',
+      usage: { inputTokens: 3, outputTokens: 2, cachedInputTokens: 1 },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    await expect(
+      generateCodexImage(models, params, async () => stream([failedImage])),
+    ).rejects.toThrow('IMAGE_RESULT_UNKNOWN');
+    await expect(
+      generateCodexImage(models, params, async () => stream([completed])),
+    ).rejects.toThrow('IMAGE_RESULT_UNKNOWN');
+  });
+  it('accepts a later successful image in the same response after a failed attempt', async () => {
+    const request = vi.fn(async () => stream([failedImage, output, completed]));
+    await expect(
+      generateCodexImage(models, params, request),
+    ).resolves.toMatchObject({
+      imageBase64: 'cG5n',
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
     'uses managed OAuth and %s with complete SSE receipts',
     async (imageModel) => {
