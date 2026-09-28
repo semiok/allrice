@@ -16,6 +16,7 @@ import {
 } from '../../lib/chatflow/work-progress';
 
 import { AssistantMarkdown } from './assistant-markdown';
+import type { MessageImageSource } from './message-image-cache';
 import { MessageImageGallery } from './attachment-components';
 import type { Message, RunTrace, RunView } from './chatflow-types';
 import { BrowserWorkspacePanel } from './browser-workspace-panel';
@@ -43,6 +44,7 @@ import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presente
 import { isMessageRunActive } from './run-view';
 
 interface ChatTranscriptProps {
+  messageImages?: MessageImageSource;
   streamingOutput?: boolean;
   atBottom: boolean;
   employeeName?: string;
@@ -66,6 +68,7 @@ interface ChatTranscriptProps {
 }
 
 export function ChatTranscript({
+  messageImages,
   streamingOutput = false,
   atBottom,
   employeeName = 'AI 员工',
@@ -214,10 +217,10 @@ export function ChatTranscript({
                         <SessionReferenceChips
                           references={message.content.sessionReferences ?? []}
                         />
-                        {message.attachments?.length ? (
+                        {messageImages && message.attachments?.length ? (
                           <MessageImageGallery
                             attachments={message.attachments}
-                            tenantHeaders={tenantHeaders}
+                            source={messageImages}
                           />
                         ) : null}
                         <div

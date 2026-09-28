@@ -392,3 +392,27 @@ rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重
 #### 2026-09-27 · MET-160 设置视觉适配复核
 
 复核官方 `native-settings` 0.1.7-rc.1（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。沿用 Modal、焦点锁定、Esc 和恢复焦点；AllRice 的 `settings-design.module.css` 负责冷灰外观与尺寸，窄屏以原生 select 切换同一 sections slot。`SettingsRoot.tsx` 的样式接入及移动导航补丁、源码摘要已更新到 UI 账本。账号退出、连接管理、电脑能力开关与个人偏好仍由 AllRice 原业务组件处理，无新增 DSH 宿主权限。
+
+## 图片发送衔接（2026-09-28）
+
+固定官方 Web UI `0.1.7-rc.1` / `46a7f68b0922371ce7144b668b90e377d8e799f4`。
+复用 `ui-attachment` 的 `MessageImage` / `ImageGallery`、原始 CSS、官方
+`ImageLightbox`，以及 `ui-conversation` 的 `HistoricalImageCache`、`nextPaint`。
+原生插件入口注册 Conversation image slots；当前 Allrice ChatFlow 不运行该
+Host/Session slot 装配，文件引用也没有原生必填的 width/height。本次沿用已建立的
+固定源码与补丁校验方式接入组件，保留缓存接管、请求去重和作用域释放实现，不另写图库。
+
+Allrice 的必要适配是：先显示发送快照，再走现有附件/消息 HTTP 接口；实际确认后把
+本地预览所有权交给原生缓存；认证文件读取使用现有签名接口，缓存按公司/工作区/用户/
+会话隔离。消息失败恢复原草稿，已上传的附件重试不重复上传。新会话、排队消息和会话
+切换仍遵守既有提交归属。普通文档保留现有输入框的上传/重试控件。
+
+具体补充：从本地预览探测尺寸，历史文件缺少尺寸时在原生组件加载后补齐；慢网浏览器
+用例捕获原图替换时偶发一帧尚未解码，因此在原生缓存释放预览前完成解码。替换旧的
+`MessageImageGallery` 自制图库、固定正方形 CSS 和每次重挂载重新签名的处理。
+WebUI 账本 `message-image-send` 记录三份原生文件及一个原生函数摘录；后续升级重放
+补丁校验，上游提供相同的解码交接或 Allrice 改用完整 Session slots 时移除相应适配。
+
+验证：真实 Chromium/React 下阻塞上传及签名返回，检查文字/图片立即进入会话、确认和
+历史刷新过程无空白帧、图片比例稳定、原图预览可关闭、失败重试复用上传结果；覆盖
+桌面与手机宽度。缓存用例检查跨用户隔离、请求合并和离开会话后的 URL 回收。

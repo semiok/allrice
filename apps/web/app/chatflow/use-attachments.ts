@@ -45,7 +45,7 @@ interface UseAttachmentsResult {
     files: WorkspaceFile[],
   ) => Promise<WorkspaceFileAddResult>;
   attachmentPreview: PendingAttachment | null;
-  clearPendingAttachments: () => void;
+  clearPendingAttachments: (retained?: ReadonlySet<string>) => void;
   deliverableVersions: DeliverableVersion[];
   fileInput: RefObject<HTMLInputElement | null>;
   filePickerOpen: boolean;
@@ -112,15 +112,19 @@ export function useAttachments({
     [],
   );
 
-  const clearPendingAttachments = useCallback(() => {
-    setPendingAttachments((current) => {
-      for (const attachment of current) {
-        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-      }
-      return [];
-    });
-    setAttachmentPreview(null);
-  }, []);
+  const clearPendingAttachments = useCallback(
+    (retained?: ReadonlySet<string>) => {
+      setPendingAttachments((current) => {
+        for (const attachment of current) {
+          if (attachment.previewUrl && !retained?.has(attachment.previewUrl))
+            URL.revokeObjectURL(attachment.previewUrl);
+        }
+        return [];
+      });
+      setAttachmentPreview(null);
+    },
+    [],
+  );
 
   const changeUploadVisibility = useCallback(
     (update: SetStateAction<Visibility>) => {
@@ -161,6 +165,8 @@ export function useAttachments({
           fileName: attachment.fileName,
           mediaType: attachment.mediaType,
           sizeBytes: attachment.sizeBytes,
+          width: attachment.width,
+          height: attachment.height,
           ...(attachment.previewUrl
             ? { previewUrl: attachment.previewUrl }
             : {}),
@@ -205,6 +211,8 @@ export function useAttachments({
         );
         return {
           ...result.attachment,
+          width: attachment.width,
+          height: attachment.height,
           ...(attachment.previewUrl
             ? { previewUrl: attachment.previewUrl }
             : {}),
@@ -308,6 +316,17 @@ export function useAttachments({
         }
         setError('每条消息的附件总大小不能超过 200 MB。');
         return;
+      }
+      // Native DSH intake probes intrinsic dimensions before submission, so the
+      // local echo and admitted image share the same box.
+      for (const attachment of accepted) {
+        if (!attachment.previewUrl) continue;
+        const probe = new Image();
+        probe.onload = () => {
+          attachment.width = probe.naturalWidth;
+          attachment.height = probe.naturalHeight;
+        };
+        probe.src = attachment.previewUrl;
       }
       if (accepted.length) {
         setPendingAttachments((current) => [...current, ...accepted]);

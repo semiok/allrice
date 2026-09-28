@@ -713,55 +713,6 @@ header.conversationHeader::after {
   }
 }
 
-.messageImages {
-  display: flex;
-  max-width: min(640px, 72vw);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.messageImages button,
-.imagePlaceholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 16px;
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.messageImages button {
-  cursor: zoom-in;
-}
-
-.messageImages[data-variant='single'] button,
-.messageImages[data-variant='single'] .imagePlaceholder {
-  width: min(240px, 60vw);
-  height: min(240px, 60vw);
-}
-
-.messageImages[data-variant='tile'] button,
-.messageImages[data-variant='tile'] .imagePlaceholder {
-  width: 64px;
-  height: 64px;
-}
-
-.messageImages img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.imagePlaceholder {
-  padding: 12px;
-  color: var(--dsw-alias-label-caption);
-  font-size: 12px;
-  text-align: center;
-}
-
 .imageDropOverlay {
   position: fixed;
   z-index: 200;

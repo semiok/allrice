@@ -784,6 +784,47 @@
           "patchSha256": "a4ee7d82705db1e29512cc5ed4e539bb2d8f9db297302ed06cb8e1f6bc332ac8"
         }
       ]
+    },
+    {
+      "id": "message-image-send",
+      "version": "0.1.7-rc.1",
+      "commit": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+      "license": "MIT",
+      "integration": "native-source-with-allrice-session-http-adapter",
+      "files": [
+        {
+          "source": "packages/client/ui-attachment/src/MessageImage.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/images/MessageImage.tsx",
+          "upstreamSha256": "3822c8e5d82e6ea06dfe590883380440372ba3e2781a197faee321ebe08aadfe",
+          "sha256": "8f539334a3d5c03b8b4a28c45ab80c9bc0bafa67f3bf8ed08410b457d17aa60b",
+          "patch": "scripts/dsh-ui-patches/message-image-MessageImage.tsx.patch",
+          "patchSha256": "e3723a1854b5b34a2ac23dba8384b42c3bdd7a11cf1fca515e67c08c03a0f01a"
+        },
+        {
+          "source": "packages/client/ui-attachment/src/MessageImage.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/images/MessageImage.module.css",
+          "upstreamSha256": "1c23188f197a9e354d6cf4c72ddbde2a9fe1a2f95d8cc909d67910d3f65e6b4c",
+          "sha256": "1c23188f197a9e354d6cf4c72ddbde2a9fe1a2f95d8cc909d67910d3f65e6b4c"
+        },
+        {
+          "source": "packages/client/ui-conversation/src/client/conversation/historical-images.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/images/historical-images.ts",
+          "upstreamSha256": "76e5431532ad5a996d0f1f198dc3ed787240c54175eeeefc33b868fee8197aeb",
+          "sha256": "9aad636abc275b823557383f265f92ac3909e9141152a26472c5ddb4b33c33ef",
+          "patch": "scripts/dsh-ui-patches/message-image-historical-images.ts.patch",
+          "patchSha256": "7d9cfb8198ed57b9de95b8876cbd18dc16aa5a652c0ca29af959bdbe06928b7c"
+        }
+      ],
+      "excerpts": [
+        {
+          "source": "packages/client/ui-conversation/src/client/service.ts",
+          "symbol": "nextPaint",
+          "target": "apps/web/app/chatflow/dsh-upstream/images/next-paint.ts",
+          "sha256": "9618e945bd79fc11f3a87ff02aceb64f4a8114d5ed2ceb5607ae839cfc432e93",
+          "upstreamSymbolSha256": "74446ea321c8ae5afbe3f2bb74cedd286eee00cb969e756223aec07a2e649682",
+          "requiredDeclaration": "function nextPaint(): Promise<void>"
+        }
+      ]
     }
   ]
 }

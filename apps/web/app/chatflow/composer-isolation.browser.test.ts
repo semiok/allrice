@@ -1,6 +1,6 @@
 /** Real Chrome + React StrictMode + synthetic loopback HTTP. No DB/auth/model/Bridge. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { WorkspaceFile } from './chatflow-types';
+import type { Attachment, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -225,6 +225,7 @@ suite(
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
+      const uploaded = new Map<string, Attachment>();
       let releaseHistoryB!: () => void;
       const historyBGate = new Promise<void>((done) => {
         releaseHistoryB = done;
@@ -471,8 +472,23 @@ suite(
       const context: BrowserContext = await browser.newContext({
         viewport: { width: options.width ?? 1440, height: 1000 },
         hasTouch: (options.width ?? 1440) < 760,
+        ...(process.env.ALLRICE_TEST_DEV_STORAGE_STATE
+          ? { storageState: process.env.ALLRICE_TEST_DEV_STORAGE_STATE }
+          : {}),
       });
       const page: Page = await context.newPage();
+      // Real Dev HTML/JS/CSS with only this page's API requests routed to the
+      // fixture. No company messages, file uploads, or model runs are created.
+      const liveOrigin = process.env.ALLRICE_TEST_DEV_ORIGIN;
+      if (liveOrigin) {
+        await page.route(`${liveOrigin}/api/v1/**`, async (route) => {
+          const url = new URL(route.request().url());
+          const response = await route.fetch({
+            url: origin + url.pathname + url.search,
+          });
+          await route.fulfill({ response });
+        });
+      }
       page.setDefaultTimeout(4000);
       // Loading the development bundle can outlast interaction waits under CI load.
       page.setDefaultNavigationTimeout(15_000);
@@ -487,7 +503,11 @@ suite(
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       try {
-        await page.goto(`${origin}/?session=${A}`);
+        await page.goto(
+          liveOrigin
+            ? `${liveOrigin}/chatflow?session=${A}`
+            : `${origin}/?session=${A}`,
+        );
         if ((options.width ?? 1440) >= 760)
           await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
         // Sidebar readiness precedes History: uploading into the temporary
@@ -605,6 +625,12 @@ suite(
               return;
             }
             if (p.path.endsWith('/attachments')) {
+              uploaded.set(C, {
+                id: C,
+                fileName: String(p.body.fileName),
+                mediaType: String(p.body.mediaType),
+                sizeBytes: 1,
+              });
               answer(p.response, {
                 attachment: {
                   id: C,
@@ -627,7 +653,12 @@ suite(
               return;
             }
             const id = p.path.split('/')[4]!;
-            const userMessage = message(`user-${index}`, String(p.body.text));
+            const userMessage = {
+              ...message(`user-${index}`, String(p.body.text)),
+              attachments: ((p.body.attachmentIds as string[]) ?? []).flatMap(
+                (id) => uploaded.get(id) ?? [],
+              ),
+            };
             const assistantMessage = message(
               `assistant-${index}`,
               options.immediateReply ? '' : 'Synthetic receipt',
@@ -653,6 +684,273 @@ suite(
         },
       };
     }
+
+    async function imageDraft(page: Page) {
+      const data = await page.evaluate(() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 320;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#ffd000';
+        ctx.fillRect(0, 0, 640, 320);
+        ctx.fillStyle = '#111';
+        ctx.fillText('Allrice image send', 20, 50);
+        return canvas.toDataURL('image/png');
+      });
+      await page.locator('input[type=file]').setInputFiles({
+        name: 'image-send.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from(data.split(',')[1]!, 'base64'),
+      });
+      await expect
+        .poll(() =>
+          page
+            .getByRole('img', { name: 'image-send.png', exact: true })
+            .evaluate(
+              (img: HTMLImageElement) =>
+                img.complete && img.naturalWidth === 640,
+            ),
+        )
+        .toBe(true);
+      return data;
+    }
+
+    it.each([1440, 390])(
+      'hands image previews from composer to transcript without waiting or blank frames at %ipx',
+      async (width) => {
+        const f = await fixture({
+          width,
+          uploadPending: true,
+          immediateReply: true,
+        });
+        let release!: () => void;
+        const signing = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let signs = 0;
+        try {
+          const data = await imageDraft(f.page);
+          const originalPreview = await f.page
+            .getByRole('img', { name: 'image-send.png', exact: true })
+            .getAttribute('src');
+          await f.page.route('**/api/v1/files/*/sign', async (route) => {
+            signs++;
+            await signing;
+            await route.fulfill({ json: { url: data } });
+          });
+          await f.send('检查图片连续显示');
+          await f.waitPending(1);
+          const image = f.page
+            .locator('[id^="message-"]')
+            .getByRole('img', { name: 'image-send.png', exact: true });
+          await image.waitFor();
+          expect(await image.getAttribute('src')).toBe(originalPreview);
+          expect(
+            await f.page.getByText('上传中', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .inputValue(),
+          ).toBe('');
+          const before = await image.boundingBox();
+          expect(before!.width / before!.height).toBeCloseTo(2, 1);
+          await f.page.evaluate(() => {
+            const state = {
+              running: true,
+              blanks: 0,
+              frames: 0,
+              failed: [] as unknown[],
+            };
+            Object.assign(window, { imageSendObservation: state });
+            const check = () => {
+              if (!state.running) return;
+              const img = document.querySelector<HTMLImageElement>(
+                '[id^="message-"] img[alt="image-send.png"]',
+              );
+              state.frames++;
+              if (!img || !img.complete || img.naturalWidth !== 640) {
+                state.blanks++;
+                state.failed.push({
+                  src: img?.src,
+                  complete: img?.complete,
+                  width: img?.naturalWidth,
+                  id: img?.closest('[id]')?.id,
+                });
+              }
+              requestAnimationFrame(check);
+            };
+            requestAnimationFrame(check);
+          });
+          await f.respond(0);
+          await f.waitPending(2);
+          expect(signs).toBe(0);
+          await f.respond(1);
+          await expect.poll(() => signs).toBe(1);
+          expect(await image.getAttribute('src')).toBe(originalPreview);
+          expect(
+            await f.page.getByText('正在加载图片…', { exact: true }).count(),
+          ).toBe(0);
+          const admitted = await image.boundingBox();
+          expect(admitted!.width).toBe(before!.width);
+          expect(admitted!.height).toBe(before!.height);
+          release();
+          await expect
+            .poll(() => image.getAttribute('src'))
+            .not.toBe(originalPreview);
+          await f.page.waitForFunction(
+            () =>
+              (
+                window as unknown as {
+                  imageSendObservation: { frames: number };
+                }
+              ).imageSendObservation.frames >= 15,
+          );
+          const observation = await f.page.evaluate(() => {
+            const state = (
+              window as unknown as {
+                imageSendObservation: {
+                  running: boolean;
+                  blanks: number;
+                  frames: number;
+                };
+              }
+            ).imageSendObservation;
+            state.running = false;
+            return state;
+          });
+          expect(observation, JSON.stringify(observation)).toMatchObject({
+            blanks: 0,
+          });
+          expect(signs).toBe(1); // acknowledgement + history refresh share the native cache.
+          expect(
+            f.writes.filter((path) => path.endsWith('/attachments')),
+          ).toHaveLength(1);
+          expect(
+            f.writes.filter((path) => path.endsWith('/messages')),
+          ).toHaveLength(1);
+          await image.click();
+          await f.page.getByRole('dialog', { name: '图片预览' }).waitFor();
+          await f.page.keyboard.press('Escape');
+          expect(
+            await f.page.getByRole('dialog', { name: '图片预览' }).count(),
+          ).toBe(0);
+          if (width === 390)
+            await f.page
+              .getByRole('button', { name: '展开侧边栏', exact: true })
+              .click();
+          await f.choose(B);
+          expect(
+            await f.page
+              .getByRole('img', { name: 'image-send.png', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(f.errors).toEqual([]);
+        } finally {
+          release();
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
+    it('restores image and text on upload failure, then retries the attachment', async () => {
+      const f = await fixture({ uploadPending: true });
+      try {
+        await imageDraft(f.page);
+        await f.send('上传失败后重试');
+        await f.waitPending(1);
+        await f.respond(0, false);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('上传失败后重试');
+        expect(
+          await f.page
+            .getByRole('group', { name: '待发送附件' })
+            .getByRole('img')
+            .evaluate(
+              (img: HTMLImageElement) =>
+                img.complete && img.naturalWidth === 640,
+            ),
+        ).toBe(true);
+        await f.page.getByRole('button', { name: '重试', exact: true }).click();
+        await f.send('上传失败后重试');
+        await f.waitPending(2);
+        expect(f.pending[1]!.path).toContain('/attachments');
+        expect(f.pending[1]!.body.contentBase64).toBe(
+          f.pending[0]!.body.contentBase64,
+        );
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    it('keeps an image submission in the pending queue during upload without creating another assistant turn', async () => {
+      const f = await fixture({ running: true, uploadPending: true });
+      try {
+        await imageDraft(f.page);
+        await f.send('图片排到下一轮');
+        await f.waitPending(1);
+        const queue = f.page.locator('[data-queue-dock]');
+        await queue.getByText(/图片排到下一轮/).waitFor();
+        expect(
+          await f.page.locator('[id^="message-optimistic-user:"]').count(),
+        ).toBe(0);
+        expect(
+          await f.page.locator('[id^="message-optimistic-assistant:"]').count(),
+        ).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    it('restores an image after failed message admission and retries without uploading it again', async () => {
+      const f = await fixture({ uploadPending: true, immediateReply: true });
+      try {
+        const data = await imageDraft(f.page);
+        await f.page.route('**/api/v1/files/*/sign', (route) =>
+          route.fulfill({ json: { url: data } }),
+        );
+        await f.send('保留图片重试');
+        await f.waitPending(1);
+        await f.respond(0);
+        await f.waitPending(2);
+        const clientId = f.pending[1]!.body.clientMessageId;
+        await f.respond(1, false);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('保留图片重试');
+        const rail = f.page.getByRole('group', { name: '待发送附件' });
+        expect(
+          await rail
+            .getByRole('img')
+            .evaluate(
+              (img: HTMLImageElement) =>
+                img.complete && img.naturalWidth === 640,
+            ),
+        ).toBe(true);
+        expect(
+          await f.page.locator('[id^="message-optimistic-user:"]').count(),
+        ).toBe(0);
+        await f.send('保留图片重试');
+        await f.waitPending(3);
+        expect(f.pending[2]!.path).toContain('/messages');
+        expect(f.pending[2]!.body.clientMessageId).toBe(clientId);
+        await f.respond(2);
+        expect(
+          f.writes.filter((path) => path.endsWith('/attachments')),
+        ).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
 
     it('never displays the previous conversation while loading and switches retained histories without HTTP', async () => {
       const f = await fixture({ delayHistoryB: true });
@@ -706,7 +1004,11 @@ suite(
     it.each([1440, 390])(
       'keeps Rice identity anchored while the submitted turn receives its first status at %ipx',
       async (width) => {
-        const f = await fixture({ immediateReply: true, longHistory: true, width });
+        const f = await fixture({
+          immediateReply: true,
+          longHistory: true,
+          width,
+        });
         try {
           await f.send('A small greeting');
           await f.waitPending(1);

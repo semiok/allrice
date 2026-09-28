@@ -149,3 +149,9 @@ stylesheet from the same 0.1.7-rc.1 commit under dsh-upstream/deliverables.
 Recorded patches replace desktop Host status/actions with Allrice authenticated
 browser actions and keep the native card button clear of legacy panel styles.
 The MIT notice above applies; hashes and patches are in the WebUI ledger.
+
+Message images retain ui-attachment MessageImage/ImageGallery and original CSS,
+ui-conversation HistoricalImageCache and nextPaint from the same 0.1.7-rc.1
+commit. Recorded patches adapt the Allrice session HTTP transport and optional
+image dimensions, and decode durable bytes before releasing the preview. The
+DeepSeek MIT notice above applies; source and patch hashes are in the WebUI ledger.

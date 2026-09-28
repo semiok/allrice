@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -73,6 +74,8 @@ import frameUi from './dsh-upstream/AppFrame.module.css';
 import { EmployeeDetailsDialog } from './employee-details-dialog';
 import styles from './dsh-saas.module.css';
 import { WorkspaceFilePickerDialog } from './workspace-file-picker-dialog';
+import { createMessageImageCache } from './message-image-cache';
+import { nextPaint } from './dsh-upstream/images/next-paint';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
 import { useBridgeReleases } from './bridge-releases';
@@ -100,6 +103,15 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [submission, setSubmission] = useState<{
+    scope: string;
+    sessionId: string | null;
+    queued: boolean;
+    user: Message;
+    assistant: Message;
+    preparing: boolean;
+  } | null>(null);
+  const [imageCache] = useState(createMessageImageCache);
   const [sessionReferences, setSessionReferences] = useState<
     SessionReference[]
   >([]);
@@ -173,6 +185,47 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const imageScope = `${settingsScope}/${activeId}`;
+  const messageImages = useMemo(
+    () => ({
+      load: imageCache.loader(imageScope, tenantHeaders),
+      reference: (attachment: Attachment) =>
+        imageCache.reference(imageScope, attachment),
+    }),
+    [imageCache, imageScope, tenantHeaders],
+  );
+  useEffect(
+    () => () => imageCache.release(imageScope),
+    [imageCache, imageScope],
+  );
+  useEffect(() => () => imageCache.dispose(), [imageCache, settingsScope]);
+  const visibleSubmission =
+    submission?.scope === settingsScope && submission.sessionId === activeId
+      ? submission
+      : null;
+  const transcriptMessages =
+    visibleSubmission && !visibleSubmission.queued
+      ? [
+          ...(history?.messages ?? []),
+          visibleSubmission.user,
+          ...(visibleSubmission.preparing ? [] : [visibleSubmission.assistant]),
+        ]
+      : (history?.messages ?? []);
+  const queuedMessages = [
+    ...(history?.queuedMessages ?? []),
+    ...(visibleSubmission?.queued
+      ? [
+          {
+            id: visibleSubmission.user.id,
+            runId: '',
+            text: visibleSubmission.user.content.text,
+            attachments: visibleSubmission.user.attachments,
+            sessionReferences: visibleSubmission.user.content.sessionReferences,
+            createdAt: visibleSubmission.user.createdAt,
+          },
+        ]
+      : []),
+  ];
   useEffect(() => {
     setSessionReferences([]);
     setReferencePickerOpen(false);
@@ -230,6 +283,7 @@ export function ChatFlowClient({
       if (sessionId !== null && captureSelection().sessionId === sessionId)
         return;
       setActiveId(sessionId, sessionId === null);
+      setSubmission(null);
       setBusy(false);
       setQuestionBusy(false);
       setError('');
@@ -493,11 +547,43 @@ export function ChatFlowClient({
     setAtTranscriptBottom(true);
     setBusy(true);
     setError('');
+    const createdAt = new Date().toISOString();
+    const echo = {
+      scope: settingsScope,
+      sessionId: activeId,
+      queued: isRunning,
+      preparing: true,
+      user: {
+        id: optimisticUserId,
+        role: 'user' as const,
+        content: { text, sessionReferences: draftReferences },
+        status: 'pending' as const,
+        runId: null,
+        createdAt,
+        attachments: draftAttachments,
+      },
+      assistant: {
+        id: optimisticAssistantId,
+        role: 'assistant' as const,
+        content: { text: '思考中…' },
+        status: 'pending' as const,
+        runId: null,
+        createdAt,
+      },
+    };
+    // DSH submission echo: paint local previews before any file serialization
+    // or network admission. Draft attachment ownership remains available on error.
+    setSubmission(echo);
+    setDraft('');
+    setSessionReferences([]);
     try {
-      const sessionId = activeId ?? (await createSession(draft));
-      if (!sessionId) return;
+      await nextPaint();
+      if (!action.current()) return;
+      const sessionId = activeId ?? (await createSession(text));
+      if (!sessionId) throw new Error('创建会话失败，请重试');
       if (!activeId && !action.adoptCreatedSession(sessionId)) return;
       if (!action.current()) return;
+      setSubmission({ ...echo, sessionId });
       const mode = 'follow_up' as const;
       const uploadResults = await Promise.allSettled(
         draftAttachments.map((attachment) =>
@@ -542,36 +628,7 @@ export function ChatFlowClient({
       );
       if (!action.current()) return;
       clientMessageId = retry.id;
-      setDraft('');
-      const createdAt = new Date().toISOString();
-      if (!isRunning)
-        setHistory((current) =>
-          current && current.session.id === sessionId
-            ? {
-                ...current,
-                messages: [
-                  ...current.messages,
-                  {
-                    id: optimisticUserId,
-                    role: 'user',
-                    content: { text, sessionReferences: draftReferences },
-                    status: 'completed',
-                    runId: null,
-                    createdAt,
-                    attachments: messageAttachments,
-                  },
-                  {
-                    id: optimisticAssistantId,
-                    role: 'assistant',
-                    content: { text: '思考中…' },
-                    status: 'pending',
-                    runId: null,
-                    createdAt,
-                  },
-                ],
-              }
-            : current,
-        );
+      setSubmission({ ...echo, sessionId, preparing: false });
       const result = await readJson<{
         run: { id: string };
         fallbackRunId: string | null;
@@ -593,7 +650,13 @@ export function ChatFlowClient({
       );
       retry.confirmed();
       if (!action.current()) return;
-      clearPendingAttachments();
+      const retainedPreviews = imageCache.handoff(
+        `${settingsScope}/${sessionId}`,
+        tenantHeaders,
+        messageAttachments,
+      );
+      clearPendingAttachments(retainedPreviews);
+      setSubmission(null);
       setSessionReferences([]);
       setHistory((current) => {
         if (!current || current.session.id !== sessionId) return current;
@@ -611,7 +674,13 @@ export function ChatFlowClient({
             ...current,
             messages: [
               ...messages,
-              result.userMessage,
+              {
+                ...result.userMessage,
+                attachments: messageAttachments.map((attachment) => ({
+                  ...attachment,
+                  previewUrl: undefined,
+                })),
+              },
               { ...result.assistantMessage, runId: result.run.id },
             ],
           };
@@ -627,7 +696,10 @@ export function ChatFlowClient({
               id: result.userMessage.id,
               runId: result.fallbackRunId ?? result.run.id,
               text,
-              attachments: messageAttachments,
+              attachments: messageAttachments.map((attachment) => ({
+                ...attachment,
+                previewUrl: undefined,
+              })),
               sessionReferences: draftReferences,
               createdAt: result.userMessage.createdAt,
             },
@@ -640,18 +712,7 @@ export function ChatFlowClient({
       void interactions.reload();
     } catch (cause) {
       if (!action.current()) return;
-      setHistory((current) =>
-        current
-          ? {
-              ...current,
-              messages: current.messages.filter(
-                (message) =>
-                  message.id !== optimisticUserId &&
-                  message.id !== optimisticAssistantId,
-              ),
-            }
-          : current,
-      );
+      setSubmission(null);
       setDraft(text);
       setSessionReferences(draftReferences);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
@@ -939,11 +1000,12 @@ export function ChatFlowClient({
         : left.occurredAt.localeCompare(right.occurredAt),
     )
     .at(-1);
-  const historyLoading = activeId !== null && history === null;
+  const historyLoading =
+    activeId !== null && history === null && !visibleSubmission;
   const isEmptyConversation =
     !sessionArchived &&
     !historyLoading &&
-    !history?.messages.length &&
+    !transcriptMessages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
   const recoverableRunView = [...activeRunMessages]
@@ -1009,7 +1071,13 @@ export function ChatFlowClient({
       onSendMessage={sendMessage}
       onUploadAttachments={uploadAttachments}
       onUploadVisibilityChange={setUploadVisibility}
-      pendingAttachments={pendingAttachments}
+      pendingAttachments={
+        visibleSubmission
+          ? pendingAttachments.filter(
+              (file) => !file.mediaType.startsWith('image/'),
+            )
+          : pendingAttachments
+      }
       uploadVisibility={uploadVisibility}
     />
   );
@@ -1372,7 +1440,8 @@ export function ChatFlowClient({
                     assistantTrees={assistants.trees}
                     runTimings={interactions.data?.runTimings}
                     onAssistantChanged={assistants.reload}
-                    messages={history?.messages ?? []}
+                    messages={transcriptMessages}
+                    messageImages={messageImages}
                     onLoadRunTrace={loadRunTrace}
                     onRecoverRun={recoverRun}
                     onScrollToBottom={scrollToTranscriptBottom}
@@ -1402,7 +1471,7 @@ export function ChatFlowClient({
                 />
                 <QueuedMessagesDock
                   key={`${workspace.organizationId}/${activeId}`}
-                  items={sessionArchived ? [] : (history?.queuedMessages ?? [])}
+                  items={sessionArchived ? [] : queuedMessages}
                   busy={busy}
                   canEdit={
                     !draft.trim() &&

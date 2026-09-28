@@ -137,6 +137,8 @@ export interface Attachment {
   mediaType: string;
   sizeBytes: number;
   previewUrl?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface PendingAttachment extends Attachment {
