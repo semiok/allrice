@@ -23,6 +23,7 @@ import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
+import { AssistantHistoryButton } from './assistant-history-button';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
@@ -1327,12 +1328,10 @@ export function ChatFlowClient({
                   <p role="status">{interactions.error}</p>
                 ) : null}
                 {workbenchEnabled && assistants.hasMore ? (
-                  <button
-                    type="button"
-                    onClick={() => void assistants.loadMore()}
-                  >
-                    加载更早的助手任务记录
-                  </button>
+                  <AssistantHistoryButton
+                    key={activeId}
+                    onLoadMore={assistants.loadMore}
+                  />
                 ) : null}
                 <MessageFeedbackProvider
                   readOnly={sessionArchived}

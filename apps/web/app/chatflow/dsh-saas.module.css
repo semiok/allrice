@@ -362,7 +362,82 @@ header.conversationHeader::after {
 }
 
 .employeeConversation .employeeSend {
-  color: var(--employee-foreground);
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  transform: none;
+  color: var(--employee-avatar-foreground, #fff);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.employeeConversation .employeeSend svg {
+  width: 24px;
+  height: 24px;
+}
+
+.employeeConversation .employeeSend:disabled {
+  opacity: 1;
+  background: color-mix(
+    in srgb,
+    var(--employee-end) 15%,
+    var(--dsw-specific-input-major)
+  );
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.assistantHistoryRow {
+  display: flex;
+  justify-content: center;
+  padding: 10px 16px 16px;
+}
+
+.assistantHistoryButton {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.assistantHistoryButton:hover:not(:disabled) {
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 8%,
+    var(--dsw-specific-input-major)
+  );
+  color: var(--dsw-alias-label-primary);
+}
+
+.assistantHistoryButton:disabled {
+  cursor: default;
+}
+
+@media (pointer: coarse) {
+  .assistantHistoryButton {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .employeeConversation .employeeSend,
+  .assistantHistoryButton {
+    transition: none;
+  }
 }
 
 .emptyStage {
