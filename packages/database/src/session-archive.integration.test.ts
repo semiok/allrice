@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
@@ -41,6 +42,58 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await fixture?.close();
+  });
+  it('repairs publication timestamps from actual messages while preserving user edits and empty sessions', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const empty = await createChatSession(f.owner, {
+      workspaceId: f.workspace,
+      title: 'Empty conversation',
+    });
+    const renamed = await createChatSession(f.owner, {
+      workspaceId: f.workspace,
+      title: 'Renamed conversation',
+    });
+    const untouched = await createChatSession(f.owner, {
+      workspaceId: f.workspace,
+      title: 'Recent conversation',
+    });
+    const old = '2026-08-01T00:00:00.000Z';
+    const messageAt = '2026-08-10T00:00:00.000Z';
+    const editAt = '2026-08-20T00:00:00.000Z';
+    const dirtyAt = '2026-09-01T00:00:00.000Z';
+    await fixture.db`update allrice_chat_sessions set created_at=${old},updated_at=${dirtyAt} where id in ${fixture.db([f.session.id, empty.id, renamed.id])}`;
+    await fixture.db`update allrice_messages set created_at=${messageAt} where session_id=${f.session.id}`;
+    await fixture.db`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata,occurred_at)
+      values(${f.org},${f.workspace},${f.user},'session.update','chat_session',${renamed.id},'allowed','resource_owner',${randomUUID()},'{}',${editAt})`;
+    const migration = await readFile(
+      new URL(
+        '../migrations/0120_session_activity_recency.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    await fixture.db.begin((tx) => tx.unsafe(migration));
+    const page = await listChatSessions(f.owner, f.workspace);
+    expect(page.sessions.map((s) => s.id)).toEqual([
+      untouched.id,
+      renamed.id,
+      f.session.id,
+      empty.id,
+    ]);
+    expect(page.sessions.map((s) => s.updatedAt)).toEqual([
+      untouched.updatedAt,
+      editAt,
+      messageAt,
+      old,
+    ]);
+    expect(
+      (await getChatSessionHistory(f.owner, f.workspace, f.session.id)).session
+        .updatedAt,
+    ).toBe(messageAt);
+    await fixture.db.begin((tx) => tx.unsafe(migration));
+    expect((await listChatSessions(f.owner, f.workspace)).sessions).toEqual(
+      page.sessions,
+    );
   });
   it('archives without deleting history, reads artifacts, rejects sends, restores with owner boundaries', async () => {
     const f = await createExperienceFixture(fixture.db);
