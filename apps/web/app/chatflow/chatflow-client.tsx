@@ -379,7 +379,7 @@ export function ChatFlowClient({
   }, [activeId, history?.messages.length, scrollToTranscriptBottom]);
 
   const {
-    addWorkspaceFile,
+    addWorkspaceFiles,
     attachmentPreview,
     clearPendingAttachments,
     deliverableVersions,
@@ -1522,8 +1522,17 @@ export function ChatFlowClient({
         />
       )}
       <WorkspaceFilePickerDialog
+        key={`${workspace.workspaceId}:${activeId ?? 'draft'}`}
         files={workspaceFiles}
-        onAddFile={addWorkspaceFile}
+        employeeName={activeEmployeeName}
+        accentStyle={employeeAccentStyle(
+          activeEmployeeName,
+          activeEmployeeColor,
+        )}
+        attachedFileIds={pendingAttachments.map(
+          (file) => file.persistedId ?? file.id,
+        )}
+        onAddFiles={addWorkspaceFiles}
         onClose={() => setFilePickerOpen(false)}
         onOpenVersionHistory={openVersionHistory}
         open={filePickerOpen}
@@ -1532,7 +1541,10 @@ export function ChatFlowClient({
       <DeliverableVersionHistoryDialog
         file={versionHistoryFile}
         loading={versionHistoryLoading}
-        onClose={() => setVersionHistoryFile(null)}
+        onClose={() => {
+          setVersionHistoryFile(null);
+          setFilePickerOpen(true);
+        }}
         versions={deliverableVersions}
       />
 
