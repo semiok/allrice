@@ -1,18 +1,22 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
 import { access } from 'node:fs/promises';
 import {
   createServer as createHttpServer,
   request as httpRequest,
   type IncomingHttpHeaders,
 } from 'node:http';
-import { request as httpsRequest } from 'node:https';
 import { connect as netConnect, isIP, type Socket } from 'node:net';
 
 import { chromium, type Page } from 'playwright-core';
 
 import { HandlerError } from './errors.js';
-import { isPublicWebAddress, validatePublicWebUrl } from './web-fetch.js';
+import {
+  isPublicWebAddress,
+  validatePublicWebUrl,
+  resolvePublicWebHostname,
+  type HostnameAddress,
+  type PublicWebDnsDependencies,
+} from './public-web-network.js';
 
 const defaultMaximumCharacters = 30_000;
 const maximumAllowedCharacters = 100_000;
@@ -26,10 +30,6 @@ const maximumSnapshotNodes = 20_000;
 const maximumTitleCharacters = 500;
 const managedBrowserViewport = { width: 1_280, height: 720 } as const;
 const maximumScreenshotBytes = 5_000_000;
-const dnsOverHttpsTimeoutMs = 5_000;
-const maximumDnsOverHttpsResponseBytes = 64_000;
-const cloudflareDnsOverHttpsAddress = '1.1.1.1';
-const cloudflareDnsOverHttpsHostname = 'cloudflare-dns.com';
 
 export type ManagedBrowserStep =
   | {
@@ -108,16 +108,6 @@ export interface ManagedBrowserDependencies {
   runner?: ManagedBrowserRunner;
   assertHostnamePublic?: (hostname: string) => Promise<void>;
   resolveHostnamePublic?: (hostname: string) => Promise<HostnameAddress[]>;
-}
-
-export interface HostnameAddress {
-  address: string;
-  family?: number;
-}
-
-interface ManagedBrowserHostnameValidationDependencies {
-  lookupHostname?: (hostname: string) => Promise<HostnameAddress[]>;
-  lookupDnsOverHttps?: (hostname: string) => Promise<string[]>;
 }
 
 function browserError(code: string, message: string, retryable = false) {
@@ -208,189 +198,29 @@ export function normalizeManagedBrowserSteps(
   });
 }
 
-function ipv4Number(address: string) {
-  const parts = address.split('.').map(Number);
-  if (
-    parts.length !== 4 ||
-    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
-  ) {
-    return null;
-  }
-  return (
-    (((parts[0]! << 24) >>> 0) +
-      (parts[1]! << 16) +
-      (parts[2]! << 8) +
-      parts[3]!) >>>
-    0
-  );
-}
-
-/**
- * RFC 2544 reserves 198.18.0.0/15 for benchmark tests. Some local TUN
- * implementations deliberately synthesize addresses from this range while
- * proxying an otherwise public hostname. Literal uses of the range remain
- * blocked; this predicate is only used to decide whether an independent DNS
- * confirmation may be attempted for a hostname.
- */
-export function isRfc2544SyntheticAddress(address: string) {
-  const value = ipv4Number(address);
-  const base = ipv4Number('198.18.0.0')!;
-  return value !== null && (value & 0xfffe0000) >>> 0 === base;
-}
-
-interface DnsOverHttpsResponse {
-  Status?: number;
-  Answer?: Array<{
-    type?: number;
-    data?: string;
-  }>;
-}
-
-async function queryCloudflareDnsOverHttps(
-  hostname: string,
-  type: 'A' | 'AAAA',
-) {
-  return new Promise<string[]>((resolve, reject) => {
-    const path = `/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`;
-    const request = httpsRequest(
-      {
-        protocol: 'https:',
-        hostname: cloudflareDnsOverHttpsAddress,
-        port: 443,
-        servername: cloudflareDnsOverHttpsHostname,
-        path,
-        method: 'GET',
-        headers: {
-          accept: 'application/dns-json',
-          host: cloudflareDnsOverHttpsHostname,
-          'user-agent': 'AllRice-ManagedBrowser-DNS/1.0',
-        },
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on('data', (chunk: Buffer) => {
-          size += chunk.byteLength;
-          if (size > maximumDnsOverHttpsResponseBytes) {
-            request.destroy(new Error('DNS-over-HTTPS response is too large'));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on('end', () => {
-          if (response.statusCode !== 200) {
-            reject(
-              new Error(
-                `DNS-over-HTTPS returned HTTP ${response.statusCode ?? 0}`,
-              ),
-            );
-            return;
-          }
-          try {
-            const payload = JSON.parse(
-              Buffer.concat(chunks).toString('utf8'),
-            ) as DnsOverHttpsResponse;
-            if (payload.Status !== 0 && payload.Status !== 3) {
-              reject(
-                new Error(
-                  `DNS-over-HTTPS returned DNS status ${payload.Status ?? -1}`,
-                ),
-              );
-              return;
-            }
-            resolve(
-              (payload.Answer ?? [])
-                .filter((answer) => answer.type === (type === 'A' ? 1 : 28))
-                .map((answer) => answer.data?.trim() ?? ''),
-            );
-          } catch (error) {
-            reject(error);
-          }
-        });
-      },
-    );
-    request.setTimeout(dnsOverHttpsTimeoutMs, () => {
-      request.destroy(new Error('DNS-over-HTTPS request timed out'));
-    });
-    request.on('error', reject);
-    request.end();
-  });
-}
-
-async function lookupPublicDnsOverHttps(hostname: string) {
-  const answers = await Promise.all([
-    queryCloudflareDnsOverHttps(hostname, 'A'),
-    queryCloudflareDnsOverHttps(hostname, 'AAAA'),
-  ]);
-  return answers.flat();
-}
+export { isRfc2544SyntheticAddress } from './public-web-network.js';
+export type { HostnameAddress } from './public-web-network.js';
 
 export async function resolveManagedBrowserHostnamePublic(
   hostname: string,
-  dependencies: ManagedBrowserHostnameValidationDependencies = {},
+  dependencies: PublicWebDnsDependencies = {},
 ) {
-  if (isIP(hostname)) {
-    if (!isPublicWebAddress(hostname)) {
-      throw browserError(
-        'BROWSER_ADDRESS_BLOCKED',
-        '浏览器任务不允许访问内部网络地址',
-      );
-    }
-    return [{ address: hostname, family: isIP(hostname) }];
-  }
-  const addresses = await (
-    dependencies.lookupHostname ??
-    ((value: string) => lookup(value, { all: true, verbatim: true }))
-  )(hostname);
-  if (
-    addresses.length &&
-    addresses.every((item) => isPublicWebAddress(item.address))
-  ) {
-    return addresses;
-  }
-
-  const onlyRfc2544SyntheticAddresses =
-    addresses.length > 0 &&
-    addresses.every((item) => isRfc2544SyntheticAddress(item.address));
-  if (!onlyRfc2544SyntheticAddresses) {
-    throw browserError(
-      'BROWSER_ADDRESS_BLOCKED',
-      '浏览器任务域名解析到了非公开网络地址',
-    );
-  }
-
-  let independentAddresses: string[];
   try {
-    independentAddresses = await (
-      dependencies.lookupDnsOverHttps ?? lookupPublicDnsOverHttps
-    )(hostname);
-  } catch {
-    throw browserError(
-      'BROWSER_DNS_VALIDATION_FAILED',
-      '浏览器任务无法独立确认域名的公开网络地址',
-      true,
-    );
+    return await resolvePublicWebHostname(hostname, dependencies);
+  } catch (error) {
+    if (error instanceof HandlerError && error.code.startsWith('WEB_'))
+      throw browserError(
+        error.code.replace('WEB_', 'BROWSER_'),
+        error.message,
+        error.retryable,
+      );
+    throw error;
   }
-  if (
-    !independentAddresses.length ||
-    independentAddresses.some(
-      (address) => !isIP(address) || !isPublicWebAddress(address),
-    )
-  ) {
-    throw browserError(
-      'BROWSER_ADDRESS_BLOCKED',
-      '浏览器任务域名的独立解析包含非公开网络地址',
-    );
-  }
-  return independentAddresses.map((address) => ({
-    address,
-    family: isIP(address),
-  }));
 }
 
 export async function assertManagedBrowserHostnamePublic(
   hostname: string,
-  dependencies: ManagedBrowserHostnameValidationDependencies = {},
+  dependencies: PublicWebDnsDependencies = {},
 ) {
   await resolveManagedBrowserHostnamePublic(hostname, dependencies);
 }

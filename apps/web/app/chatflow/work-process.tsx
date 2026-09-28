@@ -96,13 +96,15 @@ export function WorkProcess({
       ? timing?.resourceWaiting
         ? '等待计算资源…'
         : '等待处理…'
-      : process.active === '正在整理上下文'
-        ? '正在整理上下文…'
-        : process.active
-          ? '执行中…'
-          : streaming
-            ? '回复中…'
-            : '思考中…'
+      : process.active === '等待模型响应'
+        ? '等待模型响应…'
+        : process.active === '正在整理上下文'
+          ? '正在整理上下文…'
+          : process.active
+            ? '执行中…'
+            : streaming
+              ? '回复中…'
+              : '思考中…'
     : failed
       ? (failureTitle ?? '未完成')
       : canceled
