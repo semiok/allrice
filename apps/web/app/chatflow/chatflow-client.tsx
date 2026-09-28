@@ -88,7 +88,6 @@ export function ChatFlowClient({
   workbenchEnabled = false,
   localCommandsEnabled = false,
   localMcpEnabled = false,
-  experienceEnabled = false,
   assistantsEnabled = false,
 }: {
   workbenchEnabled?: boolean;
