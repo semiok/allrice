@@ -44,25 +44,19 @@ export async function readStaticArtifactPreview(
     }
   }
   const policy = runtimeStaticPreviewPolicy(artifact.object.mediaType);
-  if (
-    artifact.object.sizeBytes > 512_000 ||
-    (![
-      'text/plain',
-      'text/markdown',
-      'text/html',
-      'application/json',
-      'image/svg+xml',
-    ].includes(artifact.object.mediaType) &&
-      policy.mode !== 'authenticated_raster')
-  )
-    return {
-      kind: 'download_only',
-      reason: '此格式或文件大小仅支持下载，不在主站执行。',
-    };
-  const bytes = await readArtifactBytes(getStorageAdapter(), artifact.object);
-  if (artifact.kind === 'changeset')
-    return { kind: 'changeset', changeset: parseChangesetBytes(bytes) };
-  if (policy.mode === 'authenticated_raster')
+  if (policy.mode === 'authenticated_raster') {
+    // Generated images can be much larger than text. Match image delivery's
+    // byte limit while retaining immutable-byte and raster dimension checks.
+    if (artifact.object.sizeBytes > 8_000_000)
+      return {
+        kind: 'download_only',
+        reason: '图片超过 8 MB 预览上限，请下载查看。',
+      };
+    const bytes = await readArtifactBytes(
+      getStorageAdapter(),
+      artifact.object,
+      8_000_000,
+    );
     return boundedRaster(bytes, artifact.object.mediaType)
       ? {
           kind: 'image',
@@ -73,6 +67,24 @@ export async function readStaticArtifactPreview(
           kind: 'download_only',
           reason: '图片格式、动画或像素尺寸不符合静态预览限制，请下载查看。',
         };
+  }
+  if (
+    artifact.object.sizeBytes > 512_000 ||
+    ![
+      'text/plain',
+      'text/markdown',
+      'text/html',
+      'application/json',
+      'image/svg+xml',
+    ].includes(artifact.object.mediaType)
+  )
+    return {
+      kind: 'download_only',
+      reason: '此格式或文件大小仅支持下载，不在主站执行。',
+    };
+  const bytes = await readArtifactBytes(getStorageAdapter(), artifact.object);
+  if (artifact.kind === 'changeset')
+    return { kind: 'changeset', changeset: parseChangesetBytes(bytes) };
   try {
     return {
       kind: 'text',

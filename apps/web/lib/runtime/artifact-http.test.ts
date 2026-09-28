@@ -142,6 +142,7 @@ describe('authenticated workbench HTTP boundary', () => {
       { mediaType: 'application/pdf', sizeBytes: 8_000_001 },
       { mediaType: 'application/zip', sizeBytes: 10 },
       { mediaType: 'text/plain', sizeBytes: 512_001 },
+      { mediaType: 'image/png', sizeBytes: 8_000_001 },
     ]) {
       ports.get.mockResolvedValue({ id, kind: 'document', object });
       expect(
@@ -151,6 +152,38 @@ describe('authenticated workbench HTTP boundary', () => {
     }
     expect(ports.read).not.toHaveBeenCalled();
   });
+  it.each([512_001, 8_000_000])(
+    'previews a %i-byte image through the image read limit and rechecks access',
+    async (sizeBytes) => {
+      const object = { mediaType: 'image/png', sizeBytes };
+      ports.get.mockResolvedValue({ id, kind: 'file', object });
+      // The storage port verifies declared size and checksum; this boundary
+      // test checks its image-specific allowance and the returned raster gate.
+      const bytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+        'base64',
+      );
+      ports.read.mockResolvedValue(bytes);
+      const response = await artifactHttp(request(), 'content', sessionId, id);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        kind: 'image',
+        mediaType: 'image/png',
+        base64: bytes.toString('base64'),
+      });
+      expect(ports.read).toHaveBeenCalledWith({}, object, 8_000_000);
+      expect(ports.get).toHaveBeenCalledTimes(2);
+      ports.get
+        .mockResolvedValueOnce({ id, kind: 'file', object })
+        .mockRejectedValueOnce(new ArtifactReviewError('identity_denied'));
+      const denied = await artifactHttp(request(), 'content', sessionId, id);
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).not.toContain(bytes.toString('base64'));
+      bytes.writeUInt32BE(8193, 16);
+      const oversized = await artifactHttp(request(), 'content', sessionId, id);
+      expect(await oversized.json()).toMatchObject({ kind: 'download_only' });
+    },
+  );
   it('returns bounded PDF bytes for the native renderer after rechecking access', async () => {
     const object = { mediaType: 'application/pdf', sizeBytes: 10 };
     ports.get.mockResolvedValue({ id, kind: 'document', object });
