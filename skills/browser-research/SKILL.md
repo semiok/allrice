@@ -1,6 +1,6 @@
 ---
 name: browser-research
-description: 使用隔离的云端托管浏览器读取需要 JavaScript 渲染或少量只读交互的公开网页，保留页面快照、截图和操作时间线作为可核验证据。
+description: 读取需要 JavaScript 渲染或只读交互的公开网页，或按要求获取页面截图。普通搜索和静态页面读取优先使用网页调研；登录和网页写入操作不属于此技能。
 ---
 
 # Browser Research
@@ -13,7 +13,7 @@ Use the approved `browser_run` tool only when a public page needs browser render
 - The requested evidence is behind a public link, expandable section, delayed element, or additional scrolling.
 - The user asks for a browser-backed capture, screenshot, or reproducible page evidence.
 
-Prefer `web_search` and `web_fetch` for ordinary public research. Do not launch a browser merely to repeat evidence those tools already returned successfully.
+Prefer available `web_search` and `web_fetch` tools for ordinary public research. Do not launch a browser merely to repeat evidence those tools already returned successfully. If the user explicitly requests a screenshot or the page is already known to require rendering, start with the browser; do not force a preliminary search or fetch.
 
 ## Workflow
 
