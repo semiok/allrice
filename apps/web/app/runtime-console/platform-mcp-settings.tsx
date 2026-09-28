@@ -4,7 +4,6 @@ import {
   GITHUB_MCP_CALLBACK_PATH,
   type GithubMcpSettings,
 } from '@allrice/contracts';
-import styles from './governance-console.module.css';
 import panelStyles from './platform-mcp-settings.module.css';
 
 export function PlatformMcpSettingsPanel() {
@@ -68,7 +67,7 @@ export function PlatformMcpSettingsPanel() {
   }
   return (
     <section
-      className={`${styles.quota} ${panelStyles.panel}`}
+      className={panelStyles.panel}
       aria-label="应用授权配置"
       id="mcp-apps"
     >
