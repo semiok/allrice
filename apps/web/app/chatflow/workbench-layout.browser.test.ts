@@ -270,6 +270,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       archivedIds: new Set<string>(),
       archiveActive: options.archiveActive ?? false,
       archiveError: false,
+      sessionListError: false,
+      sessionListDelay: null as Promise<void> | null,
+      sessionListRequests: 0,
       sessionPageError: false,
       sessionPageDelay: null as Promise<void> | null,
       sessionPageRequests: [] as string[],
@@ -703,6 +706,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         const offset = Number(url.searchParams.get('cursor') ?? 0);
         const employeeId = url.searchParams.get('employeeAssignmentId');
+        if (!employeeId) {
+          state.sessionListRequests++;
+          if (state.sessionListDelay) await state.sessionListDelay;
+          if (state.sessionListError)
+            return answer(
+              { error: { message: 'Unknown synthetic route' } },
+              503,
+            );
+        }
         if (employeeId) {
           state.sessionPageRequests.push(employeeId);
           if (state.sessionPageDelay) await state.sessionPageDelay;
@@ -6605,6 +6617,83 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([1440, 390, 320])(
+    'keeps a readable retry notice and cached sessions through failed and successful list refreshes at %ipx',
+    async (width) => {
+      const f = await fixture({ width, touch: width < 760 });
+      let release: (() => void) | undefined;
+      try {
+        if (width < 760)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        const sidebar = f.page.locator('#chat-sidebar');
+        const rows = sidebar.locator('[data-row-key^="session:"]');
+        await expect.poll(() => rows.count()).toBeGreaterThan(0);
+        const ids = await rows.evaluateAll((items) =>
+          items.map((item) => item.getAttribute('data-row-key')),
+        );
+        f.state.sessionListError = true;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        const notice = sidebar.getByRole('alert', { name: '会话列表状态' });
+        await notice.getByText('会话暂未更新', { exact: true }).waitFor();
+        expect(await sidebar.getByText('Unknown synthetic route').count()).toBe(
+          0,
+        );
+        expect(await notice.getByText('已保留最近会话').isVisible()).toBe(true);
+        const box = await notice.boundingBox();
+        const sidebarBox = await sidebar.locator('> div').last().boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(sidebarBox!.x);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(
+          sidebarBox!.x + sidebarBox!.width,
+        );
+        for (const succeeds of [false, true]) {
+          f.state.sessionListError = !succeeds;
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          const before = await rows.first().boundingBox();
+          const requests = f.state.sessionListRequests;
+          const retry = notice.getByRole('button', {
+            name: '重新加载会话列表',
+          });
+          if (width < 760)
+            expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(
+              44,
+            );
+          await retry.focus();
+          await f.page.keyboard.press('Enter');
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBe(requests + 1);
+          await notice.getByText('正在更新会话…', { exact: true }).waitFor();
+          expect(await retry.isDisabled()).toBe(true);
+          expect(
+            Math.abs((await rows.first().boundingBox())!.y - before!.y),
+          ).toBeLessThan(1);
+          expect(
+            await rows.evaluateAll((items) =>
+              items.map((item) => item.getAttribute('data-row-key')),
+            ),
+          ).toEqual(ids);
+          release!();
+          f.state.sessionListDelay = null;
+          if (succeeds) await notice.waitFor({ state: 'detached' });
+          else {
+            await notice.getByText('会话暂未更新', { exact: true }).waitFor();
+            expect(await retry.isEnabled()).toBe(true);
+          }
+        }
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        release?.();
+        await f.close();
+      }
+    },
+    30_000,
+  );
 
   it('finds archives beyond the first page and keeps a failed archive visible', async () => {
     const f = await fixture({ archiveCount: 35 });
