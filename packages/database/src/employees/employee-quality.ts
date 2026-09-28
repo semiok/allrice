@@ -443,8 +443,7 @@ export async function updateEmployeeRelease(
       `;
       await transaction`
         update allrice_chat_sessions session
-        set employee_version_id = assignment.employee_version_id,
-          updated_at = now()
+        set employee_version_id = assignment.employee_version_id
         from allrice_employee_assignments assignment
         where assignment.id = session.employee_assignment_id
           and assignment.organization_id = ${context.organizationId}

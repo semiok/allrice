@@ -843,8 +843,7 @@ export async function manageEmployeeAssignments(
     }
     await transaction`
       update allrice_chat_sessions session
-      set employee_version_id = assignment.employee_version_id,
-        updated_at = now()
+      set employee_version_id = assignment.employee_version_id
       from allrice_employee_assignments assignment
       where assignment.id = session.employee_assignment_id
         and assignment.organization_id = ${context.organizationId}
@@ -1008,7 +1007,7 @@ export async function assignEmployeeVersion(
   if (!row) throw new EmployeeHubError('not_found');
   await sql`
     update allrice_chat_sessions
-    set employee_version_id = ${update.employeeVersionId}, updated_at = now()
+    set employee_version_id = ${update.employeeVersionId}
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and employee_assignment_id = ${assignmentId}

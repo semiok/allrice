@@ -61,7 +61,8 @@ export async function synchronizeTenantEmployeeAccess(tx: Tx, scope: Scope) {
         and a.active and not a.is_default and not exists(select 1 from allrice_employee_assignments other
           where other.organization_id=a.organization_id and other.workspace_id=a.workspace_id and other.user_id=a.user_id and other.active and other.is_default)`;
   }
-  await tx`update allrice_chat_sessions s set employee_version_id=a.employee_version_id,updated_at=clock_timestamp()
+  // A new employee version is not conversation activity; preserve sidebar recency.
+  await tx`update allrice_chat_sessions s set employee_version_id=a.employee_version_id
     from allrice_employee_assignments a where s.employee_assignment_id=a.id
       and s.organization_id=${organizationId} and s.workspace_id=${workspaceId} and a.active
       and s.employee_version_id<>a.employee_version_id
