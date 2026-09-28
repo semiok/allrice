@@ -72,6 +72,11 @@ export async function preparePairedBrowserGrant(
       existing.profile.lifetimeMs === 300000 &&
       existing.profile.maximumFileBytes === 1000000;
     if (!upgrade) return;
+    // Heartbeats own the device lock. Defer an upgrade rather than waiting
+    // for a browser action that owns this grant and needs that device.
+    const [available] = await tx`select id from allrice_browser_control_grants
+      where id=${existing.grant_id} and enabled and revoked_at is null for update skip locked`;
+    if (!available) return;
     // Profile identity is immutable. Retire the unused legacy generation and
     // create a new default through the same pairing path below.
     const [active] =
@@ -360,12 +365,8 @@ export async function updateLocalBrowserLoginPreferences(
       join allrice_bridge_devices d on d.id=l.device_id
       where l.grant_id=${UuidSchema.parse(grantId)} and l.organization_id=${ctx.organizationId}
         and l.workspace_id=${ctx.workspaceId} and l.owner_id=${ctx.actor.id} and l.purpose='public'
-        and g.enabled and g.revoked_at is null and d.revoked_at is null for update of d`;
+        and g.enabled and g.revoked_at is null and d.revoked_at is null for update of g`;
     if (!current) throw new RuntimePolicyError('local_browser_grant_denied');
-    const [live] =
-      await tx`select id from allrice_browser_control_grants where id=${grantId}
-      and enabled and revoked_at is null for update`;
-    if (!live) throw new RuntimePolicyError('local_browser_grant_denied');
     const replacement = await installLocalBrowserGrant(
       ctx,
       {
