@@ -139,6 +139,7 @@
   align-items: center;
   gap: 8px;
   flex: none;
+  margin-left: auto;
 }
 .executionBody {
   padding-bottom: 3px;
@@ -344,6 +345,11 @@
     padding: 0;
   }
   .stopLabel {
+    display: none;
+  }
+}
+@container (max-width: 220px) {
+  .executionTitle {
     display: none;
   }
 }
