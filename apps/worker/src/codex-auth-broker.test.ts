@@ -2,10 +2,34 @@ import { describe, expect, it } from 'vitest';
 
 import {
   codexQuotaObservation,
+  codexAuthorizationFailureCode,
   parseDshAuthorizationChallenge,
 } from './codex-auth-broker.js';
 
 describe('Codex authorization broker', () => {
+  it('records an allowlisted failure reason without forwarding OAuth error payloads', () => {
+    expect(
+      codexAuthorizationFailureCode(
+        new Error('codex_authorization_network_unavailable'),
+      ),
+    ).toBe('dsh_openai_codex_authorization_network_unavailable');
+    expect(
+      codexAuthorizationFailureCode(
+        new Error('codex_authorization_service_unavailable'),
+      ),
+    ).toBe('dsh_openai_codex_authorization_service_unavailable');
+    expect(
+      codexAuthorizationFailureCode(
+        new Error(
+          'OpenAI Codex device code request failed with status 429: secret',
+        ),
+      ),
+    ).toBe('dsh_openai_codex_authorization_rate_limited');
+    expect(
+      codexAuthorizationFailureCode(new Error('secret access_token')),
+    ).toBe('dsh_openai_codex_authorization_failed');
+  });
+
   it.each([undefined, null, {}, { accessToken: 'must-not-escape' }])(
     'quota transport/schema error must not become an account clear: %j',
     (value) => {
