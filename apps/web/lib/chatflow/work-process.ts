@@ -128,7 +128,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
         item.kind === 'think'
           ? '分析任务与处理步骤'
           : item.kind === 'compaction'
-            ? '整理会话记录'
+            ? (readableSummary(item.title) ?? '整理会话记录')
             : item.kind === 'todo'
               ? '更新工作计划'
               : toolActivityLabel(
@@ -157,7 +157,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
   const active = [...items]
     .filter(
       (item) =>
-        ['tool', 'search'].includes(item.kind) &&
+        ['tool', 'search', 'compaction'].includes(item.kind) &&
         ['started', 'updated'].includes(item.status),
     )
     .sort(
@@ -167,10 +167,12 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     steps,
     failed: steps.filter((step) => step.status === 'failed').length,
     active: active
-      ? toolActivityLabel(
-          active.toolName ?? active.title,
-          active.kind === 'search',
-        )
+      ? active.kind === 'compaction'
+        ? '正在整理上下文'
+        : toolActivityLabel(
+            active.toolName ?? active.title,
+            active.kind === 'search',
+          )
       : undefined,
   };
 }

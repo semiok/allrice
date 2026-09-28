@@ -35,6 +35,7 @@ import type {
 import type { DshNotification } from './dsh-protocol-client.js';
 import {
   nativeEventView,
+  nativeContextView,
   record,
   shortText,
   sourceMetadata,
@@ -848,6 +849,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
     >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
+      if (notification.method === 'session.context') {
+        const view = nativeContextView(notification.params);
+        if (view) await input.onNative(view);
+        return;
+      }
       if (notification.method === 'session.user-question') {
         const questions = Array.isArray(notification.params.questions)
           ? notification.params.questions
@@ -957,6 +963,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const event = record(notification.params.event);
       const data = record(event?.data);
       if (!event || !data) return;
+      // Native compaction replaces context history, not execution activity.
+      if (record(event.surfaceOp)?.op === 'replace') return;
       const source = sourceMetadata(event);
       if (event.type === 'allrice/wait/checkpoint' && parking) {
         parkingQuestion = true;

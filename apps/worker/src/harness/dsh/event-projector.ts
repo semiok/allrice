@@ -221,19 +221,57 @@ export function nativeEventView(event: Record<string, unknown>) {
           ? ('started' as const)
           : data.error
             ? ('failed' as const)
-            : phase === 'end'
+            : phase === 'end' || phase === 'prune'
               ? ('completed' as const)
               : ('updated' as const),
-      label:
-        phase === 'start'
-          ? '正在整理会话上下文'
+      label: data.error
+        ? '上下文整理未完成'
+        : phase === 'start'
+          ? '正在整理上下文'
           : phase === 'end'
-            ? '会话上下文已整理'
-            : '上下文摘要已生成',
+            ? '上下文已整理'
+            : phase === 'prune'
+              ? '工具结果已精简'
+              : '上下文摘要已生成',
       ...source,
     };
   }
   return null;
+}
+
+export function nativeContextView(params: Record<string, unknown>) {
+  const pressure = record(params.contextPressure);
+  const counts = Object.fromEntries(
+    ['pressureTokens', 'projectedTokens', 'contextWindow']
+      .filter(
+        (key) =>
+          typeof pressure?.[key] === 'number' &&
+          Number.isInteger(pressure[key]) &&
+          pressure[key] >= 0,
+      )
+      .map((key) => [key, pressure![key] as number]),
+  );
+  if (
+    !counts.contextWindow ||
+    (counts.projectedTokens === undefined &&
+      counts.pressureTokens === undefined)
+  )
+    return null;
+  return {
+    type: 'native.event' as const,
+    presentation: 'context' as const,
+    status: 'info' as const,
+    label: '上下文占用',
+    sourceEventType: 'session/projection',
+    sourcePayload: {
+      ...counts,
+      ...(typeof params.asOfSeq === 'number' &&
+      Number.isInteger(params.asOfSeq) &&
+      params.asOfSeq >= 0
+        ? { asOfSeq: params.asOfSeq }
+        : {}),
+    },
+  };
 }
 
 export function textBlocks(value: unknown) {
