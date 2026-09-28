@@ -50,7 +50,7 @@ export function mcpNetworkError(error: unknown, phase: Phase = 'initialize') {
 export function mcpRequestDiagnostics(request: typeof fetch) {
   let phase: Phase = 'initialize';
   let failure: McpError | undefined;
-  const fetch: typeof request = async (url, init) => {
+  const monitoredFetch: typeof request = async (url, init) => {
     let method: unknown;
     try {
       method = JSON.parse(
@@ -124,7 +124,7 @@ export function mcpRequestDiagnostics(request: typeof fetch) {
     }
   };
   return {
-    fetch,
+    fetch: monitoredFetch,
     error(error: unknown): McpError {
       return (
         failure ??
