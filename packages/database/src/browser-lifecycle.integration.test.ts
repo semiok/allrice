@@ -9,6 +9,7 @@ import { closeDatabase, getDatabase } from './core/client.ts';
 import {
   createManagedBrowserTask,
   startManagedBrowserTask,
+  completeManagedBrowserTask,
 } from './p1-runtime.ts';
 import { completeJob, failJob, maintainQueue } from './queue.ts';
 
@@ -188,9 +189,14 @@ function taskInput(
 async function taskState(taskId: string) {
   const sql = getDatabase();
   const rows = await sql<
-    { status: string; error_code: string | null; job_attempt: number }[]
+    {
+      status: string;
+      error_code: string | null;
+      job_attempt: number;
+      started_at: Date | null;
+    }[]
   >`
-    select status, error_code, job_attempt
+    select status, error_code, job_attempt, started_at
     from allrice_managed_browser_tasks
     where id = ${taskId}
   `;
@@ -286,7 +292,7 @@ describeDatabase(
       ).rejects.toMatchObject({ code: 'not_found' });
     });
 
-    it('serializes target capacity and fails the excess task closed', async () => {
+    it('keeps excess tasks queued and admits them in order when capacity is released', async () => {
       const scenario = await seedScenario({ concurrencyLimit: 1 });
       const tasks = await Promise.all([
         createManagedBrowserTask(
@@ -317,12 +323,92 @@ describeDatabase(
       ).toMatchObject({ reason: { code: 'BROWSER_TARGET_BUSY' } });
       const states = await Promise.all(tasks.map((task) => taskState(task.id)));
       expect(states.map((state) => state?.status).sort()).toEqual([
-        'failed',
+        'queued',
         'running',
       ]);
       expect(
-        states.find((state) => state?.status === 'failed')?.error_code,
-      ).toBe('BROWSER_TARGET_BUSY');
+        states.find((state) => state?.status === 'queued')?.error_code,
+      ).toBeNull();
+      const running =
+        tasks[states.findIndex((state) => state?.status === 'running')]!;
+      const waiting =
+        tasks[states.findIndex((state) => state?.status === 'queued')]!;
+      const later = await createManagedBrowserTask(
+        scenario.context,
+        taskInput(scenario, 'capacity-3'),
+        scenario.lease,
+      );
+      await completeManagedBrowserTask({
+        context: scenario.context,
+        lease: scenario.lease,
+        taskId: running.id,
+        status: 'canceled',
+      });
+      await expect(
+        startManagedBrowserTask({
+          context: scenario.context,
+          lease: scenario.lease,
+          taskId: later.id,
+        }),
+      ).rejects.toMatchObject({ code: 'BROWSER_TARGET_BUSY' });
+      await startManagedBrowserTask({
+        context: scenario.context,
+        lease: scenario.lease,
+        taskId: waiting.id,
+      });
+      expect(await taskState(waiting.id)).toMatchObject({
+        status: 'running',
+        error_code: null,
+      });
+      await completeManagedBrowserTask({
+        context: scenario.context,
+        lease: scenario.lease,
+        taskId: waiting.id,
+        status: 'canceled',
+      });
+      await startManagedBrowserTask({
+        context: scenario.context,
+        lease: scenario.lease,
+        taskId: later.id,
+      });
+      expect(await taskState(later.id)).toMatchObject({
+        status: 'running',
+        error_code: null,
+      });
+    });
+
+    it('cancels a queued task without starting it or permitting a success receipt', async () => {
+      const scenario = await seedScenario();
+      const task = await createManagedBrowserTask(
+        scenario.context,
+        taskInput(scenario, 'cancel-queued'),
+        scenario.lease,
+      );
+      await expect(
+        completeManagedBrowserTask({
+          context: scenario.context,
+          lease: scenario.lease,
+          taskId: task.id,
+          status: 'succeeded',
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await completeManagedBrowserTask({
+        context: scenario.context,
+        lease: scenario.lease,
+        taskId: task.id,
+        status: 'canceled',
+      });
+      expect(await taskState(task.id)).toMatchObject({
+        status: 'canceled',
+        started_at: null,
+      });
+      await expect(
+        startManagedBrowserTask({
+          context: scenario.context,
+          lease: scenario.lease,
+          taskId: task.id,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
     });
 
     it('enforces the target hard deadline from task creation time', async () => {
