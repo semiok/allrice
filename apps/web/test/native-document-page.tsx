@@ -3,6 +3,7 @@ import { StrictMode, useState } from 'react';
 import { DocumentToolbar } from '../app/chatflow/document-reader';
 import { NativeDocumentPreview } from '../app/chatflow/native-document-preview';
 import { parseArtifactPreview } from '../lib/chatflow/workbench-model';
+import workbench from '../app/chatflow/workbench.module.css';
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
 function Page() {
@@ -23,6 +24,7 @@ function Page() {
         return (
           <section
             key={item.name}
+            className={workbench.panel}
             style={{
               flex: 1,
               minWidth: 0,
