@@ -6,6 +6,7 @@ import {
   IconCopyOutlineRegular,
   IconFlatListOutlineRegular,
   IconSlidersTwoOutlineRegular,
+  Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
@@ -84,10 +85,12 @@ function mcpAuthorizationLabel(op: CloudOperationView) {
 export function CloudOperationCard({
   op,
   busy,
+  cancelPending = false,
   onAct,
 }: {
   op: CloudOperationView;
   busy: boolean;
+  cancelPending?: boolean;
   onAct: (op: CloudOperationView, decision: Decision) => void;
 }) {
   const request = op.approval?.request,
@@ -105,6 +108,7 @@ export function CloudOperationCard({
   const terminal = ['succeeded', 'failed', 'canceled', 'partial'].includes(
     op.snapshot.status,
   );
+  const stopping = cancelPending || op.snapshot.status === 'cancel_requested';
   return (
     <article
       className={styles.card}
@@ -122,7 +126,15 @@ export function CloudOperationCard({
               stroke="currentColor"
               strokeWidth="1.7"
             >
-              <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
+              {proposal.kind === 'cloud' ? (
+                <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
+              ) : (
+                <>
+                  <rect x="3" y="8" width="8" height="13" rx="1.5" />
+                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                  <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
+                </>
+              )}
             </svg>
           </span>
           {proposal.kind === 'cloud' ? '云端计算' : '应用工具'}
@@ -148,141 +160,165 @@ export function CloudOperationCard({
           ? `${proposal.inputs.length} 个输入文件 · 仅在云端执行 · 不联网`
           : `第三方应用 · ${proposal.tool}`}
       </p>
-      <details className={styles.executionDetails} open={!!pending}>
-        <summary>
-          <span>运行详情</span>
-          <span className={styles.detailsToggle}>
-            <span className={styles.expandLabel}>展开</span>
-            <span className={styles.collapseLabel}>收起</span>
-          </span>
-        </summary>
-        <div className={styles.executionBody}>
-          {proposal.kind === 'cloud' ? (
-            <p className={styles.detailScope}>
-              只读本次授权的上传文件，不访问你的电脑。
-            </p>
-          ) : (
-            <>
-              <p className={styles.notice}>
-                批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
-                沙箱之外运行，可能读取或修改其账号内的数据。
-              </p>
-              <p>
-                目标服务：<code>{proposal.endpoint}</code>
-              </p>
-              <p>
-                工具：<code>{proposal.tool}</code> · 权限类别：
-                <code>{proposal.risk}</code>
-              </p>
-            </>
-          )}
-          <div className={styles.detailSections}>
+      <div className={styles.executionFooter}>
+        <details className={styles.executionDetails} open={!!pending}>
+          <summary>
+            <span>运行详情</span>
+            <span className={styles.detailsToggle}>
+              <span className={styles.expandLabel}>展开</span>
+              <span className={styles.collapseLabel}>收起</span>
+            </span>
+          </summary>
+          <div className={styles.executionBody}>
             {proposal.kind === 'cloud' ? (
+              <p className={styles.detailScope}>
+                只读本次授权的上传文件，不访问你的电脑。
+              </p>
+            ) : (
               <>
+                <p className={styles.notice}>
+                  批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
+                  沙箱之外运行，可能读取或修改其账号内的数据。
+                </p>
+                <p>
+                  目标服务：<code>{proposal.endpoint}</code>
+                </p>
+                <p>
+                  工具：<code>{proposal.tool}</code> · 权限类别：
+                  <code>{proposal.risk}</code>
+                </p>
+              </>
+            )}
+            <div className={styles.detailSections}>
+              {proposal.kind === 'cloud' ? (
+                <>
+                  <OperationDetail
+                    title="执行脚本"
+                    meta="Node.js"
+                    icon={<IconCodeOutlineRegular size={16} />}
+                    open={!!pending}
+                  >
+                    <pre aria-label="云端待执行脚本">{proposal.script}</pre>
+                  </OperationDetail>
+                  <OperationDetail
+                    title="输入文件"
+                    meta={`${proposal.inputs.length} 个`}
+                    icon={<IconCopyOutlineRegular size={16} />}
+                    open={!!pending}
+                  >
+                    {proposal.inputs.length ? (
+                      <ul className={styles.inputFiles}>
+                        {proposal.inputs.map((file) => (
+                          <li key={file.objectId}>
+                            <code>{file.path}</code>
+                            <small>文件 ID：{file.objectId}</small>
+                            <small>{file.checksum}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>无输入文件。</p>
+                    )}
+                  </OperationDetail>
+                  <OperationDetail
+                    title="运行限制"
+                    meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
+                    icon={<IconSlidersTwoOutlineRegular size={16} />}
+                    open={!!pending}
+                  >
+                    <dl className={styles.limits}>
+                      <div>
+                        <dt>时限</dt>
+                        <dd>{proposal.limits.timeoutMs / 1000} 秒</dd>
+                      </div>
+                      <div>
+                        <dt>内存</dt>
+                        <dd>{proposal.limits.memoryMiB} MiB</dd>
+                      </div>
+                      <div>
+                        <dt>CPU</dt>
+                        <dd>{proposal.limits.cpuMillis} 毫核</dd>
+                      </div>
+                      <div>
+                        <dt>进程数上限</dt>
+                        <dd>{proposal.limits.pids}</dd>
+                      </div>
+                      <div>
+                        <dt>输出上限</dt>
+                        <dd>{proposal.limits.outputBytes} 字节</dd>
+                      </div>
+                      <div>
+                        <dt>成果上限</dt>
+                        <dd>{proposal.limits.artifactBytes} 字节</dd>
+                      </div>
+                    </dl>
+                  </OperationDetail>
+                </>
+              ) : (
                 <OperationDetail
-                  title="执行脚本"
-                  meta="Node.js"
+                  title="发送参数"
+                  meta="已脱敏"
                   icon={<IconCodeOutlineRegular size={16} />}
                   open={!!pending}
                 >
-                  <pre aria-label="云端待执行脚本">{proposal.script}</pre>
+                  <pre aria-label="MCP 发送参数">
+                    {JSON.stringify(proposal.arguments, null, 2)}
+                  </pre>
                 </OperationDetail>
+              )}
+              {op.result && (
                 <OperationDetail
-                  title="输入文件"
-                  meta={`${proposal.inputs.length} 个`}
-                  icon={<IconCopyOutlineRegular size={16} />}
-                  open={!!pending}
+                  title="执行返回内容"
+                  meta={op.result.code}
+                  icon={<IconFlatListOutlineRegular size={16} />}
                 >
-                  {proposal.inputs.length ? (
-                    <ul className={styles.inputFiles}>
-                      {proposal.inputs.map((file) => (
-                        <li key={file.objectId}>
-                          <code>{file.path}</code>
-                          <small>文件 ID：{file.objectId}</small>
-                          <small>{file.checksum}</small>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p>无输入文件。</p>
-                  )}
+                  <pre>{op.result.output || '没有可展示的输出。'}</pre>
+                  <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
                 </OperationDetail>
-                <OperationDetail
-                  title="运行限制"
-                  meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
-                  icon={<IconSlidersTwoOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  <dl className={styles.limits}>
-                    <div>
-                      <dt>时限</dt>
-                      <dd>{proposal.limits.timeoutMs / 1000} 秒</dd>
-                    </div>
-                    <div>
-                      <dt>内存</dt>
-                      <dd>{proposal.limits.memoryMiB} MiB</dd>
-                    </div>
-                    <div>
-                      <dt>CPU</dt>
-                      <dd>{proposal.limits.cpuMillis} 毫核</dd>
-                    </div>
-                    <div>
-                      <dt>进程数上限</dt>
-                      <dd>{proposal.limits.pids}</dd>
-                    </div>
-                    <div>
-                      <dt>输出上限</dt>
-                      <dd>{proposal.limits.outputBytes} 字节</dd>
-                    </div>
-                    <div>
-                      <dt>成果上限</dt>
-                      <dd>{proposal.limits.artifactBytes} 字节</dd>
-                    </div>
-                  </dl>
-                </OperationDetail>
-              </>
+              )}
+            </div>
+            {proposal.kind === 'cloud' ? (
+              <p className={styles.plannedOutputs}>
+                <span>计划输出：</span>
+                {proposal.outputs.length
+                  ? proposal.outputs.map((output) => (
+                      <code key={output.path}>
+                        {output.fileName} ({output.format})
+                      </code>
+                    ))
+                  : '无'}
+              </p>
             ) : (
-              <OperationDetail
-                title="发送参数"
-                meta="已脱敏"
-                icon={<IconCodeOutlineRegular size={16} />}
-                open={!!pending}
-              >
-                <pre aria-label="MCP 发送参数">
-                  {JSON.stringify(proposal.arguments, null, 2)}
-                </pre>
-              </OperationDetail>
-            )}
-            {op.result && (
-              <OperationDetail
-                title="执行返回内容"
-                meta={op.result.code}
-                icon={<IconFlatListOutlineRegular size={16} />}
-              >
-                <pre>{op.result.output || '没有可展示的输出。'}</pre>
-                <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
-              </OperationDetail>
+              <small className={styles.authorizationScope}>
+                仅授权这一次调用、当前工具 schema
+                和连接版本；管理员保存的服务密钥不会展示在页面上。
+              </small>
             )}
           </div>
-          {proposal.kind === 'cloud' ? (
-            <p className={styles.plannedOutputs}>
-              <span>计划输出：</span>
-              {proposal.outputs.length
-                ? proposal.outputs.map((output) => (
-                    <code key={output.path}>
-                      {output.fileName} ({output.format})
-                    </code>
-                  ))
-                : '无'}
-            </p>
-          ) : (
-            <small className={styles.authorizationScope}>
-              仅授权这一次调用、当前工具 schema
-              和连接版本；管理员保存的服务密钥不会展示在页面上。
-            </small>
-          )}
-        </div>
-      </details>
+        </details>
+        {!terminal && (
+          <div className={styles.stopControl}>
+            <Tooltip
+              label="请求停止本轮全部操作，已完成的结果会保留。"
+              side="top"
+              align="end"
+            >
+              <button
+                type="button"
+                className={styles.stopButton}
+                aria-label={
+                  stopping ? '正在停止本轮全部操作' : '请求停止本轮全部操作'
+                }
+                disabled={busy || stopping}
+                onClick={() => onAct(op, 'cancel')}
+              >
+                <span className={styles.stopIcon} aria-hidden="true" />
+                {stopping ? '正在停止…' : '停止本轮'}
+              </button>
+            </Tooltip>
+          </div>
+        )}
+      </div>
       {pending && (
         <div className={styles.actions}>
           <button
@@ -314,15 +350,6 @@ export function CloudOperationCard({
           {op.approval.revokedAt ? ' · 后续已撤销' : ''}
         </p>
       )}
-      {!terminal && op.snapshot.status !== 'cancel_requested' && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onAct(op, 'cancel')}
-        >
-          请求停止本轮全部操作
-        </button>
-      )}
       {['cancel_requested', 'unknown'].includes(op.snapshot.status) && (
         <p role="status" className={styles.notice}>
           已记录的停止指令不等于远端已经停止。
@@ -348,6 +375,8 @@ export function CloudOperationPanel({
   const [operations, setOperations] = useState<CloudOperationView[]>([]),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
+    [pendingDecision, setPendingDecision] = useState<Decision | null>(null),
+    [cancellationRunId, setCancellationRunId] = useState<string | null>(null),
     [revision, setRevision] = useState(0);
   const responses = useRef(new Map<string, unknown>());
   const api = `/api/v1/runtime/cloud-operations?workspaceId=${encodeURIComponent(workspaceId)}&runId=${encodeURIComponent(runId)}`,
@@ -395,6 +424,7 @@ export function CloudOperationPanel({
     const request = op.approval?.request;
     if (busy || (decision !== 'cancel' && !request)) return;
     setBusy(true);
+    setPendingDecision(decision);
     setError('');
     try {
       let body: unknown = { runId, action: 'cancel' };
@@ -435,6 +465,7 @@ export function CloudOperationPanel({
         throw Error(
           '操作未确认：授权可能过期、被撤销或已在其他页面处理。请刷新状态核实，勿重复执行。',
         );
+      if (decision === 'cancel') setCancellationRunId(runId);
       setRevision((value) => value + 1);
     } catch (error) {
       setError(
@@ -443,6 +474,7 @@ export function CloudOperationPanel({
       setRevision((value) => value + 1);
     } finally {
       setBusy(false);
+      setPendingDecision(null);
     }
   }
   if (!operations.length && !error) return null;
@@ -464,6 +496,10 @@ export function CloudOperationPanel({
           key={op.snapshot.binding.attempt.operationId}
           op={op}
           busy={busy}
+          cancelPending={
+            pendingDecision === 'cancel' ||
+            (cancellationRunId === runId && op.snapshot.status !== 'unknown')
+          }
           onAct={(operation, decision) => void act(operation, decision)}
         />
       ))}

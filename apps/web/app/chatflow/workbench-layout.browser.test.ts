@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { officePreview } from '@allrice/office-runtime';
+import type { CloudOperationView } from '@allrice/database';
 import type {
   Browser,
   Locator,
@@ -1181,6 +1182,97 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.errors).toEqual([]);
         expect(f.writes).toEqual([]);
       } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
+    async (width) => {
+      const f = await fixture({ width, running: true });
+      const operation = {
+        snapshot: {
+          status: 'running',
+          binding: { attempt: { operationId: id(8801) } },
+        },
+        enabled: true,
+        mcpAuthorization: { available: true, reason: 'available' },
+        proposal: {
+          kind: 'mcp',
+          endpoint: 'https://example.test/mcp',
+          tool: 'records.list',
+          arguments: {},
+          risk: 'read',
+        },
+        approval: null,
+        result: null,
+      } as unknown as CloudOperationView;
+      const requests: unknown[] = [];
+      let selectedRun = '';
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      try {
+        await f.page.route(
+          '**/api/v1/runtime/cloud-operations?**',
+          async (route) => {
+            const request = route.request();
+            const runId = new URL(request.url()).searchParams.get('runId')!;
+            selectedRun ||= runId;
+            if (request.method() === 'POST') {
+              requests.push(request.postDataJSON());
+              if (requests.length === 1)
+                return route.fulfill({ status: 503, json: {} });
+              await pending;
+              return route.fulfill({ json: {} });
+            }
+            return route.fulfill({
+              json: { operations: runId === selectedRun ? [operation] : [] },
+            });
+          },
+        );
+        await f.page.reload();
+        const card = f.page.locator(`#operation-${id(8801)}`);
+        const stop = card.getByRole('button', {
+          name: '请求停止本轮全部操作',
+          exact: true,
+        });
+        await stop.waitFor();
+        await stop.click();
+        await f.page
+          .getByRole('alert')
+          .filter({ hasText: '操作未确认' })
+          .waitFor();
+        expect(await stop.isEnabled()).toBe(true);
+        await stop.click();
+        const stopping = card.getByRole('button', {
+          name: '正在停止本轮全部操作',
+          exact: true,
+        });
+        await stopping.waitFor();
+        expect(await stopping.isDisabled()).toBe(true);
+        release();
+        await expect.poll(() => requests.length).toBe(2);
+        expect(requests).toEqual([
+          { runId: selectedRun, action: 'cancel' },
+          { runId: selectedRun, action: 'cancel' },
+        ]);
+        // The write acknowledgment alone must not claim that a remote service stopped.
+        expect(await stopping.isDisabled()).toBe(true);
+        expect(await card.getByRole('status').innerText()).toBe('正在执行');
+        operation.snapshot.status = 'cancel_requested';
+        await card
+          .getByText('停止意图已记录，结果待确认', { exact: true })
+          .waitFor();
+        expect(await stopping.isDisabled()).toBe(true);
+        operation.snapshot.status = 'canceled';
+        await card.getByText('已确认未执行或停止', { exact: true }).waitFor();
+        expect(await stopping.count()).toBe(0);
+        expect(requests).toHaveLength(2);
+      } finally {
+        release();
         await f.close();
       }
     },

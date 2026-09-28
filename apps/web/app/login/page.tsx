@@ -1,11 +1,11 @@
 import { headers } from 'next/headers';
-import { AllriceBrand } from '../../components/allrice-brand';
 import {
   portalAuthEnabled,
   portalPublicView,
   resolvePortal,
 } from '../../lib/portal/config';
 import { LoginForm } from './login-form';
+import { EmployeeShowcase } from './employee-showcase';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +17,10 @@ export default async function LoginPage() {
   return (
     <main className="auth-shell auth-workspace">
       <header className="auth-workspace-brand">
-        <AllriceBrand />
+        <span className="auth-login-wordmark">AllRice</span>
+        <span className="auth-brand-slogan" lang="en">
+          Do it right. Make it nice.
+        </span>
       </header>
       <div className="auth-workspace-columns">
         <section className="auth-workspace-intro" aria-label="Allrice 工作台">
@@ -31,29 +34,7 @@ export default async function LoginPage() {
             <br />
             和你的 AI 员工一起，把事情做好。
           </p>
-          <div className="auth-employee-list" aria-label="AI 员工示例">
-            <div className="auth-employee">
-              <span className="auth-employee-avatar" aria-hidden="true">
-                R
-              </span>
-              <div>
-                <strong>Rice</strong>
-                <span>研究、分析与日常工作</span>
-              </div>
-            </div>
-            <div className="auth-employee">
-              <span
-                className="auth-employee-avatar auth-employee-office"
-                aria-hidden="true"
-              >
-                O
-              </span>
-              <div>
-                <strong>Office 文档助手</strong>
-                <span>文档、表格与演示文稿</span>
-              </div>
-            </div>
-          </div>
+          <EmployeeShowcase />
         </section>
         <section className="auth-form-panel">
           <div className="auth-panel">
