@@ -869,7 +869,7 @@ div.composerTools {
   position: relative;
   display: inline-flex;
   flex: none;
-  height: 32px;
+  height: 36px;
   align-items: center;
   justify-content: center;
   border: 0;
@@ -879,17 +879,17 @@ div.composerTools {
 }
 
 .composerAdd {
-  width: 32px;
+  width: 36px;
   padding: 0;
   cursor: pointer;
 }
 
 .composerSelect {
-  gap: 6px;
-  padding: 0 10px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 20px;
+  gap: 7px;
+  padding: 0 11px;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 22px;
   white-space: nowrap;
 }
 
@@ -947,7 +947,7 @@ div.composerTools {
 }
 
 div.composerAttachmentMenu {
-  width: 264px;
+  width: 248px;
   max-width: calc(100vw - 24px);
   padding: 8px;
   border: 1px solid var(--dsw-alias-border-l2, #d7dde6);
@@ -960,24 +960,26 @@ div.composerAttachmentMenu {
 }
 
 .composerAttachmentMenu [role='menuitem'] {
-  min-height: 46px;
-  padding: 10px 11px;
-  gap: 12px;
-  border-radius: 10px;
-  font-size: 16px;
-  line-height: 24px;
+  min-height: 44px;
+  padding: 10px;
+  gap: 10px;
+  border-radius: 9px;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 22px;
 }
 
 .composerAttachmentMenu [role='menuitem'] > span:first-child,
 .composerAttachmentMenu [role='menuitem'] svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
 }
 
 .composerAttachmentMenu [role='presentation']:not(:has([role])) {
-  padding: 5px 11px 7px;
-  font-size: 13px;
-  line-height: 20px;
+  padding: 4px 10px 7px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
 }
 
 @media (pointer: coarse) {
@@ -1032,6 +1034,18 @@ div.composerAttachmentMenu {
   max-width: 100%;
 }
 
+.composerSelect,
+div.composerAttachmentMenu,
+.composerStatus {
+  font-family: var(
+    --ds-font-family-ui,
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif
+  );
+}
+
 .composerStatus {
   display: flex;
   width: 100%;
@@ -1040,9 +1054,10 @@ div.composerAttachmentMenu {
   justify-content: space-between;
   padding: 4px 10px 0;
   color: var(--dsw-alias-label-caption);
-  font-size: 10px;
-  line-height: 16px;
-  min-height: 26px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  min-height: 28px;
 }
 
 .composerStatusLeft {
@@ -1065,7 +1080,8 @@ div.composerAttachmentMenu {
   border-radius: 7px;
   padding: 0 7px;
   background: transparent;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 400;
   line-height: 22px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1101,7 +1117,8 @@ div.composerAttachmentMenu {
   background: transparent;
   color: var(--dsw-alias-state-business-primary);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .composerDock {

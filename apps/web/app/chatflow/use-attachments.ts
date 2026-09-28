@@ -35,8 +35,15 @@ interface UseAttachmentsOptions {
   workspace: Workspace | null;
 }
 
+export interface WorkspaceFileAddResult {
+  addedIds: string[];
+  error?: string;
+}
+
 interface UseAttachmentsResult {
-  addWorkspaceFile: (file: WorkspaceFile) => Promise<void>;
+  addWorkspaceFiles: (
+    files: WorkspaceFile[],
+  ) => Promise<WorkspaceFileAddResult>;
   attachmentPreview: PendingAttachment | null;
   clearPendingAttachments: () => void;
   deliverableVersions: DeliverableVersion[];
@@ -366,44 +373,78 @@ export function useAttachments({
     [captureSelection, setError, tenantHeaders, workspace],
   );
 
-  const addWorkspaceFile = useCallback(
-    async (file: WorkspaceFile) => {
-      if (!workspace) return;
+  const addWorkspaceFiles = useCallback(
+    async (files: WorkspaceFile[]): Promise<WorkspaceFileAddResult> => {
+      const result: WorkspaceFileAddResult = { addedIds: [] };
+      if (!workspace)
+        return { ...result, error: '工作区尚未加载，请稍后重试。' };
+      const existing = pendingAttachmentsRef.current;
+      const existingIds = new Set(
+        existing.map((file) => file.persistedId ?? file.id),
+      );
+      const unique = [
+        ...new Map(files.map((file) => [file.id, file])).values(),
+      ];
+      const selected = unique.filter((file) => !existingIds.has(file.id));
+      if (existing.length + selected.length > 20)
+        return { ...result, error: '每条消息最多添加 20 个附件。' };
+      if (
+        [...existing, ...selected].reduce(
+          (sum, file) => sum + file.sizeBytes,
+          0,
+        ) >
+        200 * 1024 * 1024
+      )
+        return { ...result, error: '每条消息的附件总大小不能超过 200 MB。' };
       const action = sessionActions.begin('composer');
-      if (!action) return;
+      if (!action)
+        return { ...result, error: '当前消息正在处理，请稍后再添加附件。' };
       setBusy(true);
+      setError('');
       try {
         const sessionId = activeId ?? (await createSession());
-        if (!sessionId) return;
-        if (!activeId && !action.adoptCreatedSession(sessionId)) return;
-        if (!action.current()) return;
-        await readJson(
-          await fetch(
-            `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
+        if (!sessionId) return result;
+        if (!activeId && !action.adoptCreatedSession(sessionId)) return result;
+        for (const file of selected) {
+          if (!action.current()) return result;
+          await readJson(
+            await fetch(
+              `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
+              {
+                method: 'PUT',
+                headers: {
+                  'content-type': 'application/json',
+                  ...tenantHeaders,
+                },
+                body: JSON.stringify({ objectId: file.id }),
+              },
+            ),
+          );
+          if (!action.current()) return result;
+          result.addedIds.push(file.id);
+          setPendingAttachments((current) => [
+            ...current.filter(
+              (item) => (item.persistedId ?? item.id) !== file.id,
+            ),
             {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json', ...tenantHeaders },
-              body: JSON.stringify({ objectId: file.id }),
+              ...file,
+              persistedId: file.id,
+              status: 'ready',
+              visibility: file.visibility,
             },
-          ),
-        );
-        if (!action.current()) return;
-        setPendingAttachments((current) => [
-          ...current.filter((item) => item.id !== file.id),
-          {
-            ...file,
-            persistedId: file.id,
-            status: 'ready',
-            visibility: file.visibility,
-          },
-        ]);
-        setFilePickerOpen(false);
+          ]);
+        }
+        if (action.current()) setFilePickerOpen(false);
       } catch (cause) {
-        if (action.current())
-          setError(cause instanceof Error ? cause.message : '文件添加失败');
+        if (action.current()) {
+          result.error =
+            cause instanceof Error ? cause.message : '文件添加失败，请重试。';
+          setError(result.error);
+        }
       } finally {
         if (action.finish()) setBusy(false);
       }
+      return result;
     },
     [
       activeId,
@@ -417,7 +458,7 @@ export function useAttachments({
   );
 
   return {
-    addWorkspaceFile,
+    addWorkspaceFiles,
     attachmentPreview,
     clearPendingAttachments,
     deliverableVersions,

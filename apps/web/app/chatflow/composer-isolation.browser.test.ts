@@ -1,5 +1,6 @@
 /** Real Chrome + React StrictMode + synthetic loopback HTTP. No DB/auth/model/Bridge. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -216,6 +217,7 @@ suite(
         immediateReply?: boolean;
         settled?: 'failed' | 'canceled';
         width?: number;
+        workspaceFiles?: WorkspaceFile[];
       } = {},
     ) {
       const pending: Pending[] = [];
@@ -348,7 +350,7 @@ suite(
         }
         if (path === '/api/v1/files') {
           answer(response, {
-            files: [
+            files: options.workspaceFiles ?? [
               {
                 id: C,
                 fileName: 'workspace-source.txt',
@@ -1059,7 +1061,18 @@ suite(
           size: getComputedStyle(el).fontSize,
           height: el.getBoundingClientRect().height,
         }));
-        expect(styles).toEqual({ size: '16px', height: 46 });
+        expect(styles).toEqual({ size: '15px', height: 44 });
+        for (const selector of [
+          '[data-compact=mode]',
+          '[data-compact=visibility]',
+        ]) {
+          expect(
+            await f.page.locator(selector).evaluate((el) => ({
+              size: getComputedStyle(el).fontSize,
+              weight: getComputedStyle(el).fontWeight,
+            })),
+          ).toEqual({ size: '15px', weight: '400' });
+        }
         const surface = await menu.evaluate((el) => ({
           background: getComputedStyle(el).backgroundColor,
           shadow: getComputedStyle(el).boxShadow,
@@ -1086,6 +1099,247 @@ suite(
         await f.close();
       }
     }, 15_000);
+
+    const pickerFiles: WorkspaceFile[] = Array.from(
+      { length: 28 },
+      (_, index) => ({
+        id: `workspace-file-${index}`,
+        fileName: `tool-result-web-search-${index}-1cd48820-0024-4b22-b75b-46f7c05705c2.txt`,
+        mediaType: 'text/plain',
+        sizeBytes: 19000,
+        ownedByMe: true,
+        category: 'exports',
+        visibility: 'workspace',
+        deliverableVersion: 1,
+      }),
+    );
+    const openPicker = async (page: Page) => {
+      await page.getByRole('button', { name: '添加文件', exact: true }).click();
+      await page
+        .getByRole('menuitem', { name: '从工作区添加', exact: true })
+        .click();
+      const dialog = page.getByRole('dialog', {
+        name: '从工作区添加文件',
+        exact: true,
+      });
+      await dialog.waitFor();
+      return dialog;
+    };
+
+    it.each([1440, 390, 320])(
+      'workspace picker keeps selection while searching and its footer visible at %i px',
+      async (width) => {
+        const f = await fixture({ width, workspaceFiles: pickerFiles });
+        try {
+          const dialog = await openPicker(f.page);
+          const search = dialog.getByRole('searchbox', { name: '搜索文件名' });
+          expect(
+            await search.evaluate((el) => el === document.activeElement),
+          ).toBe(true);
+          expect(
+            await dialog
+              .getByRole('button', { name: '添加到本轮' })
+              .isDisabled(),
+          ).toBe(true);
+          await dialog.getByRole('checkbox').nth(0).check();
+          await search.fill('web-search-4-');
+          expect(await dialog.getByRole('checkbox').count()).toBe(1);
+          await dialog.getByRole('checkbox').check();
+          await search.fill('not-a-file');
+          expect(await dialog.getByText('没有找到匹配的文件').isVisible()).toBe(
+            true,
+          );
+          expect(await dialog.getByText('已选 2 项').isVisible()).toBe(true);
+          await search.fill('');
+          expect(await dialog.getByRole('checkbox').nth(0).isChecked()).toBe(
+            true,
+          );
+          expect(await dialog.getByRole('checkbox').nth(4).isChecked()).toBe(
+            true,
+          );
+          const list = dialog.getByRole('list', { name: '工作区文件' });
+          const layout = await dialog.evaluate((el) => ({
+            left: el.getBoundingClientRect().left,
+            right: el.getBoundingClientRect().right,
+            bottom: el.getBoundingClientRect().bottom,
+            overflow: el.scrollWidth > el.clientWidth,
+            background: getComputedStyle(el).backgroundColor,
+            footer: el.querySelector('footer')!.getBoundingClientRect().bottom,
+            nameSize: getComputedStyle(el.querySelector('[class*=fileName]')!)
+              .fontSize,
+            nameWeight: getComputedStyle(el.querySelector('[class*=fileName]')!)
+              .fontWeight,
+          }));
+          expect(layout.background).toBe('rgb(255, 255, 255)');
+          expect(layout.overflow).toBe(false);
+          expect(layout.left).toBeGreaterThanOrEqual(0);
+          expect(layout.right).toBeLessThanOrEqual(width);
+          expect(layout.footer).toBeLessThanOrEqual(layout.bottom);
+          expect(layout.nameSize).toBe('15px');
+          expect(layout.nameWeight).toBe('400');
+          await list.evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+          });
+          expect(
+            await dialog
+              .getByRole('button', { name: '添加到本轮' })
+              .isVisible(),
+          ).toBe(true);
+          await list.evaluate((el) => {
+            el.scrollTop = 0;
+          });
+          await dialog
+            .getByRole('button', {
+              name: `文件详情：${pickerFiles[0]!.fileName}`,
+            })
+            .click();
+          expect(
+            await dialog
+              .locator('p')
+              .getByText(pickerFiles[0]!.fileName, { exact: true })
+              .isVisible(),
+          ).toBe(true);
+          if (process.env.ALLRICE_UI_EVIDENCE_DIR)
+            await f.page.screenshot({
+              path: `${process.env.ALLRICE_UI_EVIDENCE_DIR}/workspace-picker-${width}.png`,
+            });
+          await f.page.keyboard.press('Escape');
+          expect(await dialog.count()).toBe(0);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20000,
+    );
+
+    it('batch workspace attachments retain successes and retry only the failed selection', async () => {
+      const f = await fixture({
+        uploadPending: true,
+        workspaceFiles: pickerFiles.slice(0, 2),
+      });
+      try {
+        const dialog = await openPicker(f.page);
+        await dialog.getByRole('checkbox').nth(0).check();
+        await dialog.getByRole('checkbox').nth(1).check();
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        await f.waitPending(1);
+        expect(
+          await dialog.getByRole('button', { name: '正在添加…' }).isDisabled(),
+        ).toBe(true);
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1, false);
+        expect(await dialog.getByRole('alert').textContent()).toContain(
+          'Synthetic old request failed',
+        );
+        expect(await dialog.getByRole('checkbox').nth(0).isDisabled()).toBe(
+          true,
+        );
+        expect(await dialog.getByRole('checkbox').nth(1).isChecked()).toBe(
+          true,
+        );
+        expect(await dialog.getByText('已选 1 项').isVisible()).toBe(true);
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        await f.waitPending(3);
+        expect(f.pending.map((p) => p.body.objectId)).toEqual([
+          pickerFiles[0]!.id,
+          pickerFiles[1]!.id,
+          pickerFiles[1]!.id,
+        ]);
+        await f.respond(2);
+        expect(await dialog.count()).toBe(0);
+        const reopened = await openPicker(f.page);
+        expect(await reopened.getByRole('checkbox').nth(0).isDisabled()).toBe(
+          true,
+        );
+        expect(await reopened.getByRole('checkbox').nth(1).isDisabled()).toBe(
+          true,
+        );
+        expect(
+          await reopened
+            .getByRole('button', { name: '添加到本轮' })
+            .isDisabled(),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
+
+    it('a new workspace-file batch creates only one session and preserves the selected files', async () => {
+      const f = await fixture({
+        uploadPending: true,
+        workspaceFiles: pickerFiles.slice(0, 2),
+      });
+      try {
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        const dialog = await openPicker(f.page);
+        await dialog.getByRole('checkbox').nth(0).check();
+        await dialog.getByRole('checkbox').nth(1).check();
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        await f.waitPending(1);
+        expect(f.pending[0]!.path).toBe('/api/v1/sessions');
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1);
+        await f.waitPending(3);
+        await f.respond(2);
+        expect(f.writes).toEqual([
+          '/api/v1/sessions',
+          `/api/v1/sessions/${C}/attachments`,
+          `/api/v1/sessions/${C}/attachments`,
+        ]);
+        expect(await f.page.getByRole('dialog').count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
+
+    it('workspace file selection survives version history and rejects an oversized batch before writes', async () => {
+      const f = await fixture({ workspaceFiles: pickerFiles });
+      try {
+        await f.page.route('**/files/*/versions?*', (route) =>
+          route.fulfill({ json: { versions: [] } }),
+        );
+        const dialog = await openPicker(f.page);
+        await dialog.getByRole('checkbox').nth(0).check();
+        await dialog
+          .getByRole('button', {
+            name: `文件详情：${pickerFiles[0]!.fileName}`,
+          })
+          .click();
+        await dialog.getByRole('button', { name: '查看版本历史' }).click();
+        const history = f.page.getByRole('dialog', {
+          name: `${pickerFiles[0]!.fileName} 的版本历史`,
+        });
+        await history
+          .getByRole('button', { name: '关闭', exact: true })
+          .click();
+        expect(await dialog.getByRole('checkbox').nth(0).isChecked()).toBe(
+          true,
+        );
+        await dialog
+          .getByRole('button', {
+            name: `文件详情：${pickerFiles[0]!.fileName}`,
+          })
+          .click();
+        for (let i = 1; i < 21; i++)
+          await dialog.getByRole('checkbox').nth(i).check();
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        expect(await dialog.getByRole('alert').textContent()).toBe(
+          '每条消息最多添加 20 个附件。',
+        );
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
 
     it('late cancellation failure cannot poison another session or claim that work stopped', async () => {
       const f = await fixture({ running: true });
@@ -1241,18 +1495,23 @@ suite(
       }
     }, 15_000);
     it('a late workspace-file attachment cannot enter the next session or clear its sending owner', async () => {
-      const f = await fixture({ uploadPending: true });
+      const f = await fixture({
+        uploadPending: true,
+        workspaceFiles: pickerFiles.slice(0, 2),
+      });
       try {
         await f.page
           .getByRole('button', { name: '添加文件', exact: true })
           .click();
         await f.page.getByRole('menuitem', { name: /从工作区添加/ }).click();
+        await f.page.getByRole('checkbox').nth(0).check();
+        await f.page.getByRole('checkbox').nth(1).check();
         await f.page
           .getByRole('dialog')
-          .getByRole('button', { name: '添加', exact: true })
+          .getByRole('button', { name: '添加到本轮', exact: true })
           .click();
         await f.waitPending(1);
-        expect(f.pending[0]!.body).toEqual({ objectId: C });
+        expect(f.pending[0]!.body).toEqual({ objectId: pickerFiles[0]!.id });
         await f.page
           .getByRole('dialog')
           .getByRole('button', { name: '关闭', exact: true })
@@ -1263,7 +1522,7 @@ suite(
         await f.respond(0);
         expect(
           await f.page
-            .getByText('workspace-source.txt', { exact: true })
+            .getByText(pickerFiles[0]!.fileName, { exact: true })
             .count(),
         ).toBe(0);
         expect(
@@ -1277,6 +1536,9 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
         ).toBe('B owns current send');
+        expect(
+          f.writes.filter((path) => path.endsWith('/attachments')),
+        ).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
