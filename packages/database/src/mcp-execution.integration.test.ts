@@ -491,7 +491,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     const allowed = await draft(base);
     expect((await compilePlatformEmployee(allowed.id)).valid).toBe(true);
     const trial = await queuePlatformEmployeeTestRun(allowed.id, {
+      environment: 'company',
       workspaceId: f.workspace,
+      ownerId: f.user,
       prompt: 'Synthetic compile and release only',
     });
     expect(trial.queued).toBe(true);

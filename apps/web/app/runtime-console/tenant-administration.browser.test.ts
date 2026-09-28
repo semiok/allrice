@@ -29,13 +29,20 @@ import { tenantValidationHttp } from '../../lib/tenant-administration/validation
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
-import { GET as employeeTestRuns } from '../api/v1/admin/platform-employees/[employeeId]/test-runs/route';
+import {
+  GET as employeeTestRuns,
+  POST as queueEmployeeTest,
+} from '../api/v1/admin/platform-employees/[employeeId]/test-runs/route';
 import {
   GET as employeeLifecycle,
   POST as employeeLifecycleAction,
 } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
-import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
+import {
+  savePlatformEmployeeDraft,
+  claimNextPlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+} from '../../../../packages/database/src/employees/platform-employees.ts';
 import {
   frozenPackageSkills,
   readFrozenSkillResource,
@@ -153,8 +160,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
             parts[4] === 'platform-employees'
               ? !parts[5]
                 ? await employeeDirectory(request)
-                : parts[6] === 'test-runs' && request.method === 'GET'
-                  ? await employeeTestRuns(request, {
+                : parts[6] === 'test-runs'
+                  ? await (
+                      request.method === 'POST'
+                        ? queueEmployeeTest
+                        : employeeTestRuns
+                    )(request, {
                       params: Promise.resolve({ employeeId: parts[5]! }),
                     })
                   : parts[6] === 'lifecycle'
@@ -1004,6 +1015,88 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   });
+  it('queues draft tests in the platform environment by default and requires a chosen employee for company testing', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: { ...f.definition, name: 'Isolated preview fixture' },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(`${origin}/runtime-console?view=employees`);
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'Isolated preview fixture' })
+        .click();
+      await page.getByRole('button', { name: '测试', exact: true }).click();
+      expect(
+        await page.getByLabel('测试环境', { exact: true }).inputValue(),
+      ).toBe('platform');
+      const submit = page.getByRole('button', {
+        name: '测试草稿',
+        exact: true,
+      });
+      await expect.poll(() => submit.isEnabled()).toBe(true);
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.request().method() === 'POST' &&
+            r.url().endsWith(`/${f.employeeId}/test-runs`),
+        ),
+        submit.click(),
+      ]);
+      expect(response.status()).toBe(202);
+      const queued = await response.json();
+      expect(queued.queued).toBe(true);
+      expect(queued.testRun.input).toMatchObject({
+        environment: 'platform',
+        ownerId: platform.user.id,
+      });
+      const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+      expect(claim?.id).toBe(queued.testRun.id);
+      expect(claim?.previewContext.organizationId).toBe(
+        platform.organizationId,
+      );
+      expect(
+        await fixture.db`select id from allrice_runs where organization_id=${f.organizationId}`,
+      ).toHaveLength(0);
+      await completePlatformEmployeeTestRun(queued.testRun.id, {
+        answer: 'Platform-only synthetic preview',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-luna',
+        threadId: null,
+        usage: null,
+        events: [],
+        error: null,
+      });
+      await page
+        .getByText('Platform-only synthetic preview', { exact: true })
+        .waitFor();
+      await page
+        .getByText('平台测试 · 独立测试记录', { exact: true })
+        .waitFor();
+      await page
+        .getByLabel('测试环境', { exact: true })
+        .selectOption('company');
+      await page
+        .getByLabel('公司工作区', { exact: true })
+        .selectOption(f.workspaceId);
+      const people = page.getByLabel('测试使用的员工', { exact: true });
+      await expect.poll(() => people.locator('option').count()).toBe(2);
+      expect(await people.inputValue()).toBe('');
+      expect(await submit.isEnabled()).toBe(false);
+      await people.selectOption(f.ownerId);
+      expect(await submit.isEnabled()).toBe(true);
+      await page
+        .getByLabel('测试环境', { exact: true })
+        .selectOption('platform');
+      expect(await page.getByLabel('公司工作区', { exact: true }).count()).toBe(
+        0,
+      );
+      expect(await submit.isEnabled()).toBe(true);
+    } finally {
+      await context.close();
+    }
+  });
   it('opens the publish page from draft testing without saving, publishing, or losing unsaved edits', async () => {
     const oldEnvironment = process.env.ALLRICE_ENV;
     process.env.ALLRICE_ENV = 'development';
@@ -1023,7 +1116,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByLabel('名称', { exact: true })
         .fill('Unsaved draft title');
       await page.getByRole('button', { name: '测试', exact: true }).click();
-      await page.getByLabel('测试使用的租户').selectOption(f.workspaceId);
+      expect(
+        await page.getByLabel('测试环境', { exact: true }).inputValue(),
+      ).toBe('platform');
+      expect(await page.getByLabel('公司工作区', { exact: true }).count()).toBe(
+        0,
+      );
       await page.getByText('还没有草稿测试记录。', { exact: true }).waitFor();
       expect(
         await page
