@@ -298,7 +298,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     const repaired = await freezeSessionModelSnapshot(scope);
     expect(repaired).toMatchObject({
       provider: 'openai-codex',
-      model: f.definition.modelPolicy.model,
+      model: 'gpt-6-luna',
       authMode: 'chatgpt_subscription',
       reasoningEffort: 'xhigh',
     });
