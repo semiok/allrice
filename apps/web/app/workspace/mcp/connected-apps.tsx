@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { McpConnectionSchema, type McpConnection } from '@allrice/contracts';
 import styles from './connected-apps.module.css';
+import {
+  connectionStatusLabel,
+  visibleConnection,
+} from '../../../lib/connection-status';
 
 export function ConnectedApps({
   workspaceId,
@@ -91,7 +95,7 @@ export function ConnectedApps({
     }
   }
   const visible = connections.filter(
-    (c) => (!c.removed && (c.enabled || !c.shared)) || c.id === connectionId,
+    (c) => visibleConnection(c) || c.id === connectionId,
   );
   return (
     <section className={styles.apps} aria-label="已连接应用">
@@ -131,17 +135,7 @@ export function ConnectedApps({
         >
           <div className={styles.heading}>
             <h2>{c.name}</h2>
-            <span>
-              {c.disconnected || !c.enabled
-                ? '已断开'
-                : c.discoveryState === 'ready'
-                  ? '已连接'
-                  : c.discoveryCode === 'MCP_AUTH_REQUIRED'
-                    ? '需要登录'
-                    : ['queued', 'running'].includes(c.discoveryState)
-                      ? '正在连接'
-                      : '连接未完成'}
-            </span>
+            <span>{connectionStatusLabel(c)}</span>
           </div>
           <p>
             {new URL(c.endpoint).hostname} ·{' '}

@@ -284,6 +284,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       messageInputs: [] as Array<{ text: string; attachmentIds: string[] }>,
       connections: [] as McpConnection[],
       connectionReads: 0,
+      connectionError: false,
       connectionActions: [] as string[],
       readinessError: false,
       readinessWrongScope: false,
@@ -624,6 +625,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }
         expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
         state.connectionReads++;
+        if (state.connectionError)
+          return answer({ error: { message: 'connection failed' } }, 503);
         return answer({ connections: state.connections });
       }
       if (
@@ -4737,6 +4740,105 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('keeps online app connection status in sync without treating it as a local Bridge service', async () => {
+    const f = await fixture();
+    try {
+      f.state.connections = ['GitHub', 'Linear'].map((name, index) =>
+        McpConnectionSchema.parse({
+          id: id(70 + index),
+          definitionId: id(80 + index),
+          workspaceId: workspace,
+          name,
+          endpoint: `https://${name.toLowerCase()}.example.test/mcp`,
+          enabled: true,
+          revision: 1,
+          credentialConfigured: true,
+          credentialReference: 'synthetic',
+          managed: true,
+          shared: false,
+          discoveryState: 'ready',
+          discoveryCode: null,
+          checkedAt: now,
+          tools: [],
+        }),
+      );
+      f.state.capabilities = f.state.capabilities.map((c) =>
+        c.id === 'cloud_mcp'
+          ? {
+              ...c,
+              state: 'ready',
+              reason: 'ready',
+              action: 'compose',
+              releaseEnabled: true,
+            }
+          : c.id === 'local_mcp'
+            ? {
+                ...c,
+                state: 'needs_configuration',
+                reason: 'connection_missing',
+                action: 'mcp_settings',
+                releaseEnabled: true,
+              }
+            : c,
+      );
+      await openCapabilities(f);
+      const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
+      const online = dialog.locator('[data-capability="cloud_mcp"]');
+      const local = dialog.locator('[data-capability="local_mcp"]');
+      const list = online.getByRole('list', { name: '在线应用连接状态' });
+      await list.waitFor();
+      expect(await list.innerText()).toContain('GitHub');
+      expect(await list.innerText()).toContain('Linear');
+      expect(await list.getByText('已连接', { exact: true }).count()).toBe(2);
+      expect(await local.getAttribute('data-state')).toBe(
+        'needs_configuration',
+      );
+      expect(await local.innerText()).toContain('未配置本地服务');
+      expect(await local.innerText()).toContain('无需在这里重复配置');
+      expect(
+        await local
+          .getByText('还没有可用的应用连接。', { exact: false })
+          .count(),
+      ).toBe(0);
+      expect(
+        await local.getByRole('button', { name: '让员工连接在线应用' }).count(),
+      ).toBe(0);
+      await local.getByRole('button', { name: '查看已连接应用' }).click();
+      const github = dialog
+        .getByRole('article')
+        .filter({
+          has: f.page.getByRole('heading', { name: 'GitHub', exact: true }),
+        });
+      await github.getByText('管理连接', { exact: true }).click();
+      await github
+        .getByRole('button', { name: '断开连接', exact: true })
+        .click();
+      await github.getByText('已断开', { exact: true }).waitFor();
+      await selectSettings(dialog, '能力与环境');
+      await list.getByText('已断开', { exact: true }).waitFor();
+      expect(await list.getByText('已连接', { exact: true }).count()).toBe(1);
+      expect(await local.getAttribute('data-state')).toBe(
+        'needs_configuration',
+      );
+      f.state.connectionError = true;
+      await dialog
+        .getByRole('button', { name: '刷新能力状态', exact: true })
+        .click();
+      await online
+        .getByText('连接状态暂时无法读取', { exact: false })
+        .waitFor();
+      expect(await list.count()).toBe(0);
+      expect(
+        await online.getByText('尚未添加在线应用', { exact: false }).count(),
+      ).toBe(0);
+      expect(f.state.connectionActions).toEqual(['disconnect']);
+      expect(f.state.messageInputs).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('UX01-B explicitly refreshes after settings, protects members, and never treats errors or wrong scope as ready', async () => {
     const f = await fixture();
     try {
@@ -4756,7 +4858,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await entry.click();
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
       const mcp = dialog.locator('[data-capability="cloud_mcp"]');
-      await mcp.getByRole('button', { name: '准备应用连接任务' }).waitFor();
+      await mcp.getByRole('button', { name: '准备在线应用任务' }).waitFor();
       expect(await mcp.getByRole('link').count()).toBe(0);
       await mcp
         .getByRole('button', { name: '已连接应用', exact: true })
@@ -4771,7 +4873,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(false);
       await f.page.keyboard.press('Escape');
       await entry.click();
-      await mcp.getByRole('button', { name: '准备应用连接任务' }).waitFor();
+      await mcp.getByRole('button', { name: '准备在线应用任务' }).waitFor();
       f.state.readinessError = true;
       await dialog.getByRole('button', { name: '刷新能力状态' }).click();
       await dialog

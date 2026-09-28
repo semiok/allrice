@@ -5,10 +5,11 @@ import type {
 } from '@allrice/contracts';
 import {
   capabilityLabels,
-  capabilityReasons,
+  capabilityReasonLabel,
   capabilityStateLabels,
 } from './capability-catalog';
 import styles from './capability-panel.module.css';
+import { OnlineAppConnections } from './online-app-connections';
 
 const groups: { label: string; ids: WorkspaceCapabilityId[] }[] = [
   {
@@ -105,14 +106,17 @@ export function CapabilityContent({
                             ? '选择文件夹'
                             : capability?.reason === 'device_paused'
                               ? '已暂停'
-                              : capabilityStateLabels[state]}
+                              : id === 'local_mcp' &&
+                                  capability?.reason === 'connection_missing'
+                                ? '未配置本地服务'
+                                : capabilityStateLabels[state]}
                     </span>
                   </summary>
                   <div className={styles.cardBody}>
                     <p>{label.description}</p>
                     <p>
                       {capability
-                        ? capabilityReasons[capability.reason]
+                        ? capabilityReasonLabel(capability)
                         : '尚未取得当前状态，请刷新确认。'}
                     </p>
                     {capability?.action === 'compose' &&
@@ -133,23 +137,23 @@ export function CapabilityContent({
                       </button>
                     ) : null}
                     {id === 'cloud_mcp' && data && (
+                      <>
+                        <OnlineAppConnections
+                          key={`${data.organizationId}/${data.workspaceId}/${data.viewerId}`}
+                          workspaceId={data.workspaceId}
+                          organizationId={data.organizationId}
+                          refreshKey={data.observedAt}
+                        />
+                        <button type="button" onClick={onConnections}>
+                          已连接应用
+                        </button>
+                      </>
+                    )}
+                    {id === 'local_mcp' && data && (
                       <button type="button" onClick={onConnections}>
-                        已连接应用
+                        查看已连接应用
                       </button>
                     )}
-                    {id === 'local_mcp' &&
-                      state !== 'ready' &&
-                      data?.capabilities.some(
-                        (c) => c.id === 'cloud_mcp' && c.state === 'ready',
-                      ) && (
-                        <button
-                          type="button"
-                          disabled={busy || loading}
-                          onClick={() => onCompose('cloud_mcp')}
-                        >
-                          让员工连接在线应用
-                        </button>
-                      )}
                     {capability?.reason === 'runner_missing' &&
                       id === 'local_command' &&
                       data?.capabilities.some(
@@ -183,7 +187,7 @@ export function CapabilityContent({
                             </>
                           ) : (
                             <>
-                              <li>{capabilityReasons[capability.reason]}</li>
+                              <li>{capabilityReasonLabel(capability)}</li>
                               <li>
                                 完成后点击“刷新能力状态”。其他可用能力可以继续使用。
                               </li>
