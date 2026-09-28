@@ -30,8 +30,6 @@ interface ResourceRow {
   visibility: Visibility;
 }
 
-const defaultWorkspaceQuotaBytes = 1024 * 1024 * 1024;
-
 function authorizeRead(
   context: ExecutionContext,
   type: 'storage_object' | 'memory' | 'chat_session',
@@ -322,9 +320,9 @@ export async function registerToolBrokerExport(
       throw new Error('source_file_changed');
     const requestedParent = source?.parentObjectId ?? input.parentObjectId;
     const quotas = await transaction<
-      { limit_bytes: number | string; used_bytes: number | string }[]
+      { limit_bytes: number | string | null; used_bytes: number | string }[]
     >`
-      select coalesce(q.limit_bytes, ${defaultWorkspaceQuotaBytes}) as limit_bytes,
+      select q.limit_bytes as limit_bytes,
         coalesce(sum(o.size_bytes) filter (where o.state <> 'deleted'), 0) as used_bytes
       from allrice_workspaces w
       left join allrice_storage_quotas q
@@ -338,8 +336,9 @@ export async function registerToolBrokerExport(
     const quota = quotas[0];
     if (
       !quota ||
-      Number(quota.used_bytes) + input.object.sizeBytes >
-        Number(quota.limit_bytes)
+      (quota.limit_bytes !== null &&
+        Number(quota.used_bytes) + input.object.sizeBytes >
+          Number(quota.limit_bytes))
     ) {
       throw new DataAccessError('quota_exceeded');
     }

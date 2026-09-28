@@ -91,3 +91,17 @@
     padding: 16px;
   }
 }
+
+.embedded {
+  max-width: none;
+  padding: 0;
+  color: inherit;
+}
+.embedded .card {
+  background: var(--dsw-alias-bg-layer-2, #fff);
+  color: inherit;
+}
+
+.embedded .source {
+  background: var(--dsw-alias-bg-layer-1, #f5f7fa);
+}

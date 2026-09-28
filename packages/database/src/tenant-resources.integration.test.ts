@@ -393,7 +393,13 @@ suite('MET-151 PR3 tenant resources (isolated PostgreSQL)', () => {
         subjectId: t.target.subjectId,
         action: 'local_browser_grant',
         deviceId: d.id,
-        profile: { version: 1, origins: ['https://example.com'] },
+        // This fixture represents an older Bridge without the new defaults capability.
+        profile: {
+          version: 1,
+          origins: ['https://example.com'],
+          lifetimeMs: 300000,
+          maximumFileBytes: 1000000,
+        },
         reason: 'Platform browser bounds only',
       },
       f.db,

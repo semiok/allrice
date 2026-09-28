@@ -5,10 +5,8 @@ import {
   DataAccessError,
   RuntimePolicyError,
   resolveWorkspaceId,
-  listBrowserControlManagement,
 } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
-import { BrowserControlSettings } from './settings';
 export const dynamic = 'force-dynamic';
 export default async function BrowserSettingsPage({
   searchParams,
@@ -21,17 +19,8 @@ export default async function BrowserSettingsPage({
   if (!context) redirect('/login');
   try {
     const requested = (await searchParams)?.workspaceId;
-    const workspaceId = requested
-      ? await resolveWorkspaceId(context, requested)
-      : await resolveWorkspaceId(context);
-    await listBrowserControlManagement({ ...context, workspaceId });
-    return (
-      <main style={{ maxWidth: 1000, margin: '0 auto', padding: 24 }}>
-        <Link href="/chatflow">← 返回工作台</Link>
-        <h1>云端浏览器授权</h1>
-        <BrowserControlSettings workspaceId={workspaceId} />
-      </main>
-    );
+    await resolveWorkspaceId(context, requested);
+    redirect('/chatflow?settings=work');
   } catch (error) {
     if (
       !(error instanceof DataAccessError) &&
@@ -42,7 +31,7 @@ export default async function BrowserSettingsPage({
       <main>
         <Link href="/chatflow">返回工作台</Link>
         <p role="alert">
-          云端浏览器由平台统一配置。你可以在工作台直接使用已派驻员工的浏览器能力。
+          暂时无法访问当前工作区，请返回工作台选择可用的工作区。
         </p>
       </main>
     );

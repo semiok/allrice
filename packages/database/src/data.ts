@@ -20,8 +20,6 @@ import { z } from 'zod';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 
-const defaultWorkspaceQuotaBytes = 1024 * 1024 * 1024;
-
 const CreateStorageMetadataSchema = z
   .object({
     id: UuidSchema,
@@ -190,10 +188,10 @@ export async function createStorageMetadata(
     `;
     if (!workspaces[0]) throw new DataAccessError('authorization_denied');
     const quotas = await transaction<
-      { limit_bytes: number | string; used_bytes: number | string }[]
+      { limit_bytes: number | string | null; used_bytes: number | string }[]
     >`
       select
-        coalesce(q.limit_bytes, ${defaultWorkspaceQuotaBytes}) as limit_bytes,
+        q.limit_bytes as limit_bytes,
         coalesce(sum(o.size_bytes) filter (where o.state <> 'deleted'), 0) as used_bytes
       from allrice_workspaces w
       left join allrice_storage_quotas q
@@ -207,7 +205,9 @@ export async function createStorageMetadata(
     const quota = quotas[0];
     if (
       !quota ||
-      Number(quota.used_bytes) + metadata.sizeBytes > Number(quota.limit_bytes)
+      (quota.limit_bytes !== null &&
+        Number(quota.used_bytes) + metadata.sizeBytes >
+          Number(quota.limit_bytes))
     ) {
       throw new DataAccessError('quota_exceeded');
     }
