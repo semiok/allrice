@@ -143,6 +143,14 @@
   color: var(--dsw-alias-label-secondary);
   font-weight: 400;
 }
+.groupDescription {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--dsw-alias-border-primary);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
 .card {
   padding: 0;
   border: 0;

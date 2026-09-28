@@ -154,7 +154,7 @@ export function ComputerSettings({
       {!computers && !error && <p role="status">正在读取电脑状态…</p>}
       {computers?.length === 0 && (
         <p className={styles.preferenceRow}>
-          还没有连接电脑。安装并配对 Bridge 后，可在这里管理本地能力。
+          还没有连接电脑。安装并配对 Bridge 后，可在这里管理 Bridge 能力。
         </p>
       )}
       {computers?.map((computer) => (

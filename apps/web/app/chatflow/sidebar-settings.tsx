@@ -186,6 +186,7 @@ export function SidebarSettings({
                       <AccountPasswordSettings />
                     </>
                   )}
+                  {/* Bridge 工具随客户端提供；应用设置只管理远端连接。 */}
                   {row.id === 'apps' && (
                     <ConnectedApps workspaceId={workspaceId} />
                   )}

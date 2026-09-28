@@ -4533,7 +4533,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .evaluateAll((cards) =>
               cards.map((card) => card.getAttribute('data-capability')),
             ),
-        ).toEqual(expect.arrayContaining([...workspaceCapabilityIds]));
+        ).toEqual(
+          expect.arrayContaining(
+            workspaceCapabilityIds.filter((id) => id !== 'local_mcp'),
+          ),
+        );
         expect(
           await dialog
             .locator('[data-capability="development"]')
@@ -4740,7 +4744,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('keeps online app connection status in sync without treating it as a local Bridge service', async () => {
+  it('keeps online app status in sync alongside five Bridge capabilities without local MCP setup', async () => {
     const f = await fixture();
     try {
       f.state.connections = ['GitHub', 'Linear'].map((name, index) =>
@@ -4790,20 +4794,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await list.innerText()).toContain('GitHub');
       expect(await list.innerText()).toContain('Linear');
       expect(await list.getByText('已连接', { exact: true }).count()).toBe(2);
-      expect(await local.getAttribute('data-state')).toBe(
-        'needs_configuration',
+      expect(await local.count()).toBe(0);
+      const bridge = dialog.locator('details').filter({
+        has: f.page.locator(':scope > summary', { hasText: 'Bridge 能力' }),
+      });
+      expect(await bridge.locator('[data-capability]').count()).toBe(5);
+      expect(await bridge.locator(':scope > summary').innerText()).toContain(
+        '5 项',
       );
-      expect(await local.innerText()).toContain('未配置本地服务');
-      expect(await local.innerText()).toContain('无需在这里重复配置');
+      await online
+        .getByRole('button', { name: '已连接应用', exact: true })
+        .click();
       expect(
-        await local
-          .getByText('还没有可用的应用连接。', { exact: false })
-          .count(),
+        await dialog.getByText('本地应用高级设置', { exact: true }).count(),
       ).toBe(0);
       expect(
-        await local.getByRole('button', { name: '让员工连接在线应用' }).count(),
+        await dialog.getByLabel('固定来源与完整文件校验和 JSON').count(),
       ).toBe(0);
-      await local.getByRole('button', { name: '查看已连接应用' }).click();
       const github = dialog.getByRole('article').filter({
         has: f.page.getByRole('heading', { name: 'GitHub', exact: true }),
       });
@@ -4815,9 +4822,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await selectSettings(dialog, '能力与环境');
       await list.getByText('已断开', { exact: true }).waitFor();
       expect(await list.getByText('已连接', { exact: true }).count()).toBe(1);
-      expect(await local.getAttribute('data-state')).toBe(
-        'needs_configuration',
-      );
+      expect(await local.count()).toBe(0);
       f.state.connectionError = true;
       await dialog
         .getByRole('button', { name: '刷新能力状态', exact: true })

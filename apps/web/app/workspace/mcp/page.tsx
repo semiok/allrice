@@ -4,7 +4,6 @@ import { redirect } from 'next/navigation';
 import { DataAccessError, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
 import { ConnectedApps } from './connected-apps';
-import { LocalMcpSettings } from '../../runtime-console/local-mcp-settings';
 import styles from './connected-apps.module.css';
 
 export const dynamic = 'force-dynamic';
@@ -65,10 +64,6 @@ export default async function WorkspaceMcpPage({
         workspaceId={workspaceId}
         connectionId={(await searchParams)?.connectionId}
       />
-      <details>
-        <summary>本地应用高级设置</summary>
-        <LocalMcpSettings workspaceId={workspaceId} />
-      </details>
     </main>
   );
 }

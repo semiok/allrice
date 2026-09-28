@@ -109,6 +109,8 @@ describe('workspace MCP page access', () => {
     const html = renderToStaticMarkup(await WorkspaceMcpPage());
     expect(html).toContain('Connected apps');
     expect(html).not.toContain('MCP settings');
+    expect(html).not.toContain('本地应用高级设置');
+    expect(html).not.toContain('固定来源与完整文件校验和 JSON');
   });
 
   it.each([
