@@ -165,6 +165,9 @@ suite('DSH native document previews', () => {
       const warning = page.getByRole('button', {
         name: '缺失 1 种字体，点击查看',
       });
+      expect(
+        (await warning.locator('svg').boundingBox())!.width,
+      ).toBeGreaterThanOrEqual(14);
       await warning.click();
       const dialog = page.getByRole('dialog', { name: '缺失的字体' });
       await dialog.waitFor();
