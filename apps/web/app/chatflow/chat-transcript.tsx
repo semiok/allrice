@@ -10,7 +10,10 @@ import {
 import { SessionReferenceChips } from './session-reference-picker';
 import type { AssistantTreeView } from '@allrice/database';
 
-import { projectWorkProgress } from '../../lib/chatflow/work-progress';
+import {
+  isReplyStreaming,
+  projectWorkProgress,
+} from '../../lib/chatflow/work-progress';
 
 import { AssistantMarkdown } from './assistant-markdown';
 import { MessageImageGallery } from './attachment-components';
@@ -251,7 +254,11 @@ export function ChatTranscript({
                         onOpenArtifact={onOpenArtifact}
                         timing={timing}
                         running={messageIsRunning}
-                        streaming={streamingOutput && !!streamedText}
+                        streaming={
+                          streamingOutput &&
+                          messageIsRunning &&
+                          isReplyStreaming(traceEvents)
+                        }
                         failed={
                           message.status === 'failed' ||
                           messageRun?.status === 'failed'

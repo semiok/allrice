@@ -1906,9 +1906,8 @@ div.composerAttachmentMenu,
   display: inline-flex;
   animation: nativeEventPulse 1.4s ease-in-out infinite;
 }
-/* One cadence for the employee avatar and the top-level work status. */
-[data-working='true'] > .assistantIdentity i,
-[data-working='true'] > .workProcess > div > .processHeader {
+/* DSH owns title animation; keep the employee activity indicator separate. */
+[data-working='true'] > .assistantIdentity i {
   animation: nativeEventPulse 1.4s ease-in-out infinite;
 }
 .processStatus {
@@ -1962,4 +1961,14 @@ div.composerAttachmentMenu,
   flex-direction: column;
   gap: 16px;
   margin-top: 12px;
+}
+
+.contextCompacting {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.contextCompacting svg {
+  width: 14px;
+  height: 14px;
 }
