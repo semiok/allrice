@@ -40,6 +40,36 @@ export function cloudOperationDisplayStatus(
   return labels[op.snapshot.status] ?? op.snapshot.status;
 }
 type Decision = 'approved' | 'rejected' | 'cancel';
+
+/** A later success is context, not a rewrite of this call's failure receipt. */
+export function laterSuccessfulMcpCall(
+  op: CloudOperationView,
+  operations: CloudOperationView[],
+) {
+  const proposal = op.proposal;
+  if (
+    proposal.kind !== 'mcp' ||
+    proposal.risk !== 'read_only' ||
+    op.snapshot.status !== 'failed' ||
+    op.snapshot.result?.effects !== 'none'
+  )
+    return undefined;
+  const failedAt = Date.parse(op.snapshot.result.evidence.recordedAt);
+  return operations.find(
+    (candidate) =>
+      candidate.proposal.kind === 'mcp' &&
+      candidate.proposal.risk === 'read_only' &&
+      candidate.proposal.endpoint === proposal.endpoint &&
+      candidate.proposal.tool === proposal.tool &&
+      candidate.snapshot.binding.execution.targetId ===
+        op.snapshot.binding.execution.targetId &&
+      candidate.snapshot.binding.task.runId ===
+        op.snapshot.binding.task.runId &&
+      candidate.snapshot.status === 'succeeded' &&
+      candidate.snapshot.result &&
+      Date.parse(candidate.snapshot.result.evidence.recordedAt) > failedAt,
+  )?.snapshot.binding.attempt.operationId;
+}
 function OperationDetail({
   icon,
   title,
@@ -84,10 +114,12 @@ function mcpAuthorizationLabel(op: CloudOperationView) {
 export function CloudOperationCard({
   op,
   busy,
+  laterSuccessId,
   onAct,
 }: {
   op: CloudOperationView;
   busy: boolean;
+  laterSuccessId?: string;
   onAct: (op: CloudOperationView, decision: Decision) => void;
 }) {
   const request = op.approval?.request,
@@ -128,9 +160,17 @@ export function CloudOperationCard({
           {proposal.kind === 'cloud' ? '云端计算' : '应用工具'}
         </strong>
         <span className={styles.status} role="status">
-          {cloudOperationDisplayStatus(op)}
+          {laterSuccessId
+            ? '本次未成功 · 后续调用已成功'
+            : cloudOperationDisplayStatus(op)}
         </span>
       </header>
+      {laterSuccessId && (
+        <p className={styles.notice}>
+          同一应用工具的后续调用已成功，本次失败记录仍保留。
+          <a href={`#operation-${laterSuccessId}`}>查看成功结果</a>
+        </p>
+      )}
       {!op.enabled && (
         <p className={styles.notice}>
           新执行已停用；保留已有记录与授权状态，仍可请求停止本轮。
@@ -463,6 +503,7 @@ export function CloudOperationPanel({
         <CloudOperationCard
           key={op.snapshot.binding.attempt.operationId}
           op={op}
+          laterSuccessId={laterSuccessfulMcpCall(op, operations)}
           busy={busy}
           onAct={(operation, decision) => void act(operation, decision)}
         />

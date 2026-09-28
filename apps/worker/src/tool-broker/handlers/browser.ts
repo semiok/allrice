@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   completeManagedBrowserTask,
@@ -220,25 +221,59 @@ export const runManagedBrowser: RiceToolHandler = async ({
     browserLease,
     input.call.id,
   );
-  let startedBrowserTask;
-  try {
-    startedBrowserTask = await startManagedBrowserTask({
-      context: input.context,
-      taskId: browserTask.id,
-      lease: browserLease,
-    });
-  } catch (error) {
-    if (error instanceof ManagedBrowserTaskStartError) {
-      throw new HandlerError(
-        error.code,
-        error.code === 'BROWSER_TARGET_BUSY'
-          ? '云端浏览器当前任务已满，请稍后重试'
-          : '云端浏览器任务在开始前已超时',
-        error.code === 'BROWSER_TARGET_BUSY',
-      );
+  const waitingMonitor = createManagedBrowserCancellationMonitor({
+    organizationId: input.context.organizationId,
+    workspaceId: input.context.workspaceId!,
+    runId: input.context.runId,
+    taskId: browserTask.id,
+    parentSignal: input.signal,
+    check: input.managedBrowserCancelCheck,
+    pollIntervalMs: input.managedBrowserCancelPollIntervalMs,
+  });
+  const startedBrowserTask = await (async () => {
+    try {
+      for (;;) {
+        waitingMonitor.signal.throwIfAborted();
+        try {
+          return await startManagedBrowserTask({
+            context: input.context,
+            taskId: browserTask.id,
+            lease: browserLease,
+          });
+        } catch (error) {
+          if (!(error instanceof ManagedBrowserTaskStartError)) throw error;
+          if (error.code !== 'BROWSER_TARGET_BUSY') {
+            throw new HandlerError(
+              error.code,
+              '云端浏览器任务在等待时超过时限',
+              false,
+            );
+          }
+        }
+        // Retry admission only, never replay an executed browser task. Each
+        // poll checks the durable deadline, worker lease and target capacity.
+        await delay(500, undefined, { signal: waitingMonitor.signal });
+      }
+    } catch (error) {
+      if (waitingMonitor.signal.aborted) {
+        await completeManagedBrowserTask({
+          context: input.context,
+          lease: browserLease,
+          taskId: browserTask.id,
+          status: 'canceled',
+          errorCode: 'BROWSER_TASK_CANCELED',
+        }).catch(() => undefined);
+        throw new HandlerError(
+          'BROWSER_TASK_CANCELED',
+          '浏览任务已取消，未启动浏览器',
+          false,
+        );
+      }
+      throw error;
+    } finally {
+      waitingMonitor.dispose();
     }
-    throw error;
-  }
+  })();
   const browserTimeoutMs = Math.max(
     1,
     Date.parse(startedBrowserTask.deadlineAt) - Date.now(),

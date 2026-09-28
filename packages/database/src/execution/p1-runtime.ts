@@ -669,12 +669,33 @@ export async function startManagedBrowserTask(input: {
         and status = 'running'
     `;
     if ((counts[0]?.running_count ?? 0) >= current.target_concurrency_limit) {
-      await transaction`
-        update allrice_managed_browser_tasks
-        set status = 'failed', started_at = coalesce(started_at, created_at),
-            error_code = 'BROWSER_TARGET_BUSY', completed_at = now()
-        where id = ${taskId} and status = 'queued'
-      `;
+      // Capacity is temporary: keep this exact task queued until a slot opens.
+      return { kind: 'busy' as const };
+    }
+
+    // Give earlier live tasks the next slots. Expired leases, canceled work
+    // and tasks past their deadline must not block the queue.
+    const [ahead] = await transaction<{ count: number }[]>`
+      select count(*)::integer as count
+      from allrice_managed_browser_tasks task
+      join allrice_jobs job on job.id = task.job_id
+      join allrice_runs run on run.id = task.run_id
+      where task.organization_id = ${input.context.organizationId}
+        and task.workspace_id = ${input.context.workspaceId}
+        and task.target_id = ${current.target_id}
+        and task.status = 'queued' and task.cancel_requested_at is null
+        and (task.created_at, task.id) < (
+          select created_at, id from allrice_managed_browser_tasks where id = ${taskId}
+        )
+        and task.created_at + ${current.target_timeout_seconds} * interval '1 second' > now()
+        and job.status = 'running' and job.attempt = task.job_attempt
+        and job.lease_expires_at > now() and job.cancel_requested_at is null
+        and run.state in ('queued', 'running')
+    `;
+    if (
+      (counts[0]?.running_count ?? 0) + (ahead?.count ?? 0) >=
+      current.target_concurrency_limit
+    ) {
       return { kind: 'busy' as const };
     }
 
@@ -1080,7 +1101,11 @@ export async function completeManagedBrowserTask(input: {
       for update of task, run, job
     `;
     const current = rows[0];
-    if (!current || current.status === 'queued') {
+    if (
+      !current ||
+      (current.status === 'queued' &&
+        (input.status !== 'canceled' || evidence.length > 0))
+    ) {
       throw new DataAccessError('not_found');
     }
     const artifactRows = await transaction<BrowserEvidenceArtifactRow[]>`
@@ -1118,7 +1143,7 @@ export async function completeManagedBrowserTask(input: {
     });
     const finalErrorCode =
       finalStatus === 'canceled' ? 'BROWSER_TASK_CANCELED' : errorCode;
-    if (current.status !== 'running') {
+    if (current.status !== 'running' && current.status !== 'queued') {
       if (
         current.status !== finalStatus ||
         canonical(current.evidence) !== canonical(evidence) ||
@@ -1139,7 +1164,7 @@ export async function completeManagedBrowserTask(input: {
         and organization_id = ${input.context.organizationId}
         and workspace_id = ${input.context.workspaceId}
         and run_id = ${input.context.runId}
-        and status = 'running'
+        and status in ('queued', 'running')
       returning *
     `;
     const row = updated[0];
