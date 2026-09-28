@@ -143,6 +143,49 @@ suite('DSH native document previews', () => {
       )
       .toBe(true);
   }
+  it('keeps missing fonts in the native toolbar notice without blocking the PDF', async () => {
+    const { page, errors } = await mount(
+      [
+        {
+          name: '中文文档.docx',
+          preview: {
+            ...pdf(),
+            converted: true,
+            missingFonts: ['Microsoft YaHei'],
+          },
+        },
+      ],
+      390,
+    );
+    try {
+      await page
+        .getByText('Native PDF selectable text', { exact: true })
+        .waitFor({ timeout: 30000 });
+      expect(await page.getByRole('dialog').count()).toBe(0);
+      const warning = page.getByRole('button', {
+        name: '缺失 1 种字体，点击查看',
+      });
+      expect(
+        (await warning.locator('svg').boundingBox())!.width,
+      ).toBeGreaterThanOrEqual(14);
+      await warning.click();
+      const dialog = page.getByRole('dialog', { name: '缺失的字体' });
+      await dialog.waitFor();
+      expect(await dialog.innerText()).toContain('文字和排版可能与原文档不同');
+      expect(await dialog.innerText()).toContain('Microsoft YaHei');
+      const box = await dialog.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+      await page.keyboard.press('Escape');
+      expect(await dialog.count()).toBe(0);
+      expect(await warning.evaluate((e) => e === document.activeElement)).toBe(
+        true,
+      );
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
   it('opens native Excel and PDF concurrently without cross-registering chunks', async () => {
     const ExcelJS = createRequire(resolve('apps/worker/package.json'))(
       'exceljs',

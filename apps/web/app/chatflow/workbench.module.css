@@ -9,7 +9,8 @@
   font-size: 13px;
   line-height: 1.5;
 }
-.panel button,
+/* The native Office action owns its compact icon-button geometry. */
+.panel button:not(:where([data-office-font-warning] button)),
 .entry {
   font: inherit;
   cursor: pointer;

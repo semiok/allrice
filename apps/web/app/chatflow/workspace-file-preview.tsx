@@ -55,6 +55,9 @@ export function WorkspaceFilePreview(props: {
   return (
     <div className={reader.reader}>
       <DocumentToolbar
+        missingFonts={
+          preview?.kind === 'pdf' ? preview.missingFonts : undefined
+        }
         title={
           toolResult
             ? props.title.startsWith('tool-result-web-search-')

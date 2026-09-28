@@ -5,6 +5,7 @@
   min-width: 0;
 }
 .card {
+  container-type: inline-size;
   --cloud-accent: var(--employee-start, #3b82f6);
   border: 1px solid
     color-mix(
@@ -117,22 +118,28 @@
 .card summary::marker {
   content: '';
 }
-.executionDetails {
+.executionFooter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
+}
+.executionDetails {
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: 1;
 }
 .executionDetails > summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   min-height: 48px;
-  padding: 7px 0;
+  padding: 7px 132px 7px 0;
   font-size: 13px;
   font-weight: 600;
 }
 .detailsToggle {
-  padding: 5px 9px;
-  margin-right: -9px;
+  padding: 5px 0;
   border-radius: 7px;
   color: var(--dsw-alias-label-secondary, #68717e);
   font-size: 12px;
@@ -266,9 +273,6 @@
   font-size: 12px;
   padding: 7px 11px;
 }
-.card > button {
-  margin-top: 10px;
-}
 .root button:hover:not(:disabled),
 .card button:hover:not(:disabled) {
   background: var(--allrice-sidebar-hover, #e9ecf1);
@@ -300,6 +304,66 @@
 .actions small {
   flex-basis: 100%;
 }
+.stopControl {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  margin-top: 8px;
+  z-index: 1;
+}
+.card .stopButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 5px 10px;
+  color: var(--dsw-alias-label-secondary, #626c79);
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-bg-layer-2, #fff) 75%,
+    transparent
+  );
+  border-color: var(--dsw-alias-border-l2, #dbe2eb);
+  white-space: nowrap;
+  font-weight: 500;
+  line-height: 1.4;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+.stopIcon {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 2px;
+  background: currentColor;
+}
+.stopLabel {
+  display: inline;
+}
+@container (max-width: 220px) {
+  .executionDetails > summary {
+    padding-right: 52px;
+  }
+  .card .stopButton {
+    width: 32px;
+    padding: 0;
+  }
+  .stopLabel {
+    display: none;
+  }
+}
+.card .stopButton:hover:not(:disabled) {
+  color: #bd5149;
+  background: #fff1ef;
+  border-color: #efd2cf;
+}
+.card .stopButton:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
 .notice {
   color: #a36b27;
 }
@@ -325,9 +389,25 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .detailChevron {
+  .detailChevron,
+  .card .stopButton {
     transition: none;
   }
+}
+@media (pointer: coarse) {
+  .card .stopButton {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .stopControl {
+    margin-top: 2px;
+  }
+}
+
+:global(body[data-ds-dark-theme]) .card .stopButton:hover:not(:disabled) {
+  color: #f0918c;
+  background: #422b2d;
+  border-color: #684145;
 }
 
 :global(body[data-ds-dark-theme]) .card[data-status='succeeded'] .status {

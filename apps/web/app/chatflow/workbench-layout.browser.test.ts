@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { officePreview } from '@allrice/office-runtime';
+import type { CloudOperationView } from '@allrice/database';
 import type {
   Browser,
   Locator,
@@ -346,6 +347,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       } as ArtifactPreview,
       fileDelay: null as Promise<void> | null,
       text: report,
+      textPageLines: null as number | null,
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
@@ -1018,15 +1020,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       if (path.includes('/artifacts/')) {
         const a = state.items.find((item) => path.includes(item.id));
         if (!a) return answer({}, 404);
-        if (path.endsWith('/content'))
+        if (path.endsWith('/content')) {
+          const offset = Number(
+            new URL(route.request().url()).searchParams.get('offset') ?? 1,
+          );
+          const lines = state.text.split('\n');
+          const page =
+            state.textPageLines === null
+              ? null
+              : lines.slice(offset - 1, offset - 1 + state.textPageLines);
           return answer(
             state.officePreview ?? {
               kind: 'text',
               mediaType: 'text/markdown',
-              text: state.text,
+              text: page ? page.join('\n') : state.text,
+              ...(page
+                ? {
+                    offset,
+                    lines: page.length,
+                    eof: offset + page.length > lines.length,
+                  }
+                : {}),
             },
             state.contentError ? 503 : 200,
           );
+        }
         state.detailReads[a.id] = (state.detailReads[a.id] ?? 0) + 1;
         if (state.detailStatus !== 200)
           return answer(
@@ -1188,6 +1206,114 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.errors).toEqual([]);
         expect(f.writes).toEqual([]);
       } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390, 320])(
+    'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
+    async (width) => {
+      const f = await fixture({ width, running: true });
+      const operation = {
+        snapshot: {
+          status: 'running',
+          binding: { attempt: { operationId: id(8801) } },
+        },
+        enabled: true,
+        mcpAuthorization: { available: true, reason: 'available' },
+        proposal: {
+          kind: 'mcp',
+          endpoint: 'https://example.test/mcp',
+          tool: 'records.list',
+          arguments: {},
+          risk: 'read',
+        },
+        approval: null,
+        result: null,
+      } as unknown as CloudOperationView;
+      const requests: unknown[] = [];
+      let selectedRun = '';
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      try {
+        await f.page.route(
+          '**/api/v1/runtime/cloud-operations?**',
+          async (route) => {
+            const request = route.request();
+            const runId = new URL(request.url()).searchParams.get('runId')!;
+            selectedRun ||= runId;
+            if (request.method() === 'POST') {
+              requests.push(request.postDataJSON());
+              if (requests.length === 1)
+                return route.fulfill({ status: 503, json: {} });
+              await pending;
+              return route.fulfill({ json: {} });
+            }
+            return route.fulfill({
+              json: { operations: runId === selectedRun ? [operation] : [] },
+            });
+          },
+        );
+        await f.page.reload();
+        if (width < 760) {
+          const collapse = f.page.getByRole('button', {
+            name: '收起侧边栏',
+            exact: true,
+          });
+          if (await collapse.isVisible()) await collapse.click();
+        }
+        const card = f.page.locator(`#operation-${id(8801)}`);
+        const stop = card.getByRole('button', {
+          name: '请求停止本轮全部操作',
+          exact: true,
+        });
+        await stop.waitFor();
+        const runningHeight = (await card.boundingBox())!.height;
+        const label = card.getByText('运行详情', { exact: true });
+        const labelBox = (await label.boundingBox())!;
+        const buttonBox = (await stop.boundingBox())!;
+        expect(buttonBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
+        expect(labelBox.height).toBeLessThan(40);
+        await stop.click();
+        await expect.poll(() => requests.length).toBe(1);
+        await expect.poll(() => stop.isEnabled()).toBe(true);
+        await stop.click();
+        const stopping = card.getByRole('button', {
+          name: '正在停止本轮全部操作',
+          exact: true,
+        });
+        await stopping.waitFor();
+        expect(await stopping.isDisabled()).toBe(true);
+        release();
+        await expect.poll(() => requests.length).toBe(2);
+        expect(requests).toEqual([
+          { runId: selectedRun, action: 'cancel' },
+          { runId: selectedRun, action: 'cancel' },
+        ]);
+        // The write acknowledgment alone must not claim that a remote service stopped.
+        expect(await stopping.isDisabled()).toBe(true);
+        expect(await card.getByRole('status').innerText()).toBe('正在执行');
+        operation.snapshot.status = 'cancel_requested';
+        await card
+          .getByText('停止意图已记录，结果待确认', { exact: true })
+          .waitFor();
+        expect(await stopping.isDisabled()).toBe(true);
+        // Completion can race with a stop request; display the real result.
+        operation.snapshot.status = 'succeeded';
+        operation.result = {
+          code: 'completed',
+          output: 'Done',
+          trusted: false,
+        };
+        await card.getByText('执行成功', { exact: true }).waitFor();
+        expect(await stopping.count()).toBe(0);
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
+        expect(requests).toHaveLength(2);
+      } finally {
+        release();
         await f.close();
       }
     },
@@ -4344,9 +4470,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .evaluate((el) => el.scrollWidth <= innerWidth),
         ).toBe(true);
         await picture.click();
-        const preview = f.panel.getByRole('img', {
-          name: '圆形海报.png 静态预览',
-        });
+        const preview = f.panel.locator('[data-image-preview] img');
         await preview.waitFor();
         const zoomFrame = f.panel.locator('[data-document-zoom-frame]');
         await zoomFrame.scrollIntoViewIfNeeded();
@@ -5902,7 +6026,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('rejects late cross-session responses and renders content failure/retry without executing HTML or external images', async () => {
+  it('rejects late cross-session responses, isolates unsafe Markdown and reads native text pages', async () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
@@ -5924,6 +6048,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '重试预览', exact: true })
         .waitFor();
       f.state.contentError = false;
+      let imageRequested = false;
+      await f.page.route('https://example.com/tracker.png', async (route) => {
+        imageRequested = true;
+        await route.fulfill({
+          contentType: 'image/png',
+          body: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+            'base64',
+          ),
+        });
+      });
       f.state.text =
         '# Safe report\n<script>window.BAD = true</script>\n\n![tracking](https://example.com/tracker.png)\n\n[bad](javascript:alert(1))';
       await f.panel
@@ -5931,11 +6066,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       await f.panel.getByRole('heading', { name: 'Safe report' }).waitFor();
       expect(
-        await f.panel
-          .locator('img,iframe,script,a[href^="javascript:"]')
-          .count(),
+        await f.panel.locator('iframe,script,a[href^="javascript:"]').count(),
       ).toBe(0);
-      f.state.text = '较长的安全原文\n'.repeat(4000);
+      expect(
+        await f.page.evaluate(() => Reflect.get(window, 'BAD')),
+      ).toBeUndefined();
+      await expect.poll(() => imageRequested).toBe(true);
+      await expect
+        .poll(() =>
+          f.panel
+            .locator('img[src="https://example.com/tracker.png"]')
+            .evaluateAll((images) =>
+              images.some(
+                (image) => (image as HTMLImageElement).naturalWidth > 0,
+              ),
+            ),
+        )
+        .toBe(true);
+      f.state.text = Array.from(
+        { length: 6001 },
+        (_, i) => `较长的安全原文 ${i}`,
+      ).join('\n');
+      f.state.textPageLines = 5000;
       f.state.items.unshift(artifact(12));
       await f.reloadList();
       const body = f.panel.getByRole('region', {
@@ -5945,8 +6097,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await body.waitFor();
       const firstLength = (await body.innerText()).length;
       expect(firstLength).toBeLessThan(f.state.text.length);
-      await body.getByRole('button', { name: '加载更多内容' }).click();
-      expect((await body.innerText()).length).toBeGreaterThan(firstLength);
+      await f.panel.getByRole('button', { name: '加载更多内容' }).click();
+      await expect
+        .poll(() => body.innerText(), { timeout: 10_000 })
+        .toContain('较长的安全原文 6000');
+      expect(
+        await f.panel.getByRole('button', { name: '加载更多内容' }).count(),
+      ).toBe(0);
     } finally {
       await f.close();
     }

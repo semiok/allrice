@@ -270,16 +270,12 @@
             {
               "path": "lib/client.pdf.js",
               "sha256": "9dfd5bef9df99f1bf353575ec840a69f554164554d6742f83dbebb0d3b144324",
-              "exports": [
-                "PdfBody"
-              ]
+              "exports": ["PdfBody"]
             },
             {
               "path": "lib/client.excel.js",
               "sha256": "8577ae0297f42f7ce733281748118422131c5cb9dc7796cb6fb1028be6be952d",
-              "exports": [
-                "ExcelBody"
-              ]
+              "exports": ["ExcelBody"]
             }
           ]
         }
@@ -442,6 +438,26 @@
           "sha256": "3841c75c01d928a2a29c2411494ce2d6d7d8e0e36601767d183d818114e0ae2a",
           "patch": "scripts/dsh-ui-patches/preview-html-pack.ts.patch",
           "patchSha256": "2af83d2a6e5a654ac90a82a3188d6b3f3b206150f26a4861246fbda92aaad259"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/office/FontNotice.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/office/FontNotice.tsx",
+          "upstreamSha256": "ab1d86ed6143a38b7d046e1af78d6ec258fc78e3734e986dfda117ad859437ea",
+          "sha256": "3da2b1973a3e951b1185a40182bef4015d747e57ee9b67de14f8ed8d00428e47",
+          "patch": "scripts/dsh-ui-patches/preview-office-FontNotice.tsx.patch",
+          "patchSha256": "d130ebd554c7554d7da6aacdd362d43458156691a0e05e9efe4c41e98e0e0fbd"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/office/FontNotice.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/office/FontNotice.module.css",
+          "upstreamSha256": "e4c929a87defaee9033fa27fc9e22398d0d3eb02471bed64f5a34e737f45a080",
+          "sha256": "e4c929a87defaee9033fa27fc9e22398d0d3eb02471bed64f5a34e737f45a080"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/office/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/office/locales.ts",
+          "upstreamSha256": "6dfd039a876fe6e921ea4e1bf231b1c8d96a40db74db5f3425b8f7d81e3aa76c",
+          "sha256": "6dfd039a876fe6e921ea4e1bf231b1c8d96a40db74db5f3425b8f7d81e3aa76c"
         }
       ]
     },
