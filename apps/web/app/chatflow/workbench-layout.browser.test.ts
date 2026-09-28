@@ -347,6 +347,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       } as ArtifactPreview,
       fileDelay: null as Promise<void> | null,
       text: report,
+      textPageLines: null as number | null,
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
@@ -1019,15 +1020,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       if (path.includes('/artifacts/')) {
         const a = state.items.find((item) => path.includes(item.id));
         if (!a) return answer({}, 404);
-        if (path.endsWith('/content'))
+        if (path.endsWith('/content')) {
+          const offset = Number(
+            new URL(route.request().url()).searchParams.get('offset') ?? 1,
+          );
+          const lines = state.text.split('\n');
+          const page =
+            state.textPageLines === null
+              ? null
+              : lines.slice(offset - 1, offset - 1 + state.textPageLines);
           return answer(
             state.officePreview ?? {
               kind: 'text',
               mediaType: 'text/markdown',
-              text: state.text,
+              text: page ? page.join('\n') : state.text,
+              ...(page
+                ? {
+                    offset,
+                    lines: page.length,
+                    eof: offset + page.length > lines.length,
+                  }
+                : {}),
             },
             state.contentError ? 503 : 200,
           );
+        }
         state.detailReads[a.id] = (state.detailReads[a.id] ?? 0) + 1;
         if (state.detailStatus !== 200)
           return answer(
@@ -4453,9 +4470,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .evaluate((el) => el.scrollWidth <= innerWidth),
         ).toBe(true);
         await picture.click();
-        const preview = f.panel.getByRole('img', {
-          name: '圆形海报.png 静态预览',
-        });
+        const preview = f.panel.locator('[data-image-preview] img');
         await preview.waitFor();
         const zoomFrame = f.panel.locator('[data-document-zoom-frame]');
         await zoomFrame.scrollIntoViewIfNeeded();
@@ -6011,7 +6026,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('rejects late cross-session responses and renders content failure/retry without executing HTML or external images', async () => {
+  it('rejects late cross-session responses, isolates unsafe Markdown and reads native text pages', async () => {
     const f = await fixture({ artifacts: true });
     try {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
@@ -6033,6 +6048,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '重试预览', exact: true })
         .waitFor();
       f.state.contentError = false;
+      let imageRequested = false;
+      await f.page.route('https://example.com/tracker.png', async (route) => {
+        imageRequested = true;
+        await route.fulfill({
+          contentType: 'image/png',
+          body: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+            'base64',
+          ),
+        });
+      });
       f.state.text =
         '# Safe report\n<script>window.BAD = true</script>\n\n![tracking](https://example.com/tracker.png)\n\n[bad](javascript:alert(1))';
       await f.panel
@@ -6040,11 +6066,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       await f.panel.getByRole('heading', { name: 'Safe report' }).waitFor();
       expect(
-        await f.panel
-          .locator('img,iframe,script,a[href^="javascript:"]')
-          .count(),
+        await f.panel.locator('iframe,script,a[href^="javascript:"]').count(),
       ).toBe(0);
-      f.state.text = '较长的安全原文\n'.repeat(4000);
+      expect(
+        await f.page.evaluate(() => Reflect.get(window, 'BAD')),
+      ).toBeUndefined();
+      await expect.poll(() => imageRequested).toBe(true);
+      await expect
+        .poll(() =>
+          f.panel
+            .locator('img[src="https://example.com/tracker.png"]')
+            .evaluateAll((images) =>
+              images.some(
+                (image) => (image as HTMLImageElement).naturalWidth > 0,
+              ),
+            ),
+        )
+        .toBe(true);
+      f.state.text = Array.from(
+        { length: 6001 },
+        (_, i) => `较长的安全原文 ${i}`,
+      ).join('\n');
+      f.state.textPageLines = 5000;
       f.state.items.unshift(artifact(12));
       await f.reloadList();
       const body = f.panel.getByRole('region', {
@@ -6054,8 +6097,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await body.waitFor();
       const firstLength = (await body.innerText()).length;
       expect(firstLength).toBeLessThan(f.state.text.length);
-      await body.getByRole('button', { name: '加载更多内容' }).click();
-      expect((await body.innerText()).length).toBeGreaterThan(firstLength);
+      await f.panel.getByRole('button', { name: '加载更多内容' }).click();
+      await expect
+        .poll(async () => (await body.innerText()).length)
+        .toBeGreaterThan(firstLength);
+      expect(await body.innerText()).toContain('较长的安全原文 6000');
+      expect(
+        await f.panel.getByRole('button', { name: '加载更多内容' }).count(),
+      ).toBe(0);
     } finally {
       await f.close();
     }
