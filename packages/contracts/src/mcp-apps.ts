@@ -24,6 +24,7 @@ export const ConnectMcpAppSchema = z.discriminatedUnion('method', [
       workspaceId: UuidSchema,
       appId: McpAppIdSchema,
       method: z.literal('oauth'),
+      returnSessionId: UuidSchema.optional(),
     })
     .strict(),
   z

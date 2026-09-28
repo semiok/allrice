@@ -176,10 +176,21 @@ export function ChatFlowClient({
     setSettings(null);
     if (!workspace?.workspaceId) return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get('settings') === 'computer') {
-      setSettings({ scope: settingsScope, section: 'computer' });
-      url.searchParams.delete('settings');
-      window.history.replaceState(window.history.state, '', url);
+    const section = url.searchParams.get('settings');
+    if (!section || !['apps', 'computer', 'capabilities'].includes(section))
+      return;
+    setSettings({ scope: settingsScope, section });
+    // Consume the one-time OAuth/legacy entry without adding a Back entry or
+    // removing the selected conversation. No credential is carried in this URL.
+    url.searchParams.delete('settings');
+    try {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    } catch {
+      // Restricted browsers can deny History writes; the modal still works.
     }
   }, [settingsScope, workspace?.workspaceId]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);

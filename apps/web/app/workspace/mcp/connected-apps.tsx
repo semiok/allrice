@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   McpConnectionSchema,
+  UuidSchema,
   MCP_APPS,
   type McpAppId,
   type McpConnection,
@@ -92,6 +93,12 @@ export function ConnectedApps({
       setPendingLogin(null);
     }
   }, [connections, pendingLogin, workspaceId]);
+  function returnSession() {
+    const id = UuidSchema.safeParse(
+      new URLSearchParams(window.location.search).get('session'),
+    ).data;
+    return id ? { returnSessionId: id } : {};
+  }
   async function connectApp(appId: McpAppId, method: 'oauth' | 'token') {
     if (busy) return;
     setBusy(appId);
@@ -104,7 +111,9 @@ export function ConnectedApps({
           workspaceId,
           appId,
           method,
-          ...(method === 'token' ? { bearerToken: credential } : {}),
+          ...(method === 'token'
+            ? { bearerToken: credential }
+            : returnSession()),
         }),
       });
       const body = await response.json();
@@ -135,6 +144,7 @@ export function ConnectedApps({
           workspaceId,
           connectionId: connection.id,
           ...(action === 'credential' ? { bearerToken: credential } : {}),
+          ...(action === 'login' ? returnSession() : {}),
         }),
       });
       const body = await response.json();
