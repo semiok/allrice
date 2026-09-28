@@ -3,6 +3,7 @@
 import { useState, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
+  mcpFailureCopy,
   type WorkbenchArtifact,
   type InteractionStatus,
 } from '@allrice/contracts';
@@ -145,6 +146,10 @@ export function ChatTranscript({
                 streamingOutput,
               );
               const responseText = progress.finalText;
+              const applicationFailure =
+                message.status === 'failed' && message.applicationFailure
+                  ? mcpFailureCopy[message.applicationFailure]
+                  : null;
 
               return (
                 <div
@@ -251,6 +256,7 @@ export function ChatTranscript({
                           message.status === 'failed' ||
                           messageRun?.status === 'failed'
                         }
+                        failureTitle={applicationFailure?.title}
                         canceled={messageRun?.status === 'canceled'}
                         traceStatus={trace?.status}
                         onRetry={() => {
@@ -349,7 +355,9 @@ export function ChatTranscript({
                         <small className={styles.failedMessage}>
                           {message.errorCode ===
                           'ASSISTANT_EXECUTION_UNRESOLVED'
-                            ? '部分调用的执行状态未能确认。'
+                            ? applicationFailure
+                              ? `本轮已结束。${applicationFailure.detail}`
+                              : '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
                             : '这次没有完成。'}
                         </small>
                       ) : null}

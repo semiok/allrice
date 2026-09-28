@@ -1,3 +1,4 @@
+import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
   archiveSessionActivity,
   retryArchiveTransaction,
@@ -798,6 +799,13 @@ export async function getChatSessionHistory(
 ) {
   const row = await sessionRow(context, workspaceId, sessionId);
   const sql = getDatabase();
+  const applicationFailures = await readSessionMcpFailures(
+    context.organizationId,
+    workspaceId,
+    row.id,
+    row.owner_id,
+    sql,
+  );
   const workMethods = await readSessionWorkMethods(
     context.organizationId,
     workspaceId,
@@ -952,7 +960,16 @@ export async function getChatSessionHistory(
         return {
           ...mapped,
           ...(message.role === 'assistant' && message.run_id
-            ? { workMethods: workMethods.get(message.run_id) ?? [] }
+            ? {
+                workMethods: workMethods.get(message.run_id) ?? [],
+                ...(applicationFailures.has(message.run_id)
+                  ? {
+                      applicationFailure: applicationFailures.get(
+                        message.run_id,
+                      )!,
+                    }
+                  : {}),
+              }
             : {}),
         };
       }),

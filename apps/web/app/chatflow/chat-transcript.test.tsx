@@ -417,3 +417,29 @@ describe('historical transcript capability gating', () => {
     });
   });
 });
+
+it('keeps the saved answer and explains a failed GitHub call without looking active', () => {
+  const html = render(
+    false,
+    [
+      {
+        ...messages[0]!,
+        status: 'failed',
+        errorCode: 'ASSISTANT_EXECUTION_UNRESOLVED',
+        applicationFailure: 'github_merge_permission',
+        content: { text: 'Saved final explanation' },
+      },
+    ],
+    [],
+    {
+      runTraces: { 'run-0': { status: 'loaded', events: [] } },
+    },
+  );
+  expect(html).toContain('Saved final explanation');
+  expect(html).toContain('GitHub 权限不足');
+  expect(html).toContain('本轮已结束');
+  expect(html).toContain('Contents');
+  expect(html).not.toContain('部分调用的执行状态未能确认');
+  expect(html).not.toContain('data-working="true"');
+  expect(html).not.toContain('重新连接并恢复执行记录');
+});
