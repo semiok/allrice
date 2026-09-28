@@ -178,6 +178,9 @@ export function installTaskProgress(ctx, bridge) {
     // A sibling might have produced a new pause; recheck at dispatch below.
   }
   ctx.on('session/event', (session, event) => {
+    // Native pruning rewrites tool/result surface nodes, including earlier
+    // turns. Replacements change model context, not execution receipts.
+    if (event.surfaceOp?.op === 'replace') return;
     const d = event.data;
     if (event.type === 'tool/call') {
       let args = d.arguments;

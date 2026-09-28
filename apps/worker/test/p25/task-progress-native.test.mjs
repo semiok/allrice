@@ -45,6 +45,66 @@ function fixture() {
   };
 }
 describe('native progress middleware', () => {
+  it.each(['current', 'historical'])(
+    'does not settle a %s tool again when native pruning replaces its history',
+    async (scope) => {
+      const f = fixture(),
+        emit = f.hooks.get('session/event');
+      const result = {
+        type: 'tool/result',
+        surfaceOp: 'append',
+        data: {
+          message: {
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'large-result',
+                content: [{ type: 'text', text: 'original tool output' }],
+              },
+            ],
+          },
+        },
+      };
+      if (scope === 'current') {
+        emit(f.root, {
+          type: 'tool/call',
+          data: {
+            callId: 'large-result',
+            name: 'web_fetch',
+            arguments: '{}',
+          },
+        });
+        emit(f.root, result);
+        await f.runtime.flush();
+      }
+      const originalReceipts = f.bridge.mock.calls.length;
+      emit(f.root, { type: 'compaction/prune', data: { shadowedSeqs: [12] } });
+      emit(f.root, {
+        ...result,
+        surfaceOp: { op: 'replace', startSeq: 12, endSeq: 12 },
+        sourceEventSeqs: [12],
+        data: {
+          message: {
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'large-result',
+                content: [
+                  { type: 'text', text: '[... tool result middle pruned ...]' },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      await f.runtime.flush();
+      expect(f.bridge).toHaveBeenCalledTimes(originalReceipts);
+      const next = vi.fn(async () => ({ maxTokens: 16_000 }));
+      await f.hooks.get('agent/request')({ agent: f.root }, next);
+      expect(next).toHaveBeenCalledOnce();
+      expect(f.ctx.userQuestions.ask).not.toHaveBeenCalled();
+    },
+  );
   it('normalizes keys and transport noise, retaining business input', () => {
     expect(progressDigest({ b: 1, a: 'path', timestamp: '1' })).toBe(
       progressDigest({ a: 'path', timestamp: '2', b: 1 }),
