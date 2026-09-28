@@ -5,25 +5,30 @@ import type {
 } from '@allrice/contracts';
 import {
   capabilityLabels,
-  capabilityReasonLabel,
+  capabilityReasons,
   capabilityStateLabels,
 } from './capability-catalog';
 import styles from './capability-panel.module.css';
 import { OnlineAppConnections } from './online-app-connections';
 
-const groups: { label: string; ids: WorkspaceCapabilityId[] }[] = [
+const groups: {
+  label: string;
+  description?: string;
+  ids: WorkspaceCapabilityId[];
+}[] = [
   {
     label: '云端能力',
     ids: ['report', 'cloud_command', 'cloud_browser', 'cloud_mcp'],
   },
   {
-    label: '本地能力',
+    label: 'Bridge 能力',
+    description:
+      '由已连接电脑上的 Bridge 提供，状态根据设备、运行环境和授权判断。',
     ids: [
       'local_files',
       'changeset',
       'local_command',
       'local_browser',
-      'local_mcp',
       'development',
     ],
   },
@@ -73,6 +78,9 @@ export function CapabilityContent({
               {group.label}
               <span>{group.ids.length} 项</span>
             </summary>
+            {group.description && (
+              <p className={styles.groupDescription}>{group.description}</p>
+            )}
             {group.ids.map((id) => {
               const label = capabilityLabels[id],
                 capability = data?.capabilities.find((c) => c.id === id);
@@ -106,17 +114,14 @@ export function CapabilityContent({
                             ? '选择文件夹'
                             : capability?.reason === 'device_paused'
                               ? '已暂停'
-                              : id === 'local_mcp' &&
-                                  capability?.reason === 'connection_missing'
-                                ? '未配置本地服务'
-                                : capabilityStateLabels[state]}
+                              : capabilityStateLabels[state]}
                     </span>
                   </summary>
                   <div className={styles.cardBody}>
                     <p>{label.description}</p>
                     <p>
                       {capability
-                        ? capabilityReasonLabel(capability)
+                        ? capabilityReasons[capability.reason]
                         : '尚未取得当前状态，请刷新确认。'}
                     </p>
                     {capability?.action === 'compose' &&
@@ -148,11 +153,6 @@ export function CapabilityContent({
                           已连接应用
                         </button>
                       </>
-                    )}
-                    {id === 'local_mcp' && data && (
-                      <button type="button" onClick={onConnections}>
-                        查看已连接应用
-                      </button>
                     )}
                     {capability?.reason === 'runner_missing' &&
                       id === 'local_command' &&
@@ -187,7 +187,7 @@ export function CapabilityContent({
                             </>
                           ) : (
                             <>
-                              <li>{capabilityReasonLabel(capability)}</li>
+                              <li>{capabilityReasons[capability.reason]}</li>
                               <li>
                                 完成后点击“刷新能力状态”。其他可用能力可以继续使用。
                               </li>
@@ -196,7 +196,6 @@ export function CapabilityContent({
                         </ol>
                         {[
                           'local_command',
-                          'local_mcp',
                           'changeset',
                           'local_browser',
                         ].includes(id) && (

@@ -142,17 +142,6 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
       '配置无法通过校验；请联系管理员核对，不会按可用处理。',
   };
 
-export function capabilityReasonLabel(capability: WorkspaceCapability) {
-  if (capability.id === 'local_mcp') {
-    if (capability.reason === 'connection_missing')
-      return '尚未配置本地应用服务。GitHub、Linear 等在线连接请查看“在线应用”，无需在这里重复配置。';
-    if (capability.reason === 'connection_unverified')
-      return '本地应用服务尚未准备完成。请保持 Bridge 在线，并在“已连接应用 → 本地应用高级设置”中检查。';
-    if (capability.reason === 'connection_grant_missing')
-      return '当前员工还不能使用这个本地应用，请在“已连接应用 → 本地应用高级设置”中检查。';
-  }
-  return capabilityReasons[capability.reason];
-}
 export function capabilitySettingsHref(
   action: WorkspaceCapability['action'],
   workspaceId: string,
