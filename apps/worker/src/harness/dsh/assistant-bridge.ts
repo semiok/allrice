@@ -542,7 +542,7 @@ export function createAssistantWorkerBridge(
           return {
             error: 'assistant_child_invalid',
             message:
-              '当前任务没有这个助手，请使用 assistant.inspect 返回的直属助手编号，或直接继续当前任务。',
+              '当前任务没有这个助手，请使用本次 assistant.delegate 返回的直属助手编号，或直接继续当前任务。',
           };
         await runtime.requestMessage(context, {
           runId: task.rootRunId,

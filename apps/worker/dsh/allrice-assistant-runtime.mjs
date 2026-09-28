@@ -697,7 +697,7 @@ export function createGovernedAssistantNativeRuntime(
         type: 'string',
         required: true,
         description:
-          'Existing child Run UUID returned by assistant_delegate or assistant_inspect. Never use placeholders such as none. If there is no delegated child, continue the task yourself.',
+          'Existing child Run UUID returned by assistant_delegate. Never use placeholders such as none. If there is no delegated child, continue the task yourself.',
       },
       text: { type: 'string', required: true },
     },
@@ -767,7 +767,7 @@ export function createGovernedAssistantNativeRuntime(
             : action === 'report'
               ? 'Child assistant only: deliver the delegated result to your parent. Never use this for root user replies or progress narration.'
               : action === 'message'
-                ? 'Send a follow-up to a child delegated in the CURRENT task. Use its actual current Run UUID from assistant_delegate or assistant_inspect; never reuse a past task child ID.'
+                ? 'Send a follow-up to a child delegated in the CURRENT task. Use its actual current Run UUID from assistant_delegate; never reuse a past task child ID.'
                 : `Governed assistant ${action}; platform identity and authorization are checked.`,
         parameters,
         output: {
