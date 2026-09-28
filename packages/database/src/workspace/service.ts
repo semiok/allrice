@@ -1181,7 +1181,7 @@ export async function sendChatMessage(
   if (session.employee_version_id !== effectiveEmployeeVersionId) {
     await sql`
       update allrice_chat_sessions
-      set employee_version_id = ${effectiveEmployeeVersionId}, updated_at = now()
+      set employee_version_id = ${effectiveEmployeeVersionId}
       where id = ${session.id}
         and organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId}
