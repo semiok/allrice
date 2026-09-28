@@ -30,7 +30,7 @@ function errorCode(error: unknown) {
 }
 
 /**
- * Runs a platform draft as an ephemeral preview in a selected tenant context.
+ * Runs a platform draft in the internal test workspace unless a company was explicitly selected.
  * The draft Runtime Profile is never published, while read-only Tool Broker
  * calls use the selected workspace's real policy, files and online Bridge.
  */
@@ -42,8 +42,13 @@ export async function executeNextPlatformEmployeeTest(input: {
   const test = await claimNextPlatformEmployeeTestRun(input.workerId);
   if (!test) return false;
 
+  const testDirectory = resolve(
+    input.executionRoot,
+    'platform-employee-tests',
+    test.id,
+  );
   const adapter = new DshHarnessAdapter({
-    runtimeRoot: resolve(input.executionRoot, 'platform-employee-tests'),
+    runtimeRoot: testDirectory,
     requestTimeoutMs: test.runtimeProfile.timeoutMs,
   });
   const ids = {
@@ -114,7 +119,7 @@ export async function executeNextPlatformEmployeeTest(input: {
       providerSnapshot: snapshot,
       storageObjects: [],
       nativeSkills: test.nativeSkills,
-      workDirectory: resolve(input.executionRoot, 'platform-employee-tests'),
+      workDirectory: testDirectory,
       executionEnvironment: {
         ALLRICE_ORGANIZATION_ID: test.previewContext.organizationId,
         ALLRICE_WORKSPACE_ID: test.previewContext.workspaceId,
@@ -175,7 +180,7 @@ export async function executeNextPlatformEmployeeTest(input: {
         message:
           error instanceof Error
             ? error.message.slice(0, 2_000)
-            : 'Snow 预览运行失败。',
+            : '草稿测试运行失败。',
       },
     });
   } finally {

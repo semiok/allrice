@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
+  AdminTenantMember,
   PlatformEmployeeDefinition,
   PlatformEmployeeAuditEvent,
   PlatformEmployeeSummary,
@@ -42,6 +43,7 @@ interface Workspace {
   trialUrl?: string | null;
   id: string;
   organizationName: string;
+  organizationId: string;
   slug: string;
   name: string;
   bridgeOnline: boolean;
@@ -231,7 +233,13 @@ export function EmployeeProduction() {
   const [directory, setDirectory] = useState<DirectoryResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlatformEmployeeDefinition | null>(null);
+  const [previewEnvironment, setPreviewEnvironment] = useState<
+    'platform' | 'company'
+  >('platform');
   const [previewWorkspaceId, setPreviewWorkspaceId] = useState('');
+  const [previewOwnerId, setPreviewOwnerId] = useState('');
+  const [previewPeople, setPreviewPeople] = useState<AdminTenantMember[]>([]);
+  const [previewPeopleLoading, setPreviewPeopleLoading] = useState(false);
   const [tab, setTab] = useState<(typeof tabs)[number][0]>('basic');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -264,6 +272,44 @@ export function EmployeeProduction() {
     [directory, previewWorkspaceId],
   );
 
+  useEffect(() => {
+    const controller = new AbortController();
+    setPreviewPeople([]);
+    if (previewEnvironment !== 'company' || !previewWorkspace) {
+      setPreviewPeopleLoading(false);
+      return () => controller.abort();
+    }
+    const workspace = previewWorkspace;
+    setPreviewPeopleLoading(true);
+    void (async () => {
+      try {
+        const people = new Map<string, AdminTenantMember>();
+        let after: string | null = null;
+        do {
+          const query = new URLSearchParams({ workspaceId: workspace.id });
+          if (after) query.set('after', after);
+          const result = await api<{
+            members: AdminTenantMember[];
+            nextCursor: string | null;
+          }>(`/api/v1/admin/tenants/${workspace.organizationId}?${query}`, {
+            signal: controller.signal,
+          });
+          for (const member of result.members)
+            if (member.active && member.userStatus === 'active')
+              people.set(member.userId, member);
+          after = result.nextCursor;
+        } while (after && !controller.signal.aborted);
+        if (!controller.signal.aborted) setPreviewPeople([...people.values()]);
+      } catch (error) {
+        if (!controller.signal.aborted)
+          setError(error instanceof Error ? error.message : '读取测试员工失败');
+      } finally {
+        if (!controller.signal.aborted) setPreviewPeopleLoading(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [previewEnvironment, previewWorkspace]);
+
   const load = useCallback(
     async (preferredId?: string) => {
       setBusy(true);
@@ -291,20 +337,11 @@ export function EmployeeProduction() {
             ? prepareEmployeeEditorDefinition(clone(definition), result.skills)
             : null,
         );
-        setPreviewWorkspaceId((current) => {
-          if (result.workspaces.some((workspace) => workspace.id === current)) {
-            return current;
-          }
-          return (
-            result.workspaces.find((workspace) =>
-              `${workspace.organizationName} ${workspace.name} ${workspace.slug}`
-                .toLowerCase()
-                .includes('snow'),
-            )?.id ??
-            result.workspaces[0]?.id ??
-            ''
-          );
-        });
+        setPreviewWorkspaceId((current) =>
+          result.workspaces.some((workspace) => workspace.id === current)
+            ? current
+            : '',
+        );
         setError('');
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '加载失败');
@@ -688,7 +725,14 @@ export function EmployeeProduction() {
   }
 
   async function runDraftPreview() {
-    if (!selectedId || !draft || !testPrompt.trim() || !previewWorkspaceId)
+    if (
+      !selectedId ||
+      !draft ||
+      !testPrompt.trim() ||
+      (previewEnvironment === 'company' &&
+        (!previewWorkspaceId ||
+          !previewPeople.some((p) => p.userId === previewOwnerId)))
+    )
       return;
     setBusy(true);
     setMessage('');
@@ -735,7 +779,10 @@ export function EmployeeProduction() {
         method: 'POST',
         body: JSON.stringify({
           prompt: testPrompt,
-          workspaceId: previewWorkspaceId,
+          environment: previewEnvironment,
+          workspaceId:
+            previewEnvironment === 'company' ? previewWorkspaceId : null,
+          ownerId: previewEnvironment === 'company' ? previewOwnerId : null,
         }),
       });
       if (!result.queued || !result.testRun) {
@@ -746,7 +793,9 @@ export function EmployeeProduction() {
         (candidate) => candidate.id === previewWorkspaceId,
       );
       setMessage(
-        `已保存草稿，测试任务已提交到${workspace ? `「${workspace.name}」` : '所选租户'}的环境。结果会显示在下方，租户正在使用的版本保持不变。`,
+        previewEnvironment === 'platform'
+          ? '已保存草稿，正在平台测试环境运行。测试记录不会写入任何公司。'
+          : `已保存草稿，正在「${workspace?.organizationName} · ${workspace?.name}」以所选员工身份测试；记录计入该公司，已发布版本保持不变。`,
       );
       await loadTestRuns(selectedId);
     } catch (reason) {
@@ -1163,22 +1212,67 @@ export function EmployeeProduction() {
           在这里测试当前草稿的回复效果，结果显示在下方。仅支持问答和读取资料，生成文件、修改数据等完整任务请发布后在租户工作台验证。
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
-          <span>测试使用的租户</span>
+          <span>测试环境</span>
           <select
-            value={previewWorkspaceId}
-            onChange={(event) => setPreviewWorkspaceId(event.target.value)}
+            aria-label="测试环境"
+            value={previewEnvironment}
+            onChange={(event) => {
+              setPreviewEnvironment(
+                event.target.value as 'platform' | 'company',
+              );
+              setPreviewWorkspaceId('');
+              setPreviewOwnerId('');
+            }}
           >
-            <option value="">请选择租户</option>
-            {directory.workspaces.map((workspace) => (
-              <option value={workspace.id} key={workspace.id}>
-                {workspace.name} · {workspace.organizationName}
-              </option>
-            ))}
+            <option value="platform">平台测试（默认）</option>
+            <option value="company">指定公司环境</option>
           </select>
-          {previewWorkspace ? (
-            <small>使用所选租户已连接的模型和工具进行测试。</small>
-          ) : null}
+          <small>
+            {previewEnvironment === 'platform'
+              ? '使用平台模型和独立测试工作区，不读取公司资料，测试记录不会写入任何公司。'
+              : '仅在需要验证公司资料、连接或员工设备时选择；测试记录和用量将计入所选公司。'}
+          </small>
         </label>
+        {previewEnvironment === 'company' && (
+          <>
+            <label className={`${styles.field} ${styles.fieldWide}`}>
+              <span>公司工作区</span>
+              <select
+                aria-label="公司工作区"
+                value={previewWorkspaceId}
+                onChange={(event) => {
+                  setPreviewWorkspaceId(event.target.value);
+                  setPreviewOwnerId('');
+                }}
+              >
+                <option value="">请选择公司工作区</option>
+                {directory.workspaces.map((workspace) => (
+                  <option value={workspace.id} key={workspace.id}>
+                    {workspace.organizationName} · {workspace.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={`${styles.field} ${styles.fieldWide}`}>
+              <span>测试使用的员工</span>
+              <select
+                aria-label="测试使用的员工"
+                value={previewOwnerId}
+                disabled={!previewWorkspaceId || previewPeopleLoading}
+                onChange={(event) => setPreviewOwnerId(event.target.value)}
+              >
+                <option value="">
+                  {previewPeopleLoading ? '正在读取员工…' : '请选择员工'}
+                </option>
+                {previewPeople.map((person) => (
+                  <option key={person.userId} value={person.userId}>
+                    {person.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
         <label className={`${styles.field} ${styles.fieldWide}`}>
           <span>测试任务</span>
           <textarea
@@ -1190,7 +1284,14 @@ export function EmployeeProduction() {
           <button
             className={styles.button}
             data-primary="true"
-            disabled={busy || !testPrompt.trim() || !previewWorkspaceId}
+            disabled={
+              busy ||
+              !testPrompt.trim() ||
+              (previewEnvironment === 'company' &&
+                (!previewWorkspaceId ||
+                  previewPeopleLoading ||
+                  !previewPeople.some((p) => p.userId === previewOwnerId)))
+            }
             onClick={() => void runDraftPreview()}
           >
             {busy ? '正在启动测试…' : '测试草稿'}
@@ -1200,14 +1301,14 @@ export function EmployeeProduction() {
         <section className={styles.publishEntry} aria-label="让租户使用">
           <div>
             <strong>让租户使用</strong>
-            <p>到发布页选择租户并发布，然后进入工作台使用完整能力。</p>
+            <p>到发布页发布更新，再进入员工工作台使用完整能力。</p>
           </div>
           <button
             className={styles.button}
             disabled={busy}
             onClick={() => {
               invalidateReview();
-              if (previewWorkspaceId) setTab('publish');
+              setTab('publish');
             }}
           >
             前往发布
@@ -1224,14 +1325,13 @@ export function EmployeeProduction() {
                   <time>{new Date(run.createdAt).toLocaleString('zh-CN')}</time>
                 </header>
                 <p className={styles.testPrompt}>{run.input.prompt}</p>
-                {run.input.workspaceId ? (
-                  <small className={styles.muted}>
-                    测试租户：
-                    {directory.workspaces.find(
-                      (workspace) => workspace.id === run.input.workspaceId,
-                    )?.name ?? run.input.workspaceId}
-                  </small>
-                ) : null}
+                <small className={styles.muted}>
+                  {run.input.environment === 'platform'
+                    ? '平台测试 · 独立测试记录'
+                    : run.input.workspaceId
+                      ? `公司环境测试：${directory.workspaces.find((workspace) => workspace.id === run.input.workspaceId)?.name ?? '历史公司工作区'}`
+                      : '历史测试（未记录环境）'}
+                </small>
                 {run.output?.events.length ? (
                   <ol className={styles.testEvents}>
                     {run.output.events

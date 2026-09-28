@@ -151,7 +151,9 @@ async function fixture(legacySkillIds?: string[]) {
     // Queue through the real public API to capture its exact immutable inputs.
     // Only model completion is synthetic; this test never invokes a provider.
     const result = await queuePlatformEmployeeTestRun(employeeId, {
+      environment: 'company',
       workspaceId,
+      ownerId,
       prompt: 'Review the synthetic resource.',
     });
     expect(result.queued).toBe(true);
