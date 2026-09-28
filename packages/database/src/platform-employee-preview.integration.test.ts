@@ -182,8 +182,8 @@ suite('isolated platform draft previews (PostgreSQL; no model)', () => {
     expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
     const [failed] =
       await fixture.db`select status,output from allrice_platform_employee_test_runs where id=${result.testRun!.id}`;
-    expect(failed.status).toBe('failed');
-    expect(failed.output.error.code).toBe('TEST_ENVIRONMENT_UNAVAILABLE');
+    expect(failed?.status).toBe('failed');
+    expect(failed?.output.error.code).toBe('TEST_ENVIRONMENT_UNAVAILABLE');
     expect(
       await fixture.db`select id from allrice_jobs where organization_id=${f.organizationId}`,
     ).toHaveLength(0);
