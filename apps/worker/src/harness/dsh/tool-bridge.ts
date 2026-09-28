@@ -80,6 +80,7 @@ export function dshToolBridgeInstructions(input: HarnessExecutionInput) {
     JSON.stringify(definitions),
     'To call exactly one tool, return only <allrice_tool_call>{"id":"unique-id","name":"tool.name","arguments":{}}</allrice_tool_call>.',
     'Do not wrap that envelope in Markdown. Wait for an <allrice_tool_result> response before continuing.',
+    'Text emitted alongside a tool envelope is an internal draft and is not delivered to the user. After reading the tool result, return a complete, self-contained answer to the original request, incorporating any corrections; do not return only an addendum to the unseen draft.',
   ].join('\n');
 }
 
