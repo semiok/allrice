@@ -553,6 +553,12 @@ export function createAssistantWorkerBridge(
         return messageDispatch(callUuid);
       }
       if (method === 'report') {
+        if (instance.parentRunId === null)
+          return {
+            error: 'assistant_report_child_only',
+            message:
+              '汇报工具只供子助手向主员工交付结果。你是当前主员工，请直接向用户回复；需要继续研究时直接使用相应工具。',
+          };
         const { output, ...report } = args;
         const parsed = AssistantResultSchema.safeParse({
           ...report,
