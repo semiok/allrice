@@ -256,6 +256,11 @@
   color: #8993a0;
   font-size: 12px;
 }
+.auth-login-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .auth-login-wordmark {
   font-size: 23px;
   font-weight: 650;
