@@ -95,10 +95,3 @@
     align-items: flex-start;
   }
 }
-
-.root.embedded {
-  max-width: none;
-  margin: 0;
-  padding: 0 0 16px;
-  color: inherit;
-}

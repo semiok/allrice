@@ -1214,13 +1214,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await advanced.locator('summary').click();
         await dialog.getByRole('region', { name: '本地 MCP 连接' }).waitFor();
         await selectSettings(dialog, '我的电脑');
-        const browserAdvanced = dialog.locator('details').filter({
-          has: f.page.locator('summary', { hasText: '本地浏览器高级设置' }),
-        });
-        expect(await browserAdvanced.getAttribute('open')).toBeNull();
-        await browserAdvanced.locator('summary').click();
         await dialog
-          .getByRole('region', { name: '本地浏览器授权', exact: true })
+          .getByRole('button', { name: '连接与管理电脑', exact: true })
           .waitFor();
         expect(
           await f.page.evaluate(

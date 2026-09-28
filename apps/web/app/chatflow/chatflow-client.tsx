@@ -174,7 +174,7 @@ export function ChatFlowClient({
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
     setSettings(null);
-    if (!workspace) return;
+    if (!workspace?.workspaceId) return;
     const url = new URL(window.location.href);
     const section = url.searchParams.get('settings');
     if (!section || !['apps', 'computer', 'capabilities'].includes(section))
@@ -192,7 +192,7 @@ export function ChatFlowClient({
     } catch {
       // Restricted browsers can deny History writes; the modal still works.
     }
-  }, [settingsScope]);
+  }, [settingsScope, workspace?.workspaceId]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,

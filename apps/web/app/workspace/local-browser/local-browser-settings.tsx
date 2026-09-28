@@ -131,7 +131,7 @@ export function LocalBrowserSettings({
   async function copyPrompt(g: Grant) {
     try {
       await navigator.clipboard.writeText(
-        `请使用本地浏览器 local.browser.workspace，在设备 ${g.deviceName} 上${g.profile.network === 'public_https' ? '访问所需的公开网站' : `打开 ${g.profile.origins[0]}`}。授权 ID：${g.grantId}。不要改用云端或个人 Chrome；需要提交、上传或下载时先请求批准。`,
+        `请使用本地浏览器 local.browser.workspace，在设备 ${g.deviceName} 上打开 ${g.profile.origins[0]}。授权 ID：${g.grantId}。不要改用云端或个人 Chrome；需要提交、上传或下载时先请求批准。`,
       );
       setNotice('已复制任务说明；回到工作台，补充要完成的具体任务再发送。');
     } catch {
@@ -139,10 +139,7 @@ export function LocalBrowserSettings({
     }
   }
   return (
-    <section
-      className={`${styles.root} ${embedded ? styles.embedded : ''}`}
-      aria-label="本地浏览器授权"
-    >
+    <section className={styles.root} aria-label="本地浏览器授权">
       <header>
         <div>
           {!embedded && <h1>本地浏览器授权</h1>}
@@ -163,8 +160,8 @@ export function LocalBrowserSettings({
       </p>
       <p>
         网页观察、截图和已批准下载的工件会回传
-        SaaS。此处用于管理已有授权，或添加只允许特定网站的额外授权。
-        浏览器默认设置和保留登录选项在上方的电脑卡片中管理；具体限制以所选授权与平台规则为准。
+        SaaS。上传会把你明确选择的文件发送到批准站点；填写凭证需要单独允许，密码不发送给模型。当前每次工作台最长
+        5 分钟，单个文件最多 1 MB。
       </p>
       <p>
         设备授权不会自动增加 Rice
@@ -326,11 +323,7 @@ export function LocalBrowserSettings({
           </div>
         </article>
       ))}
-      {!embedded && (
-        <p>
-          <Link href="/chatflow">返回工作台</Link>
-        </p>
-      )}
+      <p>{!embedded && <Link href="/chatflow">返回工作台</Link>}</p>
     </section>
   );
 }
