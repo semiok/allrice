@@ -52,6 +52,26 @@ function render(
 describe('historical transcript capability gating', () => {
   afterEach(() => vi.clearAllMocks());
 
+  it.each(['completed', 'failed'] as const)(
+    'does not present settled %s history as running during a stale connection',
+    (status) => {
+      const html = render(false, [{ ...messages[0]!, status }], [], {
+        runViews: {
+          'run-0': {
+            runId: 'run-0',
+            status: 'connecting',
+            cursor: null,
+            reconnects: 1,
+            events: [],
+          },
+        },
+      });
+      expect(html).not.toContain('思考中');
+      expect(html).not.toContain('data-working="true"');
+      expect(html).not.toContain('重新连接并恢复执行记录');
+    },
+  );
+
   it('keeps the native footer clock: time today, date and time for older replies', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 8, 27, 18));

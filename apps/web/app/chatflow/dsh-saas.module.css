@@ -387,6 +387,29 @@ header.conversationHeader::after {
   color: var(--dsw-alias-label-tertiary);
 }
 
+.employeeConversation .employeeStop {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  transform: none;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-base);
+}
+
+.employeeConversation .employeeStop:hover:not(:disabled) {
+  background: var(--dsw-alias-label-primary);
+  box-shadow: 0 0 0 4px var(--dsw-alias-interactive-bg-hover);
+}
+
+.employeeConversation .employeeStop:disabled {
+  opacity: 0.6;
+}
+
+.employeeStop svg {
+  width: 16px;
+  height: 16px;
+}
+
 .assistantHistoryRow {
   display: flex;
   justify-content: center;
@@ -888,9 +911,38 @@ div.composerTools {
   color: var(--dsw-alias-state-warning-primary, #ad780b);
 }
 
-.composerAttachmentMenu {
-  width: 204px;
+div.composerAttachmentMenu {
+  width: 264px;
   max-width: calc(100vw - 24px);
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, #d7dde6);
+  border-radius: 17px;
+  background: var(--dsw-specific-input-major, #fff);
+  backdrop-filter: none;
+  box-shadow:
+    0 12px 32px rgb(22 34 52 / 16%),
+    0 3px 8px rgb(22 34 52 / 10%);
+}
+
+.composerAttachmentMenu [role='menuitem'] {
+  min-height: 46px;
+  padding: 10px 11px;
+  gap: 12px;
+  border-radius: 10px;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.composerAttachmentMenu [role='menuitem'] > span:first-child,
+.composerAttachmentMenu [role='menuitem'] svg {
+  width: 20px;
+  height: 20px;
+}
+
+.composerAttachmentMenu [role='presentation']:not(:has([role])) {
+  padding: 5px 11px 7px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 @media (pointer: coarse) {
@@ -955,6 +1007,7 @@ div.composerTools {
   color: var(--dsw-alias-label-caption);
   font-size: 10px;
   line-height: 16px;
+  min-height: 26px;
 }
 
 .composerStatusLeft {
@@ -1424,14 +1477,23 @@ div.composerTools {
   }
 }
 
-.recover {
+.connectionRetry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   align-self: center;
   margin: 8px auto;
-  padding: 7px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 9px;
-  background: var(--dsw-alias-button-elevated-fill);
   color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.connectionRetry button {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
@@ -1755,6 +1817,11 @@ div.composerTools {
 .workProcess {
   margin: 4px 0 8px;
   min-width: 0;
+}
+
+.workProcess .processHeader {
+  height: 24px;
+  min-height: 24px;
 }
 .workProcess [data-disclosure-row]:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);

@@ -65,6 +65,15 @@ export function useRunStream({
   useEffect(() => {
     stream.restoreHistory(history);
   }, [history, stream]);
+  useEffect(() => {
+    if (!activeId) return;
+    const reconnect = () => {
+      void loadHistory(activeId).catch(() => {});
+      stream.recoverConnections();
+    };
+    window.addEventListener('online', reconnect);
+    return () => window.removeEventListener('online', reconnect);
+  }, [activeId, loadHistory, stream]);
   return {
     loadRunTrace: stream.loadRunTrace,
     recoverRun: stream.recoverRun,
