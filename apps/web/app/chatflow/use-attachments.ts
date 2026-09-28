@@ -83,7 +83,7 @@ export function useAttachments({
   const [attachmentPreview, setAttachmentPreview] =
     useState<PendingAttachment | null>(null);
   const [uploadVisibility, setUploadVisibility] =
-    useState<Visibility>('private');
+    useState<Visibility>('workspace');
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [versionHistoryFile, setVersionHistoryFile] =
@@ -114,6 +114,23 @@ export function useAttachments({
     });
     setAttachmentPreview(null);
   }, []);
+
+  const changeUploadVisibility = useCallback(
+    (update: SetStateAction<Visibility>) => {
+      const next =
+        typeof update === 'function' ? update(uploadVisibility) : update;
+      setUploadVisibility(next);
+      // The selector applies to this draft. Existing stored files retain their ACL.
+      setPendingAttachments((current) =>
+        current.map((attachment) =>
+          attachment.persistedId
+            ? attachment
+            : { ...attachment, visibility: next },
+        ),
+      );
+    },
+    [uploadVisibility],
+  );
 
   const removePendingAttachment = useCallback((target: PendingAttachment) => {
     if (target.previewUrl) URL.revokeObjectURL(target.previewUrl);
@@ -414,7 +431,7 @@ export function useAttachments({
     setAttachmentPreview,
     setFilePickerOpen,
     setPendingAttachments,
-    setUploadVisibility,
+    setUploadVisibility: changeUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
     uploadVisibility,
