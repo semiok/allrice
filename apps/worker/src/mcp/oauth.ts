@@ -15,6 +15,25 @@ export function managedMcpOAuthProvider(
   session: NonNullable<McpConnectionInput['oauth']>,
 ): OAuthClientProvider {
   const data = session.data;
+  // GitHub does not support DCR or publish a complete OAuth discovery document.
+  // Its documented endpoints are pinned; never send the platform secret to a
+  // token endpoint supplied by an MCP challenge or discovery response.
+  const githubDiscovery: OAuthDiscoveryState = {
+    authorizationServerUrl: 'https://github.com',
+    authorizationServerMetadata: {
+      issuer: 'https://github.com',
+      authorization_endpoint: 'https://github.com/login/oauth/authorize',
+      token_endpoint: 'https://github.com/login/oauth/access_token',
+      response_types_supported: ['code'],
+      code_challenge_methods_supported: ['S256'],
+      token_endpoint_auth_methods_supported: ['client_secret_post'],
+    },
+    resourceMetadata: {
+      resource: 'https://api.githubcopilot.com/mcp/',
+      authorization_servers: ['https://github.com'],
+      scopes_supported: ['repo', 'read:org'],
+    },
+  };
   return {
     redirectUrl: data.redirectUrl,
     clientMetadata: {
@@ -22,8 +41,28 @@ export function managedMcpOAuthProvider(
       redirect_uris: [data.redirectUrl],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      token_endpoint_auth_method: 'none',
+      token_endpoint_auth_method:
+        data.preset === 'github' ? 'client_secret_post' : 'none',
     },
+    ...(data.preset === 'github'
+      ? {
+          async addClientAuthentication(
+            headers: Headers,
+            params: URLSearchParams,
+            url: string | URL,
+          ) {
+            if (String(url) !== 'https://github.com/login/oauth/access_token')
+              throw Error('MCP_OAUTH_URL_DENIED');
+            const client = OAuthClientInformationSchema.parse(
+              data.clientInformation,
+            );
+            if (!client.client_secret) throw Error('MCP_OAUTH_CLIENT_MISSING');
+            params.set('client_id', client.client_id);
+            params.set('client_secret', client.client_secret);
+            headers.set('Accept', 'application/json');
+          },
+        }
+      : {}),
     state: () => data.state,
     clientInformation: () =>
       data.clientInformation
@@ -44,6 +83,12 @@ export function managedMcpOAuthProvider(
     async redirectToAuthorization(url) {
       if (url.protocol !== 'https:' || url.username || url.password)
         throw Error('MCP_OAUTH_URL_DENIED');
+      if (
+        data.preset === 'github' &&
+        `${url.origin}${url.pathname}` !==
+          'https://github.com/login/oauth/authorize'
+      )
+        throw Error('MCP_OAUTH_URL_DENIED');
       data.authorizationUrl = url.href;
       await session.save(data, 'redirect');
     },
@@ -59,9 +104,13 @@ export function managedMcpOAuthProvider(
       data.discovery = { ...value };
       await session.save(data);
     },
-    discoveryState: () => data.discovery as OAuthDiscoveryState | undefined,
+    discoveryState: () =>
+      data.preset === 'github'
+        ? githubDiscovery
+        : (data.discovery as OAuthDiscoveryState | undefined),
     async invalidateCredentials(scope) {
-      if (scope === 'all' || scope === 'client') delete data.clientInformation;
+      if ((scope === 'all' || scope === 'client') && data.preset !== 'github')
+        delete data.clientInformation;
       if (scope === 'all' || scope === 'tokens') delete data.tokens;
       if (scope === 'all' || scope === 'verifier') delete data.verifier;
       if (scope === 'all' || scope === 'discovery') delete data.discovery;

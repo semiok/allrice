@@ -147,3 +147,13 @@
   outline: 2px solid #3b82f6;
   outline-offset: 3px;
 }
+
+.presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  margin-block: 16px;
+}
+.presets .card {
+  margin: 0;
+}
