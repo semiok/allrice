@@ -4,6 +4,14 @@ import type { SessionReference } from '@allrice/contracts';
 import { SessionReferenceChips } from './session-reference-picker';
 
 import type { MutableRefObject, RefObject, ReactNode } from 'react';
+import {
+  IconPlusOutlineRegular,
+  IconGlobeOutlineRegular,
+  IconFolderOpenOutlineRegular,
+  IconLinkOutlineRegular,
+  Menu,
+} from '@deepseek-ai/dsh-client-ui-primitives';
+import { ComposerSelect } from './composer-select';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 
@@ -159,67 +167,74 @@ export function ChatComposer({
           ref={composerInput}
           value={draft}
         />
-        <div className={inputUi.row}>
+        <div className={`${inputUi.row} ${styles.composerRow}`}>
           <div className={`${inputUi.tools} ${styles.composerTools}`}>
             <div className={styles.attachmentMenuAnchor}>
-              <button
-                aria-expanded={attachmentMenuOpen}
-                aria-label="添加文件"
-                className={inputUi.add}
-                disabled={busy}
-                onClick={() => onAttachmentMenuOpenChange(!attachmentMenuOpen)}
-                type="button"
-              >
-                ＋
-              </button>
-              {attachmentMenuOpen ? (
-                <div className={styles.attachmentMenu} role="menu">
-                  {onOpenSessionReferences && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        onAttachmentMenuOpenChange(false);
-                        onOpenSessionReferences();
-                      }}
-                    >
-                      <span aria-hidden="true">＠</span>
-                      <span>
-                        <strong>引用会话</strong>
-                        <small>参考之前的工作内容</small>
-                      </span>
-                    </button>
-                  )}
+              <Menu
+                open={attachmentMenuOpen && !busy}
+                side="top"
+                align="start"
+                portal
+                compact
+                listClassName={styles.composerAttachmentMenu}
+                onClose={() => onAttachmentMenuOpenChange(false)}
+                anchor={
                   <button
-                    onClick={() => {
-                      onAttachmentMenuOpenChange(false);
-                      void onOpenWorkspaceFiles();
-                    }}
-                    role="menuitem"
+                    aria-expanded={attachmentMenuOpen && !busy}
+                    aria-haspopup="menu"
+                    aria-label="添加文件"
+                    className={styles.composerAdd}
+                    disabled={busy}
+                    onClick={() =>
+                      onAttachmentMenuOpenChange(!attachmentMenuOpen)
+                    }
                     type="button"
                   >
-                    <span aria-hidden="true">◇</span>
-                    <span>
-                      <strong>从工作区添加</strong>
-                      <small>使用已有的工作区文件</small>
-                    </span>
+                    <IconPlusOutlineRegular size={19} aria-hidden="true" />
                   </button>
-                  <button
-                    onClick={() => {
-                      onAttachmentMenuOpenChange(false);
-                      fileInput.current?.click();
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    <span aria-hidden="true">↑</span>
-                    <span>
-                      <strong>从本地上传</strong>
-                      <small>上传后选择私有或工作区公开</small>
-                    </span>
-                  </button>
-                </div>
-              ) : null}
+                }
+                items={[
+                  ...(onOpenSessionReferences
+                    ? [
+                        {
+                          id: 'reference',
+                          label: '引用会话',
+                          icon: <IconLinkOutlineRegular size={17} />,
+                        },
+                      ]
+                    : []),
+                  {
+                    id: 'workspace',
+                    label: '从工作区添加',
+                    icon: <IconFolderOpenOutlineRegular size={17} />,
+                  },
+                  {
+                    id: 'upload',
+                    label: '从本地上传',
+                    icon: (
+                      <svg
+                        width="17"
+                        height="17"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m7 8 5-5 5 5M12 3v12M4 15v5h16v-5" />
+                      </svg>
+                    ),
+                  },
+                ]}
+                onSelect={(id) => {
+                  onAttachmentMenuOpenChange(false);
+                  if (id === 'reference') onOpenSessionReferences?.();
+                  else if (id === 'workspace') void onOpenWorkspaceFiles();
+                  else if (id === 'upload') fileInput.current?.click();
+                }}
+              />
               <input
                 accept=".docx,.xlsx,.pptx,.txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif"
                 hidden
@@ -234,17 +249,54 @@ export function ChatComposer({
               />
             </div>
             {assistantModeControl}
-            <select
+            <ComposerSelect
               aria-label="上传文件可见范围"
-              className={inputUi.select}
+              compact="visibility"
+              disabled={busy}
+              title={
+                uploadVisibility === 'workspace'
+                  ? '新上传的文件：工作区成员可见'
+                  : '新上传的文件：仅自己可见'
+              }
+              label={
+                uploadVisibility === 'workspace' ? (
+                  <>
+                    <span className={styles.composerVisibilityScope}>
+                      工作区
+                    </span>
+                    公开
+                  </>
+                ) : (
+                  '私有'
+                )
+              }
+              icon={
+                uploadVisibility === 'workspace' ? (
+                  <IconGlobeOutlineRegular size={16} />
+                ) : (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <rect x="5" y="10" width="14" height="11" rx="3" />
+                    <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2" />
+                  </svg>
+                )
+              }
               onChange={(event) =>
                 onUploadVisibilityChange(event.target.value as Visibility)
               }
               value={uploadVisibility}
             >
-              <option value="private">保持私有</option>
               <option value="workspace">工作区公开</option>
-            </select>
+              <option value="private">私有 · 仅自己可见</option>
+            </ComposerSelect>
           </div>
           <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
             <button

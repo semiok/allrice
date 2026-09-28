@@ -771,6 +771,44 @@ suite(
       15_000,
     );
 
+    it.each([
+      { visibility: 'workspace', selectAfterAdding: false },
+      { visibility: 'private', selectAfterAdding: false },
+      { visibility: 'private', selectAfterAdding: true },
+    ] as const)(
+      'defaults uploads to workspace and honors $visibility (change after adding: $selectAfterAdding)',
+      async ({ visibility, selectAfterAdding }) => {
+        const f = await fixture({ uploadPending: true });
+        try {
+          const scope = f.page.getByRole('combobox', {
+            name: '上传文件可见范围',
+          });
+          expect(await scope.inputValue()).toBe('workspace');
+          if (selectAfterAdding) {
+            await f.page.locator('input[type=file]').setInputFiles({
+              name: 'scope.txt',
+              mimeType: 'text/plain',
+              buffer: Buffer.from('synthetic visibility check'),
+            });
+          }
+          if (visibility === 'private') await scope.selectOption('private');
+          await f.send(
+            '请读取附件',
+            selectAfterAdding ? undefined : 'scope.txt',
+          );
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/attachments');
+          expect(f.pending[0]!.body.visibility).toBe(visibility);
+          await f.respond(0);
+          await f.waitPending(2);
+          await f.respond(1);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
     it('navigation during attachment persistence does not submit the departed draft', async () => {
       const f = await fixture({ uploadPending: true });
       try {
