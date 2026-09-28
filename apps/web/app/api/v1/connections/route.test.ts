@@ -26,7 +26,8 @@ import { GET, PATCH, POST } from './route';
 import { GET as authorize } from './authorize/route';
 import { GET as callback } from './callback/route';
 const workspaceId = randomUUID(),
-  connectionId = randomUUID();
+  connectionId = randomUUID(),
+  returnSessionId = randomUUID();
 const context = { actor: { type: 'user', id: randomUUID() } };
 const request = (payload: unknown, origin = 'https://allrice.test') =>
   new Request('https://allrice.test/api/v1/connections', {
@@ -124,7 +125,12 @@ it('uses the actual proxy browser origin for OAuth callback without accepting ca
         origin: 'https://allrice.test',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ action: 'login', workspaceId, connectionId }),
+      body: JSON.stringify({
+        action: 'login',
+        workspaceId,
+        connectionId,
+        returnSessionId,
+      }),
     }),
   );
   expect(response.status).toBe(200);
@@ -132,6 +138,7 @@ it('uses the actual proxy browser origin for OAuth callback without accepting ca
     action: 'login',
     workspaceId,
     connectionId,
+    returnSessionId,
     redirectUrl: 'https://allrice.test/api/v1/connections/callback',
   });
   expect(
@@ -197,8 +204,19 @@ it('uses server-side owner-bound redirects and consumes OAuth callback without r
     state: 'opaque',
     code: 'private-code',
   });
-  expect(resumed.headers.get('location')).toBe(
-    `/workspace/mcp?workspaceId=${workspaceId}&connectionId=${connectionId}`,
+  expect(resumed.headers.get('location')).toBe('/chatflow?settings=apps');
+  mocks.completeOAuthCallback.mockResolvedValue({
+    workspaceId,
+    connectionId,
+    returnSessionId,
+  });
+  const preserved = await callback(
+    new Request(
+      'https://allrice.test/api/v1/connections/callback?state=opaque&code=private-code&returnSessionId=attacker',
+    ),
+  );
+  expect(preserved.headers.get('location')).toBe(
+    `/chatflow?settings=apps&session=${returnSessionId}`,
   );
   mocks.completeOAuthCallback.mockRejectedValue(new Error('private-code'));
   const failed = await callback(
@@ -237,7 +255,14 @@ it('creates only official presets for the current member, never a supplied endpo
     ).status,
   ).toBe(400);
   expect(
-    (await post({ workspaceId, appId: 'linear', method: 'oauth' })).status,
+    (
+      await post({
+        workspaceId,
+        appId: 'linear',
+        method: 'oauth',
+        returnSessionId,
+      })
+    ).status,
   ).toBe(200);
   expect(mocks.create).toHaveBeenCalledWith(context, {
     workspaceId,
@@ -247,6 +272,7 @@ it('creates only official presets for the current member, never a supplied endpo
   expect(mocks.beginOAuth).toHaveBeenCalledWith(context, {
     workspaceId,
     connectionId,
+    returnSessionId,
     redirectUrl: 'https://allrice.test/api/v1/connections/callback',
   });
   mocks.create.mockResolvedValue({
@@ -275,3 +301,18 @@ it('creates only official presets for the current member, never a supplied endpo
     bearerToken: 'synthetic-personal-token',
   });
 });
+
+it.each([
+  'https://attacker.test',
+  '//attacker.test',
+  '/chatflow?session=anything',
+])(
+  'rejects arbitrary OAuth return destinations: %s',
+  async (returnSessionId) => {
+    const response = await PATCH(
+      request({ action: 'login', workspaceId, connectionId, returnSessionId }),
+    );
+    expect(response.status).toBe(400);
+    expect(mocks.beginOAuth).not.toHaveBeenCalled();
+  },
+);

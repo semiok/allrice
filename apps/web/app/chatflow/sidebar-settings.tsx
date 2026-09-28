@@ -6,6 +6,8 @@ import {
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { LocalBrowserSettings } from '../workspace/local-browser/local-browser-settings';
+import { LocalMcpSettings } from '../runtime-console/local-mcp-settings';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
@@ -39,6 +41,8 @@ export function SidebarSettings({
   onBridge: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
+  const [localAppsVisited, setLocalAppsVisited] = useState(false);
+  const [localBrowserVisited, setLocalBrowserVisited] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   async function logout() {
@@ -187,7 +191,24 @@ export function SidebarSettings({
                     </>
                   )}
                   {row.id === 'apps' && (
-                    <ConnectedApps workspaceId={workspaceId} />
+                    <>
+                      <ConnectedApps workspaceId={workspaceId} />
+                      <details
+                        className={styles.settingsFold}
+                        onToggle={(event) => {
+                          if (event.currentTarget.open)
+                            setLocalAppsVisited(true);
+                        }}
+                      >
+                        <summary>本地应用高级设置</summary>
+                        {localAppsVisited && (
+                          <LocalMcpSettings
+                            key={workspaceId}
+                            workspaceId={workspaceId}
+                          />
+                        )}
+                      </details>
+                    </>
                   )}
                   {row.id === 'work' && (
                     <WorkAutomationSettings
@@ -196,14 +217,32 @@ export function SidebarSettings({
                     />
                   )}
                   {row.id === 'computer' && (
-                    <ComputerSettings
-                      workspaceId={workspaceId}
-                      active={section === 'computer'}
-                      onBridge={() => {
-                        close();
-                        onBridge();
-                      }}
-                    />
+                    <>
+                      <ComputerSettings
+                        workspaceId={workspaceId}
+                        active={section === 'computer'}
+                        onBridge={() => {
+                          close();
+                          onBridge();
+                        }}
+                      />
+                      <details
+                        className={styles.settingsFold}
+                        onToggle={(event) => {
+                          if (event.currentTarget.open)
+                            setLocalBrowserVisited(true);
+                        }}
+                      >
+                        <summary>本地浏览器高级设置</summary>
+                        {localBrowserVisited && (
+                          <LocalBrowserSettings
+                            key={workspaceId}
+                            workspaceId={workspaceId}
+                            embedded
+                          />
+                        )}
+                      </details>
+                    </>
                   )}
                 </div>
               ));
