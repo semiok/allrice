@@ -2,6 +2,7 @@ import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
+  runtimeFeatureEnabled,
   CreateExperienceInputSchema,
   ExperienceCandidateSchema,
   ReviewExperienceInputSchema,
@@ -12,7 +13,7 @@ import { getDatabase } from './core/client.ts';
 import { embedWorkspaceText } from './workspace/memory-recall.ts';
 
 export const experienceReviewEnabled = () =>
-  process.env.ALLRICE_EXPERIENCE_REVIEW_ENABLED === '1';
+  runtimeFeatureEnabled('ALLRICE_EXPERIENCE_REVIEW_ENABLED');
 export class ExperienceError extends Error {
   constructor(
     readonly code:

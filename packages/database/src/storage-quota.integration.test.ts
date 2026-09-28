@@ -12,6 +12,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { getWorkspaceStorageUsage } from './workspace/service.ts';
 import { makeObjectKey } from '@allrice/contracts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
@@ -446,6 +447,32 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
     },
     15000,
   );
+  it('has no implicit 1 GiB cap and reports real usage plus explicit limits', async () => {
+    const { f, calls, metadata } = await sources();
+    await db`delete from allrice_storage_quotas where workspace_id=${f.workspace}`;
+    // Reserve metadata only: this test does not allocate or write a large file.
+    await createStorageMetadata(f.context, {
+      ...metadata,
+      id: randomUUID(),
+      sizeBytes: 2 * 1024 ** 3,
+    });
+    for (const call of Object.values(calls))
+      await expect(call.run()).resolves.toBeDefined();
+    const usage = await getWorkspaceStorageUsage(f.context, f.workspace);
+    expect(usage.usedBytes).toBeGreaterThan(1024 ** 3);
+    expect(usage.limitBytes).toBeNull();
+    await quota(f, usage.usedBytes + 10);
+    expect(
+      (await getWorkspaceStorageUsage(f.context, f.workspace)).limitBytes,
+    ).toBe(usage.usedBytes + 10);
+    await expect(
+      createStorageMetadata(f.context, {
+        ...metadata,
+        id: randomUUID(),
+        sizeBytes: 11,
+      }),
+    ).rejects.toThrow('quota_exceeded');
+  });
   it('pending reserves bytes, ready does not double count, tombstones release, and workflow retry is idempotent', async () => {
     const { f, calls, metadata, workflowInput } = await sources();
     const baseline = await used(f);

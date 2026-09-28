@@ -176,8 +176,12 @@ export function ChatFlowClient({
     setSettings(null);
     if (!workspace?.workspaceId) return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get('settings') === 'computer') {
-      setSettings({ scope: settingsScope, section: 'computer' });
+    const requested = url.searchParams.get('settings');
+    if (
+      requested &&
+      ['computer', 'work', 'apps', 'experience'].includes(requested)
+    ) {
+      setSettings({ scope: settingsScope, section: requested });
       url.searchParams.delete('settings');
       window.history.replaceState(window.history.state, '', url);
     }
@@ -1020,6 +1024,7 @@ export function ChatFlowClient({
       )}
       {archive.overlays}
       <ChatSidebar
+        experienceEnabled={experienceEnabled}
         archive={archive}
         capabilities={
           <CapabilityContent

@@ -2453,3 +2453,26 @@ export async function getEmployeeWorkspace(
     memories,
   };
 }
+
+/** Shared workspace accounting, visible to its members; no implicit tenant cap. */
+export async function getWorkspaceStorageUsage(
+  context: RequestContext,
+  workspaceIdInput: string,
+) {
+  const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
+  const sql = getDatabase();
+  const [usage] = await sql<
+    { used_bytes: string; limit_bytes: string | null }[]
+  >`
+    select coalesce((select sum(size_bytes) from allrice_storage_objects
+      where organization_id=w.organization_id and workspace_id=w.id and state<>'deleted'),0)::text as used_bytes,
+      q.limit_bytes::text as limit_bytes
+    from allrice_workspaces w left join allrice_storage_quotas q on q.organization_id=w.organization_id and q.workspace_id=w.id
+    where w.id=${workspaceId} and w.organization_id=${context.organizationId} and w.archived_at is null`;
+  if (!usage) throw new DataAccessError('not_found');
+  return {
+    workspaceId,
+    usedBytes: Number(usage.used_bytes),
+    limitBytes: usage.limit_bytes === null ? null : Number(usage.limit_bytes),
+  };
+}

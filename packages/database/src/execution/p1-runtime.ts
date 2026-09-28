@@ -48,7 +48,6 @@ type TargetRow = {
 };
 
 type JsonValue = Parameters<postgres.Sql['json']>[0];
-const defaultWorkspaceQuotaBytes = 1024 * 1024 * 1024;
 
 type BrowserTaskRow = {
   id: string;
@@ -909,10 +908,10 @@ export async function registerManagedBrowserEvidenceArtifact(input: {
       throw new DataAccessError('authorization_denied');
     }
     const quotas = await transaction<
-      { limit_bytes: number | string; used_bytes: number | string }[]
+      { limit_bytes: number | string | null; used_bytes: number | string }[]
     >`
       select
-        coalesce(q.limit_bytes, ${defaultWorkspaceQuotaBytes}) as limit_bytes,
+        q.limit_bytes as limit_bytes,
         coalesce(sum(stored.size_bytes) filter (
           where stored.state <> 'deleted'
         ), 0) as used_bytes
@@ -930,8 +929,9 @@ export async function registerManagedBrowserEvidenceArtifact(input: {
     const quota = quotas[0];
     if (
       !quota ||
-      Number(quota.used_bytes) + (existingObject ? 0 : object.sizeBytes) >
-        Number(quota.limit_bytes)
+      (quota.limit_bytes !== null &&
+        Number(quota.used_bytes) + (existingObject ? 0 : object.sizeBytes) >
+          Number(quota.limit_bytes))
     ) {
       throw new DataAccessError('quota_exceeded');
     }
