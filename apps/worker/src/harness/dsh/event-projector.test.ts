@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   nativeEventView,
+  nativeContextView,
   safeDshSourcePayload,
   sourceMetadata,
   visibleModelText,
@@ -144,6 +145,63 @@ describe('safeDshSourcePayload', () => {
 });
 
 describe('nativeEventView', () => {
+  it('accepts only native occupancy counts without forwarding unrelated payloads', () => {
+    expect(
+      nativeContextView({
+        asOfSeq: 17,
+        contextPressure: {
+          projectedTokens: 0,
+          pressureTokens: 156000,
+          contextWindow: 200000,
+          secret: 'private',
+        },
+      }),
+    ).toMatchObject({
+      sourceEventType: 'session/projection',
+      sourcePayload: {
+        asOfSeq: 17,
+        projectedTokens: 0,
+        pressureTokens: 156000,
+        contextWindow: 200000,
+      },
+    });
+    expect(
+      nativeContextView({ contextPressure: { contextWindow: 200000 } }),
+    ).toBeNull();
+    expect(
+      nativeContextView({
+        contextPressure: { projectedTokens: -1, contextWindow: 200000 },
+      }),
+    ).toBeNull();
+    expect(
+      nativeContextView({
+        contextPressure: { projectedTokens: 10, contextWindow: 0 },
+      }),
+    ).toBeNull();
+  });
+  it('distinguishes atomic pruning from ongoing compaction and closes failed compaction', () => {
+    const project = (phase: string, error?: string) =>
+      nativeEventView({
+        type: `compaction/${phase}`,
+        data: { compactionId: 'compact-1', error },
+      });
+    expect(project('prune')).toMatchObject({
+      presentation: 'compaction',
+      status: 'completed',
+      label: '工具结果已精简',
+    });
+    expect(project('start')).toMatchObject({ status: 'started' });
+    expect(project('summary')).toMatchObject({ status: 'updated' });
+    expect(project('end')).toMatchObject({ status: 'completed' });
+    expect(project('end', 'private error details')).toMatchObject({
+      status: 'failed',
+      label: '上下文整理未完成',
+    });
+    expect(
+      JSON.stringify(project('end', 'private error details')),
+    ).not.toContain('private error details');
+  });
+
   it('projects safe context metadata with stable DSH source identity', () => {
     expect(
       nativeEventView({

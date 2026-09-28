@@ -28,6 +28,7 @@ import {
   recordRouteDecision,
   freezeRouteSubscriptionSnapshot,
   recordToolBrokerAudit,
+  recordConversationNativeContext,
   ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
@@ -343,6 +344,28 @@ export async function executeEmployeeRun({
       throw error;
     }
     await onHarnessEvent(event);
+    if (
+      event.type === 'native.event' &&
+      event.sourceEventType === 'session/projection'
+    ) {
+      const p = event.sourcePayload ?? {};
+      if (typeof p.contextWindow === 'number') {
+        // Persist while the lease is current, including turns that later fail.
+        // This is display telemetry; losing it must not fail task execution.
+        await recordConversationNativeContext({
+          ...ownership,
+          generation: runtime.generation,
+          contextWindow: p.contextWindow,
+          ...(typeof p.asOfSeq === 'number' ? { asOfSeq: p.asOfSeq } : {}),
+          ...(typeof p.pressureTokens === 'number'
+            ? { pressureTokens: p.pressureTokens }
+            : {}),
+          ...(typeof p.projectedTokens === 'number'
+            ? { projectedTokens: p.projectedTokens }
+            : {}),
+        }).catch(() => undefined);
+      }
+    }
   };
   try {
     const executionSnapshot = resolved.executionSnapshot;

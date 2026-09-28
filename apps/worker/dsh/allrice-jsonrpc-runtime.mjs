@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import { generateCodexImage } from './allrice-codex-images.mjs';
+import {
+  nativeContextProjection,
+  installNativeContextProjection,
+} from './allrice-context-projection.mjs';
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
@@ -1407,32 +1411,10 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   async sessionProjection(params) {
     const sessionId = requiredSessionId(params);
     const record = this.sessions.get(sessionId);
-    const projections = this.ctx.get('sessionProjections');
-    if (!record || !projections) {
+    if (!record) {
       return { asOfSeq: null, contextPressure: null };
     }
-    const snapshot = projections.snapshot(record.handle.agent.session);
-    const value = snapshot.values?.contextPressure;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return { asOfSeq: snapshot.asOfSeq, contextPressure: null };
-    }
-    const pressureTokens = Number(value.pressureTokens);
-    const projectedTokens = Number(value.projectedTokens);
-    const contextWindow = Number(value.contextWindow);
-    return {
-      asOfSeq: snapshot.asOfSeq,
-      contextPressure: {
-        ...(Number.isInteger(pressureTokens) && pressureTokens >= 0
-          ? { pressureTokens }
-          : {}),
-        ...(Number.isInteger(projectedTokens) && projectedTokens >= 0
-          ? { projectedTokens }
-          : {}),
-        ...(Number.isInteger(contextWindow) && contextWindow > 0
-          ? { contextWindow }
-          : {}),
-      },
-    };
+    return nativeContextProjection(this.ctx, record.handle.agent.session);
   }
 
   async recover(params) {
@@ -1699,6 +1681,9 @@ const transport = new JsonRpcLineTransport(process.stdin, process.stdout);
 const server = new AllRiceHarnessSdkJsonRpcServer(ctx, transport, {
   maxTokensAsSuccess: false,
 });
+installNativeContextProjection(ctx, (method, params) =>
+  transport.notify(method, params),
+);
 server.installUserQuestionProvider();
 if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
   server.assistantBridge = (method, params, signal) =>

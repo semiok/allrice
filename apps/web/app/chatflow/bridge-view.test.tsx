@@ -19,7 +19,11 @@ const device = (
     : [],
 });
 
-function render(devices: BridgeDevice[], known = true) {
+function render(
+  devices: BridgeDevice[],
+  known = true,
+  overrides: Partial<ComponentProps<typeof ChatComposer>> = {},
+) {
   const view = projectBridgeView(devices, known);
   const noop = () => {};
   const props: ComponentProps<typeof ChatComposer> = {
@@ -47,11 +51,33 @@ function render(devices: BridgeDevice[], known = true) {
     onUploadAttachments: noop,
     onUploadVisibilityChange: noop,
     ...view,
+    ...overrides,
   };
   return renderToStaticMarkup(<ChatComposer {...props} />);
 }
 
 describe('Bridge connection and local workspace presentation', () => {
+  it('distinguishes occupancy from active compression even below 100 percent', () => {
+    const nativeContextStatus = {
+      source: 'dsh' as const,
+      usedTokens: 152000,
+      contextWindowTokens: 200000,
+      percentage: 76,
+      asOfSeq: 42,
+      observedAt: null,
+    };
+    const html = render([], true, {
+      nativeContextStatus,
+      contextCompacting: true,
+    });
+    expect(html).toContain('上下文占用 76%');
+    expect(html).toContain('正在整理…');
+    expect(html).toContain('不是压缩进度');
+    expect(html).not.toContain('100%');
+    expect(
+      render([], true, { nativeContextStatus, contextCompacting: false }),
+    ).not.toContain('正在整理…');
+  });
   it('keeps an online device green without claiming it has a workspace', () => {
     const html = render([device('online')]);
     expect(html).toContain('aria-label="Bridge 在线 · 未选择工作区"');

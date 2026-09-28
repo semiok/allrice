@@ -18,6 +18,8 @@ import Link from 'next/link';
 
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
+import { projectNativeContext } from '../../lib/chatflow/native-context';
+import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
@@ -878,6 +880,19 @@ export function ChatFlowClient({
   const isRunning = Object.values(runViews).some(
     (view) => view.status === 'running' || view.status === 'connecting',
   );
+  const nativeContextStatus = projectNativeContext(
+    history?.nativeContextStatus ?? null,
+    Object.values(runViews).flatMap((view) => view.events),
+  );
+  const contextCompacting = Object.values(runViews).some(
+    (view) =>
+      (view.status === 'running' || view.status === 'connecting') &&
+      projectNativeExperience(view.events).some(
+        (item) =>
+          item.kind === 'compaction' &&
+          ['started', 'updated'].includes(item.status),
+      ),
+  );
   const pendingUserQuestion = Object.values(runViews)
     .filter((view) => view.status === 'running' || view.status === 'connecting')
     .map((view) => projectPendingUserQuestion(view.events))
@@ -933,7 +948,8 @@ export function ChatFlowClient({
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
       bridgeConnectionState={bridgeConnectionState}
-      nativeContextStatus={history?.nativeContextStatus ?? null}
+      nativeContextStatus={nativeContextStatus}
+      contextCompacting={contextCompacting}
       onAttachmentMenuOpenChange={setAttachmentMenuOpen}
       onCancelRun={cancelRun}
       onDraftChange={setDraft}

@@ -3,7 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatTranscript } from './chat-transcript';
 import type { Message } from './chatflow-types';
-import type { InteractionStatus } from '@allrice/contracts';
+import type {
+  ChatFlowEventEnvelope,
+  InteractionStatus,
+} from '@allrice/contracts';
 
 const panels = vi.hoisted(() => ({ local: vi.fn(), cloud: vi.fn() }));
 vi.mock('./local-command-panel', () => ({ LocalCommandPanel: panels.local }));
@@ -87,6 +90,69 @@ describe('historical transcript capability gating', () => {
     expect(html.match(/思考中…/g)).toHaveLength(1);
     expect(html).not.toContain('Rice');
     expect(html).not.toContain('助手任务');
+  });
+  it('shows native compaction while history is collapsed and clears it after completion or failure', () => {
+    const event = (
+      sequence: number,
+      status: 'started' | 'updated' | 'completed' | 'failed',
+      phase: string,
+    ): ChatFlowEventEnvelope => ({
+      schemaVersion: 3,
+      eventId: `compact-${sequence}`,
+      organizationId: 'org',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run-0',
+      generation: 1,
+      cursor: `run-0:${sequence}`,
+      harness: 'dsh',
+      occurredAt: messages[0]!.createdAt,
+      sequence,
+      sourceEvent: {
+        id: `dsh:${sequence}`,
+        type: `compaction/${phase}`,
+        occurredAt: messages[0]!.createdAt,
+        payload: phase === 'prune' ? {} : { compactionId: 'compact-1' },
+      },
+      type: 'harness.native',
+      payload: { presentation: 'compaction', status, label: '上下文整理' },
+    });
+    const show = (events: ChatFlowEventEnvelope[]) =>
+      render(
+        false,
+        [
+          {
+            ...messages[0]!,
+            status: 'pending',
+            content: { text: 'Rice 正在处理…' },
+          },
+        ],
+        undefined,
+        {
+          runViews: {
+            'run-0': {
+              runId: 'run-0',
+              status: 'running',
+              cursor: null,
+              reconnects: 0,
+              events,
+            },
+          },
+        },
+      );
+    const events = [event(1, 'started', 'start')];
+    expect(show(events)).toContain('正在整理上下文…');
+    expect(show(events)).not.toContain('aria-expanded="true"');
+    events.push(event(2, 'updated', 'summary'));
+    expect(show(events)).toContain('正在整理上下文…');
+    for (const status of ['completed', 'failed'] as const) {
+      const html = show([...events, event(3, status, 'end')]);
+      expect(html).not.toContain('正在整理上下文…');
+      expect(html).toContain('思考中…');
+    }
+    expect(show([event(4, 'completed', 'prune')])).not.toContain(
+      '正在整理上下文…',
+    );
   });
   it('removes placeholder text and microstatus while streaming, but retains a cursor and actual output', () => {
     const html = render(

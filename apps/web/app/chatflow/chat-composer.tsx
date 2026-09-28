@@ -36,6 +36,7 @@ interface ChatComposerProps {
   localWorkspaceOnline: boolean;
   bridgeConnectionState: BridgeConnectionState;
   nativeContextStatus: History['nativeContextStatus'];
+  contextCompacting?: boolean;
   pendingAttachments: PendingAttachment[];
   uploadVisibility: Visibility;
   onAttachmentMenuOpenChange: (open: boolean) => void;
@@ -70,6 +71,7 @@ export function ChatComposer({
   localWorkspaceOnline,
   bridgeConnectionState,
   nativeContextStatus,
+  contextCompacting = false,
   pendingAttachments,
   uploadVisibility,
   onAttachmentMenuOpenChange,
@@ -273,11 +275,21 @@ export function ChatComposer({
             <span aria-hidden="true" />
             {bridgeStatus.label}
           </button>
-          {nativeContextStatus ? (
+          {nativeContextStatus || contextCompacting ? (
             <span
-              title={`DSH 原生上下文投影：约 ${nativeContextStatus.usedTokens.toLocaleString()} / ${nativeContextStatus.contextWindowTokens.toLocaleString()} tokens`}
+              role="status"
+              title={
+                nativeContextStatus
+                  ? `DSH 最近估算：约 ${nativeContextStatus.usedTokens.toLocaleString()} / ${nativeContextStatus.contextWindowTokens.toLocaleString()} tokens。自动整理会在窗口用满前触发；此百分比是占用量，不是压缩进度。`
+                  : 'DSH 正在整理上下文，完成后继续工作。'
+              }
             >
-              Session 上下文 {nativeContextStatus.percentage}%
+              {nativeContextStatus
+                ? `上下文占用 ${nativeContextStatus.percentage}%`
+                : ''}
+              {contextCompacting
+                ? `${nativeContextStatus ? ' · ' : ''}正在整理…`
+                : ''}
             </span>
           ) : null}
         </div>

@@ -94,11 +94,13 @@ export function WorkProcess({
       ? timing?.resourceWaiting
         ? '等待计算资源…'
         : '等待处理…'
-      : process.active
-        ? '执行中…'
-        : streaming
-          ? '回复中…'
-          : '思考中…'
+      : process.active === '正在整理上下文'
+        ? '正在整理上下文…'
+        : process.active
+          ? '执行中…'
+          : streaming
+            ? '回复中…'
+            : '思考中…'
     : failed
       ? '未完成'
       : canceled
@@ -125,7 +127,9 @@ export function WorkProcess({
     traceStatus === 'loading' && !process.steps.length
       ? '加载过程…'
       : undefined,
-    microStatus && !waiting ? process.active : undefined,
+    microStatus && !waiting && process.active !== '正在整理上下文'
+      ? process.active
+      : undefined,
     assistantCount
       ? `${assistantCount} 个助手${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
       : undefined,
