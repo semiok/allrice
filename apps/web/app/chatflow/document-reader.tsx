@@ -154,8 +154,8 @@ export function DocumentText(props: {
   mediaType: string;
   source?: boolean;
   toolResult?: boolean;
+  streaming?: boolean;
 }) {
-  const [limit, setLimit] = useState(20_000);
   const search = props.toolResult ? searchResultDocument(props.text) : null;
   let text = !props.source && search ? search.body : props.text;
   let language = languageForPath(props.fileName);
@@ -179,29 +179,27 @@ export function DocumentText(props: {
       ) : null}
       {rendered ? (
         <AssistantMarkdown
-          text={text.slice(0, limit)}
-          allowRemoteImages={false}
+          text={text}
+          allowRemoteImages
+          streaming={props.streaming}
         />
       ) : (
         <CodeBlock
           className={styles.code}
-          code={text.slice(0, limit)}
+          code={text}
+          streaming={props.streaming}
           lang={language}
-          lineNumbers={!!props.source}
+          lineNumbers
           wrap
           copyLabel="复制文本"
           copiedLabel="已复制"
+          toolbarLabels={{
+            codeLabel: '代码',
+            wrapLabel: '自动换行',
+            unwrapLabel: '取消换行',
+          }}
         />
       )}
-      {text.length > limit ? (
-        <button
-          className={styles.loadMore}
-          type="button"
-          onClick={() => setLimit((n) => n + 20_000)}
-        >
-          加载更多内容
-        </button>
-      ) : null}
     </section>
   );
 }

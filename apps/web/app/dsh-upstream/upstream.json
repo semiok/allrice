@@ -270,7 +270,16 @@
             {
               "path": "lib/client.pdf.js",
               "sha256": "9dfd5bef9df99f1bf353575ec840a69f554164554d6742f83dbebb0d3b144324",
-              "exports": ["PdfBody"]
+              "exports": [
+                "PdfBody"
+              ]
+            },
+            {
+              "path": "lib/client.excel.js",
+              "sha256": "8577ae0297f42f7ce733281748118422131c5cb9dc7796cb6fb1028be6be952d",
+              "exports": [
+                "ExcelBody"
+              ]
             }
           ]
         }
@@ -333,6 +342,106 @@
           "target": "apps/web/app/chatflow/dsh-upstream/document/TextPreview.module.css",
           "upstreamSha256": "525b8406ea103443ecc91bee83d133b7583aea710f76aa994ab64913d52470b9",
           "sha256": "525b8406ea103443ecc91bee83d133b7583aea710f76aa994ab64913d52470b9"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/document/suffix.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/document/suffix.ts",
+          "upstreamSha256": "30647dd990e0080ba62ac3a1d287a30e46a2a0e25fc0856dbc97076a077c3311",
+          "sha256": "30647dd990e0080ba62ac3a1d287a30e46a2a0e25fc0856dbc97076a077c3311"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/document/unviewable.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/document/unviewable.ts",
+          "upstreamSha256": "ee363ac79e33b9c68756c0d74b2f29157f711ddd0702e0bd75fbe7e7a357d5c1",
+          "sha256": "ee363ac79e33b9c68756c0d74b2f29157f711ddd0702e0bd75fbe7e7a357d5c1"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/LoadingIndicator.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/LoadingIndicator.tsx",
+          "upstreamSha256": "6e83e9b6c52f174a8ebca83627fc5179f12a07351487111ed61bef220ebca3a9",
+          "sha256": "6e83e9b6c52f174a8ebca83627fc5179f12a07351487111ed61bef220ebca3a9"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/LoadingIndicator.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/LoadingIndicator.module.css",
+          "upstreamSha256": "dc910c95ab7f84af72678dca04ee86c465dbfce2a14b65065c611d97ac4317ab",
+          "sha256": "dc910c95ab7f84af72678dca04ee86c465dbfce2a14b65065c611d97ac4317ab"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/image/ImageBody.module.css",
+          "upstreamSha256": "bc235b0e854c105d1d9a1b611dfcad0ce955f0192432425413776573c72f97c2",
+          "sha256": "bc235b0e854c105d1d9a1b611dfcad0ce955f0192432425413776573c72f97c2"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/html/HtmlBody.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/html/HtmlBody.module.css",
+          "upstreamSha256": "12ab9762cee1914d221eb619415ec2d8830382ce63d022cd3ca82b1b7b5d891a",
+          "sha256": "12ab9762cee1914d221eb619415ec2d8830382ce63d022cd3ca82b1b7b5d891a"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/html/bytes.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/html/bytes.ts",
+          "upstreamSha256": "b6da60105672540f9352db43d4d12b6bb937c80e8c14b0093cc9311766cbc130",
+          "sha256": "b6da60105672540f9352db43d4d12b6bb937c80e8c14b0093cc9311766cbc130"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/html/basic-document.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/html/basic-document.ts",
+          "upstreamSha256": "d229243c4fc237c4a6a423a9c73b29153b7a2ab4cc0f29b9d1a715044ef82922",
+          "sha256": "d229243c4fc237c4a6a423a9c73b29153b7a2ab4cc0f29b9d1a715044ef82922"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/html/bootstrap.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/html/bootstrap.ts",
+          "upstreamSha256": "4c9c9834166fdde444659d4bd311d07b080ce087d229064536fc665ec199dd52",
+          "sha256": "4c9c9834166fdde444659d4bd311d07b080ce087d229064536fc665ec199dd52"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/code/CodeBody.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/code/CodeBody.module.css",
+          "upstreamSha256": "009e8dcf43a3aa9add6788b1774624a0f717f657d1ae0c8a86170219eea20fc8",
+          "sha256": "009e8dcf43a3aa9add6788b1774624a0f717f657d1ae0c8a86170219eea20fc8"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/excel/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/excel/locales.ts",
+          "upstreamSha256": "6cbf133301c89320a7db9ed34913dc7b5f0248593729d1fa24ac4e1565cd6b1b",
+          "sha256": "ea4d91003997a6adb8faf1285636747f3a4095406de9f13494640a8106797df2",
+          "patch": "scripts/dsh-ui-patches/preview-excel-locales.ts.patch",
+          "patchSha256": "90b8686de11527f5305b0b99903e4bbad0bf9eb3ea8b5f14ab0a860c1aa3937c"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/image/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/image/locales.ts",
+          "upstreamSha256": "c9c243bfc0df57b9942ae7d627338c9de6b5d96f347058576032baa97dd7136e",
+          "sha256": "ce9aeee92f56d60fca921aac3a7d2b3187c6c807ead2298305eca1bd1b17cd5e",
+          "patch": "scripts/dsh-ui-patches/preview-image-locales.ts.patch",
+          "patchSha256": "08d8c8dc26a2342ca2f41fe09dd1e388402ba74e39fafe79c8652e740a2b3a91"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/html/locales.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/html/locales.ts",
+          "upstreamSha256": "efb4b6738d8f4ea0167d80dd295919a10df77983b7938f0da4cf332ff8e1da75",
+          "sha256": "aa4937fa043ddf619ba4953b8dd15869d93b2bc69496bf2443f02935305984df",
+          "patch": "scripts/dsh-ui-patches/preview-html-locales.ts.patch",
+          "patchSha256": "084fbf40e9e54ca2a1a3e379630a8018178a1149741805dc679c1e30f844bc44"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/image/ImageBody.tsx",
+          "upstreamSha256": "0874c6be7a7f784973217c03f8ecd5570e2fbffa50272a9326717814db145d16",
+          "sha256": "8860cc1c2f2ba28bc1a12b98e0bf6dbb730f7e48a33c4625db6ef6e38f01ef8b",
+          "patch": "scripts/dsh-ui-patches/preview-image-ImageBody.tsx.patch",
+          "patchSha256": "839e46e8f2aea13fdf8101ce969c714c300310a887dc3a690704b1dc20b29e32"
+        },
+        {
+          "source": "packages/client/ui-sidebar-documentpreview/src/client/html/pack.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/document/html/pack.ts",
+          "upstreamSha256": "7b63276004fb6b3eea706051fa23027b5291be1a1741ecaeb061093006e0d67e",
+          "sha256": "3841c75c01d928a2a29c2411494ce2d6d7d8e0e36601767d183d818114e0ae2a",
+          "patch": "scripts/dsh-ui-patches/preview-html-pack.ts.patch",
+          "patchSha256": "2af83d2a6e5a654ac90a82a3188d6b3f3b206150f26a4861246fbda92aaad259"
         }
       ]
     },

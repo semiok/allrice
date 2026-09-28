@@ -1,5 +1,11 @@
 'use client';
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from 'react';
 import {
   ZoomViewport,
   zoomSurfaceClass,
@@ -9,6 +15,15 @@ import {
   type ZoomPreference,
 } from './dsh-upstream/document/zoom/types';
 import styles from './workbench.module.css';
+import {
+  ImageBody,
+  imageMediaType,
+} from './dsh-upstream/document/image/ImageBody';
+import { zh } from './dsh-upstream/document/image/locales';
+import { previewBytes, previewLocale } from './native-document-module';
+const imageLocale = previewLocale(zh);
+const retain = () => {};
+
 const labels = {
   controls: '文档缩放',
   menu: '选择缩放比例',
@@ -21,7 +36,35 @@ const scrollport = () => {};
 
 /** Allrice supplies existing rendered bytes; DSH owns fit-width, zoom and gestures. */
 export function NativeImagePreview({ src, alt }: { src: string; alt: string }) {
-  return <NativeImagePages images={[{ src, alt }]} />;
+  const data = useMemo(
+    () => previewBytes(src.slice(src.indexOf(',') + 1)),
+    [src],
+  );
+  const [preference, setPreference] = useState<ZoomPreference>(FIT_WIDTH);
+  const [lifetime, setLifetime] = useState(() => new AbortController());
+  useEffect(() => {
+    if (lifetime.signal.aborted) setLifetime(new AbortController());
+    return () => lifetime.abort();
+  }, [lifetime]);
+  const mime = src.slice(5, src.indexOf(';'));
+  const suffix =
+    ['png', 'jpg', 'gif', 'webp', 'bmp', 'ico', 'svg'].find(
+      (ext) => imageMediaType(`file.${ext}`) === mime,
+    ) ?? 'png';
+  return (
+    <div className={styles.zoomPreview}>
+      <ImageBody
+        content={{ kind: 'bytes', data }}
+        resourceAddress={`${alt}.${suffix}`}
+        useTabInfo={() => ({ tab: { id: 'image', signal: lifetime.signal } })}
+        useStore={(select) => select({ byTab: { image: preference } })}
+        actions={{ zoom: (_id, value) => setPreference(value) }}
+        retainTab={retain}
+        scrollportRef={scrollport}
+        t={imageLocale}
+      />
+    </div>
+  );
 }
 
 /** One native scroll/zoom viewport for all pages, including pointer-anchored zoom. */

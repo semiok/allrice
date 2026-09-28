@@ -1,0 +1,10 @@
+--- a/packages/client/ui-sidebar-documentpreview/src/client/html/pack.ts
++++ b/packages/client/ui-sidebar-documentpreview/src/client/html/pack.ts
+@@ -1,6 +1,6 @@
+ /** Finite HTML-declared classic scripts and stylesheets; no module, CSS dependency or runtime fetch traversal. */
+ import type { HtmlAsset, HtmlBundle } from './bootstrap.ts'
+-import type { DocumentFileBytes } from '../rpc.ts'
++type DocumentFileBytes = { data: Uint8Array<ArrayBuffer> }
+ import { decodeText } from './bytes.ts'
+ 
+ /**

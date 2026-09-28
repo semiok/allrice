@@ -88,7 +88,11 @@ export async function artifactHttp(
         { headers },
       );
     if (action === 'content') {
-      const preview = await readStaticArtifactPreview(artifact);
+      const preview = await readStaticArtifactPreview(artifact, {
+        offset: Number(url.searchParams.get('offset') ?? 1),
+        source: url.searchParams.get('source') === '1',
+        signal: request.signal,
+      });
       // Recheck current authorization after storage IO; bytes never grant future access.
       await getWorkbenchArtifact(context, sessionId, id);
       return Response.json(preview, { headers });
