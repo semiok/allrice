@@ -9,6 +9,26 @@ export interface CodexAuthorization {
   verificationUri: string | null;
   userCode: string | null;
   expiresAt?: string;
+  detailCode?: string | null;
+}
+
+function authorizationFailureMessage(flow: CodexAuthorization) {
+  if (flow.state === 'expired') return '授权码已过期，请重新获取。';
+  if (flow.state === 'canceled') return '本次授权已取消，可以重新开始。';
+  const messages: Record<string, string> = {
+    dsh_openai_codex_authorization_network_unavailable:
+      '连接官方授权服务失败，请稍后重新获取授权码。',
+    dsh_openai_codex_authorization_service_unavailable:
+      '官方授权服务暂时不可用，已自动重试。请稍后重新获取授权码。',
+    dsh_openai_codex_authorization_rate_limited:
+      '官方授权服务提示请求过于频繁，请稍后再试。',
+    dsh_openai_codex_authorization_runtime_failed:
+      '授权服务启动失败，请重试；若仍失败，请联系管理员查看运行日志。',
+  };
+  return (
+    messages[flow.detailCode ?? ''] ??
+    '授权未完成，请重新获取授权码；若仍失败，请联系管理员查看运行日志。'
+  );
 }
 
 export function CodexAuthorizationPanel({
@@ -86,7 +106,7 @@ export function CodexAuthorizationPanel({
               </div>
             </>
           ) : (
-            <p role="status">正在准备授权码…</p>
+            <p role="status">正在获取官方授权码，连接不稳定时会自动重试…</p>
           )}
           <button type="button" disabled={busy} onClick={onCancel}>
             取消本次授权
@@ -96,9 +116,9 @@ export function CodexAuthorizationPanel({
         <>
           {authorization &&
           ['failed', 'expired', 'canceled'].includes(authorization.state) ? (
-            <p>
-              上一次授权流程已结束。
-              {connected ? '当前连接仍可使用。' : '需要连接时可以重新开始。'}
+            <p role={authorization.state === 'failed' ? 'alert' : 'status'}>
+              {authorizationFailureMessage(authorization)}
+              {connected ? '当前已保存的授权不受影响。' : ''}
             </p>
           ) : null}
           <button type="button" disabled={busy} onClick={onStart}>

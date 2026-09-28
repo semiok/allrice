@@ -28,6 +28,7 @@ function runtimeEnvironment(root: string, slot: 1 | 2) {
   return {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
+    ALLRICE_CODEX_AUTH_TRANSPORT: '1',
     ...dshEgressEnvironment(),
     ...(process.env.ALLRICE_CODEX_QUOTA_COMMAND
       ? { ALLRICE_CODEX_QUOTA_COMMAND: process.env.ALLRICE_CODEX_QUOTA_COMMAND }
@@ -65,7 +66,11 @@ async function createAuthorizationClient(root: string, slot: 1 | 2) {
   ]);
   const client = new DshProtocolClient({
     command: process.execPath,
-    args: [resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs')],
+    args: [
+      '--import',
+      resolve(import.meta.dirname, '../dsh/allrice-codex-auth-transport.mjs'),
+      resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
+    ],
     cwd: root,
     environment: runtimeEnvironment(root, slot),
     requestTimeoutMs: 300_000,
@@ -81,6 +86,18 @@ async function createAuthorizationClient(root: string, slot: 1 | 2) {
     expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
   });
   return client;
+}
+
+/** Persist only allowlisted reasons, never upstream OAuth payloads or tokens. */
+export function codexAuthorizationFailureCode(error: unknown) {
+  const message = error instanceof Error ? error.message : '';
+  if (/codex_authorization_network_unavailable|fetch failed/i.test(message))
+    return 'dsh_openai_codex_authorization_network_unavailable';
+  if (message.includes('codex_authorization_service_unavailable'))
+    return 'dsh_openai_codex_authorization_service_unavailable';
+  if (/device code request failed with status 429/i.test(message))
+    return 'dsh_openai_codex_authorization_rate_limited';
+  return 'dsh_openai_codex_authorization_failed';
 }
 
 export function parseDshAuthorizationChallenge(notification: DshNotification) {
@@ -240,12 +257,20 @@ async function runDeviceAuthorization(input: {
         ? 'dsh_openai_codex_provider_ready'
         : 'dsh_openai_codex_authorization_canceled',
     });
-  } catch {
+  } catch (error) {
+    if (cancellationRequested) return;
+    const detailCode = codexAuthorizationFailureCode(error);
+    console.warn('[Codex authorization] request failed', {
+      flowId: input.flow.id,
+      slot,
+      phase: challengePublished ? 'awaiting_user' : 'request_code',
+      detailCode,
+    });
     await completeCodexAuthorization({
       flowId: input.flow.id,
       workerId: input.workerId,
       connected: false,
-      detailCode: 'dsh_openai_codex_authorization_failed',
+      detailCode,
     });
   } finally {
     clearInterval(monitor);

@@ -103,6 +103,14 @@ suite('Codex authorization UX', () => {
       );
       await page.goto(base + '?disconnected=1');
       await panel.getByRole('button', { name: '连接 Codex 订阅' }).waitFor();
+      await page.goto(base + '/?disconnected&failed');
+      await page
+        .getByRole('alert')
+        .filter({ hasText: '连接官方授权服务失败' })
+        .waitFor();
+      expect(await page.getByText('上一次授权流程已结束。').count()).toBe(0);
+      await page.getByRole('button', { name: '连接 Codex 订阅' }).click();
+      await page.getByText('TEST-CODE', { exact: true }).waitFor();
       expect(errors).toEqual([]);
     } finally {
       await browser.close();
