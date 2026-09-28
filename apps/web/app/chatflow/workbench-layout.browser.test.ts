@@ -218,6 +218,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeCount?: number;
       employeeHistory?: boolean;
       employeeHistoryCount?: number;
+      officeHistoryCount?: number;
       touch?: boolean;
       employeeColor?: EmployeeAccentColor;
       width?: number;
@@ -246,7 +247,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ...session(id(600 + n)),
         title: `历史工作 ${n + 1}`,
       })),
-      { ...session(B), employeeAssignmentId: id(17) },
+      ...Array.from({ length: options.officeHistoryCount ?? 1 }, (_, n) => ({
+        ...session(n === 0 ? B : id(7000 + n)),
+        employeeAssignmentId: id(17),
+        ...(n ? { title: `Office 工作 ${n + 1}` } : {}),
+      })),
       {
         ...session(id(6750)),
         employeeAssignmentId: id(99),
@@ -258,6 +263,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      historyRunning: options.running ?? false,
       bridgeDevices: [] as BridgeDevice[],
       bridgeError: false,
       bridgeSelections: [] as string[],
@@ -368,6 +374,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     const withArchive = (item: Session): Session => ({
       ...item,
+      ...(options.employeeHistory && item.id === id(600)
+        ? { running: state.historyRunning }
+        : {}),
       archivedAt: state.archivedIds.has(item.id) ? now : item.archivedAt,
     });
     const sessionList = () =>
@@ -2209,19 +2218,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         if ((await office.getAttribute('aria-expanded')) !== 'true')
           await office.click();
-        await sidebar
-          .getByRole('region', { name: 'Office 文档助手', exact: true })
-          .getByRole('button', { name: /展开其余/ })
-          .click();
+        await sidebar.getByText('研究任务 B', { exact: true }).waitFor();
         const historical = sidebar.locator(
           '[data-row-key="workspace:' + id(99) + '"]',
         );
         if ((await historical.getAttribute('aria-expanded')) !== 'true')
           await historical.click();
-        await sidebar
-          .getByRole('region', { name: '旧员工（已撤回）', exact: true })
-          .getByRole('button', { name: /展开其余/ })
-          .click();
+        await sidebar.getByText('已撤回员工的工作', { exact: true }).waitFor();
         const top = sidebar.getByRole('button', {
           name: '新的工作',
           exact: true,
@@ -6240,6 +6243,72 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.context.close();
     }
   }, 30_000);
+  it.each([0, 3, 5, 7])(
+    'automatically shows up to five employee sessions before offering the rest (%i total)',
+    async (total) => {
+      const f = await fixture({
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeHistoryCount: 35,
+        officeHistoryCount: total,
+        running: true,
+      });
+      try {
+        const sidebar = f.page.locator('#chat-sidebar');
+        const rice = sidebar.getByRole('region', { name: 'Rice', exact: true });
+        const riceRows = rice.locator('[data-row-key^="session:"]');
+        await expect.poll(() => riceRows.count()).toBe(5);
+        expect(
+          await rice.locator(`[data-row-key="session:${id(600)}"]`).count(),
+        ).toBe(1);
+        f.state.historyRunning = false;
+        await f.page.reload();
+        await expect.poll(() => riceRows.count()).toBe(5);
+        const office = sidebar.getByRole('region', {
+          name: 'Office 文档助手',
+          exact: true,
+        });
+        // A first-page failure remains local and must not turn into auto-retry.
+        if (total === 7) f.state.sessionPageError = true;
+        await office.getByRole('treeitem').first().click();
+        if (total === 7) {
+          await office.getByRole('alert').waitFor();
+          expect(
+            f.state.sessionPageRequests.filter((id_) => id_ === id(17)),
+          ).toHaveLength(1);
+          f.state.sessionPageError = false;
+          await office
+            .getByRole('button', { name: '加载失败，点击重试' })
+            .click();
+        }
+        const rows = office.locator('[data-row-key^="session:"]');
+        await expect.poll(() => rows.count()).toBe(Math.min(5, total));
+        if (total > 0)
+          await expect
+            .poll(() => f.state.sessionPageRequests.includes(id(17)))
+            .toBe(true);
+        if (total > 5) {
+          await office
+            .getByRole('button', { name: '展开其余 2 个会话', exact: true })
+            .click();
+          await expect.poll(() => rows.count()).toBe(7);
+          await office
+            .getByRole('button', { name: '收起更多会话', exact: true })
+            .click();
+          await expect.poll(() => rows.count()).toBe(5);
+        } else {
+          expect(
+            await office
+              .getByRole('button', { name: /展开其余|展开更多/ })
+              .count(),
+          ).toBe(0);
+        }
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('expands older work within its employee, retries locally, and ignores a late page after switching to archives', async () => {
     const f = await fixture({
       employeeCount: 2,
@@ -6276,11 +6345,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: 'Office 文档助手',
         exact: true,
       });
-      await office.getByRole('treeitem').first().click();
       f.state.sessionPageDelay = new Promise<void>((done) => {
         release = done;
       });
-      await office.getByRole('button', { name: /展开其余/ }).click();
+      await office.getByRole('treeitem').first().click();
       await expect.poll(() => f.state.sessionPageRequests.at(-1)).toBe(id(17));
       await sidebar
         .getByRole('button', { name: '查看归档', exact: true })

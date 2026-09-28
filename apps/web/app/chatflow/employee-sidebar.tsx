@@ -7,12 +7,13 @@ import {
 import type { useSessionArchive } from './use-session-archive';
 import type { Session, Workspace } from './chatflow-types';
 import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
-import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
 import {
   employeeAccent,
   employeeAccentStyle,
   employeeGroups,
   employeePreferenceKey,
+  employeeSessionPreview,
+  employeeSessionPreviewLimit,
   employeeTranslate,
   readEmployeeExpansion,
 } from './employee-navigation';
@@ -75,6 +76,18 @@ export function EmployeeSidebar({
       archive?.employeeGroups,
     ],
   );
+  useEffect(() => {
+    if (collapsed || !archive || archive.loading) return;
+    for (const group of groups) {
+      if (
+        group.expanded &&
+        group.sessions.length <
+          Math.min(employeeSessionPreviewLimit, group.sessionCount) &&
+        !archive.employeePages?.[group.key]
+      )
+        archive.loadPreview(group.key);
+    }
+  }, [archive, collapsed, groups]);
   if (!groups.length) return <p className={css.empty}>当前没有可用员工</p>;
   const prepareSession = (target: EventTarget) => {
     if (!(target instanceof Element)) return;
@@ -115,14 +128,14 @@ export function EmployeeSidebar({
                 ? !!session.archivedAt
                 : !session.archivedAt)),
         );
-        const native = collapsedSessionRows(group.sessions);
-        // Navigation must reveal the selected row even when it is older than five.
-        const rows = all[group.key]
-          ? group.sessions
-          : group.sessions.filter(
-              (row) => native.rows.includes(row) || row.id === activeId,
-            );
+        const preview = employeeSessionPreview(group.sessions, activeId);
+        const rows = all[group.key] ? group.sessions : preview.rows;
         const pagination = archive?.employeePages?.[group.key];
+        const needsPreview =
+          !!archive &&
+          group.sessions.length <
+            Math.min(employeeSessionPreviewLimit, group.sessionCount) &&
+          (!pagination || pagination.loading || !!pagination.error);
         const hasMore = archive?.hasMore(group.key);
         const remaining = Math.max(0, group.sessionCount - rows.length);
         if (collapsed)
@@ -271,12 +284,23 @@ export function EmployeeSidebar({
                 {group.sessionCount === 0 && (
                   <span className={css.empty}>从顶部「新的工作」开始</span>
                 )}
-                {(group.sessions.length > rows.length || hasMore) && (
+                {needsPreview && !pagination?.error && (
+                  <span role="status" className={css.empty}>
+                    正在加载会话…
+                  </span>
+                )}
+                {((!needsPreview &&
+                  (group.sessions.length > rows.length || hasMore)) ||
+                  pagination?.error) && (
                   <button
                     className={css.more}
                     type="button"
                     disabled={archive?.loading || pagination?.loading}
                     onClick={() => {
+                      if (needsPreview) {
+                        archive?.loadPreview(group.key);
+                        return;
+                      }
                       setAll((current) => ({ ...current, [group.key]: true }));
                       if (hasMore) archive?.loadMore(group.key);
                     }}
@@ -295,7 +319,7 @@ export function EmployeeSidebar({
                     {pagination.error}
                   </span>
                 )}
-                {all[group.key] && native.hiddenCount > 0 && (
+                {all[group.key] && preview.hiddenCount > 0 && (
                   <button
                     className={css.more}
                     type="button"
