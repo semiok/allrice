@@ -3,6 +3,7 @@ import { generateCodexImage } from './allrice-codex-images.mjs';
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
+import { URL } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   prepareSessionReferenceContext,
