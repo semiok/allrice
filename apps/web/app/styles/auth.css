@@ -244,18 +244,31 @@
   box-sizing: border-box;
 }
 .auth-workspace-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
   color: #272c34;
   width: min(100%, 1080px);
   margin: 0 auto;
 }
+.auth-brand-slogan {
+  color: #8993a0;
+  font-size: 12px;
+}
+.auth-login-wordmark {
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.7px;
+}
 .auth-workspace-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  align-items: center;
+  align-items: start;
   gap: clamp(56px, 8vw, 120px);
   width: min(100%, 1080px);
   margin: auto;
-  padding: 72px 0;
+  padding: 44px 0;
 }
 .auth-workspace-intro h2 {
   font-size: clamp(32px, 3.2vw, 44px);
@@ -272,26 +285,37 @@
 }
 .auth-employee-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.auth-employee-slot {
+  min-width: 0;
+  height: calc(var(--employee-height, 69px) * var(--employee-scale));
 }
 .auth-employee {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
+  gap: 13px;
+  min-height: 69px;
+  padding: 12px 16px;
   background: #f0f2f5;
-  border-radius: 16px;
+  border-radius: 14px;
+  transform: scale(var(--employee-scale));
+  transform-origin: top right;
+  opacity: var(--employee-opacity);
 }
 .auth-employee-avatar {
   flex: none;
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
-  background: #3b82f6;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: var(--employee-color);
   color: #fff;
-  font-size: 22px;
+  font-size: 21px;
   font-weight: 600;
 }
 .auth-employee-office {
@@ -302,14 +326,17 @@
   display: block;
   font-size: 15px;
   font-weight: 600;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+  line-height: 1.5;
 }
 .auth-employee div > span {
   color: var(--auth-muted);
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.5;
 }
 .auth-workspace .auth-form-panel {
-  padding: 0;
+  padding: 28px 0 0;
+  min-width: 0;
 }
 .auth-workspace .auth-panel {
   max-width: 440px;
@@ -409,12 +436,17 @@
     padding: 26px 24px;
   }
   .auth-workspace-columns {
-    display: block;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 48px;
     max-width: 420px;
-    padding: 60px 0;
+    padding: 40px 0;
   }
   .auth-workspace-intro {
-    display: none;
+    grid-row: 2;
+  }
+  .auth-workspace .auth-form-panel {
+    grid-row: 1;
+    padding-top: 0;
   }
   .auth-workspace .auth-form input {
     font-size: 16px;
