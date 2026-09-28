@@ -8,6 +8,7 @@ import {
   IconSlidersTwoOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { classifyMcpFailure, mcpFailureCopy } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 
@@ -24,6 +25,39 @@ const labels: Record<string, string> = {
   canceled: '已确认未执行或停止',
   partial: '部分完成',
 };
+function operationFailure(op: CloudOperationView) {
+  return op.proposal.kind === 'mcp' &&
+    ['failed', 'unknown'].includes(op.snapshot.status)
+    ? classifyMcpFailure({
+        code:
+          op.result?.code ??
+          (op.snapshot.status === 'unknown' ? 'MCP_UNKNOWN' : null),
+        output: op.result?.output,
+        endpoint: op.proposal.endpoint,
+        tool: op.proposal.tool,
+      })
+    : null;
+}
+
+export function cloudOperationsNeedPolling(
+  runActive: boolean,
+  operations: CloudOperationView[],
+) {
+  return (
+    runActive ||
+    operations.some((op) =>
+      [
+        'planned',
+        'waiting_user',
+        'ready',
+        'dispatched',
+        'running',
+        'cancel_requested',
+      ].includes(op.snapshot.status),
+    )
+  );
+}
+
 export function cloudOperationDisplayStatus(
   op: CloudOperationView,
   now = Date.now(),
@@ -38,6 +72,8 @@ export function cloudOperationDisplayStatus(
     if (op.approval.response?.decision === 'approved')
       return '已批准，等待派发';
   }
+  const failure = operationFailure(op);
+  if (failure) return mcpFailureCopy[failure].title;
   return labels[op.snapshot.status] ?? op.snapshot.status;
 }
 type Decision = 'approved' | 'rejected' | 'cancel';
@@ -86,11 +122,13 @@ export function CloudOperationCard({
   op,
   busy,
   cancelPending = false,
+  runActive = true,
   onAct,
 }: {
   op: CloudOperationView;
   busy: boolean;
   cancelPending?: boolean;
+  runActive?: boolean;
   onAct: (op: CloudOperationView, decision: Decision) => void;
 }) {
   const request = op.approval?.request,
@@ -108,6 +146,7 @@ export function CloudOperationCard({
   const terminal = ['succeeded', 'failed', 'canceled', 'partial'].includes(
     op.snapshot.status,
   );
+  const failure = operationFailure(op);
   const stopping = cancelPending || op.snapshot.status === 'cancel_requested';
   const detailsId = useId();
   const [detailsOpen, setDetailsOpen] = useState(!!pending);
@@ -157,7 +196,13 @@ export function CloudOperationCard({
         <p role="status" className={styles.notice}>
           {mcpAuthorizationLabel(op)}。不能再批准此操作；未派发的操作不会执行。
           已派发的操作不等于已经停止，请核实返回记录。历史结果仍保留。
-          {!terminal && '仍可请求停止本轮。'}
+          {!terminal && runActive && '仍可请求停止本轮。'}
+        </p>
+      )}
+      {failure && (
+        <p role="status" className={styles.notice}>
+          {!runActive && '本轮已结束。'}
+          {mcpFailureCopy[failure].detail}
         </p>
       )}
       <p className={styles.scope}>
@@ -192,7 +237,7 @@ export function CloudOperationCard({
                 />
               </svg>
             </button>
-            {!terminal && (
+            {!terminal && runActive && (
               <Tooltip
                 label="请求停止本轮全部操作，已完成的结果会保留。"
                 side="top"
@@ -378,9 +423,12 @@ export function CloudOperationCard({
           {op.approval.revokedAt ? ' · 后续已撤销' : ''}
         </p>
       )}
-      {['cancel_requested', 'unknown'].includes(op.snapshot.status) && (
+      {(op.snapshot.status === 'cancel_requested' ||
+        (op.snapshot.status === 'unknown' && !failure)) && (
         <p role="status" className={styles.notice}>
-          已记录的停止指令不等于远端已经停止。
+          {op.snapshot.status === 'cancel_requested'
+            ? '已记录的停止指令不等于远端已经停止。'
+            : '未收到完整的执行回执。'}
           {proposal.kind === 'mcp'
             ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
             : '云端需等待实际停止和结果回执；不会自动重跑脚本。'}
@@ -409,14 +457,7 @@ export function CloudOperationPanel({
   const responses = useRef(new Map<string, unknown>());
   const api = `/api/v1/runtime/cloud-operations?workspaceId=${encodeURIComponent(workspaceId)}&runId=${encodeURIComponent(runId)}`,
     headerKey = JSON.stringify(tenantHeaders);
-  const active =
-    runActive ||
-    operations.some(
-      (op) =>
-        !['succeeded', 'failed', 'canceled', 'partial'].includes(
-          op.snapshot.status,
-        ),
-    );
+  const active = cloudOperationsNeedPolling(runActive, operations);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -519,10 +560,20 @@ export function CloudOperationPanel({
           </button>
         </p>
       )}
+      {!runActive &&
+        operations.some((op) => op.snapshot.status === 'unknown') && (
+          <button
+            type="button"
+            onClick={() => setRevision((value) => value + 1)}
+          >
+            刷新操作状态
+          </button>
+        )}
       {operations.map((op) => (
         <CloudOperationCard
           key={op.snapshot.binding.attempt.operationId}
           op={op}
+          runActive={runActive}
           busy={busy}
           cancelPending={
             pendingDecision === 'cancel' ||

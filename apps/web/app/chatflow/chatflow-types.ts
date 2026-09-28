@@ -1,3 +1,4 @@
+import type { McpFailureKind } from '@allrice/contracts';
 import type {
   ChatFlowEventEnvelope,
   SaasCapabilityManifest,
@@ -77,6 +78,7 @@ export interface Workspace {
 }
 
 export interface Message {
+  applicationFailure?: McpFailureKind;
   workMethods?: WorkMethod[];
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';

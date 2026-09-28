@@ -4,6 +4,7 @@ import type { CloudOperationView } from '@allrice/database';
 import {
   CloudOperationCard,
   cloudOperationDisplayStatus,
+  cloudOperationsNeedPolling,
 } from './cloud-operation-panel';
 
 // Presentation-only fixtures. Contract and authority validation are exercised
@@ -112,8 +113,8 @@ describe('Cloud/MCP approval presentation', () => {
     const op = view();
     op.snapshot.status = 'unknown';
     const html = render(op);
-    expect(html).toContain('不等于远端已经停止');
-    expect(html).toContain('不会自动重放');
+    expect(html).toContain('未收到应用执行结果');
+    expect(html).toContain('不会自动重试');
     expect(html).not.toContain('批准这一次执行');
   });
   it('renders exact cloud script, inputs and limits independently of MCP/local wording', () => {
@@ -155,5 +156,61 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('批准这一次执行');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('第三方 MCP');
+  });
+});
+
+describe('reported MCP failures remain visible without replay controls', () => {
+  it('shows the GitHub denial and next step while retaining unknown effects', () => {
+    const op = view();
+    op.snapshot.status = 'unknown';
+    op.proposal = {
+      kind: 'mcp',
+      endpoint: 'https://api.githubcopilot.com/mcp/',
+      tool: 'mcp__app__merge_pull_request',
+      arguments: {},
+      risk: 'write',
+    };
+    op.result = {
+      code: 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN',
+      trusted: false,
+      output: JSON.stringify({
+        isError: true,
+        error: {
+          message:
+            'failed to merge pull request: PUT https://api.github.com/repos/semiok/allrice/pulls/200/merge: 403 Resource not accessible by personal access token []',
+        },
+      }),
+    };
+    const html = renderToStaticMarkup(
+      <CloudOperationCard
+        op={op}
+        busy={false}
+        runActive={false}
+        onAct={() => {
+          throw Error('no action expected');
+        }}
+      />,
+    );
+    expect(cloudOperationDisplayStatus(op)).toBe('GitHub 权限不足');
+    expect(html).toContain('本轮已结束');
+    expect(html).toContain('Contents');
+    expect(html).not.toContain('请求停止本轮全部操作');
+    expect(html).not.toContain('远端结果待核实');
+    expect(op.snapshot.status).toBe('unknown');
+    expect(cloudOperationsNeedPolling(false, [op])).toBe(false);
+    expect(cloudOperationsNeedPolling(true, [op])).toBe(true);
+  });
+  it('continues observing active or stopping operations, but not a settled unknown', () => {
+    const op = view();
+    for (const status of [
+      'running',
+      'cancel_requested',
+      'dispatched',
+    ] as const) {
+      op.snapshot.status = status;
+      expect(cloudOperationsNeedPolling(false, [op])).toBe(true);
+    }
+    op.snapshot.status = 'unknown';
+    expect(cloudOperationsNeedPolling(false, [op])).toBe(false);
   });
 });

@@ -59,6 +59,7 @@ export function WorkProcess({
   running,
   streaming,
   failed,
+  failureTitle,
   canceled,
   traceStatus,
   onRetry,
@@ -75,6 +76,7 @@ export function WorkProcess({
   running: boolean;
   streaming: boolean;
   failed: boolean;
+  failureTitle?: string;
   canceled: boolean;
   traceStatus?: string;
   onRetry: () => void;
@@ -102,7 +104,7 @@ export function WorkProcess({
             ? '回复中…'
             : '思考中…'
     : failed
-      ? '未完成'
+      ? (failureTitle ?? '未完成')
       : canceled
         ? '已停止'
         : '工作过程';
@@ -114,6 +116,7 @@ export function WorkProcess({
   const open = expandable && expanded;
   if (
     !expandable &&
+    !failureTitle &&
     !parts?.length &&
     !timing &&
     !microStatus &&

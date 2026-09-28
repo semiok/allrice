@@ -358,6 +358,14 @@ export function ConnectedApps({
           )}
           <details className={styles.manage}>
             <summary>管理连接</summary>
+            {c.endpoint === MCP_APPS.github.endpoint &&
+              c.discoveryState === 'ready' && (
+                <p>
+                  已连接表示可以访问
+                  GitHub。具体操作取决于访问令牌的仓库权限；合并 PR 需要
+                  Contents 读写权限。
+                </p>
+              )}
             <div className={styles.actions}>
               {c.managed &&
                 !c.disconnected &&
