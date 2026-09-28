@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { withFixturePlatformAdministrator } from '../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
@@ -25,6 +26,7 @@ integration('platform-wide model inheritance', () => {
       );
       const [initial] =
         await f.db`select revision,configuration from allrice_platform_model_settings where singleton`;
+      assert.ok(initial);
       expect(initial.configuration).toMatchObject({
         workModel: 'gpt-6-luna',
         reasoningEffort: 'xhigh',
@@ -50,6 +52,7 @@ integration('platform-wide model inheritance', () => {
         await f.db.unsafe(migration);
         const [next] =
           await f.db`select revision,configuration from allrice_platform_model_settings where singleton`;
+        assert.ok(next);
         const preserved = workModel === 'gpt-5.3-codex-spark';
         expect(next.configuration).toEqual(
           preserved
@@ -65,7 +68,7 @@ integration('platform-wide model inheritance', () => {
         expect(
           (
             await f.db`select revision from allrice_platform_model_settings where singleton`
-          )[0].revision,
+          )[0]?.revision,
         ).toBe(next.revision);
       }
     } finally {
