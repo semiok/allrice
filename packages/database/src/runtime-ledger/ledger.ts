@@ -684,10 +684,13 @@ export function createRuntimeOperationLedger(options: {
       return db.begin(async (tx) => {
         // Serialize first creation, including before a root row exists.
         await tx`select pg_advisory_xact_lock(hashtextextended(${task.rootRunId}, 703))`;
-        await assertRun(tx, task, true);
         const [prior] = await tx<
           RootRow[]
         >`select * from allrice_runtime_roots where root_run_id = ${task.runId} for update`;
+        // Re-entry races operation admission and task-clock refresh, both of
+        // which lock root before run. Reversing that order deadlocks parallel
+        // MCP calls even when they only read from the remote service.
+        await assertRun(tx, task, true);
         if (prior) {
           // A durable active-time clock owns this mutable projection. Re-entry
           // may carry a pre-wait deadline; it must neither reset nor extend it.
