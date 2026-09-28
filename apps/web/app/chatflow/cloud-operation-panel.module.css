@@ -5,6 +5,7 @@
   min-width: 0;
 }
 .card {
+  container-type: inline-size;
   --cloud-accent: var(--employee-start, #3b82f6);
   border: 1px solid
     color-mix(
@@ -326,6 +327,7 @@
   border-color: var(--dsw-alias-border-l2, #dbe2eb);
   white-space: nowrap;
   font-weight: 500;
+  line-height: 1.4;
   transition:
     color 160ms ease,
     border-color 160ms ease,
@@ -337,6 +339,21 @@
   flex: none;
   border-radius: 2px;
   background: currentColor;
+}
+.stopLabel {
+  display: inline;
+}
+@container (max-width: 220px) {
+  .executionDetails > summary {
+    padding-right: 52px;
+  }
+  .card .stopButton {
+    width: 32px;
+    padding: 0;
+  }
+  .stopLabel {
+    display: none;
+  }
 }
 .card .stopButton:hover:not(:disabled) {
   color: #bd5149;
@@ -380,6 +397,7 @@
 @media (pointer: coarse) {
   .card .stopButton {
     min-height: 44px;
+    min-width: 44px;
   }
   .stopControl {
     margin-top: 2px;

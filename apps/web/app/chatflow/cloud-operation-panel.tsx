@@ -313,7 +313,9 @@ export function CloudOperationCard({
                 onClick={() => onAct(op, 'cancel')}
               >
                 <span className={styles.stopIcon} aria-hidden="true" />
-                {stopping ? '正在停止…' : '停止本轮'}
+                <span className={styles.stopLabel}>
+                  {stopping ? '正在停止…' : '停止本轮'}
+                </span>
               </button>
             </Tooltip>
           </div>
