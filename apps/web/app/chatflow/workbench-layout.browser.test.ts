@@ -3107,6 +3107,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .locator('[data-queue-dock]')
         .getByText('next real turn')
         .waitFor();
+      // The dock renders optimistically before the server accepts the message.
+      // Simulate the worker only after the queued send has been acknowledged.
+      await expect
+        .poll(() => f.state.queue.map((message) => message.text))
+        .toEqual(['next real turn']);
+      await expect.poll(() => input.isEnabled()).toBe(true);
       const item = f.state.queue.shift()!;
       f.state.queuedStarted.push({
         id: item.id,
