@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 const migration = readFileSync(
@@ -69,7 +70,7 @@ describe('foundational DSH-native Skills', () => {
   it.each([
     {
       name: 'web-research',
-      requiredTools: ['web.search'],
+      requiredTools: ['web.search', 'web.fetch'],
     },
     {
       name: 'workspace-briefing',
@@ -121,10 +122,12 @@ describe('foundational DSH-native Skills', () => {
       ],
     },
   ])(
-    'keeps $name source and database seed aligned',
-    ({ name, requiredTools }) => {
+    'keeps $name source and versioned catalog aligned while retaining its seed identity',
+    async ({ name, requiredTools }) => {
       const source = skillSource(name);
       const checksum = `sha256:${createHash('sha256').update(source.body).digest('hex')}`;
+      const catalog = await loadPlatformContentCatalog();
+      const current = catalog.skills.find((skill) => skill.name === name)!;
 
       expect(source.frontmatter).toContain(`name: ${name}`);
       expect(source.frontmatter).toMatch(/description: .+/);
@@ -142,9 +145,11 @@ describe('foundational DSH-native Skills', () => {
                   ? met98DeliverableMigration
                   : met97Migration;
       expect(seed).toContain(`'${name}'`);
-      expect(seed).toContain(source.body);
-      expect(seed).toContain(`'${checksum}'`);
-      for (const tool of requiredTools) expect(seed).toContain(`"${tool}"`);
+      // Historical migrations remain immutable; content:sync installs the
+      // current versioned catalog after those seeds have been applied.
+      expect(current.content).toBe(source.body);
+      expect(current.checksum).toBe(checksum);
+      expect(current.requiredToolRefs).toEqual(requiredTools);
     },
   );
 
