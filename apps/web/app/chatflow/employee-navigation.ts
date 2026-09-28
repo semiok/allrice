@@ -15,6 +15,7 @@ import {
 import {
   deriveGroups,
   type ArchivedFilter,
+  type SessionNode,
 } from './dsh-upstream/workspace/tree';
 import type {
   SessionListState,
@@ -25,6 +26,27 @@ import { zh } from './dsh-upstream/workspace/locales';
 import type { WorkspaceBrowserProps } from './dsh-upstream/workspace/contracts';
 
 export const employeeAccent = resolveEmployeeAccent;
+
+export const employeeSessionPreviewLimit = 5;
+
+/** Selected and running work take slots within the preview, never extra rows. */
+export function employeeSessionPreview(
+  sessions: readonly SessionNode[],
+  activeId: string | null,
+) {
+  const preferred = [
+    ...sessions.filter((row) => row.id === activeId),
+    ...sessions.filter((row) => row.running || row.runningSubagentCount > 0),
+    ...sessions,
+  ];
+  const ids = new Set<string>();
+  for (const row of preferred) {
+    if (ids.size === employeeSessionPreviewLimit) break;
+    ids.add(row.id);
+  }
+  const rows = sessions.filter((row) => ids.has(row.id));
+  return { rows, hiddenCount: sessions.length - rows.length };
+}
 
 export function employeeAccentStyle(
   name: string,
