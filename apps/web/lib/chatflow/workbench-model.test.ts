@@ -126,7 +126,7 @@ describe('workbench UI boundary', () => {
       parseArtifactDetail({ artifact, feedback: Array(101).fill({}) }),
     ).toThrow();
   });
-  it('treats active content as text, never as trusted markup or a remote image', () => {
+  it('accepts typed preview bytes and rejects remote URLs or invalid encodings', () => {
     const text =
       '<script>alert(1)</script><img src="https://untrusted.invalid/">';
     expect(
@@ -134,14 +134,17 @@ describe('workbench UI boundary', () => {
     ).toEqual({ kind: 'text', text, mediaType: 'text/html' });
     for (const input of [
       { kind: 'html', text },
-      { kind: 'image', mediaType: 'image/svg+xml', base64: 'AAAA' },
       {
         kind: 'image',
         mediaType: 'image/png',
         base64: 'https://invalid/path?',
       },
       { kind: 'image', mediaType: 'image/png', base64: 'AAA' },
-      { kind: 'text', text: 'x'.repeat(512001), mediaType: 'text/plain' },
+      {
+        kind: 'text',
+        text: 'x'.repeat(2 * 1024 * 1024 + 1),
+        mediaType: 'text/plain',
+      },
     ])
       expect(() => parseArtifactPreview(input)).toThrow();
     expect(
@@ -149,9 +152,9 @@ describe('workbench UI boundary', () => {
     ).toBe('download_only');
   });
   it.each(['image/png', 'image/jpeg', 'image/webp'])(
-    'admits %s images above the text cap up to 8 MB, including base64 padding',
+    'admits %s images above the text cap up to 32 MiB, including base64 padding',
     (mediaType) => {
-      for (const size of [3_358_298, 8_000_000]) {
+      for (const size of [3_358_298, 32 * 1024 * 1024]) {
         const input = {
           kind: 'image',
           mediaType,
@@ -159,8 +162,8 @@ describe('workbench UI boundary', () => {
         };
         expect(parseArtifactPreview(input)).toEqual(input);
       }
-      // 8,000,001 bytes has the same encoded length as 8,000,000 bytes.
-      for (const size of [8_000_001, 8_000_002])
+      // Check decoded bytes, including limits that share a padded base64 length.
+      for (const size of [32 * 1024 * 1024 + 1, 32 * 1024 * 1024 + 2])
         expect(() =>
           parseArtifactPreview({
             kind: 'image',

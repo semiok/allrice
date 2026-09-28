@@ -1,7 +1,5 @@
 'use client';
 import * as React from 'react';
-import * as jsxRuntime from 'react/jsx-runtime';
-import * as primitives from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit';
 import {
   ZoomViewport,
@@ -13,7 +11,7 @@ import {
 } from './dsh-upstream/document/pdf/store';
 import { zh, type PdfLocaleKey } from './dsh-upstream/document/pdf/locales';
 import styles from './workbench.module.css';
-import uiSource from '../dsh-upstream/upstream.json';
+import { loadNativeDocumentModule } from './native-document-module';
 
 type NativePdfProps = {
   content: { kind: 'bytes'; data: Uint8Array<ArrayBuffer> };
@@ -27,67 +25,7 @@ type NativePdfProps = {
   t: (key: PdfLocaleKey, params?: Record<string, string | number>) => string;
 };
 type PdfModule = { PdfBody: React.ComponentType<NativePdfProps> };
-let loaded: Promise<PdfModule> | undefined;
-/** Only the official PDF chunk registers here; no DSH filesystem, services or agent is started. */
-function loadPdf(): Promise<PdfModule> {
-  return (loaded ??= new Promise<PdfModule>((resolve, reject) => {
-    const previous = Reflect.get(window, '__ModuleLoader__');
-    let result: PdfModule | undefined;
-    let failure: unknown;
-    const facade = {
-      load(registration: {
-        id: string;
-        chunk: string;
-        factory: (require: (id: string) => unknown) => unknown;
-      }) {
-        try {
-          if (
-            registration.id !==
-              '@deepseek-ai/dsh-client-ui-sidebar-documentpreview' ||
-            registration.chunk !== 'client.pdf.js'
-          )
-            throw Error('预览组件来源不匹配');
-          result = registration.factory((id) => {
-            if (id === 'react') return React;
-            if (id === 'react/jsx-runtime') return jsxRuntime;
-            if (id === '@deepseek-ai/dsh-client-ui-primitives')
-              return primitives;
-            throw Error(`预览组件依赖不可用：${id}`);
-          }) as PdfModule;
-        } catch (error) {
-          failure = error;
-        }
-      },
-    };
-    Reflect.set(window, '__ModuleLoader__', facade);
-    const script = document.createElement('script');
-    const version = uiSource.componentSets.find(
-      (group) => group.id === 'native-document',
-    )!.version;
-    script.src = `/api/dsh-ui/pdf?version=${encodeURIComponent(version)}`;
-    const restore = () => {
-      if (Reflect.get(window, '__ModuleLoader__') === facade) {
-        if (previous === undefined)
-          Reflect.deleteProperty(window, '__ModuleLoader__');
-        else Reflect.set(window, '__ModuleLoader__', previous);
-      }
-      script.remove();
-    };
-    script.onload = () => {
-      restore();
-      if (result?.PdfBody) resolve(result);
-      else reject(failure ?? Error('PDF 预览组件未就绪'));
-    };
-    script.onerror = () => {
-      restore();
-      reject(Error('PDF 预览组件加载失败'));
-    };
-    document.head.append(script);
-  }).catch((error) => {
-    loaded = undefined;
-    throw error;
-  }));
-}
+const loadPdf = () => loadNativeDocumentModule<PdfModule>('pdf');
 const retain = () => {};
 const scrollport = () => {};
 export function NativePdfPreview({ base64 }: { base64: string }) {
