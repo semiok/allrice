@@ -47,3 +47,9 @@ Verification includes immutable-content/auth regressions, real native DOCX
 conversion, simultaneous PDF/Excel tabs, sheet switching, mobile SVG/GIF,
 static/interactive iframe behavior, and text paging under React StrictMode.
 Dev acceptance must also verify actual stored files through authenticated routes.
+
+### 缺失字体与预览诊断
+
+Word/PPT 转换沿用 DSH 默认字体回退。字体缺失不阻止 PDF 预览；工具栏直接复用 DSH `FontNotice` 图标与详情弹层，说明文字和排版可能与原文件不同，不再在正文上方放置缺少说明的字体列表。下载仍为原始文件。
+
+Office 转换失败及成果预览的非预期服务异常记录发生时间、发布版本、对象/成果标识与有界错误代码链，不记录文件正文、异常消息、堆栈或凭证。历史截图中的通用错误不能据此推断为字体或格式不支持；需要对应请求的诊断证据。

@@ -18,6 +18,8 @@ import { searchResultDocument } from '../../lib/chatflow/document-reader-model';
 import { AssistantMarkdown } from './assistant-markdown';
 import native from './dsh-upstream/document/TextPreview.module.css';
 import styles from './document-reader.module.css';
+import { FontNotice } from './dsh-upstream/document/office/FontNotice';
+import { zh as officeZh } from './dsh-upstream/document/office/locales';
 
 /** DSH primitives and preview chrome; Allrice only supplies scoped file actions. */
 export function DocumentToolbar(props: {
@@ -26,6 +28,7 @@ export function DocumentToolbar(props: {
   actions: MenuEntry[];
   onAction: (id: string) => void;
   children?: ReactNode;
+  missingFonts?: readonly string[];
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -36,6 +39,17 @@ export function DocumentToolbar(props: {
       <FileTypeIcon path={props.title} size={20} />
       <PathLabel path={props.title} className={styles.name} />
       {props.children}
+      <FontNotice
+        key={props.downloadUrl}
+        fonts={props.missingFonts ?? []}
+        t={(key, params) =>
+          Object.entries(params ?? {}).reduce(
+            (text, [name, value]) =>
+              text.replaceAll(`{${name}}`, String(value)),
+            officeZh[key] as string,
+          )
+        }
+      />
       <a className={styles.download} href={props.downloadUrl} download>
         <IconDownloadOutlineRegular size={16} />
         下载

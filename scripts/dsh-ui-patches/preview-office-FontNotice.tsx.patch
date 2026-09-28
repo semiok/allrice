@@ -1,0 +1,19 @@
+--- a/packages/client/ui-sidebar-documentpreview/src/client/office/FontNotice.tsx
++++ b/packages/client/ui-sidebar-documentpreview/src/client/office/FontNotice.tsx
+@@ -2,13 +2,14 @@
+ import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+ import { createPortal } from 'react-dom'
+ import clsx from 'clsx'
+-import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
++import type { OfficePreviewKey } from './locales'
+ import { Button, IconCloseOutlineRegular, IconWarningTriangleOutlineRegular, Tooltip, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
+ import common from '../TextPreview.module.css'
+ import css from './FontNotice.module.css'
+ 
+ /** Notice inputs supplied by the document owner and Office locale registration. */
+-export type FontNoticeProps = PropsLocale<'sidebarOffice'> & {
++export type FontNoticeProps = {
++  readonly t: (key: OfficePreviewKey, params?: Record<string, string | number>) => string
+   readonly fonts: readonly string[]
+ }
+ 

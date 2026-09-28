@@ -6099,9 +6099,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(firstLength).toBeLessThan(f.state.text.length);
       await f.panel.getByRole('button', { name: '加载更多内容' }).click();
       await expect
-        .poll(async () => (await body.innerText()).length)
-        .toBeGreaterThan(firstLength);
-      expect(await body.innerText()).toContain('较长的安全原文 6000');
+        .poll(() => body.innerText(), { timeout: 10_000 })
+        .toContain('较长的安全原文 6000');
       expect(
         await f.panel.getByRole('button', { name: '加载更多内容' }).count(),
       ).toBe(0);
