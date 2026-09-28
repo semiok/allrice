@@ -1,4 +1,5 @@
 import { headers } from 'next/headers';
+import { AllriceMark } from '../../components/allrice-mark';
 import {
   portalAuthEnabled,
   portalPublicView,
@@ -17,7 +18,10 @@ export default async function LoginPage() {
   return (
     <main className="auth-shell auth-workspace">
       <header className="auth-workspace-brand">
-        <span className="auth-login-wordmark">AllRice</span>
+        <span className="auth-login-brand">
+          <AllriceMark size={28} />
+          <span className="auth-login-wordmark">AllRice</span>
+        </span>
         <span className="auth-brand-slogan" lang="en">
           Do it right. Make it nice.
         </span>
