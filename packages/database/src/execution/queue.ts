@@ -958,12 +958,40 @@ async function transitionTerminal(
             input.code === 'SKILL_ARTIFACT_INVALID'
           ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件校验失败。请重新安装或刷新该 Skill 后重试。'
           : 'Rice 暂时无法完成这次请求，请稍后重试。');
+    // Native DSH may already have delivered a complete message before the
+    // final operation/accounting check fails. Keep that reply without changing
+    // the failed Run status. Never recover a delta fragment or an older attempt.
+    const [reply] =
+      input.runStatus === 'failed'
+        ? await transaction<{ payload: Record<string, unknown> }[]>`
+            select payload from allrice_run_events
+            where run_id=${job.run_id} and organization_id=${job.organization_id}
+              and workspace_id=${job.workspace_id}
+              and event_type in ('assistant.text.delta','assistant.text.completed')
+              and payload->>'messageId'=${employeeRun.assistant_message_id}
+              and payload->>'attempt'=${String(job.attempt)}
+              and (event_type='assistant.text.completed' or
+                (payload->>'sourceEventType'='assistant/message' and payload->>'textMode'='replace'))
+            order by sequence desc limit 1`
+        : [];
+    const native = reply?.payload.nativePayload as
+      { contentTypes?: unknown; interrupted?: unknown } | undefined;
+    const retainedReply =
+      typeof reply?.payload.text === 'string' &&
+      reply.payload.text.trim() &&
+      native?.interrupted !== true &&
+      !(
+        Array.isArray(native?.contentTypes) &&
+        native.contentTypes.includes('tool-call')
+      )
+        ? reply.payload.text
+        : null;
     const text =
       input.runStatus === 'succeeded' && typeof result.answer === 'string'
         ? result.answer
         : input.runStatus === 'canceled'
           ? 'Rice 的这次执行已取消。'
-          : failureText;
+          : (retainedReply ?? failureText);
     const warning = ChatMessageContentSchema.shape.budgetWarning.safeParse(
       input.runStatus === 'succeeded' &&
         result.budgetWarning &&

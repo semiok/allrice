@@ -349,7 +349,10 @@ export function ChatTranscript({
                         </small>
                       ) : message.status === 'failed' ? (
                         <small className={styles.failedMessage}>
-                          这次没有完成。
+                          {message.errorCode ===
+                          'ASSISTANT_EXECUTION_UNRESOLVED'
+                            ? '部分调用的执行状态未能确认。'
+                            : '这次没有完成。'}
                         </small>
                       ) : null}
                       {onOpenArtifact && message.runId ? (
