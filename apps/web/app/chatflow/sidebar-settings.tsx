@@ -13,7 +13,6 @@ import { MonthlyQuota } from './monthly-quota';
 import { StorageUsage } from './storage-usage';
 import { AccountPasswordSettings } from './account-password-settings';
 import { ExperiencePanel } from '../workspace/experience/experience-panel';
-import { LocalMcpSettings } from '../runtime-console/local-mcp-settings';
 import { ComputerSettings } from './computer-settings';
 import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
@@ -46,7 +45,6 @@ export function SidebarSettings({
   onBridge: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
-  const [localAppsVisited, setLocalAppsVisited] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   async function logout() {
@@ -196,24 +194,9 @@ export function SidebarSettings({
                       <StorageUsage workspaceId={workspaceId} />
                     </>
                   )}
+                  {/* Bridge 工具随客户端提供；应用设置只管理远端连接。 */}
                   {row.id === 'apps' && (
-                    <>
-                      <ConnectedApps workspaceId={workspaceId} />
-                      <details
-                        onToggle={(event) => {
-                          if (event.currentTarget.open)
-                            setLocalAppsVisited(true);
-                        }}
-                      >
-                        <summary>本地应用高级设置</summary>
-                        {localAppsVisited && (
-                          <LocalMcpSettings
-                            key={workspaceId}
-                            workspaceId={workspaceId}
-                          />
-                        )}
-                      </details>
-                    </>
+                    <ConnectedApps workspaceId={workspaceId} />
                   )}
                   {row.id === 'experience' && (
                     <ExperiencePanel
