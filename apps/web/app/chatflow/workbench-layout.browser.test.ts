@@ -1187,7 +1187,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it.each([1440, 390])(
+  it.each([1440, 390, 320])(
     'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
     async (width) => {
       const f = await fixture({ width, running: true });
@@ -1234,18 +1234,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         );
         await f.page.reload();
+        if (width < 760) {
+          const collapse = f.page.getByRole('button', {
+            name: '收起侧边栏',
+            exact: true,
+          });
+          if (await collapse.isVisible()) await collapse.click();
+        }
         const card = f.page.locator(`#operation-${id(8801)}`);
         const stop = card.getByRole('button', {
           name: '请求停止本轮全部操作',
           exact: true,
         });
         await stop.waitFor();
+        const runningHeight = (await card.boundingBox())!.height;
+        const label = card.getByText('运行详情', { exact: true });
+        const labelBox = (await label.boundingBox())!;
+        const buttonBox = (await stop.boundingBox())!;
+        expect(buttonBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
+        expect(labelBox.height).toBeLessThan(40);
         await stop.click();
-        await f.page
-          .getByRole('alert')
-          .filter({ hasText: '操作未确认' })
-          .waitFor();
-        expect(await stop.isEnabled()).toBe(true);
+        await expect.poll(() => requests.length).toBe(1);
+        await expect.poll(() => stop.isEnabled()).toBe(true);
         await stop.click();
         const stopping = card.getByRole('button', {
           name: '正在停止本轮全部操作',
@@ -1267,9 +1277,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByText('停止意图已记录，结果待确认', { exact: true })
           .waitFor();
         expect(await stopping.isDisabled()).toBe(true);
-        operation.snapshot.status = 'canceled';
-        await card.getByText('已确认未执行或停止', { exact: true }).waitFor();
+        // Completion can race with a stop request; display the real result.
+        operation.snapshot.status = 'succeeded';
+        operation.result = {
+          code: 'completed',
+          output: 'Done',
+          trusted: false,
+        };
+        await card.getByText('执行成功', { exact: true }).waitFor();
         expect(await stopping.count()).toBe(0);
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
         expect(requests).toHaveLength(2);
       } finally {
         release();
