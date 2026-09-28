@@ -20,6 +20,8 @@ import {
   sendChatMessage,
 } from './workspace/service.ts';
 import { prepareEmployeeRunBinding } from './employees/employeehub.ts';
+import { archivePlatformEmployee } from './employees/platform-employees.ts';
+import { listOrganizationAiAssignments } from './organization-employee-assignments.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -237,6 +239,34 @@ suite(
         (await getEmployeeWorkspace(f.tenant.context, f.tenant.workspaceId))
           .employees[0]!.id,
       ).toBe(a.id);
+      await archivePlatformEmployee(
+        f.source.employeeId,
+        { reason: 'Retire the acceptance employee' },
+        f.admin.user.id,
+      );
+      expect((await f.list()).employees.map((e) => e.employeeId)).not.toContain(
+        f.source.employeeId,
+      );
+      const catalog = await listOrganizationAiAssignments(
+        f.admin.context,
+        f.tenant.organizationId,
+        f.tenant.workspaceId,
+      );
+      expect(catalog.employees.map((e) => e.employeeId)).not.toContain(
+        f.source.employeeId,
+      );
+      expect(
+        (
+          await getChatSessionHistory(
+            f.tenant.context,
+            f.tenant.workspaceId,
+            session.id,
+          )
+        ).session.employeeAssignmentId,
+      ).toBe(a.id);
+      expect(
+        await fixture.db`select id from allrice_employee_assignments where id=${a.id}`,
+      ).toHaveLength(1);
     });
     it('does not let a stale personal assignment bypass withdrawal or promote a read-only member into execution', async () => {
       const f = await setup();
