@@ -14,7 +14,7 @@ import type {
   SessionReference,
   UserQuestionAnswerSubmission,
 } from '@allrice/contracts';
-import Link from 'next/link';
+import { isMessageRunActive } from './run-view';
 
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
@@ -103,6 +103,9 @@ export function ChatFlowClient({
   >([]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [cancelRequestedRunId, setCancelRequestedRunId] = useState<
+    string | null
+  >(null);
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
@@ -716,11 +719,17 @@ export function ChatFlowClient({
   async function cancelRun() {
     const targetRun = [...(history?.messages ?? [])]
       .reverse()
-      .map((message) => (message.runId ? runViews[message.runId] : undefined))
       .find(
-        (view) => view?.status === 'running' || view?.status === 'connecting',
+        (message) =>
+          message.runId && isMessageRunActive(message, runViews[message.runId]),
       );
-    if (!workspace || !targetRun) return;
+    if (
+      !workspace ||
+      !targetRun?.runId ||
+      cancelRequestedRunId === targetRun.runId
+    )
+      return;
+    setCancelRequestedRunId(targetRun.runId);
     const scope = captureSelection();
     try {
       await readJson(
@@ -736,6 +745,9 @@ export function ChatFlowClient({
     } catch (cause) {
       if (scope.current())
         setError(cause instanceof Error ? cause.message : '停止失败');
+      setCancelRequestedRunId((current) =>
+        current === targetRun.runId ? null : current,
+      );
     }
   }
 
@@ -876,9 +888,11 @@ export function ChatFlowClient({
       employeeAssistantAvailability.eligible &&
       assistantReady?.state === 'ready',
   };
-  const isRunning = Object.values(runViews).some(
-    (view) => view.status === 'running' || view.status === 'connecting',
+  const activeRunMessages = (history?.messages ?? []).filter(
+    (message) =>
+      message.runId && isMessageRunActive(message, runViews[message.runId]),
   );
+  const isRunning = activeRunMessages.length > 0;
   const pendingUserQuestion = Object.values(runViews)
     .filter((view) => view.status === 'running' || view.status === 'connecting')
     .map((view) => projectPendingUserQuestion(view.events))
@@ -896,10 +910,10 @@ export function ChatFlowClient({
     !history?.messages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
-  const recoverableRunView = [...(history?.messages ?? [])]
+  const recoverableRunView = [...activeRunMessages]
     .reverse()
-    .map((message) => (message.runId ? runViews[message.runId] : undefined))
-    .find((view) => view?.status === 'failed' || view?.status === 'canceled');
+    .map((message) => runViews[message.runId!])
+    .find((view) => !!view?.connectionError);
   const { localWorkspaceOnline, localWorkspaceLabel, bridgeConnectionState } =
     projectBridgeView(bridgeDevices, bridgeStatusKnown);
 
@@ -931,6 +945,9 @@ export function ChatFlowClient({
       fileInput={fileInput}
       hero={hero}
       isRunning={isRunning}
+      cancelPending={activeRunMessages.some(
+        (message) => message.runId === cancelRequestedRunId,
+      )}
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
       bridgeConnectionState={bridgeConnectionState}
@@ -1144,14 +1161,6 @@ export function ChatFlowClient({
                 <div
                   className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                 >
-                  {experienceEnabled && workspace ? (
-                    <Link
-                      className={workbenchUi.entry}
-                      href={`/workspace/experience?workspaceId=${encodeURIComponent(workspace.workspaceId)}${activeId ? `&sessionId=${encodeURIComponent(activeId)}` : ''}`}
-                    >
-                      经验沉淀
-                    </Link>
-                  ) : null}
                   {workbenchEnabled ? (
                     <button
                       type="button"

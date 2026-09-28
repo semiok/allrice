@@ -38,7 +38,6 @@ export function createSessionRunStream({
   workspaceId,
   loadHistory,
   loadWorkspace,
-  setError,
   tenantHeaders,
 }: SessionRunStreamOptions) {
   let active = false;
@@ -48,6 +47,7 @@ export function createSessionRunStream({
   const activeStreams = new Map<string, AbortController>();
   const runEventBuffers = new Map<string, ChatFlowEventEnvelope[]>();
   const terminalRunIds = new Set<string>();
+  const pendingRunIds = new Set<string>();
   const loadedTraceIds = new Set<string>();
   const traceLoads = new Map<string, AbortController>();
   const publish = (next: Snapshot) => {
@@ -69,6 +69,7 @@ export function createSessionRunStream({
     traceLoads.clear();
     runEventBuffers.clear();
     terminalRunIds.clear();
+    pendingRunIds.clear();
     loadedTraceIds.clear();
     publish({ runViews: {}, runTraces: {} });
   };
@@ -168,7 +169,14 @@ export function createSessionRunStream({
                     accumulated,
                   ),
                 });
+                if (terminal) {
+                  terminalRunIds.add(runId);
+                  pendingRunIds.delete(runId);
+                  await reader.cancel();
+                  break;
+                }
               }
+              if (terminal) break;
             }
           } finally {
             reader.releaseLock();
@@ -186,7 +194,7 @@ export function createSessionRunStream({
               reconnects,
             });
           }
-        } catch (cause) {
+        } catch {
           if (!current()) return;
           reconnects += 1;
           updateView(runId, {
@@ -198,19 +206,18 @@ export function createSessionRunStream({
             status: 'connecting',
             reconnects,
           });
-          if (reconnects > 6) {
-            setError(
-              cause instanceof Error
-                ? `实时连接恢复失败：${cause.message}`
-                : '实时连接恢复失败',
-            );
-            break;
-          }
+          if (reconnects > 6) break;
         }
         if (!terminal && reconnects <= 6 && current())
           await reconnectDelay(controller.signal, reconnects);
       }
       if (!current()) return;
+      if (!terminal) {
+        updateView(runId, {
+          ...snapshot.runViews[runId]!,
+          connectionError: '实时连接暂时中断',
+        });
+      }
       if (terminal) {
         terminalRunIds.add(runId);
         loadedTraceIds.add(runId);
@@ -294,17 +301,37 @@ export function createSessionRunStream({
     streamRun,
     loadRunTrace,
     recoverRun: (runId: string) => {
-      if (!active) return Promise.resolve();
-      terminalRunIds.delete(runId);
+      if (!active || !pendingRunIds.has(runId) || terminalRunIds.has(runId))
+        return Promise.resolve();
       return streamRun(runId);
+    },
+    recoverConnections: () => {
+      for (const runId of pendingRunIds)
+        if (snapshot.runViews[runId]?.connectionError) void streamRun(runId);
     },
     restoreHistory: (history: History | null) => {
       // A render can hold previous History until the new request resolves.
       if (!active || !sessionId || history?.session.id !== sessionId) return;
       for (const message of history.messages) {
-        if (!message.runId) continue;
-        if (message.status === 'pending') void streamRun(message.runId);
-        else void loadRunTrace(message.runId);
+        if (!message.runId || message.role !== 'assistant') continue;
+        const runId = message.runId;
+        if (message.status === 'pending') {
+          if (terminalRunIds.has(runId)) continue;
+          pendingRunIds.add(runId);
+          if (!snapshot.runViews[runId]?.connectionError) void streamRun(runId);
+        } else {
+          pendingRunIds.delete(runId);
+          terminalRunIds.add(runId);
+          activeStreams.get(runId)?.abort();
+          activeStreams.delete(runId);
+          const view = snapshot.runViews[runId];
+          const status =
+            view?.status === 'canceled' ? 'canceled' : message.status;
+          if (view && (view.status !== status || view.connectionError)) {
+            updateView(runId, { ...view, status, connectionError: undefined });
+          }
+          void loadRunTrace(runId);
+        }
       }
     },
   };

@@ -36,6 +36,7 @@ import { AssistantMessageActions } from './message-feedback';
 import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
 import { feedbackTranslate } from './feedback-labels';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
+import { isMessageRunActive } from './run-view';
 
 interface ChatTranscriptProps {
   streamingOutput?: boolean;
@@ -125,10 +126,7 @@ export function ChatTranscript({
                   undefined)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
-              const messageIsRunning = messageRun
-                ? messageRun.status === 'running' ||
-                  messageRun.status === 'connecting'
-                : message.status === 'pending';
+              const messageIsRunning = isMessageRunActive(message, messageRun);
               const streamedText = messageRun
                 ? assistantDelta(messageRun.events)
                 : '';
@@ -373,13 +371,15 @@ export function ChatTranscript({
             })}
 
           {recoverableRunView ? (
-            <button
-              className={styles.recover}
-              onClick={() => void onRecoverRun(recoverableRunView.runId)}
-              type="button"
-            >
-              重新连接并恢复执行记录
-            </button>
+            <div className={styles.connectionRetry} role="status">
+              <span>实时连接暂时中断</span>
+              <button
+                onClick={() => void onRecoverRun(recoverableRunView.runId)}
+                type="button"
+              >
+                重试
+              </button>
+            </div>
           ) : null}
         </div>
         {!atBottom ? (

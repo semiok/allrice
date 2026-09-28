@@ -40,6 +40,7 @@ interface ChatComposerProps {
   fileInput: RefObject<HTMLInputElement | null>;
   hero?: boolean;
   isRunning: boolean;
+  cancelPending?: boolean;
   localWorkspaceLabel?: string;
   localWorkspaceOnline: boolean;
   bridgeConnectionState: BridgeConnectionState;
@@ -74,6 +75,7 @@ export function ChatComposer({
   fileInput,
   hero = false,
   isRunning,
+  cancelPending = false,
   localWorkspaceLabel,
   localWorkspaceOnline,
   bridgeConnectionState,
@@ -173,7 +175,6 @@ export function ChatComposer({
                 side="top"
                 align="start"
                 portal
-                compact
                 listClassName={styles.composerAttachmentMenu}
                 onClose={() => onAttachmentMenuOpenChange(false)}
                 anchor={
@@ -192,27 +193,28 @@ export function ChatComposer({
                   </button>
                 }
                 items={[
+                  { type: 'label', id: 'heading', text: '添加到本轮' },
                   ...(onOpenSessionReferences
                     ? [
                         {
                           id: 'reference',
                           label: '引用会话',
-                          icon: <IconLinkOutlineRegular size={17} />,
+                          icon: <IconLinkOutlineRegular size={20} />,
                         },
                       ]
                     : []),
                   {
                     id: 'workspace',
                     label: '从工作区添加',
-                    icon: <IconFolderOpenOutlineRegular size={17} />,
+                    icon: <IconFolderOpenOutlineRegular size={20} />,
                   },
                   {
                     id: 'upload',
                     label: '从本地上传',
                     icon: (
                       <svg
-                        width="17"
-                        height="17"
+                        width="20"
+                        height="20"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
@@ -298,25 +300,46 @@ export function ChatComposer({
           </div>
           <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
             <button
-              aria-label="发送"
-              className={`${inputUi.primary} ${styles.employeeSend}`}
-              disabled={busy || !draft.trim()}
-              onClick={() => void onSendMessage()}
+              aria-label={
+                isRunning ? (cancelPending ? '正在停止' : '停止生成') : '发送'
+              }
+              title={
+                isRunning
+                  ? cancelPending
+                    ? '正在等待任务停止'
+                    : '停止本轮任务'
+                  : '发送消息'
+              }
+              className={`${inputUi.primary} ${isRunning ? styles.employeeStop : styles.employeeSend}`}
+              disabled={isRunning ? cancelPending : busy || !draft.trim()}
+              onClick={() => void (isRunning ? onCancelRun() : onSendMessage())}
               type="button"
             >
-              <svg
-                aria-hidden="true"
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.65"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="m5 12 7-7 7 7M12 19V5" />
-              </svg>
+              {isRunning ? (
+                <svg
+                  aria-hidden="true"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                >
+                  <rect x="1" y="1" width="14" height="14" rx="2" />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.65"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m5 12 7-7 7 7M12 19V5" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -345,11 +368,6 @@ export function ChatComposer({
             </span>
           ) : null}
         </div>
-        {isRunning ? (
-          <button onClick={() => void onCancelRun()} type="button">
-            停止本轮
-          </button>
-        ) : null}
       </div>
     </div>
   );
