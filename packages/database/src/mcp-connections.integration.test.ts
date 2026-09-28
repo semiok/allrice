@@ -188,6 +188,7 @@ suite('P16 tenant MCP authority — actual isolated PostgreSQL', () => {
       workspaceId: f.scope.workspaceId,
       connectionId: connection.id,
       redirectUrl: 'https://tenant.example.test/api/v1/connections/callback',
+      returnSessionId: randomUUID(),
     };
     await store.beginOAuth(f.context, input);
     const lease = await store.claimDiscovery(randomUUID());
@@ -197,6 +198,7 @@ suite('P16 tenant MCP authority — actual isolated PostgreSQL', () => {
       preset: 'github',
       redirectUrl: callbackUrl,
       returnUrl: input.redirectUrl,
+      returnSessionId: input.returnSessionId,
       clientInformation: { client_secret: clientSecret },
     });
     session.data.authorizationUrl =
@@ -227,13 +229,15 @@ suite('P16 tenant MCP authority — actual isolated PostgreSQL', () => {
       ),
     ).rejects.toMatchObject({ code: 'MCP_DENIED' });
     expect(
-      (
-        await store.completeOAuthCallback(f.context, {
-          state,
-          code: 'synthetic-code',
-        })
-      ).connectionId,
-    ).toBe(connection.id);
+      await store.completeOAuthCallback(f.context, {
+        state,
+        code: 'synthetic-code',
+      }),
+    ).toEqual({
+      workspaceId: input.workspaceId,
+      connectionId: connection.id,
+      returnSessionId: input.returnSessionId,
+    });
     await expect(
       store.completeOAuthCallback(f.context, { state, code: 'replay' }),
     ).rejects.toMatchObject({ code: 'MCP_DENIED' });

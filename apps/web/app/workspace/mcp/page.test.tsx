@@ -7,6 +7,8 @@ import { redirect } from 'next/navigation';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRequestContext } from '../../../lib/identity/session';
 import WorkspaceMcpPage from './page';
+import BrowserSettingsPage from '../browser/page';
+import WorkspaceLocalBrowserPage from '../local-browser/page';
 
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
@@ -16,11 +18,6 @@ vi.mock('next/headers', () => ({ headers: vi.fn() }));
 vi.mock('next/navigation', () => ({ redirect: vi.fn() }));
 vi.mock('../../../lib/identity/session', () => ({
   getRequestContext: vi.fn(),
-}));
-vi.mock('./connected-apps', () => ({
-  ConnectedApps: ({ workspaceId }: { workspaceId: string }) => (
-    <section data-workspace-id={workspaceId}>Connected apps</section>
-  ),
 }));
 
 const organizationId = '11111111-1111-4111-8111-111111111111';
@@ -61,54 +58,43 @@ describe('workspace MCP page access', () => {
     vi.mocked(resolveWorkspaceId).mockResolvedValue(workspaceId);
   });
 
-  it('resolves an organization-scoped email/password session without redirecting to login', async () => {
-    const actor = context();
-    vi.mocked(getRequestContext).mockResolvedValue(actor);
-    const html = renderToStaticMarkup(await WorkspaceMcpPage());
-    expect(resolveWorkspaceId).toHaveBeenCalledExactlyOnceWith(actor);
-    expect(html).toContain(`data-workspace-id="${workspaceId}"`);
-    expect(redirect).not.toHaveBeenCalled();
-    expect(actor.workspaceId).toBeNull();
-  });
-
-  it('preserves the explicit portal workspace and workspace-admin scope', async () => {
-    const actor = context(workspaceId);
-    vi.mocked(getRequestContext).mockResolvedValue(actor);
-    const html = renderToStaticMarkup(await WorkspaceMcpPage());
-    expect(resolveWorkspaceId).toHaveBeenCalledExactlyOnceWith(actor);
-    expect(html).toContain(`data-workspace-id="${workspaceId}"`);
-    expect(redirect).not.toHaveBeenCalled();
-  });
-
-  it('lets a workspace admin resolve its workspace from an organization-scoped session', async () => {
-    const actor = context();
-    actor.memberships[0]!.workspaceId = workspaceId;
-    vi.mocked(getRequestContext).mockResolvedValue(actor);
-    const html = renderToStaticMarkup(await WorkspaceMcpPage());
-    expect(html).toContain(`data-workspace-id="${workspaceId}"`);
-  });
-
-  it('preserves the explicit workspace from the capability entry and still authorizes it', async () => {
+  it.each(['admin', 'member'] as const)(
+    'redirects a %s from the legacy page into the native settings modal',
+    async (role) => {
+      const actor = context();
+      actor.memberships[0]!.role = role;
+      vi.mocked(getRequestContext).mockResolvedValue(actor);
+      await expect(WorkspaceMcpPage()).rejects.toThrow('test redirect');
+      expect(resolveWorkspaceId).toHaveBeenCalledExactlyOnceWith(actor);
+      expect(redirect).toHaveBeenCalledExactlyOnceWith(
+        '/chatflow?settings=apps',
+      );
+      expect(actor.workspaceId).toBeNull();
+    },
+  );
+  it.each([
+    [BrowserSettingsPage, 'capabilities'],
+    [WorkspaceLocalBrowserPage, 'computer'],
+  ] as const)(
+    'redirects the legacy browser entry into %s settings',
+    async (page, section) => {
+      vi.mocked(getRequestContext).mockResolvedValue(context());
+      await expect(page()).rejects.toThrow('test redirect');
+      expect(redirect).toHaveBeenCalledExactlyOnceWith(
+        `/chatflow?settings=${section}`,
+      );
+    },
+  );
+  it('still authorizes an explicit workspace before returning to settings', async () => {
     vi.mocked(getRequestContext).mockResolvedValue(context());
-    const html = renderToStaticMarkup(
-      await WorkspaceMcpPage({
-        searchParams: Promise.resolve({ workspaceId }),
-      }),
-    );
+    await expect(
+      WorkspaceMcpPage({ searchParams: Promise.resolve({ workspaceId }) }),
+    ).rejects.toThrow('test redirect');
     expect(resolveWorkspaceId).toHaveBeenCalledWith(
       expect.anything(),
       workspaceId,
     );
-    expect(html).toContain(`data-workspace-id="${workspaceId}"`);
-  });
-
-  it('lets ordinary members manage their applications without becoming an admin', async () => {
-    const actor = context();
-    actor.memberships[0]!.role = 'member';
-    vi.mocked(getRequestContext).mockResolvedValue(actor);
-    const html = renderToStaticMarkup(await WorkspaceMcpPage());
-    expect(html).toContain('Connected apps');
-    expect(html).not.toContain('MCP settings');
+    expect(redirect).toHaveBeenCalledExactlyOnceWith('/chatflow?settings=apps');
   });
 
   it.each([

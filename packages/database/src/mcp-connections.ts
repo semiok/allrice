@@ -137,6 +137,8 @@ export interface McpOAuthSession {
   redirectUrl: string;
   /** Original authenticated tenant callback, used only by the GitHub relay. */
   returnUrl?: string;
+  /** UI navigation hint only; normal session reads still enforce access. */
+  returnSessionId?: string;
   preset?: 'github';
   clientInformation?: Record<string, unknown>;
   tokens?: Record<string, unknown>;
@@ -528,9 +530,17 @@ export function createMcpStore(
     },
     async beginOAuth(
       context: RequestContext,
-      input: { workspaceId: string; connectionId: string; redirectUrl: string },
+      input: {
+        workspaceId: string;
+        connectionId: string;
+        redirectUrl: string;
+        returnSessionId?: string | undefined;
+      },
     ) {
       const scope = workspaceAdminScope(context, input.workspaceId);
+      const returnSessionId = UuidSchema.optional().parse(
+        input.returnSessionId,
+      );
       const redirect = new URL(input.redirectUrl);
       if (
         redirect.pathname !== '/api/v1/connections/callback' ||
@@ -559,6 +569,7 @@ export function createMcpStore(
         const data: McpOAuthSession = {
           state: randomBytes(32).toString('hex'),
           redirectUrl: redirect.href,
+          ...(returnSessionId ? { returnSessionId } : {}),
         };
         if (row.endpoint === MCP_APPS.github.endpoint) {
           const client = await readGithubMcpOAuthClient(tx, key());
@@ -681,6 +692,7 @@ export function createMcpStore(
           and oauth_stage='redirect' and oauth_expires_at>clock_timestamp()`;
       if (!match) throw new McpError('MCP_DENIED');
       const scope = workspaceAdminScope(context, match.workspace_id);
+      let returnSessionId: string | undefined;
       await db().begin(async (tx) => {
         await workspaceCurrentAdmin(tx, scope, true);
         await lockConnection(scope, match.binding_id, tx);
@@ -697,6 +709,7 @@ export function createMcpStore(
             true,
           ),
         ) as McpOAuthSession;
+        returnSessionId = UuidSchema.safeParse(data.returnSessionId).data;
         data.authorizationCode = input.code;
         const envelope = seal(
           JSON.stringify(data),
@@ -710,6 +723,7 @@ export function createMcpStore(
       return {
         workspaceId: match.workspace_id,
         connectionId: match.binding_id,
+        ...(returnSessionId ? { returnSessionId } : {}),
       };
     },
     async oauthSession(

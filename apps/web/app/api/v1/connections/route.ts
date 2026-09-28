@@ -170,6 +170,9 @@ export async function POST(request: Request) {
           })
         : await store.beginOAuth(context, {
             ...target,
+            ...(input.returnSessionId
+              ? { returnSessionId: input.returnSessionId }
+              : {}),
             redirectUrl: new URL(
               '/api/v1/connections/callback',
               request.headers.get('origin')!,
