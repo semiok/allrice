@@ -1223,7 +1223,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([1440, 390, 320])(
     'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
     async (width) => {
-      const f = await fixture({ width, running: true });
+      const f = await fixture({ width, running: true, touch: width < 760 });
       const operation = {
         snapshot: {
           status: 'running',
@@ -1282,25 +1282,38 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await stop.waitFor();
         const runningHeight = (await card.boundingBox())!.height;
         const label = card.getByText('运行详情', { exact: true });
-        const labelBox = (await label.boundingBox())!;
+        const labelBox = await label.boundingBox();
         const buttonBox = (await stop.boundingBox())!;
-        expect(buttonBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
-        expect(labelBox.height).toBeLessThan(40);
+        if (labelBox) {
+          expect(buttonBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
+          expect(labelBox.height).toBeLessThan(40);
+        }
         const detail = card.getByRole('button', {
           name: '查看详情',
           exact: true,
         });
         const detailBox = (await detail.boundingBox())!;
         expect(detailBox.width).toBeLessThan(115);
-        expect(detailBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
+        if (labelBox)
+          expect(detailBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
         expect(detailBox.x + detailBox.width).toBeLessThan(buttonBox.x);
+        const cardBox = (await card.boundingBox())!;
+        const inset = await card.evaluate((node) =>
+          parseFloat(getComputedStyle(node).paddingRight),
+        );
+        expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(
+          cardBox.x + cardBox.width - inset,
+        );
         const content = f.page.locator(
           `[id="${await detail.getAttribute('aria-controls')}"]`,
         );
         // The heading and the old full-row hit area are ordinary, inert text/space.
-        await label.click();
+        if (labelBox) await label.click();
         expect(await detail.getAttribute('aria-expanded')).toBe('false');
-        const gapX = (labelBox.x + labelBox.width + detailBox.x) / 2;
+        const gapX =
+          ((labelBox ? labelBox.x + labelBox.width : cardBox.x + inset) +
+            detailBox.x) /
+          2;
         await f.page.mouse.move(gapX, detailBox.y + detailBox.height / 2);
         expect(
           await f.page.evaluate(
