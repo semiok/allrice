@@ -781,6 +781,9 @@ function ArtifactReview({
       ) : (
         <>
           <DocumentToolbar
+            missingFonts={
+              preview?.kind === 'pdf' ? preview.missingFonts : undefined
+            }
             title={
               toolResult
                 ? artifact.version.fileName.startsWith(

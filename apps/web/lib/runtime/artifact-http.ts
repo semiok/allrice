@@ -16,6 +16,7 @@ import { getRequestContext } from '../identity/session';
 import { sameOriginBrowserWrite } from '../identity/request-origin';
 import { getStorageAdapter } from '../storage/runtime';
 import { readStaticArtifactPreview } from './static-artifact-preview';
+import { reportPreviewFailure } from './preview-diagnostics';
 
 type RouteAction =
   'list' | 'detail' | 'content' | 'draft' | 'submit' | 'address';
@@ -167,6 +168,8 @@ export async function artifactHttp(
             (error instanceof Error && error.name === 'ZodError')
           ? 400
           : 500;
+    if (action === 'content' && status === 500 && !request.signal.aborted)
+      reportPreviewFailure('artifact-request', error, artifactId);
     return Response.json({ code }, { status, headers });
   }
 }

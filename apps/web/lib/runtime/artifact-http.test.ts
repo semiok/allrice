@@ -296,4 +296,36 @@ describe('authenticated workbench HTTP boundary', () => {
     expect(response.status).toBe(500);
     expect(await response.text()).toBe('{"code":"ARTIFACT_UNAVAILABLE"}');
   });
+  it('records preview failure codes without recording backend secrets', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      ports.get.mockRejectedValueOnce(
+        Object.assign(new Error('SECRET_BACKEND_CONFIG'), {
+          code: 'CONNECT_TIMEOUT',
+          cause: Object.assign(new Error('private storage URL'), {
+            code: 'ETIMEDOUT',
+          }),
+        }),
+      );
+      const response = await artifactHttp(request(), 'content', sessionId, id);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe('{"code":"ARTIFACT_UNAVAILABLE"}');
+      expect(log).toHaveBeenCalledWith(
+        'Document preview failed',
+        expect.objectContaining({
+          stage: 'artifact-request',
+          referenceId: id,
+          causes: [
+            { name: 'Error', code: 'CONNECT_TIMEOUT' },
+            { name: 'Error', code: 'ETIMEDOUT' },
+          ],
+        }),
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(
+        /SECRET_BACKEND_CONFIG|private storage URL/,
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
