@@ -6,6 +6,7 @@ import {
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { LocalMcpSettings } from '../runtime-console/local-mcp-settings';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
@@ -39,6 +40,7 @@ export function SidebarSettings({
   onBridge: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
+  const [localAppsVisited, setLocalAppsVisited] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   async function logout() {
@@ -187,7 +189,24 @@ export function SidebarSettings({
                     </>
                   )}
                   {row.id === 'apps' && (
-                    <ConnectedApps workspaceId={workspaceId} />
+                    <>
+                      <ConnectedApps workspaceId={workspaceId} />
+                      <details
+                        className={styles.settingsFold}
+                        onToggle={(event) => {
+                          if (event.currentTarget.open)
+                            setLocalAppsVisited(true);
+                        }}
+                      >
+                        <summary>本地应用高级设置</summary>
+                        {localAppsVisited && (
+                          <LocalMcpSettings
+                            key={workspaceId}
+                            workspaceId={workspaceId}
+                          />
+                        )}
+                      </details>
+                    </>
                   )}
                   {row.id === 'work' && (
                     <WorkAutomationSettings
