@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
-import { projectWorkProgress } from './work-progress';
+import { isReplyStreaming, projectWorkProgress } from './work-progress';
 
 function event(
   sequence: number,
@@ -43,6 +43,25 @@ const tool = (seq: number, type: 'tool.started' | 'tool.completed') =>
   });
 
 describe('native reading order adapted to Allrice', () => {
+  it('uses the current native phase instead of the presence of an earlier reply', () => {
+    const events = [reply(1, 'a', '先查询 GitHub')];
+    expect(isReplyStreaming(events)).toBe(true);
+    events.push(reply(2, 'a', '先查询 GitHub', 'replace'));
+    expect(isReplyStreaming(events)).toBe(false);
+    events.push(tool(3, 'tool.started'), tool(4, 'tool.completed'));
+    expect(isReplyStreaming(events)).toBe(false);
+    events.push(reply(5, 'b', '最新结果'));
+    expect(isReplyStreaming(events)).toBe(true);
+    const projection = event(6, 'harness.native', { presentation: 'context' });
+    projection.sourceEvent!.type = 'session/projection';
+    expect(isReplyStreaming([...events, projection])).toBe(true);
+    projection.sourceEvent!.type = 'request/context';
+    expect(isReplyStreaming([...events, projection])).toBe(false);
+    events.push(
+      event(7, 'harness.native', { presentation: 'think', status: 'started' }),
+    );
+    expect(isReplyStreaming(events)).toBe(false);
+  });
   it('unified output hides live replies and delivers only the final answer while retaining tool status', () => {
     const events = [
       reply(1, 'a', '阶段进展'),

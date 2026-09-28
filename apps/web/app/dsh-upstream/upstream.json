@@ -130,7 +130,8 @@
             "IconRefreshOutlineRegular",
             "Switch",
             "MarkdownText",
-            "MarkdownDelegateProvider"
+            "MarkdownDelegateProvider",
+            "DisclosureRow"
           ]
         },
         {

@@ -71,12 +71,13 @@ describe('Bridge connection and local workspace presentation', () => {
       contextCompacting: true,
     });
     expect(html).toContain('上下文占用 76%');
-    expect(html).toContain('正在整理…');
+    expect(html).toContain('aria-label="正在整理上下文"');
+    expect(html).not.toContain('正在整理…');
     expect(html).toContain('不是压缩进度');
     expect(html).not.toContain('100%');
     expect(
       render([], true, { nativeContextStatus, contextCompacting: false }),
-    ).not.toContain('正在整理…');
+    ).not.toContain('aria-label="正在整理上下文"');
   });
   it('keeps an online device green without claiming it has a workspace', () => {
     const html = render([device('online')]);

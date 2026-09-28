@@ -140,6 +140,21 @@ describe('historical transcript capability gating', () => {
           },
         },
       );
+    const earlierReply: ChatFlowEventEnvelope = {
+      ...event(0, 'completed', 'end'),
+      type: 'assistant.text.delta',
+      sourceEvent: null,
+      payload: {
+        replyId: 'first',
+        text: '我先检查项目。',
+        textMode: 'replace',
+      },
+    };
+    const interleaved = show([earlierReply, event(1, 'started', 'start')]);
+    expect(interleaved.match(/正在整理上下文…/g)).toHaveLength(1);
+    expect(interleaved).not.toContain('回复中…');
+    expect(interleaved).toContain('我先检查项目。');
+    expect(interleaved).toContain('整理 · 1 项');
     const events = [event(1, 'started', 'start')];
     expect(show(events)).toContain('正在整理上下文…');
     expect(show(events)).not.toContain('aria-expanded="true"');
