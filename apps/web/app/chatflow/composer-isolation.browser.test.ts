@@ -477,16 +477,24 @@ suite(
           : {}),
       });
       const page: Page = await context.newPage();
+      let closing = false;
       // Real Dev HTML/JS/CSS with only this page's API requests routed to the
       // fixture. No company messages, file uploads, or model runs are created.
       const liveOrigin = process.env.ALLRICE_TEST_DEV_ORIGIN;
       if (liveOrigin) {
         await page.route(`${liveOrigin}/api/v1/**`, async (route) => {
           const url = new URL(route.request().url());
-          const response = await route.fetch({
-            url: origin + url.pathname + url.search,
-          });
-          await route.fulfill({ response });
+          try {
+            const response = await route.fetch({
+              url: origin + url.pathname + url.search,
+              // The loopback server has no authentication; never forward the
+              // real Dev login cookie to a diagnostic transport.
+              headers: { 'content-type': 'application/json' },
+            });
+            await route.fulfill({ response });
+          } catch (error) {
+            if (!closing) throw error;
+          }
         });
       }
       page.setDefaultTimeout(4000);
@@ -677,9 +685,11 @@ suite(
           }
         },
         async close() {
+          closing = true;
           releaseHistoryB();
-          await context.close();
           server.closeAllConnections();
+          await page.unrouteAll({ behavior: 'ignoreErrors' });
+          await context.close();
           await new Promise<void>((done) => server.close(() => done()));
         },
       };
