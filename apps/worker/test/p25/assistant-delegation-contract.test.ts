@@ -4,7 +4,7 @@ import type { AssistantRuntime } from '@allrice/database';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
-function fixture() {
+function fixture(root = false) {
   const runId = randomUUID();
   const provision = vi.fn(async () => {
     throw Error('fixture_authority_checked');
@@ -16,6 +16,7 @@ function fixture() {
         {
           runId,
           nativeSessionId: 'root',
+          parentRunId: root ? null : randomUUID(),
           allowedTools: [
             'assistant.delegate',
             'assistant.report',
@@ -116,3 +117,20 @@ it.each(['none', randomUUID()])(
     expect(f.settleUsage).toHaveBeenCalledOnce();
   },
 );
+
+it('does not publish an artifact or record a parent report from the root employee', async () => {
+  const f = fixture(true);
+  await expect(
+    f.bridge.handle('report', {
+      nativeSessionId: 'root',
+      callId: 'root-report',
+      arguments: {
+        status: 'partial',
+        summary: 'progress',
+        evidence: [],
+        incomplete: [],
+      },
+    }),
+  ).resolves.toMatchObject({ error: 'assistant_report_child_only' });
+  expect(f.settleUsage).toHaveBeenCalledOnce();
+});

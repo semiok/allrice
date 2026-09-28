@@ -213,6 +213,40 @@ export function createGovernedAssistantNativeRuntime(
     if (!entry) throw Error('assistant_native_unbound');
     return entry;
   }
+  const coordinationDefinitions = new Map();
+  const coordinationScopes = new Map();
+  function refreshCoordinationTools(agent) {
+    const entry = bindings.get(agent.id);
+    if (!entry?.wireTools) return;
+    coordinationScopes.get(agent.id)?.forEach((dispose) => dispose());
+    const names = [
+      'assistant_report',
+      'assistant_message',
+      'assistant_stop',
+    ].filter((name) => coordinationDefinitions.has(name));
+    const disposers = [];
+    // Reuse native scoped registration: hide inherited coordination endpoints,
+    // then expose only those meaningful for THIS Run and THIS agent. A child's
+    // own report endpoint survives its parent's mask (native tool semantics).
+    if (names.length) disposers.push(agent.ctx.tools.restrict({ deny: names }));
+    const hasChildren = [...bindings.values()].some(
+      (child) => child.parentNativeSessionId === agent.id && !child.stopped,
+    );
+    for (const name of names) {
+      const available =
+        name === 'assistant_report'
+          ? !!entry.parentNativeSessionId
+          : hasChildren;
+      if (available && entry.wireTools.includes(name))
+        disposers.push(
+          agent.ctx.tools.register(coordinationDefinitions.get(name)),
+        );
+    }
+    coordinationScopes.set(
+      agent.id,
+      disposers.filter((dispose) => typeof dispose === 'function'),
+    );
+  }
   const guarded = new WeakSet();
   function guardSettlement(agent) {
     if (guarded.has(agent)) return;
@@ -286,6 +320,7 @@ export function createGovernedAssistantNativeRuntime(
       guardSettlement(agent);
       const wireTools = bindings.get(agent.id).wireTools;
       if (wireTools) agent.ctx.tools.restrict({ allow: wireTools });
+      refreshCoordinationTools(agent);
     }
   });
   ctx.tools.guard((exec) => {
@@ -600,6 +635,7 @@ export function createGovernedAssistantNativeRuntime(
       initialInputId: p.inputId,
       messages: new Map(),
     });
+    refreshCoordinationTools(parent);
     completion(p.instance.nativeSessionId);
     const accepted = await ctx.subagents.startContinuable({
       provider: 'spawn',
@@ -722,62 +758,71 @@ export function createGovernedAssistantNativeRuntime(
     if (
       !options.controlTools ||
       options.controlTools.includes(`assistant.${action}`)
-    )
-      ctx.tools.register(
-        defineTool({
-          name: `assistant_${action}`,
-          description:
-            action === 'delegate'
-              ? 'Delegate a bounded independent task. Include assistant.report in tools and ask the child to report its result through that coordination channel. Never request whole parent history or wider tools.'
-              : `Governed assistant ${action}; platform identity and authorization are checked.`,
-          parameters,
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: { content: { type: 'string', required: true } },
+    ) {
+      const definition = defineTool({
+        name: `assistant_${action}`,
+        description:
+          action === 'delegate'
+            ? 'Delegate a bounded independent task. Include assistant.report in tools and ask the child to report its result through that coordination channel. Never request whole parent history or wider tools.'
+            : action === 'report'
+              ? 'Child assistant only: deliver the delegated result to your parent. Never use this for root user replies or progress narration.'
+              : action === 'message'
+                ? 'Send a follow-up to a child delegated in the CURRENT task. Use its actual current Run UUID from assistant_delegate or assistant_inspect; never reuse a past task child ID.'
+                : `Governed assistant ${action}; platform identity and authorization are checked.`,
+        parameters,
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: { content: { type: 'string', required: true } },
+          },
+          render: (_args, v) => content(v.content),
+        },
+        timeoutMs: 120000,
+        execute: async (args, exec) => {
+          const agent = ctx.agents.requireInitiator();
+          binding(agent.id);
+          const result = await bridge(
+            action,
+            {
+              nativeSessionId: agent.id,
+              callId: exec.callId,
+              arguments: args,
             },
-            render: (_args, v) => content(v.content),
-          },
-          timeoutMs: 120000,
-          execute: async (args, exec) => {
-            const agent = ctx.agents.requireInitiator();
-            binding(agent.id);
-            const result = await bridge(
-              action,
-              {
-                nativeSessionId: agent.id,
-                callId: exec.callId,
-                arguments: args,
-              },
-              exec.signal,
-            );
-            if (action === 'delegate' && result.dispatch) {
-              await start(result);
-              // A version-bound development stage depends on the delegated
-              // result. Yield the native turn instead of starting a model call
-              // with no result yet; that call cannot see a later inbox arrival.
-              // Existing authorized settlement wakes the parent. This does not
-              // complete the business Run, block sibling calls in this batch,
-              // or alter ordinary parallel-assistant delegation.
-              if (args.development !== undefined) exec.concludeTurn();
-            }
-            if (action === 'message' && result.error)
-              throw Error(result.message ?? result.error);
-            if (action === 'message' && result.dispatch) await followup(result);
-            if (action === 'report' && !result.error) {
-              exec.concludeTurn();
-            }
-            if (action === 'stop') await drain(result);
-            return { content: JSON.stringify(result) };
-          },
-          presentCall: () => ({
-            card: 'generic',
-            kind: 'tool',
-            title: `Assistant ${action}`,
-          }),
+            exec.signal,
+          );
+          if (action === 'delegate' && result.dispatch) {
+            await start(result);
+            // A version-bound development stage depends on the delegated
+            // result. Yield the native turn instead of starting a model call
+            // with no result yet; that call cannot see a later inbox arrival.
+            // Existing authorized settlement wakes the parent. This does not
+            // complete the business Run, block sibling calls in this batch,
+            // or alter ordinary parallel-assistant delegation.
+            if (args.development !== undefined) exec.concludeTurn();
+          }
+          if (
+            (action === 'message' ||
+              result.error === 'assistant_report_child_only') &&
+            result.error
+          )
+            throw Error(result.message ?? result.error);
+          if (action === 'message' && result.dispatch) await followup(result);
+          if (action === 'report' && !result.error) {
+            exec.concludeTurn();
+          }
+          if (action === 'stop') await drain(result);
+          return { content: JSON.stringify(result) };
+        },
+        presentCall: () => ({
+          card: 'generic',
+          kind: 'tool',
+          title: `Assistant ${action}`,
         }),
-      );
+      });
+      coordinationDefinitions.set(definition.name, definition);
+      ctx.tools.register(definition);
+    }
   async function drain(p) {
     const canceledIds = new Set(
       (p.instances ?? []).map((instance) => instance.runId),
@@ -796,6 +841,12 @@ export function createGovernedAssistantNativeRuntime(
       await agent.whenIdle();
     }
     for (const child of p.instances ?? []) {
+      const entry = bindings.get(child.nativeSessionId);
+      if (entry) entry.stopped = true;
+      const parent =
+        entry?.parentNativeSessionId &&
+        ctx.agents.get(entry.parentNativeSessionId);
+      if (parent) refreshCoordinationTools(parent);
       nativeCompletions.get(child.nativeSessionId)?.resolve();
       await bridge(
         'stopped',
@@ -814,6 +865,9 @@ export function createGovernedAssistantNativeRuntime(
       if (agent) guardSettlement(agent);
       if (agent && p.wireTools)
         agent.ctx.tools.restrict({ allow: p.wireTools });
+      if (agent) refreshCoordinationTools(agent);
+      if (p.parentNativeSessionId && ctx.agents.get(p.parentNativeSessionId))
+        refreshCoordinationTools(ctx.agents.get(p.parentNativeSessionId));
       return { bound: true };
     },
     start,
@@ -882,6 +936,9 @@ export function createGovernedAssistantNativeRuntime(
       await Promise.all([...pendingWrites]);
       // Completed business Runs may share the persistent native root Session.
       // Retain JSONL/context, not prior Run authority or result wakeup bindings.
+      for (const disposers of coordinationScopes.values())
+        disposers.forEach((dispose) => dispose());
+      coordinationScopes.clear();
       bindings.clear();
       deliveries.clear();
       nativeCompletions.clear();

@@ -99,8 +99,10 @@ export function projectWorkProgress(
       kind: 'reply' as const,
     })),
     ...items
-      .filter((item) =>
-        ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
+      .filter(
+        (item) =>
+          item.modelWait ||
+          ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
       )
       .map((item) => ({
         kind: 'steps' as const,
