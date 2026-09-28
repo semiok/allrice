@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./preview": {
+      "types": "./dist/preview.d.ts",
+      "default": "./dist/preview.js"
     }
   },
   "scripts": {
@@ -15,6 +19,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@allrice/contracts": "workspace:*"
+    "@allrice/contracts": "workspace:*",
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-office-to-pdf": "0.1.7-rc.1"
   }
 }

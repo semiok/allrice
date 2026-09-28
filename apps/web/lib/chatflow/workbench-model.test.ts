@@ -126,7 +126,7 @@ describe('workbench UI boundary', () => {
       parseArtifactDetail({ artifact, feedback: Array(101).fill({}) }),
     ).toThrow();
   });
-  it('treats active content as text, never as trusted markup or a remote image', () => {
+  it('accepts typed preview bytes and rejects remote URLs or invalid encodings', () => {
     const text =
       '<script>alert(1)</script><img src="https://untrusted.invalid/">';
     expect(
@@ -134,20 +134,45 @@ describe('workbench UI boundary', () => {
     ).toEqual({ kind: 'text', text, mediaType: 'text/html' });
     for (const input of [
       { kind: 'html', text },
-      { kind: 'image', mediaType: 'image/svg+xml', base64: 'AAAA' },
       {
         kind: 'image',
         mediaType: 'image/png',
         base64: 'https://invalid/path?',
       },
-      { kind: 'image', mediaType: 'image/png', base64: 'A'.repeat(684001) },
-      { kind: 'text', text: 'x'.repeat(512001), mediaType: 'text/plain' },
+      { kind: 'image', mediaType: 'image/png', base64: 'AAA' },
+      {
+        kind: 'text',
+        text: 'x'.repeat(2 * 1024 * 1024 + 1),
+        mediaType: 'text/plain',
+      },
     ])
       expect(() => parseArtifactPreview(input)).toThrow();
     expect(
       parseArtifactPreview({ kind: 'download_only', reason: 'download' }).kind,
     ).toBe('download_only');
   });
+  it.each(['image/png', 'image/jpeg', 'image/webp'])(
+    'admits %s images above the text cap up to 32 MiB, including base64 padding',
+    (mediaType) => {
+      for (const size of [3_358_298, 32 * 1024 * 1024]) {
+        const input = {
+          kind: 'image',
+          mediaType,
+          base64: Buffer.alloc(size).toString('base64'),
+        };
+        expect(parseArtifactPreview(input)).toEqual(input);
+      }
+      // Check decoded bytes, including limits that share a padded base64 length.
+      for (const size of [32 * 1024 * 1024 + 1, 32 * 1024 * 1024 + 2])
+        expect(() =>
+          parseArtifactPreview({
+            kind: 'image',
+            mediaType,
+            base64: Buffer.alloc(size).toString('base64'),
+          }),
+        ).toThrow();
+    },
+  );
   it('bounds rich diff bytes, line count and individual line length', () => {
     expect(boundedRichDiff(null, 'hello\r\n')).toBe(true);
     expect(boundedRichDiff('x'.repeat(4001), null)).toBe(false);

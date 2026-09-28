@@ -1,85 +1,123 @@
+import type { WorkbenchArtifact } from '@allrice/contracts';
 import {
-  runtimeStaticPreviewPolicy,
-  type WorkbenchArtifact,
-} from '@allrice/contracts';
-import { parseChangesetBytes, readArtifactBytes } from '@allrice/database';
+  ArtifactReviewError,
+  parseChangesetBytes,
+  readArtifactBytes,
+} from '@allrice/database';
+import { previewOfficePdf } from '@allrice/office-runtime/preview';
 import { getStorageAdapter } from '../storage/runtime';
-import { boundedRaster } from './raster-preview';
+import { readDocumentTextPage } from './document-text-page';
 import {
-  officeFormat,
-  officePreview,
-  officeRenderNotice,
-  renderOffice,
-} from '@allrice/office-runtime';
+  documentPreviewLimits as limits,
+  previewExtension,
+  previewImageMediaTypes,
+  type OfficePreviewFormat,
+  type SpreadsheetFormat,
+} from '../chatflow/document-preview-policy';
+import { unviewableBinaryPath } from '../../app/chatflow/dsh-upstream/document/document/unviewable';
 
-/** Only renders verified stored bytes. Caller must authorize before AND after
- * storage IO. Never executes HTML/SVG or remote content in the main document. */
+/** DSH renderers and defaults, fed authorized immutable AllRice objects.
+ * Routes authorize both before this read and after it completes. */
 export async function readStaticArtifactPreview(
-  artifact: Pick<WorkbenchArtifact, 'object' | 'kind'>,
+  artifact: Pick<WorkbenchArtifact, 'object' | 'kind'> & {
+    version?: { fileName: string };
+  },
+  options: { offset?: number; source?: boolean; signal?: AbortSignal } = {},
 ) {
-  if (
-    artifact.object.mediaType === 'application/pdf' &&
-    artifact.object.sizeBytes <= 8_000_000
-  ) {
-    const bytes = await readArtifactBytes(
-      getStorageAdapter(),
-      artifact.object,
-      8_000_000,
-    );
-    return { kind: 'pdf', base64: bytes.toString('base64') };
-  }
-  const format = officeFormat(artifact.object.mediaType);
-  if (format && artifact.object.sizeBytes <= 8_000_000) {
-    // Use the existing size/deadline/hash checks. The HTTP caller reauthorizes
-    // after conversion as well, including when the renderer returns a cache hit.
-    const bytes = await readArtifactBytes(
-      getStorageAdapter(),
-      artifact.object,
-      8_000_000,
-    );
+  const object = artifact.object;
+  const extension = previewExtension(
+    artifact.version?.fileName,
+    object.mediaType,
+  );
+  const storage = getStorageAdapter();
+  const download = (reason: string) => ({
+    kind: 'download_only' as const,
+    reason,
+  });
+  const bytes = (maximum: number) =>
+    readArtifactBytes(storage, object, maximum);
+  if (artifact.kind === 'changeset')
+    return {
+      kind: 'changeset',
+      changeset: parseChangesetBytes(await bytes(512_000)),
+    };
+  if (!options.source && ['doc', 'docx', 'ppt', 'pptx'].includes(extension)) {
+    if (object.sizeBytes > limits.officeInputBytes)
+      return download('此文档超过 50 MiB 预览上限，请下载查看。');
     try {
-      return officePreview(await renderOffice(bytes, format));
+      const result = await previewOfficePdf({
+        objectId: object.id,
+        checksum: object.checksum,
+        sizeBytes: object.sizeBytes,
+        format: extension as OfficePreviewFormat,
+        signal: options.signal,
+        read: async (signal, maximum) => {
+          signal.throwIfAborted();
+          const data = await bytes(maximum);
+          signal.throwIfAborted();
+          return data;
+        },
+      });
+      return {
+        kind: 'pdf',
+        base64: Buffer.from(result.pdf).toString('base64'),
+        missingFonts: result.missingFonts,
+        converted: true,
+      };
     } catch (error) {
-      return { kind: 'download_only', reason: officeRenderNotice(error) };
+      if (options.signal?.aborted) throw error;
+      return download('文档转换暂不可用，请重试预览或下载查看。');
     }
   }
-  const policy = runtimeStaticPreviewPolicy(artifact.object.mediaType);
-  if (
-    artifact.object.sizeBytes > 512_000 ||
-    (![
-      'text/plain',
-      'text/markdown',
-      'text/html',
-      'application/json',
-      'image/svg+xml',
-    ].includes(artifact.object.mediaType) &&
-      policy.mode !== 'authenticated_raster')
-  )
+  if (!options.source && ['xlsx', 'xls', 'csv', 'tsv'].includes(extension)) {
+    if (object.sizeBytes > limits.excel.maxBytes)
+      return download('此表格超过 16 MiB 预览上限，请下载查看。');
     return {
-      kind: 'download_only',
-      reason: '此格式或文件大小仅支持下载，不在主站执行。',
+      kind: 'spreadsheet',
+      format: extension as SpreadsheetFormat,
+      base64: (await bytes(limits.excel.maxBytes)).toString('base64'),
     };
-  const bytes = await readArtifactBytes(getStorageAdapter(), artifact.object);
-  if (artifact.kind === 'changeset')
-    return { kind: 'changeset', changeset: parseChangesetBytes(bytes) };
-  if (policy.mode === 'authenticated_raster')
-    return boundedRaster(bytes, artifact.object.mediaType)
-      ? {
-          kind: 'image',
-          mediaType: artifact.object.mediaType,
-          base64: bytes.toString('base64'),
-        }
-      : {
-          kind: 'download_only',
-          reason: '图片格式、动画或像素尺寸不符合静态预览限制，请下载查看。',
-        };
+  }
+  const imageMediaType =
+    previewImageMediaTypes[extension as keyof typeof previewImageMediaTypes];
+  if (
+    !options.source &&
+    (imageMediaType || ['pdf', 'html', 'htm'].includes(extension))
+  ) {
+    if (object.sizeBytes > limits.fileBytes)
+      return download('此文件超过 32 MiB 预览上限，请下载查看。');
+    const base64 = (await bytes(limits.fileBytes)).toString('base64');
+    if (imageMediaType)
+      return { kind: 'image', mediaType: imageMediaType, base64 };
+    return { kind: extension === 'pdf' ? 'pdf' : 'html', base64 };
+  }
+  if (unviewableBinaryPath(artifact.version?.fileName || `file.${extension}`))
+    return download('此文件格式暂不支持预览，请下载查看。');
   try {
+    const page = await readDocumentTextPage(
+      storage,
+      object,
+      options.offset,
+      options.signal,
+    );
     return {
       kind: 'text',
-      text: new TextDecoder('utf8', { fatal: true }).decode(bytes),
-      mediaType: artifact.object.mediaType,
+      ...page,
+      mediaType: ['md', 'markdown'].includes(extension)
+        ? 'text/markdown'
+        : object.mediaType,
     };
-  } catch {
-    return { kind: 'download_only', reason: '非 UTF-8 文本，请下载查看。' };
+  } catch (error) {
+    if (
+      error instanceof ArtifactReviewError &&
+      error.code === 'preview_not_text'
+    )
+      return download('文件不是可读取的 UTF-8 文本，请下载查看。');
+    if (
+      error instanceof ArtifactReviewError &&
+      error.code === 'preview_page_too_large'
+    )
+      return download('文本单页超过 2 MiB 预览上限，请下载查看。');
+    throw error;
   }
 }

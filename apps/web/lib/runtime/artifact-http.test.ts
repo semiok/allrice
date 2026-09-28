@@ -1,5 +1,4 @@
-import type * as OfficeRuntime from '@allrice/office-runtime';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as DatabaseModule from '@allrice/database';
 import { ArtifactReviewError } from '@allrice/database';
@@ -15,13 +14,15 @@ const ports = vi.hoisted(() => ({
   address: vi.fn(),
   read: vi.fn(),
   render: vi.fn(),
+  storage: { get: vi.fn() },
 }));
-vi.mock('@allrice/office-runtime', async (original) => ({
-  ...(await original<typeof OfficeRuntime>()),
-  renderOffice: ports.render,
+vi.mock('@allrice/office-runtime/preview', () => ({
+  previewOfficePdf: ports.render,
 }));
 vi.mock('../identity/session', () => ({ getRequestContext: ports.context }));
-vi.mock('../storage/runtime', () => ({ getStorageAdapter: () => ({}) }));
+vi.mock('../storage/runtime', () => ({
+  getStorageAdapter: () => ports.storage,
+}));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof DatabaseModule>()),
   workbenchEnabled: ports.enabled,
@@ -54,10 +55,18 @@ describe('authenticated workbench HTTP boundary', () => {
     ports.get.mockResolvedValue({
       id,
       kind: 'document',
-      object: { mediaType: 'text/plain', sizeBytes: 10 },
+      object: {
+        mediaType: 'text/plain',
+        sizeBytes: 5,
+        checksum:
+          'sha256:' + createHash('sha256').update('hello').digest('hex'),
+      },
     });
     ports.feedback.mockResolvedValue([]);
     ports.read.mockResolvedValue(Buffer.from('hello'));
+    ports.storage.get.mockImplementation(async () =>
+      new Blob(['hello']).stream(),
+    );
     ports.save.mockResolvedValue({ state: 'submitted' });
   });
   it('keeps flags, authentication and origin separate', async () => {
@@ -111,7 +120,7 @@ describe('authenticated workbench HTTP boundary', () => {
     ).toBe(413);
     expect(ports.save).not.toHaveBeenCalled();
   });
-  it('returns HTML and SVG only as inert JSON text with restrictive headers', async () => {
+  it('returns HTML and SVG bytes inside inert JSON with restrictive headers', async () => {
     const html =
       '<script>fetch("https://attacker.invalid")</script><svg onload="alert(1)" />';
     ports.read.mockResolvedValue(Buffer.from(html));
@@ -131,19 +140,24 @@ describe('authenticated workbench HTTP boundary', () => {
         "default-src 'none'",
       );
       expect(await response.json()).toEqual({
-        kind: 'text',
-        text: html,
-        mediaType,
+        kind: mediaType === 'text/html' ? 'html' : 'image',
+        base64: Buffer.from(html).toString('base64'),
+        ...(mediaType === 'image/svg+xml' ? { mediaType } : {}),
       });
     }
   });
   it('does not inline large or unsupported binaries', async () => {
     for (const object of [
-      { mediaType: 'application/pdf', sizeBytes: 8_000_001 },
-      { mediaType: 'application/zip', sizeBytes: 10 },
-      { mediaType: 'text/plain', sizeBytes: 512_001 },
+      { mediaType: 'application/pdf', sizeBytes: 32 * 1024 * 1024 + 1 },
+      { mediaType: 'application/zip', sizeBytes: 10, fileName: 'archive.zip' },
+      { mediaType: 'image/png', sizeBytes: 32 * 1024 * 1024 + 1 },
     ]) {
-      ports.get.mockResolvedValue({ id, kind: 'document', object });
+      ports.get.mockResolvedValue({
+        id,
+        kind: 'document',
+        object,
+        version: { fileName: 'fileName' in object ? object.fileName : '' },
+      });
       expect(
         (await (await artifactHttp(request(), 'content', sessionId, id)).json())
           .kind,
@@ -151,6 +165,39 @@ describe('authenticated workbench HTTP boundary', () => {
     }
     expect(ports.read).not.toHaveBeenCalled();
   });
+  it.each([512_001, 8_000_000, 9_000_000])(
+    'previews a %i-byte image through the image read limit and rechecks access',
+    async (sizeBytes) => {
+      const object = { mediaType: 'image/png', sizeBytes };
+      ports.get.mockResolvedValue({ id, kind: 'file', object });
+      // The storage port verifies declared size and checksum; this boundary
+      // test checks native admission and the post-read authorization boundary.
+      const bytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+        'base64',
+      );
+      ports.read.mockResolvedValue(bytes);
+      const response = await artifactHttp(request(), 'content', sessionId, id);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        kind: 'image',
+        mediaType: 'image/png',
+        base64: bytes.toString('base64'),
+      });
+      expect(ports.read).toHaveBeenCalledWith(
+        ports.storage,
+        object,
+        32 * 1024 * 1024,
+      );
+      expect(ports.get).toHaveBeenCalledTimes(2);
+      ports.get
+        .mockResolvedValueOnce({ id, kind: 'file', object })
+        .mockRejectedValueOnce(new ArtifactReviewError('identity_denied'));
+      const denied = await artifactHttp(request(), 'content', sessionId, id);
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).not.toContain(bytes.toString('base64'));
+    },
+  );
   it('returns bounded PDF bytes for the native renderer after rechecking access', async () => {
     const object = { mediaType: 'application/pdf', sizeBytes: 10 };
     ports.get.mockResolvedValue({ id, kind: 'document', object });
@@ -162,7 +209,11 @@ describe('authenticated workbench HTTP boundary', () => {
       kind: 'pdf',
       base64: bytes.toString('base64'),
     });
-    expect(ports.read).toHaveBeenCalledWith({}, object, 8_000_000);
+    expect(ports.read).toHaveBeenCalledWith(
+      ports.storage,
+      object,
+      32 * 1024 * 1024,
+    );
     expect(ports.get).toHaveBeenCalledTimes(2);
   });
   it('rechecks identity after storage IO without returning already-read bytes on revocation', async () => {
@@ -170,7 +221,12 @@ describe('authenticated workbench HTTP boundary', () => {
       .mockResolvedValueOnce({
         id,
         kind: 'document',
-        object: { mediaType: 'text/plain', sizeBytes: 10 },
+        object: {
+          mediaType: 'text/plain',
+          sizeBytes: 5,
+          checksum:
+            'sha256:' + createHash('sha256').update('hello').digest('hex'),
+        },
       })
       .mockRejectedValueOnce(new ArtifactReviewError('identity_denied'));
     const response = await artifactHttp(request(), 'content', sessionId, id);
@@ -183,34 +239,32 @@ describe('authenticated workbench HTTP boundary', () => {
       kind: 'document',
       object: {
         mediaType:
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         sizeBytes: 600_000,
       },
     };
     const rendered = {
-      checksum: `sha256:${'a'.repeat(64)}`,
-      format: 'xlsx',
-      engine: 'LibreOffice',
-      pageCount: 1,
-      pages: [{ number: 1, base64: 'PRIVATE_PAGE' }],
-      formulas: [],
+      pdf: Buffer.from('%PDF_PRIVATE_PAGE'),
+      missingFonts: [],
     };
     ports.get.mockResolvedValue(office);
     ports.render.mockResolvedValue(rendered);
     const allowed = await artifactHttp(request(), 'content', sessionId, id);
     expect(allowed.status).toBe(200);
     expect(await allowed.json()).toMatchObject({
-      kind: 'office',
-      pages: rendered.pages,
+      kind: 'pdf',
+      base64: rendered.pdf.toString('base64'),
+      converted: true,
     });
-    expect(ports.read).toHaveBeenCalledWith({}, office.object, 8_000_000);
-    expect(ports.render).toHaveBeenCalledWith(Buffer.from('hello'), 'xlsx');
+    expect(ports.render).toHaveBeenCalledWith(
+      expect.objectContaining({ format: 'docx', sizeBytes: 600_000 }),
+    );
     ports.get
       .mockResolvedValueOnce(office)
       .mockRejectedValueOnce(new ArtifactReviewError('identity_denied'));
     const denied = await artifactHttp(request(), 'content', sessionId, id);
     expect(denied.status).toBe(403);
-    expect(await denied.text()).not.toContain('PRIVATE_PAGE');
+    expect(await denied.text()).not.toContain(rendered.pdf.toString('base64'));
     ports.render.mockRejectedValue(Error('PRIVATE_DIAGNOSTIC'));
     const unavailable = await artifactHttp(request(), 'content', sessionId, id);
     expect(await unavailable.json()).toMatchObject({
@@ -232,7 +286,7 @@ describe('authenticated workbench HTTP boundary', () => {
       sessionId,
       input,
       true,
-      {},
+      ports.storage,
     );
     expect(ports.address).not.toHaveBeenCalled();
   });
