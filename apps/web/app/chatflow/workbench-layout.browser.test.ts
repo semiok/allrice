@@ -1245,6 +1245,166 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([1440, 390])(
+    'expands tool details downward without moving the clicked header at %ipx',
+    async (width) => {
+      const f = await fixture({ width, touch: width < 760 });
+      const operations = Array.from({ length: 5 }, (_, index) => ({
+        snapshot: {
+          status: 'succeeded',
+          binding: { attempt: { operationId: id(8900 + index) } },
+        },
+        enabled: true,
+        mcpAuthorization: { available: true, reason: 'available' },
+        proposal: {
+          kind: 'mcp',
+          endpoint: 'https://example.test/mcp',
+          tool: 'mcp__app__list_pull_requests',
+          arguments: { query: 'Existing work' },
+          risk: 'read',
+        },
+        approval: null,
+        result: {
+          code: 'completed',
+          output: 'Existing tool result\n'.repeat(100),
+          trusted: false,
+        },
+      }));
+      try {
+        f.state.messages = navigationHistory(2);
+        f.state.messages.at(-1)!.runId = run;
+        f.state.messages.at(-1)!.content.text = '查询完成。';
+        await f.page.route('**/api/v1/runtime/cloud-operations?**', (route) =>
+          route.fulfill({
+            json: {
+              operations:
+                new URL(route.request().url()).searchParams.get('runId') === run
+                  ? operations
+                  : [],
+            },
+          }),
+        );
+        await f.page.reload();
+        if (width < 760) {
+          const hide = f.page.getByRole('button', {
+            name: '收起侧边栏',
+            exact: true,
+          });
+          if (await hide.isVisible()) await hide.click();
+        }
+        const scroll = f.page.locator('[data-conversation-scroll]');
+        const card = f.page.locator(`#operation-${id(8900)}`);
+        const next = f.page.locator(`#operation-${id(8901)}`);
+        const header = card.locator('header');
+        const toggle = header.getByRole('button');
+        await toggle.waitFor();
+        await scroll.evaluate((node) => {
+          node.scrollTop = node.scrollHeight;
+          node.dispatchEvent(new Event('scroll'));
+        });
+        const settle = () =>
+          f.page.evaluate(
+            () =>
+              new Promise<void>((resolve) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => resolve()),
+                ),
+              ),
+          );
+        const geometry = async () => ({
+          top: (await header.boundingBox())!.y,
+          next: (await next.boundingBox())!.y,
+          height: (await card.boundingBox())!.height,
+          scroll: await scroll.evaluate((node) => node.scrollTop),
+        });
+        await settle();
+        // Starting at the bottom reproduces the resize-follow jump in a finished reply.
+        await expect
+          .poll(() =>
+            scroll.evaluate(
+              (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+            ),
+          )
+          .toBeLessThan(2);
+        for (const input of ['pointer', 'keyboard'] as const) {
+          await scroll.evaluate((node) => {
+            node.scrollTop = node.scrollHeight;
+            node.dispatchEvent(new Event('scroll'));
+          });
+          await settle();
+          if (input === 'keyboard')
+            await toggle.evaluate((node) =>
+              node.focus({ preventScroll: true }),
+            );
+          const before = await geometry();
+          if (input === 'keyboard') await toggle.press('Enter');
+          else if (width < 760) await toggle.tap();
+          else await toggle.click();
+          await settle();
+          const after = await geometry();
+          expect(after.height).toBeGreaterThan(before.height + 100);
+          expect(Math.abs(after.top - before.top)).toBeLessThan(2);
+          expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
+          expect(
+            Math.abs(after.next - before.next - (after.height - before.height)),
+          ).toBeLessThan(2);
+          await toggle.press('Space');
+          await settle();
+          expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
+        }
+        // Reading older content must also keep its position on expansion.
+        await scroll.evaluate((node) => {
+          node.scrollTop -= 100;
+        });
+        await settle();
+        const before = await geometry();
+        await toggle.click();
+        await settle();
+        expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
+        await f.page
+          .getByRole('button', { name: '回到底部', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            scroll.evaluate(
+              (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+            ),
+          )
+          .toBeLessThan(2);
+        // Native parameter/result disclosures follow the same reading behavior.
+        const last = f.page.locator(`#operation-${id(8904)}`);
+        await last
+          .getByRole('button', { name: '查看详情', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '回到底部', exact: true })
+          .click();
+        await settle();
+        const result = last
+          .locator('summary')
+          .filter({ hasText: '执行返回内容' });
+        const resultTop = (await result.boundingBox())!.y;
+        const lastHeight = (await last.boundingBox())!.height;
+        const scrollTop = await scroll.evaluate((node) => node.scrollTop);
+        await result.click();
+        await settle();
+        expect((await last.boundingBox())!.height).toBeGreaterThan(
+          lastHeight + 100,
+        );
+        expect(
+          Math.abs((await result.boundingBox())!.y - resultTop),
+        ).toBeLessThan(2);
+        expect(
+          Math.abs(
+            (await scroll.evaluate((node) => node.scrollTop)) - scrollTop,
+          ),
+        ).toBeLessThan(2);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it.each([1440, 390, 320])(
     'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
     async (width) => {
@@ -1368,7 +1528,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }),
         ).toBe(true);
         await detail.focus();
+        const headerTop = (await card.locator('header').boundingBox())!.y;
         await f.page.keyboard.press('Enter');
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        expect(
+          Math.abs((await card.locator('header').boundingBox())!.y - headerTop),
+        ).toBeLessThan(2);
         const collapse = card.getByRole('button', {
           name: '收起详情',
           exact: true,

@@ -1299,7 +1299,21 @@ export function ChatFlowClient({
                 columnRef={transcriptColumn}
                 onNavigateAway={pauseTranscriptFollowing}
               />
-              <div className={conversationUi.viewArea}>
+              <div
+                className={conversationUi.viewArea}
+                onClickCapture={(event) => {
+                  const target = event.target;
+                  if (
+                    target instanceof Element &&
+                    target.closest('button[aria-expanded], summary')
+                  ) {
+                    // Manual disclosure changes are reading actions, not new
+                    // output. Pause before React/native details resize so the
+                    // bottom-follow observer cannot scroll the trigger away.
+                    pauseTranscriptFollowing();
+                  }
+                }}
+              >
                 {workbenchEnabled && activeId ? (
                   <InteractionStatusPanel
                     data={interactions.data}
