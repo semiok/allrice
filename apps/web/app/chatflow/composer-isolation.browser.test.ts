@@ -706,7 +706,7 @@ suite(
     it.each([1440, 390])(
       'keeps Rice identity anchored while the submitted turn receives its first status at %ipx',
       async (width) => {
-        const f = await fixture({ immediateReply: true, longHistory: true });
+        const f = await fixture({ immediateReply: true, longHistory: true, width });
         try {
           await f.send('A small greeting');
           await f.waitPending(1);
