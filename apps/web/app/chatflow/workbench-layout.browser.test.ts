@@ -4067,6 +4067,153 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('keeps MCP receipts in native reply order and renders each call status only once', async () => {
+    const f = await fixture({
+      running: true,
+      streamingOutput: true,
+      controlledStream: true,
+    });
+    const operations = ['first', 'second'].map((nativeCallId, index) => ({
+      nativeCallId,
+      createdAt: now,
+      snapshot: {
+        status: index === 0 ? 'succeeded' : 'running',
+        binding: {
+          action: 'cloud.mcp.call',
+          attempt: { operationId: id(8990 + index) },
+        },
+      },
+      enabled: true,
+      mcpAuthorization: { available: true, reason: 'available' },
+      proposal: {
+        kind: 'mcp',
+        endpoint: 'https://example.test/mcp',
+        tool: 'mcp__app__list_pull_requests',
+        arguments: { page: index + 1 },
+        risk: 'read',
+      },
+      approval: null,
+      result: null,
+    }));
+    try {
+      await f.page.route('**/api/v1/runtime/cloud-operations?**', (route) =>
+        route.fulfill({ json: { operations } }),
+      );
+      await f.page.reload();
+      await f.page.waitForFunction(
+        () => document.documentElement.dataset.streamReady === 'true',
+      );
+      const push = async (
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+      ) => {
+        const sequence = f.state.events.length + 1;
+        const event: ChatFlowEventEnvelope = {
+          schemaVersion: 3,
+          eventId: id(9100 + sequence),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence,
+          cursor: `${run}:${sequence}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: null,
+          type,
+          payload,
+        };
+        f.state.events.push(event);
+        await f.page.evaluate(
+          (body) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', { detail: body }),
+            ),
+          `data: ${JSON.stringify(event)}\n\n`,
+        );
+      };
+      await push('assistant.text.delta', {
+        replyId: 'intro',
+        text: '先核对两页记录。',
+      });
+      await push('tool.completed', {
+        toolCallId: 'first',
+        name: 'cloud.mcp.call',
+        summary: '第一次读取完成',
+      });
+      await push('assistant.text.delta', {
+        replyId: 'middle',
+        text: '第一页已核对，再读取第二页。',
+      });
+      await push('tool.started', {
+        toolCallId: 'second',
+        name: 'cloud.mcp.call',
+      });
+      const first = f.page.locator(`#operation-${id(8990)}`),
+        second = f.page.locator(`#operation-${id(8991)}`);
+      await second.getByText('执行中', { exact: true }).waitFor();
+      await push('assistant.text.delta', {
+        replyId: 'final',
+        text: '两页记录核对结束，最终结论在这里。',
+      });
+      const final = f.page.locator('[data-work-reply="reply:final"]');
+      await final.waitFor();
+      const middle = f.page.locator('[data-work-reply="reply:middle"]');
+      expect((await first.boundingBox())!.y).toBeLessThan(
+        (await middle.boundingBox())!.y,
+      );
+      expect((await middle.boundingBox())!.y).toBeLessThan(
+        (await second.boundingBox())!.y,
+      );
+      expect((await second.boundingBox())!.y).toBeLessThan(
+        (await final.boundingBox())!.y,
+      );
+      expect(
+        await f.page
+          .getByRole('region', { name: '工作过程', exact: true })
+          .getByText('进行中', { exact: true })
+          .count(),
+      ).toBe(0);
+      expect(await f.page.locator('[aria-label="工作步骤"]').count()).toBe(0);
+      await second
+        .getByRole('button', { name: '查看详情', exact: true })
+        .click();
+      expect(
+        await second.getByText('发送参数', { exact: true }).isVisible(),
+      ).toBe(true);
+      operations[1]!.snapshot.status = 'succeeded';
+      await push('tool.completed', {
+        toolCallId: 'second',
+        name: 'cloud.mcp.call',
+      });
+      f.state.messageStatus = 'completed';
+      f.state.reply = '两页记录核对结束，最终结论在这里。';
+      await push('assistant.text.completed', {
+        replyId: 'final',
+        text: f.state.reply,
+      });
+      await push('run.succeeded', {});
+      await f.page.getByRole('button', { name: /工作过程/ }).click();
+      await second.waitFor();
+      expect((await second.boundingBox())!.y).toBeLessThan(
+        (await final.boundingBox())!.y,
+      );
+      await f.page.screenshot({ path: '/tmp/allrice-timeline-order.png' });
+      await f.page.reload();
+      await final.waitFor();
+      await f.page.getByRole('button', { name: /工作过程/ }).click();
+      await second.waitFor();
+      expect(await first.count()).toBe(1);
+      expect(await second.count()).toBe(1);
+      expect((await second.boundingBox())!.y).toBeLessThan(
+        (await final.boundingBox())!.y,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
   it('native streaming preserves settled paragraphs and reading position across deltas and completion', async () => {
     const f = await fixture({
       running: true,

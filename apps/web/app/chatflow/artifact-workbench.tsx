@@ -481,6 +481,9 @@ export function ArtifactSummaryCards({
     )
       series.set(a.version.seriesId, a);
   const newest = [...series.values()];
+  // An empty native deliverables wrapper still contributes its top margin.
+  // Mount it only for an actual file, keeping optimistic -> accepted turns still.
+  if (!newest.length) return null;
   return (
     <div className={deliveries.root}>
       <div className={deliveries.presented} data-single={newest.length === 1}>

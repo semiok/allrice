@@ -1,4 +1,5 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
+import type { CloudOperationView } from '@allrice/database';
 import { nativeProcessGroups } from './native-process-groups';
 import {
   assistantReplies,
@@ -57,10 +58,47 @@ export function projectWorkProgress(
   fallback: string,
   running: boolean,
   streamingOutput = true,
+  operations: readonly CloudOperationView[] = [],
 ) {
   const current = currentAssistantEvents(events);
-  const items = projectNativeExperience(current);
   const replies = assistantReplies(current);
+  const items = projectNativeExperience(current);
+  for (const op of operations) {
+    const operationId = op.snapshot.binding.attempt.operationId;
+    const item = op.nativeCallId
+      ? items.find((item) => item.id === `tool:${op.nativeCallId}`)
+      : undefined;
+    if (item) {
+      item.operationId = operationId;
+      continue;
+    }
+    // History can arrive after receipts. Keep every receipt visible without
+    // guessing that two calls with the same tool name are the same operation.
+    const createdAt = op.createdAt ? Date.parse(op.createdAt) : NaN;
+    const next = current.find(
+      (event) => Date.parse(event.occurredAt) >= createdAt,
+    );
+    items.push({
+      id: op.nativeCallId
+        ? `tool:${op.nativeCallId}`
+        : `operation:${operationId}`,
+      operationId,
+      kind: 'tool',
+      toolName: op.snapshot.binding.action,
+      title: op.proposal.kind === 'mcp' ? op.proposal.tool : '云端计算',
+      sequence: next
+        ? next.sequence - 0.5
+        : !Number.isFinite(createdAt) && replies.length
+          ? replies.at(-1)!.sequence - 0.5
+          : (current.at(-1)?.sequence ?? 0) + 0.5,
+      status:
+        op.snapshot.status === 'succeeded'
+          ? 'completed'
+          : op.snapshot.status === 'failed'
+            ? 'failed'
+            : 'info',
+    });
+  }
   const completed = current
     .filter((event) => event.type === 'assistant.text.completed')
     .at(-1);
@@ -79,7 +117,7 @@ export function projectWorkProgress(
   // Legacy events have no reliable message boundary. Keep their familiar final
   // response instead of guessing which substring was an intermediate reply.
   const interleaved = replies.some((reply) => reply.id !== 'legacy');
-  if (!interleaved)
+  if (!interleaved && !operations.length)
     return {
       items,
       parts: undefined,

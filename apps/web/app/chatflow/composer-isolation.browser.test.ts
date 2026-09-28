@@ -215,6 +215,7 @@ suite(
         question?: boolean;
         delayHistoryB?: boolean;
         immediateReply?: boolean;
+        longHistory?: boolean;
         settled?: 'failed' | 'canceled';
         width?: number;
         workspaceFiles?: WorkspaceFile[];
@@ -235,6 +236,12 @@ suite(
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
+      if (options.longHistory)
+        messages[A]!.unshift(
+          ...Array.from({ length: 20 }, (_, i) =>
+            message('old-' + i, 'Old paragraph. '.repeat(35), 'assistant'),
+          ),
+        );
       if (options.running || options.settled)
         messages[A]!.push(
           message(
@@ -695,6 +702,43 @@ suite(
         await f.close();
       }
     });
+
+    it.each([1440, 390])(
+      'keeps Rice identity anchored while the submitted turn receives its first status at %ipx',
+      async (width) => {
+        const f = await fixture({ immediateReply: true, longHistory: true });
+        try {
+          await f.send('A small greeting');
+          await f.waitPending(1);
+          const identity = () =>
+            f.page.locator('[data-working="true"] > div').first();
+          const geometry = () =>
+            f.page.evaluate(() => {
+              const node = document.querySelector('[data-working="true"]')!;
+              const identity = node.firstElementChild!;
+              const scroll = document.querySelector(
+                '[data-conversation-scroll]',
+              )!;
+              return {
+                top: identity.getBoundingClientRect().top,
+                height: node.getBoundingClientRect().height,
+                scroll: scroll.scrollTop,
+                content: node.textContent,
+              };
+            });
+          await identity().waitFor();
+          await f.page.waitForTimeout(100);
+          const before = await geometry();
+          await f.respond(0);
+          await f.page.waitForTimeout(500);
+          const after = await geometry();
+
+          expect(Math.abs(after.top - before.top)).toBeLessThan(1);
+        } finally {
+          await f.close();
+        }
+      },
+    );
 
     it('late successful A POST preserves B draft/attachments and never cancels or resumes A', async () => {
       const f = await fixture();

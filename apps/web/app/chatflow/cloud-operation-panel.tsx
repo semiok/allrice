@@ -582,11 +582,17 @@ export function CloudOperationPanel({
   workspaceId,
   tenantHeaders,
   runActive,
+  children,
 }: {
   runId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
+  children?: (feed: {
+    operations: CloudOperationView[];
+    renderOperation: (operationId: string) => ReactNode;
+    feedback: ReactNode;
+  }) => ReactNode;
 }) {
   const [operations, setOperations] = useState<CloudOperationView[]>([]),
     [error, setError] = useState(''),
@@ -599,6 +605,7 @@ export function CloudOperationPanel({
     headerKey = JSON.stringify(tenantHeaders);
   const active = cloudOperationsNeedPolling(runActive, operations);
   useEffect(() => {
+    if (!runId) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function load() {
@@ -628,7 +635,7 @@ export function CloudOperationPanel({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [api, headerKey, active, revision]);
+  }, [api, headerKey, active, revision, runId]);
   async function act(op: CloudOperationView, decision: Decision) {
     const request = op.approval?.request;
     if (busy || (decision !== 'cancel' && !request)) return;
@@ -686,9 +693,8 @@ export function CloudOperationPanel({
       setPendingDecision(null);
     }
   }
-  if (!operations.length && !error) return null;
-  return (
-    <section className={styles.root} aria-label="云端计算与 MCP 操作审批">
+  const feedback = (
+    <>
       {error && (
         <p role="alert">
           {error}{' '}
@@ -709,20 +715,35 @@ export function CloudOperationPanel({
             刷新操作状态
           </button>
         )}
-      {operations.map((op) => (
-        <CloudOperationCard
-          key={op.snapshot.binding.attempt.operationId}
-          op={op}
-          runActive={runActive}
-          laterSuccessId={laterSuccessfulMcpCall(op, operations)}
-          busy={busy}
-          cancelPending={
-            pendingDecision === 'cancel' ||
-            (cancellationRunId === runId && op.snapshot.status !== 'unknown')
-          }
-          onAct={(operation, decision) => void act(operation, decision)}
-        />
-      ))}
+    </>
+  );
+  const renderOperation = (operationId: string) => {
+    const op = operations.find(
+      (op) => op.snapshot.binding.attempt.operationId === operationId,
+    );
+    return op ? (
+      <CloudOperationCard
+        key={op.snapshot.binding.attempt.operationId}
+        op={op}
+        runActive={runActive}
+        laterSuccessId={laterSuccessfulMcpCall(op, operations)}
+        busy={busy}
+        cancelPending={
+          pendingDecision === 'cancel' ||
+          (cancellationRunId === runId && op.snapshot.status !== 'unknown')
+        }
+        onAct={(operation, decision) => void act(operation, decision)}
+      />
+    ) : null;
+  };
+  if (children) return children({ operations, renderOperation, feedback });
+  if (!operations.length && !error) return null;
+  return (
+    <section className={styles.root} aria-label="云端计算与 MCP 操作审批">
+      {feedback}
+      {operations.map((op) =>
+        renderOperation(op.snapshot.binding.attempt.operationId),
+      )}
     </section>
   );
 }

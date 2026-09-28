@@ -29,7 +29,14 @@ function render(
   overrides: Partial<ComponentProps<typeof ChatTranscript>> = {},
 ) {
   panels.local.mockReturnValue(null);
-  panels.cloud.mockReturnValue(null);
+  panels.cloud.mockImplementation(
+    ({ children }) =>
+      children?.({
+        operations: [],
+        renderOperation: () => null,
+        feedback: null,
+      }) ?? null,
+  );
   return renderToStaticMarkup(
     <ChatTranscript
       streamingOutput

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { CloudOperationView } from '@allrice/database';
 import { describe, expect, it } from 'vitest';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import { isReplyStreaming, projectWorkProgress } from './work-progress';
@@ -165,4 +166,35 @@ describe('native reading order adapted to Allrice', () => {
     expect(result.parts).toBeUndefined();
     expect(result.finalText).toBe('最终回复');
   });
+});
+
+it('joins receipts only by native call ID and retains an unlinked repeated tool', () => {
+  const events = [
+    reply(1, 'a', '开始'),
+    tool(2, 'tool.started'),
+    reply(4, 'b', '结束'),
+  ];
+  const op = (id: string, call: string | null) =>
+    ({
+      nativeCallId: call,
+      snapshot: {
+        binding: { action: 'read', attempt: { operationId: id } },
+        status: 'succeeded',
+      },
+      proposal: { kind: 'mcp', tool: 'read' },
+    }) as CloudOperationView;
+  const view = projectWorkProgress(events, '', true, true, [
+    op('exact', 'read'),
+    op('unmatched', null),
+  ]);
+  expect(view.items.find((item) => item.id === 'tool:read')?.operationId).toBe(
+    'exact',
+  );
+  expect(view.items.filter((item) => item.operationId)).toHaveLength(2);
+  expect(view.parts?.at(-1)).toMatchObject({ kind: 'reply', text: '结束' });
+  expect(
+    projectWorkProgress([], '历史结论', false, true, [
+      op('old', null),
+    ]).parts?.map((p) => p.kind),
+  ).toEqual(['steps', 'reply']);
 });

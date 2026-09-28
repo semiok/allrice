@@ -14,6 +14,7 @@ export interface NativeExperienceItem {
   sequence: number;
   lastSequence?: number;
   toolName?: string;
+  operationId?: string;
   startedAt?: string;
   finishedAt?: string;
 }

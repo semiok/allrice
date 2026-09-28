@@ -1969,6 +1969,11 @@ div.composerAttachmentMenu,
   min-width: 0;
   color: var(--dsw-alias-label-primary);
 }
+.processReceipts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .processFlow {
   display: flex;
   flex-direction: column;

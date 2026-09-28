@@ -68,6 +68,7 @@ export function WorkProcess({
   children,
   artifacts,
   onOpenArtifact,
+  renderOperation,
   label = '工作过程',
 }: {
   items: NativeExperienceItem[];
@@ -86,6 +87,7 @@ export function WorkProcess({
   artifacts?: readonly WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
   label?: string;
+  renderOperation?: (operationId: string) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const process = summarizeWorkProcess(items);
@@ -111,7 +113,11 @@ export function WorkProcess({
         ? '已停止'
         : '工作过程';
   const expandable = Boolean(
-    process.steps.length ||
+    process.steps.some(
+      (step) =>
+        !renderOperation ||
+        !items.some((item) => item.id === step.id && item.operationId),
+    ) ||
     Children.toArray(children).length ||
     traceStatus === 'failed',
   );
@@ -120,6 +126,7 @@ export function WorkProcess({
     !expandable &&
     !failureTitle &&
     !parts?.length &&
+    !items.some((item) => item.operationId && renderOperation) &&
     !timing &&
     !microStatus &&
     !assistantCount &&
@@ -172,6 +179,7 @@ export function WorkProcess({
         <div key={part.id} hidden={!showHistory}>
           <WorkProcessGroup
             items={part.items}
+            renderOperation={renderOperation}
             running={running && !part.closed}
           />
         </div>
@@ -269,7 +277,12 @@ export function WorkProcess({
         }
       >
         <div className={styles.processDetails}>
-          <WorkProcessSteps items={items} running={running} />
+          <WorkProcessSteps
+            items={items.filter(
+              (item) => !item.operationId || !renderOperation,
+            )}
+            running={running}
+          />
           {traceStatus === 'failed' ? (
             <button
               className={styles.nativeTraceRetry}
@@ -284,6 +297,12 @@ export function WorkProcess({
         </div>
         {children}
       </DisclosureRow>
+      {renderOperation &&
+        items
+          .filter((item) => item.operationId)
+          .map((item) => (
+            <div key={item.id}>{renderOperation(item.operationId!)}</div>
+          ))}
     </section>
   );
 }
@@ -292,6 +311,38 @@ export function WorkProcess({
  * the current phase. Do not recursively render another turn-status header.
  */
 function WorkProcessGroup({
+  items,
+  running,
+  renderOperation,
+}: {
+  items: NativeExperienceItem[];
+  running: boolean;
+  renderOperation?: (operationId: string) => ReactNode;
+}) {
+  const rows: ReactNode[] = [];
+  let pending: NativeExperienceItem[] = [];
+  const flush = () => {
+    if (!pending.length) return;
+    rows.push(
+      <NativeStepsGroup
+        key={pending[0]!.id}
+        items={pending}
+        running={running}
+      />,
+    );
+    pending = [];
+  };
+  for (const item of items) {
+    if (item.operationId && renderOperation) {
+      flush();
+      rows.push(<div key={item.id}>{renderOperation(item.operationId)}</div>);
+    } else pending.push(item);
+  }
+  flush();
+  return <div className={styles.processReceipts}>{rows}</div>;
+}
+
+function NativeStepsGroup({
   items,
   running,
 }: {
