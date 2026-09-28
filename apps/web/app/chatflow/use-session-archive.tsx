@@ -49,6 +49,11 @@ export function useSessionArchive({
   >(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState<{
+    scope: string;
+    filter: ArchivedFilter;
+    message: string;
+  } | null>(null);
   const [request, setRequest] = useState<SessionArchiveConfirmRequest | null>(
     null,
   );
@@ -95,6 +100,7 @@ export function useSessionArchive({
           return;
         if (!Array.isArray(result.sessions))
           throw new Error('工作记录响应无效，请重试');
+        setLoadError(null);
         setPage((old) => {
           const before =
             cursor && old?.scope === scope && old.filter === filter
@@ -114,7 +120,12 @@ export function useSessionArchive({
         });
       } catch (cause) {
         if (ticket === generation.current && currentScope.current === scope)
-          setError(cause instanceof Error ? cause.message : '工作记录加载失败');
+          setLoadError({
+            scope,
+            filter,
+            message:
+              cause instanceof Error ? cause.message : '工作记录加载失败',
+          });
       } finally {
         if (ticket === generation.current) setLoading(false);
       }
@@ -132,6 +143,7 @@ export function useSessionArchive({
     setRequest(null);
     setToast(null);
     setError('');
+    setLoadError(null);
     pending.current.clear();
     setFilter('default');
   }, [scope]);
@@ -358,7 +370,13 @@ export function useSessionArchive({
     setFilter,
     loading,
     error,
-    reload: () => void load(),
+    loadError:
+      loadError?.scope === scope && loadError.filter === filter
+        ? loadError.message
+        : '',
+    reload: () => {
+      if (!loading) void load();
+    },
     employeeGroups: currentPage?.employeeGroups,
     employeePages: currentPage?.employees,
     hasMore: (employeeId: string) => !!cursorFor(employeeId),

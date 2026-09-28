@@ -59,12 +59,90 @@
   margin: 4px 0 8px;
   font-size: 12px;
 }
+.loadNotice {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 76px;
+  margin: 4px 2px 12px;
+  padding: 12px 8px 12px 12px;
+  border-radius: 12px;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-state-warning-primary, #ad780b) 9%,
+    var(--dsw-specific-sidebar-fill)
+  );
+  color: var(--dsw-alias-label-primary);
+}
+.loadNoticeContent {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.loadNoticeTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+.loadNoticeDescription {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.loadRetry {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 74px;
+  min-height: 36px;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.loadRetry:hover:not(:disabled) {
+  background: var(--dsw-alias-button-floating-hover);
+}
+.loadRetry:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.loadRetry:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: 2px;
+}
+.retrying {
+  animation: session-list-retry 0.85s linear infinite;
+}
+@keyframes session-list-retry {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .retrying {
+    animation: none;
+  }
+}
 .archiveButton:focus-visible,
 .archiveHeader button:focus-visible {
   outline: 2px solid var(--dsw-alias-label-primary);
   outline-offset: -2px;
 }
 @media (hover: none) {
+  .loadRetry {
+    min-height: 44px;
+  }
   .newWorkActions .newWorkButton {
     min-height: 44px;
   }
