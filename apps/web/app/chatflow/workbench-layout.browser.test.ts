@@ -2518,10 +2518,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it.each([390, 1440])(
+  it.each([320, 390, 1440])(
     'places the daily mode pill between attachment and visibility controls at width %i',
     async (width) => {
-      const f = await fixture({ width });
+      const f = await fixture({ width, touch: width < 760 });
       try {
         const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
         const mode = f.page.getByRole('combobox', {
@@ -2552,6 +2552,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(pill!.x + pill!.width).toBeLessThan(visibility!.x);
         expect(Math.abs(add!.y - pill!.y)).toBeLessThan(2);
         expect(Math.abs(visibility!.y - pill!.y)).toBeLessThan(2);
+        const send = await f.page
+          .getByRole('button', { name: '发送', exact: true })
+          .boundingBox();
+        expect(
+          Math.abs(send!.y + send!.height / 2 - pill!.y - pill!.height / 2),
+        ).toBeLessThan(2);
+        expect(visibility!.x + visibility!.width).toBeLessThan(send!.x);
         expect(pill!.y).toBeGreaterThanOrEqual(textarea!.y + textarea!.height);
         await input.fill('保留问题和键盘操作');
         await mode.focus();
