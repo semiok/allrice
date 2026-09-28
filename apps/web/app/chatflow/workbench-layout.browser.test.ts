@@ -1259,7 +1259,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         proposal: {
           kind: 'mcp',
           endpoint: 'https://example.test/mcp',
-          tool: 'records.list',
+          tool: 'mcp__app__list_pull_requests',
           arguments: {},
           risk: 'read',
         },
@@ -1304,51 +1304,56 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '请求停止本轮全部操作',
           exact: true,
         });
-        await stop.waitFor();
-        const runningHeight = (await card.boundingBox())!.height;
-        const label = card.getByText('运行详情', { exact: true });
-        const labelBox = await label.boundingBox();
-        const buttonBox = (await stop.boundingBox())!;
-        if (labelBox) {
-          expect(buttonBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
-          expect(labelBox.height).toBeLessThan(40);
-        }
         const detail = card.getByRole('button', {
           name: '查看详情',
           exact: true,
         });
+        await detail.waitFor();
+        const runningHeight = (await card.boundingBox())!.height;
+        if (width === 1440) expect(runningHeight).toBeLessThanOrEqual(56);
+        const label = card
+          .locator('header')
+          .getByText('mcp__app__list_pull_requests', { exact: true });
+        const labelBox = (await label.boundingBox())!;
+        expect(
+          await card.locator('header').getByRole('status').innerText(),
+        ).toBe('执行中');
+        for (const item of [
+          label,
+          card.locator('header').getByRole('status'),
+          detail,
+        ]) {
+          expect(
+            await item.evaluate((node) => ({
+              font: getComputedStyle(node).fontSize,
+              weight: getComputedStyle(node).fontWeight,
+            })),
+          ).toEqual({ font: '15px', weight: '400' });
+        }
         const detailBox = (await detail.boundingBox())!;
-        expect(detailBox.width).toBeLessThan(115);
-        if (labelBox)
-          expect(detailBox.x).toBeGreaterThan(labelBox.x + labelBox.width);
-        expect(detailBox.x + detailBox.width).toBeLessThan(buttonBox.x);
+        expect(detailBox.width).toBeLessThanOrEqual(64);
         const cardBox = (await card.boundingBox())!;
-        const inset = await card.evaluate((node) =>
-          parseFloat(getComputedStyle(node).paddingRight),
-        );
-        expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(
-          cardBox.x + cardBox.width - inset,
+        expect(detailBox.x + detailBox.width).toBeLessThan(
+          cardBox.x + cardBox.width,
         );
         const content = f.page.locator(
           `[id="${await detail.getAttribute('aria-controls')}"]`,
         );
-        // The heading and the old full-row hit area are ordinary, inert text/space.
-        if (labelBox) await label.click();
+        // The tool name and unused header space must not expand the receipt.
+        await label.click();
         expect(await detail.getAttribute('aria-expanded')).toBe('false');
-        const gapX =
-          ((labelBox ? labelBox.x + labelBox.width : cardBox.x + inset) +
-            detailBox.x) /
-          2;
-        await f.page.mouse.move(gapX, detailBox.y + detailBox.height / 2);
+        const gapX = cardBox.x + 8;
+        const gapY = labelBox.y + labelBox.height / 2;
+        await f.page.mouse.move(gapX, gapY);
         expect(
           await f.page.evaluate(
             ({ x, y }) =>
               document.elementFromPoint(x, y)?.closest('button, summary') !==
               null,
-            { x: gapX, y: detailBox.y + detailBox.height / 2 },
+            { x: gapX, y: gapY },
           ),
         ).toBe(false);
-        await f.page.mouse.click(gapX, detailBox.y + detailBox.height / 2);
+        await f.page.mouse.click(gapX, gapY);
         expect(await content.isVisible()).toBe(false);
         await detail.hover();
         expect(
@@ -1379,6 +1384,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.keyboard.press('Space');
         expect(await detail.getAttribute('aria-expanded')).toBe('false');
         expect((await card.boundingBox())!.height).toBe(runningHeight);
+        await detail.click();
         await stop.click();
         await expect.poll(() => requests.length).toBe(1);
         await expect.poll(() => stop.isEnabled()).toBe(true);
@@ -1397,7 +1403,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ]);
         // The write acknowledgment alone must not claim that a remote service stopped.
         expect(await stopping.isDisabled()).toBe(true);
-        expect(await card.getByRole('status').innerText()).toBe('正在执行');
+        expect(
+          await card.locator('header').getByRole('status').innerText(),
+        ).toBe('执行中');
         operation.snapshot.status = 'cancel_requested';
         await card
           .getByText('停止意图已记录，结果待确认', { exact: true })
@@ -1410,9 +1418,40 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'Done',
           trusted: false,
         };
-        await card.getByText('执行成功', { exact: true }).waitFor();
+        await card
+          .locator('header')
+          .getByText('成功', { exact: true })
+          .waitFor();
         expect(await stopping.count()).toBe(0);
+        await collapse.click();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
+        operation.snapshot.status = 'failed';
+        operation.result = {
+          code: 'MCP_REQUEST_FAILED',
+          output: 'network request failed',
+          trusted: false,
+        };
+        await card
+          .locator('header')
+          .getByText('失败', { exact: true })
+          .waitFor();
+        expect((await card.boundingBox())!.height).toBe(runningHeight);
+        await detail.click();
+        expect(
+          await content.getByText('工具：', { exact: false }).isVisible(),
+        ).toBe(true);
+        await collapse.click();
+        operation.snapshot.status = 'unknown';
+        await card
+          .locator('header')
+          .getByText('结果待核实', { exact: true })
+          .waitFor();
+        expect(
+          await card
+            .locator('header')
+            .getByText('失败', { exact: true })
+            .count(),
+        ).toBe(0);
         expect(requests).toHaveLength(2);
       } finally {
         release();

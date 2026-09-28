@@ -1,11 +1,15 @@
 'use client';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
+  IconCheckOutlineRegular,
+  IconChevronDownOutlineRegular,
   IconChevronRightOutlineRegular,
   IconCodeOutlineRegular,
   IconCopyOutlineRegular,
   IconFlatListOutlineRegular,
+  IconLoadingOutlineRegular,
   IconSlidersTwoOutlineRegular,
+  IconWarningOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { classifyMcpFailure, mcpFailureCopy } from '@allrice/contracts';
@@ -75,6 +79,34 @@ export function cloudOperationDisplayStatus(
   const failure = operationFailure(op);
   if (failure) return mcpFailureCopy[failure].title;
   return labels[op.snapshot.status] ?? op.snapshot.status;
+}
+
+/** Compact receipts never turn an unconfirmed outcome into success or failure. */
+export function cloudOperationCompactStatus(op: CloudOperationView) {
+  switch (op.snapshot.status) {
+    case 'running':
+      return '执行中';
+    case 'succeeded':
+      return '成功';
+    case 'failed':
+      return '失败';
+    case 'planned':
+      return '准备中';
+    case 'ready':
+      return '待执行';
+    case 'dispatched':
+      return '待确认';
+    case 'cancel_requested':
+      return '停止待确认';
+    case 'unknown':
+      return '结果待核实';
+    case 'canceled':
+      return '已取消';
+    case 'partial':
+      return '部分完成';
+    default:
+      return cloudOperationDisplayStatus(op);
+  }
 }
 type Decision = 'approved' | 'rejected' | 'cancel';
 
@@ -183,42 +215,65 @@ export function CloudOperationCard({
   useEffect(() => {
     setDetailsOpen(!!pending);
   }, [pending, op.snapshot.binding.attempt.operationId]);
-  return (
-    <article
-      className={styles.card}
-      id={`operation-${op.snapshot.binding.attempt.operationId}`}
-      data-status={op.snapshot.status}
+  const compact = proposal.kind === 'mcp';
+  const fullStatus = laterSuccessId
+    ? '本次未成功 · 后续调用已成功'
+    : cloudOperationDisplayStatus(op);
+  const detailsToggle = (
+    <button
+      type="button"
+      className={styles.detailsToggle}
+      aria-label={detailsOpen ? '收起详情' : '查看详情'}
+      aria-expanded={detailsOpen}
+      aria-controls={detailsId}
+      onClick={() => setDetailsOpen((open) => !open)}
     >
-      <header>
-        <strong className={styles.title}>
-          <span className={styles.icon} aria-hidden="true">
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-            >
-              {proposal.kind === 'cloud' ? (
-                <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
-              ) : (
-                <>
-                  <rect x="3" y="8" width="8" height="13" rx="1.5" />
-                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
-                  <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
-                </>
-              )}
-            </svg>
-          </span>
-          {proposal.kind === 'cloud' ? '云端计算' : '应用工具'}
-        </strong>
-        <span className={styles.status} role="status">
-          {laterSuccessId
-            ? '本次未成功 · 后续调用已成功'
-            : cloudOperationDisplayStatus(op)}
+      <span>
+        {compact
+          ? detailsOpen
+            ? '收起'
+            : '详情'
+          : detailsOpen
+            ? '收起详情'
+            : '查看详情'}
+      </span>
+      {compact ? (
+        <IconChevronDownOutlineRegular size={14} />
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d={detailsOpen ? 'M3 8h10' : 'M3 8h10M8 3v10'}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      )}
+    </button>
+  );
+  const stopButton = !terminal && runActive && (
+    <Tooltip
+      label="请求停止本轮全部操作，已完成的结果会保留。"
+      side="top"
+      align="end"
+    >
+      <button
+        type="button"
+        className={styles.stopButton}
+        aria-label={stopping ? '正在停止本轮全部操作' : '请求停止本轮全部操作'}
+        disabled={busy || stopping}
+        onClick={() => onAct(op, 'cancel')}
+      >
+        <span className={styles.stopIcon} aria-hidden="true" />
+        <span className={styles.stopLabel}>
+          {stopping ? '正在停止…' : '停止本轮'}
         </span>
-      </header>
+      </button>
+    </Tooltip>
+  );
+  const notices = (
+    <>
       {laterSuccessId && (
         <p className={styles.notice}>
           同一应用工具的后续调用已成功，本次失败记录仍保留。
@@ -243,67 +298,132 @@ export function CloudOperationCard({
           {mcpFailureCopy[failure].detail}
         </p>
       )}
-      <p className={styles.scope}>
-        {proposal.kind === 'cloud'
-          ? `${proposal.inputs.length} 个输入文件 · 仅在云端执行 · 不联网`
-          : `第三方应用 · ${proposal.tool}`}
-      </p>
-      <div className={styles.executionFooter}>
-        <div className={styles.executionToolbar}>
-          <span className={styles.executionTitle}>运行详情</span>
-          <div className={styles.executionControls}>
-            <button
-              type="button"
-              className={styles.detailsToggle}
-              aria-expanded={detailsOpen}
-              aria-controls={detailsId}
-              onClick={() => setDetailsOpen((open) => !open)}
+    </>
+  );
+  const receiptNotes = (
+    <>
+      {op.approval?.response && (
+        <p>
+          你的决定：
+          {op.approval.response.decision === 'approved'
+            ? '已批准本次操作'
+            : '已拒绝本次操作'}
+          {op.approval.revokedAt ? ' · 后续已撤销' : ''}
+        </p>
+      )}
+      {(op.snapshot.status === 'cancel_requested' ||
+        (op.snapshot.status === 'unknown' && !failure)) && (
+        <p role="status" className={styles.notice}>
+          {op.snapshot.status === 'cancel_requested'
+            ? '已记录的停止指令不等于远端已经停止。'
+            : '未收到完整的执行回执。'}
+          {proposal.kind === 'mcp'
+            ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
+            : '云端需等待实际停止和结果回执；不会自动重跑脚本。'}
+        </p>
+      )}
+    </>
+  );
+  return (
+    <article
+      className={`${styles.card}${compact ? ` ${styles.compactCard}` : ''}`}
+      id={`operation-${op.snapshot.binding.attempt.operationId}`}
+      data-status={op.snapshot.status}
+    >
+      <header className={compact ? styles.compactHeader : undefined}>
+        <strong className={compact ? styles.compactTitle : styles.title}>
+          <span className={styles.icon} aria-hidden="true">
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
             >
-              <span>{detailsOpen ? '收起详情' : '查看详情'}</span>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                aria-hidden="true"
-              >
-                <path
-                  d={detailsOpen ? 'M3 8h10' : 'M3 8h10M8 3v10'}
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
-            {!terminal && runActive && (
-              <Tooltip
-                label="请求停止本轮全部操作，已完成的结果会保留。"
-                side="top"
-                align="end"
-              >
-                <button
-                  type="button"
-                  className={styles.stopButton}
-                  aria-label={
-                    stopping ? '正在停止本轮全部操作' : '请求停止本轮全部操作'
-                  }
-                  disabled={busy || stopping}
-                  onClick={() => onAct(op, 'cancel')}
-                >
-                  <span className={styles.stopIcon} aria-hidden="true" />
-                  <span className={styles.stopLabel}>
-                    {stopping ? '正在停止…' : '停止本轮'}
-                  </span>
-                </button>
-              </Tooltip>
-            )}
-          </div>
+              {proposal.kind === 'cloud' ? (
+                <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
+              ) : (
+                <>
+                  <rect x="3" y="8" width="8" height="13" rx="1.5" />
+                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                  <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
+                </>
+              )}
+            </svg>
+          </span>
+          {proposal.kind === 'cloud' ? (
+            '云端计算'
+          ) : (
+            <span className={styles.toolName}>
+              {proposal.tool.startsWith('mcp__app__') ? (
+                <>
+                  <span className={styles.toolPrefix}>mcp__app__</span>
+                  {proposal.tool.slice('mcp__app__'.length)}
+                </>
+              ) : (
+                proposal.tool
+              )}
+            </span>
+          )}
+        </strong>
+        <div className={compact ? styles.compactControls : undefined}>
+          <Tooltip label={fullStatus} side="top" align="end">
+            <span
+              className={styles.status}
+              role="status"
+              aria-label={fullStatus}
+            >
+              {compact && (
+                <span className={styles.statusIcon} aria-hidden="true">
+                  {op.snapshot.status === 'running' ? (
+                    <IconLoadingOutlineRegular size={14} />
+                  ) : op.snapshot.status === 'succeeded' ? (
+                    <IconCheckOutlineRegular size={14} />
+                  ) : op.snapshot.status === 'failed' ? (
+                    <IconWarningOutlineRegular size={14} />
+                  ) : (
+                    <span className={styles.statusDot} />
+                  )}
+                </span>
+              )}
+              {compact ? cloudOperationCompactStatus(op) : fullStatus}
+            </span>
+          </Tooltip>
+          {compact && detailsToggle}
         </div>
+      </header>
+      {!compact && notices}
+      {proposal.kind === 'cloud' && (
+        <p className={styles.scope}>
+          {`${proposal.inputs.length} 个输入文件 · 仅在云端执行 · 不联网`}
+        </p>
+      )}
+      <div className={styles.executionFooter}>
+        {!compact && (
+          <div className={styles.executionToolbar}>
+            <span className={styles.executionTitle}>运行详情</span>
+            <div className={styles.executionControls}>
+              {detailsToggle}
+              {stopButton}
+            </div>
+          </div>
+        )}
         <div
           id={detailsId}
           className={styles.executionBody}
           hidden={!detailsOpen}
         >
+          {compact && (
+            <>
+              <div className={styles.compactDetailHeading}>
+                <span>应用工具 · 第三方应用</span>
+                {stopButton}
+              </div>
+              <p className={styles.detailScope}>{fullStatus}</p>
+              {notices}
+            </>
+          )}
           {proposal.kind === 'cloud' ? (
             <p className={styles.detailScope}>
               只读本次授权的上传文件，不访问你的电脑。
@@ -428,6 +548,7 @@ export function CloudOperationCard({
               和连接版本；管理员保存的服务密钥不会展示在页面上。
             </small>
           )}
+          {compact && receiptNotes}
         </div>
       </div>
       {pending && (
@@ -452,26 +573,7 @@ export function CloudOperationCard({
           </small>
         </div>
       )}
-      {op.approval?.response && (
-        <p>
-          你的决定：
-          {op.approval.response.decision === 'approved'
-            ? '已批准本次操作'
-            : '已拒绝本次操作'}
-          {op.approval.revokedAt ? ' · 后续已撤销' : ''}
-        </p>
-      )}
-      {(op.snapshot.status === 'cancel_requested' ||
-        (op.snapshot.status === 'unknown' && !failure)) && (
-        <p role="status" className={styles.notice}>
-          {op.snapshot.status === 'cancel_requested'
-            ? '已记录的停止指令不等于远端已经停止。'
-            : '未收到完整的执行回执。'}
-          {proposal.kind === 'mcp'
-            ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
-            : '云端需等待实际停止和结果回执；不会自动重跑脚本。'}
-        </p>
-      )}
+      {!compact && receiptNotes}
     </article>
   );
 }

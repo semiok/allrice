@@ -4,6 +4,7 @@ import type { CloudOperationView } from '@allrice/database';
 import {
   CloudOperationCard,
   cloudOperationDisplayStatus,
+  cloudOperationCompactStatus,
   cloudOperationsNeedPolling,
   laterSuccessfulMcpCall,
 } from './cloud-operation-panel';
@@ -39,6 +40,20 @@ const render = (op: CloudOperationView, busy = false) =>
     <CloudOperationCard op={op} busy={busy} onAct={() => {}} />,
   );
 describe('Cloud/MCP approval presentation', () => {
+  it('keeps compact statuses distinct from unconfirmed remote outcomes', () => {
+    const op = view();
+    for (const [status, label] of [
+      ['running', '执行中'],
+      ['succeeded', '成功'],
+      ['failed', '失败'],
+      ['unknown', '结果待核实'],
+      ['cancel_requested', '停止待确认'],
+      ['dispatched', '待确认'],
+    ] as const) {
+      op.snapshot.status = status;
+      expect(cloudOperationCompactStatus(op)).toBe(label);
+    }
+  });
   it.each(['read_only', 'write'])(
     'links a later successful %s call without clearing failures or unknown effects',
     (risk) => {
