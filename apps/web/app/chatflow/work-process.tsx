@@ -113,11 +113,7 @@ export function WorkProcess({
         ? '已停止'
         : '工作过程';
   const expandable = Boolean(
-    process.steps.some(
-      (step) =>
-        !renderOperation ||
-        !items.some((item) => item.id === step.id && item.operationId),
-    ) ||
+    process.steps.length ||
     Children.toArray(children).length ||
     traceStatus === 'failed',
   );
@@ -278,10 +274,9 @@ export function WorkProcess({
       >
         <div className={styles.processDetails}>
           <WorkProcessSteps
-            items={items.filter(
-              (item) => !item.operationId || !renderOperation,
-            )}
+            items={items}
             running={running}
+            receiptsVisible={Boolean(renderOperation)}
           />
           {traceStatus === 'failed' ? (
             <button
@@ -319,35 +314,33 @@ function WorkProcessGroup({
   running: boolean;
   renderOperation?: (operationId: string) => ReactNode;
 }) {
-  const rows: ReactNode[] = [];
-  let pending: NativeExperienceItem[] = [];
-  const flush = () => {
-    if (!pending.length) return;
-    rows.push(
+  // Receipts supplement the native summary; they must not replace its steps.
+  // Keep both at this process boundary, before any later assistant reply.
+  return (
+    <div className={styles.processReceipts}>
       <NativeStepsGroup
-        key={pending[0]!.id}
-        items={pending}
+        items={items}
         running={running}
-      />,
-    );
-    pending = [];
-  };
-  for (const item of items) {
-    if (item.operationId && renderOperation) {
-      flush();
-      rows.push(<div key={item.id}>{renderOperation(item.operationId)}</div>);
-    } else pending.push(item);
-  }
-  flush();
-  return <div className={styles.processReceipts}>{rows}</div>;
+        receiptsVisible={Boolean(renderOperation)}
+      />
+      {renderOperation &&
+        items
+          .filter((item) => item.operationId)
+          .map((item) => (
+            <div key={item.id}>{renderOperation(item.operationId!)}</div>
+          ))}
+    </div>
+  );
 }
 
 function NativeStepsGroup({
   items,
   running,
+  receiptsVisible,
 }: {
   items: NativeExperienceItem[];
   running: boolean;
+  receiptsVisible: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const { steps } = summarizeWorkProcess(items);
@@ -365,7 +358,11 @@ function NativeStepsGroup({
         rowClassName={styles.processHeader}
       >
         <div className={styles.processDetails}>
-          <WorkProcessSteps items={items} running={running} />
+          <WorkProcessSteps
+            items={items}
+            running={running}
+            receiptsVisible={receiptsVisible}
+          />
         </div>
       </DisclosureRow>
     </section>
@@ -375,9 +372,11 @@ function NativeStepsGroup({
 function WorkProcessSteps({
   items,
   running,
+  receiptsVisible,
 }: {
   items: NativeExperienceItem[];
   running: boolean;
+  receiptsVisible: boolean;
 }) {
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
@@ -387,6 +386,9 @@ function WorkProcessSteps({
         const pending =
           ['started', 'updated'].includes(step.status) &&
           step.category !== 'plan';
+        const hasReceipt =
+          receiptsVisible &&
+          items.some((item) => item.id === step.id && item.operationId);
         const status =
           step.status === 'failed'
             ? `未成功${step.error ? `：${step.error}` : ''}`
@@ -429,7 +431,7 @@ function WorkProcessSteps({
                 </>
               }
             />
-            {status ? (
+            {status && !(status === '进行中' && hasReceipt) ? (
               <small className={styles.processStepStatus}>{status}</small>
             ) : null}
           </li>

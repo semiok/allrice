@@ -4067,7 +4067,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('keeps MCP receipts in native reply order and renders each call status only once', async () => {
+  it('keeps native tool summaries and receipt details in reply order without duplicate pending text', async () => {
     const f = await fixture({
       running: true,
       streamingOutput: true,
@@ -4175,7 +4175,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByText('进行中', { exact: true })
           .count(),
       ).toBe(0);
-      expect(await f.page.locator('[aria-label="工作步骤"]').count()).toBe(0);
+      const groups = f.page.locator('section[aria-label="工作步骤"]');
+      expect(await groups.count()).toBe(2);
+      for (const group of await groups.all()) {
+        const summary = group.getByRole('button', { name: '工具 · 1 项' });
+        await summary.click();
+        const steps = group.getByRole('list', { name: '工作步骤' });
+        await steps.waitFor();
+        expect(await steps.locator('li').count()).toBe(1);
+        expect(await steps.getByText('进行中', { exact: true }).count()).toBe(
+          0,
+        );
+      }
+      expect(await groups.last().innerText()).toContain('使用已连接的服务');
       await second
         .getByRole('button', { name: '查看详情', exact: true })
         .click();
@@ -4206,6 +4218,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await second.waitFor();
       expect(await first.count()).toBe(1);
       expect(await second.count()).toBe(1);
+      expect(await groups.count()).toBe(2);
+      await groups.last().getByRole('button', { name: '工具 · 1 项' }).click();
+      expect(
+        await groups.last().getByRole('list', { name: '工作步骤' }).isVisible(),
+      ).toBe(true);
       expect((await second.boundingBox())!.y).toBeLessThan(
         (await final.boundingBox())!.y,
       );
