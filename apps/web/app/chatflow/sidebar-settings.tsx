@@ -46,7 +46,7 @@ export function SidebarSettings({
   onBridge: () => void;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
-  const [localAppsOpen, setLocalAppsOpen] = useState(false);
+  const [localAppsVisited, setLocalAppsVisited] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   async function logout() {
@@ -200,13 +200,17 @@ export function SidebarSettings({
                     <>
                       <ConnectedApps workspaceId={workspaceId} />
                       <details
-                        onToggle={(event) =>
-                          setLocalAppsOpen(event.currentTarget.open)
-                        }
+                        onToggle={(event) => {
+                          if (event.currentTarget.open)
+                            setLocalAppsVisited(true);
+                        }}
                       >
-                        <summary>本地应用连接（高级）</summary>
-                        {localAppsOpen && (
-                          <LocalMcpSettings workspaceId={workspaceId} />
+                        <summary>本地应用高级设置</summary>
+                        {localAppsVisited && (
+                          <LocalMcpSettings
+                            key={workspaceId}
+                            workspaceId={workspaceId}
+                          />
                         )}
                       </details>
                     </>

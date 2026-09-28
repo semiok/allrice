@@ -176,14 +176,24 @@ export function ChatFlowClient({
     setSettings(null);
     if (!workspace?.workspaceId) return;
     const url = new URL(window.location.href);
-    const requested = url.searchParams.get('settings');
+    const section = url.searchParams.get('settings');
     if (
-      requested &&
-      ['computer', 'work', 'apps', 'experience'].includes(requested)
-    ) {
-      setSettings({ scope: settingsScope, section: requested });
-      url.searchParams.delete('settings');
-      window.history.replaceState(window.history.state, '', url);
+      !section ||
+      !['apps', 'computer', 'capabilities', 'work', 'experience'].includes(
+        section,
+      )
+    )
+      return;
+    setSettings({ scope: settingsScope, section });
+    url.searchParams.delete('settings');
+    try {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    } catch {
+      // Restricted browsers may deny History writes; the modal still opens.
     }
   }, [settingsScope, workspace?.workspaceId]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);

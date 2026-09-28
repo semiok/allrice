@@ -121,7 +121,7 @@ suite('member connected-apps page', () => {
       }
     });
     try {
-      await page.goto(origin);
+      await page.goto(`${origin}/chatflow?session=${connectionId}`);
       await page.getByText('管理连接', { exact: true }).click();
       await page.getByRole('button', { name: '填写连接凭据' }).click();
       await page
@@ -214,7 +214,7 @@ suite('member connected-apps page', () => {
         });
     });
     try {
-      await page.goto(origin);
+      await page.goto(`${origin}/chatflow?session=${connectionId}`);
       await page
         .getByRole('button', { name: '使用访问令牌连接', exact: true })
         .click();
@@ -252,6 +252,7 @@ suite('member connected-apps page', () => {
         workspaceId,
         appId: 'linear',
         method: 'oauth',
+        returnSessionId: connectionId,
       });
     } finally {
       await context.close();

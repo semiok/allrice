@@ -210,6 +210,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   async function fixture(
     options: {
+      settingsEntry?: 'apps' | 'computer' | 'capabilities';
       archiveCount?: number;
       archiveActive?: boolean;
       tenantAdmin?: boolean;
@@ -1082,7 +1083,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       return answer({}, 404);
     });
     await page.goto(
-      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}`,
+      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
     );
     await (
       options.startup
@@ -1191,6 +1192,56 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+
+  for (const width of [1440, 390]) {
+    it(`returns OAuth to the settings modal, keeps the conversation and includes local apps at ${width}px`, async () => {
+      const f = await fixture({
+        width,
+        settingsEntry: 'apps',
+        tenantAdmin: true,
+      });
+      try {
+        const dialog = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await dialog
+          .getByRole('heading', { name: '已连接应用', exact: true })
+          .waitFor();
+        expect(new URL(f.page.url()).searchParams.get('session')).toBe(A);
+        expect(new URL(f.page.url()).searchParams.has('settings')).toBe(false);
+        const advanced = dialog.locator('details').filter({
+          has: f.page.locator('summary', { hasText: '本地应用高级设置' }),
+        });
+        expect(await advanced.getAttribute('open')).toBeNull();
+        expect(
+          await dialog.getByRole('region', { name: '本地 MCP 连接' }).count(),
+        ).toBe(0);
+        await advanced.locator('summary').click();
+        await dialog.getByRole('region', { name: '本地 MCP 连接' }).waitFor();
+        await selectSettings(dialog, '我的电脑');
+        await dialog
+          .getByRole('button', { name: '连接与管理电脑', exact: true })
+          .waitFor();
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await dialog.getByRole('button', { name: '关闭设置' }).click();
+        expect(await dialog.count()).toBe(0);
+        await f.page.reload();
+        await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+        expect(await dialog.count()).toBe(0);
+        expect(new URL(f.page.url()).searchParams.get('session')).toBe(A);
+        expect(f.errors).toEqual([]);
+        expect(f.unexpected).toEqual([]);
+        expect(f.writes).toEqual([]);
+      } finally {
+        await f.context.close();
+      }
+    });
+  }
 
   it('native turn navigation previews, jumps and tracks reading position, and hides when the conversation narrows', async () => {
     const f = await fixture();
