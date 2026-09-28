@@ -226,6 +226,12 @@ async function runDeviceAuthorization(input: {
   try {
     const result = await client.authorizeCodex();
     const connected = result.status === 'authorized';
+    // Publish the slot health before ending the flow: the admin stops polling
+    // on completion and activation must never see the previous account status.
+    await recordCodexProviderStatus(
+      await probeDshCodexProvider(input.executionRoot, slot),
+      slot,
+    );
     await completeCodexAuthorization({
       flowId: input.flow.id,
       workerId: input.workerId,
@@ -234,10 +240,6 @@ async function runDeviceAuthorization(input: {
         ? 'dsh_openai_codex_provider_ready'
         : 'dsh_openai_codex_authorization_canceled',
     });
-    await recordCodexProviderStatus(
-      await probeDshCodexProvider(input.executionRoot, slot),
-      slot,
-    );
   } catch {
     await completeCodexAuthorization({
       flowId: input.flow.id,
