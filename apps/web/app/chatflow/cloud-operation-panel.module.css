@@ -487,6 +487,19 @@
   width: 14px;
   height: 14px;
 }
+.compactCard[data-status='running'] .statusIcon {
+  animation: statusSpin 1s linear infinite;
+}
+@keyframes statusSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .compactCard[data-status='running'] .statusIcon {
+    animation: none;
+  }
+}
 .statusDot {
   width: 5px;
   height: 5px;
