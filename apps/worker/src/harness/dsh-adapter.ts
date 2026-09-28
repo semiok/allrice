@@ -573,7 +573,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             id: toolCall.id,
             ok: true,
             content: toolResult.modelContent,
-          })}</allrice_tool_result>`;
+          })}</allrice_tool_result>\n\nContinue the original user request using this tool result. Any text emitted alongside the preceding tool envelope was not delivered to the user. Return a complete, self-contained answer incorporating the result and any corrections, not just an addendum to an unseen draft.`;
         } catch (error) {
           await emit({
             type: 'tool.failed',

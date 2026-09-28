@@ -309,7 +309,13 @@ lines.on('line', (line) => {
       mediaTypes: images.map((image) => image.mediaType),
     });
   } else if (prompt.trimStart().startsWith('<allrice_tool_result>')) {
-    text = 'tool-finished';
+    // The continuation must not assume the user received the draft that
+    // accompanied a legacy envelope (including a full comparison/report).
+    text =
+      prompt.includes('was not delivered to the user') &&
+      prompt.includes('complete, self-contained answer')
+        ? 'tool-finished'
+        : 'Only an addendum to the unseen draft.';
   } else if (prompt.includes('use-tool-with-preamble')) {
     text =
       'I will check that now.\n<allrice_tool_call>{"id":"call-1","name":"workspace.file.read","arguments":{"objectId":"00000000-0000-4000-8000-000000000001"}}</allrice_tool_call>';
