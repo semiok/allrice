@@ -11,7 +11,11 @@ import {
 } from '@allrice/contracts';
 import { connectorInputDigest } from '@allrice/database';
 import { createPinnedMcpFetch } from './egress.js';
-import { redactMcpValue, type McpConnectionInput } from './transport.js';
+import {
+  assertMcpInput,
+  redactMcpValue,
+  type McpConnectionInput,
+} from './transport.js';
 import { managedMcpOAuthProvider } from './oauth.js';
 
 /** Allrice owns identity, network admission and the operation ledger. DSH owns
@@ -170,11 +174,9 @@ export function createNativeMcpTransport(
         arguments: Record<string, unknown>;
       },
     ) {
-      // Native MCP passes the advertised input schema through unchanged and
-      // the server validates its arguments. The DSH output-schema subset is
-      // not an MCP input validator (e.g. it intentionally rejects maxLength).
       if (Buffer.byteLength(JSON.stringify(input.arguments)) > 131_072)
         throw new McpError('MCP_LIMIT');
+      assertMcpInput(input.tool.inputSchema, input.arguments);
       let dispatched = false;
       try {
         return await withClient(input, async (ctx, tools, received) => {

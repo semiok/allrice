@@ -12,6 +12,31 @@ import { connectorInputDigest, type McpStore } from '@allrice/database';
 
 import { createPinnedMcpFetch } from './egress.js';
 
+/** A local schema rejection proves no tools/call was sent. */
+export class McpInputValidationError extends McpError {
+  constructor(detail: string) {
+    super('MCP_INVALID_SCHEMA');
+    this.message = `工具参数校验失败：${detail.slice(0, 2000)}。请按工具参数定义修正后重试。`;
+  }
+}
+
+export function assertMcpInput(
+  schema: Record<string, unknown>,
+  argumentsInput: Record<string, unknown>,
+) {
+  // Reuse the MCP SDK's input validator. DSH's output-schema subset is not
+  // suitable here: advertised MCP inputs also use maxLength, enum, etc.
+  let validate;
+  try {
+    validate = new AjvJsonSchemaValidator().getValidator(schema);
+  } catch {
+    throw new McpError('MCP_INVALID_SCHEMA');
+  }
+  const result = validate(argumentsInput);
+  if (!result.valid)
+    throw new McpInputValidationError(result.errorMessage ?? '参数不符合定义');
+}
+
 export function validateMcpSchema<T = unknown>(
   schema: Record<string, unknown>,
 ) {
@@ -164,10 +189,9 @@ export function createMcpTransport(
         arguments: Record<string, unknown>;
       },
     ) {
-      if (!validateMcpSchema(input.tool.inputSchema)(input.arguments).valid)
-        throw new McpError('MCP_INVALID_SCHEMA');
       if (Buffer.byteLength(JSON.stringify(input.arguments)) > 131_072)
         throw new McpError('MCP_LIMIT');
+      assertMcpInput(input.tool.inputSchema, input.arguments);
       let dispatched = false;
       try {
         return await withClient(input, async (client) => {

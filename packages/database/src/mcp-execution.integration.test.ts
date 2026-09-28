@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
+import { createAssistantRuntime } from './assistant-runtime.ts';
 import * as McpConnections from './mcp-connections.ts';
 import {
   revokeRuntimeActionApproval,
@@ -151,6 +152,57 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     const tool = ready.tools.find(
       (t) => t.description === 'Append a synthetic record',
     )!;
+    const invalid = await f.create('managed-native-invalid-input', {
+      connectionId: connection.id,
+      tool: tool.name,
+      arguments: { value: 'x'.repeat(101) },
+    });
+    const task = invalid.snapshot.binding.task;
+    const worker = {
+      workerId: f.worker,
+      jobId: f.job,
+      leaseToken: invalid.jobLeaseToken,
+      generation: invalid.snapshot.binding.attempt.generation,
+    };
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+    const assistants = createAssistantRuntime({
+      database: db,
+      authorize: async () => {},
+    });
+    await assistants.configureRoot({
+      task,
+      worker,
+      nativeSessionId: `dsh-${f.session}`,
+      allowedTools: ['cloud.mcp.call'],
+      configuration: {
+        version: 1,
+        mode: 'daily',
+        allowAssistants: true,
+        maxDepth: 1,
+        maxChildren: 4,
+        maxConcurrent: 2,
+      },
+    });
+    await f.decide(invalid);
+    const rejected = await McpExecutor.runMcpRuntimeOperation(invalid, {
+      database: db,
+      store,
+      transport: native,
+    });
+    expect(rejected).toMatchObject({
+      status: 'failed',
+      code: 'MCP_INVALID_SCHEMA',
+    });
+    expect(rejected.output).toContain('工具参数校验失败');
+    expect(f.service.state.calls).toBe(0);
+    expect(
+      (
+        await invalid.ledger.readOperation(
+          task.scope,
+          invalid.snapshot.binding.attempt.operationId,
+        )
+      ).result,
+    ).toMatchObject({ status: 'failed', effects: 'none' });
     const created = await f.create('managed-native-write', {
       connectionId: connection.id,
       tool: tool.name,
@@ -164,6 +216,13 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     });
     expect(result.status).toBe('succeeded');
     expect(f.service.state.rows).toEqual(['same-task']);
+    expect(
+      await assistants.finalizeRoot({
+        scope: task.scope,
+        rootRunId: f.run,
+        worker,
+      }),
+    ).toMatchObject({ status: 'completed' });
     const [unchanged] =
       await db`select execution_snapshot from allrice_employee_runs where run_id=${f.run}`;
     expect(

@@ -17,6 +17,7 @@ import {
 } from '@allrice/contracts';
 import { invokeFrozenMcpTool } from './lifecycle.js';
 import type { createMcpTransport } from './transport.js';
+import { McpInputValidationError } from './transport.js';
 
 type Created = Awaited<ReturnType<typeof createMcpRuntimeOperation>>;
 type Database = ReturnType<typeof getDatabase>;
@@ -248,7 +249,7 @@ export async function runMcpRuntimeOperation(
               },
         evidence: {
           ...evidenceBase,
-          output: '',
+          output: error instanceof McpInputValidationError ? error.message : '',
           outputDigest: evidence.digest,
           isError: true,
           code,
