@@ -396,6 +396,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             url.searchParams.has('format')
           )
             return originalFetch(input, init);
+          let closed = false;
+          let cleanup = () => {};
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
               const push = (event: Event) =>
@@ -404,16 +406,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     (event as CustomEvent<string>).detail,
                   ),
                 );
+              cleanup = () => {
+                closed = true;
+                window.removeEventListener('allrice-test-stream', push);
+              };
               window.addEventListener('allrice-test-stream', push);
               document.documentElement.dataset.streamReady = 'true';
               init?.signal?.addEventListener(
                 'abort',
                 () => {
-                  window.removeEventListener('allrice-test-stream', push);
+                  if (closed) return;
+                  cleanup();
                   controller.close();
                 },
                 { once: true },
               );
+            },
+            cancel() {
+              cleanup();
             },
           });
           return new Response(stream, {
