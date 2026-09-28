@@ -43,7 +43,7 @@ import {
 
 async function openIndependentTools(page: Page) {
   const section = page.locator('details').filter({
-    has: page.locator(':scope > summary', { hasText: '单独选择工具' }),
+    has: page.locator(':scope > summary', { hasText: '单独添加工具' }),
   });
   if ((await section.getAttribute('open')) === null)
     await section.locator(':scope > summary').click();
@@ -889,7 +889,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           (employee: { id: string }) => employee.id === f.employeeId,
         );
       const original = await directory();
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
       await page
         .getByRole('checkbox', {
@@ -925,7 +925,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button')
         .filter({ hasText: 'MET151 MCP safety fixture' })
         .click();
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
       await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
       expect(
@@ -989,7 +989,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByRole('button', { name: '安全', exact: true }).count(),
       ).toBe(0);
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await page
         .getByText('是否自动执行，由使用者在前台', { exact: false })
         .waitFor();
@@ -1161,33 +1161,35 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await tab('技能');
       await skill(f.skillId).check();
       await skill(otherSkill.skillId).check();
-      await tab('工具');
-      const branches = page.locator('details').filter({
-        has: page.locator(':scope > summary strong', { hasText: 'p18-' }),
-      });
-      expect(await branches.count()).toBe(2);
-      expect(await branches.first().getAttribute('open')).toBeNull();
-      await branches.first().locator(':scope > summary').focus();
-      await page.keyboard.press('Enter');
-      await branches
-        .first()
-        .getByText('读取已冻结 Skill', { exact: true })
+      await tab('技能');
+      expect(
+        await page.getByRole('button', { name: '工具', exact: true }).count(),
+      ).toBe(0);
+      await page
+        .getByRole('region', { name: '基础能力', exact: true })
         .waitFor();
-      expect(await branches.first().getByRole('checkbox').count()).toBe(0);
-      // A shared dependency appears under each skill, without disabled controls.
-      await branches.nth(1).locator(':scope > summary').click();
-      await branches
-        .nth(1)
-        .getByText('读取已冻结 Skill', { exact: true })
-        .waitFor();
-      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      const branches = [f.skillId, otherSkill.skillId].map((id) =>
+        page
+          .getByRole('region', { name: `技能：p18-${id}`, exact: true })
+          .locator('details')
+          .first(),
+      );
+      for (const branch of branches) {
+        expect(await branch.getAttribute('open')).toBeNull();
+        await branch.locator(':scope > summary').focus();
+        await page.keyboard.press('Enter');
+        await branch.getByText('读取已冻结 Skill', { exact: true }).waitFor();
+        expect(await branch.getByRole('checkbox').count()).toBe(0);
+        expect(await branch.getByText(/用于：/).count()).toBeGreaterThan(0);
+      }
+      await openIndependentTools(page);
       expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
       expect(await tool('读取已冻结 Skill').isDisabled()).toBe(false);
       await tool('联网搜索').check();
       await save();
       await open();
-      await tab('工具');
-      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      await tab('技能');
+      await openIndependentTools(page);
       expect(await tool('联网搜索').isChecked()).toBe(true);
       expect(
         (await directory()).currentDraft.definition.capabilities
@@ -1197,6 +1199,20 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         path: '/tmp/met155-dependency-tools.png',
         fullPage: true,
       });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page
+        .getByRole('region', { name: `技能：p18-${f.skillId}`, exact: true })
+        .scrollIntoViewIfNeeded();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: '/tmp/met155-unified-skills-mobile.png',
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1440, height: 1050 });
       await publish();
       const first = await directory();
       const firstPublished = await f.revision(first.currentPublished.id);
@@ -1228,8 +1244,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
 
       await tab('技能');
       await skill(f.skillId).uncheck();
-      await tab('工具');
-      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      await tab('技能');
+      await openIndependentTools(page);
       expect(await tool('读取工作区文件').isChecked()).toBe(false);
       expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
       expect(
@@ -1240,7 +1256,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await open();
       await tab('技能');
       await skill(otherSkill.skillId).uncheck();
-      await tab('工具');
+      await tab('技能');
+      await openIndependentTools(page);
       expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
       expect(await tool('读取网页').isChecked()).toBe(false);
       expect(await tool('工作区文件列表').isChecked()).toBe(true);
@@ -1311,7 +1328,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         await palette.screenshot({
           path: process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT,
         });
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
       await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
       await page.getByText('本地项目预览', { exact: true }).waitFor();

@@ -16,17 +16,6 @@
   font-size: 16px;
 }
 
-.heading button {
-  padding: 7px 12px;
-  color: #c5d9f5;
-  font: inherit;
-  font-size: 13px;
-  background: #25282c;
-  border: 1px solid #454a50;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
 .hint {
   margin: 0;
   color: #aab1bb;
@@ -40,6 +29,119 @@
   border: 1px solid #34383d;
   border-radius: 12px;
   background: #1b1d20;
+}
+
+.skills,
+.basicGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.skill {
+  align-self: start;
+}
+
+.skill[data-selected='true'] {
+  border-color: #576e8b;
+  background: #20252c;
+}
+
+.skillHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-right: 14px;
+}
+
+.skillHeader > .choice {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillHeader > .badge {
+  margin-top: 16px;
+}
+
+.badge {
+  flex-shrink: 0;
+  color: #b7bec8;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.badge[data-selected='true'] {
+  color: #a8c7fa;
+}
+
+.skillBody {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.skillBody > details {
+  border-top: 1px solid #3c444e;
+}
+
+.textButton,
+.basic a {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #aecbfa;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.textButton:hover,
+.basic a:hover {
+  text-decoration: underline;
+}
+
+.textButton:disabled,
+.choice:has(input:disabled) {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.basics {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.basics h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.basic {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 14px;
+  border: 1px solid #34383d;
+  border-radius: 12px;
+  background: #1b1d20;
+  overflow-wrap: anywhere;
+}
+
+.basic > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.warning {
+  margin: 0;
+  color: #e7bb80;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .tree summary {
@@ -71,6 +173,12 @@
   font-weight: 400;
 }
 
+.tree .sources {
+  display: block;
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
 .dependencies {
   display: grid;
   gap: 2px;
@@ -88,6 +196,10 @@
 
 .checkmark {
   margin-right: 10px;
+  color: #aab1bb;
+}
+
+.checkmark[data-configured='true'] {
   color: #7dbd9b;
 }
 
@@ -146,6 +258,10 @@
 
 @media (max-width: 900px) {
   .tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .skills,
+  .basicGrid {
     grid-template-columns: minmax(0, 1fr);
   }
   .tree summary small {

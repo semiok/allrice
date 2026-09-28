@@ -18,7 +18,7 @@ import {
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
-import { EmployeeToolTree, employeeSkillLabel } from './employee-tool-tree';
+import { EmployeeSkills } from './employee-skills';
 
 type Employee = PlatformEmployeeSummary;
 
@@ -92,7 +92,6 @@ const tabs = [
   ['workflows', 'Workflow'],
   ['knowledge', 'Knowledge'],
   ['model', '模型'],
-  ['tools', '工具'],
   ['debug', '测试'],
   ['publish', '发布更新'],
 ] as const;
@@ -180,38 +179,6 @@ function RuntimeFieldLabel(props: {
         </code>
       ) : null}
     </span>
-  );
-}
-
-function Checks(props: {
-  items: { id: string; label: string; detail: string; disabled?: boolean }[];
-  selected: string[];
-  onChange: (value: string[]) => void;
-}) {
-  const selected = new Set(props.selected);
-  return (
-    <div className={styles.checks}>
-      {props.items.map((item) => (
-        <label className={styles.check} key={item.id}>
-          <input
-            type="checkbox"
-            checked={selected.has(item.id)}
-            disabled={item.disabled}
-            onChange={(event) =>
-              props.onChange(
-                event.target.checked
-                  ? [...selected, item.id]
-                  : [...selected].filter((id) => id !== item.id),
-              )
-            }
-          />
-          <span>
-            <strong>{item.label}</strong>
-            <small>{item.detail}</small>
-          </span>
-        </label>
-      ))}
-    </div>
   );
 }
 
@@ -1037,46 +1004,35 @@ export function EmployeeProduction() {
   } else if (tab === 'skills') {
     panel = (
       <>
-        <div className={styles.runtimeSourceNotice}>
-          <div>
-            <code>AGENTS.md</code>
-            <span>勾选技能自动添加所需工具，并生成技能目录和路由说明</span>
-          </div>
-          <div>
-            <code>SKILL.md</code>
-            <span>每个已选 Skill 作为独立、不可变的发布快照传入运行时</span>
-          </div>
-        </div>
         <p className={styles.muted}>
-          取消技能会移除仅由它带入的工具；其他技能所需和手动保留的工具不受影响。历史配置中的工具继续保留。
+          技能所需工具自动跟随；取消技能时，其他技能所需和单独添加的工具会保留。
+          是否自动执行，由使用者在前台「设置 → 员工工作方式」中决定。
         </p>
-        {directory.skills.length ? (
-          <Checks
-            items={directory.skills.map((skill) => ({
-              id: skill.id,
-              label: employeeSkillLabel(skill),
-              detail: `${skill.source === 'dsh-migrated' ? 'DSH 迁移' : 'AllRice 自有'} · v${skill.version} · ${skill.license} · ${skill.reviewStatus === 'reviewed' ? '已审核' : '未通过审核'}${skill.bundleChecksum ? ` · 冻结资源包 ${skill.resourceCount ?? 0} 项` : ''} · ${skill.description}`,
-              disabled: !skill.enabled || skill.reviewStatus !== 'reviewed',
-            }))}
-            selected={draft.capabilities.nativeSkillIds}
-            onChange={selectSkills}
-          />
-        ) : (
-          <p className={styles.notice}>
-            平台原生 Skill 库当前为空。先审核并迁移 Skill，再装配给 Rice。
+        <EmployeeSkills
+          definition={draft}
+          skills={directory.skills}
+          tools={
+            directory.tools ??
+            employeeToolCatalog.map((tool) => ({ ...tool, released: false }))
+          }
+          busy={busy}
+          onSelectSkills={selectSkills}
+          onSelectTool={retainTool}
+          onInspectSkill={(id) => void inspectSkill(id)}
+        />
+        <details className={styles.muted}>
+          <summary>配置帮助</summary>
+          <p>
+            {directory.rapidIteration
+              ? '添加后保存并发布即可使用；草稿测试仅支持问答和读取资料，完整任务请进入租户工作台验证。'
+              : '添加后保存草稿，按发布检查完成当前版本验证，再发布到目标租户。'}
           </p>
-        )}
-        <div className={styles.actions}>
-          {directory.skills.map((skill) => (
-            <button
-              className={styles.button}
-              key={skill.id}
-              onClick={() => void inspectSkill(skill.id)}
-            >
-              查看 {employeeSkillLabel(skill)} 内容
-            </button>
-          ))}
-        </div>
+          <p>
+            成员继承已派驻员工的能力，执行跟随设置中的“员工工作方式”。使用本地项目时，在“我的电脑”连接
+            Bridge
+            并选择项目目录，测试环境会自动准备；缺项可在“能力与环境”查看。
+          </p>
+        </details>
         {skillView ? (
           <section aria-label="Skill 只读内容">
             <h3>Skill 来源与内容（只读）</h3>
@@ -1117,44 +1073,6 @@ export function EmployeeProduction() {
         <a href="/runtime-console?view=governance">前往模型与用量</a>
         <p>平台配置更新后，从下一次任务开始生效。</p>
       </div>
-    );
-  } else if (tab === 'tools') {
-    panel = (
-      <>
-        <p>
-          {directory.rapidIteration
-            ? '勾选工具后保存并发布即可启用；所需的员工能力和执行策略会自动配置。'
-            : '选择员工工具，保存并发布后生效。'}
-        </p>
-        <p className={styles.notice}>
-          只需选择技能和工具，所需能力与本地文件访问方式会自动配置。
-          是否自动执行，由使用者在前台「设置 → 员工工作方式」中决定。
-        </p>
-        <EmployeeToolTree
-          definition={draft}
-          skills={directory.skills}
-          tools={
-            directory.tools ??
-            employeeToolCatalog.map((tool) => ({ ...tool, released: false }))
-          }
-          busy={busy}
-          onSelectTool={retainTool}
-          onManageSkills={() => setTab('skills')}
-        />
-        <details className={styles.muted}>
-          <summary>配置帮助</summary>
-          <p>
-            {directory.rapidIteration
-              ? '添加后保存并发布即可使用；草稿测试仅支持问答和读取资料，完整任务请进入租户工作台验证。'
-              : '添加后保存草稿，按发布检查完成当前版本验证，再发布到目标租户。'}
-          </p>
-          <p>
-            成员继承已派驻员工的能力，执行跟随设置中的“员工工作方式”。使用本地项目时，在“我的电脑”连接
-            Bridge
-            并选择项目目录，测试环境会自动准备；缺项可在“能力与环境”查看。
-          </p>
-        </details>
-      </>
     );
   } else if (tab === 'debug') {
     panel = (
