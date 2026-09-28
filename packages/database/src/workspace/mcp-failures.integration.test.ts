@@ -55,10 +55,10 @@ suite('historical MCP failure notices from scoped immutable receipts', () => {
       code: 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN',
     });
     const read = (
-      org = f.org,
-      workspace = f.workspace,
-      session = f.session,
-      owner = f.user,
+      org: string = f.org,
+      workspace: string = f.workspace,
+      session: string = f.session,
+      owner: string = f.user,
     ) => readSessionMcpFailures(org, workspace, session, owner, fixture.db);
     expect((await read()).size).toBe(0);
     await fixture.db`update allrice_runs set state='failed',error_code='ASSISTANT_EXECUTION_UNRESOLVED' where id=${f.run}`;
