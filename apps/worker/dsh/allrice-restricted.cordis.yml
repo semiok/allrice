@@ -38,7 +38,14 @@
             maxDelayMs: 4000
             jitterRatio: 0.1
         models:
-          - id: !!js process.env.DSH_CODEX_MODEL ?? 'gpt-5.6-luna'
+          - id: !!js process.env.DSH_CODEX_MODEL ?? 'gpt-6-luna'
+            # The pinned pi-ai catalog predates GPT-6. Declare the two new
+            # models through DSH's native configuration extension; otherwise
+            # an unknown ID defaults to reasoning=false. Model metadata checked
+            # against the official Codex catalog on 2026-09-28.
+            contextWindow: !!js "['gpt-6-sol', 'gpt-6-luna'].includes(process.env.DSH_CODEX_MODEL ?? 'gpt-6-luna') ? 272000 : undefined"
+            input: !!js "['gpt-6-sol', 'gpt-6-luna'].includes(process.env.DSH_CODEX_MODEL ?? 'gpt-6-luna') ? ['text', 'image'] : undefined"
+            reasoningEfforts: !!js "['gpt-6-sol', 'gpt-6-luna'].includes(process.env.DSH_CODEX_MODEL ?? 'gpt-6-luna') ? { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' } : undefined"
       openai-compatible:
         apiKeyEnv: OPENAI_COMPATIBLE_API_KEY
         api: openai-completions

@@ -1574,7 +1574,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       },
       body: JSON.stringify({
         id: `allrice-search-${Date.now()}`,
-        model: process.env.DSH_CODEX_MODEL ?? 'gpt-5.6-luna',
+        model: process.env.DSH_CODEX_MODEL ?? 'gpt-6-luna',
         commands: {
           search_query: [{ q: query }],
           response_length: maxResults <= 3 ? 'short' : 'medium',

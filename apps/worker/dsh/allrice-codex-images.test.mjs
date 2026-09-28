@@ -39,6 +39,19 @@ function stream(events) {
   );
 }
 describe('Codex image transport', () => {
+  it.each(['gpt-6-sol', 'gpt-6-luna'])(
+    'forwards %s through image generation without substituting an old model',
+    async (workModel) => {
+      const request = vi.fn(async () => stream([output, completed]));
+      const receipt = await generateCodexImage(
+        models,
+        { ...params, workModel },
+        request,
+      );
+      expect(receipt.workModel).toBe(workModel);
+      expect(JSON.parse(request.mock.calls[0][1].body).model).toBe(workModel);
+    },
+  );
   it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
     'uses managed OAuth and %s with complete SSE receipts',
     async (imageModel) => {

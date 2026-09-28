@@ -15,9 +15,11 @@ export function employeeReasoningSettings(provider: string, model: string) {
   const id = model.trim() === '3.8flash' ? 'gemini-3.8-flash' : model.trim();
   let efforts: Effort[] = [];
   if (provider === 'openai-codex') {
-    // Exact IDs in this pinned pi-ai Codex catalog, not a family-name guess.
+    // Current Codex IDs plus historical employee model policies.
     if (
       [
+        'gpt-6-sol',
+        'gpt-6-luna',
         'gpt-5.3-codex-spark',
         'gpt-5.4',
         'gpt-5.4-mini',
@@ -58,7 +60,7 @@ export function switchEmployeeModelProvider(
   provider: (typeof EMPLOYEE_PROVIDER_OPTIONS)[number]['value'],
 ): ModelPolicy {
   if (policy.provider === provider) return policy;
-  const model = 'gpt-5.6-luna';
+  const model = 'gpt-6-luna';
   const settings = employeeReasoningSettings(provider, model);
   return {
     ...policy,

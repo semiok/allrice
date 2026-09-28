@@ -3,6 +3,9 @@ import { Buffer } from 'node:buffer';
 
 const endpoint = 'https://chatgpt.com/backend-api/codex/responses';
 const workModels = new Set([
+  'gpt-6-sol',
+  'gpt-6-luna',
+  // Keep historical frozen Runs executable while new selections use GPT-6.
   'gpt-5.6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
