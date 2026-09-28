@@ -910,6 +910,10 @@ div.composerTools {
 }
 
 @container (max-width: 340px) {
+  .composerSelect {
+    padding-inline: 8px;
+  }
+
   .composerVisibilityScope {
     display: none;
   }
