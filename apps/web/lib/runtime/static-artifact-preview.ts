@@ -7,6 +7,7 @@ import {
 import { previewOfficePdf } from '@allrice/office-runtime/preview';
 import { getStorageAdapter } from '../storage/runtime';
 import { readDocumentTextPage } from './document-text-page';
+import { reportPreviewFailure } from './preview-diagnostics';
 import {
   documentPreviewLimits as limits,
   previewExtension,
@@ -66,6 +67,7 @@ export async function readStaticArtifactPreview(
       };
     } catch (error) {
       if (options.signal?.aborted) throw error;
+      reportPreviewFailure('office-conversion', error, object.id);
       return download('文档转换暂不可用，请重试预览或下载查看。');
     }
   }

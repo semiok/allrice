@@ -108,17 +108,7 @@ export function NativeDocumentPreview({
       <NativeHtmlPreview base64={preview.base64} interactive={interactive} />
     );
   if (preview.kind === 'pdf')
-    return (
-      <>
-        {!!preview.missingFonts?.length && (
-          <details>
-            <summary>部分字体不可用（{preview.missingFonts.length}）</summary>
-            <p>{preview.missingFonts.join('、')}</p>
-          </details>
-        )}
-        <NativePdfPreview base64={preview.base64} />
-      </>
-    );
+    return <NativePdfPreview base64={preview.base64} />;
   if (preview.kind === 'image')
     return (
       <NativeImagePreview
