@@ -213,6 +213,9 @@ suite(
         running?: boolean;
         question?: boolean;
         delayHistoryB?: boolean;
+        immediateReply?: boolean;
+        settled?: 'failed' | 'canceled';
+        width?: number;
       } = {},
     ) {
       const pending: Pending[] = [];
@@ -224,14 +227,21 @@ suite(
         releaseHistoryB = done;
       });
       let assistantStatus = 'cancel_requested';
+      let showTiming = false;
       const messages: Record<string, ReturnType<typeof message>[]> = {
         [A]: [message('history-a', 'Existing A')],
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
-      if (options.running)
+      if (options.running || options.settled)
         messages[A]!.push(
-          message('assistant-a', '', 'assistant', runId, 'pending'),
+          message(
+            'assistant-a',
+            '',
+            'assistant',
+            runId,
+            options.settled ? 'failed' : 'pending',
+          ),
         );
       const answer = (
         response: ServerResponse,
@@ -372,7 +382,28 @@ suite(
           return;
         }
         if (path.endsWith('/interactions')) {
-          answer(response, { runtime: null, pendingActions: [], inputs: [] });
+          answer(response, {
+            runtime: null,
+            pendingActions: [],
+            inputs: [],
+            runTimings: showTiming
+              ? [
+                  {
+                    runId,
+                    timing: {
+                      activeMs: 4000,
+                      waitingMs: 0,
+                      wallMs: 4000,
+                      timeoutMs: 0,
+                      remainingMs: null,
+                      phase: 'active',
+                      sources: [],
+                      calls: null,
+                    },
+                  },
+                ]
+              : [],
+          });
           return;
         }
         if (path.endsWith('/timings')) {
@@ -429,7 +460,8 @@ suite(
         throw Error('Loopback fixture not listening');
       const origin = `http://127.0.0.1:${address.port}`;
       const context: BrowserContext = await browser.newContext({
-        viewport: { width: 1440, height: 1000 },
+        viewport: { width: options.width ?? 1440, height: 1000 },
+        hasTouch: (options.width ?? 1440) < 760,
       });
       const page: Page = await context.newPage();
       page.setDefaultTimeout(4000);
@@ -447,7 +479,8 @@ suite(
       page.on('pageerror', (error) => errors.push(error.message));
       try {
         await page.goto(`${origin}/?session=${A}`);
-        await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
+        if ((options.width ?? 1440) >= 760)
+          await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
         await page.getByText('Existing A', { exact: true }).waitFor();
@@ -473,6 +506,21 @@ suite(
         writes,
         errors,
         releaseHistoryB,
+        showTiming() {
+          showTiming = true;
+        },
+        finishRun() {
+          for (const item of messages[A]!)
+            if (item.runId === runId) {
+              item.status = 'failed';
+              item.content.text = '';
+            }
+          for (const response of streams) {
+            response.end(
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'run.canceled', payload: {} })}\n\n`,
+            );
+          }
+        },
         setAssistantStatus(value: string) {
           assistantStatus = value;
         },
@@ -499,7 +547,15 @@ suite(
           await page
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .fill(text);
-          await page.getByRole('button', { name: '发送', exact: true }).click();
+          const sendButton = page.getByRole('button', {
+            name: '发送',
+            exact: true,
+          });
+          if (await sendButton.count()) await sendButton.click();
+          else
+            await page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .press('Enter');
         },
         async waitPending(count: number) {
           await expect
@@ -557,18 +613,24 @@ suite(
               });
               return;
             }
+            if (p.path.includes('/cancel')) {
+              answer(p.response, { accepted: true });
+              return;
+            }
             const id = p.path.split('/')[4]!;
             const userMessage = message(`user-${index}`, String(p.body.text));
             const assistantMessage = message(
               `assistant-${index}`,
-              'Synthetic receipt',
+              options.immediateReply ? '' : 'Synthetic receipt',
               'assistant',
+              options.immediateReply ? runId : null,
+              options.immediateReply ? 'pending' : 'completed',
             );
             messages[id]?.push(userMessage, assistantMessage);
             answer(p.response, {
               run: { id: runId },
               fallbackRunId: null,
-              delivery: 'follow_up',
+              delivery: options.immediateReply ? 'immediate' : 'follow_up',
               userMessage,
               assistantMessage,
             });
@@ -859,11 +921,177 @@ suite(
         await f.close();
       }
     }, 15_000);
+    it.each([390, 1440])(
+      'keeps the thinking row and composer stable across submit, timing and stop at %spx',
+      async (width) => {
+        const f = await fixture({ immediateReply: true, width });
+        try {
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('在吗');
+          await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .click();
+          await f.waitPending(1);
+          const identity = f.page
+            .locator('[class*="assistantIdentity"]')
+            .last();
+          await identity.waitFor();
+          const geometry = async () => {
+            const composer = await input.locator('..').boundingBox();
+            const author = await identity.boundingBox();
+            const process = await f.page
+              .getByRole('region', { name: '工作过程', exact: true })
+              .boundingBox();
+            return {
+              y: composer!.y,
+              height: composer!.height,
+              gap: composer!.y - author!.y,
+              processHeight: process!.height,
+            };
+          };
+          // Settle the ordinary new-message scroll, then measure only the state transition.
+          await f.page.waitForTimeout(350);
+          const submitting = await geometry();
+          expect(
+            await f.page
+              .getByRole('button', { name: '停止生成', exact: true })
+              .count(),
+          ).toBe(0);
+          await f.respond(0);
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .waitFor();
+          await f.page.waitForTimeout(150);
+          const running = await geometry();
+          f.showTiming();
+          await f.page.getByLabel('本轮运行时间', { exact: true }).waitFor();
+          const timed = await geometry();
+          if (process.env.ALLRICE_UI_EVIDENCE_DIR)
+            await f.page.screenshot({
+              path: `${process.env.ALLRICE_UI_EVIDENCE_DIR}/timed-${width}.png`,
+            });
+          for (const state of [running, timed]) {
+            expect(Math.abs(state.y - submitting.y)).toBeLessThanOrEqual(1);
+            expect(state.height).toBe(submitting.height);
+            expect(Math.abs(state.gap - submitting.gap)).toBeLessThanOrEqual(1);
+            expect(state.processHeight).toBe(submitting.processHeight);
+          }
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .click();
+          await f.waitPending(2);
+          expect(
+            await f.page
+              .getByRole('button', { name: '正在停止', exact: true })
+              .isDisabled(),
+          ).toBe(true);
+          await f.respond(1);
+          f.finishRun();
+          await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .waitFor();
+          expect(await f.page.getByText('重新连接并恢复执行记录').count()).toBe(
+            0,
+          );
+          expect(
+            await f.page
+              .getByRole('link', { name: '经验沉淀', exact: true })
+              .count(),
+          ).toBe(0);
+          expect((await input.locator('..').boundingBox())!.height).toBe(
+            submitting.height,
+          );
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
+    it.each(['failed', 'canceled'] as const)(
+      'opens settled %s history without a stop control or reconnect action',
+      async (settled) => {
+        const f = await fixture({ settled });
+        try {
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .fill('尚未发送');
+          await f.page.evaluate(() =>
+            window.dispatchEvent(new Event('online')),
+          );
+          await f.page.waitForTimeout(150);
+          expect(
+            await f.page
+              .getByRole('button', { name: '停止生成', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(await f.page.getByText('重新连接并恢复执行记录').count()).toBe(
+            0,
+          );
+          expect(
+            f.reads.filter(
+              (url) => url.includes('/events') && !url.includes('format=json'),
+            ),
+          ).toEqual([]);
+          expect(f.writes).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
+    it('uses an opaque, readable attachment menu with keyboard and outside dismissal', async () => {
+      const f = await fixture();
+      try {
+        const add = f.page.getByRole('button', {
+          name: '添加文件',
+          exact: true,
+        });
+        await add.click();
+        const menu = f.page.getByRole('menu');
+        const item = menu.getByRole('menuitem', {
+          name: '从工作区添加',
+          exact: true,
+        });
+        const styles = await item.evaluate((el) => ({
+          size: getComputedStyle(el).fontSize,
+          height: el.getBoundingClientRect().height,
+        }));
+        expect(styles).toEqual({ size: '16px', height: 46 });
+        const surface = await menu.evaluate((el) => ({
+          background: getComputedStyle(el).backgroundColor,
+          shadow: getComputedStyle(el).boxShadow,
+          border: getComputedStyle(el).borderTopWidth,
+        }));
+        expect(surface.background).not.toBe('rgba(0, 0, 0, 0)');
+        expect(surface.shadow).not.toBe('none');
+        expect(surface.border).toBe('1px');
+        if (process.env.ALLRICE_UI_EVIDENCE_DIR)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_UI_EVIDENCE_DIR}/attachment-menu.png`,
+          });
+        await f.page.keyboard.press('Escape');
+        expect(await menu.count()).toBe(0);
+        expect(await add.evaluate((el) => el === document.activeElement)).toBe(
+          true,
+        );
+        await add.click();
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息' })
+          .click({ position: { x: 500, y: 10 } });
+        expect(await menu.count()).toBe(0);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
     it('late cancellation failure cannot poison another session or claim that work stopped', async () => {
       const f = await fixture({ running: true });
       try {
         await f.page
-          .getByRole('button', { name: '停止本轮', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .click();
         await f.waitPending(1);
         expect(f.pending[0]!.path).toContain(`${runId}/cancel`);
@@ -877,7 +1105,7 @@ suite(
         ).toBe(0);
         expect(
           await f.page
-            .getByRole('button', { name: '停止本轮', exact: true })
+            .getByRole('button', { name: '停止生成', exact: true })
             .count(),
         ).toBe(0);
         expect(f.writes).toHaveLength(1);
@@ -895,12 +1123,12 @@ suite(
           request.url().includes(`${runId}/cancel`),
         );
         await f.page
-          .getByRole('button', { name: '停止本轮', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .click();
         await failed;
         await f.page.getByText('Failed to fetch', { exact: true }).waitFor();
         await f.page
-          .getByRole('button', { name: '停止本轮', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .waitFor();
         expect(f.errors).toEqual([]);
         expect(f.writes).toHaveLength(0);

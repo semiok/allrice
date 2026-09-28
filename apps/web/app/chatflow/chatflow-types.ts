@@ -170,6 +170,7 @@ export interface RunView {
   status: 'connecting' | 'running' | 'completed' | 'failed' | 'canceled';
   cursor: string | null;
   reconnects: number;
+  connectionError?: string;
   events: ChatFlowEventEnvelope[];
 }
 
