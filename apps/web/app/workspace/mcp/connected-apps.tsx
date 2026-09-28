@@ -1,7 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { McpConnectionSchema, type McpConnection } from '@allrice/contracts';
+import {
+  McpConnectionSchema,
+  MCP_APPS,
+  type McpAppId,
+  type McpConnection,
+} from '@allrice/contracts';
 import styles from './connected-apps.module.css';
 
 export function ConnectedApps({
@@ -18,6 +23,9 @@ export function ConnectedApps({
   const [refreshing, setRefreshing] = useState(false);
   const [credentialId, setCredentialId] = useState('');
   const [credential, setCredential] = useState('');
+  const [githubOAuthReady, setGithubOAuthReady] = useState(false);
+  const [presetToken, setPresetToken] = useState<McpAppId | null>(null);
+  const [pendingLogin, setPendingLogin] = useState<string | null>(null);
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
       const response = await fetch(
@@ -28,12 +36,20 @@ export function ConnectedApps({
       if (!response.ok)
         throw Error(body.error?.message ?? '暂时无法读取应用连接');
       setConnections(McpConnectionSchema.array().parse(body.connections));
+      setGithubOAuthReady(body.apps?.github?.oauthReady === true);
       setLoading(false);
     },
     [workspaceId],
   );
   useEffect(() => {
     const abort = new AbortController();
+    setConnections([]);
+    setLoading(true);
+    setCredential('');
+    setCredentialId('');
+    setPresetToken(null);
+    setPendingLogin(null);
+    setError('');
     void refresh(abort.signal).catch((e: Error) => {
       if (!abort.signal.aborted) {
         setError(e.message);
@@ -61,6 +77,48 @@ export function ConnectedApps({
       abort.abort();
     };
   }, [connections, refresh]);
+  useEffect(() => {
+    if (!pendingLogin) return;
+    const connection = connections.find((c) => c.id === pendingLogin);
+    if (connection?.loginState === 'redirect') {
+      setPendingLogin(null);
+      window.location.assign(
+        `/api/v1/connections/authorize?workspaceId=${workspaceId}&connectionId=${connection.id}`,
+      );
+    } else if (
+      connection?.loginState === 'error' ||
+      connection?.discoveryState === 'error'
+    ) {
+      setPendingLogin(null);
+    }
+  }, [connections, pendingLogin, workspaceId]);
+  async function connectApp(appId: McpAppId, method: 'oauth' | 'token') {
+    if (busy) return;
+    setBusy(appId);
+    setError('');
+    try {
+      const response = await fetch('/api/v1/connections', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          appId,
+          method,
+          ...(method === 'token' ? { bearerToken: credential } : {}),
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw Error(body.error?.message ?? '连接操作未完成');
+      setCredential('');
+      setPresetToken(null);
+      if (method === 'oauth') setPendingLogin(body.connection.id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '连接操作未完成');
+    } finally {
+      setBusy(null);
+    }
+  }
   async function mutate(
     connection: McpConnection,
     action: 'disconnect' | 'reconnect' | 'credential' | 'login' | 'delete',
@@ -81,6 +139,7 @@ export function ConnectedApps({
       });
       const body = await response.json();
       if (!response.ok) throw Error(body.error?.message ?? '连接操作未完成');
+      if (action === 'login') setPendingLogin(connection.id);
       setCredential('');
       setCredentialId('');
       await refresh();
@@ -96,8 +155,109 @@ export function ConnectedApps({
   return (
     <section className={styles.apps} aria-label="已连接应用">
       <p>
-        让员工连接你需要的应用，在这里查看和管理。断开共享应用只影响你自己。
+        连接你的应用，让员工在你的授权范围内使用。个人连接仅你可用，断开共享应用只影响你自己。
       </p>
+      {!loading && (
+        <div className={styles.presets} aria-label="默认应用">
+          {(
+            Object.entries(MCP_APPS) as [
+              McpAppId,
+              (typeof MCP_APPS)[McpAppId],
+            ][]
+          ).map(([appId, app]) => {
+            const added = connections.some(
+              (c) => !c.shared && !c.removed && c.endpoint === app.endpoint,
+            );
+            return (
+              <div className={styles.card} key={appId}>
+                <h2>{app.name}</h2>
+                <p>{app.description}</p>
+                {added ? (
+                  <p>已添加，可在下方管理连接。</p>
+                ) : (
+                  <>
+                    <div className={styles.actions}>
+                      {(appId === 'linear' || githubOAuthReady) && (
+                        <button
+                          disabled={!!busy}
+                          onClick={() => void connectApp(appId, 'oauth')}
+                        >
+                          连接 {app.name}
+                        </button>
+                      )}
+                      <button
+                        disabled={!!busy}
+                        onClick={() => {
+                          setPresetToken(appId);
+                          setCredential('');
+                          setCredentialId('');
+                        }}
+                      >
+                        {appId === 'github' && !githubOAuthReady
+                          ? '使用访问令牌连接'
+                          : '使用访问令牌'}
+                      </button>
+                    </div>
+                    {appId === 'github' && !githubOAuthReady && (
+                      <p>
+                        GitHub
+                        账号登录待平台配置。现在可使用自己的访问令牌连接。
+                      </p>
+                    )}
+                    {presetToken === appId && (
+                      <form
+                        className={styles.credential}
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void connectApp(appId, 'token');
+                        }}
+                      >
+                        <label>
+                          {app.name} 访问令牌
+                          <input
+                            type="password"
+                            value={credential}
+                            onChange={(event) =>
+                              setCredential(event.target.value)
+                            }
+                            minLength={8}
+                            maxLength={4096}
+                            autoComplete="off"
+                            required
+                          />
+                        </label>
+                        <p>
+                          <a
+                            href={app.tokenUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            在 {app.name} 创建访问令牌
+                          </a>
+                          ，选择需要访问的仓库或工作区。令牌只保存在连接凭据中，不发送到聊天。
+                        </p>
+                        <button disabled={!!busy || !credential}>
+                          保存并连接
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!!busy}
+                          onClick={() => {
+                            setPresetToken(null);
+                            setCredential('');
+                          }}
+                        >
+                          取消
+                        </button>
+                      </form>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       <button
         type="button"
         disabled={loading || refreshing || !!busy}
@@ -119,7 +279,9 @@ export function ConnectedApps({
       {loading ? (
         <p>正在读取应用连接…</p>
       ) : !visible.length ? (
-        <p>还没有连接应用。告诉员工你想使用哪个服务，或提供服务地址即可。</p>
+        <p>
+          还没有连接应用。选择上方应用开始连接，其他服务也可以在聊天中告诉员工。
+        </p>
       ) : null}
       {visible.map((c) => (
         <article
@@ -150,6 +312,9 @@ export function ConnectedApps({
           <div className={styles.actions}>
             {c.managed &&
               !c.disconnected &&
+              c.enabled &&
+              (!c.credentialConfigured || c.discoveryState === 'error') &&
+              (c.endpoint !== MCP_APPS.github.endpoint || githubOAuthReady) &&
               (c.loginState === 'redirect' ? (
                 <a
                   href={`/api/v1/connections/authorize?workspaceId=${workspaceId}&connectionId=${c.id}`}
@@ -177,9 +342,32 @@ export function ConnectedApps({
               </button>
             ) : null}
           </div>
+          {c.managed &&
+            !c.disconnected &&
+            c.endpoint === MCP_APPS.github.endpoint &&
+            !githubOAuthReady &&
+            !c.credentialConfigured && (
+              <p>请在“管理连接”中填写 GitHub 访问令牌。</p>
+            )}
+          {c.loginState === 'error' && (
+            <p role="status">账号登录未完成，请重试登录或使用访问令牌。</p>
+          )}
           <details className={styles.manage}>
             <summary>管理连接</summary>
             <div className={styles.actions}>
+              {c.managed &&
+                !c.disconnected &&
+                c.enabled &&
+                !['preparing', 'exchanging'].includes(c.loginState) &&
+                (c.endpoint !== MCP_APPS.github.endpoint ||
+                  githubOAuthReady) && (
+                  <button
+                    disabled={!!busy}
+                    onClick={() => void mutate(c, 'login')}
+                  >
+                    重新账号登录
+                  </button>
+                )}
               {!c.disconnected && c.enabled && (
                 <button
                   disabled={!!busy}
@@ -193,6 +381,7 @@ export function ConnectedApps({
                   disabled={!!busy}
                   onClick={() => {
                     setCredentialId(c.id);
+                    setPresetToken(null);
                     setCredential('');
                   }}
                 >

@@ -1,9 +1,16 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ lookup: vi.fn(), request: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  lookup: vi.fn(),
+  request: vi.fn(),
+  presetResolve: vi.fn(),
+}));
 vi.mock('node:dns/promises', () => ({ lookup: mocks.lookup }));
 vi.mock('node:https', () => ({ request: mocks.request }));
+vi.mock('../managed-browser.js', () => ({
+  resolveManagedBrowserHostnamePublic: mocks.presetResolve,
+}));
 import { createPinnedMcpFetch } from './egress.js';
 
 const endpoint = 'https://mcp.example.test/mcp';
@@ -16,6 +23,7 @@ const input = () => ({
 beforeEach(() => {
   mocks.lookup.mockReset();
   mocks.request.mockReset();
+  mocks.presetResolve.mockReset();
 });
 describe('P16 production egress boundary (isolated DNS/TLS transport-unit tests)', () => {
   it.each([
@@ -112,4 +120,27 @@ describe('P16 production egress boundary (isolated DNS/TLS transport-unit tests)
     expect(mocks.lookup).not.toHaveBeenCalled();
     expect(mocks.request).not.toHaveBeenCalled();
   });
+});
+
+it('resolves official hosts independently but still rejects any private result before TLS', async () => {
+  for (const endpoint of [
+    'https://mcp.linear.app/mcp',
+    'https://github.com/login/oauth/access_token',
+    'https://api.githubcopilot.com/mcp/',
+  ]) {
+    mocks.presetResolve.mockResolvedValue([
+      { address: '127.0.0.1', family: 4 },
+    ]);
+    await expect(
+      createPinnedMcpFetch({ ...input(), endpoint })(endpoint, {
+        method: 'POST',
+        body: '{}',
+      }),
+    ).rejects.toMatchObject({ code: 'MCP_SOURCE_DENIED' });
+    expect(mocks.presetResolve).toHaveBeenLastCalledWith(
+      new URL(endpoint).hostname,
+    );
+  }
+  expect(mocks.request).not.toHaveBeenCalled();
+  expect(mocks.lookup).not.toHaveBeenCalled();
 });

@@ -5,6 +5,8 @@ import type * as DatabaseModule from '@allrice/database';
 
 const mocks = vi.hoisted(() => ({
   context: vi.fn(),
+  create: vi.fn(),
+  githubMcpOAuthReady: vi.fn(),
   list: vi.fn(),
   rotate: vi.fn(),
   beginOAuth: vi.fn(),
@@ -18,8 +20,9 @@ vi.mock('../../../../lib/identity/session', () => ({
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof DatabaseModule>()),
   createMcpStore: () => mocks,
+  githubMcpOAuthReady: mocks.githubMcpOAuthReady,
 }));
-import { GET, PATCH } from './route';
+import { GET, PATCH, POST } from './route';
 import { GET as authorize } from './authorize/route';
 import { GET as callback } from './callback/route';
 const workspaceId = randomUUID(),
@@ -35,6 +38,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.context.mockResolvedValue(context);
   mocks.list.mockResolvedValue([]);
+  mocks.githubMcpOAuthReady.mockResolvedValue(false);
+  mocks.create.mockResolvedValue({ id: connectionId });
   mocks.setMemberConnected.mockResolvedValue({ id: connectionId });
   mocks.beginOAuth.mockResolvedValue({
     id: connectionId,
@@ -203,4 +208,70 @@ it('uses server-side owner-bound redirects and consumes OAuth callback without r
   );
   expect(failed.status).toBe(400);
   expect(await failed.text()).not.toContain('private-code');
+});
+
+it('creates only official presets for the current member, never a supplied endpoint or owner', async () => {
+  const post = (payload: unknown) =>
+    POST(
+      new Request('https://allrice.test/api/v1/connections', {
+        method: 'POST',
+        headers: {
+          origin: 'https://allrice.test',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+  expect(
+    (await post({ workspaceId, appId: 'github', method: 'oauth' })).status,
+  ).toBe(409);
+  expect(mocks.create).not.toHaveBeenCalled();
+  expect(
+    (
+      await post({
+        workspaceId,
+        appId: 'linear',
+        method: 'oauth',
+        endpoint: 'https://attacker.test',
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (await post({ workspaceId, appId: 'linear', method: 'oauth' })).status,
+  ).toBe(200);
+  expect(mocks.create).toHaveBeenCalledWith(context, {
+    workspaceId,
+    name: 'Linear',
+    endpoint: 'https://mcp.linear.app/mcp',
+  });
+  expect(mocks.beginOAuth).toHaveBeenCalledWith(context, {
+    workspaceId,
+    connectionId,
+    redirectUrl: 'https://allrice.test/api/v1/connections/callback',
+  });
+  mocks.create.mockResolvedValue({
+    id: connectionId,
+    disconnected: true,
+    removed: true,
+  });
+  expect(
+    (
+      await post({
+        workspaceId,
+        appId: 'github',
+        method: 'token',
+        bearerToken: 'synthetic-personal-token',
+      })
+    ).status,
+  ).toBe(200);
+  expect(mocks.setMemberConnected).toHaveBeenCalledWith(context, {
+    workspaceId,
+    connectionId,
+    connected: true,
+  });
+  expect(mocks.rotate).toHaveBeenCalledWith(context, {
+    workspaceId,
+    connectionId,
+    bearerToken: 'synthetic-personal-token',
+  });
 });

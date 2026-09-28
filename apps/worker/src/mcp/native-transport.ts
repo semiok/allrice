@@ -52,6 +52,20 @@ export function createNativeMcpTransport(
     const boundedFetch: typeof fetch = async (url, init) => {
       input.signal.throwIfAborted();
       await input.assertAuthorized();
+      if (input.oauth?.data.preset === 'github') {
+        const target = new URL(
+          typeof url === 'string'
+            ? url
+            : url instanceof URL
+              ? url.href
+              : url.url,
+        );
+        if (
+          target.href !== 'https://github.com/login/oauth/access_token' &&
+          target.origin !== 'https://api.githubcopilot.com'
+        )
+          throw new McpError('MCP_DENIED');
+      }
       const response = await request(url, {
         ...init,
         signal: AbortSignal.any([

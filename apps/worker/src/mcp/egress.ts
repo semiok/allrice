@@ -5,6 +5,13 @@ import { isIP } from 'node:net';
 import { McpEndpointSchema, McpError } from '@allrice/contracts';
 import { createPinnedLookup } from '../pinned-lookup.js';
 import { isPublicWebAddress } from '../web-fetch.js';
+import { resolveManagedBrowserHostnamePublic } from '../managed-browser.js';
+
+const presetHosts = new Set([
+  'mcp.linear.app',
+  'api.githubcopilot.com',
+  'github.com',
+]);
 
 export function validateMcpEndpoint(input: string) {
   const url = new URL(McpEndpointSchema.parse(input));
@@ -49,13 +56,23 @@ export function createPinnedMcpFetch(input: {
     await input.assertAuthorized();
     input.signal.throwIfAborted();
     init?.signal?.throwIfAborted();
-    const addresses = await lookup(url.hostname, { all: true, verbatim: true });
+    // Reuse the browser's independently verified public DNS for official
+    // presets on TUN networks. The synthetic address is never used in TLS.
+    // Custom endpoints keep the existing strict system-DNS policy.
+    const addresses = presetHosts.has(url.hostname)
+      ? await resolveManagedBrowserHostnamePublic(url.hostname).catch(() => {
+          throw new McpError('MCP_SOURCE_DENIED');
+        })
+      : await lookup(url.hostname, { all: true, verbatim: true });
     if (
       !addresses.length ||
       addresses.some((entry) => !isPublicWebAddress(entry.address))
     )
       throw new McpError('MCP_SOURCE_DENIED');
-    const address = addresses[0]!;
+    const address = {
+      address: addresses[0]!.address,
+      family: isIP(addresses[0]!.address),
+    };
     const body =
       input.oauthNetwork && init?.body instanceof URLSearchParams
         ? init.body.toString()

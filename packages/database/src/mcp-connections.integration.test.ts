@@ -6,6 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RequestContext, McpDiscoveredTool } from '@allrice/contracts';
 
 import { createMcpStore } from './mcp-connections.ts';
+import {
+  getGithubMcpSettings,
+  updateGithubMcpSettings,
+  McpSettingsConflict,
+} from './platform-mcp-settings.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -108,6 +113,164 @@ suite('P16 tenant MCP authority — actual isolated PostgreSQL', () => {
     if (admin && /^p16_mcp_[a-f0-9]{32}$/.test(schema))
       await admin.unsafe(`drop schema "${schema}" cascade`);
     await admin?.end({ timeout: 5 });
+  });
+  it('encrypts platform OAuth secrets, isolates member callbacks, and relays only live GitHub state to its saved tenant', async () => {
+    const f = await fixture();
+    const clientSecret = 'synthetic-platform-client-secret';
+    const callbackUrl =
+      'https://admin.example.test/api/v1/connections/github/callback';
+    const previous = await getGithubMcpSettings(f.context, db);
+    const settings = await updateGithubMcpSettings(
+      f.context,
+      {
+        expectedRevision: previous.revision,
+        clientId: 'synthetic-client-id',
+        clientSecret,
+        callbackUrl,
+      },
+      { database: db, credentialKey: key },
+    );
+    expect(settings).toMatchObject({ secretConfigured: true, ready: true });
+    expect(JSON.stringify(settings)).not.toContain(clientSecret);
+    const rows =
+      await db`select value from allrice_runtime_metadata where key='platform-mcp-oauth:github'`;
+    expect(JSON.stringify(rows)).not.toContain(clientSecret);
+    await expect(
+      updateGithubMcpSettings(
+        f.context,
+        {
+          expectedRevision: previous.revision,
+          clientId: 'synthetic-client-id',
+          clientSecret,
+          callbackUrl,
+        },
+        { database: db, credentialKey: key },
+      ),
+    ).rejects.toBeInstanceOf(McpSettingsConflict);
+    const user = randomUUID();
+    await db`insert into allrice_users(id,email,display_name,password_hash) values(${user},${`${user}@example.test`},'Member','synthetic')`;
+    await db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.scope.organizationId},${f.scope.workspaceId},${user},'member')`;
+    const other: RequestContext = {
+      ...f.context,
+      actor: { type: 'user', id: user },
+      memberships: f.context.memberships.map((m) => ({
+        ...m,
+        userId: user,
+        role: 'member',
+      })),
+    };
+    await expect(getGithubMcpSettings(other, db)).rejects.toMatchObject({
+      code: 'authorization_denied',
+    });
+    await expect(
+      updateGithubMcpSettings(
+        other,
+        {
+          expectedRevision: settings.revision,
+          clientId: 'synthetic-client-id',
+          clientSecret,
+          callbackUrl,
+        },
+        { database: db, credentialKey: key },
+      ),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const store = createMcpStore({
+      database: db,
+      credentialKey: key,
+      memberManaged: true,
+    });
+    const connection = await store.create(f.context, {
+      workspaceId: f.scope.workspaceId,
+      name: 'GitHub',
+      endpoint: 'https://api.githubcopilot.com/mcp/',
+    });
+    const input = {
+      workspaceId: f.scope.workspaceId,
+      connectionId: connection.id,
+      redirectUrl: 'https://tenant.example.test/api/v1/connections/callback',
+    };
+    await store.beginOAuth(f.context, input);
+    const lease = await store.claimDiscovery(randomUUID());
+    expect(lease?.connectionId).toBe(connection.id);
+    const session = (await store.oauthSession({ lease: lease! }))!;
+    expect(session.data).toMatchObject({
+      preset: 'github',
+      redirectUrl: callbackUrl,
+      returnUrl: input.redirectUrl,
+      clientInformation: { client_secret: clientSecret },
+    });
+    session.data.authorizationUrl =
+      'https://github.com/login/oauth/authorize?synthetic=1';
+    await session.save(session.data, 'redirect');
+    await store.completeDiscovery(lease!, { errorCode: 'MCP_AUTH_REQUIRED' });
+    const state = session.data.state;
+    const returned = await store.githubOAuthReturn({
+      state,
+      code: 'synthetic-code',
+      callbackUrl,
+    });
+    expect(new URL(returned).origin).toBe('https://tenant.example.test');
+    await expect(
+      store.githubOAuthReturn({
+        state,
+        code: 'synthetic-code',
+        callbackUrl: 'https://evil.test/api/v1/connections/github/callback',
+      }),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await expect(
+      store.completeOAuthCallback(other, { state, code: 'synthetic-code' }),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await expect(
+      store.completeOAuthCallback(
+        { ...f.context, organizationId: randomUUID() },
+        { state, code: 'synthetic-code' },
+      ),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    expect(
+      (
+        await store.completeOAuthCallback(f.context, {
+          state,
+          code: 'synthetic-code',
+        })
+      ).connectionId,
+    ).toBe(connection.id);
+    await expect(
+      store.completeOAuthCallback(f.context, { state, code: 'replay' }),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await expect(
+      store.githubOAuthReturn({ state, code: 'replay', callbackUrl }),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await store.beginOAuth(f.context, input);
+    const nextLease = (await store.claimDiscovery(randomUUID()))!;
+    const nextSession = (await store.oauthSession({ lease: nextLease }))!;
+    nextSession.data.authorizationUrl =
+      'https://github.com/login/oauth/authorize';
+    await nextSession.save(nextSession.data, 'redirect');
+    await store.completeDiscovery(nextLease, {
+      errorCode: 'MCP_AUTH_REQUIRED',
+    });
+    await db`update allrice_mcp_binding_config set oauth_expires_at=clock_timestamp()-interval '1 second' where binding_id=${connection.id}`;
+    await expect(
+      store.oauthAuthorizationUrl(f.context, input.workspaceId, connection.id),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await expect(
+      store.githubOAuthReturn({
+        state: nextSession.data.state,
+        code: 'expired',
+        callbackUrl,
+      }),
+    ).rejects.toMatchObject({ code: 'MCP_DENIED' });
+    await store.setMemberConnected(f.context, {
+      ...input,
+      connected: false,
+      remove: true,
+    });
+    const audit =
+      await db`select metadata from allrice_audit_events where organization_id=${f.scope.organizationId}`;
+    expect(JSON.stringify(audit)).not.toContain(clientSecret);
+    expect(
+      JSON.stringify(await store.list(f.context, f.scope.workspaceId)),
+    ).not.toContain(clientSecret);
   });
   it('keeps personal applications private from other members and deletes credentials without reconnecting on rediscovery', async () => {
     const f = await fixture();

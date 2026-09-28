@@ -1,12 +1,8 @@
+import { encryptionKey, seal, unseal } from './mcp-credentials.ts';
+import { readGithubMcpOAuthClient } from './platform-mcp-settings.ts';
+import { MCP_APPS } from '@allrice/contracts';
 import { isPlatformAdmin } from './platform-authority.ts';
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  randomUUID,
-} from 'node:crypto';
-import { z } from 'zod';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
   CreateMcpConnectionInputSchema,
@@ -68,16 +64,6 @@ type ToolRow = {
 };
 const hash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
-const envelopeSchema = z
-  .object({
-    iv: z.string().regex(/^[a-f0-9]{24}$/),
-    tag: z.string().regex(/^[a-f0-9]{32}$/),
-    ciphertext: z
-      .string()
-      .regex(/^[a-f0-9]+$/)
-      .max(131072),
-  })
-  .strict();
 function workspaceAdminScope(
   context: RequestContext,
   workspaceInput: string,
@@ -100,11 +86,6 @@ function workspaceAdminScope(
     workspaceId,
     actorId: context.actor.id,
   });
-}
-function encryptionKey(value: string | undefined) {
-  if (!value || !/^[a-f0-9]{64}$/i.test(value))
-    throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
-  return Buffer.from(value, 'hex');
 }
 async function workspaceCurrentAdmin(
   tx: Database | Tx,
@@ -132,39 +113,6 @@ function aad(scope: McpScope, bindingId: string, revision: number) {
     `${scope.organizationId}:${scope.workspaceId}:${bindingId}:${revision}`,
   );
 }
-function seal(value: string, key: Buffer, associated: Buffer, json = false) {
-  if (Buffer.byteLength(value) > 65536) throw new McpError('MCP_LIMIT');
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
-  cipher.setAAD(associated);
-  return {
-    iv: iv.toString('hex'),
-    ciphertext: Buffer.concat([
-      cipher.update(json ? value : McpBearerSchema.parse(value)),
-      cipher.final(),
-    ]).toString('hex'),
-    tag: cipher.getAuthTag().toString('hex'),
-  };
-}
-function unseal(value: unknown, key: Buffer, associated: Buffer, json = false) {
-  try {
-    const envelope = envelopeSchema.parse(value);
-    const cipher = createDecipheriv(
-      'aes-256-gcm',
-      key,
-      Buffer.from(envelope.iv, 'hex'),
-    );
-    cipher.setAAD(associated);
-    cipher.setAuthTag(Buffer.from(envelope.tag, 'hex'));
-    const plaintext = Buffer.concat([
-      cipher.update(Buffer.from(envelope.ciphertext, 'hex')),
-      cipher.final(),
-    ]).toString('utf8');
-    return json ? plaintext : McpBearerSchema.parse(plaintext);
-  } catch {
-    throw new McpError('MCP_CREDENTIAL_UNAVAILABLE');
-  }
-}
 async function workspaceAudit(
   tx: Tx,
   scope: McpScope,
@@ -187,6 +135,9 @@ export interface McpDiscoveryLease {
 export interface McpOAuthSession {
   state: string;
   redirectUrl: string;
+  /** Original authenticated tenant callback, used only by the GitHub relay. */
+  returnUrl?: string;
+  preset?: 'github';
   clientInformation?: Record<string, unknown>;
   tokens?: Record<string, unknown>;
   discovery?: Record<string, unknown>;
@@ -609,6 +560,13 @@ export function createMcpStore(
           state: randomBytes(32).toString('hex'),
           redirectUrl: redirect.href,
         };
+        if (row.endpoint === MCP_APPS.github.endpoint) {
+          const client = await readGithubMcpOAuthClient(tx, key());
+          data.preset = 'github';
+          data.returnUrl = redirect.href;
+          data.redirectUrl = client.callbackUrl;
+          data.clientInformation = client.clientInformation;
+        }
         const envelope = seal(
           JSON.stringify(data),
           key(),
@@ -623,6 +581,58 @@ export function createMcpStore(
       });
       return publicConnection(scope, input.connectionId);
     },
+    /** Public callback relay: resolves only a live opaque state and never exchanges
+     * tokens. The original tenant callback still requires its initiating member. */
+    async githubOAuthReturn(input: {
+      state: string;
+      code?: string;
+      error?: string;
+      callbackUrl: string;
+    }) {
+      if (
+        !/^[a-f0-9]{64}$/.test(input.state) ||
+        (!input.code && !input.error) ||
+        (input.code?.length ?? 0) > 4096
+      )
+        throw new McpError('MCP_DENIED');
+      const [row] = await db()<
+        {
+          binding_id: string;
+          organization_id: string;
+          workspace_id: string;
+          managed_by: string;
+          revision: number;
+          oauth_envelope: unknown;
+        }[]
+      >`select c.binding_id,c.organization_id,c.workspace_id,c.managed_by,c.revision,c.oauth_envelope from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id where c.oauth_state_hash=${hash(input.state)} and c.oauth_stage='redirect' and c.oauth_expires_at>clock_timestamp() and c.endpoint=${MCP_APPS.github.endpoint} and b.enabled`;
+      if (!row) throw new McpError('MCP_DENIED');
+      const scope = {
+        organizationId: row.organization_id,
+        workspaceId: row.workspace_id,
+        actorId: row.managed_by,
+      };
+      const data = JSON.parse(
+        unseal(
+          row.oauth_envelope,
+          key(),
+          Buffer.from(
+            `oauth:${aad(scope, row.binding_id, row.revision).toString()}`,
+          ),
+          true,
+        ),
+      ) as McpOAuthSession;
+      if (
+        data.preset !== 'github' ||
+        data.redirectUrl !== input.callbackUrl ||
+        !data.returnUrl
+      )
+        throw new McpError('MCP_DENIED');
+      const destination = new URL(data.returnUrl);
+      destination.searchParams.set('state', input.state);
+      if (input.error) destination.searchParams.set('error', 'access_denied');
+      else destination.searchParams.set('code', input.code!);
+      return destination.href;
+    },
     async oauthAuthorizationUrl(
       context: RequestContext,
       workspaceId: string,
@@ -631,7 +641,10 @@ export function createMcpStore(
       const scope = workspaceAdminScope(context, workspaceId);
       await workspaceCurrentAdmin(db(), scope, true);
       const row = await read(scope, connectionId);
+      const [live] =
+        await db()`select binding_id from allrice_mcp_binding_config where binding_id=${row.id} and oauth_expires_at>clock_timestamp()`;
       if (
+        !live ||
         !row.enabled ||
         row.disconnected ||
         row.managed_by !== scope.actorId ||
