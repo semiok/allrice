@@ -181,12 +181,12 @@ export function useSessionArchive({
       ? null
       : currentPage?.nextCursor;
   };
-  async function loadMore(employeeId: string) {
-    const cursor = cursorFor(employeeId);
+  async function loadMore(employeeId: string, fromStart = false) {
+    const cursor = fromStart ? undefined : cursorFor(employeeId);
     if (
       !workspaceId ||
       loading ||
-      !cursor ||
+      (!fromStart && !cursor) ||
       employeeRequests.current.has(employeeId)
     )
       return;
@@ -216,14 +216,14 @@ export function useSessionArchive({
           : old,
       );
     };
-    update({ nextCursor: cursor, loading: true, error: '' });
+    update({ nextCursor: cursor ?? null, loading: true, error: '' });
     try {
       const query = new URLSearchParams({
         workspaceId,
         employeeAssignmentId: employeeId,
-        cursor,
         archived: filter === 'only' ? 'only' : String(filter === 'show'),
       });
+      if (cursor) query.set('cursor', cursor);
       const result = await fetch(`/api/v1/sessions?${query}`, {
         headers,
         cache: 'no-store',
@@ -239,7 +239,7 @@ export function useSessionArchive({
       );
     } catch (cause) {
       update({
-        nextCursor: cursor,
+        nextCursor: cursor ?? null,
         loading: false,
         error: cause instanceof Error ? cause.message : '工作记录加载失败',
       });
@@ -362,6 +362,7 @@ export function useSessionArchive({
     employeeGroups: currentPage?.employeeGroups,
     employeePages: currentPage?.employees,
     hasMore: (employeeId: string) => !!cursorFor(employeeId),
+    loadPreview: (employeeId: string) => void loadMore(employeeId, true),
     loadMore: (employeeId: string) => void loadMore(employeeId),
     restore: (id: string) => act(id, false),
     renderActions,
