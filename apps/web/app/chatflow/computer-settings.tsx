@@ -8,6 +8,7 @@ import type {
   BridgeEnvironment,
 } from '@allrice/contracts';
 import styles from './sidebar-settings.module.css';
+import { BrowserLoginSettings } from './browser-login-settings';
 
 type Computer = {
   device: BridgeDevice;
@@ -215,6 +216,18 @@ export function ComputerSettings({
               </div>
             );
           })}
+          {computer.environment?.browserDefaultsVersion === 1 ? (
+            <BrowserLoginSettings
+              workspaceId={workspaceId}
+              deviceId={computer.device.id}
+              active={active}
+            />
+          ) : (
+            <p>
+              更新 Bridge
+              后，浏览器将默认保留登录，文件和运行时长使用平台统一规则。
+            </p>
+          )}
         </section>
       ))}
       <div className={styles.computerActions}>

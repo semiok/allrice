@@ -86,9 +86,7 @@ export async function startLocalBrowserProxy(input: {
     `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
   );
   const sockets = new Set<Socket>();
-  let closed = false,
-    bytes = 0,
-    tunnels = 0;
+  let closed = false;
   const server = createServer((_req, res) => {
     res.writeHead(403, { connection: 'close' });
     res.end();
@@ -98,11 +96,6 @@ export async function startLocalBrowserProxy(input: {
     socket.on('error', () => socket.destroy());
     socket.once('close', () => sockets.delete(socket));
     socket.setTimeout(30000, () => socket.destroy());
-    socket.on('data', (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > 40 * 1024 * 1024)
-        for (const tracked of sockets) tracked.destroy();
-    });
   }
   server.on('connection', track);
   server.on('clientError', (_error, socket) => socket.destroy());
@@ -138,7 +131,7 @@ export async function startLocalBrowserProxy(input: {
         );
         return;
       }
-      if (closed || bytes > 40 * 1024 * 1024 || ++tunnels > 200) throw denied();
+      if (closed) throw denied();
       const target = request.url ?? '';
       const url = new URL(`https://${target}`);
       if (

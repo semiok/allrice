@@ -134,7 +134,7 @@ export async function startLocalBrowserDriver(input: {
     if (disposition === 'completed' && context && input.binding.persistLogin) {
       try {
         await input.options.assertCurrent();
-        const state = await context.storageState();
+        const state = await context.storageState({ indexedDB: true });
         await input.options.assertCurrent();
         await input.profiles.save(input.binding, input.options.profile, state);
       } catch {
@@ -330,7 +330,7 @@ export async function startLocalBrowserDriver(input: {
         if (closing || !context) throw Error('LOCAL_BROWSER_LEASE_LOST');
         if (!input.binding.persistLogin) return;
         await input.options.assertCurrent();
-        const saved = await context.storageState();
+        const saved = await context.storageState({ indexedDB: true });
         await input.options.assertCurrent();
         await input.profiles.save(input.binding, input.options.profile, saved);
       },

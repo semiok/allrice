@@ -23,6 +23,7 @@ import {
 } from './browser-control.ts';
 import {
   listLocalBrowserGrants,
+  updateLocalBrowserLoginPreferences,
   installLocalBrowserGrant,
   revokeLocalBrowserGrant,
   pendingLocalBrowserRevocations,
@@ -103,6 +104,79 @@ suite('P22 real PostgreSQL device browser authority', () => {
     if (storageRoot?.includes('/allrice-p22-test-'))
       await rm(storageRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
+  });
+  it('upgrades automatic defaults after Bridge upgrade and rotates login preferences without restoring revoked profiles', async () => {
+    const f = await createLocalBrowserFixture(db, storageRoot, { open: false });
+    await db`delete from allrice_local_browser_grants where grant_id=${f.localGrant.grantId}`;
+    await db`delete from allrice_browser_control_grants where id=${f.localGrant.grantId}`;
+    const environment = {
+      version: 1,
+      clientVersion: '0.6.0-dev.7',
+      paused: false,
+      browser: 'ready',
+      sandbox: 'unavailable',
+      preview: 'unavailable',
+    };
+    const heartbeat = (upgraded = false) =>
+      heartbeatBridgeDevice(f.token, {
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        environment: {
+          ...environment,
+          ...(upgraded
+            ? { browserDefaultsVersion: 1, clientVersion: '0.6.0-dev.8' }
+            : {}),
+        },
+      });
+    await heartbeat();
+    expect((await listLocalBrowserGrants(f.context, db))[0]).toMatchObject({
+      persistLogin: false,
+      profile: { lifetimeMs: 300000, maximumFileBytes: 1000000 },
+    });
+    await heartbeat(true);
+    const current = (await listLocalBrowserGrants(f.context, db))[0]!;
+    expect(current).toMatchObject({
+      persistLogin: true,
+      profile: {
+        lifetimeMs: 3600000,
+        maximumFileBytes: 9000000,
+        allowUploads: true,
+        allowDownloads: true,
+        allowHumanCredentials: true,
+      },
+    });
+    const replacement = await updateLocalBrowserLoginPreferences(
+      f.context,
+      current.grantId,
+      false,
+      db,
+    );
+    const grants = await listLocalBrowserGrants(f.context, db);
+    expect(grants.find((g) => g.grantId === current.grantId)).toMatchObject({
+      enabled: false,
+      cleanupRequested: true,
+    });
+    expect(grants.find((g) => g.grantId === replacement.grantId)).toMatchObject(
+      { enabled: true, persistLogin: false },
+    );
+    await expect(
+      updateLocalBrowserLoginPreferences(f.context, current.grantId, true, db),
+    ).rejects.toThrow('local_browser_grant_denied');
+    await heartbeat(true);
+    expect(
+      (await listLocalBrowserGrants(f.context, db)).filter((g) => g.enabled),
+    ).toMatchObject([{ grantId: replacement.grantId, persistLogin: false }]);
+    const cleared = await updateLocalBrowserLoginPreferences(
+      f.context,
+      replacement.grantId,
+      false,
+      db,
+    );
+    expect(cleared.logicalProfileId).not.toBe(replacement.logicalProfileId);
+    await heartbeat();
+    await expect(f.open(randomUUID(), cleared.grantId)).rejects.toThrow(
+      'local_browser_upgrade_required',
+    );
   });
   it('paired member gets one prepared browser, can execute, pause and revoke without an administrator', async () => {
     const f = await createLocalBrowserFixture(db, storageRoot, { open: false });

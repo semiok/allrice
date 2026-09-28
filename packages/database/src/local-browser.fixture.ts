@@ -66,6 +66,8 @@ export async function createLocalBrowserFixture(
     allowUploads: true,
     allowDownloads: true,
     allowHumanCredentials: true,
+    lifetimeMs: 300000,
+    maximumFileBytes: 1000000,
   });
   const grant = await installLocalBrowserGrant(
     f.context,

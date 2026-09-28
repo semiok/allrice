@@ -72,6 +72,58 @@ async function fixture() {
   };
 }
 describe('P22 owned login state, real private files', () => {
+  it('restores public-site cookies, localStorage and IndexedDB across tasks and erases them on device revocation', async () => {
+    const { store, binding } = await fixture();
+    const publicProfile = BrowserProfileSchema.parse({
+      version: 1,
+      network: 'public_https',
+      origins: [],
+    });
+    const nativeState = {
+      ...state,
+      origins: [
+        {
+          ...state.origins[0]!,
+          indexedDB: [
+            {
+              name: 'auth',
+              version: 1,
+              stores: [
+                {
+                  name: 'tokens',
+                  autoIncrement: false,
+                  records: [{ key: 'session', value: 'synthetic-idb' }],
+                  indexes: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    await store.save(binding, publicProfile, nativeState);
+    expect(await store.load(binding, publicProfile)).toEqual(nativeState);
+    await expect(
+      store.load({ ...binding, ownerId: randomUUID() }, publicProfile),
+    ).rejects.toThrow();
+    await expect(
+      store.save(binding, publicProfile, {
+        ...state,
+        origins: [{ origin: 'http://localhost', localStorage: [] }],
+      }),
+    ).rejects.toThrow();
+    await store.revokeDevice(binding.deviceId);
+    await store.revokeDevice(binding.deviceId);
+    const saved = await readFile(
+      join(
+        store.deviceDirectory(binding.deviceId),
+        `${binding.logicalProfileId}.json`,
+      ),
+      'utf8',
+    );
+    expect(saved).not.toContain('synthetic-idb');
+    expect(saved).not.toContain('synthetic-secret');
+  });
   it('device cleanup is bounded to its private index, erases inactive login state, and is idempotent', async () => {
     const { store, binding } = await fixture();
     const other = {
