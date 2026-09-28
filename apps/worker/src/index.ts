@@ -171,15 +171,22 @@ async function refreshReadiness() {
   }
 }
 
+let codexProbeRunning = false;
 async function refreshCodexProviderStatus() {
+  if (codexProbeRunning) return;
+  codexProbeRunning = true;
   try {
     await mkdir(executionRoot, { recursive: true, mode: 0o700 });
-    const codex = await probeDshCodexProvider(executionRoot);
-    await recordCodexProviderStatus(codex);
+    for (const slot of [1, 2] as const) {
+      const codex = await probeDshCodexProvider(executionRoot, slot);
+      await recordCodexProviderStatus(codex, slot);
+    }
   } catch (error) {
     console.error('[M5] Codex provider probe failed', {
       message: error instanceof Error ? error.message : 'codex_probe_failed',
     });
+  } finally {
+    codexProbeRunning = false;
   }
 }
 

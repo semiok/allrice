@@ -33,8 +33,8 @@ export function CodexAuthorizationPanel({
     <div className={styles.authorizationFlow}>
       <p>
         {connected
-          ? '仅在更换订阅账号或需要重新登录时使用。完成前仍使用当前连接。'
-          : '连接一次 Codex 订阅，即可用于对话和图片。'}
+          ? '在官方页面登录这个位置对应的账号。授权完成后，启用状态保持不变。'
+          : '在官方页面完成订阅账号授权，之后可手动启用。'}
       </p>
       {active ? (
         <>

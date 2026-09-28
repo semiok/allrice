@@ -1,3 +1,4 @@
+import type * as SubscriptionHome from '../codex-subscription-home.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1109,4 +1110,12 @@ describe('DshHarnessAdapter', () => {
     );
     expect(after.answer).toBe('turn-2');
   });
+});
+
+vi.mock('../codex-subscription-home.js', async (original) => {
+  const actual = await original<typeof SubscriptionHome>();
+  return {
+    ...actual,
+    activeCodexSubscriptionHome: async () => actual.codexSubscriptionHome(1),
+  };
 });

@@ -1878,7 +1878,7 @@ export async function publishPlatformEmployee(
     if (compilation.runtimeProfile?.provider === 'openai-codex') {
       const statuses = await sql<{ status: string; checked_at: Date | null }[]>`
       select status, checked_at from allrice_provider_status
-      where provider = 'codex'
+      where provider = 'codex' and subscription_slot=(select slot from allrice_codex_subscriptions where enabled)
     `;
       const provider = statuses[0];
       if (
@@ -2028,7 +2028,7 @@ export async function publishPlatformEmployee(
       if (!rapidIteration) {
         const providers = await transaction<{ checked_at: Date }[]>`
       select checked_at from allrice_provider_status
-      where provider = 'codex' and status = 'connected'
+      where provider = 'codex' and subscription_slot=(select slot from allrice_codex_subscriptions where enabled) and status = 'connected'
         and checked_at >= clock_timestamp() - interval '120 seconds'
       for share
     `;

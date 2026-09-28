@@ -3,15 +3,12 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import type {
-  SaasCapabilityManifest,
-  CodexSubscriptionQuotaSnapshot,
-} from '@allrice/contracts';
-import { CodexSubscriptionQuota } from './codex-subscription-quota';
+import type { SaasCapabilityManifest } from '@allrice/contracts';
+import type { CodexAuthorization } from './codex-authorization';
 import {
-  CodexAuthorizationPanel,
-  type CodexAuthorization,
-} from './codex-authorization';
+  CodexSubscriptionsPanel,
+  type CodexSubscriptionAccount,
+} from './codex-subscriptions';
 import {
   UnknownUsageReviewCard,
   type UnknownUsageReview,
@@ -159,12 +156,11 @@ export function GovernanceConsole() {
     'enforce',
   );
   const [unknownUsage, setUnknownUsage] = useState<UnknownUsageReview[]>([]);
-  const [authorization, setAuthorization] = useState<Authorization | null>(
-    null,
-  );
+  const [subscriptions, setSubscriptions] = useState<
+    CodexSubscriptionAccount[]
+  >([]);
   const [codexStatus, setCodexStatus] = useState('unknown');
-  const [codexQuota, setCodexQuota] =
-    useState<CodexSubscriptionQuotaSnapshot | null>(null);
+
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -192,9 +188,8 @@ export function GovernanceConsole() {
       readJson<{
         provider: {
           status: string;
-          quota?: CodexSubscriptionQuotaSnapshot | null;
         };
-        authorization: Authorization | null;
+        subscriptions: CodexSubscriptionAccount[];
       }>(await fetch('/api/v1/admin/providers/codex', { cache: 'no-store' })),
     ]);
     setConnections(poolResult.modelPool.connections);
@@ -204,9 +199,8 @@ export function GovernanceConsole() {
     setUnknownUsage(governanceResult.governance.unknownUsage ?? []);
     setProviderStates(governanceResult.governance.providers);
     setProviderOperations(governanceResult.governance.operations);
-    setAuthorization(codexResult.authorization);
+    setSubscriptions(codexResult.subscriptions);
     setCodexStatus(codexResult.provider.status);
-    setCodexQuota(codexResult.provider.quota ?? null);
   }, []);
 
   useEffect(() => {
@@ -217,25 +211,72 @@ export function GovernanceConsole() {
 
   useEffect(() => {
     if (
-      !authorization ||
-      !['pending', 'running', 'awaiting_user'].includes(authorization.state)
+      !subscriptions.some(
+        (a) =>
+          a.authorization &&
+          ['pending', 'running', 'awaiting_user'].includes(
+            a.authorization.state,
+          ),
+      )
     )
       return;
-    const timer = window.setInterval(() => void load(), 1_000);
+    const timer = window.setInterval(
+      () =>
+        void load().catch((error) =>
+          setNotice(
+            error instanceof Error ? error.message : '授权状态暂不可用',
+          ),
+        ),
+      2000,
+    );
     return () => window.clearInterval(timer);
-  }, [authorization, load]);
+  }, [subscriptions, load]);
 
-  async function startCodexAuthorization() {
+  async function selectSubscription(enabledSlot: 1 | 2 | null) {
+    setBusy(true);
+    try {
+      await readJson(
+        await fetch('/api/v1/admin/providers/codex', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            enabledSlot,
+            expectedEnabledSlot:
+              subscriptions.find((a) => a.enabled)?.slot ?? null,
+          }),
+        }),
+      );
+      setNotice(
+        enabledSlot === null
+          ? '两个账号均已停用，授权仍保留。'
+          : `已启用 ${enabledSlot} 号账号，另一个账号已停用。`,
+      );
+      await load();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '切换失败');
+      await load().catch(() => {});
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startCodexAuthorization(subscriptionSlot: 1 | 2) {
     setBusy(true);
     try {
       const result = await readJson<{ authorization: Authorization }>(
         await fetch('/api/v1/admin/providers/codex/authorize', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: '{}',
+          body: JSON.stringify({ subscriptionSlot }),
         }),
       );
-      setAuthorization(result.authorization);
+      setSubscriptions((old) =>
+        old.map((a) =>
+          a.slot === subscriptionSlot
+            ? { ...a, authorization: result.authorization }
+            : a,
+        ),
+      );
       setNotice('正在准备授权码，请在下方完成授权。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '授权启动失败');
@@ -244,17 +285,22 @@ export function GovernanceConsole() {
     }
   }
 
-  async function cancelAuthorization() {
-    if (!authorization) return;
+  async function cancelAuthorization(flowId: string) {
     setBusy(true);
     try {
       const result = await readJson<{ authorization: Authorization }>(
         await fetch(
-          `/api/v1/admin/providers/codex/authorize?flowId=${encodeURIComponent(authorization.id)}`,
+          `/api/v1/admin/providers/codex/authorize?flowId=${encodeURIComponent(flowId)}`,
           { method: 'DELETE' },
         ),
       );
-      setAuthorization(result.authorization);
+      setSubscriptions((old) =>
+        old.map((a) =>
+          a.authorization?.id === flowId
+            ? { ...a, authorization: result.authorization }
+            : a,
+        ),
+      );
       setNotice('已取消本次授权流程。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '暂时无法取消授权');
@@ -444,33 +490,38 @@ export function GovernanceConsole() {
                   </dl>
                   {provider?.key === 'codex' ? (
                     <div className={styles.codexAuth}>
-                      <CodexSubscriptionQuota quota={codexQuota} />
-                      <CodexAuthorizationPanel
-                        status={codexStatus}
-                        authorization={authorization}
+                      <CodexSubscriptionsPanel
+                        accounts={subscriptions}
                         busy={busy}
-                        onStart={() => void startCodexAuthorization()}
-                        onCancel={() => void cancelAuthorization()}
+                        onSelect={(slot) => void selectSubscription(slot)}
+                        onAuthorize={(slot) =>
+                          void startCodexAuthorization(slot)
+                        }
+                        onCancel={(id) => void cancelAuthorization(id)}
                       />
                     </div>
                   ) : null}
-                  {governance ? (
+                  {governance &&
+                  (provider?.key !== 'codex' ||
+                    governance.circuitState !== 'closed') ? (
                     <footer>
-                      <button
-                        className={
-                          governance.killSwitch
-                            ? styles.dangerActive
-                            : styles.danger
-                        }
-                        disabled={busy}
-                        onClick={() =>
-                          void updateProvider(connection.id, {
-                            killSwitch: !governance.killSwitch,
-                          })
-                        }
-                      >
-                        {governance.killSwitch ? '解除紧急停用' : '紧急停用'}
-                      </button>
+                      {provider?.key !== 'codex' && (
+                        <button
+                          className={
+                            governance.killSwitch
+                              ? styles.dangerActive
+                              : styles.danger
+                          }
+                          disabled={busy}
+                          onClick={() =>
+                            void updateProvider(connection.id, {
+                              killSwitch: !governance.killSwitch,
+                            })
+                          }
+                        >
+                          {governance.killSwitch ? '解除紧急停用' : '紧急停用'}
+                        </button>
+                      )}
                       {governance.circuitState !== 'closed' ? (
                         <button
                           disabled={busy}

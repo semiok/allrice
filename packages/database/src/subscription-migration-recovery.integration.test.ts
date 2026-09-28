@@ -137,7 +137,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       (provider,auth_mode,status,detail_code,checked_at,subscription_quota)
       values('codex','chatgpt_subscription','connected',
         'synthetic-ci-fallback-sentinel',now(),'{"sentinel":"must-not-change"}')
-      on conflict(provider) do update set status=excluded.status,
+      on conflict(provider,subscription_slot) do update set status=excluded.status,
         detail_code=excluded.detail_code,checked_at=excluded.checked_at,
         subscription_quota=excluded.subscription_quota`;
     shadowBefore = await fallbackFingerprint(shadowSchema);
@@ -146,6 +146,10 @@ integration('subscription incremental migration and cold SQL readers', () => {
       throughMigration: '0096_assistant_pricing.sql',
       allowCiDatabase: true,
     });
+    // Orthogonal account-slot schema needed by today's provider readers.
+    await fixture.db.unsafe(
+      await migration('0121_codex_subscription_slots.sql'),
+    );
     // This seed represents a Run created by the 0096 binary, before company
     // profiles existed. Only omit that future optional snapshot field while
     // constructing legacy data; all subscription readers/writers remain real.
@@ -245,7 +249,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       provider,auth_mode,status,cli_version,detail_code,checked_at)
       values('codex','chatgpt_subscription','connected','old-fixture',
         'legacy-status-before-quota',now()-interval '1 minute')
-      on conflict(provider) do update set status=excluded.status,
+      on conflict(provider,subscription_slot) do update set status=excluded.status,
         cli_version=excluded.cli_version,detail_code=excluded.detail_code,
         checked_at=excluded.checked_at`;
     history = await ledgerHistory();
