@@ -25,7 +25,51 @@
   justify-self: start;
 }
 .panel {
+  margin: 32px clamp(20px, 4vw, 56px);
+  padding: 24px;
+  background: #191a1d;
+  border: 1px solid #34363b;
+  border-radius: 16px;
+  color: #f2f3f4;
+  line-height: 1.65;
   overflow-wrap: anywhere;
+}
+.panel h2 {
+  margin-top: 0;
+  font-size: 22px;
+}
+.panel h3 {
+  margin-top: 24px;
+  font-size: 17px;
+}
+.panel p,
+.panel li {
+  font-size: 14px;
+  color: #bfc3cc;
+}
+.panel a {
+  color: #87d4a5;
+}
+.panel summary {
+  cursor: pointer;
+}
+.panel button {
+  border: 1px solid #404349;
+  border-radius: 10px;
+  background: #f2f3f4;
+  color: #17181a;
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.panel button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.panel :is(input, button, a, summary):focus-visible {
+  outline: 2px solid #87d4a5;
+  outline-offset: 3px;
 }
 .panel li {
   margin-block: 10px;
