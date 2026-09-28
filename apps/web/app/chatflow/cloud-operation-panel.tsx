@@ -86,7 +86,6 @@ export function laterSuccessfulMcpCall(
   const proposal = op.proposal;
   if (
     proposal.kind !== 'mcp' ||
-    proposal.risk !== 'read_only' ||
     op.snapshot.status !== 'failed' ||
     op.snapshot.result?.effects !== 'none'
   )
@@ -95,7 +94,6 @@ export function laterSuccessfulMcpCall(
   return operations.find(
     (candidate) =>
       candidate.proposal.kind === 'mcp' &&
-      candidate.proposal.risk === 'read_only' &&
       candidate.proposal.endpoint === proposal.endpoint &&
       candidate.proposal.tool === proposal.tool &&
       candidate.snapshot.binding.execution.targetId ===
