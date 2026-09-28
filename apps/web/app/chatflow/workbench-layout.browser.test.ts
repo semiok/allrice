@@ -1246,6 +1246,143 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   );
 
   it.each([1440, 390])(
+    'expands native work process downward from the clicked header at %ipx',
+    async (width) => {
+      const f = await fixture({
+        width,
+        touch: width < 760,
+        streamingOutput: true,
+      });
+      const operations = Array.from({ length: 4 }, (_, index) => ({
+        nativeCallId: `lookup-${index}`,
+        snapshot: {
+          status: 'succeeded',
+          binding: {
+            action: 'cloud.mcp.call',
+            attempt: { operationId: id(8950 + index) },
+          },
+        },
+        enabled: true,
+        mcpAuthorization: { available: true, reason: 'available' },
+        proposal: {
+          kind: 'mcp',
+          tool: 'mcp__app__list_pull_requests',
+          arguments: {},
+          risk: 'read',
+        },
+        approval: null,
+        result: null,
+      }));
+      try {
+        f.state.messages = navigationHistory(2);
+        f.state.messages.at(-1)!.runId = run;
+        f.state.messages.at(-1)!.content.text = '核对完成。';
+        f.state.events = operations.map((operation, index) => ({
+          schemaVersion: 3,
+          eventId: id(8960 + index),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence: index + 1,
+          cursor: `${run}:${index + 1}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: null,
+          type: 'tool.completed',
+          payload: {
+            toolCallId: operation.nativeCallId,
+            name: 'cloud.mcp.call',
+          },
+        }));
+        await f.page.route('**/api/v1/runtime/cloud-operations?**', (route) =>
+          route.fulfill({
+            json: {
+              operations:
+                new URL(route.request().url()).searchParams.get('runId') === run
+                  ? operations
+                  : [],
+            },
+          }),
+        );
+        await f.page.reload();
+        if (width < 760) {
+          const hide = f.page.getByRole('button', {
+            name: '收起侧边栏',
+            exact: true,
+          });
+          if (await hide.isVisible()) await hide.click();
+        }
+        const process = f.page
+          .getByRole('region', { name: '工作过程', exact: true })
+          .last();
+        const header = process.locator('[data-disclosure-row]').first();
+        const cards = process.locator('[id^="operation-"]');
+        const scroll = f.page.locator('[data-conversation-scroll]');
+        await cards.first().waitFor({ state: 'attached' });
+        expect(await header.getAttribute('aria-expanded')).toBe('false');
+        const settle = () =>
+          f.page.evaluate(
+            () =>
+              new Promise<void>((resolve) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => resolve()),
+                ),
+              ),
+          );
+        const geometry = async () => ({
+          top: (await header.boundingBox())!.y,
+          scroll: await scroll.evaluate((node) => node.scrollTop),
+        });
+        for (const input of ['pointer', 'keyboard'] as const) {
+          await scroll.evaluate((node) => {
+            node.scrollTop = node.scrollHeight;
+            node.dispatchEvent(new Event('scroll'));
+          });
+          await settle();
+          if (input === 'keyboard')
+            await header.evaluate((node) =>
+              node.focus({ preventScroll: true }),
+            );
+          const before = await geometry();
+          if (input === 'keyboard') await header.press('Enter');
+          else if (width < 760)
+            await header.getByText('工作过程', { exact: true }).tap();
+          else await header.getByText('工作过程', { exact: true }).click();
+          await cards.first().waitFor();
+          await settle();
+          const after = await geometry();
+          expect(Math.abs(after.top - before.top)).toBeLessThan(2);
+          expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
+          expect(await cards.count()).toBe(4);
+          expect((await cards.first().boundingBox())!.y).toBeGreaterThan(
+            after.top,
+          );
+          expect(
+            (await process.locator('[data-work-reply]').boundingBox())!.y,
+          ).toBeGreaterThan((await cards.last().boundingBox())!.y);
+          const tools = process.getByRole('button', { name: '工具 · 4 项' });
+          const toolsTop = (await tools.boundingBox())!.y;
+          await tools.click();
+          await process.getByRole('list', { name: '工作步骤' }).waitFor();
+          await settle();
+          expect(
+            Math.abs((await tools.boundingBox())!.y - toolsTop),
+          ).toBeLessThan(2);
+          await tools.click();
+          await header.press('Space');
+          await settle();
+          expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
+        }
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
     'expands tool details downward without moving the clicked header at %ipx',
     async (width) => {
       const f = await fixture({ width, touch: width < 760 });

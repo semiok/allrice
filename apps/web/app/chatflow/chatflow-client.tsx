@@ -89,6 +89,10 @@ import {
   userQuestionAnswerText,
 } from './user-question-composer';
 
+// DSH's whole-row disclosures are divs with button semantics, not <button>s.
+const transcriptDisclosureSelector =
+  'button[aria-expanded], [data-disclosure-row][aria-expanded], summary';
+
 export function ChatFlowClient({
   workbenchEnabled = false,
   localCommandsEnabled = false,
@@ -1373,11 +1377,22 @@ export function ChatFlowClient({
                   const target = event.target;
                   if (
                     target instanceof Element &&
-                    target.closest('button[aria-expanded], summary')
+                    target.closest(transcriptDisclosureSelector)
                   ) {
                     // Manual disclosure changes are reading actions, not new
                     // output. Pause before React/native details resize so the
                     // bottom-follow observer cannot scroll the trigger away.
+                    pauseTranscriptFollowing();
+                  }
+                }}
+                onKeyDownCapture={(event) => {
+                  // The native DSH row toggles directly on Enter/Space without
+                  // emitting a click, so keyboard expansion needs the same pause.
+                  if (
+                    (event.key === 'Enter' || event.key === ' ') &&
+                    event.target instanceof Element &&
+                    event.target.closest(transcriptDisclosureSelector)
+                  ) {
                     pauseTranscriptFollowing();
                   }
                 }}
