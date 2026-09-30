@@ -18,6 +18,7 @@ export function employeeReasoningSettings(provider: string, model: string) {
     // Current Codex IDs plus historical employee model policies.
     if (
       [
+        'gpt-6.1-sol',
         'gpt-6-sol',
         'gpt-6-luna',
         'gpt-5.3-codex-spark',
@@ -60,7 +61,7 @@ export function switchEmployeeModelProvider(
   provider: (typeof EMPLOYEE_PROVIDER_OPTIONS)[number]['value'],
 ): ModelPolicy {
   if (policy.provider === provider) return policy;
-  const model = 'gpt-6-luna';
+  const model = 'gpt-6.1-sol';
   const settings = employeeReasoningSettings(provider, model);
   return {
     ...policy,

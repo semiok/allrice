@@ -29,6 +29,9 @@ describe('employee provider-specific configuration', () => {
       employeeReasoningSettings('openai-codex', 'gpt-5.6-luna').efforts,
     ).toEqual(['low', 'medium', 'high', 'xhigh']);
     expect(
+      employeeModelPolicyProblem({ ...policy, model: 'gpt-6.1-sol' }),
+    ).toBeNull();
+    expect(
       employeeReasoningSettings('gemini', 'gemini-3.8-flash').efforts,
     ).toEqual([]);
     const old = {
@@ -42,7 +45,7 @@ describe('employee provider-specific configuration', () => {
     expect(employeeModelPolicyProblem(old)).toContain('已从新配置入口移除');
     expect(switchEmployeeModelProvider(old, 'openai-codex')).toMatchObject({
       provider: 'openai-codex',
-      model: 'gpt-6-luna',
+      model: 'gpt-6.1-sol',
       credentialReference: 'deployment:codex-default',
       baseUrl: null,
       fallbackModels: [],

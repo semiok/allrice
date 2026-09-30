@@ -17,6 +17,50 @@ const integration =
     : describe.skip;
 integration('platform-wide model inheritance', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it('sets GPT-6.1 Sol once while retaining reasoning, images, connection and timeout', async () => {
+    const f = await createAssistantFixtureDatabase();
+    try {
+      const migration = await readFile(
+        new URL('../migrations/0122_gpt61_sol_default.sql', import.meta.url),
+        'utf8',
+      );
+      const [initial] =
+        await f.db`select configuration from allrice_platform_model_settings where singleton`;
+      assert.ok(initial);
+      const original = {
+        ...initial.configuration,
+        workModel: 'gpt-6-sol',
+        reasoningEffort: 'low',
+        imageModel: 'auto',
+        imagesEnabled: true,
+        timeoutMs: 600_000,
+      };
+      await f.db`update allrice_platform_model_settings set configuration=${f.db.json(original)},revision=10 where singleton`;
+      await f.db.unsafe(migration);
+      await f.db.unsafe(migration);
+      const [next] =
+        await f.db`select revision,configuration from allrice_platform_model_settings where singleton`;
+      expect(next).toMatchObject({
+        revision: 11,
+        configuration: { ...original, workModel: 'gpt-6.1-sol' },
+      });
+      const catalog = await f.db`
+        select m.model,m.display_name,m.context_window_tokens,m.input_modalities,m.reasoning_efforts
+        from allrice_model_catalog_entries m join allrice_model_providers p on p.id=m.provider_id
+        where m.model='gpt-6.1-sol' and p.provider_key='codex'`;
+      expect(catalog).toEqual([
+        {
+          model: 'gpt-6.1-sol',
+          display_name: 'GPT-6.1 Sol',
+          context_window_tokens: 272000,
+          input_modalities: ['text', 'image'],
+          reasoning_efforts: ['low', 'medium', 'high', 'xhigh'],
+        },
+      ]);
+    } finally {
+      await f.close();
+    }
+  }, 40_000);
   it('migrates only retired defaults to Luna/xhigh and preserves other configuration', async () => {
     const f = await createAssistantFixtureDatabase();
     try {
@@ -28,7 +72,7 @@ integration('platform-wide model inheritance', () => {
         await f.db`select revision,configuration from allrice_platform_model_settings where singleton`;
       assert.ok(initial);
       expect(initial.configuration).toMatchObject({
-        workModel: 'gpt-6-luna',
+        workModel: 'gpt-6.1-sol',
         reasoningEffort: 'xhigh',
       });
       for (const workModel of [
@@ -90,7 +134,7 @@ integration('platform-wide model inheritance', () => {
         expectedRevision: settings.revision,
         configuration: {
           ...settings.configuration,
-          workModel: 'gpt-6-sol',
+          workModel: 'gpt-6.1-sol',
           imagesEnabled: true,
         },
       };
@@ -119,7 +163,7 @@ integration('platform-wide model inheritance', () => {
         sessionId: task.sessionId,
       });
       expect(next).toMatchObject({
-        model: 'gpt-6-sol',
+        model: 'gpt-6.1-sol',
         provider: 'openai-codex',
         fallbackPolicy: 'disabled',
         resolvedFallbacks: [],
