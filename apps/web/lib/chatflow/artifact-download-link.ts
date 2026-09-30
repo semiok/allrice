@@ -6,7 +6,11 @@ export function artifactForDownloadLink<
     object: { id: string };
     version: { fileName: string };
   },
->(href: string | undefined, artifacts: readonly T[]): T | undefined {
+>(
+  href: string | undefined,
+  artifacts: readonly T[],
+  label?: string,
+): T | undefined {
   if (!href || !artifacts.length) return undefined;
   try {
     // Some model replies JSON-escape path separators, even twice. Repair
@@ -21,10 +25,23 @@ export function artifactForDownloadLink<
       url.password
     )
       return undefined;
-    const match = /^\/api\/v1\/files\/([a-f0-9-]{36})\/download$/.exec(
+    const match = /^\/api\/v1\/files\/([a-f0-9-]{36})(?:\/download)?$/.exec(
       url.pathname,
     );
-    return match ? artifacts.find((a) => a.object.id === match[1]) : undefined;
+    if (match) return artifacts.find((a) => a.object.id === match[1]);
+
+    // Repair a malformed local file ID only when the explicit link label
+    // identifies exactly one real delivery. Never guess from a UUID prefix.
+    if (
+      !label ||
+      !href.startsWith('/api/v1/files/') ||
+      !/^\/api\/v1\/files\/[^/]+(?:\/download)?$/.test(url.pathname)
+    )
+      return undefined;
+    const matches = artifacts.filter((a) =>
+      [a.version.fileName, `下载 ${a.version.fileName}`].includes(label.trim()),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
   } catch {
     return undefined;
   }
@@ -36,8 +53,9 @@ export function artifactDownloadLink(
     object: { id: string };
     version: { fileName: string };
   }[],
+  label?: string,
 ): string | undefined {
-  const artifact = artifactForDownloadLink(href, artifacts);
+  const artifact = artifactForDownloadLink(href, artifacts, label);
   return artifact
     ? `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(artifact.version.fileName)}`
     : href;
