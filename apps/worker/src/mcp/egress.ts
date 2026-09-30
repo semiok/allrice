@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import { McpEndpointSchema, McpError } from '@allrice/contracts';
+import { HandlerError } from '../errors.js';
 import { createPinnedLookup } from '../pinned-lookup.js';
 import { isPublicWebAddress } from '../web-fetch.js';
 import { mcpNetworkError } from './diagnostics.js';
@@ -61,9 +62,16 @@ export function createPinnedMcpFetch(input: {
     // presets on TUN networks. The synthetic address is never used in TLS.
     // Custom endpoints keep the existing strict system-DNS policy.
     const addresses = presetHosts.has(url.hostname)
-      ? await resolveManagedBrowserHostnamePublic(url.hostname).catch(() => {
-          throw new McpError('MCP_SOURCE_DENIED');
-        })
+      ? await resolveManagedBrowserHostnamePublic(url.hostname).catch(
+          (error: unknown) => {
+            if (
+              error instanceof HandlerError &&
+              error.code === 'BROWSER_ADDRESS_BLOCKED'
+            )
+              throw new McpError('MCP_SOURCE_DENIED');
+            throw mcpNetworkError(error);
+          },
+        )
       : await lookup(url.hostname, { all: true, verbatim: true });
     if (
       !addresses.length ||

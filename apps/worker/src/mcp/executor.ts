@@ -213,12 +213,17 @@ export async function runMcpRuntimeOperation(
       };
       result = {
         signal: returned.isError
-          ? { type: 'operation.uncertain', reason: 'receipt_missing' }
+          ? created.readOnly
+            ? {
+                type: 'operation.outcome',
+                result: { status: 'failed', effects: 'none', evidence },
+              }
+            : { type: 'operation.uncertain', reason: 'receipt_missing' }
           : {
               type: 'operation.outcome',
               result: {
                 status: 'succeeded',
-                effects: payload.tool.risk === 'read_only' ? 'none' : 'applied',
+                effects: created.readOnly ? 'none' : 'applied',
                 evidence,
               },
             },
@@ -227,18 +232,27 @@ export async function runMcpRuntimeOperation(
           output: returned.modelContent,
           outputDigest,
           isError: returned.isError,
-          code: returned.isError ? 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN' : null,
+          code: returned.isError
+            ? created.readOnly
+              ? 'MCP_REMOTE_READ_FAILED'
+              : 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN'
+            : null,
         },
       };
     } catch (error) {
-      const code = error instanceof McpError ? error.code : 'MCP_UNKNOWN';
+      const rawCode = error instanceof McpError ? error.code : 'MCP_UNKNOWN';
+      const code =
+        rawCode === 'MCP_UNKNOWN' && created.readOnly
+          ? 'MCP_UNAVAILABLE'
+          : rawCode;
       const output =
         error instanceof McpTransportError
           ? mcpDiagnosticOutput(error)
           : error instanceof McpInputValidationError
             ? error.message
             : '';
-      // Only pre-dispatch failures prove no effects. Persist safe diagnostics
+      // Pre-dispatch failures and authorized read-only calls have no write
+      // effects. A lost read still failed and must not be replayed. Persist safe diagnostics
       // for unknown replies too, without ever granting permission to replay.
       const evidence = {
         id: mcpStableId(`${operationId}:evidence`),
@@ -246,7 +260,7 @@ export async function runMcpRuntimeOperation(
         digest: runtimePolicyDigest({
           code,
           output,
-          dispatched: code === 'MCP_UNKNOWN',
+          dispatched: rawCode === 'MCP_UNKNOWN',
         }),
       };
       const current = await ledger.readOperation(scope, operationId);

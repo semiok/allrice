@@ -4,7 +4,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
+import {
+  createMcpRuntimeOperation,
+  createMcpOperationLedger,
+} from './mcp-execution.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
+import { assertAssistantAuthority } from './assistant-authority.ts';
+import { productionAssistantController } from '../../../apps/worker/src/harness/dsh/assistant-controller.js';
 import * as McpConnections from './mcp-connections.ts';
 import {
   revokeRuntimeActionApproval,
@@ -58,8 +64,10 @@ const suite =
     : describe.skip;
 const services: Awaited<ReturnType<typeof startMcpAcceptanceService>>[] = [];
 
-async function fixture() {
-  const f = await createMcpExecutionFixture(db);
+async function fixture(
+  options: Parameters<typeof createMcpExecutionFixture>[1] = {},
+) {
+  const f = await createMcpExecutionFixture(db, options);
   services.push(f.service);
   if (!f.employeeGrant) throw Error('fixture employee grant required');
   return { ...f, employeeGrant: f.employeeGrant };
@@ -1158,6 +1166,207 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     expect(f.service.state.calls).toBe(0);
     expect((await f.execute(c)).output).toBe(result.output);
   });
+  it.each(['network', 'remote_error'] as const)(
+    'settles a failed read (%s) without replay or blocking root completion',
+    async (failure) => {
+      const f = await fixture();
+      const c = await f.create('read-failure', {
+        connectionId: f.connection.id,
+        tool: 'records.list',
+        arguments: {},
+      });
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      const assistants = createAssistantRuntime({
+        database: db,
+        authorize: async () => {},
+      });
+      const task = c.snapshot.binding.task;
+      const worker = {
+        workerId: f.worker,
+        jobId: f.job,
+        leaseToken: c.jobLeaseToken,
+        generation: c.snapshot.binding.attempt.generation,
+      };
+      await assistants.configureRoot({
+        task,
+        worker,
+        nativeSessionId: `dsh-${f.session}`,
+        allowedTools: ['cloud.mcp.call'],
+        configuration: {
+          version: 1,
+          mode: 'daily',
+          allowAssistants: true,
+          maxDepth: 1,
+          maxChildren: 4,
+          maxConcurrent: 2,
+        },
+      });
+      await f.decide(c);
+      const invoke = vi.spyOn(f.transport, 'invoke');
+      if (failure === 'network')
+        invoke.mockRejectedValue(
+          new McpTransportError('MCP_UNKNOWN', {
+            phase: 'tools_call',
+            reason: 'network',
+            networkCode: 'ECONNRESET',
+            requestDispatched: true,
+            connectionAttempts: 1,
+          }),
+        );
+      else
+        invoke.mockResolvedValue({
+          modelContent: 'read failed',
+          summary: 'failed read',
+          rawOutput: { isError: true },
+          isError: true,
+        });
+      const result = await f.execute(c);
+      expect(result.status).toBe('failed');
+      expect((await f.execute(c)).status).toBe('failed');
+      expect(invoke).toHaveBeenCalledOnce();
+      expect(
+        (
+          await c.ledger.readOperation(
+            task.scope,
+            c.snapshot.binding.attempt.operationId,
+          )
+        ).result,
+      ).toMatchObject({ status: 'failed', effects: 'none' });
+      expect(
+        await assistants.finalizeRoot({
+          scope: task.scope,
+          rootRunId: f.run,
+          worker,
+        }),
+      ).toMatchObject({ status: 'completed' });
+    },
+  );
+  it.each([false, true])(
+    'the production child bridge reads MCP (official fallback=%s), rejects writes and stops only the child',
+    async (githubRead) => {
+      const f = await fixture({ assistants: true, githubRead });
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      const configuration = {
+        version: 1 as const,
+        mode: 'daily' as const,
+        allowAssistants: true,
+        maxDepth: 1,
+        maxChildren: 4,
+        maxConcurrent: 2,
+      };
+      await db`update allrice_runs set input=${db.json({ assistantConfiguration: configuration })} where id=${f.run}`;
+      const [job] = await db<
+        { lease_token: string }[]
+      >`select lease_token::text from allrice_jobs where id=${f.job}`;
+      const worker = {
+        workerId: f.worker,
+        jobId: f.job,
+        leaseToken: job!.lease_token,
+        generation: 1,
+      };
+      const controller = productionAssistantController({
+        configuration,
+        context: f.execution,
+        worker,
+        runLimits: {},
+        tools: ['assistant.delegate', 'assistant.report', 'cloud.mcp.call'].map(
+          (name) => ({ name }),
+        ),
+        authorize: assertAssistantAuthority,
+        database: db,
+      })!;
+      const bridge = await controller.bind(`dsh-${f.session}`, 1);
+      const delegated = (await bridge.handle('delegate', {
+        nativeSessionId: `dsh-${f.session}`,
+        callId: 'delegate-mcp',
+        arguments: {
+          label: 'Read helper',
+          text: 'Read records, report the actual result',
+          tools: ['cloud.mcp.call', 'assistant.report'],
+        },
+      })) as { instance: { runId: string; nativeSessionId: string } };
+      const child = delegated.instance;
+      const execute = McpExecutor.runMcpRuntimeOperation;
+      const spy = vi
+        .spyOn(McpExecutor, 'runMcpRuntimeOperation')
+        .mockImplementation((created, options) =>
+          execute(created, {
+            ...options,
+            store: f.store,
+            transport: f.transport,
+          }),
+        );
+      try {
+        const readArgs = {
+          connectionId: f.connection.id,
+          tool: 'records.list',
+          arguments: {},
+        };
+        const result = (await bridge.handle('tool', {
+          nativeSessionId: child.nativeSessionId,
+          callId: 'child-read',
+          name: 'cloud.mcp.call',
+          arguments: readArgs,
+        })) as { modelContent: string };
+        expect(JSON.parse(result.modelContent).status).toBe('succeeded');
+        expect(f.service.state.reads).toBe(1);
+        const [op] =
+          await db`select initial_snapshot from allrice_runtime_operations where root_run_id=${f.run}`;
+        expect(op!.initial_snapshot.agentInstanceId).toBe(child.runId);
+        expect(op!.initial_snapshot.binding.task.rootRunId).toBe(f.run);
+        await expect(
+          bridge.handle('tool', {
+            nativeSessionId: child.nativeSessionId,
+            callId: 'child-write',
+            name: 'cloud.mcp.call',
+            arguments: f.args,
+          }),
+        ).rejects.toMatchObject({ code: 'ASSISTANT_MCP_DENIED' });
+        expect(f.service.state.calls).toBe(0);
+        const pending = await createMcpRuntimeOperation(
+          {
+            context: f.execution,
+            callId: 'pending-child-read',
+            arguments: readArgs,
+            assistant: { runId: child.runId, worker },
+          },
+          db,
+        );
+        const runtime = createAssistantRuntime({
+          database: db,
+          authorize: assertAssistantAuthority,
+        });
+        await runtime.cancelChild(f.context, {
+          runId: f.run,
+          childRunId: child.runId,
+          requestId: randomUUID(),
+        });
+        expect(
+          (
+            await pending.ledger.readOperation(
+              pending.snapshot.binding.task.scope,
+              pending.snapshot.binding.attempt.operationId,
+            )
+          ).status,
+        ).toBe('canceled');
+        const [root] =
+          await db`select cancel_request_id from allrice_runtime_roots where root_run_id=${f.run}`;
+        expect(root!.cancel_request_id).toBeNull();
+        const fresh = createMcpOperationLedger(pending.principal, db);
+        await expect(
+          fresh.dispatch({
+            scope: pending.snapshot.binding.task.scope,
+            operationId: pending.snapshot.binding.attempt.operationId,
+            leaseOwner: f.worker,
+            leaseMs: 15000,
+          }),
+        ).rejects.toThrow();
+        expect(f.service.state.reads).toBe(1);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
   it('loss of the reply after the write is unknown and re-entry never repeats it', async () => {
     const f = await fixture(),
       c = await f.create();

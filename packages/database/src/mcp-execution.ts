@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
 import { z } from 'zod';
 import {
+  createAssistantOperationAuthority,
+  type AssistantOperationOrigin,
+} from './assistant-operation-authority.ts';
+import {
   FrozenMcpToolSchema,
+  mcpCallIsReadOnly,
   McpCallInputSchema,
   McpExecutionPayloadSchema,
   RuntimeActionBindingSchema,
@@ -45,8 +50,25 @@ const snapshotSchema = z.object({
 export function createMcpOperationLedger(
   context: RuntimePolicyPrincipal,
   database: Database = getDatabase(),
+  initial?: {
+    binding: RuntimeActionBinding;
+    assistant?: AssistantOperationOrigin;
+  },
 ) {
+  if (!context.workspaceId) throw new RuntimePolicyError('mcp_binding_denied');
+  const authority = createAssistantOperationAuthority(
+    {
+      id: null,
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId,
+      ownerId: context.actor.id,
+    },
+    initial,
+    'cloud.mcp.call',
+  );
   const policyOptions = {
+    lockCurrentBinding: authority.lockCurrentBinding,
+    assertFinalBinding: authority.assertCurrentBinding,
     context,
     resolveCurrentBinding: async ({
       transaction,
@@ -54,8 +76,13 @@ export function createMcpOperationLedger(
     }: {
       transaction: Parameters<typeof checkMcpBindingAuthority>[0];
       binding: RuntimeActionBinding;
-    }) =>
-      (await checkMcpBindingAuthority(transaction, context, binding)).binding,
+    }) => {
+      await authority.assertCurrentBinding({ transaction, binding });
+      const origin = await authority.resolve({ transaction, binding });
+      return (
+        await checkMcpBindingAuthority(transaction, context, binding, !!origin)
+      ).binding;
+    },
   };
   return Object.assign(
     createRuntimeOperationLedger({
@@ -74,7 +101,12 @@ export function createMcpOperationLedger(
 /** The model chooses only an entry from this Run's already-frozen service tool
  * list. Job/Worker, target, credential revision and grant are server facts. */
 export async function createMcpRuntimeOperation(
-  input: { context: ExecutionContext; arguments: unknown; callId: string },
+  input: {
+    context: ExecutionContext;
+    arguments: unknown;
+    callId: string;
+    assistant?: AssistantOperationOrigin;
+  },
   database: Database = getDatabase(),
 ) {
   if (!mcpExecutionEnabled())
@@ -93,6 +125,7 @@ export async function createMcpRuntimeOperation(
     throw new RuntimePolicyError('invalid_tool_call');
   const [run] = await database<
     {
+      project_id: string | null;
       execution_spec: unknown;
       execution_snapshot: unknown;
       policy_snapshot_id: string;
@@ -105,7 +138,7 @@ export async function createMcpRuntimeOperation(
       lease_token: string;
     }[]
   >`
-    select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload as policy,e.session_id,e.employee_version_id,v.employee_id,c.thread_generation,j.timeout_at,j.lease_token::text
+    select r.project_id,r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload as policy,e.session_id,e.employee_version_id,v.employee_id,c.thread_generation,j.timeout_at,j.lease_token::text
     from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
     join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
     join allrice_employee_versions v on v.id=e.employee_version_id
@@ -125,7 +158,10 @@ export async function createMcpRuntimeOperation(
   let matches = frozen.mcpTools.filter(
     (t) => t.connectionId === args.connectionId && t.name === args.tool,
   );
-  if (frozen.capabilitySnapshot.bindings.toolNames.includes('cloud.mcp.call')) {
+  if (
+    !input.assistant &&
+    frozen.capabilitySnapshot.bindings.toolNames.includes('cloud.mcp.call')
+  ) {
     const [managed] =
       await database`select binding_id from allrice_mcp_binding_config where binding_id=${args.connectionId}
       and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and managed_by=${owner}`;
@@ -150,6 +186,13 @@ export async function createMcpRuntimeOperation(
     scope,
     tool,
   );
+  const readOnly = mcpCallIsReadOnly({
+    endpoint,
+    tool,
+    arguments: args.arguments,
+  });
+  if (input.assistant && !readOnly)
+    throw new RuntimePolicyError('assistant_mcp_read_only_required');
   await assertEmployeeMcpAuthorization(
     database,
     scope,
@@ -161,7 +204,7 @@ export async function createMcpRuntimeOperation(
     tool,
     arguments: args.arguments,
   });
-  const key = `mcp-call:${ctx.runId}:${input.callId}`,
+  const key = `mcp-call:${ctx.runId}:${input.assistant ? `assistant:${input.assistant.runId}:` : ''}${input.callId}`,
     operationId = mcpStableId(key),
     targetId = mcpExecutionTargetId(tool.connectionId);
   // Projection of an explicitly installed connector, not a fresh grant. The
@@ -173,7 +216,7 @@ export async function createMcpRuntimeOperation(
       scope: {
         organizationId: ctx.organizationId,
         workspaceId: ctx.workspaceId,
-        projectId: null,
+        projectId: input.assistant ? run.project_id : null,
       },
       chatSessionId: run.session_id,
       runId: ctx.runId,
@@ -234,7 +277,16 @@ export async function createMcpRuntimeOperation(
     workspaceId: ctx.workspaceId,
     requestId: randomUUID(),
   };
-  const ledger = createMcpOperationLedger(principal, database);
+  const ledger = createMcpOperationLedger(principal, database, {
+    binding,
+    assistant: input.assistant,
+  });
+  if (input.assistant) {
+    await database.begin(async (transaction) => {
+      await ledger.policyOptions.lockCurrentBinding({ transaction, binding });
+      await ledger.policyOptions.assertFinalBinding({ transaction, binding });
+    });
+  }
   const budgets = await ensureRuntimeOperationRoot(
     ledger,
     binding.task,
@@ -246,7 +298,7 @@ export async function createMcpRuntimeOperation(
       contractVersion: 1,
       binding,
       stepId: null,
-      agentInstanceId: null,
+      agentInstanceId: input.assistant?.runId ?? null,
       processId: null,
       cancelRequestId: null,
       idempotencyKey: mcpStableId(`${key}:delivery`),
@@ -270,6 +322,7 @@ export async function createMcpRuntimeOperation(
     database,
     binding.attempt.operationId,
     input.callId,
+    input.assistant?.runId,
   );
   if (snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
@@ -281,6 +334,7 @@ export async function createMcpRuntimeOperation(
   return {
     snapshot,
     payload,
+    readOnly,
     ledger,
     principal,
     scope,

@@ -1,0 +1,11 @@
+# Assistant MCP reads
+
+Run `7cca5500` attempted to delegate GitHub PR audits using `cloud.mcp.call` and `assistant.report`. The child tool allowlist rejected MCP before creating either child; the generic broker error hid that reason. Two lost MCP read replies then prevented the root task from finalizing.
+
+Children now support already-frozen MCP reads. Every creation, dispatch and heartbeat checks the current member, employee assignment, connection/schema revisions, worker lease and complete assistant ancestry. Connection management and writes remain root actions. Each child call has its own idempotency identity and immutable `agentInstanceId`; stopping that child cancels its operations without stopping siblings or the parent. A child operation canceled before any lease was issued records non-execution and releases its unused reservation.
+
+Legacy managed GitHub grants marked all tools as `write`. The exact official endpoint and a finite list of documented read tool names/methods provide a server-side read classification without changing connection grants or credentials. Custom endpoints and unrecognized operations keep the frozen risk classification. See [GitHub's official tool reference](https://github.com/github/github-mcp-server#pull-requests).
+
+A returned remote read error or lost read reply records a failed read with no write effects, retains safe diagnostics, settles its usage and does not prevent the employee from finishing an honest partial analysis. Writes with lost replies remain unknown. Neither path automatically replays a dispatched tool. Historical unknown operations and the original failed Run remain unchanged. Official preset DNS outages report unavailable; private addresses and redirects remain denied.
+
+Validation covers production child bridge admission against isolated PostgreSQL and authenticated synthetic MCP HTTP, legacy GitHub read classification, write refusal, durable child attribution/cancellation, failed read finalization, and no replay of writes. Existing native DSH delegation and Bridge authority suites cover the shared runtime path. Dev acceptance must additionally use a real delegated GitHub read and inspect the resulting receipts before delivery.

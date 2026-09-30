@@ -689,7 +689,7 @@ export function createGovernedAssistantNativeRuntime(
         items: { type: 'string' },
         required: true,
         description:
-          'Explicit subset of your allowed canonical tools. Must include assistant.report for result delivery. Use ["assistant.report"] for a task requiring no external tools. Do not grant assistant.delegate unless further delegation is needed.',
+          'Explicit subset of your allowed canonical tools supported for children: workspace.skill.read, workspace.document.read, workspace.memory.search, workspace.session.search, web.search, cloud.mcp.call (already authorized read-only calls only; no connection management or writes), local.process.execute and assistant coordination tools. Must include assistant.report for result delivery. Use ["assistant.report"] for a task requiring no external tools. Do not grant assistant.delegate unless further delegation is needed.',
       },
     },
     message: {

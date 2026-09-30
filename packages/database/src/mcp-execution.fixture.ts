@@ -11,7 +11,10 @@ import {
 } from '@allrice/contracts';
 import { createMcpStore } from './mcp-connections.ts';
 import { createEmployeeMcpBindingStore } from './mcp-employee-bindings.ts';
-import { employeeManifest } from './employees/employee-config.ts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+} from './employees/employee-config.ts';
 import { prepareEmployeeRunBinding } from './employees/employeehub.ts';
 import { createMcpRuntimeOperation } from './mcp-execution.ts';
 import {
@@ -34,6 +37,8 @@ export async function createMcpExecutionFixture(
   db: ReturnType<typeof postgres>,
   options: {
     bind?: boolean;
+    assistants?: boolean;
+    githubRead?: boolean;
     deniedCapabilities?: ('secret:use' | 'network:outbound')[];
     authorize?: (scope: {
       user: string;
@@ -93,7 +98,9 @@ export async function createMcpExecutionFixture(
     await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'test','P16 synthetic')`;
     await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${org},${workspace},${user},'admin')`;
   });
-  const service = await startMcpAcceptanceService();
+  const service = await startMcpAcceptanceService({
+    githubRead: options.githubRead,
+  });
   try {
     await authorizeFixturePlatformAdministrator(db, user);
     const store = createMcpStore({
@@ -133,7 +140,13 @@ export async function createMcpExecutionFixture(
       key: 'p16',
       name: 'P16',
       description: 'Synthetic MCP employee',
-      toolNames: ['cloud.mcp.call', 'web.fetch'],
+      toolNames: [
+        'cloud.mcp.call',
+        'web.fetch',
+        ...(options.assistants
+          ? ['assistant.delegate', 'assistant.report']
+          : []),
+      ],
       securityPolicy: {
         dataScopes: ['workspace'],
         connectorIdentityModes: ['service'],
@@ -145,7 +158,7 @@ export async function createMcpExecutionFixture(
       await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policy},${org},${user},1,${tx.json(policyPayload)},clock_timestamp()+interval '1 hour')`;
       await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},'{}','{}')`;
       await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p16','P16')`;
-      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot) values(${version},${org},${workspace},${employee},1,'P16',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${digest(manifest)},${tx.json(manifest)},${tx.json(manifest.provider)})`;
+      await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot) values(${version},${org},${workspace},${employee},1,'P16',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${employeeManifestChecksum(manifest)},${tx.json(manifest)},${tx.json(manifest.provider)})`;
       await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignment},${org},${workspace},${employee},${version},${user})`;
       await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id) values(${session},${org},${workspace},${user},'P16 synthetic',${assignment},${version})`;
       await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content) values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),(${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
@@ -226,7 +239,11 @@ export async function createMcpExecutionFixture(
     await updateWorkAutomation(
       context,
       workspace,
-      { expectedRevision: 0, capability: 'cloud', enabled: false },
+      {
+        expectedRevision: 0,
+        capability: 'cloud',
+        enabled: options.assistants ?? false,
+      },
       db,
     );
     await updateWorkAutomation(
@@ -241,7 +258,17 @@ export async function createMcpExecutionFixture(
         version: 1,
         enabled: true,
         mode: 'execute',
-        rules: [{ action: 'cloud.mcp.call', effect: 'allow' }],
+        rules: [
+          { action: 'cloud.mcp.call', effect: 'allow' },
+          ...(options.assistants
+            ? [
+                {
+                  action: 'assistant.delegate' as const,
+                  effect: 'allow' as const,
+                },
+              ]
+            : []),
+        ],
       },
       null,
       db,

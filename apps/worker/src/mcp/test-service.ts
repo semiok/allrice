@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 
 export async function startMcpAcceptanceService(
-  options: { anonymous?: boolean; oauth?: boolean } = {},
+  options: { anonymous?: boolean; oauth?: boolean; githubRead?: boolean } = {},
 ) {
   const state = {
     token: 'p16-synthetic-secret-token',
@@ -161,6 +161,27 @@ export async function startMcpAcceptanceService(
         };
       },
     );
+    if (options.githubRead)
+      mcp.registerTool(
+        'mcp__app__pull_request_read',
+        {
+          description: 'Read a synthetic pull request',
+          inputSchema: {
+            method: z.enum(['get', 'get_files']),
+            owner: z.string(),
+            repo: z.string(),
+            pullNumber: z.number(),
+          },
+        },
+        async () => {
+          state.reads++;
+          return {
+            content: [
+              { type: 'text', text: JSON.stringify({ title: 'Synthetic PR' }) },
+            ],
+          };
+        },
+      );
     mcp.registerTool(
       'records.append',
       {
@@ -223,6 +244,7 @@ export async function startMcpAcceptanceService(
           : input.url;
     if (
       url !== 'https://mcp.example.test/mcp' &&
+      !(options.githubRead && url === 'https://api.githubcopilot.com/mcp/') &&
       !(
         state.oauthEnabled && new URL(url).origin === 'https://mcp.example.test'
       )
@@ -238,7 +260,9 @@ export async function startMcpAcceptanceService(
     state,
     target,
     fetchOverride,
-    endpoint: 'https://mcp.example.test/mcp',
+    endpoint: options.githubRead
+      ? 'https://api.githubcopilot.com/mcp/'
+      : 'https://mcp.example.test/mcp',
     async close() {
       for (const release of state.pending) release();
       for (const transport of transports) await transport.close();
