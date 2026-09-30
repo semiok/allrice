@@ -1192,9 +1192,10 @@ div.composerAttachmentMenu,
   align-items: center;
   gap: 7px;
   margin-bottom: 6px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 22px;
 }
 
 .assistantIdentity i {
@@ -1220,7 +1221,7 @@ div.composerAttachmentMenu,
   background: transparent;
   color: var(--dsw-alias-label-caption);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
 }
 
@@ -1794,7 +1795,7 @@ div.composerAttachmentMenu,
   overflow-wrap: anywhere;
 }
 
-/* Allrice public-event adapter; native DSH disclosure chrome stays unchanged. */
+/* Allrice public-event adapter over native DSH disclosure chrome. */
 .workProcess {
   margin: 4px 0 8px;
   min-width: 0;
@@ -1803,6 +1804,23 @@ div.composerAttachmentMenu,
 .workProcess .processHeader {
   height: 24px;
   min-height: 24px;
+  align-items: baseline;
+  line-height: 24px;
+}
+.processHeader > :first-child,
+.processSeparator {
+  align-self: center;
+}
+.workProcess .processTitle {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 24px;
+}
+.workProcess .processSummary {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 24px;
 }
 .workProcess [data-disclosure-row]:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
@@ -1814,8 +1832,8 @@ div.composerAttachmentMenu,
   overflow-y: auto;
   padding: 8px 0 0 22px;
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 22px;
   overflow-wrap: anywhere;
 }
 .processDetails p {
@@ -1848,6 +1866,7 @@ div.composerAttachmentMenu,
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   font-weight: 400;
+  line-height: 22px;
 }
 .processStepDescription {
   color: var(--dsw-alias-label-tertiary);
@@ -1860,11 +1879,11 @@ div.composerAttachmentMenu,
   display: block;
   padding-left: 22px;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 22px;
 }
 .processSteps [data-failed] .processStepStatus {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-state-danger-label, #c24747);
 }
 .processPulse {
   display: inline-flex;
