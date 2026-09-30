@@ -5,8 +5,8 @@ import { LIVE_RUN_CLOCK_INTERVAL_MS } from './dsh-upstream/feedback/message-chro
 export function formatRunDuration(ms: number) {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
   return seconds < 60
-    ? `${seconds} 秒`
-    : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+    ? `${seconds}秒`
+    : `${Math.floor(seconds / 60)}分 ${seconds % 60}秒`;
 }
 
 /** DSH's one-second display cadence, anchored to Allrice's server clock.
