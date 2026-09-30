@@ -5,6 +5,19 @@ import {
   ReviewSubscriptionUsageBudgetInputSchema,
 } from './governance.ts';
 describe('unknown usage recovery presentation and input', () => {
+  it.each([
+    ['DSH_TRANSPORT', '模型连接中断'],
+    ['DSH_TIMEOUT', '等待模型响应超时'],
+    ['DSH_PI_AI_ERROR', '模型响应失败'],
+    ['DSH_RECOVERY_REQUIRED', '原执行记录尚不能安全恢复'],
+  ])(
+    'explains %s with preserved records and no whole-task replay',
+    (code, copy) => {
+      expect(modelGovernanceFailureText(code)).toContain(copy);
+      expect(modelGovernanceFailureText(code)).toContain('已保留');
+    },
+  );
+
   it('distinguishes unknown use, internal quota and actual provider problems', () => {
     expect(modelGovernanceFailureText('MODEL_TOKEN_USAGE_UNKNOWN')).toContain(
       '反复重试不会解除',

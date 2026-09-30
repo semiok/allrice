@@ -346,7 +346,10 @@ integration(
             undefined,
             (id) => s.client.call('p25/inspect', { nativeSessionId: id }),
           ),
-        ).rejects.toThrow('assistant_recovery_required_no_replay');
+        ).rejects.toMatchObject({
+          code: 'DSH_RECOVERY_REQUIRED',
+          retryable: false,
+        });
         expect(s.native.requests).toHaveLength(requests);
         const after = await s.bound.tree();
         expect(after.budgets).toEqual(before.budgets);
@@ -525,7 +528,10 @@ integration(
             undefined,
             (id) => cold.call('p25/inspect', { nativeSessionId: id }),
           ),
-        ).rejects.toThrow('assistant_recovery_required_no_replay');
+        ).rejects.toMatchObject({
+          code: 'DSH_RECOVERY_REQUIRED',
+          retryable: false,
+        });
         const tree = await s.bound.tree();
         expect(
           tree.messages.every(

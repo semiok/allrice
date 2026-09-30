@@ -2,10 +2,31 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 
+/** Fixed native failure copy; caller may retain a complete reply alongside it. */
+export function nativeExecutionFailureText(
+  code: string | null | undefined,
+): string | null {
+  switch (code) {
+    case 'DSH_TRANSPORT':
+      return '模型连接中断，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。';
+    case 'DSH_TIMEOUT':
+      return '等待模型响应超时，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。';
+    case 'DSH_PI_AI_ERROR':
+    case 'DSH_TURN_FAILED':
+      return '模型响应失败，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。';
+    case 'DSH_RECOVERY_REQUIRED':
+      return '原执行记录尚不能安全恢复，任务没有自动重跑。已有内容和工具结果已保留，请展开“工作过程”核对。';
+    default:
+      return null;
+  }
+}
+
 /** Safe public copy; never return raw provider errors or claim unknown == exhausted. */
 export function modelGovernanceFailureText(
   code: string | null | undefined,
 ): string | null {
+  const nativeFailure = nativeExecutionFailureText(code);
+  if (nativeFailure) return nativeFailure;
   switch (code) {
     case 'DSH_EXECUTION_OUTCOME_UNKNOWN':
       return '执行进程已中断，结果不明的操作没有自动重跑。已产生的内容与执行记录保留，请先核对操作结果。';

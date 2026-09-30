@@ -11,6 +11,7 @@ Coordinate approved public research capabilities to answer questions that need m
 
 - Identify what must be compared or verified, including any requested time window. Use sources already supplied or retrieved in the current task first.
 - Read supplied URLs directly: `wechat_article_read` for WeChat articles, `web_fetch` for ordinary public pages. Search with `wechat_article_search` or `web_search` only for missing sources or evidence. Do not load every research Skill or restart discovery merely because this Skill is selected.
+- A blocked address, denied access or authentication error does not call for browser research or repeated reads. Report the unavailable source; search for accessible evidence only when it can still satisfy the request, explicitly distinguishing substitutes and search results from the unread source.
 - Use multiple channels only when they contribute relevant evidence. Comparing several web sources does not require a WeChat search, and a WeChat comparison does not require a general web search by default.
 - Compare publication date, event date, primary evidence, and source independence. Reposts of the same original claim are not independent corroboration. Explain material conflicts and unresolved gaps.
 - Stop when the requested comparison or verification is supported. Produce a concise synthesis with Markdown links next to the claims they support; do not create a file unless requested.
