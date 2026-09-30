@@ -4,89 +4,57 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
 
-import { DshDialog } from './dsh-upstream/Dialog';
+import { ImageGallery } from './dsh-upstream/images/MessageImage';
+import type { MessageImageSource } from './message-image-cache';
 import type { Attachment, PendingAttachment } from './chatflow-types';
-import { readJson } from './chatflow-utils';
 import styles from './dsh-saas.module.css';
 
-function isImageAttachment(attachment: Attachment) {
-  return attachment.mediaType.startsWith('image/');
-}
+const imageLabels = {
+  image: '图片',
+  open: '查看原图',
+  openNamed: (name: string) => `查看 ${name}`,
+  loading: '正在加载图片…',
+  loadFailed: '图片加载失败，点击重试',
+  lightbox: { dialog: '图片预览', close: '关闭' },
+};
 
 export function MessageImageGallery({
   attachments,
-  tenantHeaders,
+  source,
 }: {
   attachments: Attachment[];
-  tenantHeaders: Record<string, string>;
+  source: MessageImageSource;
 }) {
-  const images = attachments.filter(isImageAttachment);
-  const [urls, setUrls] = useState<Record<string, string>>({});
-  const [preview, setPreview] = useState<Attachment | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void Promise.all(
-      images.map(async (image) => {
-        const signed = await readJson<{ url: string }>(
-          await fetch(`/api/v1/files/${image.id}/sign`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', ...tenantHeaders },
-            body: JSON.stringify({ lifetimeSeconds: 900 }),
-          }),
-        );
-        return [image.id, signed.url] as const;
-      }),
-    )
-      .then((entries) => {
-        if (active) setUrls(Object.fromEntries(entries));
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [attachments, tenantHeaders]);
-
-  if (!images.length) return null;
+  const images = useMemo(
+    () =>
+      attachments
+        .filter((a) => a.mediaType.startsWith('image/'))
+        .map((attachment) =>
+          attachment.previewUrl
+            ? {
+                preview: {
+                  url: attachment.previewUrl,
+                  name: attachment.fileName,
+                  width: attachment.width,
+                  height: attachment.height,
+                },
+              }
+            : { attachment: source.reference(attachment) },
+        ),
+    [attachments, source],
+  );
   return (
-    <>
-      <div
-        className={styles.messageImages}
-        data-variant={images.length === 1 ? 'single' : 'tile'}
-      >
-        {images.map((image) =>
-          urls[image.id] ? (
-            <button
-              key={image.id}
-              onClick={() => setPreview(image)}
-              title={`查看 ${image.fileName}`}
-              type="button"
-            >
-              <img alt={image.fileName} src={urls[image.id]} />
-            </button>
-          ) : (
-            <span className={styles.imagePlaceholder} key={image.id}>
-              正在加载图片…
-            </span>
-          ),
-        )}
-      </div>
-      {preview && urls[preview.id] ? (
-        <DshDialog
-          ariaLabel={`预览 ${preview.fileName}`}
-          bodyClassName={styles.attachmentPreviewBody}
-          className={styles.attachmentPreviewDialog}
-          onClose={() => setPreview(null)}
-          title={preview.fileName}
-        >
-          <img alt={preview.fileName} src={urls[preview.id]} />
-        </DshDialog>
-      ) : null}
-    </>
+    <ImageGallery
+      images={images}
+      load={source.load}
+      align="end"
+      labels={imageLabels}
+    />
   );
 }
 

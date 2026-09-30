@@ -42,7 +42,7 @@ describe('employee provider-specific configuration', () => {
     expect(employeeModelPolicyProblem(old)).toContain('已从新配置入口移除');
     expect(switchEmployeeModelProvider(old, 'openai-codex')).toMatchObject({
       provider: 'openai-codex',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       credentialReference: 'deployment:codex-default',
       baseUrl: null,
       fallbackModels: [],

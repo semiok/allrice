@@ -17,10 +17,23 @@ export async function GET(
     const context = { ...login, workspaceId };
     const { id } = await route.params;
     const file = await getStoredFile(context, UuidSchema.parse(id));
-    const preview = await readStaticArtifactPreview({
-      object: file.object,
-      kind: 'file',
-    });
+    const preview = await readStaticArtifactPreview(
+      {
+        object: file.object,
+        kind: 'file',
+        version: {
+          fileName: (new URL(request.url).searchParams.get('name') ?? '').slice(
+            0,
+            500,
+          ),
+        },
+      },
+      {
+        offset: Number(new URL(request.url).searchParams.get('offset') ?? 1),
+        source: new URL(request.url).searchParams.get('source') === '1',
+        signal: request.signal,
+      },
+    );
     await getStoredFile(context, id);
     return Response.json(preview, {
       headers: {

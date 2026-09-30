@@ -170,6 +170,9 @@ export function isRuntimeRelativePath(value: unknown): value is string {
   );
 }
 
+/** Shared raw-byte bound for server reads and browser base64 admission. */
+export const runtimeRasterPreviewMaxBytes = 8_000_000;
+
 /** Presentation requirements; a renderer must enforce them before displaying bytes. */
 export function runtimeStaticPreviewPolicy(mimeType: string) {
   const raster = ['image/png', 'image/jpeg', 'image/webp'].includes(mimeType);

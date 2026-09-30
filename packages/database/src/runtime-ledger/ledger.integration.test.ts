@@ -249,6 +249,45 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     ).toBe(10);
   });
 
+  it('locks the root before the run when reusing it during another operation', async () => {
+    const f = await fixture();
+    let ready!: (pid: number) => void;
+    let release!: () => void;
+    const locked = new Promise<number>((resolve) => {
+      ready = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const operation = db.begin(async (tx) => {
+      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${f.ids.runId} for update`;
+      const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      ready(row!.pid);
+      await resume;
+      // Operation admission / task-clock refresh already use this lock order.
+      await tx`select id from allrice_runs where id=${f.ids.runId} for update`;
+    });
+    const pid = await locked;
+    const registration = ledger().createRoot(f.root);
+    const done = Promise.all([operation, registration]);
+    void done.catch(() => undefined);
+    try {
+      await expect
+        .poll(
+          async () => {
+            const [row] = await db<{ waiting: boolean }[]>`
+          select exists(select 1 from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))) as waiting`;
+            return row!.waiting;
+          },
+          { timeout: 5000, interval: 20 },
+        )
+        .toBe(true);
+    } finally {
+      release();
+    }
+    await done;
+  });
+
   it('reuses a root across adapters without expanding its original deadline or budget', async () => {
     const f = await fixture(3);
     const budgets = await ensureRuntimeOperationRoot(

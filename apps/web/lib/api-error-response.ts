@@ -1,3 +1,4 @@
+import { CodexSubscriptionError } from '@allrice/database';
 import { DataAccessError } from '@allrice/database';
 
 import { apiProblem, type ApiProblemCode } from './api-problem';
@@ -17,6 +18,13 @@ export function isRequestValidationError(error: unknown) {
 }
 
 export function apiErrorResponse(error: unknown) {
+  if (error instanceof CodexSubscriptionError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: error.message,
+      retryable: false,
+    });
   let status = 400;
   let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Request validation failed';

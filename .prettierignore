@@ -48,3 +48,6 @@ apps/web/app/chatflow/dsh-upstream/archive/WorkspaceBrowser.module.css
 
 # Pinned native delivery cards with recorded browser adapter patches.
 apps/web/app/chatflow/dsh-upstream/deliverables/
+
+# Pinned DSH image renderer/cache and verified HTTP compatibility patches.
+apps/web/app/chatflow/dsh-upstream/images/

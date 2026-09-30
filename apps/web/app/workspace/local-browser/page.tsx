@@ -3,7 +3,6 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { DataAccessError, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
-import { LocalBrowserSettings } from './local-browser-settings';
 
 export const dynamic = 'force-dynamic';
 export default async function WorkspaceLocalBrowserPage({
@@ -50,9 +49,5 @@ export default async function WorkspaceLocalBrowserPage({
         <p>当前账号没有此工作区的本地浏览器使用权限。</p>
       </main>
     );
-  return (
-    <main>
-      <LocalBrowserSettings workspaceId={workspaceId} />
-    </main>
-  );
+  redirect('/chatflow?settings=computer');
 }

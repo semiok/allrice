@@ -1,3 +1,4 @@
+import { CodexSubscriptionError } from '@allrice/database';
 import {
   DataAccessError,
   IdentityError,
@@ -31,6 +32,13 @@ const publicationConflicts: Readonly<Record<string, string>> = {
 };
 
 export function executionErrorResponse(error: unknown) {
+  if (error instanceof CodexSubscriptionError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: error.message,
+      retryable: false,
+    });
   if (error instanceof UsageBudgetReviewError)
     return apiProblem({
       status: 409,

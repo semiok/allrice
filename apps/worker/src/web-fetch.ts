@@ -1,10 +1,12 @@
-import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { isIP } from 'node:net';
 
 import { HandlerError } from './errors.js';
 import { createPinnedLookup } from './pinned-lookup.js';
+import {
+  resolvePublicWebHostname,
+  validatePublicWebUrl,
+} from './public-web-network.js';
 
 const maximumRedirects = 3;
 const maximumResponseBytes = 750_000;
@@ -19,114 +21,10 @@ const allowedMediaTypes = [
   'text/xml',
 ];
 
-function ipv4Number(address: string) {
-  const parts = address.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
-    return null;
-  }
-  return (
-    (((parts[0]! << 24) >>> 0) +
-      (parts[1]! << 16) +
-      (parts[2]! << 8) +
-      parts[3]!) >>>
-    0
-  );
-}
-
-function inIpv4Range(address: number, base: string, prefix: number) {
-  const baseNumber = ipv4Number(base)!;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  return (address & mask) === (baseNumber & mask);
-}
-
-export function isPublicWebAddress(address: string) {
-  const family = isIP(address);
-  if (family === 4) {
-    const value = ipv4Number(address)!;
-    const blocked: [string, number][] = [
-      ['0.0.0.0', 8],
-      ['10.0.0.0', 8],
-      ['100.64.0.0', 10],
-      ['127.0.0.0', 8],
-      ['169.254.0.0', 16],
-      ['172.16.0.0', 12],
-      ['192.0.0.0', 24],
-      ['192.0.2.0', 24],
-      ['192.168.0.0', 16],
-      ['198.18.0.0', 15],
-      ['198.51.100.0', 24],
-      ['203.0.113.0', 24],
-      ['224.0.0.0', 4],
-      ['240.0.0.0', 4],
-    ];
-    return !blocked.some(([base, prefix]) => inIpv4Range(value, base, prefix));
-  }
-  if (family === 6) {
-    const normalized = address.toLowerCase().split('%')[0]!;
-    if (normalized.startsWith('::ffff:')) {
-      return isPublicWebAddress(normalized.slice('::ffff:'.length));
-    }
-    return !(
-      normalized === '::' ||
-      normalized === '::1' ||
-      normalized.startsWith('fc') ||
-      normalized.startsWith('fd') ||
-      /^fe[89ab]/.test(normalized) ||
-      normalized.startsWith('ff') ||
-      normalized.startsWith('2001:db8:')
-    );
-  }
-  return false;
-}
-
-export function validatePublicWebUrl(value: string) {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new HandlerError('WEB_URL_INVALID', '网页地址格式不正确', false);
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new HandlerError(
-      'WEB_URL_INVALID',
-      '只允许读取 HTTP 或 HTTPS 网页',
-      false,
-    );
-  }
-  const portAllowed =
-    !url.port ||
-    (url.protocol === 'http:' && url.port === '80') ||
-    (url.protocol === 'https:' && url.port === '443');
-  if (url.username || url.password || !portAllowed) {
-    throw new HandlerError(
-      'WEB_URL_INVALID',
-      '网页地址包含不允许的认证或端口',
-      false,
-    );
-  }
-  const hostname = url.hostname.toLowerCase();
-  if (
-    hostname === 'localhost' ||
-    hostname.endsWith('.localhost') ||
-    hostname.endsWith('.local') ||
-    hostname.endsWith('.internal')
-  ) {
-    throw new HandlerError(
-      'WEB_ADDRESS_BLOCKED',
-      '不允许读取内部网络地址',
-      false,
-    );
-  }
-  if (isIP(hostname) && !isPublicWebAddress(hostname)) {
-    throw new HandlerError(
-      'WEB_ADDRESS_BLOCKED',
-      '不允许读取内部网络地址',
-      false,
-    );
-  }
-  url.hash = '';
-  return url;
-}
+export {
+  isPublicWebAddress,
+  validatePublicWebUrl,
+} from './public-web-network.js';
 
 function decodeEntities(text: string) {
   return text
@@ -163,33 +61,12 @@ export function extractReadableWebText(content: string, mediaType: string) {
     .slice(0, maximumExtractedCharacters);
 }
 
-async function resolvePublicAddress(hostname: string) {
-  if (isIP(hostname)) {
-    if (!isPublicWebAddress(hostname)) {
-      throw new HandlerError(
-        'WEB_ADDRESS_BLOCKED',
-        '不允许读取内部网络地址',
-        false,
-      );
-    }
-    return { address: hostname, family: isIP(hostname) as 4 | 6 };
-  }
-  const addresses = await lookup(hostname, { all: true, verbatim: true });
-  if (
-    !addresses.length ||
-    addresses.some((item) => !isPublicWebAddress(item.address))
-  ) {
-    throw new HandlerError(
-      'WEB_ADDRESS_BLOCKED',
-      '域名解析到了非公开网络地址',
-      false,
-    );
-  }
-  return addresses[0]!;
-}
-
 async function readOnce(url: URL) {
-  const resolved = await resolvePublicAddress(url.hostname);
+  const [address] = await resolvePublicWebHostname(url.hostname);
+  const resolved = {
+    address: address!.address,
+    family: address!.family as 4 | 6,
+  };
   const transport = url.protocol === 'https:' ? httpsRequest : httpRequest;
   return new Promise<{
     status: number;

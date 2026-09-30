@@ -34,6 +34,9 @@ export type McpDisplayAuthorization = {
     | 'unavailable';
 };
 export type CloudOperationView = {
+  /** Join a receipt to its native timeline row; never match by tool name. */
+  nativeCallId?: string | null;
+  createdAt?: string;
   snapshot: RuntimeOperationSnapshot;
   enabled: boolean;
   /** Current display availability only, never an approval or execution grant. */
@@ -131,6 +134,8 @@ export async function listCloudRuntimeOperations(
     return tx<
       {
         snapshot: unknown;
+        native_call_id: string | null;
+        created_at: Date;
         mcp_payload: unknown | null;
         cloud_payload: unknown | null;
         mcp_result: {
@@ -142,8 +147,9 @@ export async function listCloudRuntimeOperations(
         approval_id: string | null;
       }[]
     >`
-      select o.snapshot,mi.payload as mcp_payload,ci.payload as cloud_payload,ma.result as mcp_result,ca.outcome as cloud_outcome,mc.endpoint,cb.enabled as connection_enabled,a.id as approval_id
+      select o.snapshot,o.created_at,oc.native_call_id,mi.payload as mcp_payload,ci.payload as cloud_payload,ma.result as mcp_result,ca.outcome as cloud_outcome,mc.endpoint,cb.enabled as connection_enabled,a.id as approval_id
       from allrice_runtime_operations o
+      left join allrice_task_operation_calls oc on oc.operation_id=o.id
       left join allrice_mcp_execution_inputs mi on mi.operation_id=o.id and mi.organization_id=o.organization_id and mi.workspace_id=o.workspace_id and mi.owner_id=${context.actor.id}
       left join allrice_mcp_binding_config mc on mc.binding_id=mi.binding_id
       left join allrice_connector_bindings cb on cb.id=mi.binding_id and cb.organization_id=o.organization_id and cb.workspace_id=o.workspace_id
@@ -181,6 +187,8 @@ export async function listCloudRuntimeOperations(
         payload.arguments,
       );
       views.push({
+        nativeCallId: row.native_call_id,
+        createdAt: row.created_at.toISOString(),
         snapshot,
         mcpAuthorization: await mcpDisplayAuthorization(
           context,
@@ -211,6 +219,8 @@ export async function listCloudRuntimeOperations(
     } else {
       const payload = CloudCommandSchema.parse(row.cloud_payload);
       views.push({
+        nativeCallId: row.native_call_id,
+        createdAt: row.created_at.toISOString(),
         snapshot,
         mcpAuthorization: null,
         enabled:

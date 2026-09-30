@@ -158,9 +158,11 @@ export function ExperienceReviewCard({
 export function ExperiencePanel({
   workspaceId,
   sessionId,
+  embedded = false,
 }: {
   workspaceId: string;
   sessionId?: string;
+  embedded?: boolean;
 }) {
   const [sources, setSources] = useState<Source[]>([]),
     [candidates, setCandidates] = useState<ExperienceCandidate[]>([]),
@@ -244,9 +246,13 @@ export function ExperiencePanel({
     }
   };
   return (
-    <main className={styles.page}>
-      <Link href="/chatflow">← 返回工作台</Link>
-      <h1>经验候选与审核</h1>
+    <section className={`${styles.page} ${embedded ? styles.embedded : ''}`}>
+      {!embedded && (
+        <>
+          <Link href="/chatflow">← 返回工作台</Link>
+          <h1>记忆与经验</h1>
+        </>
+      )}
       <p>
         从已结束任务人工选取、改写纠偏或规则。普通聊天、Ask User
         回答或计划认可都不代表批准；这里的明确审核才会生成长期记忆新版本。
@@ -382,6 +388,6 @@ export function ExperiencePanel({
         />
       ))}
       {!candidates.length ? <p>暂无你可以查看的经验候选。</p> : null}
-    </main>
+    </section>
   );
 }

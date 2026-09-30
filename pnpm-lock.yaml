@@ -128,58 +128,58 @@ importers:
 
   apps/web:
     dependencies:
-      '@allrice/contracts':
+      "@allrice/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@allrice/database':
+      "@allrice/database":
         specifier: workspace:*
         version: link:../../packages/database
-      '@allrice/office-runtime':
+      "@allrice/office-runtime":
         specifier: workspace:*
         version: link:../../packages/office-runtime
-      '@allrice/storage':
+      "@allrice/storage":
         specifier: workspace:*
         version: link:../../packages/storage
-      '@allrice/ui':
+      "@allrice/ui":
         specifier: workspace:*
         version: link:../../packages/ui
-      '@deepseek-ai/cordis':
+      "@deepseek-ai/cordis":
         specifier: 4.0.4
         version: 4.0.4
-      '@deepseek-ai/dsh-brand':
+      "@deepseek-ai/dsh-brand":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-client-ui-chat':
+      "@deepseek-ai/dsh-client-store":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-client-ui-conversation':
+      "@deepseek-ai/dsh-client-ui-chat":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-client-store':
+      "@deepseek-ai/dsh-client-ui-conversation":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-client-ui-dockkit':
+      "@deepseek-ai/dsh-client-ui-dockkit":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
-      '@deepseek-ai/dsh-client-ui-primitives':
+      "@deepseek-ai/dsh-client-ui-primitives":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
-      '@deepseek-ai/dsh-client-ui-sidebar-documentpreview':
+      "@deepseek-ai/dsh-client-ui-sidebar-documentpreview":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-util-values':
+      "@deepseek-ai/dsh-util-values":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-util-workspace-path':
+      "@deepseek-ai/dsh-util-workspace-path":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@pierre/diffs':
+      "@pierre/diffs":
         specifier: 1.4.1
         version: 1.4.1(@shikijs/themes@4.4.3)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
-      '@shikijs/langs':
+      "@shikijs/langs":
         specifier: 4.3.1
         version: 4.3.1
-      '@tanstack/react-virtual':
+      "@tanstack/react-virtual":
         specifier: 3.14.9
         version: 3.14.9(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       anser:
@@ -191,6 +191,9 @@ importers:
       diff:
         specifier: ^9.0.0
         version: 9.0.0
+      dompurify:
+        specifier: 3.4.11
+        version: 3.4.11
       immer:
         specifier: 10.1.1
         version: 10.1.1
@@ -261,10 +264,10 @@ importers:
         specifier: 4.4.7
         version: 4.4.7(@types/react@19.2.18)(immer@10.1.1)(react@19.2.0)
     devDependencies:
-      '@types/react':
+      "@types/react":
         specifier: ^19.2.7
         version: 19.2.18
-      '@types/react-dom':
+      "@types/react-dom":
         specifier: ^19.2.3
         version: 19.2.4(@types/react@19.2.18)
 
@@ -525,9 +528,15 @@ importers:
 
   packages/office-runtime:
     dependencies:
-      '@allrice/contracts':
+      "@allrice/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@deepseek-ai/cordis":
+        specifier: 4.0.4
+        version: 4.0.4
+      "@deepseek-ai/dsh-office-to-pdf":
+        specifier: 0.1.7-rc.1
+        version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
 
   packages/storage:
     dependencies:
@@ -6343,6 +6352,91 @@ packages:
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
+
+  dompurify@3.4.11:
+    resolution:
+      integrity: sha512-zhlUV12GsaRzMsf9q5M254YhA4+VuF0fG+QFqu6aYpoGlKtz+w8//jBcGVYBgQkR5GHjUomejY84AV+/uPbWdw==
+
+  "@deepseek-ai/dsh-office-to-pdf@0.1.7-rc.1":
+    resolution:
+      integrity: sha512-Lg8/k5gHZjiOp8uAfr4sd933AdtZSSHh6VWxoUa50R27fQwsjv7C5lfAIKPZgrXDaIlc/231E2i0l4rLMw/kQw==
+    peerDependencies:
+      "@deepseek-ai/cordis": ~4.0.4
+
+  "@deepseek-ai/dsh-typert-protocol@0.1.7-rc.1":
+    resolution:
+      integrity: sha512-DOJiFdvHl1RoJHO7C6XymZUqVZwZiF7JL1PS+AEtQWg6nsYXvlkF1VLbwzPxMW470RzzimGLCz7boOxx086dLA==
+    peerDependencies:
+      "@deepseek-ai/cordis": ~4.0.4
+
+  "@deepseek-ai/libreoffice-kit@0.1.2":
+    resolution:
+      integrity: sha512-PM3GtAr8/nG7mY22yoYQgRTfkhzQ72v1sDME/46I/Kl7S4+yOFYC1h0hRT8JL9p9vjdEwXW9icdhUQK0QPz+YQ==
+    engines:
+      node: ">=22.19.0"
+    hasBin: true
+
+  fflate@0.8.2:
+    resolution:
+      integrity: sha512-cPJU47OaAoCbg0pBvzsgpTPhmhqI5eJjh/JIu8tPj5q+T7iLvW/JAYUqmE7KOB4R1ZyEhzBaIQpQpardBF5z8A==
+
+  saxes@6.0.0:
+    resolution:
+      integrity: sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==
+    engines:
+      node: ">=v12.22.7"
+
+  "@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.1":
+    resolution:
+      integrity: sha512-D6NBvtoNpm9pOgBXGQTdxpds1tYMeiFKhGJgnXF/SE0124ZM8j0AOXI7cZ8CErHctqIoVYP+gKWCrnQl4we41A==
+    engines:
+      node: ">=22.19.0"
+    cpu:
+      - arm64
+    os:
+      - darwin
+
+  "@deepseek-ai/libreoffice-kit-darwin-x64@0.1.1":
+    resolution:
+      integrity: sha512-VcAqzmzDbRySLBnpRNYSEd+fDmAtdgL1hQMjRf4sFnQuz7m1vipQ00DtlqFG/T+9uCc20bMIyiDWh8zfYObW3w==
+    engines:
+      node: ">=22.19.0"
+    cpu:
+      - x64
+    os:
+      - darwin
+
+  "@deepseek-ai/libreoffice-kit-wasm@0.1.1":
+    resolution:
+      integrity: sha512-YuKZJdDhR/0GeTZUHJsJvachJR8ZiS4lcrL+lxUF2GLRwXcMikN0zAQOA+6kD/nRI+vlHsCkX0KvHaKvfae79Q==
+    engines:
+      node: ">=22.19.0"
+    os:
+      - linux
+
+  "@deepseek-ai/libreoffice-kit-win32-arm64@0.1.2":
+    resolution:
+      integrity: sha512-+JMKIDfLfpQEIeWWJBkKeAGJ8Niiv6SLQ1SFMh8K28eUOSaLLGPt4j7ywEWtyKCtXenD+VRlKo5gZlqDmCtNCg==
+    engines:
+      node: ">=22.19.0"
+    cpu:
+      - arm64
+    os:
+      - win32
+
+  "@deepseek-ai/libreoffice-kit-win32-x64@0.1.2":
+    resolution:
+      integrity: sha512-EUuTMnFF404uVVZz0j2oAoHY0Xhobdg0jChUUm74sudwaqxTM9rvgUYEWbeJd95oVjIParMdsb4hLdAhZ10BIw==
+    engines:
+      node: ">=22.19.0"
+    cpu:
+      - x64
+    os:
+      - win32
+
+  "@types/trusted-types@2.0.7":
+    resolution:
+      integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==
 
 snapshots:
 
@@ -12858,3 +12952,56 @@ snapshots:
       react: 19.2.0
 
   zwitch@2.0.4: {}
+  dompurify@3.4.11:
+    optionalDependencies:
+      "@types/trusted-types": 2.0.7
+
+  "@deepseek-ai/dsh-office-to-pdf@0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)":
+    dependencies:
+      "@deepseek-ai/cordis": 4.0.4
+      "@deepseek-ai/dsh-brand": 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
+      "@deepseek-ai/dsh-typert-protocol": 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
+      "@deepseek-ai/libreoffice-kit": 0.1.2
+      "@deepseek-ai/schemastery": 3.18.4
+      zod: 4.4.3
+
+  "@deepseek-ai/dsh-typert-protocol@0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)":
+    dependencies:
+      "@deepseek-ai/cordis": 4.0.4
+      "@deepseek-ai/dsh-brand": 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
+
+  "@deepseek-ai/libreoffice-kit@0.1.2":
+    dependencies:
+      fflate: 0.8.2
+      fontkit: 2.0.4
+      saxes: 6.0.0
+    optionalDependencies:
+      "@deepseek-ai/libreoffice-kit-darwin-arm64": 0.1.1
+      "@deepseek-ai/libreoffice-kit-darwin-x64": 0.1.1
+      "@deepseek-ai/libreoffice-kit-wasm": 0.1.1
+      "@deepseek-ai/libreoffice-kit-win32-arm64": 0.1.2
+      "@deepseek-ai/libreoffice-kit-win32-x64": 0.1.2
+
+  fflate@0.8.2: {}
+
+  saxes@6.0.0:
+    dependencies:
+      xmlchars: 2.2.0
+
+  "@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.1":
+    optional: true
+
+  "@deepseek-ai/libreoffice-kit-darwin-x64@0.1.1":
+    optional: true
+
+  "@deepseek-ai/libreoffice-kit-wasm@0.1.1":
+    optional: true
+
+  "@deepseek-ai/libreoffice-kit-win32-arm64@0.1.2":
+    optional: true
+
+  "@deepseek-ai/libreoffice-kit-win32-x64@0.1.2":
+    optional: true
+
+  "@types/trusted-types@2.0.7":
+    optional: true

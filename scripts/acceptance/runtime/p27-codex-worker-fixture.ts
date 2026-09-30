@@ -47,6 +47,8 @@ export async function createP27CodexWorkerFixture(
     syntheticImagesWithAssistants?: boolean;
     /** Isolated MET-163 image execution acceptance. */
     imageGeneration?: boolean;
+    /** Exercise platform image tools and the production assistant controller together. */
+    imageGenerationAssistants?: boolean;
   } = {},
 ) {
   const runLimits = options.imageGeneration
@@ -58,6 +60,10 @@ export async function createP27CodexWorkerFixture(
     'P27_CODEX_WORKER_MIGRATION_CHECKPOINT_INVALID',
   );
   requireFixture(!owned, 'P27_CODEX_WORKER_FIXTURE_ALREADY_OWNED');
+  requireFixture(
+    !options.imageGenerationAssistants || options.imageGeneration === true,
+    'P27_IMAGE_ASSISTANTS_REQUIRE_IMAGES',
+  );
   requireFixture(
     !options.syntheticImagesWithAssistants || options.allowCiDatabase === true,
     'P27_CODEX_WORKER_SYNTHETIC_IMAGES_ONLY',
@@ -244,6 +250,9 @@ export async function createP27CodexWorkerFixture(
             'workspace.file.list',
             'workspace.document.read',
             'workspace.export.create',
+            ...(options.imageGenerationAssistants
+              ? ['assistant.delegate', 'assistant.report']
+              : []),
           ]
         : options.syntheticImagesWithAssistants
           ? ['assistant.delegate', 'assistant.report']
@@ -289,14 +298,16 @@ export async function createP27CodexWorkerFixture(
       await tx`insert into allrice_model_connections(id,provider_id,scope,name,credential_reference,base_url,status)
         values(${connectionId},${catalog.provider_id},'platform','P27 isolated Codex','deployment:codex-default',null,'ready')`;
       if (!options.throughMigration)
+        // This historical fixture deliberately runs the pinned P27 model; the
+        // current production default is validated by platform settings tests.
         await tx`update allrice_platform_model_settings
-        set configuration=jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}) where singleton`;
+        set configuration=jsonb_set(jsonb_set(jsonb_set(jsonb_set(configuration,'{connectionId}',${tx.json(connectionId)}),'{reasoningEffort}','"low"'::jsonb),'{timeoutMs}',${tx.json(runLimits.timeoutMs)}),'{workModel}','"gpt-5.6-luna"'::jsonb) where singleton`;
       if (options.imageGeneration)
         await tx`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imagesEnabled}','true'::jsonb) where singleton`;
       await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
         values(${connectionId},'canary',${[organizationId]},false)`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
-        values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: [] })})`;
+        values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: options.imageGenerationAssistants ? [{ action: 'assistant.delegate', effect: 'allow' }] : [] })})`;
     });
     await withFixturePlatformAdministrator(ownerId, () =>
       models.upsertEmployeeModelPolicy({
@@ -390,7 +401,9 @@ export async function createP27CodexWorkerFixture(
               assistantConfiguration: {
                 version: 1,
                 mode: 'daily',
-                allowAssistants: images !== undefined,
+                allowAssistants:
+                  images !== undefined ||
+                  options.imageGenerationAssistants === true,
                 maxConcurrent: 1,
                 maxDepth: 1,
                 maxChildren: 1,

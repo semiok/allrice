@@ -7,6 +7,7 @@ import {
   RuntimePolicyControlsSchema,
   RuntimeTaskRefSchema,
   runtimeContractEqual,
+  withPlatformImageTools,
 } from '@allrice/contracts';
 import { z } from 'zod';
 import type { AssistantAuthorityInput } from './assistant-runtime.ts';
@@ -280,8 +281,20 @@ export async function assertAssistantAuthority(
         !definition.securityPolicy.deniedCapabilities.includes(capability),
     ),
   );
-  const frozenTools = snapshot.data.capabilitySnapshot.bindings.toolNames,
-    declaredTools = manifest.data.capabilityBindings.toolNames;
+  const model =
+    snapshot.data.schemaVersion === 2 ? snapshot.data.modelSnapshot : undefined;
+  const frozenTools = withPlatformImageTools(
+      snapshot.data.capabilitySnapshot.bindings.toolNames,
+      snapshot.data.capabilitySnapshot.grantedCapabilities,
+      model,
+    ),
+    declaredTools = withPlatformImageTools(
+      manifest.data.capabilityBindings.toolNames,
+      manifest.data.capabilities.filter(
+        (c) => !definition.securityPolicy.deniedCapabilities.includes(c),
+      ),
+      model,
+    );
   requireAuthority(
     frozenTools.includes('assistant.delegate') &&
       declaredTools.includes('assistant.delegate') &&

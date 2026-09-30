@@ -6,6 +6,7 @@ import {
 } from '@allrice/database';
 
 import { getRequestContext } from '../../../../../../../lib/identity/session';
+import { sameOriginBrowserWrite } from '../../../../../../../lib/identity/request-origin';
 import { apiErrorResponse } from '../../../../../../../lib/api-error-response';
 
 export const runtime = 'nodejs';
@@ -25,6 +26,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    if (!sameOriginBrowserWrite(request))
+      throw new DataAccessError('authorization_denied');
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
     const input = await request.json().catch(() => ({}));
@@ -39,6 +42,8 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    if (!sameOriginBrowserWrite(request))
+      throw new DataAccessError('authorization_denied');
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
     const flowId = new URL(request.url).searchParams.get('flowId');

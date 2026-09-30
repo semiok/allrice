@@ -4,6 +4,9 @@ import type { CloudOperationView } from '@allrice/database';
 import {
   CloudOperationCard,
   cloudOperationDisplayStatus,
+  cloudOperationCompactStatus,
+  cloudOperationsNeedPolling,
+  laterSuccessfulMcpCall,
 } from './cloud-operation-panel';
 
 // Presentation-only fixtures. Contract and authority validation are exercised
@@ -37,6 +40,75 @@ const render = (op: CloudOperationView, busy = false) =>
     <CloudOperationCard op={op} busy={busy} onAct={() => {}} />,
   );
 describe('Cloud/MCP approval presentation', () => {
+  it('keeps compact statuses distinct from unconfirmed remote outcomes', () => {
+    const op = view();
+    for (const [status, label] of [
+      ['running', '执行中'],
+      ['succeeded', '成功'],
+      ['failed', '失败'],
+      ['unknown', '结果待核实'],
+      ['cancel_requested', '停止待确认'],
+      ['dispatched', '待确认'],
+    ] as const) {
+      op.snapshot.status = status;
+      expect(cloudOperationCompactStatus(op)).toBe(label);
+    }
+  });
+  it.each(['read_only', 'write'])(
+    'links a later successful %s call without clearing failures or unknown effects',
+    (risk) => {
+      const failed = view();
+      failed.proposal = {
+        ...failed.proposal,
+        risk,
+      } as CloudOperationView['proposal'];
+      failed.snapshot.status = 'failed';
+      failed.snapshot.binding.execution = {
+        targetId: 'same-connection',
+      } as CloudOperationView['snapshot']['binding']['execution'];
+      failed.snapshot.binding.task = {
+        runId: 'run-a',
+      } as CloudOperationView['snapshot']['binding']['task'];
+      failed.snapshot.result = {
+        status: 'failed',
+        effects: 'none',
+        evidence: { recordedAt: '2026-09-28T06:00:00Z' },
+      } as NonNullable<CloudOperationView['snapshot']['result']>;
+      const succeeded = structuredClone(failed);
+      succeeded.snapshot.status = 'succeeded';
+      succeeded.snapshot.binding.attempt.operationId = 'later-success';
+      succeeded.snapshot.result = {
+        ...failed.snapshot.result,
+        status: 'succeeded',
+        evidence: {
+          ...failed.snapshot.result.evidence,
+          recordedAt: '2026-09-28T06:01:00Z',
+        },
+      };
+      expect(laterSuccessfulMcpCall(failed, [failed, succeeded])).toBe(
+        'later-success',
+      );
+      const html = renderToStaticMarkup(
+        <CloudOperationCard
+          op={failed}
+          busy={false}
+          laterSuccessId="later-success"
+          onAct={() => {}}
+        />,
+      );
+      expect(html).toContain('后续调用已成功');
+      expect(html).toContain('href="#operation-later-success"');
+      expect(failed.snapshot.status).toBe('failed');
+      const other = structuredClone(succeeded);
+      other.snapshot.binding.task.runId = 'run-b';
+      expect(laterSuccessfulMcpCall(failed, [other])).toBeUndefined();
+      (other.proposal as { tool: string }).tool = 'different.tool';
+      other.snapshot.binding.task.runId = 'run-a';
+      expect(laterSuccessfulMcpCall(failed, [other])).toBeUndefined();
+      failed.snapshot.status = 'unknown';
+      expect(laterSuccessfulMcpCall(failed, [succeeded])).toBeUndefined();
+    },
+  );
   it('distinguishes a third-party send from chat/local execution and escapes parameters', () => {
     const html = render(view());
     expect(html).toContain('应用工具');
@@ -112,8 +184,8 @@ describe('Cloud/MCP approval presentation', () => {
     const op = view();
     op.snapshot.status = 'unknown';
     const html = render(op);
-    expect(html).toContain('不等于远端已经停止');
-    expect(html).toContain('不会自动重放');
+    expect(html).toContain('未收到应用执行结果');
+    expect(html).toContain('不会自动重试');
     expect(html).not.toContain('批准这一次执行');
   });
   it('renders exact cloud script, inputs and limits independently of MCP/local wording', () => {
@@ -145,15 +217,71 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('不联网');
     expect(html).toContain('input.json');
     expect(html).toContain('计划输出：');
-    expect(html).toMatch(/<details[^>]*open=""[^>]*><summary><span>运行详情/);
+    expect(html).toMatch(/<button[^>]*aria-expanded="true"[^>]*>/);
+    expect(html).toContain('收起详情');
     op.snapshot.status = 'succeeded';
-    expect(render(op)).not.toMatch(
-      /<details[^>]*open=""[^>]*><summary><span>运行详情/,
-    );
+    expect(render(op)).toMatch(/<button[^>]*aria-expanded="false"[^>]*>/);
+    expect(render(op)).toContain('查看详情');
     expect(html).toContain('256');
     expect(html).toContain('disabled=""');
     expect(html).toContain('批准这一次执行');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('第三方 MCP');
+  });
+});
+
+describe('reported MCP failures remain visible without replay controls', () => {
+  it('shows the GitHub denial and next step while retaining unknown effects', () => {
+    const op = view();
+    op.snapshot.status = 'unknown';
+    op.proposal = {
+      kind: 'mcp',
+      endpoint: 'https://api.githubcopilot.com/mcp/',
+      tool: 'mcp__app__merge_pull_request',
+      arguments: {},
+      risk: 'write',
+    };
+    op.result = {
+      code: 'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN',
+      trusted: false,
+      output: JSON.stringify({
+        isError: true,
+        error: {
+          message:
+            'failed to merge pull request: PUT https://api.github.com/repos/semiok/allrice/pulls/200/merge: 403 Resource not accessible by personal access token []',
+        },
+      }),
+    };
+    const html = renderToStaticMarkup(
+      <CloudOperationCard
+        op={op}
+        busy={false}
+        runActive={false}
+        onAct={() => {
+          throw Error('no action expected');
+        }}
+      />,
+    );
+    expect(cloudOperationDisplayStatus(op)).toBe('GitHub 权限不足');
+    expect(html).toContain('本轮已结束');
+    expect(html).toContain('Contents');
+    expect(html).not.toContain('请求停止本轮全部操作');
+    expect(html).not.toContain('远端结果待核实');
+    expect(op.snapshot.status).toBe('unknown');
+    expect(cloudOperationsNeedPolling(false, [op])).toBe(false);
+    expect(cloudOperationsNeedPolling(true, [op])).toBe(true);
+  });
+  it('continues observing active or stopping operations, but not a settled unknown', () => {
+    const op = view();
+    for (const status of [
+      'running',
+      'cancel_requested',
+      'dispatched',
+    ] as const) {
+      op.snapshot.status = status;
+      expect(cloudOperationsNeedPolling(false, [op])).toBe(true);
+    }
+    op.snapshot.status = 'unknown';
+    expect(cloudOperationsNeedPolling(false, [op])).toBe(false);
   });
 });

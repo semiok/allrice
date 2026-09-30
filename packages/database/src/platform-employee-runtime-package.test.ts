@@ -382,7 +382,7 @@ describe('platform employee runtime package', () => {
     expect(first.files.agentsMd).toContain('web-research');
     expect(first.files.agentsMd).toContain('自主路由规则');
     expect(first.files.agentsMd).toContain(
-      '用户询问新闻、近期事件、最新公开信息',
+      '有网页链接直接 web_fetch，没有来源再 web_search',
     );
     expect(first.files.agentsMd).toContain('用户不需要点名 Skill');
     expect(first.files.identityMd).toContain('通用工作伙伴');

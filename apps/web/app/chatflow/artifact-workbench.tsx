@@ -9,14 +9,12 @@ import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
 import { dockLabels, useNativeDock } from './use-native-dock';
 import { WorkspaceFileTree } from './workspace-file-tree';
 import { WorkspaceFilePreview } from './workspace-file-preview';
-import { NativePdfPreview } from './native-pdf-preview';
-import { NativeImagePreview } from './native-image-preview';
-import { OfficePreview } from './office-preview';
 import {
-  DocumentToolbar,
-  DocumentVersions,
-  DocumentText,
-} from './document-reader';
+  NativeDocumentPreview,
+  hasSourcePreview,
+  hasNativeViewport,
+} from './native-document-preview';
+import { DocumentToolbar, DocumentVersions } from './document-reader';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
@@ -443,24 +441,8 @@ export function ReadOnlyArtifactPreview({
 }: {
   preview: ArtifactPreview;
 }) {
-  if (preview.kind === 'pdf')
-    return <NativePdfPreview base64={preview.base64} />;
-  if (preview.kind === 'office')
-    return <OfficePreview preview={preview} key={preview.checksum} />;
-  if (preview.kind === 'text')
-    return preview.mediaType === 'text/markdown' ||
-      preview.mediaType === 'text/plain' ? (
-      <SafeDocument text={preview.text} />
-    ) : (
-      <TextPage text={preview.text} label="静态源码（不执行）" />
-    );
-  if (preview.kind === 'image')
-    return (
-      <NativeImagePreview
-        alt="成果静态证据预览"
-        src={`data:${preview.mediaType};base64,${preview.base64}`}
-      />
-    );
+  if (preview.kind !== 'changeset')
+    return <NativeDocumentPreview preview={preview} fileName="文件预览" />;
   if (preview.kind === 'changeset')
     return (
       <>
@@ -481,9 +463,7 @@ export function ReadOnlyArtifactPreview({
         ))}
       </>
     );
-  return (
-    <p>{preview.reason} 管理检查不代替使用者操作，请由本人到租户工作台下载。</p>
-  );
+  return null;
 }
 
 export function ArtifactSummaryCards({
@@ -501,6 +481,9 @@ export function ArtifactSummaryCards({
     )
       series.set(a.version.seriesId, a);
   const newest = [...series.values()];
+  // An empty native deliverables wrapper still contributes its top margin.
+  // Mount it only for an actual file, keeping optimistic -> accepted turns still.
+  if (!newest.length) return null;
   return (
     <div className={deliveries.root}>
       <div className={deliveries.presented} data-single={newest.length === 1}>
@@ -627,6 +610,7 @@ function ArtifactReview({
     [previewError, setPreviewError] = useState(''),
     [previewRetry, setPreviewRetry] = useState(0);
   const [path, setPath] = useState('');
+  const [interactiveHtml, setInteractiveHtml] = useState(false);
   const [view, setView] = useState<'preview' | 'diff' | 'source'>('preview'),
     [mode, setMode] = useState<'split' | 'unified'>('split'),
     [rawSide, setRawSide] = useState<'before' | 'after'>('after');
@@ -800,6 +784,9 @@ function ArtifactReview({
       ) : (
         <>
           <DocumentToolbar
+            missingFonts={
+              preview?.kind === 'pdf' ? preview.missingFonts : undefined
+            }
             title={
               toolResult
                 ? artifact.version.fileName.startsWith(
@@ -813,7 +800,15 @@ function ArtifactReview({
             actions={[
               { id: 'catalog', label: '查看所有成果' },
               { id: 'refresh', label: '刷新文件' },
-              ...(bodyText !== null
+              ...(preview?.kind === 'html'
+                ? [
+                    {
+                      id: 'interactive',
+                      label: interactiveHtml ? '切换静态网页' : '切换交互网页',
+                    },
+                  ]
+                : []),
+              ...(hasSourcePreview(preview)
                 ? [
                     {
                       id: 'source',
@@ -822,6 +817,8 @@ function ArtifactReview({
                   ]
                 : []),
               ...(artifact.kind !== 'changeset' &&
+              preview?.kind === 'text' &&
+              preview.eof !== false &&
               artifact.version.parentVersionId
                 ? [
                     {
@@ -833,6 +830,10 @@ function ArtifactReview({
             ]}
             onAction={(id) => {
               if (id === 'catalog') onCatalog();
+              if (id === 'interactive') {
+                setInteractiveHtml((value) => !value);
+                setView('preview');
+              }
               if (id === 'source')
                 setView((v) => (v === 'source' ? 'preview' : 'source'));
               if (id === 'compare')
@@ -854,7 +855,7 @@ function ArtifactReview({
             />
           </DocumentToolbar>
           <div
-            className={`${reader.content} ${preview?.kind === 'office' && view !== 'diff' ? reader.officeContent : ''}`}
+            className={`${reader.content} ${hasNativeViewport(preview) && view === 'preview' ? reader.officeContent : ''}`}
           >
             {artifact.stale ? (
               <p className={styles.muted}>
@@ -897,7 +898,9 @@ function ArtifactReview({
             ) : null}
             {view === 'diff' &&
             (file ||
-              (bodyText !== null && previous?.preview.kind === 'text')) ? (
+              (bodyText !== null &&
+                previous?.preview.kind === 'text' &&
+                previous.preview.eof !== false)) ? (
               <>
                 <div className={styles.row}>
                   <label>
@@ -943,7 +946,7 @@ function ArtifactReview({
             ) : view === 'diff' && bodyText !== null ? (
               <p className={styles.muted}>
                 {previous
-                  ? '上一版不支持文本对比，可分别下载核对。'
+                  ? '上一版无法完整参与文本对比，可分别下载核对。'
                   : '正在读取上一版基线…'}
               </p>
             ) : null}
@@ -969,40 +972,17 @@ function ArtifactReview({
                   label={`${rawSide === 'before' ? '修改前' : '修改后'}文本`}
                 />
               </details>
-            ) : bodyText !== null && view !== 'diff' ? (
-              <DocumentText
-                text={bodyText}
+            ) : preview && preview.kind !== 'changeset' && view !== 'diff' ? (
+              <NativeDocumentPreview
+                key={artifact.id}
+                preview={preview}
                 fileName={artifact.version.fileName}
-                mediaType={
-                  preview?.kind === 'text' ? preview.mediaType : 'text/plain'
-                }
+                pageUrl={`${endpoint}/content${query}`}
+                headers={tenantHeaders}
                 source={view === 'source'}
+                interactive={interactiveHtml}
                 toolResult={toolResult}
               />
-            ) : preview?.kind === 'image' ? (
-              <NativeImagePreview
-                src={`data:${preview.mediaType};base64,${preview.base64}`}
-                alt={`${artifact.version.fileName} 静态预览`}
-              />
-            ) : preview?.kind === 'pdf' ? (
-              <NativePdfPreview base64={preview.base64} />
-            ) : preview?.kind === 'office' ? (
-              <OfficePreview preview={preview} key={preview.checksum} />
-            ) : preview?.kind === 'download_only' ? (
-              <div>
-                <p className={styles.muted}>{preview.reason}</p>
-                {['docx', 'xlsx', 'pptx'].includes(artifact.version.format) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPreview(null);
-                      setPreviewRetry((n) => n + 1);
-                    }}
-                  >
-                    重试预览
-                  </button>
-                )}
-              </div>
             ) : !preview ? (
               previewError ? (
                 <div role="alert" className={styles.error}>

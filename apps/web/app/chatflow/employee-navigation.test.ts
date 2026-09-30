@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { employeeGroups, employeePreferenceKey } from './employee-navigation';
-import { collapsedSessionRows } from './dsh-upstream/workspace/collapsed-session-rows';
+import {
+  employeeGroups,
+  employeePreferenceKey,
+  employeeSessionPreview,
+} from './employee-navigation';
 import type { Session, Workspace } from './chatflow-types';
 
 const employee = (id: string) => ({
@@ -60,7 +63,7 @@ describe('Allrice employee projection into the native DSH tree', () => {
       employeeGroups({ ...workspace, employees: [] }, [], null, {}),
     ).toEqual([]);
   });
-  it('passes real pending interactions to native rows and keeps running work outside the idle quota', () => {
+  it('counts running work within five preview rows and retains its pending interaction', () => {
     const sessions = Array.from({ length: 7 }, (_, index) =>
       session(String(index), 'a'),
     );
@@ -70,17 +73,37 @@ describe('Allrice employee projection into the native DSH tree', () => {
       pendingInteraction: 'approval',
     };
     const group = employeeGroups(workspace, sessions, '0', {})[0]!;
-    const collapsed = collapsedSessionRows(group.sessions);
+    const collapsed = employeeSessionPreview(group.sessions, '0');
     expect(collapsed.rows.map((row) => row.id)).toEqual([
       '0',
       '1',
       '2',
       '3',
-      '4',
       '6',
     ]);
-    expect(collapsed.hiddenCount).toBe(1);
+    expect(collapsed.hiddenCount).toBe(2);
     expect(collapsed.rows.at(-1)?.pendingInteraction).toBe('approval');
+  });
+  it('keeps an older selected session inside the five-row limit even with many running sessions', () => {
+    const sessions = Array.from({ length: 9 }, (_, index) => ({
+      ...session(String(index), 'a'),
+      running: true,
+    }));
+    const group = employeeGroups(workspace, sessions, '8', {})[0]!;
+    const preview = employeeSessionPreview(group.sessions, '8');
+    expect(preview.rows.map((row) => row.id)).toEqual([
+      '0',
+      '1',
+      '2',
+      '3',
+      '8',
+    ]);
+    expect(preview.hiddenCount).toBe(4);
+    sessions.forEach((s) => {
+      s.running = false;
+    });
+    const idle = employeeGroups(workspace, sessions, '8', {})[0]!;
+    expect(employeeSessionPreview(idle.sessions, '8').rows).toHaveLength(5);
   });
   it('isolates remembered expansion across users and workspaces', () => {
     const first = employeePreferenceKey(workspace);

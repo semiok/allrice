@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
+import { summarizeWorkProcess } from './work-process';
 import { projectNativeExperience } from './native-experience';
 
 function event(
@@ -241,4 +242,32 @@ describe('projectNativeExperience', () => {
     ]);
     expect(projected.map((item) => item.sequence)).toEqual([2, 3, 5]);
   });
+});
+
+it('projects model waiting into one visible row and clears it when output resumes', () => {
+  const start = event(
+    1,
+    'harness.native',
+    { presentation: 'lifecycle', status: 'started', label: '等待模型响应' },
+    { callId: 'model-1' },
+  );
+  start.sourceEvent!.type = 'allrice/model-wait';
+  const finish = {
+    ...start,
+    eventId: randomUUID(),
+    sequence: 2,
+    payload: { ...start.payload, status: 'completed' },
+  };
+  expect(summarizeWorkProcess(projectNativeExperience([start])).active).toBe(
+    '等待模型响应',
+  );
+  const rows = projectNativeExperience([start, finish]);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    modelWait: true,
+    status: 'completed',
+    lastSequence: 2,
+  });
+  expect(summarizeWorkProcess(rows).active).toBeUndefined();
+  expect(summarizeWorkProcess(rows).steps[0]?.description).toBe('等待模型响应');
 });

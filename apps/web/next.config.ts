@@ -2,7 +2,15 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  serverExternalPackages: [
+    '@deepseek-ai/dsh-office-to-pdf',
+    '@deepseek-ai/libreoffice-kit',
+    '@deepseek-ai/cordis',
+  ],
   outputFileTracingIncludes: {
+    '/api/dsh-ui/excel': [
+      './node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.excel.js',
+    ],
     '/api/dsh-ui/pdf': [
       './node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.pdf.js',
     ],

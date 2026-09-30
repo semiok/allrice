@@ -52,6 +52,8 @@ const {
 }));
 
 vi.mock('@allrice/database', async (original) => ({
+  ManagedBrowserTaskStartError: (await original<typeof Database>())
+    .ManagedBrowserTaskStartError,
   ArtifactPublicationRollbackError: (await original<typeof Database>())
     .ArtifactPublicationRollbackError,
   completeManagedBrowserTask,
@@ -1377,7 +1379,63 @@ describe('Codex hosted search Tool Broker integration', () => {
     );
   });
 
-  it('runs an isolated browser task and persists replayable evidence', async () => {
+  it.each(['cancel', 'timeout'] as const)(
+    'stops a queued browser task on %s without launching a browser',
+    async (reason) => {
+      const { ManagedBrowserTaskStartError } =
+        await import('@allrice/database');
+      const context = executionContext(),
+        taskId = randomUUID(),
+        controller = new AbortController();
+      createDefaultManagedBrowserTask.mockResolvedValue({
+        id: taskId,
+        allowedDomains: ['example.com'],
+      });
+      completeManagedBrowserTask.mockResolvedValue({ id: taskId });
+      isManagedBrowserTaskCancelRequested.mockResolvedValue({
+        requested: false,
+        status: 'queued',
+      });
+      startManagedBrowserTask
+        .mockImplementationOnce(async () => {
+          if (reason === 'cancel') controller.abort();
+          throw new ManagedBrowserTaskStartError('BROWSER_TARGET_BUSY');
+        })
+        .mockRejectedValue(
+          new ManagedBrowserTaskStartError('BROWSER_TARGET_TIMEOUT'),
+        );
+      const managedBrowserRun = vi.fn();
+      await expect(
+        executeRiceTool({
+          context,
+          capabilities: ['network:outbound'],
+          storageRoot: '/tmp/unused-browser-queue-test',
+          managedBrowserJobAttempt: 1,
+          managedBrowserJobLeaseToken: randomUUID(),
+          signal: controller.signal,
+          call: {
+            id: randomUUID(),
+            name: 'browser.run',
+            arguments: { url: 'https://example.com' },
+          },
+          managedBrowserRun,
+        }),
+      ).rejects.toMatchObject({
+        code:
+          reason === 'cancel'
+            ? 'BROWSER_TASK_CANCELED'
+            : 'BROWSER_TARGET_TIMEOUT',
+      });
+      expect(managedBrowserRun).not.toHaveBeenCalled();
+      expect(createDefaultManagedBrowserTask).toHaveBeenCalledTimes(1);
+      if (reason === 'cancel')
+        expect(completeManagedBrowserTask).toHaveBeenCalledWith(
+          expect.objectContaining({ taskId, status: 'canceled' }),
+        );
+    },
+  );
+
+  it('waits for browser capacity and persists evidence from exactly one execution', async () => {
     const context = executionContext();
     const taskId = randomUUID();
     const jobAttempt = 1;
@@ -1388,10 +1446,15 @@ describe('Codex hosted search Tool Broker integration', () => {
       workspaceId: context.workspaceId,
       allowedDomains: ['example.com'],
     });
-    startManagedBrowserTask.mockResolvedValue({
-      task: { id: taskId },
-      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
-    });
+    const { ManagedBrowserTaskStartError } = await import('@allrice/database');
+    startManagedBrowserTask
+      .mockRejectedValueOnce(
+        new ManagedBrowserTaskStartError('BROWSER_TARGET_BUSY'),
+      )
+      .mockResolvedValue({
+        task: { id: taskId },
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
     registerManagedBrowserEvidenceArtifact.mockResolvedValue({
       id: randomUUID(),
     });
@@ -1458,6 +1521,9 @@ describe('Codex hosted search Tool Broker integration', () => {
         taskId,
         lease: { attempt: jobAttempt, leaseToken: jobLeaseToken },
       });
+      expect(startManagedBrowserTask).toHaveBeenCalledTimes(2);
+      expect(createDefaultManagedBrowserTask).toHaveBeenCalledTimes(1);
+      expect(managedBrowserRun).toHaveBeenCalledTimes(1);
       expect(managedBrowserRun).toHaveBeenCalledWith(
         expect.objectContaining({
           startUrl: 'https://example.com/report',

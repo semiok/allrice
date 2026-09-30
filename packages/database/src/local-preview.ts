@@ -83,6 +83,9 @@ export async function createLocalPreviewWorkspace(
     const profile = BrowserProfileSchema.parse({
       version: 1,
       origins: [localPreviewOrigin(endpointId)],
+      // Service previews have no file transfer; retain the legacy wire size
+      // so older Bridge builds can still preview their approved service.
+      maximumFileBytes: 1000000,
       allowUploads: false,
       allowDownloads: false,
       allowHumanCredentials: false,

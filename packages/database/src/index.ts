@@ -93,3 +93,9 @@ export * from './organization-activity.ts';
 
 export * from './execution-diagnostics.ts';
 export * from './operations-resources.ts';
+export {
+  getGithubMcpSettings,
+  updateGithubMcpSettings,
+  githubMcpOAuthReady,
+  McpSettingsConflict,
+} from './platform-mcp-settings.ts';

@@ -1,24 +1,27 @@
 ---
 name: wechat-research
-description: 搜索并读取微信公众号公开文章，核验文章信息并提供可点击的原文来源。适用于查找公众号文章、读取微信文章、研究公众号公开内容，或围绕某个主题整理公众号资料。
+description: 读取指定微信公众号公开文章，或按主题、公众号名称查找文章并整理内容。已有文章链接时直接读取；需要跨来源比较和核验时使用研究汇总。
 ---
 
 # WeChat Research
 
 Research public WeChat Official Account articles through the approved cloud tools and provide a concise, source-backed answer.
 
-## Workflow
+## Choose the entry point
 
-1. Use `wechat_article_search` with a focused query. Start with one query and refine it only when the returned results are insufficient.
-2. Inspect titles, accounts, dates, snippets, and canonical URLs. Select only the results that are relevant to the user's request.
-3. Use `wechat_article_read` to read the selected public articles before making claims about their contents.
-4. Answer in the user's language. State the article title, publishing account, publication date when available, and link to the canonical `mp.weixin.qq.com` source.
-5. Distinguish article claims from verified facts. When the question requires broader verification, use a separate approved research capability rather than treating one article as independent confirmation.
+- Given one or more article URLs, call `wechat_article_read` directly for the requested articles. Do not search for an article whose URL is already supplied or re-read an unchanged article already available in the current task.
+- Given a topic or account name without article URLs, use `wechat_article_search` with a focused query. Inspect titles, accounts, dates and snippets, then read the relevant articles. Refine the query only when evidence is insufficient.
+- For a summary or extraction, answer from the requested article. Broaden to other sources when the user requests comparison or verification, or an unresolved factual question requires it; a single article is not independent confirmation.
+- If reading fails, report the actual limitation. Search for an alternative only when it can satisfy the request, and identify it as a different source; do not repeat a blocked read or silently substitute another article.
+
+## Answer
+
+State the title, publishing account and publication date when available, and link to the canonical `mp.weixin.qq.com` source. Distinguish the article's claims from verified facts. Do not invent missing metadata or infer article contents from a search snippet.
 
 ## Default Call Budget
 
-- Use at most two searches for a normal request.
-- Read at most three articles unless the user explicitly asks for a broader survey.
+- Start with one search when discovery is needed; a normal request rarely needs more than two searches or three selected articles.
+- Follow the requested scope when the user supplies more articles or asks for a broader survey.
 - Stop once the requested conclusion has enough direct evidence.
 
 ## Boundaries

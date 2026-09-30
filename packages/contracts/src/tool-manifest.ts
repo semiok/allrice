@@ -162,7 +162,8 @@ export const allRiceToolManifest = [
     canonicalName: 'web.fetch',
     capability: 'network:outbound',
     risk: 'read_only',
-    transport: 'envelope',
+    transport: 'dsh_broker_native',
+    dshWireName: 'web_fetch',
   },
   {
     canonicalName: 'browser.run',

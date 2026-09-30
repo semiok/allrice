@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -14,13 +15,16 @@ import type {
   SessionReference,
   UserQuestionAnswerSubmission,
 } from '@allrice/contracts';
-import Link from 'next/link';
+import { isMessageRunActive } from './run-view';
 
 import { isConversationAtBottom } from '../../lib/chatflow/conversation-scroll';
 import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-state';
+import { projectNativeContext } from '../../lib/chatflow/native-context';
+import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
+import { AssistantHistoryButton } from './assistant-history-button';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
@@ -70,6 +74,8 @@ import frameUi from './dsh-upstream/AppFrame.module.css';
 import { EmployeeDetailsDialog } from './employee-details-dialog';
 import styles from './dsh-saas.module.css';
 import { WorkspaceFilePickerDialog } from './workspace-file-picker-dialog';
+import { createMessageImageCache } from './message-image-cache';
+import { nextPaint } from './dsh-upstream/images/next-paint';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
 import { useBridgeReleases } from './bridge-releases';
@@ -82,6 +88,10 @@ import {
   UserQuestionComposer,
   userQuestionAnswerText,
 } from './user-question-composer';
+
+// DSH's whole-row disclosures are divs with button semantics, not <button>s.
+const transcriptDisclosureSelector =
+  'button[aria-expanded], [data-disclosure-row][aria-expanded], summary';
 
 export function ChatFlowClient({
   workbenchEnabled = false,
@@ -97,11 +107,23 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [submission, setSubmission] = useState<{
+    scope: string;
+    sessionId: string | null;
+    queued: boolean;
+    user: Message;
+    assistant: Message;
+    preparing: boolean;
+  } | null>(null);
+  const [imageCache] = useState(createMessageImageCache);
   const [sessionReferences, setSessionReferences] = useState<
     SessionReference[]
   >([]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [cancelRequestedRunId, setCancelRequestedRunId] = useState<
+    string | null
+  >(null);
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
@@ -167,6 +189,47 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const imageScope = `${settingsScope}/${activeId}`;
+  const messageImages = useMemo(
+    () => ({
+      load: imageCache.loader(imageScope, tenantHeaders),
+      reference: (attachment: Attachment) =>
+        imageCache.reference(imageScope, attachment),
+    }),
+    [imageCache, imageScope, tenantHeaders],
+  );
+  useEffect(
+    () => () => imageCache.release(imageScope),
+    [imageCache, imageScope],
+  );
+  useEffect(() => () => imageCache.dispose(), [imageCache, settingsScope]);
+  const visibleSubmission =
+    submission?.scope === settingsScope && submission.sessionId === activeId
+      ? submission
+      : null;
+  const transcriptMessages =
+    visibleSubmission && !visibleSubmission.queued
+      ? [
+          ...(history?.messages ?? []),
+          visibleSubmission.user,
+          ...(visibleSubmission.preparing ? [] : [visibleSubmission.assistant]),
+        ]
+      : (history?.messages ?? []);
+  const queuedMessages = [
+    ...(history?.queuedMessages ?? []),
+    ...(visibleSubmission?.queued
+      ? [
+          {
+            id: visibleSubmission.user.id,
+            runId: '',
+            text: visibleSubmission.user.content.text,
+            attachments: visibleSubmission.user.attachments,
+            sessionReferences: visibleSubmission.user.content.sessionReferences,
+            createdAt: visibleSubmission.user.createdAt,
+          },
+        ]
+      : []),
+  ];
   useEffect(() => {
     setSessionReferences([]);
     setReferencePickerOpen(false);
@@ -174,7 +237,28 @@ export function ChatFlowClient({
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
     setSettings(null);
-  }, [settingsScope]);
+    if (!workspace?.workspaceId) return;
+    const url = new URL(window.location.href);
+    const section = url.searchParams.get('settings');
+    if (
+      !section ||
+      !['apps', 'computer', 'capabilities', 'work', 'experience'].includes(
+        section,
+      )
+    )
+      return;
+    setSettings({ scope: settingsScope, section });
+    url.searchParams.delete('settings');
+    try {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    } catch {
+      // Restricted browsers may deny History writes; the modal still opens.
+    }
+  }, [settingsScope, workspace?.workspaceId]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
@@ -203,6 +287,7 @@ export function ChatFlowClient({
       if (sessionId !== null && captureSelection().sessionId === sessionId)
         return;
       setActiveId(sessionId, sessionId === null);
+      setSubmission(null);
       setBusy(false);
       setQuestionBusy(false);
       setError('');
@@ -352,7 +437,7 @@ export function ChatFlowClient({
   }, [activeId, history?.messages.length, scrollToTranscriptBottom]);
 
   const {
-    addWorkspaceFile,
+    addWorkspaceFiles,
     attachmentPreview,
     clearPendingAttachments,
     deliverableVersions,
@@ -466,11 +551,43 @@ export function ChatFlowClient({
     setAtTranscriptBottom(true);
     setBusy(true);
     setError('');
+    const createdAt = new Date().toISOString();
+    const echo = {
+      scope: settingsScope,
+      sessionId: activeId,
+      queued: isRunning,
+      preparing: true,
+      user: {
+        id: optimisticUserId,
+        role: 'user' as const,
+        content: { text, sessionReferences: draftReferences },
+        status: 'pending' as const,
+        runId: null,
+        createdAt,
+        attachments: draftAttachments,
+      },
+      assistant: {
+        id: optimisticAssistantId,
+        role: 'assistant' as const,
+        content: { text: '思考中…' },
+        status: 'pending' as const,
+        runId: null,
+        createdAt,
+      },
+    };
+    // DSH submission echo: paint local previews before any file serialization
+    // or network admission. Draft attachment ownership remains available on error.
+    setSubmission(echo);
+    setDraft('');
+    setSessionReferences([]);
     try {
-      const sessionId = activeId ?? (await createSession(draft));
-      if (!sessionId) return;
+      await nextPaint();
+      if (!action.current()) return;
+      const sessionId = activeId ?? (await createSession(text));
+      if (!sessionId) throw new Error('创建会话失败，请重试');
       if (!activeId && !action.adoptCreatedSession(sessionId)) return;
       if (!action.current()) return;
+      setSubmission({ ...echo, sessionId });
       const mode = 'follow_up' as const;
       const uploadResults = await Promise.allSettled(
         draftAttachments.map((attachment) =>
@@ -515,36 +632,7 @@ export function ChatFlowClient({
       );
       if (!action.current()) return;
       clientMessageId = retry.id;
-      setDraft('');
-      const createdAt = new Date().toISOString();
-      if (!isRunning)
-        setHistory((current) =>
-          current && current.session.id === sessionId
-            ? {
-                ...current,
-                messages: [
-                  ...current.messages,
-                  {
-                    id: optimisticUserId,
-                    role: 'user',
-                    content: { text, sessionReferences: draftReferences },
-                    status: 'completed',
-                    runId: null,
-                    createdAt,
-                    attachments: messageAttachments,
-                  },
-                  {
-                    id: optimisticAssistantId,
-                    role: 'assistant',
-                    content: { text: '思考中…' },
-                    status: 'pending',
-                    runId: null,
-                    createdAt,
-                  },
-                ],
-              }
-            : current,
-        );
+      setSubmission({ ...echo, sessionId, preparing: false });
       const result = await readJson<{
         run: { id: string };
         fallbackRunId: string | null;
@@ -566,7 +654,13 @@ export function ChatFlowClient({
       );
       retry.confirmed();
       if (!action.current()) return;
-      clearPendingAttachments();
+      const retainedPreviews = imageCache.handoff(
+        `${settingsScope}/${sessionId}`,
+        tenantHeaders,
+        messageAttachments,
+      );
+      clearPendingAttachments(retainedPreviews);
+      setSubmission(null);
       setSessionReferences([]);
       setHistory((current) => {
         if (!current || current.session.id !== sessionId) return current;
@@ -584,7 +678,13 @@ export function ChatFlowClient({
             ...current,
             messages: [
               ...messages,
-              result.userMessage,
+              {
+                ...result.userMessage,
+                attachments: messageAttachments.map((attachment) => ({
+                  ...attachment,
+                  previewUrl: undefined,
+                })),
+              },
               { ...result.assistantMessage, runId: result.run.id },
             ],
           };
@@ -600,7 +700,10 @@ export function ChatFlowClient({
               id: result.userMessage.id,
               runId: result.fallbackRunId ?? result.run.id,
               text,
-              attachments: messageAttachments,
+              attachments: messageAttachments.map((attachment) => ({
+                ...attachment,
+                previewUrl: undefined,
+              })),
               sessionReferences: draftReferences,
               createdAt: result.userMessage.createdAt,
             },
@@ -613,18 +716,7 @@ export function ChatFlowClient({
       void interactions.reload();
     } catch (cause) {
       if (!action.current()) return;
-      setHistory((current) =>
-        current
-          ? {
-              ...current,
-              messages: current.messages.filter(
-                (message) =>
-                  message.id !== optimisticUserId &&
-                  message.id !== optimisticAssistantId,
-              ),
-            }
-          : current,
-      );
+      setSubmission(null);
       setDraft(text);
       setSessionReferences(draftReferences);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
@@ -715,11 +807,17 @@ export function ChatFlowClient({
   async function cancelRun() {
     const targetRun = [...(history?.messages ?? [])]
       .reverse()
-      .map((message) => (message.runId ? runViews[message.runId] : undefined))
       .find(
-        (view) => view?.status === 'running' || view?.status === 'connecting',
+        (message) =>
+          message.runId && isMessageRunActive(message, runViews[message.runId]),
       );
-    if (!workspace || !targetRun) return;
+    if (
+      !workspace ||
+      !targetRun?.runId ||
+      cancelRequestedRunId === targetRun.runId
+    )
+      return;
+    setCancelRequestedRunId(targetRun.runId);
     const scope = captureSelection();
     try {
       await readJson(
@@ -735,6 +833,9 @@ export function ChatFlowClient({
     } catch (cause) {
       if (scope.current())
         setError(cause instanceof Error ? cause.message : '停止失败');
+      setCancelRequestedRunId((current) =>
+        current === targetRun.runId ? null : current,
+      );
     }
   }
 
@@ -875,8 +976,23 @@ export function ChatFlowClient({
       employeeAssistantAvailability.eligible &&
       assistantReady?.state === 'ready',
   };
-  const isRunning = Object.values(runViews).some(
-    (view) => view.status === 'running' || view.status === 'connecting',
+  const activeRunMessages = (history?.messages ?? []).filter(
+    (message) =>
+      message.runId && isMessageRunActive(message, runViews[message.runId]),
+  );
+  const isRunning = activeRunMessages.length > 0;
+  const nativeContextStatus = projectNativeContext(
+    history?.nativeContextStatus ?? null,
+    Object.values(runViews).flatMap((view) => view.events),
+  );
+  const contextCompacting = Object.values(runViews).some(
+    (view) =>
+      (view.status === 'running' || view.status === 'connecting') &&
+      projectNativeExperience(view.events).some(
+        (item) =>
+          item.kind === 'compaction' &&
+          ['started', 'updated'].includes(item.status),
+      ),
   );
   const pendingUserQuestion = Object.values(runViews)
     .filter((view) => view.status === 'running' || view.status === 'connecting')
@@ -888,17 +1004,18 @@ export function ChatFlowClient({
         : left.occurredAt.localeCompare(right.occurredAt),
     )
     .at(-1);
-  const historyLoading = activeId !== null && history === null;
+  const historyLoading =
+    activeId !== null && history === null && !visibleSubmission;
   const isEmptyConversation =
     !sessionArchived &&
     !historyLoading &&
-    !history?.messages.length &&
+    !transcriptMessages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
-  const recoverableRunView = [...(history?.messages ?? [])]
+  const recoverableRunView = [...activeRunMessages]
     .reverse()
-    .map((message) => (message.runId ? runViews[message.runId] : undefined))
-    .find((view) => view?.status === 'failed' || view?.status === 'canceled');
+    .map((message) => runViews[message.runId!])
+    .find((view) => !!view?.connectionError);
   const { localWorkspaceOnline, localWorkspaceLabel, bridgeConnectionState } =
     projectBridgeView(bridgeDevices, bridgeStatusKnown);
 
@@ -930,10 +1047,14 @@ export function ChatFlowClient({
       fileInput={fileInput}
       hero={hero}
       isRunning={isRunning}
+      cancelPending={activeRunMessages.some(
+        (message) => message.runId === cancelRequestedRunId,
+      )}
       localWorkspaceLabel={localWorkspaceLabel}
       localWorkspaceOnline={localWorkspaceOnline}
       bridgeConnectionState={bridgeConnectionState}
-      nativeContextStatus={history?.nativeContextStatus ?? null}
+      nativeContextStatus={nativeContextStatus}
+      contextCompacting={contextCompacting}
       onAttachmentMenuOpenChange={setAttachmentMenuOpen}
       onCancelRun={cancelRun}
       onDraftChange={setDraft}
@@ -954,7 +1075,13 @@ export function ChatFlowClient({
       onSendMessage={sendMessage}
       onUploadAttachments={uploadAttachments}
       onUploadVisibilityChange={setUploadVisibility}
-      pendingAttachments={pendingAttachments}
+      pendingAttachments={
+        visibleSubmission
+          ? pendingAttachments.filter(
+              (file) => !file.mediaType.startsWith('image/'),
+            )
+          : pendingAttachments
+      }
       uploadVisibility={uploadVisibility}
     />
   );
@@ -1013,6 +1140,7 @@ export function ChatFlowClient({
       )}
       {archive.overlays}
       <ChatSidebar
+        experienceEnabled={experienceEnabled}
         archive={archive}
         capabilities={
           <CapabilityContent
@@ -1143,14 +1271,6 @@ export function ChatFlowClient({
                 <div
                   className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                 >
-                  {experienceEnabled && workspace ? (
-                    <Link
-                      className={workbenchUi.entry}
-                      href={`/workspace/experience?workspaceId=${encodeURIComponent(workspace.workspaceId)}${activeId ? `&sessionId=${encodeURIComponent(activeId)}` : ''}`}
-                    >
-                      经验沉淀
-                    </Link>
-                  ) : null}
                   {workbenchEnabled ? (
                     <button
                       type="button"
@@ -1251,7 +1371,32 @@ export function ChatFlowClient({
                 columnRef={transcriptColumn}
                 onNavigateAway={pauseTranscriptFollowing}
               />
-              <div className={conversationUi.viewArea}>
+              <div
+                className={conversationUi.viewArea}
+                onClickCapture={(event) => {
+                  const target = event.target;
+                  if (
+                    target instanceof Element &&
+                    target.closest(transcriptDisclosureSelector)
+                  ) {
+                    // Manual disclosure changes are reading actions, not new
+                    // output. Pause before React/native details resize so the
+                    // bottom-follow observer cannot scroll the trigger away.
+                    pauseTranscriptFollowing();
+                  }
+                }}
+                onKeyDownCapture={(event) => {
+                  // The native DSH row toggles directly on Enter/Space without
+                  // emitting a click, so keyboard expansion needs the same pause.
+                  if (
+                    (event.key === 'Enter' || event.key === ' ') &&
+                    event.target instanceof Element &&
+                    event.target.closest(transcriptDisclosureSelector)
+                  ) {
+                    pauseTranscriptFollowing();
+                  }
+                }}
+              >
                 {workbenchEnabled && activeId ? (
                   <InteractionStatusPanel
                     data={interactions.data}
@@ -1289,12 +1434,10 @@ export function ChatFlowClient({
                   <p role="status">{interactions.error}</p>
                 ) : null}
                 {workbenchEnabled && assistants.hasMore ? (
-                  <button
-                    type="button"
-                    onClick={() => void assistants.loadMore()}
-                  >
-                    加载更早的助手任务记录
-                  </button>
+                  <AssistantHistoryButton
+                    key={activeId}
+                    onLoadMore={assistants.loadMore}
+                  />
                 ) : null}
                 <MessageFeedbackProvider
                   readOnly={sessionArchived}
@@ -1312,7 +1455,8 @@ export function ChatFlowClient({
                     assistantTrees={assistants.trees}
                     runTimings={interactions.data?.runTimings}
                     onAssistantChanged={assistants.reload}
-                    messages={history?.messages ?? []}
+                    messages={transcriptMessages}
+                    messageImages={messageImages}
                     onLoadRunTrace={loadRunTrace}
                     onRecoverRun={recoverRun}
                     onScrollToBottom={scrollToTranscriptBottom}
@@ -1342,7 +1486,7 @@ export function ChatFlowClient({
                 />
                 <QueuedMessagesDock
                   key={`${workspace.organizationId}/${activeId}`}
-                  items={sessionArchived ? [] : (history?.queuedMessages ?? [])}
+                  items={sessionArchived ? [] : queuedMessages}
                   busy={busy}
                   canEdit={
                     !draft.trim() &&
@@ -1476,8 +1620,17 @@ export function ChatFlowClient({
         />
       )}
       <WorkspaceFilePickerDialog
+        key={`${workspace.workspaceId}:${activeId ?? 'draft'}`}
         files={workspaceFiles}
-        onAddFile={addWorkspaceFile}
+        employeeName={activeEmployeeName}
+        accentStyle={employeeAccentStyle(
+          activeEmployeeName,
+          activeEmployeeColor,
+        )}
+        attachedFileIds={pendingAttachments.map(
+          (file) => file.persistedId ?? file.id,
+        )}
+        onAddFiles={addWorkspaceFiles}
         onClose={() => setFilePickerOpen(false)}
         onOpenVersionHistory={openVersionHistory}
         open={filePickerOpen}
@@ -1486,7 +1639,10 @@ export function ChatFlowClient({
       <DeliverableVersionHistoryDialog
         file={versionHistoryFile}
         loading={versionHistoryLoading}
-        onClose={() => setVersionHistoryFile(null)}
+        onClose={() => {
+          setVersionHistoryFile(null);
+          setFilePickerOpen(true);
+        }}
         versions={deliverableVersions}
       />
 

@@ -49,6 +49,32 @@ export async function prepareTenantCloudGrants(tx: Tx, scope: Scope) {
             where organization_id=${organizationId} and workspace_id=${workspaceId} and owner_id=${user.user_id}`
           : await tx`select id,enabled,revoked_at,profile from allrice_browser_control_grants
             where organization_id=${organizationId} and workspace_id=${workspaceId} and owner_id=${user.user_id} and transport='cloud'`;
+      if (existing.some((g) => !g.enabled || g.revoked_at)) continue;
+      if (kind === 'browser') {
+        // Issue a successor for automatic legacy defaults. Keep the old grant
+        // immutable so an in-flight task (including one still opening) keeps its binding.
+        const [legacy] =
+          await tx`select g.id from allrice_browser_control_grants g
+          where g.organization_id=${organizationId} and g.workspace_id=${workspaceId} and g.owner_id=${user.user_id}
+            and g.target_id=${target.id} and g.transport='cloud' and g.enabled and g.revoked_at is null
+            and g.profile->>'network'='public_https' and (g.profile->>'lifetimeMs')::integer in (300000,600000)
+            and (g.profile->>'maximumFileBytes')::integer in (1000000,2000000,9000000)
+            and g.profile->>'allowUploads'='true' and g.profile->>'allowDownloads'='true' and g.profile->>'allowHumanCredentials'='true'
+            and g.profile<>${tx.json(parsed.data)}
+            and exists(select 1 from allrice_audit_events a where a.resource_id=g.id and a.action='tenant.cloud.prepared')
+            and not exists(select 1 from allrice_browser_control_grants successor where successor.organization_id=g.organization_id
+              and successor.workspace_id=g.workspace_id and successor.owner_id=g.owner_id and successor.transport='cloud'
+              and successor.created_at>g.created_at)
+          order by g.created_at desc limit 1 for share of g`;
+        if (legacy) {
+          const successorId = randomUUID();
+          await tx`insert into allrice_browser_control_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled)
+            values(${successorId},${organizationId},${workspaceId},${user.user_id},${target.id},1,${tx.json(parsed.data)},true)`;
+          await tx`insert into allrice_audit_events(organization_id,workspace_id,action,resource_type,resource_id,decision,reason,metadata)
+            values(${organizationId},${workspaceId},'tenant.cloud.prepared','browser_grant',${successorId},'recorded','platform_browser_defaults',
+              ${tx.json({ ownerId: user.user_id, targetId: target.id, predecessorId: legacy.id })})`;
+        }
+      }
       if (
         existing.some((g) => !g.enabled || g.revoked_at) ||
         existing.some(

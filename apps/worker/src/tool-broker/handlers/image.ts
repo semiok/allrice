@@ -12,10 +12,20 @@ import {
   workbenchEnabled,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { requestCodexImage } from '../../codex-image-broker.js';
+import {
+  requestCodexImage,
+  CodexImageGenerationFailedError,
+} from '../../codex-image-broker.js';
 import { loadHarnessImages } from '../../harness/prompt-images.js';
-import { HandlerError } from '../../errors.js';
+import { confirmToolFailure, HandlerError } from '../../errors.js';
 import type { RiceToolHandler, RiceToolResult } from '../types.js';
+
+const knownFailureCodes = new Set([
+  'IMAGE_AUTH_REQUIRED',
+  'IMAGE_RATE_LIMITED',
+  'IMAGE_MODEL_UNAVAILABLE',
+  'IMAGE_GENERATION_FAILED',
+]);
 
 export function decodeGeneratedPng(encoded: string) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
@@ -111,6 +121,22 @@ export const generateImage: RiceToolHandler = async ({
   if (!claimed.execute) {
     if (claimed.status === 'succeeded' && claimed.result)
       return claimed.result as RiceToolResult;
+    if (
+      claimed.status === 'failed' &&
+      knownFailureCodes.has(claimed.errorCode ?? '')
+    ) {
+      const failure = new HandlerError(
+        claimed.errorCode!,
+        '相同图片请求已确认失败，未取得图片；没有重复生成。',
+        false,
+      );
+      confirmToolFailure(failure, {
+        runId: input.context.runId,
+        callId: input.call.id,
+        toolName: input.call.name,
+      });
+      throw failure;
+    }
     throw new HandlerError(
       'IMAGE_RESULT_UNKNOWN',
       '相同图片请求已提交，结果尚未确认或未成功；不会自动重复生成。',
@@ -196,21 +222,26 @@ export const generateImage: RiceToolHandler = async ({
   } catch (error) {
     const code =
       error instanceof HandlerError ? error.code : 'IMAGE_RESULT_UNKNOWN';
-    await finishImageOperation({
+    if (error instanceof CodexImageGenerationFailedError)
+      await recordImageReceipt({
+        context: input.context,
+        operationId: claimed.id,
+        usage: error.receipt.usage,
+        requestId: error.receipt.requestId,
+      });
+    const knownFailure = !received && knownFailureCodes.has(code);
+    const persisted = await finishImageOperation({
       context: input.context,
       operationId: claimed.id,
-      status:
-        !received &&
-        [
-          'IMAGE_AUTH_REQUIRED',
-          'IMAGE_RATE_LIMITED',
-          'IMAGE_MODEL_UNAVAILABLE',
-          'IMAGE_GENERATION_FAILED',
-        ].includes(code)
-          ? 'failed'
-          : 'unknown',
+      status: knownFailure ? 'failed' : 'unknown',
       errorCode: code,
-    }).catch(() => undefined);
+    }).catch(() => false);
+    if (persisted && knownFailure && error instanceof HandlerError)
+      confirmToolFailure(error, {
+        runId: input.context.runId,
+        callId: input.call.id,
+        toolName: input.call.name,
+      });
     throw error;
   }
 };

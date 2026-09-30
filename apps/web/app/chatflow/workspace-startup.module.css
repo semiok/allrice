@@ -1,0 +1,172 @@
+.loading {
+  --startup-ink: #292d35;
+  --startup-secondary: #616a77;
+  --startup-status: #737d8b;
+  --startup-highlight: #344155;
+  display: grid;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 0;
+  place-items: center;
+  color: var(--startup-ink);
+  background: var(--dsw-alias-bg-base);
+  font-family: var(--ds-font-family-ui, system-ui, sans-serif);
+}
+
+.startup {
+  --cycle-duration: 1.8s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 420px;
+  padding: 24px;
+  text-align: center;
+  transform: translateY(-8px);
+}
+
+.mark {
+  display: block;
+  flex: none;
+}
+
+.grain {
+  opacity: 0;
+  animation: goldTrail var(--cycle-duration) cubic-bezier(0.37, 0, 0.63, 1)
+    infinite;
+  animation-delay: calc(var(--grain-phase) * var(--cycle-duration));
+}
+
+.wordmark {
+  margin-top: 21px;
+  font-size: 27px;
+  line-height: 1;
+  font-weight: 650;
+  letter-spacing: -0.85px;
+}
+
+.tagline {
+  margin: 10px 0 0;
+  color: var(--startup-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: 0.1px;
+}
+
+.status {
+  width: fit-content;
+  margin: 28px 0 0;
+  color: var(--startup-status);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.25px;
+  animation: statusBreathe calc(var(--cycle-duration) / 2) ease-in-out infinite;
+}
+
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .status {
+    background-image: linear-gradient(
+      100deg,
+      var(--startup-status) 42%,
+      var(--startup-highlight) 50%,
+      var(--startup-status) 58%
+    );
+    background-size: 300% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    animation:
+      statusShimmer calc(var(--cycle-duration) / 2) linear infinite,
+      statusBreathe calc(var(--cycle-duration) / 2) ease-in-out infinite;
+  }
+}
+
+.startupHint {
+  margin: 12px 0 16px;
+  color: var(--startup-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.startup button {
+  min-height: 40px;
+  padding: 8px 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-button-elevated-fill);
+  font: inherit;
+  cursor: pointer;
+}
+
+.startup button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.startup[data-failed='true'] .grain {
+  animation: none;
+  opacity: 0;
+}
+
+.startup[data-failed='true'] .grain[data-grain='7'] {
+  opacity: 1;
+}
+
+.startup[data-failed='true'] .status {
+  animation: none;
+  opacity: 1;
+  background-image: none;
+  color: var(--startup-secondary);
+}
+
+:global(body[data-ds-dark-theme]) .loading {
+  --startup-ink: var(--dsw-alias-label-primary);
+  --startup-secondary: var(--dsw-alias-label-secondary);
+  --startup-status: var(--dsw-alias-label-tertiary);
+  --startup-highlight: var(--dsw-alias-label-primary);
+}
+
+@keyframes goldTrail {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  65%,
+  80% {
+    opacity: 0;
+  }
+}
+
+@keyframes statusBreathe {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes statusShimmer {
+  from {
+    background-position: 100% 50%;
+  }
+  to {
+    background-position: 0% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grain {
+    animation: none;
+    opacity: 0;
+  }
+  .grain[data-grain='7'] {
+    opacity: 1;
+  }
+  .status {
+    animation: none;
+    opacity: 1;
+    background-image: none;
+    color: var(--startup-status);
+  }
+}

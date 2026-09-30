@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMcpExecutionFixture } from './mcp-execution.fixture.ts';
+import { createAssistantRuntime } from './assistant-runtime.ts';
 import * as McpConnections from './mcp-connections.ts';
 import {
   revokeRuntimeActionApproval,
@@ -22,6 +23,7 @@ import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
 import { riceToolDefinitionsForCapabilities } from '../../../apps/worker/src/tool-broker/definitions.js';
 import * as McpExecutor from '../../../apps/worker/src/mcp/executor.js';
 import { createNativeMcpTransport } from '../../../apps/worker/src/mcp/native-transport.js';
+import { McpTransportError } from '../../../apps/worker/src/mcp/diagnostics.js';
 import { executeNextMcpDiscovery } from '../../../apps/worker/src/mcp/lifecycle.js';
 import {
   managedMcpRunContext,
@@ -151,6 +153,57 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     const tool = ready.tools.find(
       (t) => t.description === 'Append a synthetic record',
     )!;
+    const invalid = await f.create('managed-native-invalid-input', {
+      connectionId: connection.id,
+      tool: tool.name,
+      arguments: { value: 'x'.repeat(101) },
+    });
+    const task = invalid.snapshot.binding.task;
+    const worker = {
+      workerId: f.worker,
+      jobId: f.job,
+      leaseToken: invalid.jobLeaseToken,
+      generation: invalid.snapshot.binding.attempt.generation,
+    };
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+    const assistants = createAssistantRuntime({
+      database: db,
+      authorize: async () => {},
+    });
+    await assistants.configureRoot({
+      task,
+      worker,
+      nativeSessionId: `dsh-${f.session}`,
+      allowedTools: ['cloud.mcp.call'],
+      configuration: {
+        version: 1,
+        mode: 'daily',
+        allowAssistants: true,
+        maxDepth: 1,
+        maxChildren: 4,
+        maxConcurrent: 2,
+      },
+    });
+    await f.decide(invalid);
+    const rejected = await McpExecutor.runMcpRuntimeOperation(invalid, {
+      database: db,
+      store,
+      transport: native,
+    });
+    expect(rejected).toMatchObject({
+      status: 'failed',
+      code: 'MCP_INVALID_SCHEMA',
+    });
+    expect(rejected.output).toContain('工具参数校验失败');
+    expect(f.service.state.calls).toBe(0);
+    expect(
+      (
+        await invalid.ledger.readOperation(
+          task.scope,
+          invalid.snapshot.binding.attempt.operationId,
+        )
+      ).result,
+    ).toMatchObject({ status: 'failed', effects: 'none' });
     const created = await f.create('managed-native-write', {
       connectionId: connection.id,
       tool: tool.name,
@@ -164,6 +217,13 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     });
     expect(result.status).toBe('succeeded');
     expect(f.service.state.rows).toEqual(['same-task']);
+    expect(
+      await assistants.finalizeRoot({
+        scope: task.scope,
+        rootRunId: f.run,
+        worker,
+      }),
+    ).toMatchObject({ status: 'completed' });
     const [unchanged] =
       await db`select execution_snapshot from allrice_employee_runs where run_id=${f.run}`;
     expect(
@@ -491,7 +551,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     const allowed = await draft(base);
     expect((await compilePlatformEmployee(allowed.id)).valid).toBe(true);
     const trial = await queuePlatformEmployeeTestRun(allowed.id, {
+      environment: 'company',
       workspaceId: f.workspace,
+      ownerId: f.user,
       prompt: 'Synthetic compile and release only',
     });
     expect(trial.queued).toBe(true);
@@ -809,6 +871,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
           await f.decide(c);
           const result = await pending;
           expect(JSON.parse(result.modelContent).status).toBe('succeeded');
+          expect(JSON.parse(result.modelContent).permissionGuidance).toContain(
+            '不证明当前连接令牌',
+          );
           return result;
         },
       });
@@ -1067,12 +1132,47 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     expect(result.code).toBe('MCP_DENIED');
     expect(f.service.state.reads).toBe(0);
   });
+  it('persists safe connection diagnostics without classifying a pre-dispatch failure as unknown', async () => {
+    const f = await fixture(),
+      c = await f.create();
+    await f.decide(c);
+    vi.spyOn(f.transport, 'invoke').mockRejectedValueOnce(
+      new McpTransportError('MCP_UNAVAILABLE', {
+        phase: 'tools_list',
+        reason: 'http_error',
+        httpStatus: 503,
+        requestDispatched: false,
+        connectionAttempts: 2,
+      }),
+    );
+    const result = await f.execute(c);
+    expect(result.status).toBe('failed');
+    expect(JSON.parse(result.output).diagnostic).toMatchObject({
+      phase: 'tools_list',
+      httpStatus: 503,
+      connectionAttempts: 2,
+    });
+    const [attempt] =
+      await db`select result from allrice_mcp_execution_attempts where operation_id=${c.snapshot.binding.attempt.operationId}`;
+    expect(attempt!.result.evidence.output).toBe(result.output);
+    expect(f.service.state.calls).toBe(0);
+    expect((await f.execute(c)).output).toBe(result.output);
+  });
   it('loss of the reply after the write is unknown and re-entry never repeats it', async () => {
     const f = await fixture(),
       c = await f.create();
     await f.decide(c);
     f.service.state.dropReply = true;
-    expect((await f.execute(c)).status).toBe('unknown');
+    const result = await f.execute(c);
+    expect(result.status).toBe('unknown');
+    expect(JSON.parse(result.output).diagnostic).toMatchObject({
+      phase: 'tools_call',
+      requestDispatched: true,
+      connectionAttempts: 1,
+    });
+    const [attempt] =
+      await db`select result from allrice_mcp_execution_attempts where operation_id=${c.snapshot.binding.attempt.operationId}`;
+    expect(attempt!.result.evidence.output).toBe(result.output);
     expect(f.service.state.calls).toBe(1);
     expect((await f.execute(c)).status).toBe('unknown');
     expect(f.service.state.calls).toBe(1);
