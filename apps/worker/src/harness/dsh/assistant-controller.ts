@@ -21,6 +21,7 @@ import {
   createAssistantPricing,
   createRuntimeOperationLedger,
   createLocalCommandOperation,
+  createMcpRuntimeOperation,
   waitLocalCommandOperation,
   publishAssistantOutput,
   getDatabase,
@@ -35,6 +36,7 @@ import { createAssistantWorkerBridge } from './assistant-bridge.js';
 import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 import { assertAssistantProviderOutputBound } from './assistant-provider.js';
 
+import { runMcpRuntimeOperation } from '../../mcp/executor.js';
 import { assistantModelCallCapacity } from './assistant-call-limits.js';
 
 function assertPriceProvider(
@@ -330,6 +332,7 @@ export function productionAssistantController(input: {
         'workspace.memory.search',
         'workspace.session.search',
         'web.search',
+        'cloud.mcp.call',
       ]);
       const wireNames = Object.fromEntries(
         allRiceToolManifest.flatMap((tool) =>
@@ -379,7 +382,42 @@ export function productionAssistantController(input: {
                 });
               }
             : undefined,
-        onReadTool: onToolCall ? (call) => onToolCall(call) : undefined,
+        onReadTool: async (call, childRunId) => {
+          if (call.name !== 'cloud.mcp.call') {
+            if (!onToolCall) throw Error('assistant_tool_not_available');
+            return onToolCall(call);
+          }
+          // This path accepts only a frozen, read-only call, never connection
+          // management. Child provenance is internal, not a model argument.
+          const created = await (async () => {
+            try {
+              const created = await createMcpRuntimeOperation(
+                {
+                  context: input.context,
+                  arguments: call.arguments,
+                  callId: call.id,
+                  assistant: { runId: childRunId, worker },
+                },
+                db,
+              );
+              return created;
+            } catch {
+              throw new HandlerError(
+                'ASSISTANT_MCP_DENIED',
+                '助手只能调用本轮已授权的只读 MCP 工具；连接管理和写入请交由主员工执行。',
+                false,
+              );
+            }
+          })();
+          const result = await runMcpRuntimeOperation(created, {
+            database: db,
+            signal: input.signal,
+          });
+          return {
+            modelContent: JSON.stringify(result),
+            summary: `云端 MCP · ${result.status}`,
+          };
+        },
         onProposal: async (call, childRunId) => {
           if (call.name !== 'local.process.execute')
             throw Error('assistant_proposal_unavailable');

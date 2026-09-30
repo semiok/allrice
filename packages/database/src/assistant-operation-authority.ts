@@ -24,20 +24,23 @@ const deny = (): never => {
   throw new RuntimePolicyError('assistant_authority_changed');
 };
 
-/** Resolves immutable operation provenance on EVERY reconstructed Bridge
+/** Resolves immutable operation provenance on EVERY reconstructed Bridge/MCP
  * ledger. No closure-only child authorization survives as an implicit grant. */
 export function createAssistantOperationAuthority(
-  device: BridgeDevice,
+  device: Pick<BridgeDevice, 'organizationId' | 'workspaceId' | 'ownerId'> & {
+    id: string | null;
+  },
   initial?: {
     binding: RuntimeActionBinding;
     assistant?: AssistantOperationOrigin;
   },
+  action: 'local.process.execute' | 'cloud.mcp.call' = 'local.process.execute',
 ) {
   async function resolve({ transaction: tx, binding }: Input) {
     const [row] = await tx<{ initial_snapshot: unknown }[]>`
       select initial_snapshot from allrice_runtime_operations
       where id=${binding.attempt.operationId} and organization_id=${device.organizationId}
-        and workspace_id=${device.workspaceId} and device_id=${device.id}`;
+        and workspace_id=${device.workspaceId} and device_id is not distinct from ${device.id}::uuid`;
     const snapshot = row
       ? RuntimeOperationSnapshotSchema.parse(row.initial_snapshot)
       : null;
@@ -59,7 +62,7 @@ export function createAssistantOperationAuthority(
       !storedBinding ||
       !runtimeContractEqual(storedBinding, binding) ||
       (first && first.assistant?.runId !== agent) ||
-      binding.action !== 'local.process.execute' ||
+      binding.action !== action ||
       binding.task.runId !== binding.task.rootRunId ||
       binding.task.parentRunId !== null ||
       agent === binding.task.rootRunId ||
@@ -163,7 +166,7 @@ export function createAssistantOperationAuthority(
           !['provisioning', 'running', 'waiting'].includes(i.status) ||
           i.state !== 'running' ||
           !Array.isArray(i.allowed_tools) ||
-          !i.allowed_tools.includes('local.process.execute'),
+          !i.allowed_tools.includes(action),
       )
     )
       deny();
@@ -171,8 +174,8 @@ export function createAssistantOperationAuthority(
       await assertAssistantAuthority({
         transaction: tx,
         task,
-        tools: ['local.process.execute'],
-        phase: 'proposal',
+        tools: [action],
+        phase: action === 'local.process.execute' ? 'proposal' : 'tool',
       });
     } catch (error) {
       if (
@@ -190,5 +193,5 @@ export function createAssistantOperationAuthority(
     )
       deny();
   }
-  return { lockCurrentBinding, assertCurrentBinding };
+  return { lockCurrentBinding, assertCurrentBinding, resolve };
 }

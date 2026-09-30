@@ -144,3 +144,24 @@ it('resolves official hosts independently but still rejects any private result b
   expect(mocks.request).not.toHaveBeenCalled();
   expect(mocks.lookup).not.toHaveBeenCalled();
 });
+
+it('reports an official preset DNS outage as unavailable without opening a socket', async () => {
+  const preset = 'https://api.githubcopilot.com/mcp/';
+  mocks.presetResolve.mockRejectedValue(
+    Object.assign(new Error('private DNS details'), { code: 'EAI_AGAIN' }),
+  );
+  await expect(
+    createPinnedMcpFetch({ ...input(), endpoint: preset })(preset, {
+      method: 'POST',
+      body: '{}',
+    }),
+  ).rejects.toMatchObject({
+    code: 'MCP_UNAVAILABLE',
+    diagnostic: {
+      reason: 'network',
+      networkCode: 'EAI_AGAIN',
+      requestDispatched: false,
+    },
+  });
+  expect(mocks.request).not.toHaveBeenCalled();
+});

@@ -5,6 +5,7 @@ import type postgres from 'postgres';
 import { assertEmployeeMcpAuthorization } from './mcp-employee-bindings.ts';
 import {
   FrozenMcpToolSchema,
+  mcpCallIsReadOnly,
   McpExecutionPayloadSchema,
   RuntimeActionBindingSchema,
   runtimeContractEqual,
@@ -62,6 +63,7 @@ export async function checkMcpBindingAuthority(
   tx: postgres.TransactionSql,
   context: RuntimePolicyPrincipal,
   binding: RuntimeActionBinding,
+  assistant = false,
 ) {
   if (
     !mcpExecutionEnabled() ||
@@ -71,7 +73,7 @@ export async function checkMcpBindingAuthority(
     binding.execution.deviceId !== null ||
     binding.execution.workCopy.kind !== 'remote_service' ||
     binding.execution.workCopy.id !== binding.attempt.operationId ||
-    binding.task.scope.projectId !== null ||
+    (!assistant && binding.task.scope.projectId !== null) ||
     binding.baseline.length ||
     binding.dataScope.length ||
     binding.task.scope.organizationId !== context.organizationId ||
@@ -163,7 +165,8 @@ export async function checkMcpBindingAuthority(
     const [managed] =
       await tx`select binding_id from allrice_mcp_binding_config where binding_id=${tool.connectionId}
       and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and managed_by=${context.actor.id}`;
-    if (!managed) throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
+    if (assistant || !managed)
+      throw new RuntimePolicyError('mcp_frozen_tool_not_allowed');
   }
   const [connection] = await tx<
     {
@@ -187,6 +190,16 @@ export async function checkMcpBindingAuthority(
     and (c.managed_by is null or c.managed_by=${context.actor.id})
     and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${context.actor.id} and not x.connected)
     for share of c,b,d,g,r`;
+  if (
+    assistant &&
+    (!connection ||
+      !mcpCallIsReadOnly({
+        endpoint: connection.endpoint,
+        tool,
+        arguments: payload.arguments,
+      }))
+  )
+    throw new RuntimePolicyError('assistant_mcp_read_only_required');
   const declared = {
     name: tool.name,
     description: tool.description,

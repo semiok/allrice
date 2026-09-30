@@ -4,7 +4,7 @@ import type { AssistantRuntime } from '@allrice/database';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 
 type Options = Parameters<typeof createAssistantWorkerBridge>[0];
-function fixture(root = false) {
+function fixture(root = false, supportedChildTools?: ReadonlySet<string>) {
   const runId = randomUUID();
   const provision = vi.fn(async () => {
     throw Error('fixture_authority_checked');
@@ -36,6 +36,7 @@ function fixture(root = false) {
     worker: {} as Options['worker'],
     wireNames: {},
     readOnlyTools: new Set(),
+    supportedChildTools,
   });
   return { bridge, provision, settleUsage };
 }
@@ -132,5 +133,25 @@ it('does not publish an artifact or record a parent report from the root employe
       },
     }),
   ).resolves.toMatchObject({ error: 'assistant_report_child_only' });
+  expect(f.settleUsage).toHaveBeenCalledOnce();
+});
+
+it('returns supported tools for an unavailable child tool without provisioning', async () => {
+  const f = fixture(true, new Set(['assistant.report', 'cloud.mcp.call']));
+  await expect(
+    f.bridge.handle('delegate', {
+      nativeSessionId: 'root',
+      callId: 'unsupported',
+      arguments: {
+        label: 'child',
+        text: 'Read',
+        tools: ['assistant.report', 'cloud.browser.execute'],
+      },
+    }),
+  ).resolves.toMatchObject({
+    error: 'assistant_child_tool_not_supported',
+    supportedTools: ['assistant.report'],
+  });
+  expect(f.provision).not.toHaveBeenCalled();
   expect(f.settleUsage).toHaveBeenCalledOnce();
 });

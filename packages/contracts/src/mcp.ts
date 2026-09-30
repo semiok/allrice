@@ -154,6 +154,48 @@ export const FrozenMcpToolSchema = McpDiscoveredToolSchema.extend({
   credentialReference: z.string().min(1).max(255),
 }).strict();
 export type FrozenMcpTool = z.infer<typeof FrozenMcpToolSchema>;
+/** Verified official GitHub read operations. Legacy managed connections stored
+ * every grant as write; do not alter their permissions or trust remote hints.
+ * Exact endpoint/name/method semantics supplement a frozen read-only grant.
+ * Source: https://github.com/github/github-mcp-server#pull-requests */
+export function mcpCallIsReadOnly(input: {
+  endpoint: string;
+  tool: Pick<FrozenMcpTool, 'name' | 'risk'>;
+  arguments: Record<string, unknown>;
+}) {
+  if (input.tool.risk === 'read_only') return true;
+  const endpoint = McpEndpointSchema.safeParse(input.endpoint);
+  if (
+    !endpoint.success ||
+    ![
+      'https://api.githubcopilot.com/mcp/',
+      'https://api.githubcopilot.com/mcp',
+    ].includes(new URL(endpoint.data).href)
+  )
+    return false;
+  const name = input.tool.name.replace(/^mcp__app__/, '');
+  if (name === 'pull_request_read')
+    return [
+      'get',
+      'get_diff',
+      'get_status',
+      'get_files',
+      'get_commits',
+      'get_review_comments',
+      'get_reviews',
+      'get_comments',
+      'get_check_runs',
+    ].includes(String(input.arguments.method));
+  return [
+    'get_file_contents',
+    'get_commit',
+    'list_pull_requests',
+    'search_pull_requests',
+    'search_code',
+    'list_commits',
+    'list_branches',
+  ].includes(name);
+}
 export const McpCallInputSchema = z
   .object({
     connectionId: UuidSchema,

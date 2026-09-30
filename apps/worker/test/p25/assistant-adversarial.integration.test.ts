@@ -45,10 +45,13 @@ integration(
       'settlement-failed',
       'confirmed-export',
       'foreign-receipt',
+      'root-mcp-write',
     ] as const)(
       'accounts a returned query failure without releasing uncertain execution: %s',
       async (mode) => {
         const f = await assistantFixture(database.db);
+        if (mode === 'root-mcp-write')
+          await database.db`update allrice_assistant_instances set allowed_tools=allowed_tools||'["cloud.mcp.call"]'::jsonb where run_id=${f.task.runId}`;
         const error = new Error('Synthetic handler failure');
         const handler = vi.fn(async (): Promise<HarnessToolResult> => {
           throw error;
@@ -68,7 +71,9 @@ integration(
           readOnlyTools: new Set(
             ['known-read', 'proposal', 'settlement-failed'].includes(mode)
               ? ['read']
-              : [],
+              : mode === 'root-mcp-write'
+                ? ['cloud.mcp.call']
+                : [],
           ),
           onRootTool: handler,
         });
@@ -76,7 +81,7 @@ integration(
         const request = {
           nativeSessionId: f.nativeSessionId,
           callId: randomUUID(),
-          name: 'read',
+          name: mode === 'root-mcp-write' ? 'cloud.mcp.call' : 'read',
           arguments: {},
         };
         if (mode === 'confirmed-export' || mode === 'foreign-receipt') {

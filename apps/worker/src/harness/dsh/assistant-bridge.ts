@@ -301,7 +301,8 @@ export function createAssistantWorkerBridge(
         if (
           !isProposal &&
           (riceToolRisk(name) === 'read_only' ||
-            options.readOnlyTools.has(name) ||
+            (options.readOnlyTools.has(name) &&
+              (!isRoot || name !== 'cloud.mcp.call')) ||
             isConfirmedToolFailure(error, {
               runId: instance.runId,
               callId,
@@ -434,7 +435,14 @@ export function createAssistantWorkerBridge(
           options.supportedChildTools &&
           selectedTools.some((tool) => !options.supportedChildTools!.has(tool))
         )
-          throw Error('assistant_child_tool_not_supported');
+          return {
+            error: 'assistant_child_tool_not_supported',
+            message:
+              'No child was created. Select tools from supportedTools and include assistant.report. cloud.mcp.call supports frozen read-only tools only; connection management and writes stay with the parent.',
+            supportedTools: [...options.supportedChildTools]
+              .filter((tool) => instance.allowedTools.includes(tool))
+              .sort(),
+          };
         let assignment:
           | {
               expectedHead: { artifactId: string; digest: string };

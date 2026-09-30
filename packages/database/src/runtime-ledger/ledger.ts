@@ -315,15 +315,18 @@ async function cancelOperationRows(
     if (
       row.snapshot.status === 'cancel_requested' &&
       row.lease_token_hash === null &&
-      row.bridge_payload !== null &&
-      [
-        'local.process.execute',
-        'local.fs.changeset',
-        'local.mcp.discover',
-        'local.mcp.call',
-      ].includes(
-        RuntimeBridgePayloadSchema.parse(row.bridge_payload).capability,
-      )
+      ((row.snapshot.agentInstanceId !== null &&
+        row.snapshot.binding.action === 'cloud.mcp.call' &&
+        row.snapshot.binding.execution.targetKind === 'cloud_mcp') ||
+        (row.bridge_payload !== null &&
+          [
+            'local.process.execute',
+            'local.fs.changeset',
+            'local.mcp.discover',
+            'local.mcp.call',
+          ].includes(
+            RuntimeBridgePayloadSchema.parse(row.bridge_payload).capability,
+          )))
     ) {
       const evidence = {
         summary: '取消发生在派发前，动作未执行',
